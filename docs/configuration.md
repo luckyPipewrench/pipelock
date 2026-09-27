@@ -787,7 +787,7 @@ websocket_proxy:
 
 ## DLP (Data Loss Prevention)
 
-Scans URLs for secrets and sensitive data using regex patterns. Built-in patterns cover API keys, tokens, credentials, and prompt injection indicators. Runs before DNS resolution to prevent exfiltration via DNS queries. Matching is always case-insensitive.
+Scans URLs for secrets and sensitive data using regex patterns. Built-in patterns cover API keys, tokens, credentials, and prompt injection indicators. Runs before DNS resolution to prevent exfiltration via DNS queries. Matching is always case-insensitive, except `AWS Access ID`: a candidate containing lowercase letters counts only if it also contains an uppercase ID or an `AKIA`/`ASIA` run in any case.
 
 ```yaml
 dlp:
@@ -897,7 +897,7 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 | LLM Router API Key | `sk-or-v1-` + 20+ hex chars | critical |
 | Answer Engine API Key | `pplx-` + 20+ token chars | critical |
 | Web Research API Key | `tvly-` + 20+ token chars | critical |
-| AWS Access Key ID | `AKIA\|A3T\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ASIA` | critical |
+| AWS Access ID | `AKIA\|A3T\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ASIA` | critical |
 | Google API Key | `AIza` | high |
 | Google OAuth Client Secret | `GOCSPX-` | critical |
 | Google OAuth Token | `ya29.` | critical |
@@ -975,7 +975,8 @@ Core safety-floor patterns (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `
 When `scan_env: true`, pipelock reads all environment variables at startup and flags URLs containing any env value that is:
 - 16+ characters (configurable via `min_env_secret_length`)
 - Shannon entropy > 3.0 bits/char
-- Checked in raw form, base64, hex, and base32 encodings
+- Checked whole in raw, base64, base64url, hex, base32, and decimal-character-code form (comma- or space-separated, e.g. `65,75,73`)
+- Also checked as a contiguous 16-byte-or-longer piece when the value itself is 16+ bytes with entropy above 3.0 (partial-disclosure matching always needs 16 contiguous bytes, whatever `min_env_secret_length` is set to). For URL-shaped values, only the password, query values, fragment, and path segments are matched in part. The URL block reason ends in `(partial N)` and text findings carry `partial_len`.
 
 This catches leaked API keys even without a specific DLP pattern for that provider.
 

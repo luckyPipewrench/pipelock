@@ -1664,6 +1664,35 @@ func TestDropSelfMatchingSSETail_UnicodeSuffixAndCanceledScan(t *testing.T) {
 	}
 }
 
+func TestDropSelfMatchingSSETail_BoundedProbes(t *testing.T) {
+	for _, everyPrefixDirty := range []bool{false, true} {
+		t.Run(fmt.Sprint(everyPrefixDirty), func(t *testing.T) {
+			tail := strings.Repeat("x", 4096)
+			probes := 0
+			scan := func(_ context.Context, text string) scanner.TextDLPResult {
+				probes++
+				return scanner.TextDLPResult{Clean: !everyPrefixDirty && len(text) != len(tail)}
+			}
+			got, err := dropSelfMatchingSSETailWithScan(t.Context(), tail, GenericSSEScanOptions{}, scan)
+			if err != nil || probes > 32 || got != tail {
+				t.Fatalf("tail length=%d probes=%d err=%v; want retained tail and at most 32 scans", len(got), probes, err)
+			}
+		})
+	}
+}
+
+func TestSSETailRuneBoundary_ExcludesLength(t *testing.T) {
+	tail := "éx"
+	for _, end := range []int{-1, 0, 1, len(tail), len(tail) + 1} {
+		if sseTailRuneBoundary(tail, end) {
+			t.Fatalf("end=%d is not an interior rune boundary", end)
+		}
+	}
+	if !sseTailRuneBoundary(tail, 2) {
+		t.Fatal("byte 2 must be an interior rune boundary")
+	}
+}
+
 func TestScanGenericSSEStream_FinalMultilineCredential(t *testing.T) {
 	key := "ghp_" + strings.Repeat("D", 40)
 	body := "event: " + key[:4] + "\ndata: " + key[4:8] + "\ndata: " + key[8:] + "\n\n"

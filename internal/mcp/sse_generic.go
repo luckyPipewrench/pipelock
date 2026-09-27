@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -435,20 +436,43 @@ func ScanGenericSSEStreamWithOptions(
 // for the current event. That suffix may begin another credential. The quiet
 // scans keep this bookkeeping check out of warn telemetry.
 func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
+	return dropSelfMatchingSSETailWithScan(ctx, tail, opts, sc.ScanTextForDLPQuiet)
+}
+
+// A dirty normalized or decoded view has no safe raw match offset. Limit the
+// fallback work per event; retaining the tail preserves unexamined suffixes.
+const sseTailProbeLimit = 32
+
+func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts GenericSSEScanOptions, scan func(context.Context, string) scanner.TextDLPResult) (string, error) {
+	originalTail := tail
+	probes := 0
 	for tail != "" {
-		result, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail), opts.Target, opts.Suppress)
+		if probes >= sseTailProbeLimit {
+			return originalTail, nil
+		}
+		result, _ := keepUnsuppressedDLP(scan(ctx, tail), opts.Target, opts.Suppress)
+		probes++
 		if err := checkSSEDLPContext(ctx); err != nil {
 			return "", err
 		}
 		if result.Clean {
 			return tail, nil
 		}
-		matchEnd := len(tail)
-		for end := 1; end <= len(tail); end++ {
-			if end < len(tail) && !utf8.RuneStart(tail[end]) {
+		matchEnd := 0
+		for _, match := range result.Matches {
+			span := match.Span()
+			if match.Encoded == "" && span.ViewLabel == scanner.ViewDLPNormalized && span.ByteEnd > 0 && span.ByteEnd <= len(tail) &&
+				(span.ByteEnd == len(tail) || sseTailRuneBoundary(tail, span.ByteEnd)) && strings.HasPrefix(normalize.ForDLP(tail), tail[:span.ByteEnd]) &&
+				(matchEnd == 0 || span.ByteEnd < matchEnd) {
+				matchEnd = span.ByteEnd
+			}
+		}
+		for end := 1; matchEnd == 0 && end < len(tail) && probes < sseTailProbeLimit; end++ {
+			if !sseTailRuneBoundary(tail, end) {
 				continue
 			}
-			prefix, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail[:end]), opts.Target, opts.Suppress)
+			prefix, _ := keepUnsuppressedDLP(scan(ctx, tail[:end]), opts.Target, opts.Suppress)
+			probes++
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return "", err
 			}
@@ -457,9 +481,16 @@ func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail stri
 				break
 			}
 		}
+		if matchEnd == 0 {
+			return originalTail, nil
+		}
 		tail = tail[matchEnd:]
 	}
 	return "", nil
+}
+
+func sseTailRuneBoundary(tail string, end int) bool {
+	return end > 0 && end < len(tail) && utf8.RuneStart(tail[end])
 }
 
 func checkSSEDLPContext(ctx context.Context) error {

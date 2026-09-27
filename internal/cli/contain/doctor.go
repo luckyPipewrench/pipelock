@@ -283,8 +283,30 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if cfg, err := config.LoadForInspection(env.configPath); err == nil && viewerRFBEnabled(cfg.Containment.Display) {
 		mode = 0o660
 	}
-	if err := checkDisplaySocket(env.stat, path, mode); err != nil {
+	if env.lstat == nil {
+		return fail(classInfra, "RFB socket lstat unavailable", "rerun contain install")
+	}
+	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
+	}
+	info, err := env.lstat(path)
+	if err != nil {
+		return fail(classInfra, "RFB socket: "+err.Error(), "rerun contain install")
+	}
+	if env.lookupUser == nil {
+		return fail(classInfra, "RFB owner lookup unavailable", "rerun contain install")
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return fail(classInfra, "lookup RFB owner: "+err.Error(), "rerun contain install")
+	}
+	uid, err := strconv.ParseUint(agent.Uid, 10, 32)
+	if err != nil {
+		return fail(classInfra, "parse RFB owner uid: "+err.Error(), "rerun contain install")
+	}
+	ownerUID, ok := fileOwnerUID(info)
+	if !ok || uint64(ownerUID) != uid {
+		return fail(classInfra, "RFB socket is not owned by the contained agent uid", "rerun contain install")
 	}
 	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
 		return fail(classInfra, err.Error(), "rerun contain install")

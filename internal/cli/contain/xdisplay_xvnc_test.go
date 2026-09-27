@@ -635,8 +635,8 @@ func TestDoctorDisplayRFBPassesWithViewerEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	rfb := viewerRFBSocket
-	env := &doctorEnv{configPath: cfgPath, agentHome: root, lookupUser: func(string) (*user.User, error) {
-		return &user.User{Uid: "0", Gid: strconv.Itoa(os.Getgid())}, nil
+	env := &doctorEnv{configPath: cfgPath, agentHome: root, agentUserName: testAgentUser, lookupUser: func(string) (*user.User, error) {
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
 	}, stat: func(path string) (os.FileInfo, error) {
 		switch path {
 		case defaultXvncPath:
@@ -647,6 +647,9 @@ func TestDoctorDisplayRFBPassesWithViewerEnabled(t *testing.T) {
 			return os.Stat(path)
 		}
 	}, lstat: func(path string) (os.FileInfo, error) {
+		if path == rfb {
+			return fakeFileInfo{mode: os.ModeSocket | 0o660, sys: fakeFileSysWithOwner(testUID(), testGID())}, nil
+		}
 		if path == filepath.Dir(rfb) {
 			return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, testGID())}, nil
 		}
@@ -655,6 +658,27 @@ func TestDoctorDisplayRFBPassesWithViewerEnabled(t *testing.T) {
 	result := checkDoctorDisplayRFB(context.Background(), env)
 	if result.status != statusPass || !strings.Contains(result.detail, "0660") {
 		t.Fatalf("viewer-enabled RFB socket should pass at 0660: %+v", result)
+	}
+	originalLstat := env.lstat
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		uid  uint32
+	}{
+		{name: "symlink", mode: os.ModeSymlink | 0o660, uid: testUID()},
+		{name: "foreign owner", mode: os.ModeSocket | 0o660, uid: testUID() + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env.lstat = func(path string) (os.FileInfo, error) {
+				if path == rfb {
+					return fakeFileInfo{mode: tc.mode, sys: fakeFileSysWithOwner(tc.uid, testGID())}, nil
+				}
+				return originalLstat(path)
+			}
+			if got := checkDoctorDisplayRFB(context.Background(), env); got.status != statusFail {
+				t.Fatalf("unsafe RFB socket accepted: %+v", got)
+			}
+		})
 	}
 }
 

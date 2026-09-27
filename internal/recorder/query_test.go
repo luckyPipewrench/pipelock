@@ -5,6 +5,7 @@ package recorder_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -720,6 +721,29 @@ func TestQuerySession_FailsOnFilenameSessionMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `session_id "other" does not match requested session "victim"`) {
 		t.Fatalf("error = %v", err)
+	}
+	// A verifier maps a refusal of evidence to a verification failure, so
+	// the error must be identifiable as one.
+	if !errors.Is(err, recorder.ErrEvidenceRefused) {
+		t.Fatalf("session mismatch is not ErrEvidenceRefused: %v", err)
+	}
+	if err := recorder.CheckEntrySessions([]recorder.Entry{e}, "other"); err != nil {
+		t.Fatalf("matching session refused: %v", err)
+	}
+}
+
+func TestResolveEvidenceLocation_SymlinkIsEvidenceRefused(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "evidence-victim-0.jsonl")
+	if err := writeFile(target, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "evidence-victim-0.jsonl")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	_, err := recorder.ResolveEvidenceLocation(dir, "")
+	if err == nil || !errors.Is(err, recorder.ErrEvidenceRefused) || !strings.Contains(err.Error(), "refuse symlink") {
+		t.Fatalf("symlinked evidence file: %v", err)
 	}
 }
 

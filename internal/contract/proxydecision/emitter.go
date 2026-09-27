@@ -171,6 +171,7 @@ type Emitter struct {
 	mu            sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
+	healthErr     error
 }
 
 // NewEmitter returns nil when recorder or signer is missing, matching the
@@ -230,18 +231,73 @@ func (e *Emitter) ChainState() (seq uint64, prevHash string) {
 	return e.chainSeq, e.chainPrevHash
 }
 
+// HealthError reports an uncertain write. A new emitter must not
+// resume from this chain head without reconciling the recorder's on-disk log.
+func (e *Emitter) HealthError() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.healthErr
+}
+
+// ErrEmitterRetired marks an emitter whose chain head was handed to a successor.
+var ErrEmitterRetired = errors.New("proxydecision: emitter retired")
+
+// Retire atomically stops further emission and returns the final chain head,
+// so a successor resumes from the last recorded receipt even when requests
+// were still emitting while the successor was being built. An unhealthy
+// emitter returns its health error instead of a head that cannot be trusted.
+func (e *Emitter) Retire() (seq uint64, prevHash string, err error) {
+	if e == nil {
+		return 0, recorder.GenesisHash, nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.healthErr != nil {
+		return 0, "", e.healthErr
+	}
+	e.healthErr = ErrEmitterRetired
+	return e.chainSeq, e.chainPrevHash, nil
+}
+
+// ResumeAt moves an emitter that has not been published yet to a retired
+// predecessor's chain head.
+func (e *Emitter) ResumeAt(seq uint64, prevHash string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.chainSeq = seq
+	e.chainPrevHash = prevHash
+}
+
 // Emit builds, signs, and records one v2 proxy_decision receipt. It is a no-op
 // on a nil receiver. The mutex spans the whole build→sign→hash→persist→advance
 // sequence so concurrent calls produce a well-ordered chain; chain state is
 // advanced only after a successful record, so a failed write leaves the chain
 // at its previous position (mirroring the v1 emitter and the shadow emitter).
 func (e *Emitter) Emit(d Decision) error {
+	return e.emit(d, false)
+}
+
+// EmitDurable records a decision only when the recorder confirms durable storage.
+func (e *Emitter) EmitDurable(d Decision) error {
+	return e.emit(d, true)
+}
+
+func (e *Emitter) emit(d Decision, durable bool) error {
 	if e == nil {
 		return nil
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.healthErr != nil {
+		return fmt.Errorf("proxy_decision emitter unhealthy: %w", e.healthErr)
+	}
 
 	// Sanitize secret-bearing fields BEFORE signing, byte-identically to the v1
 	// emitter (#676). The signed target must never carry raw secret bytes.
@@ -327,14 +383,26 @@ func (e *Emitter) Emit(d Decision) error {
 		return fmt.Errorf("marshal proxy_decision receipt: %w", err)
 	}
 
-	if err := e.recorder.Record(recorder.Entry{
+	entry := recorder.Entry{
 		SessionID: e.session,
 		Type:      evidenceReceiptEntryType,
 		EventKind: string(rcpt.PayloadKind),
 		Transport: d.Transport,
 		Summary:   fmt.Sprintf("%s: %s %s via %s", rcpt.PayloadKind, d.ActionType, d.Verdict, d.WinningSource),
 		Detail:    json.RawMessage(rcptJSON),
-	}); err != nil {
+	}
+	var recordErr error
+	if durable {
+		rec, ok := e.recorder.(interface{ RecordDurable(recorder.Entry) error })
+		if !ok {
+			return errors.New("proxy_decision recorder does not support durable writes")
+		}
+		recordErr = rec.RecordDurable(entry)
+	} else {
+		recordErr = e.recorder.Record(entry)
+	}
+	if err := recordErr; err != nil {
+		e.healthErr = err
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
 	}
 	e.chainPrevHash = rcptHash

@@ -72,6 +72,51 @@ func timeAfterTest() <-chan time.Time {
 	return time.After(5 * time.Second)
 }
 
+func TestRecordDurable_SyncsNewEvidenceDirectory(t *testing.T) {
+	rec := newDurableTestRecorder(t, Config{MaxEntriesPerFile: 1})
+	defer func() { _ = rec.Close() }()
+	var calls int
+	rec.dirSync = func(path string) error {
+		if path != rec.cfg.Dir {
+			t.Fatalf("directory sync path = %q, want %q", path, rec.cfg.Dir)
+		}
+		calls++
+		return nil
+	}
+	for i := range 2 {
+		if err := rec.RecordDurable(Entry{SessionID: "directory-sync", Type: "request", Summary: fmt.Sprintf("entry %d", i)}); err != nil {
+			t.Fatalf("RecordDurable(%d): %v", i, err)
+		}
+		if calls != i+1 {
+			t.Fatalf("directory sync calls after entry %d = %d, want %d", i, calls, i+1)
+		}
+	}
+}
+
+func TestRecordDurable_DirectorySyncFailureFailsClosed(t *testing.T) {
+	rec := newDurableTestRecorder(t, Config{})
+	defer func() { _ = rec.Close() }()
+	want := errors.New("injected directory sync failure")
+	var calls int
+	rec.dirSync = func(string) error {
+		calls++
+		if calls == 1 {
+			return want
+		}
+		return nil
+	}
+	err := rec.RecordDurable(Entry{SessionID: "directory-sync-failure", Type: "request", Summary: "must fail"})
+	if !errors.Is(err, want) {
+		t.Fatalf("RecordDurable error = %v, want %v", err, want)
+	}
+	if err := rec.RecordDurable(Entry{SessionID: "directory-sync-failure", Type: "request", Summary: "retry"}); err != nil {
+		t.Fatalf("RecordDurable retry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("directory sync calls = %d, want 2", calls)
+	}
+}
+
 func TestRecordDurable_WaitsForSyncBeforeSuccessAndObserver(t *testing.T) {
 	rec := newDurableTestRecorder(t, Config{})
 	defer func() { _ = rec.Close() }()

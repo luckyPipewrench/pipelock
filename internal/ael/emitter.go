@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -60,6 +61,8 @@ var systemArtifactOps = artifactOps{
 	openFile:       os.OpenFile,
 	syncDirectory:  syncDirectory,
 }
+
+func syncDirectory(path string) error { return directorysync.Sync(path) }
 
 // Emitter writes one artifact consumed directly by stock aelcheck.
 type Emitter struct {

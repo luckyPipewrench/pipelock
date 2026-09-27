@@ -281,6 +281,37 @@ func newDualEmitFixture(t *testing.T, redact bool) *dualEmitFixture {
 	return &dualEmitFixture{p: p, rec: rec, dir: dir, pub: pub, kid: signer.KeyID()}
 }
 
+func TestBuildReceiptEmitterRejectsUncertainV2Head(t *testing.T) {
+	f := newDualEmitFixture(t, false)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg := *f.p.CurrentConfig()
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+	if _, err := f.p.buildReceiptEmitter(&cfg); err != nil {
+		t.Fatalf("healthy emitter could not stage reload: %v", err)
+	}
+	f.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	d, ok := v2DecisionFromOpts(receipt.EmitOpts{
+		Transport: TransportForward, Target: "https://api.vendor.example/a", Verdict: config.ActionAllow,
+		PolicyHash: cfg.CanonicalPolicyHash(),
+	})
+	if !ok {
+		t.Fatal("could not derive v2 decision")
+	}
+	if err := f.p.v2EmitterPtr.Load().EmitDurable(d); !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("durable emit = %v, want sync failure", err)
+	}
+	if _, err := f.p.buildReceiptEmitter(&cfg); err == nil {
+		t.Fatal("reload staged a new emitter from an uncertain v2 head")
+	}
+}
+
 func mustEmitReceipt(t *testing.T, p *Proxy, opts receipt.EmitOpts) {
 	t.Helper()
 	if err := p.emitReceipt(opts); err != nil {

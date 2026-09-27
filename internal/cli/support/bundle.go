@@ -163,15 +163,17 @@ func runBundle(cmd *cobra.Command, configFile, outputPath string, writeJSON bool
 		return fmt.Errorf("writing archive: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
-
 	// Optionally write a companion manifest.json.
 	if writeJSON {
 		manifestPath := strings.TrimSuffix(outputPath, ".tar.gz") + "-manifest.json"
 		if err := writeManifestJSON(manifestPath, m); err != nil {
+			_ = os.Remove(filepath.Clean(outputPath))
 			return fmt.Errorf("writing manifest JSON: %w", err)
 		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Manifest written to:       %s\n", manifestPath)
+	} else {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Support bundle written to: %s\n", outputPath)
 	}
 
 	return nil
@@ -385,17 +387,30 @@ func marshalIndent(v any) ([]byte, error) {
 
 // writeArchive creates a gzip-compressed tar archive at path containing a
 // manifest header and all bundle entries.
-func writeArchive(path string, m manifest, entries []bundleEntry) error {
+func writeArchive(path string, m manifest, entries []bundleEntry) (err error) {
+	return writeArchiveWithClose(path, m, entries, (*os.File).Close)
+}
+
+func writeArchiveWithClose(path string, m manifest, entries []bundleEntry, closeFile func(*os.File) error) (err error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(path), bundleDirMode); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, bundleFileMode) // #nosec G304 -- operator-supplied output path
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, bundleFileMode) // #nosec G304 -- operator-supplied output path; exclusive creation rejects existing leaves and symlinks
 	if err != nil {
 		return fmt.Errorf("creating archive file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	// This call created the file exclusively, so a failure after creation
+	// removes it; otherwise a partial archive would block a retry to the same path.
+	defer func() {
+		if closeErr := closeFile(f); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(filepath.Clean(path))
+		}
+	}()
 
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
@@ -449,11 +464,24 @@ func tarWrite(tw *tar.Writer, name string, data []byte, mtime time.Time) error {
 }
 
 // writeManifestJSON writes a standalone manifest.json next to the archive.
-func writeManifestJSON(path string, m manifest) error {
+func writeManifestJSON(path string, m manifest) (err error) {
 	data, err := marshalIndent(m)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(filepath.Clean(path), data, bundleFileMode)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, bundleFileMode) // #nosec G304 -- operator-supplied output path; exclusive creation rejects existing leaves and symlinks
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(filepath.Clean(path))
+		}
+	}()
+	_, err = f.Write(data)
+	return err
 }

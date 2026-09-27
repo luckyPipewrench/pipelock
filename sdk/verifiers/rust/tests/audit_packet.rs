@@ -33,7 +33,9 @@ fn example_packet_validates_in_offline_mode() {
         },
     )
     .unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid, "{:?}", report.errors);
+    assert_eq!(report.verdict, "schema_checked_trust_unverified");
+    assert!(!report.trusted);
     assert_eq!(report.schema_check, "pass");
     assert_eq!(report.chain_check, "skipped");
 }
@@ -339,7 +341,9 @@ fn offline_skips_chain_verification() {
         },
     )
     .unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid, "{:?}", report.errors);
+    assert_eq!(report.verdict, "schema_checked_trust_unverified");
+    assert!(!report.trusted);
     assert_eq!(report.chain_check, "skipped");
     assert_eq!(report.cross_check, "skipped");
     assert_eq!(report.lifecycle_assessment, "not_assessed");

@@ -895,6 +895,10 @@ fetch_proxy:
 	}
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SessionProfiling.Enabled = true
+	cfg.BehavioralBaseline.Enabled = true
+	cfg.BehavioralBaseline.ProfileDir = t.TempDir()
+	cfg.BehavioralBaseline.DeviationAction = config.ActionBlock
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
@@ -944,6 +948,10 @@ fetch_proxy:
 	}
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	reloadCfg.SessionProfiling.Enabled = true
+	reloadCfg.BehavioralBaseline.Enabled = true
+	reloadCfg.BehavioralBaseline.ProfileDir = cfg.BehavioralBaseline.ProfileDir
+	reloadCfg.BehavioralBaseline.DeviationAction = config.ActionWarn
 	if cfg.CanonicalPolicyHash() == reloadCfg.CanonicalPolicyHash() {
 		t.Fatal("expected distinct canonical policy hashes for failed reload")
 	}
@@ -965,6 +973,9 @@ fetch_proxy:
 	}
 	if p.CurrentConfig() != cfg {
 		t.Fatal("session_open emit failure should preserve the old config")
+	}
+	if got := p.sessionMgrPtr.Load().baselinePtr.Load().action; got != config.ActionBlock {
+		t.Fatalf("failed reload weakened baseline action to %q", got)
 	}
 	if afterEmitter := p.receiptEmitterPtr.Load(); afterEmitter != beforeEmitter {
 		t.Fatal("receipt emitter changed even though reload session_open emission failed")

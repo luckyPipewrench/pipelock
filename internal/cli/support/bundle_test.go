@@ -10,6 +10,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,6 +48,38 @@ func fakeGHToken() string      { return testGitHubTokenPrefix + testGitHubTokenP
 func fakeAnthropicKey() string { return testAnthropicKeyPart1 + testAnthropicKeyPart2 }
 func fakeWebhookToken() string { return "wh-t0k3n-" + testAWSKeySuffix }
 func fakeLogAWSKey() string    { return testAWSKeyPrefix + strings.Repeat("Z", 16) }
+
+func TestBundle_ManifestCollisionRemovesNewArchive(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "bundle.tar.gz")
+	manifestPath := filepath.Join(dir, "bundle-manifest.json")
+	if err := os.WriteFile(filepath.Clean(manifestPath), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func() error {
+		cmd := support.BundleCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--output", archivePath, "--json"})
+		err := cmd.Execute()
+		if err != nil && strings.Contains(out.String(), "Support bundle written") {
+			t.Fatalf("reported archive success before manifest completed: %s", out.String())
+		}
+		return err
+	}
+	if err := run(); err == nil {
+		t.Fatal("expected manifest collision")
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("archive left after manifest collision: %v", err)
+	}
+	if err := os.Remove(filepath.Clean(manifestPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("retry after removing manifest: %v", err)
+	}
+}
 
 // makeSecretConfig returns a config seeded with several fake secrets in
 // different positions: top-level token, nested field, webhook URL userinfo,
@@ -586,6 +619,48 @@ func TestBundle_JSONManifestFlag(t *testing.T) {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		t.Errorf("manifest.json is not valid JSON: %v", err)
+	}
+}
+
+func TestBundle_RejectsExistingAndSymlinkOutputs(t *testing.T) {
+	t.Parallel()
+	for _, manifest := range []bool{false, true} {
+		t.Run(fmt.Sprintf("manifest=%t", manifest), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			archive := filepath.Join(dir, "bundle.tar.gz")
+			victim := filepath.Join(dir, "victim")
+			if err := os.WriteFile(victim, []byte("preserve"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := archive
+			if manifest {
+				out = filepath.Join(dir, "bundle-manifest.json")
+			} else {
+				if err := os.Symlink(victim, archive); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			if manifest {
+				if err := os.Symlink(victim, out); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			cmd := support.BundleCmd()
+			cmd.SetOut(io.Discard)
+			args := []string{"--output", archive}
+			if manifest {
+				args = append(args, "--json")
+			}
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err == nil {
+				t.Fatal("expected existing output to be rejected")
+			}
+			got, err := os.ReadFile(filepath.Clean(victim))
+			if err != nil || string(got) != "preserve" {
+				t.Fatalf("victim changed: %q, %v", got, err)
+			}
+		})
 	}
 }
 

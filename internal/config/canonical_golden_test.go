@@ -678,7 +678,7 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "6cc8756c333eb5f988f95770aabc7364155256dc211340c715eaf9c935a81e20"
+	goldenHashRichConfig = "7ce7a9db3d2640683d0df963ed76f990786f80c1ee169a22d000fcb83aa353fb"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1249,8 +1249,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
 		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "a83f6527d67f9c59f154ae8627258f002bdb70179e7b21d525a7c41acb90e8b4"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1f1d03d0b418f6567f44ace8fecb799a7d3641b8c4f93ef5997c46643550b87f"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "7f2ef1fc259e75ecd1668dfd69d9cd50635ac71bf1e3f9e775b9f2a92a213b81"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "08738fab5c24c988f2f5676d67983a54af4f25956146177069672a80a1b21449"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

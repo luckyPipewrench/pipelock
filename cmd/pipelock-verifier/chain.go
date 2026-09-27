@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -267,7 +268,11 @@ func actionChainReport(label string, receipts []actionreceipt.Receipt, keyHex st
 // receipts from a path. Both file-based and dir-based extractors conform.
 type evidenceExtractorFunc func() ([]contractreceipt.EvidenceReceipt, error)
 
-func runEvidenceChainWith(stdout, stderr io.Writer, label, keyHex string, opts chainOptions, extract evidenceExtractorFunc) (bool, error) {
+// actionExtractorFunc extracts the ActionReceipt v1 chain from the same
+// evidence the paired evidenceExtractorFunc reads.
+type actionExtractorFunc func() ([]actionreceipt.Receipt, error)
+
+func runEvidenceChainWith(stdout, stderr io.Writer, label, keyHex string, opts chainOptions, extract evidenceExtractorFunc, extractAction actionExtractorFunc) (bool, error) {
 	receipts, err := extract()
 	if err != nil {
 		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract evidence receipts: %w", err))
@@ -275,7 +280,11 @@ func runEvidenceChainWith(stdout, stderr io.Writer, label, keyHex string, opts c
 	if len(receipts) == 0 {
 		return false, nil
 	}
-	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
+	actionReceipts, err := extractAction()
+	if err != nil {
+		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
+	}
+	return true, verifyEvidenceChain(stdout, stderr, label, receipts, actionReceipts, keyHex, opts)
 }
 
 func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label, keyHex string, opts chainOptions) (bool, error) {
@@ -284,23 +293,127 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label, keyH
 	}
 	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
 		return contractreceipt.ExtractEvidenceReceiptsBytes(data)
+	}, func() ([]actionreceipt.Receipt, error) {
+		if !hasActionReceiptEntry(data) {
+			return nil, nil
+		}
+		return actionreceipt.ExtractReceiptsBytes(data)
 	})
 }
 
 func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.EvidenceLocation, label, keyHex string, opts chainOptions) (bool, error) {
 	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
 		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, opts.sessionID)
+	}, func() ([]actionreceipt.Receipt, error) {
+		return sessionActionReceipts(location, opts.sessionID)
 	})
 }
 
-func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []contractreceipt.EvidenceReceipt, keyHex string, opts chainOptions) error {
+// actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.
+const actionReceiptEntryType = "action_receipt"
+
+// hasActionReceiptEntry reports whether evidence bytes hold an action_receipt
+// entry. It reads each line's type the way the EvidenceReceipt v2 extractor
+// does, so the two agree on what every line is. Evidence without one has no
+// ActionReceipt v1 chain whatever its format: a v2-only file written as bare
+// entry lines is not recorder output, and the v1 extractor rejects it rather
+// than returning an empty chain. A scan error answers true, so the strict
+// extractor runs and reports it.
+func hasActionReceiptEntry(data []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
+	for scanner.Scan() {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(scanner.Bytes()), &probe) == nil && probe.Type == actionReceiptEntryType {
+			return true
+		}
+	}
+	return scanner.Err() != nil
+}
+
+// sessionActionReceipts returns the ActionReceipt v1 chain of one session in a
+// directory, or none when no file of that session holds an action_receipt
+// entry. Membership is the parsed session name, as the v2 extractor uses.
+func sessionActionReceipts(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, error) {
+	entries, err := recorder.ReadEvidenceLocationEntries(location)
+	if err != nil {
+		return nil, fmt.Errorf("read evidence directory: %w", err)
+	}
+	want := filepath.Base(session)
+	found := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name, _, ok := recorder.ParseEvidenceFilename(e.Name())
+		if !ok || name != want {
+			continue
+		}
+		data, readErr := recorder.ReadEvidenceFileBounded(filepath.Join(location.Dir, e.Name()), recorder.MaxEvidenceReadFileBytes)
+		if readErr != nil {
+			return nil, fmt.Errorf("read %s: %w", e.Name(), readErr)
+		}
+		if hasActionReceiptEntry(data) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	return actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, session)
+}
+
+// verifyEvidenceChain verifies the EvidenceReceipt v2 chain and, when the same
+// evidence also holds one, the ActionReceipt v1 chain.
+func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []contractreceipt.EvidenceReceipt, actionReceipts []actionreceipt.Receipt, keyHex string, opts chainOptions) error {
 	chainOpts, err := opts.chainVerifyOptions(keyHex)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence verification options: %w", err))
 	}
 	report, verifyErr := evidenceChainReport(label, receipts, chainOpts, opts)
+	report, verifyErr = withActionChain(report, verifyErr, label, actionReceipts, keyHex, opts)
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	return verifyErr
+}
+
+// withActionChain folds the ActionReceipt v1 chain into an EvidenceReceipt v2
+// report. A current run writes both chains into the same files, each signed on
+// its own, so a forged receipt in one leaves the other intact: verifying only
+// the v2 chain reported a session valid while its action chain was forged.
+// Both chains must verify. The v2 report stays the primary one, so a session
+// whose chains both pass prints exactly what it did before, and a failure
+// names the chain it came from.
+func withActionChain(report chainReport, reportErr error, label string, actionReceipts []actionreceipt.Receipt, keyHex string, opts chainOptions) (chainReport, error) {
+	if len(actionReceipts) == 0 {
+		return report, reportErr
+	}
+	action, actionErr := actionChainReport(label, actionReceipts, keyHex, opts)
+	actionOK := actionErr == nil && action.Valid
+	reportOK := reportErr == nil && report.Valid
+	if actionOK && reportOK {
+		return report, reportErr
+	}
+	// Without a key and without --allow-unpinned both chains fail only for
+	// being unpinned; the v2 report already says so.
+	if report.Error == unpinnedReceiptBanner && action.Error == unpinnedReceiptBanner {
+		return report, reportErr
+	}
+	var reasons []string
+	if !reportOK {
+		reasons = append(reasons, "evidence receipt chain: "+report.Error)
+	} else {
+		report.BrokenAtSeq = action.BrokenAtSeq
+	}
+	if !actionOK {
+		reasons = append(reasons, "action receipt chain: "+action.Error)
+	}
+	report.Valid = false
+	report.Unpinned = false
+	report.Error = strings.Join(reasons, "; ")
+	return report, cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New(report.Error))
 }
 
 // evidenceChainReport verifies an EvidenceReceipt v2 chain and returns its

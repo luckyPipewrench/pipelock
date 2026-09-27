@@ -145,7 +145,8 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 }
 
 // sessionChainReport verifies one run exactly as --session <run> does: its
-// EvidenceReceipt v2 chain when it has one, else its ActionReceipt v1 chain.
+// EvidenceReceipt v2 chain and its ActionReceipt v1 chain when it has both,
+// else whichever one it has.
 func sessionChainReport(location recorder.EvidenceLocation, session, keyHex string, opts chainOptions) (chainReport, error) {
 	label := fmt.Sprintf("%s (session %s)", location.Dir, session)
 	v2, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
@@ -157,7 +158,12 @@ func sessionChainReport(location recorder.EvidenceLocation, session, keyHex stri
 		if optsErr != nil {
 			return chainReport{Path: label, Error: optsErr.Error()}, optsErr
 		}
-		return evidenceChainReport(label, v2, chainOpts, opts)
+		v1, v1Err := sessionActionReceipts(location, session)
+		if v1Err != nil {
+			return chainReport{Path: label, Error: fmt.Sprintf("extract receipts: %v", v1Err)}, v1Err
+		}
+		report, reportErr := evidenceChainReport(label, v2, chainOpts, opts)
+		return withActionChain(report, reportErr, label, v1, keyHex, opts)
 	}
 	if opts.anySet() {
 		err := fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2)

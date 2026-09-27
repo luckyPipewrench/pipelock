@@ -473,11 +473,14 @@ Pipelock does not currently verify that this key differs from the receipt
 signing key.
 
 Anchoring is fail-degraded, not a traffic gate. An unavailable log, unreadable
-entry key, invalid chain, or write failure increments
+entry key, invalid chain, write failure, or a non-Rekor backend proof that
+fails its own verification right after submission (never persisted) increments
 `pipelock_evidence_auto_anchor_failures_total`, records the last error in the
-`/stats` evidence-health JSON, and prints a `CRITICAL` line to stderr. Proxy
-traffic and receipt emission continue without waiting for the retry, which runs
-on a later pass. Successful markers feed the `anchoring_fresh` evidence-health
+`/stats` evidence-health JSON, and prints a `CRITICAL` line to stderr. Rekor
+proofs are the one exception: the runtime holds no Rekor log public key, so
+they are recorded unverified and checked only offline, with
+`pipelock-verifier independent --rekor-log-key`. Proxy traffic and receipt
+emission continue without waiting for the retry, which runs on a later pass. Successful markers feed the `anchoring_fresh` evidence-health
 diagnostic and anchor-lag metrics. They do not award an AEL grade. The deprecated
 `current_ael` surface is unavailable because a live process cannot independently
 grade its own evidence.
@@ -486,7 +489,9 @@ The log operator determines the ceiling of the proof. A self-hosted Rekor log
 adds tamper evidence and durability, but it is not independent from its
 operator. A public log can provide an independent witness, but it publishes
 checkpoint metadata and may impose rate limits. Pipelock deliberately chooses
-neither for you.
+neither for you. Re-submitting an already-logged checkpoint reuses the
+existing Rekor entry recovered from the `409` conflict response's `Location`
+header, rather than failing the retry.
 
 For hermetic development, configure the deterministic local backend instead:
 

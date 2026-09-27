@@ -193,7 +193,8 @@ a verified contiguous stream).
      code point (e.g. an emoji) and MUST be preserved intact. A canonicalizer
      that walks UTF-16 code units must not mangle a valid pair to two U+FFFD.
 - **Typed-string grammars**: 64-char lowercase hex digests; RFC3339Nano
-  timestamps; unsigned decimal counters (no leading zero except "0").
+  timestamps (uppercase `T`/`Z` only, seconds 00-59, offset hour ≤ 23 and
+  minute ≤ 59); unsigned decimal counters (no leading zero except "0").
 
 ## Signing input (for signature verification)
 

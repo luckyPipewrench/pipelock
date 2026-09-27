@@ -545,3 +545,129 @@ fn offline_audit_packet_verdict_is_unchanged() {
     assert!(!report.trusted);
     assert!(!report.valid);
 }
+
+// The evidence file of a current run holds an ActionReceipt v1 chain and an
+// EvidenceReceipt v2 chain. The packet's counts and root describe the first,
+// so a forged v2 receipt left the packet trusted until both were verified.
+fn run_key() -> String {
+    fs::read_to_string(
+        common::repo_root().join("sdk/conformance/testdata/run-chains/signer-key.hex"),
+    )
+    .unwrap()
+    .trim()
+    .to_string()
+}
+
+fn packet_over_run(evidence: &std::path::Path, key: &str) -> PathBuf {
+    let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-run-packet-{}-{id}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir(&dir).unwrap();
+    fs::copy(evidence, dir.join("evidence.jsonl")).unwrap();
+    let receipts = extract_receipts(&dir.join("evidence.jsonl")).unwrap();
+    let chain = verify_chain(&receipts, key);
+    assert!(chain.valid, "{:?}", chain.error);
+    let mut packet = base_packet();
+    packet["summary"]["receipt_count"] = Value::from(chain.receipt_count as u64);
+    packet["summary"]["totals"] = serde_json::to_value(compute_totals(&receipts)).unwrap();
+    packet["verifier"]["receipt_count"] = Value::from(chain.receipt_count as u64);
+    packet["verifier"]["root_hash"] = Value::from(chain.root_hash);
+    packet["verifier"]["final_seq"] = Value::from(chain.final_seq);
+    packet["verifier"]["signer_key"] = Value::from(key);
+    fs::write(
+        dir.join("packet.json"),
+        format!("{}\n", serde_json::to_string_pretty(&packet).unwrap()),
+    )
+    .unwrap();
+    fs::write(dir.join("verifier.txt"), "ok\n").unwrap();
+    dir
+}
+
+/// The clean and forged copies of run B's evidence file.
+fn forged_run_files() -> (PathBuf, PathBuf) {
+    let root = common::repo_root().join("sdk/conformance/testdata");
+    let exp: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("parity/v2-forge-rehash/expect.json")).unwrap(),
+    )
+    .unwrap();
+    let target = exp["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["mode"] == "file" && c["valid"] == false)
+        .and_then(|c| c["target"].as_str())
+        .expect("forged file cell")
+        .to_string();
+    (
+        root.join("run-chains/valid").join(&target),
+        root.join("parity/v2-forge-rehash").join(&target),
+    )
+}
+
+fn run_audit_cli(dir: &std::path::Path, keys: &[&str]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"));
+    cmd.arg("audit-packet").arg(dir).arg("--json");
+    for key in keys {
+        cmd.arg("--key").arg(key);
+    }
+    let out = cmd.output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn an_audit_packet_over_a_forged_evidence_receipt_is_never_trusted() {
+    let key = run_key();
+    let (clean, forged) = forged_run_files();
+    let options = AuditPacketOptions {
+        signer_key: key.clone(),
+        ..default_options()
+    };
+
+    let control =
+        verify_audit_packet(packet_over_run(&clean, &key).to_str().unwrap(), &options).unwrap();
+    assert!(control.valid, "{:?}", control.errors);
+    assert!(control.trusted);
+    assert_eq!(control.verdict, "valid");
+
+    let forged_dir = packet_over_run(&forged, &key);
+    let report = verify_audit_packet(forged_dir.to_str().unwrap(), &options).unwrap();
+    assert_eq!(report.chain_check, "fail");
+    assert!(!report.valid);
+    assert!(!report.trusted);
+    assert_eq!(report.verdict, "invalid");
+    assert!(
+        has_error(&report.errors, "evidence receipt chain"),
+        "{:?}",
+        report.errors
+    );
+
+    let (code, stdout, stderr) = run_audit_cli(&forged_dir, &[&key]);
+    assert_eq!(code, 1, "{stdout}");
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["trusted"], false);
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("verification failed: audit packet")
+                && l.contains("evidence receipt chain")),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn audit_packet_key_repeats_to_pin_a_trusted_key_set() {
+    let key = run_key();
+    let dir = packet_over_run(&forged_run_files().0, &key);
+    let other = "11".repeat(32);
+    assert_eq!(run_audit_cli(&dir, &[&other]).0, 1);
+    let (code, stdout, stderr) = run_audit_cli(&dir, &[&other, &key]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert_eq!(run_audit_cli(&dir, &[&key, &other]).0, 0);
+}

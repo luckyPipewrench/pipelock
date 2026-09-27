@@ -405,7 +405,7 @@ A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same ma
 
 `containment.display.geometry` sets the display size as one `WxH` token (default `1280x1024`, width 320–32768, height 200–32768, at most 16,777,216 pixels). Rerun `contain install` after changing it.
 
-`pipelock contain view` starts a local Unix socket for a standard VNC client. Run it as the configured `operator_user`; add `--control` to allow keyboard and pointer input. The command prints the socket path and an SSH forwarding example. It does not read the managed configuration, which only the proxy account can read. It checks its access to the viewer control socket and reports whether the viewer is not running or the caller is not the configured operator; the viewer service enforces the operator identity. The viewer runtime directory `/run/pipelock-contain-viewer/` is mode `0710` with a traverse-only ACL entry for the operator and no group access.
+`pipelock contain view` starts a local Unix socket for a standard VNC client. Run it as the configured `operator_user`; add `--control` to allow keyboard and pointer input. The command prints the socket path and an SSH forwarding example.
 
 ### Xvfb display authorization
 

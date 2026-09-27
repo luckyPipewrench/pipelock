@@ -8,14 +8,20 @@
       "valid": true
     },
     {
-      "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "session": "proxy.run.da660e29de374fd065cf1a12b3abde7b",
       "valid": true
     }
   ],
-  "linked": [],
+  "linked": [
+    {
+      "session": "proxy.run.da660e29de374fd065cf1a12b3abde7b",
+      "predecessor_session": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "predecessor_tail_seq": 4,
+      "trust": "trusted_key"
+    }
+  ],
   "unlinked": [
-    "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
-    "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+    "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
   ],
   "findings": []
 }

@@ -8,10 +8,26 @@ import { parseArgs } from "node:util";
 import { verifyAuditPacket } from "./audit-packet.js";
 import { verifyChain } from "./chain.js";
 import { analyzeLifecycle } from "./lifecycle.js";
-import { emitAuditPacket, emitChain, emitReceipt } from "./output.js";
-import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
+import {
+  baseHealthy,
+  baseUnlinked,
+  chainScopedTrust,
+  readSessionReceipts,
+  resolveBaseSessions,
+  runSessionBase,
+  verifyBase,
+  type BaseFinding,
+  type ChainLink,
+} from "./chain-set.js";
+import { emitAuditPacket, emitChain, emitChainSet, emitReceipt } from "./output.js";
+import { extractReceipts, extractReceiptsFromSessionDir, selectReceiptChain } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
-import { loadRotationEndorsementFile, verifyChainWithEndorsements } from "./rotation.js";
+import {
+  loadRotationEndorsementFile,
+  verifyChainWithEndorsements,
+  type RotationEndorsement,
+} from "./rotation.js";
+import type { Receipt } from "./types.js";
 import { runAARPCommand } from "./aarp/cli.js";
 import { comparableProvenance, runProvenanceFixture } from "./provenance-proof.js";
 import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
@@ -77,6 +93,158 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
   return report.valid ? 0 : 1;
 }
 
+// ChainSetReport is the directory-mode report when the evidence directory
+// holds per-run receipt chains: one chain report per run, then the restart
+// continuity of the base. Unlinked runs are always listed, because a passing
+// result is not proof that no run's evidence is missing.
+export interface ChainSetReport {
+  path: string;
+  base: string;
+  valid: boolean;
+  chains: (ChainCommandReport & { session: string })[];
+  continuity: {
+    healthy: boolean;
+    linked: {
+      session: string;
+      predecessor_session: string;
+      predecessor_tail_seq: number;
+      trust: string;
+    }[];
+    unlinked: string[];
+    findings: BaseFinding[];
+  };
+}
+
+async function chainReportFor(
+  label: string,
+  receipts: Receipt[],
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsements: RotationEndorsement[],
+  sessionID: string,
+): Promise<ChainCommandReport> {
+  if (receipts.length === 0) {
+    return {
+      path: label,
+      valid: false,
+      receipt_count: 0,
+      final_seq: 0,
+      error: "no receipts in chain",
+    };
+  }
+  const result =
+    endorsements.length > 0
+      ? await verifyChainWithEndorsements(receipts, keyHex, {
+          sessionID,
+          endorsements,
+        })
+      : await verifyChain(receipts, keyHex, { allowUnpinned });
+  const lifecycle = analyzeLifecycle(receipts, result);
+  const lifecycleBroken = lifecycle.status === "BROKEN";
+  return {
+    path: label,
+    valid: result.valid && !lifecycleBroken,
+    unpinned:
+      keyHex === "" &&
+      (result.error?.includes("UNPINNED") === true || (result.valid && !lifecycleBroken))
+        ? true
+        : undefined,
+    receipt_count: result.receipt_count,
+    final_seq: result.final_seq,
+    root_hash: result.root_hash || undefined,
+    // Preserve the verifier's concrete cryptographic, hash, trust, or
+    // sequence failure. Lifecycle is a supplemental gate only when the chain
+    // itself verified successfully.
+    error: lifecycleBroken && result.valid ? `lifecycle: ${lifecycle.reason}` : result.error,
+    broken_at_seq: result.broken_at_seq,
+  };
+}
+
+async function loadEndorsements(
+  endorsementPaths: string[],
+  allowUnpinned: boolean,
+): Promise<RotationEndorsement[]> {
+  if (endorsementPaths.length > 0 && allowUnpinned) {
+    throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
+  }
+  return Promise.all(
+    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
+  );
+}
+
+// runChainSetCommand verifies every chain of base in dir and the base's
+// restart continuity, matching the Go reference verify-receipt --chain.
+async function runChainSetCommand(
+  dir: string,
+  base: string,
+  keyHex: string,
+  allowUnpinned: boolean,
+  endorsementPaths: string[],
+  json: boolean,
+): Promise<number> {
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const trustedKeys = keyHex
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => key !== "");
+  let baseReport;
+  let sessions: string[];
+  try {
+    sessions = resolveBaseSessions(dir, base);
+    baseReport = await verifyBase(dir, base, { trustedKeys, endorsements });
+  } catch (err) {
+    throw new RuntimeError(`restart continuity check incomplete: ${errorMessage(err)}`);
+  }
+  const chains: ChainSetReport["chains"] = [];
+  for (const session of sessions) {
+    const label = `${dir} (session ${session})`;
+    const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
+    let chainReport: ChainCommandReport;
+    try {
+      const receipts = selectReceiptChain(readSessionReceipts(dir, session));
+      chainReport = await chainReportFor(
+        label,
+        receipts,
+        scoped.keys.join(","),
+        allowUnpinned,
+        scoped.endorsements,
+        session,
+      );
+    } catch (err) {
+      chainReport = {
+        path: label,
+        valid: false,
+        receipt_count: 0,
+        final_seq: 0,
+        error: `extract receipts: ${errorMessage(err)}`,
+      };
+    }
+    chains.push({ session, ...chainReport });
+  }
+  const healthy = baseHealthy(baseReport);
+  const report: ChainSetReport = {
+    path: dir,
+    base,
+    valid: healthy && chains.every((c) => c.valid),
+    chains,
+    continuity: {
+      healthy,
+      linked: baseReport.chains
+        .filter((c) => c.link !== undefined)
+        .map((c) => ({
+          session: c.session,
+          predecessor_session: (c.link as ChainLink).predecessor_session,
+          predecessor_tail_seq: Number((c.link as ChainLink).predecessor_tail_seq),
+          trust: c.link_trust === "" ? "untrusted" : c.link_trust,
+        })),
+      unlinked: baseUnlinked(baseReport),
+      findings: baseReport.findings,
+    },
+  };
+  emitChainSet(report, json);
+  return report.valid ? 0 : 1;
+}
+
 async function runChainCommand(args: string[]): Promise<number> {
   const parsed = parseArgs({
     args,
@@ -86,14 +254,39 @@ async function runChainCommand(args: string[]): Promise<number> {
       key: { type: "string", default: "" },
       "allow-unpinned": { type: "boolean", default: false },
       dir: { type: "boolean", default: false },
-      "session-id": { type: "string", default: "proxy" },
+      "session-id": { type: "string" },
       "rotation-endorsement": { type: "string", multiple: true, default: [] },
     },
   });
   const target = requireOneArg(parsed.positionals, "chain");
   const keyHex = resolveSignerKey(parsed.values.key ?? "");
   const asDir = parsed.values.dir === true;
+  const explicitSession = parsed.values["session-id"] !== undefined;
   const sessionID = parsed.values["session-id"] ?? "proxy";
+  const allowUnpinned = parsed.values["allow-unpinned"] === true;
+  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
+  // Without an explicit --session-id, a directory whose base has per-run
+  // chains is verified as a whole: every run and the links between them.
+  // An explicit --session-id keeps single-session verification.
+  if (asDir && !explicitSession) {
+    const clean = path.normalize(target);
+    let runs: string[];
+    try {
+      runs = resolveBaseSessions(clean, sessionID).filter((s) => runSessionBase(s) !== undefined);
+    } catch (err) {
+      throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
+    }
+    if (runs.length > 0) {
+      return runChainSetCommand(
+        clean,
+        sessionID,
+        keyHex,
+        allowUnpinned,
+        endorsementPaths,
+        parsed.values.json === true,
+      );
+    }
+  }
   let receipts;
   let label: string;
   try {
@@ -115,50 +308,19 @@ async function runChainCommand(args: string[]): Promise<number> {
     throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
   }
   if (receipts.length === 0) {
-    const report: ChainCommandReport = {
-      path: label,
-      valid: false,
-      receipt_count: 0,
-      final_seq: 0,
-      error: "no receipts in chain",
-    };
+    const report = await chainReportFor(label, receipts, keyHex, allowUnpinned, [], sessionID);
     emitChain(report, parsed.values.json === true);
     return 1;
   }
-  const allowUnpinned = parsed.values["allow-unpinned"] === true;
-  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
-  if (endorsementPaths.length > 0 && allowUnpinned) {
-    throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
-  }
-  const endorsements = await Promise.all(
-    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const report = await chainReportFor(
+    label,
+    receipts,
+    keyHex,
+    allowUnpinned,
+    endorsements,
+    sessionID,
   );
-  const result =
-    endorsements.length > 0
-      ? await verifyChainWithEndorsements(receipts, keyHex, {
-          sessionID,
-          endorsements,
-        })
-      : await verifyChain(receipts, keyHex, { allowUnpinned });
-  const lifecycle = analyzeLifecycle(receipts, result);
-  const lifecycleBroken = lifecycle.status === "BROKEN";
-  const report: ChainCommandReport = {
-    path: label,
-    valid: result.valid && !lifecycleBroken,
-    unpinned:
-      keyHex === "" &&
-      (result.error?.includes("UNPINNED") === true || (result.valid && !lifecycleBroken))
-        ? true
-        : undefined,
-    receipt_count: result.receipt_count,
-    final_seq: result.final_seq,
-    root_hash: result.root_hash || undefined,
-    // Preserve the verifier's concrete cryptographic, hash, trust, or
-    // sequence failure. Lifecycle is a supplemental gate only when the chain
-    // itself verified successfully.
-    error: lifecycleBroken && result.valid ? `lifecycle: ${lifecycle.reason}` : result.error,
-    broken_at_seq: result.broken_at_seq,
-  };
   emitChain(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
 }

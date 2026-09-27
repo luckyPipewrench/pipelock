@@ -97,6 +97,19 @@ function requireHex(value: unknown, bytes: number, field: string): string {
   return text;
 }
 
+// isCanonicalUTCTimestamp reports whether text is what Go's
+// time.Time.UTC().Format(time.RFC3339Nano) prints: UTC, "Z", and a fraction
+// with no trailing zeros.
+export function isCanonicalUTCTimestamp(text: string): boolean {
+  const match =
+    /^(?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<time>[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.(?<fraction>[0-9]{0,8}[1-9]))?Z$/u.exec(
+      text,
+    );
+  return (
+    match !== null && validDateTime(match.groups?.["date"] ?? "", match.groups?.["time"] ?? "")
+  );
+}
+
 function requireCanonicalTimestamp(value: unknown): string {
   const text = requireCanonicalString(value, "rotated_at");
   const match =

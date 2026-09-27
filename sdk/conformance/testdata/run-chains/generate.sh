@@ -74,8 +74,25 @@ cp -a "$work/after-a" "$rec"
 one_run C
 sess_c=$(sessions "$rec" | grep -vx "$sess_a")
 cp -a "$rec" "$work/after-c"
+
+# Run D restarts after A with a rotated signing key, following the documented
+# rotation ceremony: generate the successor key, endorse it with the retiring
+# key while stopped, install it, restart.
+rm -rf "$rec"
+cp -a "$work/after-a" "$rec"
+"$bin" signing key generate --purpose receipt-signing --out "$work/next.key" >"$work/keygen.log" 2>&1
+"$bin" signing receipt-rotation endorse --chain "$rec" --session "$sess_a" \
+	--prior-key-file "$key" --new-key-file "$work/next.key" --root-key "$key.pub" \
+	--out "$work/rotation-endorsement.json" >"$work/endorse.log" 2>&1
+cp "$key" "$work/retired.key"
+cp "$work/next.key" "$key"
+one_run D
+sess_d=$(sessions "$rec" | grep -vx "$sess_a")
+cp -a "$rec" "$work/after-d"
+cp "$work/retired.key" "$key"
 test -f "$work/after-b/chain-link-$sess_a.json"
 test -f "$work/after-c/chain-link-$sess_a.json"
+test -f "$work/after-d/chain-link-$sess_a.json"
 
 # variant NAME SESSION... copies the named chains' shards into OUTPUT/NAME.
 variant() {
@@ -138,6 +155,15 @@ variant double-successor "$work/after-b" "$sess_a" "$sess_b"
 cp "$work/after-c"/evidence-"$sess_c"-*.jsonl "$out/double-successor/"
 cp "$work/after-b/chain-link-$sess_a.json" "$out/double-successor/"
 cp "$work/after-c/chain-link-$sess_a.json" "$out/double-successor/chain-link-$sess_c.json"
+
+# A restart that changed signing keys. Whether the link is trusted depends on
+# what the verifier is given: the first key only, both keys, or the first key
+# plus the rotation endorsement.
+variant key-rotated "$work/after-d" "$sess_a" "$sess_d"
+cp "$work/after-d/chain-link-$sess_a.json" "$out/key-rotated/"
+cp "$work/rotation-endorsement.json" "$out/key-rotated/rotation-endorsement.json"
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["new_signer_key"])' \
+	"$work/rotation-endorsement.json" >"$out/rotated-signer-key.hex"
 
 cp "$key.pub" "$out/signer-key.hex"
 # Throwaway key from this generation only, kept so the Go generator can sign

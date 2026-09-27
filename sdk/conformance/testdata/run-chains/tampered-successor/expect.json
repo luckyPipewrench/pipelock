@@ -4,33 +4,33 @@
   "healthy": false,
   "chains": [
     {
-      "session": "proxy.run.b684334b834ef3faf86816cb54b23195",
+      "session": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
       "valid": true
     },
     {
-      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e",
+      "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
       "valid": false
     }
   ],
   "linked": [
     {
-      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e",
-      "predecessor_session": "proxy.run.b684334b834ef3faf86816cb54b23195",
+      "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "predecessor_session": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
       "predecessor_tail_seq": 4,
       "trust": "same_key"
     }
   ],
   "unlinked": [
-    "proxy.run.b684334b834ef3faf86816cb54b23195"
+    "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
   ],
   "findings": [
     {
       "kind": "corrupt_chain",
-      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e"
+      "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
     },
     {
       "kind": "outer_chain_broken",
-      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e"
+      "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
     }
   ]
 }

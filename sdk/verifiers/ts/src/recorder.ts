@@ -131,12 +131,12 @@ function legacyNamespaceFieldIsSet(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
 }
 
-interface ExtractedReceipts {
+export interface ExtractedReceipts {
   action: Receipt[];
   evidence: Receipt[];
 }
 
-function extractTypedReceipts(file: string): ExtractedReceipts {
+export function extractTypedReceipts(file: string): ExtractedReceipts {
   const extracted: ExtractedReceipts = { action: [], evidence: [] };
   for (const entry of readEntries(file)) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
@@ -170,7 +170,7 @@ function extractTypedReceipts(file: string): ExtractedReceipts {
 // A default Pipelock run interleaves both types in one file, each on its own
 // chain. A file that carries only evidence_receipt entries is verified as an
 // evidence_receipt_v2 chain.
-function selectReceiptChain(extracted: ExtractedReceipts): Receipt[] {
+export function selectReceiptChain(extracted: ExtractedReceipts): Receipt[] {
   return extracted.action.length > 0 ? extracted.action : extracted.evidence;
 }
 

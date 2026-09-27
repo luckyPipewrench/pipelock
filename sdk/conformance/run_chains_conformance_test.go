@@ -41,6 +41,28 @@ var runChainVariants = []string{
 	"double-successor",
 	"link-wrong-tail",
 	"link-appended",
+	"key-rotated",
+}
+
+// runChainCase is one verification of a variant under one trust input. The
+// key-rotated variant is checked three ways, because whether a restart that
+// changed signing keys is trusted depends on what the verifier is given.
+type runChainCase struct {
+	variant    string
+	expectFile string
+	bothKeys   bool
+	endorse    bool
+}
+
+func runChainCases() []runChainCase {
+	cases := make([]runChainCase, 0, len(runChainVariants)+2)
+	for _, v := range runChainVariants {
+		cases = append(cases, runChainCase{variant: v, expectFile: runChainExpectFile})
+	}
+	return append(cases,
+		runChainCase{variant: "key-rotated", expectFile: "expect-both-keys.json", bothKeys: true},
+		runChainCase{variant: "key-rotated", expectFile: "expect-endorsed.json", endorse: true},
+	)
 }
 
 type runChainExpect struct {
@@ -70,18 +92,35 @@ type runChainExpectFind struct {
 	Session string `json:"session"`
 }
 
-func runChainSignerKey(t *testing.T) string {
+func runChainKeyFile(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(runChainsDir, "signer-key.hex"))
+	data, err := os.ReadFile(filepath.Join(runChainsDir, name))
 	if err != nil {
-		t.Fatalf("read signer key: %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
 	return strings.TrimSpace(string(data))
 }
 
-func runChainExpectFor(t *testing.T, dir, key string) runChainExpect {
+func runChainOptions(t *testing.T, c runChainCase) receipt.BaseVerifyOptions {
 	t.Helper()
-	report, err := receipt.VerifyBase(dir, runChainsBase, receipt.BaseVerifyOptions{TrustedKeys: []string{key}})
+	opts := receipt.BaseVerifyOptions{TrustedKeys: []string{runChainKeyFile(t, "signer-key.hex")}}
+	if c.bothKeys {
+		opts.TrustedKeys = append(opts.TrustedKeys, runChainKeyFile(t, "rotated-signer-key.hex"))
+	}
+	if c.endorse {
+		var e receipt.RotationEndorsement
+		if err := json.Unmarshal([]byte(runChainKeyFile(t, filepath.Join(c.variant, "rotation-endorsement.json"))), &e); err != nil {
+			t.Fatalf("decode endorsement: %v", err)
+		}
+		opts.Endorsements = []receipt.RotationEndorsement{e}
+	}
+	return opts
+}
+
+func runChainExpectFor(t *testing.T, c runChainCase) runChainExpect {
+	t.Helper()
+	dir := filepath.Join(runChainsDir, c.variant)
+	report, err := receipt.VerifyBase(dir, runChainsBase, runChainOptions(t, c))
 	if err != nil {
 		t.Fatalf("VerifyBase %s: %v", dir, err)
 	}
@@ -125,20 +164,18 @@ func runChainExpectFor(t *testing.T, dir, key string) runChainExpect {
 // TestRunChainFixturesMatchGoReference fails when a fixture's expect.json no
 // longer states what the Go reference concludes about that directory.
 func TestRunChainFixturesMatchGoReference(t *testing.T) {
-	key := runChainSignerKey(t)
-	for _, v := range runChainVariants {
-		t.Run(v, func(t *testing.T) {
-			dir := filepath.Join(runChainsDir, v)
-			got, err := json.MarshalIndent(runChainExpectFor(t, dir, key), "", "  ")
+	for _, c := range runChainCases() {
+		t.Run(c.variant+"/"+c.expectFile, func(t *testing.T) {
+			got, err := json.MarshalIndent(runChainExpectFor(t, c), "", "  ")
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := os.ReadFile(filepath.Join(dir, runChainExpectFile))
+			want, err := os.ReadFile(filepath.Join(runChainsDir, c.variant, c.expectFile))
 			if err != nil {
 				t.Fatalf("read expect: %v", err)
 			}
 			if !bytes.Equal(bytes.TrimSpace(want), got) {
-				t.Fatalf("%s/expect.json is stale; regenerate with PIPELOCK_RUN_CHAIN_FIXTURES=1\nwant:\n%s\ngot:\n%s", v, want, got)
+				t.Fatalf("%s/%s is stale; regenerate with PIPELOCK_RUN_CHAIN_FIXTURES=1\nwant:\n%s\ngot:\n%s", c.variant, c.expectFile, want, got)
 			}
 		})
 	}
@@ -147,7 +184,6 @@ func TestRunChainFixturesMatchGoReference(t *testing.T) {
 // TestRunChainFixturesCoverEveryVerdict keeps the fixture set meaningful: it
 // must hold passing and failing directories and each targeted finding kind.
 func TestRunChainFixturesCoverEveryVerdict(t *testing.T) {
-	key := runChainSignerKey(t)
 	want := map[string]string{
 		"valid":                "",
 		"link-deleted":         "",
@@ -157,9 +193,10 @@ func TestRunChainFixturesCoverEveryVerdict(t *testing.T) {
 		"double-successor":     receipt.FindingDoubleSuccessor,
 		"link-wrong-tail":      receipt.FindingLinkTailMismatch,
 		"link-appended":        receipt.FindingAppendedAfterLink,
+		"key-rotated":          receipt.FindingUntrustedSuccessorKey,
 	}
 	for v, kind := range want {
-		exp := runChainExpectFor(t, filepath.Join(runChainsDir, v), key)
+		exp := runChainExpectFor(t, runChainCase{variant: v})
 		if kind == "" {
 			if !exp.Valid {
 				t.Errorf("%s: want valid, got findings %+v", v, exp.Findings)
@@ -221,14 +258,12 @@ func TestGenerateRunChainFixtures(t *testing.T) {
 	}
 	writeResignedLinkVariant(t, "link-appended", validDir, link, earlier.ActionRecord.ChainSeq, earlierHash, priv)
 
-	key := runChainSignerKey(t)
-	for _, v := range runChainVariants {
-		dir := filepath.Join(runChainsDir, v)
-		body, err := json.MarshalIndent(runChainExpectFor(t, dir, key), "", "  ")
+	for _, c := range runChainCases() {
+		body, err := json.MarshalIndent(runChainExpectFor(t, c), "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, runChainExpectFile), append(body, '\n'), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(runChainsDir, c.variant, c.expectFile), append(body, '\n'), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

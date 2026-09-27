@@ -178,6 +178,11 @@ func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanni
 			out[http.CanonicalHeaderKey(name)] = values
 		}
 	}
+	// The client controls this upstream routing value, even when it was
+	// originally issued by a server. Never exempt its bytes from DLP.
+	if values := headers.Values("Mcp-Session-Id"); len(values) > 0 {
+		out["Mcp-Session-Id"] = values
+	}
 	return out
 }
 

@@ -42,13 +42,13 @@ func TestExtractTextResult_NumericChannel(t *testing.T) {
 		{
 			name:        "tool result with structuredContent numbers",
 			raw:         `{"content":[{"type":"text","text":"ok"}],"structuredContent":{"codes":[57,52,50]}}`,
-			wantText:    "ok",
+			wantText:    "ok codes",
 			wantNumeric: "57,52,50",
 		},
 		{
 			name:        "tool result with only numbers",
 			raw:         `{"content":[],"structuredContent":{"value":12345678901234567890}}`,
-			wantText:    "",
+			wantText:    "value",
 			wantNumeric: "12345678901234567890",
 		},
 		{

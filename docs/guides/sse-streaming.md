@@ -78,6 +78,7 @@ response_scanning:
 
 ## Known limitations
 
+- **Cross-event findings arrive when the later event completes the match.** Earlier events have already been forwarded and cannot be retracted; block mode stops the completing event.
 - **Cross-event detection is bounded by a fixed-size rolling tail.** Fragments
   of a split payload are joined only while they fall within the tail window;
   payloads separated by more intervening bytes than the tail holds are not

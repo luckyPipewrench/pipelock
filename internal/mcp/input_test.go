@@ -1698,6 +1698,27 @@ func TestScanRequest_ParamsWithOnlyNumbers(t *testing.T) {
 	}
 }
 
+func TestScanRequest_UnknownEnvelopeFieldDLP(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := testSecretPrefix + strings.Repeat("a", 25)
+	line := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"ok":true},"extension":"` + secret + `"}`
+	verdict := ScanRequest(t.Context(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean || verdict.Action != config.ActionBlock || len(verdict.Matches) == 0 {
+		t.Fatalf("unknown envelope credential passed input DLP: %+v", verdict)
+	}
+}
+
+func TestMCPListenerSessionHeaderDLP(t *testing.T) {
+	sc := testInputScanner(t)
+	headers := make(http.Header)
+	headers.Set("Mcp-Session-Id", testSecretPrefix+strings.Repeat("b", 25))
+	for _, cfg := range []*config.RequestBodyScanning{nil, {Enabled: true, ScanHeaders: false}, {Enabled: true, ScanHeaders: true, HeaderMode: config.HeaderModeAll, IgnoreHeaders: []string{"Mcp-Session-Id"}}} {
+		if got := scanMCPListenerHeadersForDLP(t.Context(), headers, sc, cfg); got == nil || got.header != "Mcp-Session-Id" || len(got.matches) == 0 {
+			t.Fatalf("session header escaped DLP with config %+v: %+v", cfg, got)
+		}
+	}
+}
+
 func TestScanRequest_ActionSetOnDLPMatch(t *testing.T) {
 	sc := testInputScanner(t)
 

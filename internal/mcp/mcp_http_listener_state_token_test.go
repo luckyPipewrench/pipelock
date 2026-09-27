@@ -68,6 +68,81 @@ func TestHTTPListener_RequireStateTokenOptInRefusesUnauthenticatedCall(t *testin
 	}
 }
 
+func TestHTTPListener_TokenRequirementWithoutOtherStateControls(t *testing.T) {
+	required := true
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, request.ID)
+	}))
+	defer upstream.Close()
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), listenerStateTokenRequired: &required})
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			var body io.Reader
+			if method == http.MethodPost {
+				body = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`)
+			}
+			req, err := http.NewRequestWithContext(t.Context(), method, baseURL+"/", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if method == http.MethodGet {
+				req.Header.Set("Accept", "text/event-stream")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SessionBinding) {
+				t.Fatalf("missing-state reason = %q, want %q", got, blockreason.SessionBinding)
+			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("tokenless request reached upstream %d times", got)
+			}
+		})
+	}
+	response, headers := postStatefulListenerJSONHeaders(t, baseURL, fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"client","version":"1"}}}`, currentMCPVersion))
+	if !strings.Contains(response, `"id":2,"result":{}`) {
+		t.Fatalf("initialize setup did not return the expected result: %s", response)
+	}
+	token := headers.Get(listenerSessionTokenHeader)
+	if token == "" {
+		t.Fatal("initialize setup did not issue a listener state token")
+	}
+	withoutToken, _ := postStatefulListenerJSONHeaders(t, baseURL, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{}}}`)
+	if !strings.Contains(withoutToken, "authenticated principal") || upstreamCalls.Load() != 1 {
+		t.Fatalf("tokenless tool call after initialize was not rejected: response=%s upstream calls=%d", withoutToken, upstreamCalls.Load())
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/input"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(listenerSessionTokenHeader, token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(payload), `"id":3,"result":{}`) || upstreamCalls.Load() != 2 {
+		t.Fatalf("valid listener token failed: status=%d response=%s upstream calls=%d", resp.StatusCode, payload, upstreamCalls.Load())
+	}
+}
+
 func TestHTTPListener_RequireStateTokenReloadsLive(t *testing.T) {
 	var required atomic.Pointer[bool]
 	off := false

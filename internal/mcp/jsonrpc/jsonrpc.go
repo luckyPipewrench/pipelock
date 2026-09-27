@@ -254,6 +254,11 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool) TextResult {
 			return TextResult{Truncated: true}
 		}
 		texts = append(texts, structured.Strings...)
+		keys := ExtractKeysFromJSONResult(tr.StructuredContent)
+		if keys.Truncated {
+			return TextResult{Truncated: true}
+		}
+		texts = append(texts, keys.Keys...)
 		// Always return after a successful ToolResult parse, even when
 		// texts is empty. Falling through to ExtractStringsFromJSON would
 		// feed base64 media in data/blob/raw fields into prompt scanning.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // SSEReader reads Server-Sent Events from an io.Reader and implements
@@ -34,6 +35,13 @@ func NewSSEReader(r io.Reader) *SSEReader {
 // This can be used for reconnection with the Last-Event-ID header.
 func (sr *SSEReader) LastEventID() string {
 	return sr.lastEventID
+}
+
+// ClearInvalidLastEventID prevents a rejected ID from affecting later events.
+func (sr *SSEReader) ClearInvalidLastEventID() {
+	if !utf8.ValidString(sr.lastEventID) {
+		sr.lastEventID = ""
+	}
 }
 
 // LastEventType returns the event: field from the most recently read SSE event.

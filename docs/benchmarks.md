@@ -9,10 +9,10 @@ Benchmarks measure the scanner pipeline only, not network I/O. This isolates pip
 Configuration (balanced defaults):
 - SSRF protection disabled (no DNS lookups in benchmarks)
 - Rate limiting disabled (no time-dependent state)
-- Response scanning: 32 prompt injection patterns
+- Response scanning: 34 prompt-injection and state/control-poisoning patterns
 - DLP: 65 patterns + BIP-39 seed phrase detection
 
-Run `make bench` to reproduce on your hardware. Numbers below are the median of three runs on the hardware listed at the bottom (v3.1.0).
+Run `make bench` to reproduce on your hardware. Single-request numbers below are the median of three runs of v3.6.0 at commit `7283f25e7` with Go 1.26.0 on the hardware listed at the bottom, in a process limited to four CPUs (`GOMAXPROCS=4`). Response scanning evaluates its patterns in parallel, so its figures depend on the CPUs available and can be lower on a machine that gives the process more. The parallel throughput section is still from v3.1.0 with 16 CPUs and says so.
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
@@ -20,12 +20,12 @@ URL scanning with DNS-based SSRF, rate limiting, and data budget checks disabled
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| AllowedURL | 38,656 | 5,722 | 99 |
-| BlockedByBlocklist | 1,894 | 320 | 6 |
-| BlockedByDLP | 7,204 | 4,272 | 109 |
-| BlockedByEntropy | 59,432 | 11,589 | 194 |
-| BlockedByURLLength | 142 | 64 | 3 |
-| ComplexAllowedURL | 107,631 | 24,723 | 600 |
+| AllowedURL | 52,585 | 10,184 | 224 |
+| BlockedByBlocklist | 2,817 | 760 | 21 |
+| BlockedByDLP | 15,164 | 8,466 | 243 |
+| BlockedByEntropy | 91,223 | 27,464 | 630 |
+| BlockedByURLLength | 320 | 160 | 5 |
+| ComplexAllowedURL | 255,189 | 85,535 | 2,001 |
 
 ## Response Scanning (`ScanResponse()`)
 
@@ -33,11 +33,11 @@ Pattern matching for prompt injection on fetched content, across the multi-pass 
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean (~90B) | 387,450 | 6,727 | 68 |
-| WithInjection (~100B) | 71,988 | 2,106 | 16 |
-| LargeClean (~10KB) | 46,291,110 | 118,850 | 64 |
-| StateControlClean | 667,271 | 7,964 | 68 |
-| StateControlMatch | 537,802 | 8,121 | 72 |
+| Clean (~90B) | 65,822 | 4,302 | 28 |
+| WithInjection (~100B) | 66,689 | 2,108 | 11 |
+| LargeClean (~10KB) | 5,545,968 | 86,399 | 14 |
+| StateControlClean | 384,163 | 6,323 | 28 |
+| StateControlMatch | 285,188 | 5,458 | 28 |
 
 ## Text DLP Scanning (`ScanTextForDLP()`)
 
@@ -45,17 +45,17 @@ DLP pattern matching on arbitrary text (MCP arguments, request bodies). 65 patte
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean | 82,425 | 5,805 | 80 |
-| Match | 85,474 | 13,866 | 237 |
+| Clean | 118,326 | 13,671 | 267 |
+| Match | 159,391 | 37,176 | 791 |
 
 ## DLP Pre-Filter
 
-Aho-Corasick prefix automaton. Short-circuits clean text before regex evaluation. Zero allocations on miss.
+Aho-Corasick prefix automaton. Short-circuits clean text before regex evaluation.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| CleanText (no match) | 671 | 0 | 0 |
-| WithPrefix (match) | 653 | 168 | 3 |
+| CleanText (no match) | 1,115 | 104 | 2 |
+| WithPrefix (match) | 926 | 104 | 2 |
 
 ## Cross-Request Detection
 
@@ -63,10 +63,10 @@ Entropy budget tracking and fragment buffer for detecting secrets split across m
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| EntropyTracker_Record | 113,719 | 1,157 | 6 |
-| EntropyTracker_RecordMultiSession | 18,018 | 1,129 | 6 |
-| FragmentBuffer_Append | 76 | 200 | 1 |
-| FragmentBuffer_AppendAndScan | 11,984,418 | 1,420,138 | 686 |
+| EntropyTracker_Record | 110,469 | 1,169 | 6 |
+| EntropyTracker_RecordMultiSession | 14,052 | 1,105 | 6 |
+| FragmentBuffer_Append | 194 | 321 | 2 |
+| FragmentBuffer_AppendAndScan | 10,387,231 | 1,658,632 | 5,301 |
 
 ## MCP Response Scanning (`mcp.ScanResponse()`)
 
@@ -74,13 +74,13 @@ JSON-RPC 2.0 response parsing + text extraction + prompt injection scanning.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| Clean | 351,475 | 12,283 | 186 |
-| Injection | 61,047 | 6,145 | 130 |
-| ExtractText (5 blocks) | 5,435 | 5,208 | 73 |
+| Clean | 315,819 | 50,129 | 1,179 |
+| Injection | 280,299 | 54,525 | 1,311 |
+| ExtractText (5 blocks) | 9,475 | 9,840 | 131 |
 
 ## Parallel Throughput (`b.RunParallel`, GOMAXPROCS=16)
 
-True concurrent throughput across all available goroutines.
+True concurrent throughput across all available goroutines. Measured on v3.1.0; these numbers have not been refreshed for v3.6.0.
 
 ### Scanner
 
@@ -105,23 +105,23 @@ True concurrent throughput across all available goroutines.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
-| ShannonEntropy | 2,201 | 2,120 | 7 |
-| MatchDomain/exact | 49 | 48 | 1 |
-| MatchDomain/wildcard | 52 | 48 | 1 |
+| ShannonEntropy | 2,200 | 2,120 | 7 |
+| MatchDomain/exact | 267 | 48 | 1 |
+| MatchDomain/wildcard | 341 | 64 | 2 |
 
 ## Key Takeaways
 
-- **Typical URL scan with DNS-based SSRF, rate limiting, and data budget checks disabled: ~39 microseconds** (measured on v3.1.0). Well under 1ms; network latency dominates real requests.
-- Blocked URLs short-circuit early: the blocklist check is ~2μs, and an over-length URL is rejected in ~142ns before any expensive layer runs.
-- DLP regex matching (65 patterns) with pre-filter: ~7μs. Pre-filter alone: ~671ns with zero allocations on clean text.
-- Response scanning runs the full multi-pass normalization cascade: ~387μs on small clean content, ~72μs when injection is detected via early exit. State/control patterns add cost on clean text (~667μs). Large content (~10KB) is the heavy case at ~46ms; a scanner + benchmark performance audit is planned for a future release.
-- MCP scanning (JSON parse + text extraction + pattern match): ~351μs clean, ~61μs injection.
-- Cross-request entropy tracking: ~114μs per record. Fragment buffer append: ~76ns (single alloc).
-- **Parallel benchmark throughput was measured at GOMAXPROCS=16** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead; per-op time rises under SMT contention on this 8-core/16-thread part).
+- **Typical URL scan with DNS-based SSRF, rate limiting, and data budget checks disabled: ~53 microseconds** (v3.6.0). Well under 1ms; network latency dominates real requests. It was ~39μs in v3.1.0.
+- Blocked URLs short-circuit early: the blocklist check is ~3μs, and an over-length URL is rejected in ~320ns before any expensive layer runs.
+- A DLP block on a URL takes ~15μs. The pre-filter alone takes ~1.1μs on clean text with two small allocations.
+- Response scanning runs the full multi-pass normalization cascade: ~66μs on small clean content and ~67μs when injection is detected. State/control patterns add cost on clean text (~384μs). Large content (~10KB) takes ~5.5ms, down from ~46ms in v3.1.0.
+- MCP scanning (JSON parse + text extraction + pattern match): ~316μs clean, ~280μs injection.
+- Cross-request entropy tracking: ~110μs per record. Fragment buffer append: ~194ns.
+- **Parallel throughput figures are from v3.1.0 at GOMAXPROCS=16** and were not re-measured for v3.6.0 (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead; per-op time rises under SMT contention on this 8-core/16-thread part).
 
 ## Hardware
 
-AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux 6.x / Fedora 43
+AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Linux / Fedora 43. Single-request and seed-phrase tables: v3.6.0 at `7283f25e7`, Go 1.26.0, `GOMAXPROCS=4`. Parallel tables: v3.1.0, Go 1.25, 16 CPUs.
 
 ## Running Benchmarks
 
@@ -162,9 +162,9 @@ Dedicated scanner for BIP-39 mnemonic seed phrases. Uses dictionary lookup + sli
 
 | Benchmark | ns/op | B/op | allocs/op | Description |
 |-----------|-------|------|-----------|-------------|
-| `SeedDetect_CleanText` | 2,229 | 1,803 | 20 | Short text with no BIP-39 words (fast bail) |
-| `SeedDetect_ValidPhrase` | 2,926 | 1,756 | 18 | 12-word valid mnemonic (full pipeline + checksum) |
-| `SeedDetect_LongText` | 2,853,140 | 858,447 | 6,368 | 1000-word text, all BIP-39 words (worst case) |
-| `SeedChecksum` | 136 | 0 | 0 | Checksum validation in isolation |
+| `SeedDetect_CleanText` | 2,073 | 528 | 3 | Short text with no BIP-39 words (fast bail) |
+| `SeedDetect_ValidPhrase` | 2,832 | 688 | 4 | 12-word valid mnemonic (full pipeline + checksum) |
+| `SeedDetect_LongText` | 2,472,856 | 796,784 | 5,366 | 1000-word text, all BIP-39 words (worst case) |
+| `SeedChecksum` | 118 | 0 | 0 | Checksum validation in isolation |
 
-Clean text bails in ~2μs. Valid phrase detection including checksum takes ~3μs. The 1000-word worst case (all BIP-39 words) is a pathological input that doesn't occur in real traffic. Checksum validation is 136ns with zero allocations.
+Clean text bails in ~2μs. Valid phrase detection including checksum takes ~3μs. The 1000-word worst case (all BIP-39 words) is a pathological input that doesn't occur in real traffic. Checksum validation is ~118ns with zero allocations.

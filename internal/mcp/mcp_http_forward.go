@@ -220,6 +220,10 @@ func RunHTTPProxy(
 			}
 			return fmt.Errorf("reading stdin: %w", err)
 		}
+		var deferredGeneration uint64
+		if fwdOpts.KillSwitch != nil {
+			deferredGeneration = fwdOpts.KillSwitch.DeferredGeneration()
+		}
 
 		// Parse the inbound frame once per message. Kill switch, request
 		// tracking, and upstream-error responses all read frame.ID
@@ -283,10 +287,6 @@ func RunHTTPProxy(
 				continue
 			}
 			deferredReq := decision.Deferred
-			var deferredGeneration uint64
-			if fwdOpts.KillSwitch != nil {
-				deferredGeneration = fwdOpts.KillSwitch.DeferredGeneration()
-			}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    deferredReq.DeferID,
 				ActionID:   deferredReq.DeferID,

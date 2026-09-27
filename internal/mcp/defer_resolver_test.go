@@ -58,6 +58,51 @@ func TestDeferredStdioConcurrentActivation(t *testing.T) {
 	testDeferredStdioKillSwitchRelease(t, true)
 }
 
+func TestDeferredStdioActivationDuringScanInvalidatesHold(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	ks := killswitch.New(config.Defaults())
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	inputR, inputW := io.Pipe()
+	var upstream, logBuf syncBuffer
+	blocked := make(chan BlockedRequest, 4)
+	done := make(chan struct{})
+	var scanned atomic.Bool
+	go func() {
+		defer close(done)
+		ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
+			config.ActionWarn, config.ActionBlock, blocked, nil, nil, MCPProxyOpts{
+				Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager,
+				ReceiptEmitter: emitter, Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+				DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+					ks.SetAPI(true)
+					ks.SetAPI(false)
+					scanned.Store(true)
+					return true, "", "", ""
+				},
+			})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred stdio hold")
+	if !scanned.Load() {
+		t.Fatal("scan callback did not run")
+	}
+	if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if strings.Contains(upstream.String(), "send_tool") {
+		t.Fatal("activation during scanning allowed held stdio send")
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
+}
+
 type claimGateWriter struct {
 	started chan struct{}
 	release chan struct{}
@@ -157,6 +202,59 @@ func TestDeferredHTTPReleaseChecksLiveKillSwitch(t *testing.T) {
 
 func TestDeferredHTTPConcurrentActivation(t *testing.T) {
 	testDeferredHTTPKillSwitchRelease(t, true)
+}
+
+func TestDeferredHTTPActivationDuringScanInvalidatesHold(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	ks := killswitch.New(config.Defaults())
+	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
+	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	done := make(chan error, 1)
+	var scanned atomic.Bool
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+			Scanner: sc, PolicyCfg: policyCfg, DeferManager: manager,
+			ReceiptEmitter: emitter, KillSwitch: ks,
+			DoWCheck: func(_, _, _ string) (bool, string, string, string) {
+				ks.SetAPI(true)
+				ks.SetAPI(false)
+				scanned.Store(true)
+				return true, "", "", ""
+			},
+		})
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "deferred HTTP hold")
+	if !scanned.Load() {
+		t.Fatal("scan callback did not run")
+	}
+	if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceContext); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("activation during scanning allowed held HTTP send")
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
 }
 
 func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {

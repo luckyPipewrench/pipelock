@@ -338,6 +338,10 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+		var deferredGeneration uint64
+		if ks != nil {
+			deferredGeneration = ks.DeferredGeneration()
+		}
 
 		// Consume both Pipelock-owned _meta members before scanning:
 		// com.pipelock/mediation cannot be spoofed through to the server,
@@ -1399,10 +1403,6 @@ func ForwardScannedInput(
 			heldAuthorityFrame := frame
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
-			var deferredGeneration uint64
-			if opts.KillSwitch != nil {
-				deferredGeneration = opts.KillSwitch.DeferredGeneration()
-			}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    actionID,
 				ActionID:   actionID,

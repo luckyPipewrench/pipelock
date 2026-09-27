@@ -25,6 +25,7 @@ Subcommands:
   run         Verify containment, then launch a registered agent tool.
   verify      Run containment probes; report pass/fail/skip.
   doctor      Live self-test of the runtime contract; report remediation.
+  view        Connect a VNC client to the contained display.
   rollback    Undo install (idempotent).
   add-tool    Drop a new /usr/local/bin/plk-<name> wrapper.
   grant-workspace
@@ -57,6 +58,8 @@ planned actions without touching state.`,
 		reloadNFTRulesCmd(),
 		netnsForwardCmd(),
 		netnsAssertCmd(),
+		viewerCmd(),
+		viewCmd(),
 		upgradeCmd(),
 	)
 

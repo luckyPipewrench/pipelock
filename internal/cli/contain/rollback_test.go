@@ -29,6 +29,37 @@ func TestRunRollback_DryRunDoesNotShellOut(t *testing.T) {
 	}
 }
 
+func TestRollbackViewerUserRequiresCreationRecord(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(t.TempDir(), "display.service")
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == viewerUserName {
+			return &user.User{Uid: "900", Gid: "900"}, nil
+		}
+		return &user.User{Uid: "1000", Gid: "1000"}, nil
+	}
+	remove := actionMaybeDeleteViewerUser(rollbackOpts{})
+	if err := remove.undo(context.Background(), env); err != nil || runnerSaw(runner, "userdel -r "+viewerUserName) {
+		t.Fatalf("pre-existing viewer deleted: %v", err)
+	}
+	marker := viewerCreationMarkerPath(env)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("901\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := remove.undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "UID differs") || runnerSaw(runner, "userdel -r "+viewerUserName) {
+		t.Fatalf("replacement viewer deleted: %v", err)
+	}
+	if err := os.WriteFile(marker, []byte("900\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := remove.undo(context.Background(), env); err != nil || !runnerSaw(runner, "userdel -r "+viewerUserName) {
+		t.Fatalf("created viewer retained: %v", err)
+	}
+}
+
 func TestRunRollback_ExecutesActionsInReverse(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	// Plant some artifacts so several actions have something to remove.
@@ -296,8 +327,15 @@ func TestRollbackActions_KeepUsersSuppressesUserDel(t *testing.T) {
 
 func TestRollbackActions_PurgeUsersOverridesKeepUsers(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	env.displayUnitPath = filepath.Join(t.TempDir(), "display.service")
 	env.lookupUser = func(name string) (*user.User, error) {
 		return &user.User{Uid: "988", Gid: "988", Username: name}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(viewerCreationMarkerPath(env)), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(viewerCreationMarkerPath(env), []byte("988\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	actions := rollbackActions(rollbackOpts{keepUsers: true, purgeUsers: true, keepData: true})
 	for i := len(actions) - 1; i >= 0; i-- {
@@ -307,15 +345,15 @@ func TestRollbackActions_PurgeUsersOverridesKeepUsers(t *testing.T) {
 		}
 		_ = a.undo(context.Background(), env)
 	}
-	// userdel must run for BOTH users.
+	// userdel must run for all three managed users.
 	count := 0
 	for _, c := range runner.calls {
 		if c.name == testUserDel {
 			count++
 		}
 	}
-	if count != 2 {
-		t.Errorf("expected 2 userdel calls (proxy + agent), got %d in %v", count, runner.calls)
+	if count != 3 {
+		t.Errorf("expected 3 userdel calls (proxy + agent + viewer), got %d in %v", count, runner.calls)
 	}
 }
 

@@ -1193,3 +1193,17 @@ func TestApplyMCPResponseMediaPolicy_RelabelsProvenImageType(t *testing.T) {
 		})
 	}
 }
+
+func TestSetMCPMediaMimeTypeRejectsUnparseableResource(t *testing.T) {
+	block := map[string]json.RawMessage{"type": json.RawMessage(`"resource"`), "resource": json.RawMessage(`"not-an-object"`)}
+	if err := setMCPMediaMimeType(block, "resource.blob", "image/webp"); err == nil {
+		t.Fatal("unparseable embedded resource accepted")
+	}
+	good := map[string]json.RawMessage{"resource": json.RawMessage(`{"blob":"AA==","mimeType":"image/png"}`)}
+	if err := setMCPMediaMimeType(good, "resource.blob", "image/webp"); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	if !strings.Contains(string(good["resource"]), `"image/webp"`) {
+		t.Fatalf("resource mimeType not relabeled: %s", good["resource"])
+	}
+}

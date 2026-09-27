@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -80,4 +81,39 @@ func TestScan_QueryEntropyHonorsCredentialAudience(t *testing.T) {
 			t.Fatalf("random neighbor param: allowed=%v scanner=%q reason=%q", r.Allowed, r.Scanner, r.Reason)
 		}
 	})
+}
+
+// Scan runs DLP before entropy, so off-audience hosts in the test above are
+// rejected before the new guard is consulted. These cases call the entropy
+// stage directly so a regression in the audience decision itself fails.
+func TestCheckEntropy_AudienceGuardRejectsOffAudienceHosts(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceEntropyConfig())
+	defer s.Close()
+
+	key := "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+	for _, raw := range []string{
+		"https://api.vendor.example/js?key=" + key,
+		"https://maps.googleapis.com.evil.example/js?key=" + key,
+	} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := s.checkEntropyWithContext(context.Background(), parsed)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Fatalf("%s: allowed=%v scanner=%q, want entropy block", parsed.Host, r.Allowed, r.Scanner)
+		}
+	}
+
+	parsed, err := url.Parse("https://maps.googleapis.com/maps/api/js?key=" + key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := s.checkEntropyWithContext(context.Background(), parsed); !r.Allowed {
+		t.Fatalf("positive control: audience host blocked by %q: %s", r.Scanner, r.Reason)
+	}
+	if s.queryValueIsAudienceCredential("https://maps.googleapis.com/", "") {
+		t.Fatal("empty value treated as an audience credential")
+	}
 }

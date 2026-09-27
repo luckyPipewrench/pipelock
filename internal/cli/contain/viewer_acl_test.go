@@ -57,3 +57,25 @@ func TestViewerControlACLRequiresExactOperatorGrant(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckExactACLRejectsReadFailureAndMalformedEntry(t *testing.T) {
+	want := map[string]string{"user:": "rw-", "other:": "---"}
+	failing := func(context.Context, string, ...string) (string, int, error) {
+		return "permission denied", 1, nil
+	}
+	if err := checkExactACL(context.Background(), failing, "/run/viewer", "viewer control ACL", want); err == nil || !strings.Contains(err.Error(), "read viewer control ACL") {
+		t.Fatalf("read failure error = %v, want read viewer control ACL", err)
+	}
+	malformed := func(context.Context, string, ...string) (string, int, error) {
+		return "user::rw-\nuser:a:b:c\nother::---\n", 0, nil
+	}
+	if err := checkExactACL(context.Background(), malformed, "/run/viewer", "viewer control ACL", want); err == nil || !strings.Contains(err.Error(), `unexpected entry "user:a:b:c"`) {
+		t.Fatalf("malformed entry error = %v, want the four-field entry named", err)
+	}
+	valid := func(context.Context, string, ...string) (string, int, error) {
+		return "user::rw-\nother::---\n", 0, nil
+	}
+	if err := checkExactACL(context.Background(), valid, "/run/viewer", "viewer control ACL", want); err != nil {
+		t.Fatalf("positive control: exact ACL rejected: %v", err)
+	}
+}

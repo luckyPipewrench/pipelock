@@ -9,6 +9,8 @@ Numbers are from Go benchmarks on an AMD Ryzen 7 7800X3D (8 cores / 16 threads) 
 
 ## Scanning Latency (single request)
 
+Throughput in these tables is the reciprocal of latency for requests handled one after another. It is not a one-core capacity figure: the measurements had four CPUs available, and response and MCP scanning evaluate their patterns in parallel. See the concurrent scaling section for multi-request throughput.
+
 ### URL Scanning (fetch/forward proxy hot path)
 
 Ordered URL pipeline: length and parsing checks, scheme, CRLF injection, path
@@ -16,9 +18,9 @@ traversal, allowlist/blocklist policy, immutable SSRF and DLP floors, configured
 DLP, path and subdomain entropy, DNS SSRF/rebinding, rate limit, data budget,
 and final context checks.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Full pipeline (allowed URL) | ~53 μs | ~19,000/sec |
+| Allowed URL (DNS SSRF, rate limit and data budget off) | ~53 μs | ~19,000/sec |
 | Blocklist block (early exit) | ~2.8 μs | ~355,000/sec |
 | DLP pattern match (65 patterns, pre-filtered) | ~15 μs | ~66,000/sec |
 | DLP pre-filter only (clean text, two small allocations) | ~1.1 μs | ~897,000/sec |
@@ -29,7 +31,7 @@ and final context checks.
 
 JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
 | Clean tool response | ~316 μs | ~3,200/sec |
 | Injection detected (early exit) | ~280 μs | ~3,600/sec |
@@ -40,7 +42,7 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 Pattern matching against 34 prompt-injection and state/control patterns on
 fetched page content.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
 | Short clean text (~90B) | ~66 μs | ~15,000/sec |
 | 10KB clean text | ~5.5 ms | ~180/sec |

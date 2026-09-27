@@ -49,7 +49,7 @@ func parityFixture(t *testing.T) string {
 		if de.IsDir() || de.Name() == "expect.json" {
 			continue
 		}
-		data, readErr := os.ReadFile(filepath.Join(src, de.Name()))
+		data, readErr := os.ReadFile(filepath.Clean(filepath.Join(src, de.Name())))
 		if readErr != nil {
 			t.Fatal(readErr)
 		}

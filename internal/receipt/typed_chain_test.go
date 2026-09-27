@@ -49,7 +49,7 @@ func copyRunChainFixture(t *testing.T) string {
 		if de.IsDir() || de.Name() == "expect.json" {
 			continue
 		}
-		data, readErr := os.ReadFile(filepath.Join(src, de.Name()))
+		data, readErr := os.ReadFile(filepath.Clean(filepath.Join(src, de.Name())))
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
@@ -85,9 +85,9 @@ type evidenceLine struct {
 }
 
 // rewriteEvidence applies edit to every line of path (returning false drops
-// the line). With rehash it then recomputes the recorder entry hash chain,
-// which needs no signing key: it models an attacker with write access only.
-func rewriteEvidence(t *testing.T, path string, rehash bool, edit func(l *evidenceLine) bool) {
+// the line), then recomputes the recorder entry hash chain, which needs no
+// signing key: it models an attacker with write access only.
+func rewriteEvidence(t *testing.T, path string, edit func(l *evidenceLine) bool) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -112,16 +112,14 @@ func rewriteEvidence(t *testing.T, path string, rehash bool, edit func(l *eviden
 	var out bytes.Buffer
 	prev := recorder.GenesisHash
 	for _, l := range lines {
-		if rehash {
-			l.PrevHash = prev
-			l.Hash = recorder.ComputeHash(recorder.Entry{
-				Version: l.Version, Sequence: l.Sequence, Timestamp: l.Timestamp, SessionID: l.SessionID,
-				ChainKind: l.ChainKind, WriterInstanceID: l.WriterInstanceID, TraceID: l.TraceID,
-				Type: l.Type, EventKind: l.EventKind, Transport: l.Transport, Summary: l.Summary,
-				RawDetail: l.Detail, RawRef: l.RawRef, PrevHash: prev,
-			})
-			prev = l.Hash
-		}
+		l.PrevHash = prev
+		l.Hash = recorder.ComputeHash(recorder.Entry{
+			Version: l.Version, Sequence: l.Sequence, Timestamp: l.Timestamp, SessionID: l.SessionID,
+			ChainKind: l.ChainKind, WriterInstanceID: l.WriterInstanceID, TraceID: l.TraceID,
+			Type: l.Type, EventKind: l.EventKind, Transport: l.Transport, Summary: l.Summary,
+			RawDetail: l.Detail, RawRef: l.RawRef, PrevHash: prev,
+		})
+		prev = l.Hash
 		b, err := json.Marshal(l)
 		if err != nil {
 			t.Fatal(err)
@@ -197,7 +195,7 @@ func TestVerifyBase_ForgedEvidenceReceiptFailsRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := copyRunChainFixture(t)
 			done := false
-			rewriteEvidence(t, runFile(dir, fixtureRun2), true, func(l *evidenceLine) bool { return forgeFirstEvidenceReceipt(l, &done) })
+			rewriteEvidence(t, runFile(dir, fixtureRun2), func(l *evidenceLine) bool { return forgeFirstEvidenceReceipt(l, &done) })
 			if !done {
 				t.Fatal("fixture has no evidence receipt to forge")
 			}
@@ -219,7 +217,7 @@ func TestVerifyBase_EvidenceOnlyChainIsVerified(t *testing.T) {
 	strip := func(l *evidenceLine) bool { return l.Type != recorderEntryType }
 	t.Run("honest", func(t *testing.T) {
 		dir := copyRunChainFixture(t)
-		rewriteEvidence(t, runFile(dir, fixtureRun2), true, strip)
+		rewriteEvidence(t, runFile(dir, fixtureRun2), strip)
 		r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{fixtureSignerKey(t)}})
 		c := chainOf(t, r, fixtureRun2)
 		if !c.Valid || c.Receipts != 0 || c.EvidenceReceipts == 0 {
@@ -229,7 +227,7 @@ func TestVerifyBase_EvidenceOnlyChainIsVerified(t *testing.T) {
 	t.Run("forged", func(t *testing.T) {
 		dir := copyRunChainFixture(t)
 		done := false
-		rewriteEvidence(t, runFile(dir, fixtureRun2), true, func(l *evidenceLine) bool {
+		rewriteEvidence(t, runFile(dir, fixtureRun2), func(l *evidenceLine) bool {
 			return strip(l) && forgeFirstEvidenceReceipt(l, &done)
 		})
 		r := mustVerifyBase(t, dir, BaseVerifyOptions{TrustedKeys: []string{fixtureSignerKey(t)}})
@@ -300,7 +298,7 @@ func TestVerifyBase_DuplicateRunNonce(t *testing.T) {
 	if err := os.WriteFile(replay, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rewriteEvidence(t, replay, true, func(l *evidenceLine) bool {
+	rewriteEvidence(t, replay, func(l *evidenceLine) bool {
 		l.SessionID = fixtureReplayRun
 		return true
 	})

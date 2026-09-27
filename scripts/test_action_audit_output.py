@@ -96,10 +96,18 @@ class ActionValidateOutputTest(unittest.TestCase):
         step = next(item for item in action["runs"]["steps"] if item["name"] == "Validate config")
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
+            # The message goes through a file so its newline reaches stdout as a
+            # real line break, the way a quoted config value would.
+            message_file = base / "message.txt"
+            message_file.write_text(message + "\n", encoding="utf-8")
             binary = base / "pipelock"
-            binary.write_text(f"#!/bin/sh\nprintf '%s\\n' {json.dumps(message)}\nexit {code}\n", encoding="utf-8")
+            binary.write_text(f'#!/bin/sh\ncat "$CHECK_MESSAGE_FILE"\nexit {code}\n', encoding="utf-8")
             binary.chmod(0o700)
-            env = os.environ | {"PATH": f"{base}:{os.environ['PATH']}", "PIPELOCK_CONFIG": "pipelock.yaml"}
+            env = os.environ | {
+                "PATH": f"{base}:{os.environ['PATH']}",
+                "PIPELOCK_CONFIG": "pipelock.yaml",
+                "CHECK_MESSAGE_FILE": str(message_file),
+            }
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", step["run"]],
                 cwd=ROOT, env=env, capture_output=True, text=True, check=False,
@@ -109,13 +117,24 @@ class ActionValidateOutputTest(unittest.TestCase):
         result = self.run_validate_step('invalid host "a\n::warning file=x.yml::FORGED"', 1)
         self.assertEqual(result.returncode, 1, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertTrue(lines[0].startswith("::stop-commands::"), result.stdout)
-        token = lines[0].removeprefix("::stop-commands::")
-        self.assertRegex(token, r"^[0-9a-f]{32}$")
-        self.assertEqual(lines[-1], f"::{token}::")
-        forged = [i for i, line in enumerate(lines) if "FORGED" in line]
+        # Positive control: the forged command really is its own output line,
+        # so the placement check below is about the guard, not the fixture.
+        forged = [i for i, line in enumerate(lines) if line.startswith("::warning")]
         self.assertTrue(forged, result.stdout)
-        self.assertTrue(all(0 < i < len(lines) - 1 for i in forged), result.stdout)
+        commands = [i for i, line in enumerate(lines) if line.startswith("::")]
+        stops = [i for i in commands if lines[i].startswith("::stop-commands::")]
+        self.assertEqual(len(stops), 1, result.stdout)
+        start = stops[0]
+        token = lines[start].removeprefix("::stop-commands::")
+        self.assertRegex(token, r"^[0-9a-f]{32}$")
+        resumes = [i for i in commands if lines[i] == f"::{token}::"]
+        self.assertEqual(len(resumes), 1, result.stdout)
+        end = resumes[0]
+        # Every other line the runner could read as a command sits inside the
+        # stopped region, where it is inert.
+        for i in commands:
+            if i not in (start, end):
+                self.assertTrue(start < i < end, f"command line {lines[i]!r} is outside the stopped region:\n{result.stdout}")
 
     def test_valid_config_keeps_success_and_output(self):
         result = self.run_validate_step("Config validation: OK", 0)

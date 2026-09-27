@@ -1,5 +1,5 @@
 {
-  "note": "Generated from the Go reference (receipt.VerifyBase). outer_chain_broken comes from the recorder entry hash chain, which only the Go verifiers check.",
+  "note": "Generated from the Go reference (receipt.VerifyBase). outer_chain_broken comes from the recorder entry hash chain.",
   "valid": false,
   "healthy": false,
   "chains": [

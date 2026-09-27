@@ -1663,6 +1663,51 @@ func TestScanGenericSSEStream_CrossEventWarnRetainsDistinctSuffix(t *testing.T) 
 	if err != nil || len(findings) != 2 {
 		t.Fatalf("err=%v findings=%v out=%q; want two distinct cross-event findings", err, findings, out.String())
 	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Error(), "cross-event dlp") {
+			t.Fatalf("finding %v is not a cross-event DLP finding", finding)
+		}
+	}
+}
+
+func TestScanGenericSSEStream_CrossEventWarnRetainsPunctuatedSuffix(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	first := fakeAWSKey()
+	second := "AKIA" + strings.Repeat("Q", 16)
+	body := "data: " + first[:8] + "\n\ndata: " + first[8:] + "!" + second[:8] + "\n\ndata: " + second[8:] + "\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("err=%v findings=%v out=%q; want two distinct cross-event findings", err, findings, out.String())
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Error(), "cross-event dlp") {
+			t.Fatalf("finding %v is not a cross-event DLP finding", finding)
+		}
+	}
+}
+
+func TestScanGenericSSEStream_CrossEventWarnRetainsNewlineSuffix(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	first := fakeAWSKey()
+	second := "AKIA" + strings.Repeat("Q", 16)
+	body := "data: " + first[:8] + "\n\ndata: " + first[8:] + "\ndata: " + second[:8] + "\n\ndata: " + second[8:] + "\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("err=%v findings=%v out=%q; want two distinct cross-event findings", err, findings, out.String())
+	}
+	for _, finding := range findings {
+		if !strings.Contains(finding.Error(), "cross-event dlp") {
+			t.Fatalf("finding %v is not a cross-event DLP finding", finding)
+		}
+	}
 }
 
 func TestScanGenericSSEStream_CurrentEventDLPWarnClearsTail(t *testing.T) {

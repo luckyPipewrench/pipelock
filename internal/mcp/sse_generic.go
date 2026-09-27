@@ -220,6 +220,10 @@ func ScanGenericSSEStreamWithOptions(
 		text := canonicalSSEEventText(event, reader)
 		rollingText := sseRollingEventText(text, "")
 		rollingInjectionText := sseRollingEventText(text, " ")
+		// The rolling view leaves the id out so a persisted id cannot split
+		// an event/data value; this view joins the id to the data instead.
+		idDataText := sseIDDataEventText(text, "")
+		idDataInjectionText := sseIDDataEventText(text, " ")
 		payloadText := string(event)
 
 		clearDLPTailAfterCurrent := false
@@ -231,8 +235,11 @@ func ScanGenericSSEStreamWithOptions(
 		if injectResult.Failed() {
 			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
 		}
-		if injectResult.Clean && rollingInjectionText != "" {
-			injectResult = sc.ScanResponseWithSuppress(ctx, rollingInjectionText, opts.Target, opts.Suppress)
+		for _, view := range []string{rollingInjectionText, idDataInjectionText} {
+			if !injectResult.Clean || view == "" {
+				continue
+			}
+			injectResult = sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
 			observedCore.record(injectResult)
 			if injectResult.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
@@ -269,8 +276,11 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(droppedMatches)
 		}
-		if dlpResult.Clean && rollingText != "" {
-			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, rollingText), opts.Target, opts.Suppress)
+		for _, view := range []string{rollingText, idDataText} {
+			if !dlpResult.Clean || view == "" {
+				continue
+			}
+			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
@@ -635,6 +645,29 @@ func sseRollingEventText(canonical, separator string) string {
 		}
 	}
 	return b.String()
+}
+
+// sseIDDataEventText joins the id value with the data values, dropping the
+// field labels. It is empty when the event has no id, since the rolling and
+// payload views already cover data alone.
+func sseIDDataEventText(canonical, separator string) string {
+	var values []string
+	hasID := false
+	for line := range strings.SplitSeq(canonical, "\n") {
+		value, ok := strings.CutPrefix(line, "id:")
+		if ok {
+			hasID = true
+		} else if value, ok = strings.CutPrefix(line, "data:"); !ok {
+			continue
+		}
+		if value = strings.TrimPrefix(value, " "); value != "" {
+			values = append(values, value)
+		}
+	}
+	if !hasID {
+		return ""
+	}
+	return strings.Join(values, separator)
 }
 
 func advanceSSERollingTail(tail string, event []byte, reset bool, separator string) string {

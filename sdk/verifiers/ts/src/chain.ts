@@ -581,3 +581,26 @@ export function computeTotals(receipts: Receipt[]) {
   }
   return totals;
 }
+
+// evidenceChainKey picks the key an EvidenceReceipt v2 chain is verified
+// against. A v2 chain has one signer and is verified against one key. Given a
+// trusted set (directory mode passes each run its scoped trust, which includes
+// an endorsed successor key), it is the trusted key equal to the chain's
+// declared signer_key_id. The declared id only selects: every receipt is still
+// verified against that key, and a signer outside the set gets the first
+// trusted key, which then fails. A single key is returned unchanged.
+export function evidenceChainKey(keyHex: string, receipts: Receipt[]): string {
+  const keys = keyHex
+    .split(",")
+    .map((key) => key.trim().toLowerCase())
+    .filter((key) => key !== "");
+  if (keys.length <= 1) return keyHex;
+  const signature = receipts[0]?.signature;
+  const declared =
+    typeof signature === "object" &&
+    signature !== null &&
+    typeof (signature as Record<string, unknown>)["signer_key_id"] === "string"
+      ? ((signature as Record<string, unknown>)["signer_key_id"] as string).toLowerCase()
+      : "";
+  return keys.find((key) => key === declared) ?? (keys[0] as string);
+}

@@ -8,16 +8,25 @@
 // tail it continues. verifyBase verifies every chain of a base and every link
 // file that names one, with the same findings Go reports.
 //
-// One Go check is not ported: the recorder file's own entry hash chain
-// (Go finding outer_chain_broken). The SDK verifiers check the receipt chain
-// inside the recorder file, in this mode as in single-session mode.
+// Each chain is read the way Go's session reader reads it: a symlinked
+// evidence file inside the directory is refused, and every entry must carry
+// the session its file name claims. The recorder's own entry hash chain is
+// checked (finding outer_chain_broken), and two chains whose signed action
+// records carry the same run_nonce are reported (finding duplicate_run_nonce),
+// because a process run writes exactly one chain.
 
 import { lstatSync, readdirSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { receiptHash, verifyChain } from "./chain.js";
-import { extractTypedReceipts } from "./recorder.js";
+import {
+  extractTypedFromEntries,
+  readEntryLines,
+  type ExtractedReceipts,
+  type ParsedRecorderLine,
+} from "./recorder.js";
+import { FindingOuterChainBroken, verifyRecorderChain } from "./recorder-chain.js";
 import {
   isCanonicalUTCTimestamp,
   verifyChainWithEndorsements,
@@ -36,6 +45,8 @@ export const FindingLinkTailMismatch = "link_tail_mismatch";
 export const FindingAppendedAfterLink = "appended_after_link";
 export const FindingDoubleSuccessor = "double_successor";
 export const FindingUntrustedSuccessorKey = "untrusted_successor_key";
+export const FindingDuplicateRunNonce = "duplicate_run_nonce";
+export { FindingOuterChainBroken };
 
 export const LinkTrustSameKey = "same_key";
 export const LinkTrustTrustedKey = "trusted_key";
@@ -137,24 +148,36 @@ export function parseEvidenceFilename(
   return { session: rest.slice(0, lastDash), seqStart };
 }
 
-type EvidenceIndex = Map<string, string[]>;
+// EvidenceIndex maps each session to its shard files in order. A symlinked
+// evidence file is kept apart: it names its session, so that session is
+// listed and then refused, rather than silently read or silently dropped.
+interface EvidenceIndex {
+  files: Map<string, string[]>;
+  symlinks: Map<string, string[]>;
+}
 
 function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
+  const symlinks = new Map<string, string[]>();
   for (const de of readdirSync(dir, { withFileTypes: true })) {
     if (de.isDirectory() || !de.name.endsWith(evidenceSuffix)) continue;
     const parsed = parseEvidenceFilename(de.name);
     if (parsed === undefined) continue;
+    if (de.isSymbolicLink()) {
+      symlinks.set(parsed.session, [...(symlinks.get(parsed.session) ?? []), de.name].sort());
+      if (!shards.has(parsed.session)) shards.set(parsed.session, []);
+      continue;
+    }
     const list = shards.get(parsed.session) ?? [];
     list.push({ file: path.join(dir, de.name), name: de.name, seq: parsed.seqStart });
     shards.set(parsed.session, list);
   }
-  const ix: EvidenceIndex = new Map();
+  const ix: EvidenceIndex = { files: new Map(), symlinks };
   for (const [session, list] of shards) {
     list.sort((a, b) =>
       a.seq !== b.seq ? (a.seq < b.seq ? -1 : 1) : a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
-    ix.set(
+    ix.files.set(
       session,
       list.map((s) => s.file),
     );
@@ -162,10 +185,17 @@ function indexRecorderFiles(dir: string): EvidenceIndex {
   return ix;
 }
 
-// indexFiles refuses two distinct shard names that start the same session at
+// indexFiles refuses a symlinked evidence file of the session, as Go's
+// evidence reader does, and two distinct shard names that start the session at
 // the same sequence, as Go's evidencename.CheckNoDuplicateSeqStart does.
 function indexFiles(ix: EvidenceIndex, session: string): string[] {
-  const files = ix.get(session) ?? [];
+  const linked = ix.symlinks.get(session);
+  if (linked !== undefined && linked.length > 0) {
+    throw new EvidenceRefusedError(
+      `refuse symlink in evidence directory: "${linked[0] as string}"`,
+    );
+  }
+  const files = ix.files.get(session) ?? [];
   for (let i = 1; i < files.length; i++) {
     const prev = parseEvidenceFilename(path.basename(files[i - 1] as string));
     const cur = parseEvidenceFilename(path.basename(files[i] as string));
@@ -184,7 +214,7 @@ function indexFiles(ix: EvidenceIndex, session: string): string[] {
 }
 
 function sortedSessions(ix: EvidenceIndex): string[] {
-  return [...ix.keys()].sort(compareStrings);
+  return [...ix.files.keys()].sort(compareStrings);
 }
 
 function compareStrings(a: string, b: string): number {
@@ -205,19 +235,48 @@ export function resolveBaseSessions(dir: string, base: string): string[] {
   return sortedSessions(indexRecorderFiles(dir)).filter((s) => isBaseChain(s, base));
 }
 
+// EvidenceRefusedError is evidence the verifier will not read as the session
+// it claims to be: a symlinked file in the evidence directory, or an entry
+// whose session_id differs from the session its file name claims. It is a
+// verification failure, never a usage error.
+export class EvidenceRefusedError extends Error {}
+
+// readSessionLines reads every recorder entry of one session in shard order.
+// Like Go's session reader (internal/recorder/query.go), it refuses an entry
+// whose session_id is not the session its file name claims: a file named for
+// run X that holds run Y's entries is not run X's evidence.
+function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLine[] {
+  const out: ParsedRecorderLine[] = [];
+  for (const file of indexFiles(ix, session)) {
+    for (const l of readEntryLines(file)) {
+      if (l.entry.session_id !== session) {
+        throw new EvidenceRefusedError(
+          `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
+        );
+      }
+      out.push(l);
+    }
+  }
+  return out;
+}
+
+// SessionEvidence is one session's recorder entries and the two receipt
+// chains they hold.
+export interface SessionEvidence {
+  lines: ParsedRecorderLine[];
+  typed: ExtractedReceipts;
+}
+
+// readSessionEvidence reads one session of dir with the refusals above.
+export function readSessionEvidence(dir: string, session: string): SessionEvidence {
+  const lines = readSessionLines(indexRecorderFiles(dir), session);
+  return { lines, typed: extractTypedFromEntries(lines.map((l) => l.entry)) };
+}
+
 // readSessionReceipts returns the receipts of one session in shard order, as
 // action receipts and evidence receipts.
-export function readSessionReceipts(
-  dir: string,
-  session: string,
-): { action: Receipt[]; evidence: Receipt[] } {
-  const combined = { action: [] as Receipt[], evidence: [] as Receipt[] };
-  for (const file of indexFiles(indexRecorderFiles(dir), session)) {
-    const extracted = extractTypedReceipts(file);
-    combined.action.push(...extracted.action);
-    combined.evidence.push(...extracted.evidence);
-  }
-  return combined;
+export function readSessionReceipts(dir: string, session: string): ExtractedReceipts {
+  return readSessionEvidence(dir, session).typed;
 }
 
 function chainLinkFilePredecessor(name: string): string | undefined {
@@ -730,8 +789,47 @@ export async function verifyBase(
       add(FindingDoubleSuccessor, p, `continued by ${succ.length} link files: [${succ.join(" ")}]`);
     }
   }
+  checkRunNonces(sessions, data, add);
   for (const s of sessions) report.chains.push((data.get(s) as BaseChainData).chain);
   return report;
+}
+
+// checkRunNonces reports two chains of the base that carry the same run_nonce.
+// Every action record a process run signs carries that run's nonce, and a run
+// writes exactly one chain, so a nonce in two chains means one run's evidence
+// appears twice: a replayed or copied run under a second session name. The
+// session_id and file name are unsigned; the nonce is signed. Only chains that
+// verified are compared, so the nonce is one their signatures cover; a chain
+// with no action records has no nonce and is not compared. Each chain sharing
+// the nonce is named, because nothing signed says which one is the original.
+function checkRunNonces(
+  sessions: string[],
+  data: Map<string, BaseChainData>,
+  add: (kind: string, session: string, detail: string) => void,
+): void {
+  const holders = new Map<string, string[]>();
+  for (const s of sessions) {
+    const d = data.get(s) as BaseChainData;
+    if (!d.chain.valid || d.receipts.length === 0) continue;
+    const nonces = new Set<string>();
+    for (const r of d.receipts) {
+      const nonce = r.action_record?.run_nonce;
+      if (typeof nonce === "string" && nonce !== "") nonces.add(nonce);
+    }
+    for (const nonce of nonces) holders.set(nonce, [...(holders.get(nonce) ?? []), s]);
+  }
+  for (const nonce of [...holders.keys()].sort(compareStrings)) {
+    const chains = holders.get(nonce) as string[];
+    if (chains.length < 2) continue;
+    for (const s of chains) {
+      const others = chains.filter((c) => c !== s);
+      add(
+        FindingDuplicateRunNonce,
+        s,
+        `run_nonce ${nonce} is also carried by ${others.join(", ")}: one run's signed records appear in more than one chain`,
+      );
+    }
+  }
 }
 
 function loadBaseChain(
@@ -740,8 +838,18 @@ function loadBaseChain(
   add: (kind: string, session: string, detail: string) => void,
 ): void {
   const s = d.chain.session;
+  let lines: ParsedRecorderLine[];
   try {
-    for (const file of indexFiles(ix, s)) d.receipts.push(...extractTypedReceipts(file).action);
+    lines = readSessionLines(ix, s);
+  } catch (err) {
+    d.chain.error = (err as Error).message;
+    add(FindingCorruptChain, s, d.chain.error);
+    return;
+  }
+  const outer = verifyRecorderChain(lines);
+  if (outer !== undefined) add(FindingOuterChainBroken, s, outer);
+  try {
+    d.receipts = extractTypedFromEntries(lines.map((l) => l.entry)).action;
   } catch (err) {
     d.receipts = [];
     d.chain.error = (err as Error).message;

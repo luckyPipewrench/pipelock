@@ -2820,6 +2820,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "media_policy"
 			return
 		}
+		applyRelabeledContentType(resp.Header, mediaVerdict)
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 			respBody = mediaVerdict.Body
 			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))

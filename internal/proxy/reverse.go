@@ -2511,6 +2511,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				goto responseScanning
 			}
 			_ = resp.Body.Close()
+			applyRelabeledContentType(resp.Header, verdict)
 			if verdict.StripResult != nil && verdict.StripResult.Changed() {
 				body = verdict.Body
 				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))

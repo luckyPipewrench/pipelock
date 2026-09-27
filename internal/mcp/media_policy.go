@@ -26,8 +26,12 @@ type mcpMediaPolicyResult struct {
 }
 
 type mcpMediaVerdict struct {
-	Body        []byte
-	MediaType   string
+	Body      []byte
+	MediaType string
+	// Relabeled is the image type the payload's own header proves when the
+	// server declared a different JPEG/PNG type; the result's mimeType is
+	// rewritten to it.
+	Relabeled   string
 	Blocked     bool
 	BlockReason string
 	StripResult *media.StripResult
@@ -118,7 +122,8 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 			if verdict.Blocked {
 				return raw, changed, verdict.BlockReason, exposures
 			}
-			if verdict.StripResult != nil && verdict.StripResult.Changed() {
+			stripped := verdict.StripResult != nil && verdict.StripResult.Changed()
+			if stripped || verdict.Relabeled != "" {
 				encodedOut := base64.StdEncoding.EncodeToString(verdict.Body)
 				if rawContentBlocks == nil {
 					if err := json.Unmarshal(contentRaw, &rawContentBlocks); err != nil {
@@ -130,6 +135,11 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 				}
 				if err := setMCPMediaPayload(rawContentBlocks[i], field.name, encodedOut); err != nil {
 					return raw, changed, fmt.Sprintf("media_policy: rewrite result.content[%d].%s: %v", i, field.name, err), exposures
+				}
+				if verdict.Relabeled != "" {
+					if err := setMCPMediaMimeType(rawContentBlocks[i], field.name, verdict.Relabeled); err != nil {
+						return raw, changed, fmt.Sprintf("media_policy: relabel result.content[%d].%s: %v", i, field.name, err), exposures
+					}
 				}
 				changed = true
 			}
@@ -151,6 +161,44 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result: %v", err), exposures
 	}
 	return updated, true, "", exposures
+}
+
+// mcpMediaTypeKeys are the fields servers use to label a payload's type. The
+// spec field is mimeType; mediaType and contentType also appear in practice.
+var mcpMediaTypeKeys = []string{"mimeType", "mediaType", "contentType"}
+
+// setMCPMediaMimeType records the proven media type wherever the block labels
+// its payload: mimeType always, and any other label key already present on
+// the block or its embedded resource, so no stale copy names the declared
+// format.
+func setMCPMediaMimeType(block map[string]json.RawMessage, field, mimeType string) error {
+	value, err := json.Marshal(mimeType)
+	if err != nil {
+		return fmt.Errorf("marshal mimeType: %w", err)
+	}
+	relabel := func(m map[string]json.RawMessage, ensureMime bool) {
+		for _, k := range mcpMediaTypeKeys {
+			if _, ok := m[k]; ok || (ensureMime && k == "mimeType") {
+				m[k] = value
+			}
+		}
+	}
+	if field != "resource.blob" {
+		relabel(block, true)
+		return nil
+	}
+	relabel(block, false)
+	var resource map[string]json.RawMessage
+	if err := json.Unmarshal(block["resource"], &resource); err != nil || resource == nil {
+		return fmt.Errorf("parse resource for mimeType")
+	}
+	relabel(resource, true)
+	updated, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("re-marshal resource: %w", err)
+	}
+	block["resource"] = updated
+	return nil
 }
 
 func setMCPMediaPayload(block map[string]json.RawMessage, field, encoded string) error {
@@ -369,6 +417,12 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 
 	outBody := body
 	var stripResult *media.StripResult
+	relabeled := ""
+	if proven := media.StripType(mt, body, policy.ImageTypeAllowed); proven != mt {
+		relabeled = proven
+		mt = proven
+		exposure.ContentType = proven
+	}
 	if policy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)
 		if err != nil {
@@ -391,6 +445,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	return mcpMediaVerdict{
 		Body:        outBody,
 		MediaType:   mt,
+		Relabeled:   relabeled,
 		StripResult: stripResult,
 		Exposure:    mcpExposureOrNil(policy, exposure),
 	}

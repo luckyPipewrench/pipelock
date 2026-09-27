@@ -1153,3 +1153,43 @@ func TestForwardScanned_MediaPolicyBlockReceiptFailureLogsAuditGap(t *testing.T)
 		t.Fatalf("missing audit_gap marker in log: %s", log.String())
 	}
 }
+
+func TestApplyMCPMediaPolicy_RelabeledAllowedRasterPasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	body := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00"), make([]byte, 24)...)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", body, testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Fatalf("MCP WebP payload declared as image/png blocked: %s", verdict.BlockReason)
+	}
+	html := []byte("<!DOCTYPE html><html><body>x</body></html>")
+	if v := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", html, testMCPMediaTransport); !v.Blocked {
+		t.Fatal("MCP HTML payload declared as image/png was forwarded")
+	}
+}
+
+func TestApplyMCPResponseMediaPolicy_RelabelsProvenImageType(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	webp := append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00"), make([]byte, 24)...)
+	b64 := base64.StdEncoding.EncodeToString(webp)
+	for _, tc := range []struct{ name, line, want string }{
+		{"image block", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png"}]}}`, `"mimeType":"image/webp"`},
+		{"image block with mediaType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png","mediaType":"image/png"}]}}`, `"mediaType":"image/webp"`},
+		{"resource blob", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"resource","resource":{"uri":"file:///x.png","mimeType":"image/png","blob":"` + b64 + `"}}]}}`, `"mimeType":"image/webp"`},
+		{"resource blob with parent mediaType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"resource","mediaType":"image/png","resource":{"uri":"file:///x.png","mimeType":"image/png","mediaType":"image/png","blob":"` + b64 + `"}}]}}`, `"mediaType":"image/webp"`},
+		{"image block with contentType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png","contentType":"image/png"}]}}`, `"contentType":"image/webp"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := applyMCPResponseMediaPolicy([]byte(tc.line), &cfg.MediaPolicy, testMCPMediaTransport)
+			if result.Blocked {
+				t.Fatalf("relabeled WebP blocked: %s", result.BlockReason)
+			}
+			if !result.Changed || !strings.Contains(string(result.Line), tc.want) || strings.Contains(string(result.Line), `"image/png"`) {
+				t.Fatalf("mimeType not rewritten to the proven type: changed=%v %s", result.Changed, result.Line)
+			}
+		})
+	}
+}

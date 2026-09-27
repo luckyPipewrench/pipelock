@@ -18,6 +18,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const testMediaBlockReason = "test"
@@ -1077,5 +1079,107 @@ func TestApplyMediaPolicy_NilBodyStillRefusesAudioVideo(t *testing.T) {
 					tt.contentType, verdict.Blocked, tt.wantBlocked, verdict.BlockReason)
 			}
 		})
+	}
+}
+
+// relabeledWebP is a WebP body a CDN served under an image/png Content-Type.
+func relabeledWebP() []byte {
+	return append([]byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00"), make([]byte, 24)...)
+}
+
+func TestApplyMediaPolicy_RelabeledAllowedRasterPasses(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	if !cfg.MediaPolicy.ImageTypeAllowed("image/webp") {
+		t.Fatal("precondition: policy allows image/webp")
+	}
+	body := relabeledWebP()
+	v := applyMediaPolicy(cfg, "image/png", body)
+	if v.Blocked {
+		t.Fatalf("WebP served as image/png blocked: %s", v.BlockReason)
+	}
+	if string(v.Body) != string(body) {
+		t.Fatal("relabeled WebP body changed")
+	}
+}
+
+func TestApplyMediaPolicy_RelabeledRasterStillRefusedWhenNotAllowedOrNotRaster(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg"}
+	if v := applyMediaPolicy(cfg, "image/png", relabeledWebP()); !v.Blocked || !strings.Contains(v.BlockReason, "bytes look like image/webp") {
+		t.Fatalf("WebP served as PNG with WebP disallowed: blocked=%v %q", v.Blocked, v.BlockReason)
+	}
+	cfg = config.Defaults()
+	for name, body := range map[string][]byte{
+		"html": []byte("<!DOCTYPE html><html><body>x</body></html>"),
+		"svg":  []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`),
+	} {
+		if v := applyMediaPolicy(cfg, "image/png", body); !v.Blocked {
+			t.Fatalf("%s served as image/png was forwarded", name)
+		}
+	}
+}
+
+func TestApplyMediaPolicy_RelabeledTypeIsForwarded(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/x-icon"}
+	v := applyMediaPolicy(cfg, "image/png", relabeledWebP())
+	if v.Blocked || v.Relabeled != "image/webp" || v.MediaType != "image/webp" {
+		t.Fatalf("verdict = blocked:%v relabeled:%q mt:%q", v.Blocked, v.Relabeled, v.MediaType)
+	}
+	h := http.Header{"Content-Type": {"image/png"}}
+	applyRelabeledContentType(h, v)
+	if got := h.Get("Content-Type"); got != "image/webp" {
+		t.Fatalf("forwarded Content-Type = %q, want image/webp", got)
+	}
+	// Short WHATWG prefixes that any payload can start with stay refused.
+	for name, body := range map[string][]byte{
+		"webp prefix + svg": append([]byte("RIFF\x00\x00\x00\x00WEBPVP"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`)...),
+		"gif prefix + html": []byte("GIF89a<html><body>x</body></html>"),
+		"bmp prefix + html": []byte("BM<html><body>x</body></html>"),
+		"ico sig + script":  append([]byte{0, 0, 1, 0}, []byte("<script>x()</script>")...),
+	} {
+		if v := applyMediaPolicy(cfg, "image/png", body); !v.Blocked || v.Relabeled != "" {
+			t.Fatalf("%s served as image/png: blocked=%v relabeled=%q", name, v.Blocked, v.Relabeled)
+		}
+	}
+}
+
+// TestFetchEndpoint_PublishesRelabeledType proves the fetch JSON names the
+// type the bytes prove, not the upstream's mislabel.
+func TestFetchEndpoint_PublishesRelabeledType(t *testing.T) {
+	body := relabeledWebP()
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/icon.png", nil)
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode FetchResponse: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Blocked || !strings.HasPrefix(resp.ContentType, "image/webp") {
+		t.Fatalf("fetch published blocked=%v reason=%q content_type=%q, want image/webp", resp.Blocked, resp.BlockReason, resp.ContentType)
 	}
 }

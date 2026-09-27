@@ -97,7 +97,7 @@ This isn't a replay of a fetch HTML block. Fetch scans HTML after hidden-content
 |---|---|
 | 0 | The loaded config lets the response through (no match, or only matches the configured action forwards). |
 | 2 | The config failed to load, or reading or scanning the input failed. |
-| 3 | A match the loaded config does not simply forward. Under `response_scanning.action: block` runtime blocks the response. Under `strip` the report still says blocked, but runtime replaces the matched text and delivers the rest of the response. |
+| 3 | A match the loaded config does not simply forward. Under `response_scanning.action: block` runtime blocks the response. Under `strip` the report still says blocked, but runtime replaces the matched text and delivers the rest of the response, unless the rewrite fails or the response is a partial (206) one, in which case runtime blocks it. |
 
 ## URL explanation exit codes
 

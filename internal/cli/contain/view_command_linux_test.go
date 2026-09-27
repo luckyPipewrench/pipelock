@@ -13,13 +13,11 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 type viewSignalWriter struct{ lines chan string }
@@ -35,14 +33,7 @@ func (w viewSignalWriter) Write(p []byte) (int, error) {
 func TestViewCommandDependencies(t *testing.T) {
 	root := t.TempDir()
 	base := realViewDeps(io.Discard, io.Discard)
-	base.load = func(string) (*config.Config, error) {
-		cfg := config.Defaults()
-		cfg.Containment.Display.Viewer.Enabled = new(bool)
-		*cfg.Containment.Display.Viewer.Enabled = true
-		cfg.Containment.Display.Viewer.OperatorUser = "operator"
-		return cfg, nil
-	}
-	base.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	base.access = func(string) error { return nil }
 	base.getenv = func(string) string { return root }
 	base.geteuid = func() int { return os.Geteuid() }
 	for _, tc := range []struct {
@@ -50,15 +41,14 @@ func TestViewCommandDependencies(t *testing.T) {
 		change     func(*viewDeps)
 		opts       viewOptions
 	}{
-		{"config", "load viewer configuration", func(d *viewDeps) {
-			d.load = func(string) (*config.Config, error) { return nil, errors.New("unavailable") }
+		{"viewer not running", "viewer is not running", func(d *viewDeps) {
+			d.access = func(string) error { return &os.PathError{Op: "access", Path: d.controlPath, Err: syscall.ENOENT} }
 		}, viewOptions{}},
-		{"disabled", "contained display viewer is disabled", func(d *viewDeps) {
-			d.load = func(string) (*config.Config, error) { c := config.Defaults(); return c, nil }
+		{"not operator", "operator_user", func(d *viewDeps) {
+			d.access = func(string) error { return &os.PathError{Op: "access", Path: d.controlPath, Err: syscall.EACCES} }
 		}, viewOptions{}},
-		{"identity", "current viewer user", func(d *viewDeps) { d.current = func() (*user.User, error) { return nil, errors.New("unavailable") } }, viewOptions{}},
-		{"operator", "operator", func(d *viewDeps) {
-			d.current = func() (*user.User, error) { return &user.User{Username: "other"}, nil }
+		{"socket check error", "check viewer control socket", func(d *viewDeps) {
+			d.access = func(string) error { return syscall.EIO }
 		}, viewOptions{}},
 		{"runtime", "XDG_RUNTIME_DIR is unset", func(d *viewDeps) { d.getenv = func(string) string { return "" } }, viewOptions{}},
 		{"listen", "listen for VNC client", func(d *viewDeps) {
@@ -94,14 +84,7 @@ func TestViewCommandControlModeAndFailurePaths(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "view.sock")
 	deps := realViewDeps(io.Discard, io.Discard)
-	deps.load = func(string) (*config.Config, error) {
-		cfg := config.Defaults()
-		yes := true
-		cfg.Containment.Display.Viewer.Enabled = &yes
-		cfg.Containment.Display.Viewer.OperatorUser = "operator"
-		return cfg, nil
-	}
-	deps.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	deps.access = func(string) error { return nil }
 	deps.getenv = func(string) string { return root }
 	deps.geteuid = os.Geteuid
 	deps.listen = func(_ context.Context, network, address string) (net.Listener, error) {
@@ -140,14 +123,7 @@ func TestViewCommandControlSendsRequestedMode(t *testing.T) {
 	path := filepath.Join(root, "view.sock")
 	ready := viewSignalWriter{lines: make(chan string, 4)}
 	deps := realViewDeps(ready, io.Discard)
-	deps.load = func(string) (*config.Config, error) {
-		cfg := config.Defaults()
-		yes := true
-		cfg.Containment.Display.Viewer.Enabled = &yes
-		cfg.Containment.Display.Viewer.OperatorUser = "operator"
-		return cfg, nil
-	}
-	deps.current = func() (*user.User, error) { return &user.User{Username: "operator"}, nil }
+	deps.access = func(string) error { return nil }
 	deps.geteuid = os.Geteuid
 	modeSeen := make(chan string, 1)
 	deps.dial = func(context.Context, string, string) (net.Conn, error) {

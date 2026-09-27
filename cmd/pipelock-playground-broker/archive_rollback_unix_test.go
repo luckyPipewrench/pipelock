@@ -20,7 +20,10 @@ import (
 // lowered file-size limit. The limit applies to every file the process writes,
 // including the test framework's own log when test caching is on, so the limited
 // body runs in a child that writes no such log.
-const tinyFileSizeChildEnv = "PIPELOCK_TEST_TINY_FSIZE_CHILD"
+const (
+	tinyFileSizeChildEnv     = "PIPELOCK_TEST_TINY_FSIZE_CHILD"
+	tinyFileSizeSkipProbeEnv = "PIPELOCK_TEST_TINY_FSIZE_SKIP_PROBE"
+)
 
 // runInTinyFileSizeChild re-runs the named test in a child process and fails
 // the parent when the child fails. It returns true in the child, where the
@@ -76,6 +79,22 @@ func withTinyFileSizeLimit(t *testing.T, limit uint64) {
 }
 
 func TestTinyFileSizeChildPropagatesSkip(t *testing.T) {
+	if os.Getenv(tinyFileSizeSkipProbeEnv) != "1" {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), exe, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 -- fixed self-test binary and test name.
+		cmd.Env = append(os.Environ(), tinyFileSizeSkipProbeEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("skip probe failed: %v\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "--- SKIP: "+t.Name()) || !strings.Contains(string(out), "child cannot use this fixture") {
+			t.Fatalf("child skip was not propagated:\n%s", out)
+		}
+		return
+	}
 	if !runInTinyFileSizeChild(t) {
 		return
 	}

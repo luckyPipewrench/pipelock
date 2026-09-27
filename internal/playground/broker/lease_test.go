@@ -44,6 +44,30 @@ func TestReleaseDestroyDeadlineRetainsCapacityAndRetries(t *testing.T) {
 	}
 }
 
+func TestAdoptWarmReleaseCallbackCanReadManager(t *testing.T) {
+	lm := newManager(t, &fakeProvider{}, 1)
+	called := make(chan struct{})
+	_, err := lm.AdoptWarm("warm", &Machine{ID: "warm-machine"}, func() {
+		lm.ActiveMachineIDs()
+		close(called)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { lm.Release(context.Background(), "warm"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("release callback deadlocked on manager lock")
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("release callback was not called")
+	}
+}
+
 func TestRetryFailedDestroysHonorsCallerCancellation(t *testing.T) {
 	p := &blockingDestroyProvider{fakeProvider: &fakeProvider{}, entered: make(chan struct{}, 4), allow: make(chan struct{})}
 	lm := newManager(t, p, 2)

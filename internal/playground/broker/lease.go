@@ -190,9 +190,11 @@ func (lm *LeaseManager) destroyQuarantined(ctx context.Context, lease *Lease) {
 	delete(lm.destroying, lease.Machine.ID)
 	if err == nil {
 		delete(lm.quarantine, lease.Machine.ID)
-		lease.release()
 	}
 	lm.mu.Unlock()
+	if err == nil {
+		lease.release()
+	}
 	if err != nil {
 		lm.logMu.Lock()
 		_, _ = fmt.Fprintf(lm.log, "broker: destroy machine %s failed: %v\n", lease.Machine.ID, err)

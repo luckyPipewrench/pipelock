@@ -986,19 +986,24 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		targets = []string{sessionID}
 	}
 	var failed []string
+	var firstErr error
 	for _, s := range targets {
 		chainOpts, chainKeys := chainScopedTrust(report, s, trustedKeys, opts)
 		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, chainKeys, chainOpts); verifyErr != nil {
 			failed = append(failed, s)
+			if firstErr == nil {
+				firstErr = verifyErr
+			}
 		}
 		_, _ = fmt.Fprintln(out)
 	}
 	printRestartContinuity(out, report)
 	if len(failed) > 0 {
-		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s", len(failed), len(targets), strings.Join(failed, ", "))
+		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s (first: %w)", len(failed), len(targets), strings.Join(failed, ", "), firstErr)
 	}
 	if !report.Healthy() {
-		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
+		f := report.Findings[0]
+		return fmt.Errorf("restart continuity: %d link finding(s), first %s on %s: %s", len(report.Findings), f.Kind, f.Session, f.Detail)
 	}
 	return nil
 }

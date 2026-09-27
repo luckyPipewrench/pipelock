@@ -335,13 +335,9 @@ func (f *fixture) basePacket(n int) auditpacket.Packet {
 // stdout, stderr, and the resolved exit code.
 func runRoot(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
-	root := newRootCmd()
 	var stdout, stderr bytes.Buffer
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	root.SetArgs(args)
-	err := root.Execute()
-	return stdout.String(), stderr.String(), exitCodeFor(err)
+	code := execute(args, &stdout, &stderr)
+	return stdout.String(), stderr.String(), code
 }
 
 func runAuditPacketWithKey(t *testing.T, key string, args ...string) (string, string, int) {

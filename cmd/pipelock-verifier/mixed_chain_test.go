@@ -4,12 +4,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // mixedRunSession is the run in the run-chain fixtures whose action chain the
@@ -66,6 +70,76 @@ func v2TamperedDir(t *testing.T) string {
 	if err := os.WriteFile(path, bytes.Join(lines, []byte("\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	rehashRecorderFile(t, path)
+	return dir
+}
+
+// rehashRecorderFile recomputes the recorder entry hash chain of path,
+// keeping every detail byte. It needs no signing key, which is why a receipt
+// forged this way must still fail on its own signature.
+func rehashRecorderFile(t *testing.T, path string) {
+	t.Helper()
+	type line struct {
+		Version          int             `json:"v"`
+		Sequence         uint64          `json:"seq"`
+		Timestamp        time.Time       `json:"ts"`
+		SessionID        string          `json:"session_id"`
+		ChainKind        string          `json:"chain_kind,omitempty"`
+		WriterInstanceID string          `json:"writer_instance_id,omitempty"`
+		TraceID          string          `json:"trace_id,omitempty"`
+		Type             string          `json:"type"`
+		EventKind        string          `json:"event_kind,omitempty"`
+		Transport        string          `json:"transport"`
+		Summary          string          `json:"summary"`
+		Detail           json.RawMessage `json:"detail"`
+		RawRef           string          `json:"raw_ref,omitempty"`
+		PrevHash         string          `json:"prev_hash"`
+		Hash             string          `json:"hash"`
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	prev := recorder.GenesisHash
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
+	for sc.Scan() {
+		raw := bytes.TrimSpace(sc.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		var l line
+		if err := json.Unmarshal(raw, &l); err != nil {
+			t.Fatal(err)
+		}
+		l.PrevHash = prev
+		l.Hash = recorder.ComputeHash(recorder.Entry{
+			Version: l.Version, Sequence: l.Sequence, Timestamp: l.Timestamp, SessionID: l.SessionID,
+			ChainKind: l.ChainKind, WriterInstanceID: l.WriterInstanceID, TraceID: l.TraceID,
+			Type: l.Type, EventKind: l.EventKind, Transport: l.Transport, Summary: l.Summary,
+			RawDetail: l.Detail, RawRef: l.RawRef, PrevHash: prev,
+		})
+		prev = l.Hash
+		b, err := json.Marshal(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Write(b)
+		out.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Clean(path), out.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rehashedFixtureDir copies a fixture and recomputes the named run's recorder
+// hash chain, so a forged receipt in it is caught by its signature and not by
+// the hash chain a keyless attacker can repair.
+func rehashedFixtureDir(t *testing.T, name string) string {
+	t.Helper()
+	dir := copyFixtureDir(t, name)
+	rehashRecorderFile(t, mixedRunFile(dir))
 	return dir
 }
 
@@ -77,7 +151,7 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 	key := readRunChainFixture(t, "signer-key.hex")
 	dirs := map[string]string{
 		"valid":     filepath.Join(runChainFixtures, "valid"),
-		"v1-forged": filepath.Join(runChainFixtures, "tampered-predecessor"),
+		"v1-forged": rehashedFixtureDir(t, "tampered-predecessor"),
 		"v2-forged": v2TamperedDir(t),
 	}
 	wantErr := map[string]string{
@@ -190,8 +264,16 @@ func TestChain_ExplicitSessionIgnoresPrefixSibling(t *testing.T) {
 	if err := os.WriteFile(sibling, forged, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code = runRoot(t, "chain", dir, "--dir", "--session", mixedRunSession, "--key", key)
-	if code != 0 {
-		t.Fatalf("session %s read its prefix sibling: exit %d\n%s%s", mixedRunSession, code, stdout, stderr)
+	// The sibling is a chain of the same base, so the named run's own chain
+	// still verifies clean, and the verdict fails on the base finding the
+	// sibling raises: its entries belong to another session.
+	stdout, stderr, code = runRoot(t, "chain", dir, "--dir", "--session", mixedRunSession, "--key", key, "--json")
+	var got chainReport
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode: %v\n%s%s", err, stdout, stderr)
+	}
+	sibSession := mixedRunSession + "-evil"
+	if code != 1 || got.Valid || !strings.HasPrefix(got.Error, "restart continuity: ") || !strings.Contains(got.Error, sibSession) {
+		t.Fatalf("exit %d valid=%v error=%q: want the named run clean and the base finding on %s", code, got.Valid, got.Error, sibSession)
 	}
 }

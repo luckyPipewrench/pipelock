@@ -32,7 +32,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,11 +44,26 @@ import (
 const exitUsage = 64
 
 func main() {
+	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// execute runs the verifier and returns its exit code. Every failure prints a
+// one-line reason on stderr, here and only here: cobra's own error printing
+// is silenced on every command, because the subcommands silence it so a
+// failed report is not followed by a duplicate, and that left every failure
+// with no report of its own (a missing path, a malformed key, a refused
+// symlink) exiting non-zero with nothing on either stream.
+func execute(args []string, stdout, stderr io.Writer) int {
 	root := newRootCmd()
-	if err := root.Execute(); err != nil {
-		// cobra prints the error itself; we map it to a structured exit code.
-		os.Exit(exitCodeFor(err))
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	err := root.Execute()
+	if err != nil {
+		reason := strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", "; ")
+		_, _ = fmt.Fprintf(stderr, "pipelock-verifier: %s\n", reason)
 	}
+	return exitCodeFor(err)
 }
 
 func newRootCmd() *cobra.Command {
@@ -57,8 +74,9 @@ func newRootCmd() *cobra.Command {
 envelopes, receipt chains, and Audit Packets against their schema and signing rules. It is a
 self-contained binary with no network surface; consumers can drop it into a
 CI runner, an auditor's laptop, or an isolated environment.`,
-		SilenceUsage:  true,
-		SilenceErrors: false,
+		SilenceUsage: true,
+		// execute prints every error once; see there.
+		SilenceErrors: true,
 		Version:       cliutil.Version,
 	}
 	root.SetFlagErrorFunc(usageFlagError)

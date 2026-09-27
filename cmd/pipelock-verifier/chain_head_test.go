@@ -17,7 +17,7 @@ import (
 
 func TestChainV2RejectsOversizedEvidenceAtExtractor(t *testing.T) {
 	data := make([]byte, maxVerifierInputBytes+1)
-	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", "", chainOptions{})
+	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", chainTrust{}, chainOptions{})
 	if !handled || err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized v2 evidence: handled=%t err=%v", handled, err)
 	}

@@ -162,7 +162,7 @@ To allow a legitimate service that uses hex/base32 subdomains by design, add it 
 
 ## Tuning Response Scanning
 
-Response injection patterns can flag legitimate content: documentation about AI safety, security research pages, or sites that discuss prompt engineering.
+Response injection patterns can flag legitimate content: documentation about AI safety, security research pages, or sites that discuss prompt engineering. To see which pattern matched a blocked body and where, save the body and run `pipelock explain response --config <file> < body`.
 
 There are two knobs here and they are not interchangeable. Start with the narrow one.
 

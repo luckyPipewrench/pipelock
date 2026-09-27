@@ -25,7 +25,20 @@ class ActionAuditOutputTest(unittest.TestCase):
             fixture = base / "fixture.json"
             fixture.write_text(json.dumps({"score": 80, "findings": [finding]}), encoding="utf-8")
             binary = base / "pipelock"
-            binary.write_text('#!/bin/sh\ncat "$AUDIT_FIXTURE"\n', encoding="utf-8")
+            # The real binary prints JSON for --json and a human-readable report
+            # for -o, and that report quotes repository file names verbatim.
+            # Replaying the JSON for both calls hid that second output stream.
+            binary.write_text(
+                '#!/bin/sh\n'
+                'for arg in "$@"; do\n'
+                '  if [ "$arg" = "-o" ]; then\n'
+                '    printf \'Findings:\\n  (forged.yml\\n::warning file=forged.yml::FORGED from filename:1)\\n\'\n'
+                '    exit 0\n'
+                '  fi\n'
+                'done\n'
+                'cat "$AUDIT_FIXTURE"\n',
+                encoding="utf-8",
+            )
             binary.chmod(0o700)
             output = base / "output"
             summary = base / "summary"
@@ -75,6 +88,39 @@ class ActionAuditOutputTest(unittest.TestCase):
             "file": "config.yml", "line": 7,
         })
         self.assertIn("::warning file=config.yml,line=7::Detected configuration issue", stdout)
+
+
+class ActionValidateOutputTest(unittest.TestCase):
+    def run_validate_step(self, message, code):
+        action = yaml.safe_load((ROOT / "action.yml").read_text(encoding="utf-8"))
+        step = next(item for item in action["runs"]["steps"] if item["name"] == "Validate config")
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            binary = base / "pipelock"
+            binary.write_text(f"#!/bin/sh\nprintf '%s\\n' {json.dumps(message)}\nexit {code}\n", encoding="utf-8")
+            binary.chmod(0o700)
+            env = os.environ | {"PATH": f"{base}:{os.environ['PATH']}", "PIPELOCK_CONFIG": "pipelock.yaml"}
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", step["run"]],
+                cwd=ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+
+    def test_config_value_cannot_inject_workflow_command(self):
+        result = self.run_validate_step('invalid host "a\n::warning file=x.yml::FORGED"', 1)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(lines[0].startswith("::stop-commands::"), result.stdout)
+        token = lines[0].removeprefix("::stop-commands::")
+        self.assertRegex(token, r"^[0-9a-f]{32}$")
+        self.assertEqual(lines[-1], f"::{token}::")
+        forged = [i for i, line in enumerate(lines) if "FORGED" in line]
+        self.assertTrue(forged, result.stdout)
+        self.assertTrue(all(0 < i < len(lines) - 1 for i in forged), result.stdout)
+
+    def test_valid_config_keeps_success_and_output(self):
+        result = self.run_validate_step("Config validation: OK", 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Config validation: OK", result.stdout)
 
 
 if __name__ == "__main__":

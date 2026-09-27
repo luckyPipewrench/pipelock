@@ -274,7 +274,11 @@ runs:
         if [ -n "$CONFIG" ]; then
           echo "config_path=${CONFIG}" >> "$GITHUB_OUTPUT"
         else
-          pipelock audit "$DIR" -o "$REPORT_DIR/suggested.yaml" "${EXCLUDE_ARGS[@]}" 2>/dev/null || true
+          # The human-readable report this call prints echoes repository file
+          # names verbatim, and the runner treats any stdout line starting with
+          # "::" as a workflow command. The suggested config is written to a
+          # file, so nothing on stdout is needed.
+          pipelock audit "$DIR" -o "$REPORT_DIR/suggested.yaml" "${EXCLUDE_ARGS[@]}" >/dev/null 2>&1 || true
           if [ -f "$REPORT_DIR/suggested.yaml" ]; then
             echo "config_path=${REPORT_DIR}/suggested.yaml" >> "$GITHUB_OUTPUT"
           else
@@ -287,7 +291,15 @@ runs:
       shell: bash
       env:
         PIPELOCK_CONFIG: ${{ inputs.config }}
-      run: pipelock check --config "$PIPELOCK_CONFIG"
+      # Validation errors quote values from the repository's config, which can
+      # contain a newline, so the output runs with workflow commands stopped.
+      run: |
+        stop_token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+        echo "::stop-commands::${stop_token}"
+        rc=0
+        pipelock check --config "$PIPELOCK_CONFIG" || rc=$?
+        echo "::${stop_token}::"
+        exit "$rc"
 
     - name: Test scanning coverage
       if: inputs.test-vectors == 'true'

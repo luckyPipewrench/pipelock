@@ -837,6 +837,8 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
+	// Owner-only artifacts must not be retained by browsers or intermediaries.
+	w.Header().Set("Cache-Control", "no-store")
 	s.setCORS(w)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)

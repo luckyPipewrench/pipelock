@@ -1,0 +1,212 @@
+{
+  "description": "recorder.ComputeHash for each line, recorder.ParseEntryLine rejections, and recorder.VerifyChain over whole chains, all from Go",
+  "hashes": [
+    {
+      "name": "v1 minimal",
+      "line": "{\"v\":1,\"seq\":0,\"ts\":\"2026-09-27T18:36:18.011030409Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"x\",\"detail\":null,\"prev_hash\":\"genesis\",\"hash\":\"30eec324b6dec6040a250c705a766f33f6ebf49ce57ce822334bcfd20258238e\"}",
+      "hash": "30eec324b6dec6040a250c705a766f33f6ebf49ce57ce822334bcfd20258238e"
+    },
+    {
+      "name": "v1 ignores event_kind",
+      "line": "{\"v\":1,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"event_kind\":\"read\",\"transport\":\"t\",\"summary\":\"x\",\"detail\":{},\"prev_hash\":\"p\",\"hash\":\"eb9768dfc2d911f9b21814f0b49f46cb4d3cd7b139ff7c9ea8b08e10f81c470a\"}",
+      "hash": "eb9768dfc2d911f9b21814f0b49f46cb4d3cd7b139ff7c9ea8b08e10f81c470a"
+    },
+    {
+      "name": "v2 full",
+      "line": "{\"v\":2,\"seq\":7,\"ts\":\"2026-09-27T18:36:18.5Z\",\"session_id\":\"proxy.run.0123\",\"trace_id\":\"tr\",\"type\":\"action_receipt\",\"event_kind\":\"read\",\"transport\":\"receipt_session\",\"summary\":\"receipt: allow\",\"detail\":{\"b\":1,\"a\":\"x\"},\"raw_ref\":\"ref\",\"prev_hash\":\"p\",\"hash\":\"b73bd4c5936bd49ea136895fe1058c2efe35ea7a54582a2906f9ccb191583119\"}",
+      "hash": "b73bd4c5936bd49ea136895fe1058c2efe35ea7a54582a2906f9ccb191583119"
+    },
+    {
+      "name": "v2 detail absent",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"prev_hash\":\"p\",\"hash\":\"f3d542b22dd66f083891f8662412e049ec348d1de0a33bdac86328fb358223d2\"}",
+      "hash": "f3d542b22dd66f083891f8662412e049ec348d1de0a33bdac86328fb358223d2"
+    },
+    {
+      "name": "v2 detail whitespace and escapes kept verbatim",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\": { \"z\" : [1, 2.50, 1e3] , \"a\":\"\u003c\\/é\" } ,\"prev_hash\":\"p\",\"hash\":\"99b2b3a8a7dbf5daaf498d7a974e69f1f510987f501490e1217d2966fbb7961c\"}",
+      "hash": "99b2b3a8a7dbf5daaf498d7a974e69f1f510987f501490e1217d2966fbb7961c"
+    },
+    {
+      "name": "v2 fraction trailing zeros trimmed",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18.120000000Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"2763b6e26aa009f69513fb46a26aef6e183fe93b7a568b7d6fd6243c23f426d5\"}",
+      "hash": "2763b6e26aa009f69513fb46a26aef6e183fe93b7a568b7d6fd6243c23f426d5"
+    },
+    {
+      "name": "v2 fraction of zeros dropped",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18.000Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e\"}",
+      "hash": "be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e"
+    },
+    {
+      "name": "v2 fraction beyond nanoseconds truncated",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18.1234567899Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"4d7198032fcd5d89bf5405f60362df1c9ccf9279b9427b44136742e357fd67bd\"}",
+      "hash": "4d7198032fcd5d89bf5405f60362df1c9ccf9279b9427b44136742e357fd67bd"
+    },
+    {
+      "name": "v2 positive offset converted to UTC",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-28T00:06:18.25+05:30\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"2676339c850931ffb287c03f5bc23f2ea954c781e48023d151009960a41b7bf2\"}",
+      "hash": "2676339c850931ffb287c03f5bc23f2ea954c781e48023d151009960a41b7bf2"
+    },
+    {
+      "name": "v2 negative offset crossing midnight and year",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-12-31T22:00:00-04:00\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"e9bf3fb8ff00d9eadeb14ecc7fdfbdba913174a42c876befa50d3416352e938f\"}",
+      "hash": "e9bf3fb8ff00d9eadeb14ecc7fdfbdba913174a42c876befa50d3416352e938f"
+    },
+    {
+      "name": "v2 leap day",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2028-02-29T23:59:59.999999999Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"9a92e9bb063ba58f2d10a6c2333e69a774dc59ead07b465194858cd82302e4f7\"}",
+      "hash": "9a92e9bb063ba58f2d10a6c2333e69a774dc59ead07b465194858cd82302e4f7"
+    },
+    {
+      "name": "v2 null ts is the zero time",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":null,\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"0861857d5092c4ce16717fcab06560c129cd2015ae23695d6d7b7a7e4eaa1a69\"}",
+      "hash": "0861857d5092c4ce16717fcab06560c129cd2015ae23695d6d7b7a7e4eaa1a69"
+    },
+    {
+      "name": "v2 missing ts is the zero time",
+      "line": "{\"v\":2,\"seq\":1,\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"0861857d5092c4ce16717fcab06560c129cd2015ae23695d6d7b7a7e4eaa1a69\"}",
+      "hash": "0861857d5092c4ce16717fcab06560c129cd2015ae23695d6d7b7a7e4eaa1a69"
+    },
+    {
+      "name": "v2 null strings are empty",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":null,\"trace_id\":null,\"type\":\"decision\",\"event_kind\":null,\"transport\":\"t\",\"summary\":null,\"detail\":1,\"raw_ref\":null,\"prev_hash\":\"p\",\"hash\":\"969fa943e7772c064417572c15638cab115567b5a0d78df91b05896af6800777\"}",
+      "hash": "969fa943e7772c064417572c15638cab115567b5a0d78df91b05896af6800777"
+    },
+    {
+      "name": "v2 seq beyond 2^53",
+      "line": "{\"v\":2,\"seq\":18446744073709551615,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"58bc3642606266a215bb31fb959e3809b3d999826ff63675c4eca86b847f9045\"}",
+      "hash": "58bc3642606266a215bb31fb959e3809b3d999826ff63675c4eca86b847f9045"
+    },
+    {
+      "name": "v2 unicode and escaped strings",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"sé\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\u003cb\u003e\u0026\u2028\\\"\\\\ 😀 é\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"f0a0174b56a747f1d5982eb4aaeb6ac16c1ea1696b71e3071c8bd34970fadac5\"}",
+      "hash": "f0a0174b56a747f1d5982eb4aaeb6ac16c1ea1696b71e3071c8bd34970fadac5"
+    },
+    {
+      "name": "v2 unknown top-level field ignored",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"extra\":{\"q\":1},\"prev_hash\":\"p\",\"hash\":\"be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e\"}",
+      "hash": "be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e"
+    },
+    {
+      "name": "v2 ts escape decoded before parsing",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e\"}",
+      "hash": "be17a95491c75b587d1561c527e5e1aea785be6d9fc661803cfbf04a78adb42e"
+    },
+    {
+      "name": "v3 namespace fields",
+      "line": "{\"v\":3,\"seq\":2,\"ts\":\"2026-09-27T18:36:18.011Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w1\",\"type\":\"decision\",\"event_kind\":\"k\",\"transport\":\"t\",\"summary\":\"x\",\"detail\":{\"a\":1},\"prev_hash\":\"p\",\"hash\":\"76556194b0424b70ca0f0eb61fc2f3af926f191c0fc2d5c418844c9cef2ddc23\"}",
+      "hash": "76556194b0424b70ca0f0eb61fc2f3af926f191c0fc2d5c418844c9cef2ddc23"
+    }
+  ],
+  "rejects": [
+    {
+      "name": "NUL in summary",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\\u0000b\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "v2 summary cannot contain NUL"
+    },
+    {
+      "name": "legacy entry with namespace",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "legacy entry cannot carry v3 recorder namespace fields"
+    },
+    {
+      "name": "ts hour out of range",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T24:00:00Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "parsing time \"2026-09-27T24:00:00Z\": hour out of range"
+    },
+    {
+      "name": "ts day out of range",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-02-30T00:00:00Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "parsing time \"2026-02-30T00:00:00Z\": day out of range"
+    },
+    {
+      "name": "ts without zone",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "parsing time \"2026-09-27T18:36:18\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \"\" as \"Z07:00\""
+    },
+    {
+      "name": "ts lowercase separator",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27t18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "parsing time \"2026-09-27t18:36:18Z\" as \"2006-01-02T15:04:05Z07:00\": cannot parse \"t18:36:18Z\" as \"T\""
+    },
+    {
+      "name": "seq negative",
+      "line": "{\"v\":2,\"seq\":-1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "json: cannot unmarshal number -1 into Go struct field .seq of type uint64"
+    },
+    {
+      "name": "seq fraction",
+      "line": "{\"v\":2,\"seq\":1.5,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"\",\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "json: cannot unmarshal number 1.5 into Go struct field .seq of type uint64"
+    },
+    {
+      "name": "summary not a string",
+      "line": "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":5,\"detail\":1,\"prev_hash\":\"p\",\"hash\":\"h\"}",
+      "error": "json: cannot unmarshal number into Go struct field .summary of type string"
+    }
+  ],
+  "chains": [
+    {
+      "name": "valid v2 chain",
+      "lines": [
+        "{\"v\":2,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d\"}",
+        "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d\",\"hash\":\"50ca5a8e7fc2cc58c82290464ace4141c3a430387315b97ce12002cf1587c869\"}",
+        "{\"v\":2,\"seq\":2,\"ts\":\"2026-09-27T18:36:20Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"c\",\"detail\":3,\"prev_hash\":\"50ca5a8e7fc2cc58c82290464ace4141c3a430387315b97ce12002cf1587c869\",\"hash\":\"f99c99b103875937cab0f6934bc5c822d4c12d7e887c012d059d95888eb9b083\"}"
+      ],
+      "error": ""
+    },
+    {
+      "name": "valid v1 then v2",
+      "lines": [
+        "{\"v\":1,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"a570a416cc3e8b80273c0451a29b27b81fcc043c523a15393e9c0aef3a93e493\"}",
+        "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"a570a416cc3e8b80273c0451a29b27b81fcc043c523a15393e9c0aef3a93e493\",\"hash\":\"1c5cf6d4aa5ee8458057f8118869728a0b01783f5cc708c836471329f8adf266\"}"
+      ],
+      "error": ""
+    },
+    {
+      "name": "first entry not genesis",
+      "lines": [
+        "{\"v\":2,\"seq\":3,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"0000\",\"hash\":\"8c6c62b870fca25f2c21a38e228e06e5b9d433d86cb305a983aeefbabc807b03\"}"
+      ],
+      "error": "entry seq 3: first entry PrevHash should be \"genesis\", got \"0000\""
+    },
+    {
+      "name": "prev_hash break",
+      "lines": [
+        "{\"v\":2,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d\"}",
+        "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"ffff\",\"hash\":\"e2cfbf6345719be4f3224fdb35e6d7e4b50c82c8b6e53fb8de113150d79ae6ef\"}"
+      ],
+      "error": "entry seq 1: chain break: PrevHash ffff != previous Hash 2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d"
+    },
+    {
+      "name": "stored hash edited",
+      "lines": [
+        "{\"v\":2,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+      ],
+      "error": "entry seq 0: hash mismatch: computed 2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d, stored 0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "v3 namespace changed",
+      "lines": [
+        "{\"v\":3,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w1\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"7c89fb0b42144c08fc7705a5bf30cb9dea7ad01ebcd066e6b9dbe2a3d5f8b2db\"}",
+        "{\"v\":3,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w2\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"7c89fb0b42144c08fc7705a5bf30cb9dea7ad01ebcd066e6b9dbe2a3d5f8b2db\",\"hash\":\"e81c359eacefb9c0cd9d26032f7a7048054d61f1bf514775f423b200fcc2fdd1\"}"
+      ],
+      "error": "entry seq 1: v3 chain namespace changed"
+    },
+    {
+      "name": "v3 after legacy",
+      "lines": [
+        "{\"v\":2,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d\"}",
+        "{\"v\":3,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w1\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"2c1e66b0e4a490f8154d8533020bcf336695f9ab0682d006d0c982f402fbff2d\",\"hash\":\"c248ba6a648c1fa5b9425b641e66676a8efaa89e708f93cee5e5cf66c26e4dfa\"}"
+      ],
+      "error": "entry seq 1: v3 chain cannot continue a legacy recorder namespace"
+    },
+    {
+      "name": "legacy after v3",
+      "lines": [
+        "{\"v\":3,\"seq\":0,\"ts\":\"2026-09-27T18:36:18Z\",\"session_id\":\"s\",\"chain_kind\":\"recorder\",\"writer_instance_id\":\"w1\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"a\",\"detail\":1,\"prev_hash\":\"genesis\",\"hash\":\"7c89fb0b42144c08fc7705a5bf30cb9dea7ad01ebcd066e6b9dbe2a3d5f8b2db\"}",
+        "{\"v\":2,\"seq\":1,\"ts\":\"2026-09-27T18:36:19Z\",\"session_id\":\"s\",\"type\":\"decision\",\"transport\":\"t\",\"summary\":\"b\",\"detail\":2,\"prev_hash\":\"7c89fb0b42144c08fc7705a5bf30cb9dea7ad01ebcd066e6b9dbe2a3d5f8b2db\",\"hash\":\"2627961804d1774c8ff748d0458f8c96cf4e1a546814ccbc4908cf7e416aba5b\"}"
+      ],
+      "error": "entry seq 1: legacy entry cannot continue a v3 recorder namespace"
+    }
+  ]
+}

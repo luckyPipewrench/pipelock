@@ -2336,8 +2336,27 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			return false
 		}
 	}
-	// Keep the live baseline snapshot unchanged until the last fallible receipt
-	// operation succeeds. A failed reload must leave its old enforcement action.
+	// Requests emit v2 receipts without reloadMu, so the chain head staged
+	// above can be stale by now. Retire the live emitter as the last fallible
+	// step and resume its replacement from the head it actually reached; a
+	// request still holding the old pointer then fails instead of forking.
+	if oldV2 := p.v2EmitterPtr.Load(); cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil &&
+		oldV2 != nil && receiptStage.v2 != nil && receiptStage.v2 != oldV2 {
+		seq, prev, err := oldV2.Retire()
+		if err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("proxy_decision chain hand-off failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+		receiptStage.v2.ResumeAt(seq, prev)
+	}
+	// The baseline update is last: a failed hand-off must not leave the live
+	// baseline at an unpublished action. Receipt emitters already retired by
+	// this point remain fail-closed if baseline reconfiguration then fails.
 	if reconfigureBaseline != nil {
 		if err := reconfigureBaseline.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),

@@ -242,6 +242,38 @@ func (e *Emitter) HealthError() error {
 	return e.healthErr
 }
 
+// ErrEmitterRetired marks an emitter whose chain head was handed to a successor.
+var ErrEmitterRetired = errors.New("proxydecision: emitter retired")
+
+// Retire atomically stops further emission and returns the final chain head,
+// so a successor resumes from the last recorded receipt even when requests
+// were still emitting while the successor was being built. An unhealthy
+// emitter returns its health error instead of a head that cannot be trusted.
+func (e *Emitter) Retire() (seq uint64, prevHash string, err error) {
+	if e == nil {
+		return 0, recorder.GenesisHash, nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.healthErr != nil {
+		return 0, "", e.healthErr
+	}
+	e.healthErr = ErrEmitterRetired
+	return e.chainSeq, e.chainPrevHash, nil
+}
+
+// ResumeAt moves an emitter that has not been published yet to a retired
+// predecessor's chain head.
+func (e *Emitter) ResumeAt(seq uint64, prevHash string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.chainSeq = seq
+	e.chainPrevHash = prevHash
+}
+
 // Emit builds, signs, and records one v2 proxy_decision receipt. It is a no-op
 // on a nil receiver. The mutex spans the whole build→sign→hash→persist→advance
 // sequence so concurrent calls produce a well-ordered chain; chain state is

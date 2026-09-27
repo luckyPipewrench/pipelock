@@ -314,6 +314,47 @@ func (e *emitter) outer() { e.emit() }`
 	}
 }
 
+func TestCalledProductionFunctionsResolvesMixedReceiverForms(t *testing.T) {
+	const source = `package sample
+type emitter struct{}
+func (e emitter) build() { _ = receipt.PayloadProxyDecision }
+func (e *emitter) sign() { _ = receipt.PayloadProxyDecision }
+func (e *emitter) outer() { e.build() }
+func (e emitter) valueOuter() { e.sign() }`
+	file, err := parser.ParseFile(token.NewFileSet(), "sample.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	functions := map[string]*productionFunction{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		key := functionKey("sample", productionFunctionName(fn))
+		functions[key] = &productionFunction{
+			packagePath: "sample", name: productionFunctionName(fn), decl: fn,
+			imports: map[string]string{"receipt": receiptMaturityModulePath + "/internal/contract/receipt"},
+		}
+	}
+	for caller, callee := range map[string]string{
+		"(*emitter).outer":   "emitter.build",
+		"emitter.valueOuter": "(*emitter).sign",
+	} {
+		fn := functions[functionKey("sample", caller)]
+		want := functions[functionKey("sample", callee)]
+		if fn == nil || want == nil {
+			t.Fatalf("fixture missing %s or %s", caller, callee)
+		}
+		if got := calledProductionFunctions(fn, functions); len(got) != 1 || got[0] != want {
+			t.Fatalf("%s resolved to %v, want %s", caller, got, callee)
+		}
+		if !reachesPayloadKind(fn, PayloadProxyDecision, functions, map[string]bool{}) {
+			t.Fatalf("%s did not reach the payload producer through %s", caller, callee)
+		}
+	}
+}
+
 func calledProductionFunctions(fn *productionFunction, functions map[string]*productionFunction) []*productionFunction {
 	var called []*productionFunction
 	invoked := invokedFuncLits(fn.decl.Body)
@@ -341,7 +382,17 @@ func calledProductionFunctions(fn *productionFunction, functions map[string]*pro
 				ident.Obj != nil && ident.Obj == fn.decl.Recv.List[0].Names[0].Obj {
 				// ParseFile resolves lexical objects by default. Object identity
 				// excludes a same-named local that shadows the receiver.
-				key = functionKey(fn.packagePath, receiverName(fn.decl.Recv.List[0].Type)+"."+callee.Sel.Name)
+				// Go lets a method call either receiver form on its receiver:
+				// T and *T share one method set by name, so try both.
+				receiver := receiverName(fn.decl.Recv.List[0].Type)
+				key = functionKey(fn.packagePath, receiver+"."+callee.Sel.Name)
+				if functions[key] == nil {
+					other := "(*" + receiver + ")"
+					if trimmed, ok := strings.CutPrefix(receiver, "(*"); ok {
+						other = strings.TrimSuffix(trimmed, ")")
+					}
+					key = functionKey(fn.packagePath, other+"."+callee.Sel.Name)
+				}
 			}
 		}
 		if candidate := functions[key]; candidate != nil {

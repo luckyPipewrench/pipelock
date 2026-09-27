@@ -45,6 +45,9 @@ func TestReloadBaselineReconfigureFailureKeepsCurrentConfig(t *testing.T) {
 	if got := p.CurrentConfig().BehavioralBaseline.DeviationAction; got != config.ActionBlock {
 		t.Fatalf("live baseline action = %q, want %q", got, config.ActionBlock)
 	}
+	if snap := p.sessionMgrPtr.Load().baselinePtr.Load(); snap == nil || snap.action != config.ActionBlock {
+		t.Fatalf("live baseline snapshot action changed after failed reload: %+v", snap)
+	}
 	if p.sessionMgrPtr.Load().BaselineManager() != before {
 		t.Fatal("failed reload replaced the baseline manager")
 	}

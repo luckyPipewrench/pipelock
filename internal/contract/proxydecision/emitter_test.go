@@ -904,3 +904,36 @@ func validDecision() Decision {
 		PolicyHash:    testSpanDigest,
 	}
 }
+
+func TestRetireHandsOffHeadAndStopsEmission(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.Emit(validDecision()); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	wantSeq, wantHead := em.ChainState()
+	seq, head, err := em.Retire()
+	if err != nil || seq != wantSeq || head != wantHead {
+		t.Fatalf("Retire = (%d, %q, %v), want (%d, %q, nil)", seq, head, err, wantSeq, wantHead)
+	}
+	if err := em.Emit(validDecision()); !errors.Is(err, ErrEmitterRetired) {
+		t.Fatalf("Emit after Retire = %v, want ErrEmitterRetired", err)
+	}
+	if _, _, err := em.Retire(); !errors.Is(err, ErrEmitterRetired) {
+		t.Fatalf("second Retire = %v, want ErrEmitterRetired", err)
+	}
+	next, _, _ := newTestEmitter(t, rec, nil)
+	next.ResumeAt(seq, head)
+	if gotSeq, gotHead := next.ChainState(); gotSeq != seq || gotHead != head {
+		t.Fatalf("ResumeAt state = (%d, %q), want (%d, %q)", gotSeq, gotHead, seq, head)
+	}
+}
+
+func TestRetireAndResumeAtNilEmitter(t *testing.T) {
+	var em *Emitter
+	seq, head, err := em.Retire()
+	if err != nil || seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("nil Retire = (%d, %q, %v)", seq, head, err)
+	}
+	em.ResumeAt(3, "head")
+}

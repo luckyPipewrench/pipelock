@@ -89,14 +89,14 @@ pipelock explain response --config /etc/pipelock/pipelock.yaml < saved-response.
 pipelock explain response --config /etc/pipelock/pipelock.yaml --json < saved-response.bin
 ```
 
-Position, length and match SHA-256 index the named scanner view, not the raw stdin bytes, so slice that view rather than the saved file when you compare fingerprints. The report states the action the loaded config applies: under `response_scanning.action: warn` a match is reported as allowed with a note that runtime forwards the response and logs the finding.
+Position, length and match SHA-256 index the named scanner view, not the raw stdin bytes, so slice that view rather than the saved file when you compare fingerprints. The report states the action the loaded config applies: under `response_scanning.action: warn` a match is reported as allowed with a note that runtime forwards the response and logs the finding. When `response_scanning.enabled` is `false`, a match on a core response pattern is reported as blocked whatever the action says, because runtime blocks it.
 
 This isn't a replay of a fetch HTML block. Fetch scans HTML after hidden-content extraction and readability and applies destination-scoped suppressions using the final response URL, so a saved HTML document can disagree with a live fetch verdict. Reconstruct the extracted text when diagnosing a fetch HTML block.
 
 | Exit code | Meaning |
 |---|---|
 | 0 | The loaded config lets the response through (no match, or only matches the configured action forwards). |
-| 2 | The config failed to load. |
+| 2 | The config failed to load, or reading or scanning the input failed. |
 | 3 | The loaded config blocks the response. |
 
 ## URL explanation exit codes

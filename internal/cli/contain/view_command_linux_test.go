@@ -58,8 +58,15 @@ func TestViewCommandDependencies(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := base
 			tc.change(&deps)
-			if err := runContainViewCommand(context.Background(), deps, tc.opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+			err := runContainViewCommand(context.Background(), deps, tc.opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			// A permission error is also what the configured operator sees on
+			// a host whose viewer unit predates the traverse grant, so the
+			// message must name both causes.
+			if tc.name == "permission denied" && !strings.Contains(err.Error(), "operator_user") {
+				t.Fatalf("error = %v, want it to name the operator_user cause too", err)
 			}
 		})
 	}

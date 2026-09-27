@@ -129,11 +129,13 @@ for (const c of CASES) {
     assert.equal(baseHealthy(report), goFindings(exp).length === 0);
   });
 
-  // The CLI takes one --key, so the two-key trust input exists only in the API.
-  if (c.bothKeys) continue;
   test(`run-chain fixture ${name}: CLI directory mode reaches the Go verdict`, () => {
     const exp = expectFor(variant, c.expectFile);
     const args = ["chain", join(FIXTURES, variant), "--dir", "--key", KEY, "--json"];
+    // --key repeats, as the Go reference's does, to pin a trusted key set.
+    if (c.bothKeys) {
+      args.push("--key", readFileSync(join(FIXTURES, "rotated-signer-key.hex"), "utf8").trim());
+    }
     if (c.endorse) args.push("--rotation-endorsement", endorsementPath(c));
     const r = runCLI(args);
     assert.equal(r.status, exp.valid ? 0 : 1, r.stderr);
@@ -141,8 +143,17 @@ for (const c of CASES) {
       valid: boolean;
       base: string;
       chains: { session: string; valid: boolean }[];
-      continuity: { healthy: boolean; unlinked: string[]; linked: { trust: string }[] };
+      continuity: {
+        healthy: boolean;
+        unlinked: string[];
+        linked: { trust: string }[];
+        findings: { kind: string; session: string }[];
+      };
     };
+    assert.deepEqual(
+      sortFindings(report.continuity.findings.map((f) => ({ kind: f.kind, session: f.session }))),
+      sortFindings(goFindings(exp)),
+    );
     assert.equal(report.valid, exp.valid);
     assert.equal(report.base, "proxy");
     assert.deepEqual(

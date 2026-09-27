@@ -50,9 +50,14 @@ type installEnv struct {
 	readDir    func(path string) ([]os.DirEntry, error)
 	writeFile  func(path string, contents []byte, mode os.FileMode) error
 	removeFile func(path string) error
-	mkdirAll   func(path string, mode os.FileMode) error
-	chown      func(path string, uid, gid int) error
-	lchown     func(path string, uid, gid int) error
+	// runViewerACL passes a held directory/socket descriptor to ACL tools.
+	// Production uses ExtraFiles so /proc/self/fd/3 names the pinned inode.
+	runViewerACL func(context.Context, *os.File, string, ...string) (string, int, error)
+	// viewerACLUID is an unprivileged fixture override for the expected owner.
+	viewerACLUID *uint32
+	mkdirAll     func(path string, mode os.FileMode) error
+	chown        func(path string, uid, gid int) error
+	lchown       func(path string, uid, gid int) error
 	// ownLeafNoFollow applies mode and ownership through a single O_NOFOLLOW
 	// descriptor. It is a seam so tests can run unprivileged; production must
 	// keep the descriptor-based implementation, because a path-based chmod in
@@ -210,6 +215,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
 		runCmd:                        realRunCommand,
+		runViewerACL:                  runViewerACLCommand,
 		dialCtx:                       realDial,
 		wait:                          waitForReadiness,
 		stat:                          os.Stat,

@@ -254,48 +254,7 @@ func viewerTraverseDirs(agentHome string) []string {
 // removeViewerTraverseACL removes the obsolete home-socket access independently
 // of the unit text. A failed cleanup is retried on the next install or rollback.
 func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
-	if env.agentHome == "" {
-		return nil
-	}
-	stat := env.lstat
-	if stat == nil {
-		stat = env.stat
-	}
-	if stat == nil {
-		return errors.New("legacy viewer ACL stat unavailable")
-	}
-	for _, dir := range viewerTraverseDirs(env.agentHome) {
-		info, err := stat(dir)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return fmt.Errorf("inspect viewer traverse directory %s: %w", dir, err)
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("legacy viewer traverse path %s is not a real directory", dir)
-		}
-		if err := revokeViewerTraverseDir(ctx, env, dir); err != nil {
-			return err
-		}
-	}
-	socket := legacyViewerSocketPath(env.agentHome)
-	info, err := stat(socket)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect legacy RFB socket: %w", err)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("legacy RFB path %s is not a socket", socket)
-	}
-	if err := revokeViewerTraverseDir(ctx, env, socket); err != nil {
-		return err
-	}
-	if err := env.removeFile(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove legacy RFB socket: %w", err)
-	}
-	return nil
+	return removeViewerTraverseACLNoFollow(ctx, env)
 }
 
 func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) error {

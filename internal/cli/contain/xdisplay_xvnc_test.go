@@ -280,8 +280,8 @@ func TestRemoveViewerTraverseACLRevokesExistingChainOnly(t *testing.T) {
 		t.Fatalf("setfacl calls = %q, want %q", got, want)
 	}
 	env.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
-	if err := removeViewerTraverseACL(context.Background(), env); !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("non-ENOENT stat error = %v", err)
+	if err := removeViewerTraverseACL(context.Background(), env); err != nil {
+		t.Fatalf("descriptor cleanup depends on path stat hook: %v", err)
 	}
 	dirs := viewerTraverseDirs(env.agentHome)
 	if last := dirs[len(dirs)-1]; last != filepath.Join(env.agentHome, ".local/state/pipelock/display") {
@@ -873,15 +873,9 @@ func TestViewerTraverseACLRestoresGroupAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.proxyUserName = proxyUser.Username
-	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
-		// #nosec G204 -- production passes only getfacl/setfacl and the test directory.
-		output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-		if err != nil {
-			return string(output), 1, err
-		}
-		return string(output), 0, nil
-	}
-	if err := revokeViewerTraverseDir(context.Background(), env, dir); err != nil {
+	env.agentHome = dir
+	env.runViewerACL = runViewerACLCommand
+	if err := removeViewerTraverseACL(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
 	// #nosec G204 -- the command reads this test's temporary directory.
@@ -891,6 +885,137 @@ func TestViewerTraverseACLRestoresGroupAccess(t *testing.T) {
 	}
 	if strings.Contains(string(after), "user:"+proxyUID+":") || !strings.Contains(string(after), "group::r-x") || !strings.Contains(string(before), "group::r-x") {
 		t.Fatalf("legacy grant not safely revoked:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestRemoveViewerTraverseACLRefusesSymlinkedComponent(t *testing.T) {
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		t.Skip("setfacl unavailable")
+	}
+	root := shortDisplayTestDir(t)
+	home := filepath.Join(root, "agent")
+	target := filepath.Join(root, "target")
+	for _, path := range []string{home, target} {
+		if err := os.Mkdir(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, filepath.Join(home, ".local")); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the fixture only changes an ACL in its temporary directory.
+	if output, err := exec.CommandContext(context.Background(), "setfacl", "-m", "u:65534:--x", target).CombinedOutput(); err != nil {
+		t.Fatalf("seed target ACL: %v: %s", err, output)
+	}
+	// #nosec G204 -- the fixture only reads an ACL in its temporary directory.
+	before, err := exec.CommandContext(context.Background(), "getfacl", "-cp", target).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, _ := newFakeEnv(t)
+	env.agentHome = home
+	env.proxyUserName = "nobody"
+	env.runViewerACL = runViewerACLCommand
+	if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "without following symlinks") {
+		t.Fatalf("symlinked component accepted: %v", err)
+	}
+	// #nosec G204 -- the fixture only reads an ACL in its temporary directory.
+	after, err := exec.CommandContext(context.Background(), "getfacl", "-cp", target).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("symlink target ACL changed:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestRemoveViewerTraverseACLPinsComponentBeforeACL(t *testing.T) {
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		t.Skip("setfacl unavailable")
+	}
+	root := shortDisplayTestDir(t)
+	home := filepath.Join(root, "agent")
+	local := filepath.Join(home, ".local")
+	target := filepath.Join(root, "target")
+	for _, path := range []string{local, target} {
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// #nosec G204 -- the fixture changes only its temporary directory.
+	if output, err := exec.CommandContext(context.Background(), "setfacl", "-m", "u:65534:--x", target).CombinedOutput(); err != nil {
+		t.Fatalf("seed target ACL: %v: %s", err, output)
+	}
+	// #nosec G204 -- the fixture reads only its temporary directory.
+	before, err := exec.CommandContext(context.Background(), "getfacl", "-cp", target).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, _ := newFakeEnv(t)
+	env.agentHome = home
+	env.proxyUserName = "nobody"
+	env.runViewerACL = runViewerACLCommand
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		// #nosec G204 -- the regression exercises the old ACL path with fixed tools.
+		output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+		if err != nil {
+			return string(output), 1, err
+		}
+		return string(output), 0, nil
+	}
+	realLstat := env.lstat
+	env.lstat = func(path string) (os.FileInfo, error) {
+		info, err := realLstat(path)
+		if path == local && err == nil {
+			if renameErr := os.Rename(local, local+".moved"); renameErr != nil {
+				return nil, renameErr
+			}
+			if linkErr := os.Symlink(target, local); linkErr != nil {
+				return nil, linkErr
+			}
+		}
+		return info, err
+	}
+	if err := removeViewerTraverseACL(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	// #nosec G204 -- the fixture reads only its temporary directory.
+	after, err := exec.CommandContext(context.Background(), "getfacl", "-cp", target).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("replacement target ACL changed:\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestRemoveViewerTraverseACLRemovesPinnedSocket(t *testing.T) {
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		t.Skip("setfacl unavailable")
+	}
+	home := filepath.Join(shortDisplayTestDir(t), "agent")
+	socket := legacyViewerSocketPath(home)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	// #nosec G204 -- the fixture changes only its temporary socket ACL.
+	if output, err := exec.CommandContext(context.Background(), "setfacl", "-m", "u:65534:rw-", socket).CombinedOutput(); err != nil {
+		t.Fatalf("seed socket ACL: %v: %s", err, output)
+	}
+	env, _, _ := newFakeEnv(t)
+	env.agentHome = home
+	env.proxyUserName = "nobody"
+	env.runViewerACL = runViewerACLCommand
+	if err := removeViewerTraverseACL(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy socket remains: %v", err)
 	}
 }
 
@@ -1071,11 +1196,11 @@ func TestLegacyViewerACLFailsVerifyAndDoctor(t *testing.T) {
 }
 
 func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
-	t.Run("no stat hook available", func(t *testing.T) {
+	t.Run("path stat hook is not used", func(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		env.agentHome = filepath.Join(shortDisplayTestDir(t), "agent")
 		env.stat, env.lstat = nil, nil
-		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "stat unavailable") {
+		if err := removeViewerTraverseACL(context.Background(), env); err != nil {
 			t.Fatalf("nil stat/lstat = %v", err)
 		}
 	})
@@ -1103,7 +1228,7 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 		if err := os.WriteFile(env.agentHome, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "not a real directory") {
+		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "not a directory") {
 			t.Fatalf("regular file traverse path = %v", err)
 		}
 	})
@@ -1122,8 +1247,8 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 			}
 			return realLstat(path)
 		}
-		if err := removeViewerTraverseACL(context.Background(), env); !errors.Is(err, os.ErrPermission) {
-			t.Fatalf("socket stat error = %v", err)
+		if err := removeViewerTraverseACL(context.Background(), env); err != nil {
+			t.Fatalf("descriptor cleanup depends on path stat hook: %v", err)
 		}
 	})
 	t.Run("legacy path is not a socket", func(t *testing.T) {
@@ -1137,7 +1262,7 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
-		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "is not a socket") {
+		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "not an agent-owned socket") {
 			t.Fatalf("regular file at legacy socket path = %v", err)
 		}
 	})
@@ -1175,8 +1300,11 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 		runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
 		runner.on(argvFor("getfacl", "-p", socket), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
 		env.removeFile = func(string) error { return os.ErrPermission }
-		if err := removeViewerTraverseACL(context.Background(), env); !errors.Is(err, os.ErrPermission) {
-			t.Fatalf("socket removal error = %v", err)
+		if err := removeViewerTraverseACL(context.Background(), env); err != nil {
+			t.Fatalf("descriptor unlink used path removal hook: %v", err)
+		}
+		if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("legacy socket remains: %v", err)
 		}
 	})
 }

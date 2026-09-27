@@ -344,6 +344,13 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		return runner.run(ctx, name, args...)
 	}
 
+	uid := uint32(os.Getuid()) // #nosec G115 -- Linux uid_t is uint32.
+	env.viewerACLUID = &uid
+	env.runViewerACL = func(ctx context.Context, file *os.File, name string, args ...string) (string, int, error) {
+		args = append([]string(nil), args...)
+		args[len(args)-1] = file.Name()
+		return runner.run(ctx, name, args...)
+	}
 	return env, runner, out
 }
 

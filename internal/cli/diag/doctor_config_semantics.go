@@ -382,7 +382,9 @@ func checkDoctorSuppressEntries(cfg *config.Config) []doctorReportCheck {
 }
 
 // analyzeDoctorInertExemptions flags exempt_domains lists configured on
-// scanners that are disabled, so the exemption cannot affect anything.
+// scanners that are disabled. For response scanning the streaming bypass is
+// inactive, but core response findings on a matching host can still be
+// downgraded to warn, which the finding text says.
 func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 	var findings []ConfigSemanticFinding
 

@@ -124,7 +124,7 @@ tradeoff.
 explain does not perform network access. It runs the layers that fire before
 DNS resolution (scheme, CRLF, path traversal, allowlist, blocklist, core SSRF
 literal, core/URL DLP, path and subdomain entropy). The hostname-based SSRF
-layer (layer 8) resolves DNS at runtime, so explain reports when a verdict
+layer resolves DNS at runtime, so explain reports when a verdict
 would additionally depend on resolution rather than reaching out itself. IP
 literals that resolve to private ranges are still caught here by the immutable
 core SSRF literal check, which needs no resolution.
@@ -455,7 +455,7 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		if ssrfActive && !explainHostIsIPLiteral(report.Host) {
 			report.DNSDependent = true
 			report.Notes = append(report.Notes,
-				"this config's SSRF layer (layer 8) resolves DNS at runtime; explain did not resolve, so a private/metadata IP or DNS failure could still block this URL when proxied")
+				"this config's SSRF layer resolves DNS at runtime; explain did not resolve, so a private/metadata IP or DNS failure could still block this URL when proxied")
 		}
 		report.Notes = append(report.Notes, explainUnevaluatedLayerNotes(cfg, report.Host)...)
 		return report, nil

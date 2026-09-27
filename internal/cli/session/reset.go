@@ -28,9 +28,11 @@ alone; use terminate when those must go too.
 
 This is the operator command for "the session is at critical because
 a blocked destination keeps retrying", not for changing airlock tier.
-Release only moves session-wide airlock. If inspect shows airlock
-none and a destination scope at hard, reset is the command that
-matches the blocker.
+Release sets the session-wide airlock and every destination-scoped
+airlock to the tier it names, but leaves the adaptive score and
+escalation level in place. If inspect shows the session at critical
+from a destination that keeps retrying, reset is the command that
+clears the blocker.
 
 Invocation sessions (mcp-stdio-/mcp-http-/mcp-ws-) cannot be reset
 via the admin API — they are rejected with a 400 error.

@@ -132,7 +132,7 @@ report, together with the fact that it can still block the request at runtime:
 
 ```text
 Verdict: ALLOWED
-note: this config's SSRF layer (layer 8) resolves DNS at runtime; explain did not
+note: this config's SSRF layer resolves DNS at runtime; explain did not
       resolve, so a private/metadata IP or DNS failure could still block this URL
       when proxied
 note: this verdict covers URL-layer checks only; explain does not fetch the URL,

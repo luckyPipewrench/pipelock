@@ -841,3 +841,32 @@ fn broken(seq: u64, error: String) -> ChainResult {
         broken_at_seq: Some(seq),
     }
 }
+
+/// Picks the key an EvidenceReceipt v2 chain is verified against. A v2 chain
+/// has one signer and is verified against one key. Given a trusted set
+/// (directory mode passes each run its scoped trust, which includes an
+/// endorsed successor key), it is the trusted key equal to the chain's
+/// declared `signer_key_id`. The declared id only selects: every receipt is
+/// still verified against that key, and a signer outside the set gets the
+/// first trusted key, which then fails. A single key is returned unchanged.
+pub fn evidence_chain_key(key_hex: &str, receipts: &[Receipt]) -> String {
+    let keys: Vec<String> = key_hex
+        .split(',')
+        .map(|key| key.trim().to_ascii_lowercase())
+        .filter(|key| !key.is_empty())
+        .collect();
+    if keys.len() <= 1 {
+        return key_hex.to_string();
+    }
+    let declared = receipts
+        .first()
+        .and_then(|r| r.get("signature"))
+        .and_then(|sig| sig.get("signer_key_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    keys.iter()
+        .find(|key| **key == declared)
+        .unwrap_or(&keys[0])
+        .clone()
+}

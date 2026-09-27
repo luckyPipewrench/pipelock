@@ -26,15 +26,21 @@ const SKIPPABLE_ENTRY_TYPES: &[&str] = &[
 pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
     Ok(read_entry_lines(path)?
         .into_iter()
-        .map(|(entry, _)| entry)
+        .map(|line| line.entry)
         .collect())
 }
 
-// read_entry_lines returns each validated entry together with the Go-encoded
-// source bytes of an action receipt's ext bag, when it has one. Only that span
-// is kept, never the whole untrusted line, so memory stays proportional to the
-// parsed entries.
-fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, Option<String>)>> {
+/// One validated recorder entry, the Go-encoded source bytes of an action
+/// receipt's ext bag when it has one, and the trimmed source line, which the
+/// recorder hash chain check needs byte for byte. The input file is bounded
+/// by the verifier's read limit, so keeping the lines is bounded too.
+pub(crate) struct RecorderLine {
+    pub(crate) entry: serde_json::Value,
+    pub(crate) ext: Option<String>,
+    pub(crate) line: String,
+}
+
+pub(crate) fn read_entry_lines(path: &Path) -> Result<Vec<RecorderLine>> {
     let text = read_verifier_text(path)?;
     let mut entries = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {
@@ -76,7 +82,11 @@ fn read_entry_lines(path: &Path) -> Result<Vec<(serde_json::Value, Option<String
             } else {
                 None
             };
-        entries.push((entry, ext_bytes));
+        entries.push(RecorderLine {
+            entry,
+            ext: ext_bytes,
+            line: line.to_string(),
+        });
     }
     Ok(entries)
 }
@@ -115,8 +125,19 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
 }
 
 pub(crate) fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
+    extract_typed_from_lines(read_entry_lines(path)?)
+}
+
+/// Splits already-read recorder entries into the two receipt chains, refusing
+/// any entry type it does not know.
+pub(crate) fn extract_typed_from_lines(lines: Vec<RecorderLine>) -> Result<ExtractedReceipts> {
     let mut extracted = ExtractedReceipts::default();
-    for (entry, ext_bytes) in read_entry_lines(path)? {
+    for RecorderLine {
+        entry,
+        ext: ext_bytes,
+        ..
+    } in lines
+    {
         let entry_type = entry.get("type").and_then(serde_json::Value::as_str);
         let is_receipt =
             entry_type == Some(ACTION_RECEIPT_TYPE) || entry_type == Some(EVIDENCE_RECEIPT_TYPE);

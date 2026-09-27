@@ -143,17 +143,34 @@ fn interleaved_evidence_receipts_are_skipped_like_go_receipt_chain_mode() {
     mixed.extend_from_slice(&lines[1..3]);
     mixed.push(evidence_line.as_str());
     mixed.extend_from_slice(&lines[3..]);
-    let file = dir.0.join("evidence-mixed-0.jsonl");
+    let file = dir.0.join("evidence-conformance-session-0.jsonl");
     fs::write(&file, format!("{}\n", mixed.join("\n"))).unwrap();
     for receipts in [
         extract_receipts(&file).unwrap(),
-        extract_receipts_from_session_dir(&dir.0, "mixed").unwrap(),
+        extract_receipts_from_session_dir(&dir.0, "conformance-session").unwrap(),
     ] {
         assert_eq!(receipts.len(), 5);
         let result = verify_chain(&receipts, &key_hex());
         assert!(result.valid, "{:?}", result.error);
         assert_eq!(result.root_hash, EXT_CHAIN_ROOT_HASH);
     }
+
+    // The same entries under another session's file name are not that
+    // session's evidence: the Go session reader refuses them.
+    fs::write(
+        dir.0.join("evidence-mixed-0.jsonl"),
+        format!("{}\n", mixed.join("\n")),
+    )
+    .unwrap();
+    let err = extract_receipts_from_session_dir(&dir.0, "mixed")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "entry seq 0 session_id \"conformance-session\" does not match requested session \"mixed\""
+        ),
+        "{err}"
+    );
 
     let only = dir.0.join("evidence-only-0.jsonl");
     fs::write(&only, format!("{evidence_line}\n")).unwrap();

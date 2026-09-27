@@ -26,6 +26,7 @@ fn example_packet_validates_in_offline_mode() {
         root.join("sdk/audit-packet/example.json").to_str().unwrap(),
         &AuditPacketOptions {
             signer_key: String::new(),
+            signer_keys: Vec::new(),
             offline: true,
             allow_self_consistent_only: false,
             no_trust_required: false,
@@ -470,6 +471,7 @@ fn write_packet_with_evidence(name: &str, lines: Option<usize>) -> PathBuf {
 fn default_options() -> AuditPacketOptions {
     AuditPacketOptions {
         signer_key: PUBLIC_KEY.to_string(),
+        signer_keys: Vec::new(),
         offline: false,
         allow_self_consistent_only: false,
         no_trust_required: false,

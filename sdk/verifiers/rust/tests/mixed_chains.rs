@@ -117,7 +117,16 @@ fn a_session_holding_both_chains_is_valid_only_when_both_verify() {
         for (mode, mut args) in modes {
             args.extend(["--key", key.as_str(), "--json"]);
             let (code, stdout) = run_cli(&args);
-            let report: Value = serde_json::from_str(&stdout).expect("json report");
+            let parsed: Value = serde_json::from_str(&stdout).expect("json report");
+            // A named run reports its own chain inside the base report.
+            let report = match parsed["chains"].as_array() {
+                Some(chains) => chains
+                    .iter()
+                    .find(|c| c["session"] == SESSION)
+                    .cloned()
+                    .expect("named run line"),
+                None => parsed.clone(),
+            };
             if want_err.is_empty() {
                 assert_eq!(code, 0, "{name}/{mode}: {stdout}");
                 assert_eq!(report["valid"], true);
@@ -127,7 +136,7 @@ fn a_session_holding_both_chains_is_valid_only_when_both_verify() {
                 assert_eq!(report["valid"], false);
                 let err = report["error"].as_str().unwrap_or("");
                 assert!(
-                    err.starts_with(want_err),
+                    err.contains(want_err),
                     "{name}/{mode}: error {err:?} should name {want_err:?}"
                 );
             }
@@ -165,7 +174,9 @@ fn an_unpinned_mixed_session_reports_the_banner_once() {
 
 /// For session S the name evidence-S-evil-0.jsonl belongs to session S-evil
 /// under Go's parsed-equality rule, so it must not be read into S's chain even
-/// though it starts with "evidence-S-".
+/// though it starts with "evidence-S-". The -evil file holds S's entries, so
+/// the base pass refuses it by entry session_id, and a named run fails on any
+/// finding in its base while its own chain stays valid.
 #[test]
 fn an_explicit_session_does_not_read_a_prefix_sibling_sessions_files() {
     let dir = temp_dir("prefix");
@@ -200,8 +211,33 @@ fn an_explicit_session_does_not_read_a_prefix_sibling_sessions_files() {
         SESSION,
         "--key",
         &key,
+        "--json",
     ]);
-    assert_eq!(code, 0, "read its prefix sibling: {stdout}");
+    assert_eq!(code, 1, "{stdout}");
+    let report: Value = serde_json::from_str(&stdout).expect("json report");
+    let chains: Vec<(String, bool, u64)> = report["chains"]
+        .as_array()
+        .expect("chains")
+        .iter()
+        .map(|c| {
+            (
+                c["session"].as_str().unwrap_or_default().to_string(),
+                c["valid"].as_bool().unwrap_or_default(),
+                c["action_receipts"].as_u64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(chains, vec![(SESSION.to_string(), true, alone as u64)]);
+    let findings = report["continuity"]["findings"]
+        .as_array()
+        .expect("findings");
+    assert_eq!(findings.len(), 1, "{stdout}");
+    assert_eq!(findings[0]["kind"], "corrupt_chain");
+    assert_eq!(findings[0]["session"], format!("{SESSION}-evil"));
+    assert!(findings[0]["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("does not match requested session"));
     assert_eq!(
         extract_receipts_from_session_dir(&dir.0, SESSION)
             .expect("extract")

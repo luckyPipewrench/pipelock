@@ -9,12 +9,19 @@
 //! a base and every link file that names one, with the same findings Go
 //! reports.
 //!
-//! One Go check is not ported: the recorder file's own entry hash chain (Go
-//! finding `outer_chain_broken`). The SDK verifiers check the receipt chain
-//! inside the recorder file, in this mode as in single-session mode.
+//! Each chain is read the way Go's session reader reads it: a symlinked
+//! evidence file inside the directory is refused, and every entry must carry
+//! the session its file name claims. The recorder's own entry hash chain is
+//! checked (finding `outer_chain_broken`), and two chains whose signed action
+//! records carry the same `run_nonce` are reported (finding
+//! `duplicate_run_nonce`), because a process run writes exactly one chain.
 
 use crate::chain::{receipt_hash, verify_chain_with_options};
-use crate::recorder::extract_typed_receipts;
+use crate::recorder::{
+    extract_typed_from_lines, read_entry_lines, ExtractedReceipts, RecorderLine,
+};
+use crate::recorder_chain::verify_recorder_chain;
+pub use crate::recorder_chain::FINDING_OUTER_CHAIN_BROKEN;
 use crate::rotation::{
     canonical_utc_timestamp, verify_chain_with_endorsements, verify_rotation_endorsement,
     RotationEndorsement,
@@ -37,6 +44,7 @@ pub const FINDING_LINK_TAIL_MISMATCH: &str = "link_tail_mismatch";
 pub const FINDING_APPENDED_AFTER_LINK: &str = "appended_after_link";
 pub const FINDING_DOUBLE_SUCCESSOR: &str = "double_successor";
 pub const FINDING_UNTRUSTED_SUCCESSOR_KEY: &str = "untrusted_successor_key";
+pub const FINDING_DUPLICATE_RUN_NONCE: &str = "duplicate_run_nonce";
 
 pub const LINK_TRUST_SAME_KEY: &str = "same_key";
 pub const LINK_TRUST_TRUSTED_KEY: &str = "trusted_key";
@@ -163,42 +171,97 @@ pub fn parse_evidence_filename(name: &str) -> Option<(String, u64)> {
     Some((rest[..last_dash].to_string(), seq))
 }
 
-type EvidenceIndex = BTreeMap<String, Vec<PathBuf>>;
+/// Each session's shard files in order. A symlinked evidence file is kept
+/// apart: it names its session, so that session is listed and then refused,
+/// rather than silently read or silently dropped.
+struct EvidenceIndex {
+    files: BTreeMap<String, Vec<PathBuf>>,
+    symlinks: BTreeMap<String, Vec<String>>,
+}
 
 fn index_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
     let mut shards: BTreeMap<String, Vec<(u64, String, PathBuf)>> = BTreeMap::new();
+    let mut symlinks: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let entries = fs::read_dir(dir).map_err(|err| format!("reading evidence directory: {err}"))?;
     for entry in entries {
         let entry = entry.map_err(|err| format!("reading evidence directory: {err}"))?;
-        let is_dir = entry
+        let file_type = entry
             .file_type()
-            .map_err(|err| format!("reading evidence directory: {err}"))?
-            .is_dir();
+            .map_err(|err| format!("reading evidence directory: {err}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if is_dir || !name.ends_with(EVIDENCE_SUFFIX) {
+        if file_type.is_dir() || !name.ends_with(EVIDENCE_SUFFIX) {
             continue;
         }
         let Some((session, seq)) = parse_evidence_filename(&name) else {
             continue;
         };
+        if file_type.is_symlink() {
+            let list = symlinks.entry(session.clone()).or_default();
+            list.push(name);
+            list.sort();
+            shards.entry(session).or_default();
+            continue;
+        }
         shards
             .entry(session)
             .or_default()
             .push((seq, name, entry.path()));
     }
-    Ok(shards
+    let files = shards
         .into_iter()
         .map(|(session, mut list)| {
             list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
             (session, list.into_iter().map(|(_, _, path)| path).collect())
         })
-        .collect())
+        .collect();
+    Ok(EvidenceIndex { files, symlinks })
 }
 
-/// Refuses two distinct shard names that start the same session at the same
+/// Evidence the verifier will not read as the session it claims to be: a
+/// symlinked file in the evidence directory, or an entry whose `session_id`
+/// differs from the session its file name claims. It is a verification
+/// failure, never a usage error.
+#[derive(Debug, Clone)]
+pub struct SessionReadError {
+    pub refused: bool,
+    pub message: String,
+}
+
+impl std::fmt::Display for SessionReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<String> for SessionReadError {
+    fn from(message: String) -> Self {
+        Self {
+            refused: false,
+            message,
+        }
+    }
+}
+
+fn refused(message: String) -> SessionReadError {
+    SessionReadError {
+        refused: true,
+        message,
+    }
+}
+
+/// Refuses a symlinked evidence file of the session, as Go's evidence reader
+/// does, and two distinct shard names that start the session at the same
 /// sequence, as Go's `evidencename.CheckNoDuplicateSeqStart` does.
-fn index_files<'a>(ix: &'a EvidenceIndex, session: &str) -> Result<&'a [PathBuf], String> {
-    let files = ix.get(session).map_or(&[][..], Vec::as_slice);
+fn index_files<'a>(
+    ix: &'a EvidenceIndex,
+    session: &str,
+) -> Result<&'a [PathBuf], SessionReadError> {
+    if let Some(name) = ix.symlinks.get(session).and_then(|l| l.first()) {
+        return Err(refused(format!(
+            "refuse symlink in evidence directory: \"{name}\""
+        )));
+    }
+    let files = ix.files.get(session).map_or(&[][..], Vec::as_slice);
     for pair in files.windows(2) {
         let prev = pair[0].file_name().map(|n| n.to_string_lossy().to_string());
         let cur = pair[1].file_name().map(|n| n.to_string_lossy().to_string());
@@ -208,10 +271,10 @@ fn index_files<'a>(ix: &'a EvidenceIndex, session: &str) -> Result<&'a [PathBuf]
                 parse_evidence_filename(&cur),
             ) {
                 if p == c {
-                    return Err(format!(
+                    return Err(SessionReadError::from(format!(
                         "ambiguous evidence shard sequence start: {prev} and {cur} both start session \"{}\" at sequence {}",
                         c.0, c.1
-                    ));
+                    )));
                 }
             }
         }
@@ -223,9 +286,55 @@ fn index_files<'a>(ix: &'a EvidenceIndex, session: &str) -> Result<&'a [PathBuf]
 /// sorted.
 pub fn resolve_base_sessions(dir: &Path, base: &str) -> Result<Vec<String>, String> {
     Ok(index_recorder_files(dir)?
+        .files
         .into_keys()
         .filter(|s| is_base_chain(s, base))
         .collect())
+}
+
+/// Reads every recorder entry of one session in shard order. Like Go's
+/// session reader (`internal/recorder/query.go`), it refuses an entry whose
+/// `session_id` is not the session its file name claims: a file named for run
+/// X that holds run Y's entries is not run X's evidence.
+fn read_session_lines(
+    ix: &EvidenceIndex,
+    session: &str,
+) -> Result<Vec<RecorderLine>, SessionReadError> {
+    let mut out = Vec::new();
+    for file in index_files(ix, session)? {
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for line in read_entry_lines(file).map_err(|err| SessionReadError::from(err.to_string()))? {
+            let got = line.entry.get("session_id");
+            if got.and_then(Value::as_str) != Some(session) {
+                return Err(refused(format!(
+                    "reading {name}: entry seq {} session_id {} does not match requested session {}",
+                    line.entry
+                        .get("seq")
+                        .map_or_else(|| "null".to_string(), Value::to_string),
+                    got.map_or_else(|| "null".to_string(), Value::to_string),
+                    Value::String(session.to_string())
+                )));
+            }
+            out.push(line);
+        }
+    }
+    Ok(out)
+}
+
+/// Reads one session of `dir` with the refusals above, returning the recorder
+/// hash chain verdict (`None` when it holds) and the two receipt chains.
+pub(crate) fn read_session_evidence(
+    dir: &Path,
+    session: &str,
+) -> Result<(Option<String>, ExtractedReceipts), SessionReadError> {
+    let lines = read_session_lines(&index_recorder_files(dir)?, session)?;
+    let outer = verify_recorder_chain(&lines.iter().map(|l| l.line.as_str()).collect::<Vec<_>>());
+    let typed =
+        extract_typed_from_lines(lines).map_err(|err| SessionReadError::from(err.to_string()))?;
+    Ok((outer, typed))
 }
 
 /// Returns one session's receipts in shard order, as the action-receipt and
@@ -234,15 +343,8 @@ pub fn read_session_receipts(
     dir: &Path,
     session: &str,
 ) -> Result<(Vec<Receipt>, Vec<Receipt>), String> {
-    let ix = index_recorder_files(dir)?;
-    let mut action = Vec::new();
-    let mut evidence = Vec::new();
-    for file in index_files(&ix, session)? {
-        let extracted = extract_typed_receipts(file).map_err(|err| err.to_string())?;
-        action.extend(extracted.action);
-        evidence.extend(extracted.evidence);
-    }
-    Ok((action, evidence))
+    let (_, typed) = read_session_evidence(dir, session).map_err(|err| err.message)?;
+    Ok((typed.action, typed.evidence))
 }
 
 fn chain_link_file_predecessor(name: &str) -> Option<&str> {
@@ -548,6 +650,7 @@ fn chain_acceptable(res: &ChainResult) -> bool {
 pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<BaseReport, String> {
     let ix = index_recorder_files(dir)?;
     let sessions: Vec<String> = ix
+        .files
         .keys()
         .filter(|s| is_base_chain(s, base))
         .cloned()
@@ -761,6 +864,7 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
             );
         }
     }
+    check_run_nonces(&sessions, &data, &mut add);
     let chains = sessions
         .iter()
         .map(|s| data.remove(s).expect("session loaded").chain)
@@ -772,23 +876,83 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
     })
 }
 
+/// Reports two chains of the base that carry the same `run_nonce`. Every
+/// action record a process run signs carries that run's nonce, and a run
+/// writes exactly one chain, so a nonce in two chains means one run's evidence
+/// appears twice: a replayed or copied run under a second session name. The
+/// `session_id` and file name are unsigned; the nonce is signed. Only chains
+/// that verified are compared, so the nonce is one their signatures cover; a
+/// chain with no action records has no nonce and is not compared. Each chain
+/// sharing the nonce is named, because nothing signed says which one is the
+/// original.
+fn check_run_nonces(
+    sessions: &[String],
+    data: &HashMap<String, BaseChainData>,
+    add: &mut dyn FnMut(&str, &str, String),
+) {
+    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for s in sessions {
+        let d = &data[s];
+        if !d.chain.valid || d.receipts.is_empty() {
+            continue;
+        }
+        let nonces: std::collections::BTreeSet<&str> = d
+            .receipts
+            .iter()
+            .filter_map(|r| string_at(r, &["action_record", "run_nonce"]))
+            .filter(|n| !n.is_empty())
+            .collect();
+        for nonce in nonces {
+            holders
+                .entry(nonce.to_string())
+                .or_default()
+                .push(s.clone());
+        }
+    }
+    for (nonce, chains) in &holders {
+        if chains.len() < 2 {
+            continue;
+        }
+        for s in chains {
+            let others: Vec<&str> = chains
+                .iter()
+                .filter(|c| *c != s)
+                .map(String::as_str)
+                .collect();
+            add(
+                FINDING_DUPLICATE_RUN_NONCE,
+                s,
+                format!(
+                    "run_nonce {nonce} is also carried by {}: one run's signed records appear in more than one chain",
+                    others.join(", ")
+                ),
+            );
+        }
+    }
+}
+
 fn load_base_chain(
     ix: &EvidenceIndex,
     d: &mut BaseChainData,
     add: &mut dyn FnMut(&str, &str, String),
 ) {
     let s = d.chain.session.clone();
-    let loaded = index_files(ix, &s).and_then(|files| {
-        let mut receipts = Vec::new();
-        for file in files {
-            receipts.extend(
-                extract_typed_receipts(file)
-                    .map_err(|err| err.to_string())?
-                    .action,
-            );
+    let lines = match read_session_lines(ix, &s) {
+        Ok(lines) => lines,
+        Err(err) => {
+            d.chain.error = err.message.clone();
+            add(FINDING_CORRUPT_CHAIN, &s, err.message);
+            return;
         }
-        Ok(receipts)
-    });
+    };
+    if let Some(outer) =
+        verify_recorder_chain(&lines.iter().map(|l| l.line.as_str()).collect::<Vec<_>>())
+    {
+        add(FINDING_OUTER_CHAIN_BROKEN, &s, outer);
+    }
+    let loaded = extract_typed_from_lines(lines)
+        .map(|typed| typed.action)
+        .map_err(|err| err.to_string());
     match loaded {
         Err(err) => {
             d.chain.error = err.clone();

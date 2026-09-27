@@ -130,6 +130,12 @@ pub fn emit_receipt(report: &ReceiptReport, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Writes the one-line reason a verification failed to stderr, in text and
+/// JSON mode alike, so no failing exit is silent.
+pub fn report_failure(reason: &str) {
+    eprintln!("verification failed: {}", reason.replace(['\r', '\n'], " "));
+}
+
 pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
     if json {
         return write_json(report);
@@ -144,6 +150,9 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
             println!("CHAIN VALID: {}", report.path);
         }
         println!("  receipts:   {}", report.receipt_count);
+        if let (Some(action), Some(evidence)) = (report.action_receipts, report.evidence_receipts) {
+            println!("  by kind:    {action} action_receipt, {evidence} evidence_receipt");
+        }
         println!("  final seq:  {}", report.final_seq);
         println!(
             "  root hash:  {}",
@@ -188,7 +197,7 @@ pub fn emit_chain_set(report: &ChainSetReport, json: bool) -> Result<()> {
     println!(
         "{label}: base \"{}\": {} chain(s), {} linked, {} unlinked, {} link finding(s)",
         report.base,
-        report.chains.len(),
+        c.chain_count,
         c.linked.len(),
         c.unlinked.len(),
         c.findings.len()

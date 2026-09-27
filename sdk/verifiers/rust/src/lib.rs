@@ -14,6 +14,7 @@ pub(crate) mod provenance_proof;
 pub mod rawjson;
 pub mod receipt;
 pub mod recorder;
+pub mod recorder_chain;
 pub mod rotation;
 pub mod schema;
 pub mod signing;

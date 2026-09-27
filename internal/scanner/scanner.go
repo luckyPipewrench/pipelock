@@ -3123,37 +3123,72 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 		}
 		return eligible[i].raw < eligible[j].raw
 	})
-	stride := knownValueStride(totalSpan)
+	// Each part, and its raw encoded form when that differs, is one sequence
+	// of window starts.
+	type urlSeq struct {
+		text string
+		base int
+	}
+	var seqs []urlSeq
+	for _, p := range eligible {
+		seqs = append(seqs, urlSeq{text: p.part, base: p.idx})
+		if p.raw != p.part && len(p.raw) >= minKnownSecretSubstringLen {
+			seqs = append(seqs, urlSeq{text: p.raw, base: p.idx})
+		}
+	}
 	out := make(map[string][]int)
 	entryCount := 0
-	// phase carries the sampling position from one part into the next, so the
-	// parts are sampled as one continuous span of totalSpan window starts and
-	// yield at most maxKnownValuePartialAnchors anchors in total. Restarting at
-	// offset zero in every part would give each short part its own anchor, and
-	// thousands of short segments would exceed the bound.
-	phase := 0
-	for _, p := range eligible {
-		part, raw, idx := p.part, p.raw, p.idx
-		partWindows, next, windowErr := collectValueWindowsPhased(part, idx, maxEntries-entryCount, stride, phase)
-		if windowErr != nil {
-			return nil, windowErr
+	add := func(text string, base, stride, phase int) (int, error) {
+		windows, next, err := collectValueWindowsPhased(text, base, maxEntries-entryCount, stride, phase)
+		if err != nil {
+			return 0, err
 		}
-		phase = next
-		for window, offsets := range partWindows {
+		for window, offsets := range windows {
 			out[window] = append(out[window], offsets...)
 			entryCount += len(offsets)
 		}
-		if raw != part && len(raw) >= minKnownSecretSubstringLen {
-			rawWindows, rawNext, rawErr := collectValueWindowsPhased(raw, idx, maxEntries-entryCount, stride, phase)
-			if rawErr != nil {
-				return nil, rawErr
+		return next, nil
+	}
+	// phase carries the sampling position from one sequence into the next, so
+	// the sequences are sampled as one continuous span and yield at most
+	// maxKnownValuePartialAnchors anchors in total. Restarting at offset zero
+	// in every sequence would give each its own anchor, and thousands of short
+	// segments would exceed the bound.
+	phase := 0
+	if totalSpan <= maxKnownValuePartialAnchors || len(seqs) > maxKnownValuePartialAnchors {
+		// Either every window fits (stride 1), or there are more parts than
+		// anchors and some part cannot be given one.
+		stride := knownValueStride(totalSpan)
+		for _, q := range seqs {
+			next, err := add(q.text, q.base, stride, phase)
+			if err != nil {
+				return nil, err
 			}
-			phase = rawNext
-			for window, offsets := range rawWindows {
-				out[window] = append(out[window], offsets...)
-				entryCount += len(offsets)
-			}
+			phase = next
 		}
+		return out, nil
+	}
+	// A sampled URL keeps each part's first window, so a whole credential part
+	// copied on its own is always found even when the stride is wider than the
+	// part. The remaining anchors sample the rest of every part as one span.
+	reserve := len(seqs)
+	rest := totalSpan - reserve
+	stride := 0
+	if left := maxKnownValuePartialAnchors - reserve; left > 0 && rest > 0 {
+		stride = (rest + left - 1) / left
+	}
+	for _, q := range seqs {
+		if _, err := add(q.text[:minKnownSecretSubstringLen], q.base, 1, 0); err != nil {
+			return nil, err
+		}
+		if stride == 0 || len(q.text) == minKnownSecretSubstringLen {
+			continue
+		}
+		next, err := add(q.text[1:], q.base+1, stride, phase)
+		if err != nil {
+			return nil, err
+		}
+		phase = next
 	}
 	return out, nil
 }

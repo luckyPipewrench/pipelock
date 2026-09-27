@@ -7458,6 +7458,9 @@ func TestKnownValueWindowBudget_LongURLSampleIsDeterministic(t *testing.T) {
 	for _, offsets := range first {
 		anchors += len(offsets)
 	}
+	if anchors == 0 {
+		t.Fatal("long query URL retained no anchors")
+	}
 	if full := params * (40 - minKnownSecretSubstringLen + 1); anchors >= full {
 		t.Fatalf("got %d anchors of %d windows, want a sampled value", anchors, full)
 	}
@@ -7468,6 +7471,59 @@ func TestKnownValueWindowBudget_LongURLSampleIsDeterministic(t *testing.T) {
 		}
 		if !reflect.DeepEqual(first, again) {
 			t.Fatalf("build %d retained different anchors from the first build", run+2)
+		}
+	}
+}
+
+// A sampled URL keeps every credential part's first window, so a whole short
+// part copied on its own is found even when one long part forces a stride
+// wider than the short part.
+func TestKnownValueWindowBudget_SampledURLKeepsEveryPartsFirstWindow(t *testing.T) {
+	const shortParts = 50
+	var b strings.Builder
+	b.WriteString("https://api.vendor.example/")
+	b.WriteString(highEntropyKnownValue(60 * 1024))
+	b.WriteString("?")
+	var shorts []string
+	for i := range shortParts {
+		sum := sha256.Sum256([]byte("short" + strconv.Itoa(i)))
+		v := base64.RawURLEncoding.EncodeToString(sum[:])[:20]
+		if ShannonEntropy(v[:minKnownSecretSubstringLen]) <= envLeakMinEntropy {
+			t.Fatalf("fixture part %q has a first window below the entropy floor", v)
+		}
+		shorts = append(shorts, v)
+		if i > 0 {
+			b.WriteString("&")
+		}
+		b.WriteString("k" + strconv.Itoa(i) + "=" + v)
+	}
+	value := b.String()
+	windows, err := knownValueWindowsBounded(value, maxKnownValueWindowEntries)
+	if err != nil {
+		t.Fatalf("long URL refused: %v", err)
+	}
+	anchors := 0
+	for _, offsets := range windows {
+		anchors += len(offsets)
+	}
+	if anchors == 0 || anchors > maxKnownValuePartialAnchors {
+		t.Fatalf("long URL kept %d anchors, want 1..%d", anchors, maxKnownValuePartialAnchors)
+	}
+	// Positive control: the long segment really forces a stride wider than a
+	// short part's five window starts, so without the reserved first window
+	// some short parts would get none.
+	if stride := knownValueStride(60*1024 - minKnownSecretSubstringLen + 1); stride <= 20-minKnownSecretSubstringLen+1 {
+		t.Fatalf("stride %d does not exceed a short part's window starts", stride)
+	}
+	for _, v := range shorts {
+		first := v[:minKnownSecretSubstringLen]
+		want := strings.Index(value, v)
+		found := false
+		for _, off := range windows[first] {
+			found = found || off == want
+		}
+		if !found {
+			t.Fatalf("short part %q at offset %d has no indexed first window", v, want)
 		}
 	}
 }

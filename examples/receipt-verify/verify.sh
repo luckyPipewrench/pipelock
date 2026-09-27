@@ -6,7 +6,7 @@
 #
 # Generates a runtime signing key, starts pipelock with flight recorder,
 # triggers a metadata SSRF block, verifies the receipt, then tampers the
-# signature and asserts verification fails.
+# signed record and asserts verification fails.
 #
 # Usage:
 #   ./verify.sh
@@ -283,19 +283,39 @@ fi
 
 # -- Test 5 -------------------------------------------------------------------
 step "Test 5: tampered captured record fails verification (required)"
-TAMPERED="$WORK/evidence-proxy-0.tampered.jsonl"
-TAMPERED_RECEIPT_SEQ="$(tamper_captured_record "$EVIDENCE" "$TAMPERED")"
+mkdir -p "$WORK/tampered"
+TAMPERED="$WORK/tampered/$(basename "$EVIDENCE")"
+tamper_captured_record "$EVIDENCE" "$TAMPERED" >/dev/null
 if "$PIPELOCK" verify-receipt "$TAMPERED" --key "$PUB" >"$WORK/verify-tampered.out" 2>"$WORK/verify-tampered.err"; then
   fail "tampered captured record unexpectedly verified"
 elif grep -q '^CHAIN BROKEN:' "$WORK/verify-tampered.out" \
-  && grep -q "^  Error:    seq ${TAMPERED_RECEIPT_SEQ}: signature: signature verification failed$" "$WORK/verify-tampered.out" \
-  && grep -q "^  Broke at: seq ${TAMPERED_RECEIPT_SEQ}$" "$WORK/verify-tampered.out"; then
+  && grep -q '^  Error:    recorder entry hash chain: entry seq [0-9][0-9]*: hash mismatch:' "$WORK/verify-tampered.out"; then
   cat "$WORK/verify-tampered.out"
   pass "tampered captured record rejected by verify-receipt"
 else
   fail "tampered captured record had an unexpected verification failure"
   cat "$WORK/verify-tampered.out" >&2 || true
   cat "$WORK/verify-tampered.err" >&2 || true
+fi
+
+# -- Test 6 -------------------------------------------------------------------
+step "Test 6: tampered standalone receipt fails signature verification (required)"
+python3 - "$BLOCK_RECEIPT" "$WORK/tampered-receipt.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+receipt = json.loads(Path(sys.argv[1]).read_text())
+receipt["action_record"]["verdict"] = "allow"
+Path(sys.argv[2]).write_text(json.dumps(receipt) + "\n")
+PY
+if "$PIPELOCK" verify-receipt "$WORK/tampered-receipt.json" --key "$PUB" >"$WORK/verify-tampered-receipt.out" 2>"$WORK/verify-tampered-receipt.err"; then
+  fail "tampered standalone receipt unexpectedly verified"
+elif grep -q 'signature verification failed' "$WORK/verify-tampered-receipt.out"; then
+  pass "tampered standalone receipt rejected by signature check"
+else
+  fail "tampered standalone receipt had an unexpected verification failure"
+  cat "$WORK/verify-tampered-receipt.out" >&2 || true
+  cat "$WORK/verify-tampered-receipt.err" >&2 || true
 fi
 
 # -- Summary ------------------------------------------------------------------

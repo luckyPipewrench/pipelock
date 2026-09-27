@@ -136,6 +136,41 @@ func TestSentinelDeferredClaimBoundary(t *testing.T) {
 	release()
 }
 
+func TestSentinelObservationInvalidatesHeldSendAfterRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kill")
+	cfg := testConfig()
+	cfg.KillSwitch.SentinelFile = path
+	c := New(cfg)
+	generation := c.DeferredGeneration()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.IsActiveMCP([]byte(`{"id":1}`)); !d.Active || d.Source != srcSentinel {
+		t.Fatalf("decision did not observe sentinel: %+v", d)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := c.ClaimDeferredSendAt(generation); ok {
+		release()
+		t.Fatal("held send claimed after observed sentinel activation was removed")
+	}
+	newGeneration := c.DeferredGeneration()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.IsActiveMCP([]byte(`{"id":2}`)); !d.Active || d.Source != srcSentinel {
+		t.Fatalf("decision did not observe reactivated sentinel: %+v", d)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if release, ok := c.ClaimDeferredSendAt(newGeneration); ok {
+		release()
+		t.Fatal("new held send claimed after a second sentinel activation")
+	}
+}
+
 func TestController_ConfigEnabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.KillSwitch.Enabled = true

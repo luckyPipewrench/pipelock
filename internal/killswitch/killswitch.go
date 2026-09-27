@@ -39,7 +39,8 @@ type Decision struct {
 type Controller struct {
 	deferredMu         sync.RWMutex // serializes activation with deferred upstream send claims
 	deferredInFlight   atomic.Int64
-	deferredGeneration uint64 // guarded by deferredMu
+	deferredGeneration atomic.Uint64
+	sentinelObserved   atomic.Bool // tracks observed active intervals
 	cfg                atomic.Pointer[runtime]
 	api                atomic.Bool
 	sigusr1            atomic.Bool
@@ -273,14 +274,15 @@ func (c *Controller) ClaimDeferredSend() (release func(), ok bool) {
 func (c *Controller) DeferredGeneration() uint64 {
 	c.deferredMu.RLock()
 	defer c.deferredMu.RUnlock()
-	return c.deferredGeneration
+	c.observeSentinel(c.cfg.Load().sentinelFile)
+	return c.deferredGeneration.Load()
 }
 
 // ClaimDeferredSendAt rejects holds created before any subsequent activation.
 func (c *Controller) ClaimDeferredSendAt(generation uint64) (release func(), ok bool) {
 	c.deferredMu.Lock()
 	defer c.deferredMu.Unlock()
-	if generation != c.deferredGeneration || c.computeDecision(c.cfg.Load()).Active {
+	if generation != c.deferredGeneration.Load() || c.computeDecision(c.cfg.Load()).Active {
 		return nil, false
 	}
 	c.deferredInFlight.Add(1)
@@ -301,7 +303,7 @@ func (c *Controller) ToggleSignal() bool {
 		current := c.sigusr1.Load()
 		if c.sigusr1.CompareAndSwap(current, !current) {
 			if !current {
-				c.deferredGeneration++
+				c.deferredGeneration.Add(1)
 			}
 			return !current
 		}
@@ -342,7 +344,7 @@ func (c *Controller) Reload(cfg *config.Config) {
 	defer c.deferredMu.Unlock()
 	c.cfg.Store(buildRuntime(cfg))
 	if c.computeDecision(c.cfg.Load()).Active {
-		c.deferredGeneration++
+		c.deferredGeneration.Add(1)
 	}
 }
 
@@ -352,7 +354,7 @@ func (c *Controller) SetAPI(active bool) {
 	defer c.deferredMu.Unlock()
 	c.api.Store(active)
 	if active {
-		c.deferredGeneration++
+		c.deferredGeneration.Add(1)
 	}
 }
 
@@ -363,7 +365,7 @@ func (c *Controller) SetConductorRemote(active bool, message string) {
 	c.conductorMsg.Store(message)
 	c.conductor.Store(active)
 	if active {
-		c.deferredGeneration++
+		c.deferredGeneration.Add(1)
 	}
 }
 
@@ -379,7 +381,7 @@ func (c *Controller) SetConductorStale(active bool, message string) {
 	c.conductorStaleMsg.Store(message)
 	c.conductorStale.Store(active)
 	if active {
-		c.deferredGeneration++
+		c.deferredGeneration.Add(1)
 	}
 }
 
@@ -392,7 +394,7 @@ func (c *Controller) SetConductorApplyFailure(active bool, message string) {
 	c.conductorApplyFailureMsg.Store(message)
 	c.conductorApplyFailure.Store(active)
 	if active {
-		c.deferredGeneration++
+		c.deferredGeneration.Add(1)
 	}
 }
 
@@ -464,20 +466,28 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 	if c.sigusr1.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}
 	}
-	if rt.sentinelFile != "" {
-		_, err := os.Stat(rt.sentinelFile)
-		if err == nil {
-			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
-		}
-		// Fail closed: if stat fails for any reason other than file-not-found
-		// (e.g. permission denied, broken symlink), treat as active. An
-		// attacker should not be able to bypass the kill switch by making the
-		// sentinel file unreadable.
-		if !errors.Is(err, os.ErrNotExist) {
-			return Decision{Active: true, Message: rt.message, Source: "sentinel"}
-		}
+	if c.observeSentinel(rt.sentinelFile) {
+		return Decision{Active: true, Message: rt.message, Source: "sentinel"}
 	}
 	return Decision{}
+}
+
+// observeSentinel records active intervals even during concurrent decision checks.
+func (c *Controller) observeSentinel(path string) bool {
+	if path == "" {
+		c.sentinelObserved.Store(false)
+		return false
+	}
+	_, err := os.Stat(path)
+	// Fail closed for stat errors other than file-not-found.
+	active := err == nil || !errors.Is(err, os.ErrNotExist)
+	if active && c.sentinelObserved.CompareAndSwap(false, true) {
+		c.deferredGeneration.Add(1)
+	}
+	if !active {
+		c.sentinelObserved.Store(false)
+	}
+	return active
 }
 
 // hasID checks if a JSON message contains an "id" field (i.e., is a request,

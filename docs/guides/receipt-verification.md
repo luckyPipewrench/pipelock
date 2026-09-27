@@ -205,10 +205,13 @@ Chain verification checks:
   object may carry advisory forward-compatible metadata. The signature never
   covers it and its value never contributes to a verified claim; only its
   bytes join the chain link hash.
-- In a flight-recorder file, the chain is the `action_receipt` subsequence.
-  `evidence_receipt` entries interleaved in the same file are skipped, as in
-  the Go verifier; a file with only `evidence_receipt` entries is verified as
-  an EvidenceReceipt v2 chain by the SDK verifiers.
+- In a flight-recorder file, `pipelock verify-receipt` verifies the
+  `action_receipt` subsequence and skips interleaved `evidence_receipt`
+  entries. A current run writes both, each as its own signed chain. The
+  standalone `pipelock-verifier chain` and the TypeScript and Rust `chain`
+  commands verify both chains when a file or session holds both: the result is
+  valid only when both verify, and a failure names the chain it came from. A
+  file with only one of them is verified as that chain.
 
 By default, this verifies the receipt subsequence only. To verify every present
 flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
@@ -666,7 +669,7 @@ exercise the canonical vectors from the Go schema package, so a schema
 change that breaks any verifier fails the release before the tag. The
 verifier-CI workflow runs these tests on every PR.
 
-The standalone `pipelock-verifier chain DIR --dir` and the TypeScript and Rust `chain DIR --dir` commands verify a directory the way `pipelock verify-receipt --chain DIR` does. Without a session flag, they verify every run chain of the `proxy` base and every restart link file, and report linked and unlinked runs; a link whose signature fails, that names anything but the predecessor's exact last receipt, that gives a predecessor a second successor, or that changes signing keys without `--key` or a rotation endorsement fails the directory. An explicit `--session` (Go) or `--session-id` (TypeScript and Rust) such as `proxy.run.<id>` checks that one run chain as before, and a directory with no run chains keeps single-session verification. A direct JSONL file argument checks only that shard. The TypeScript and Rust verifiers check the receipt chain inside each recorder file but not the recorder file's own entry hash chain, which the Go verifiers also check. The TypeScript and Rust CLIs take one `--key`; `pipelock-verifier chain` doesn't accept `--rotation-endorsement`, so a restart that changed signing keys needs `pipelock verify-receipt` or the TypeScript or Rust verifier with the endorsement.
+The standalone `pipelock-verifier chain DIR --dir` and the TypeScript and Rust `chain DIR --dir` commands verify a directory the way `pipelock verify-receipt --chain DIR` does. Without a session flag, they verify every run chain of the `proxy` base and every restart link file, and report linked and unlinked runs; a link whose signature fails, that names anything but the predecessor's exact last receipt, that gives a predecessor a second successor, or that changes signing keys without `--key` or a rotation endorsement fails the directory. An explicit `--session` (Go) or `--session-id` (TypeScript and Rust) such as `proxy.run.<id>` checks that one run chain as before, and a directory with no run chains keeps single-session verification. A file belongs to a session when its parsed name matches exactly: for session `s`, `evidence-s-evil-0.jsonl` belongs to session `s-evil` and is not read. A direct JSONL file argument checks only that shard. The TypeScript and Rust verifiers check the receipt chain inside each recorder file but not the recorder file's own entry hash chain, which the Go verifiers also check. The TypeScript and Rust CLIs take one `--key`; `pipelock-verifier chain` doesn't accept `--rotation-endorsement`, so a restart that changed signing keys needs `pipelock verify-receipt` or the TypeScript or Rust verifier with the endorsement.
 
 ## Audit Packet v0 schema
 

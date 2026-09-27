@@ -64,9 +64,24 @@ func idleBridge(t *testing.T, timeout time.Duration) (*BridgeProxy, <-chan net.C
 		case <-stopped:
 		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Error("bridge did not shut down after cancel and Close")
+			forceReleaseBridge(bp)
 		}
 	})
 	return bp, accepted, cancel
+}
+
+// forceReleaseBridge frees the listener and every tracked connection of a
+// bridge whose shutdown hung, so a failed test cannot hold sockets open while
+// later tests run. TryLock avoids joining a deadlock on the bridge mutex.
+func forceReleaseBridge(bp *BridgeProxy) {
+	_ = bp.listener.Close()
+	if !bp.mu.TryLock() {
+		return
+	}
+	defer bp.mu.Unlock()
+	for c := range bp.conns {
+		_ = c.Close()
+	}
 }
 
 func dialBridge(t *testing.T, bp *BridgeProxy, accepted <-chan net.Conn) (net.Conn, net.Conn) {

@@ -1628,6 +1628,42 @@ func TestScanGenericSSEStream_CurrentEventDLPWarnNoSpaceDoesNotRepeat(t *testing
 	}
 }
 
+func TestScanGenericSSEStream_CurrentEventWarnRetainsPunctuatedSecondCredential(t *testing.T) {
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	first := fakeAWSKey()
+	second := "AKIA" + strings.Repeat("Q", 16)
+	body := "data: " + first + "!" + second[:8] + "\n\ndata: " + second[8:] + "\n\n"
+	var out bytes.Buffer
+	var findings []error
+	err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(body), &out, nil,
+		testA2AScanner(t), cfg, GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }})
+	if err != nil || len(findings) != 2 {
+		t.Fatalf("err=%v findings=%v out=%q; want current-event and cross-event DLP findings", err, findings, out.String())
+	}
+	if !strings.Contains(findings[1].Error(), "cross-event dlp") {
+		t.Fatalf("second finding = %v, want cross-event DLP", findings[1])
+	}
+}
+
+func TestDropSelfMatchingSSETail_UnicodeSuffixAndCanceledScan(t *testing.T) {
+	sc := testA2AScanner(t)
+	tail := fakeAWSKey() + "é!AKIAQQQQ"
+	got, err := dropSelfMatchingSSETail(t.Context(), sc, tail, GenericSSEScanOptions{})
+	if err != nil || got != "é!AKIAQQQQ" {
+		t.Fatalf("tail=%q err=%v, want suffix after first credential", got, err)
+	}
+	got, err = dropSelfMatchingSSETail(t.Context(), sc, "é"+tail, GenericSSEScanOptions{})
+	if err != nil || got != "é!AKIAQQQQ" {
+		t.Fatalf("unicode prefix tail=%q err=%v, want suffix after first credential", got, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := dropSelfMatchingSSETail(ctx, sc, tail, GenericSSEScanOptions{}); !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("canceled scan error = %v, want ErrSSEStreamScanError", err)
+	}
+}
+
 func TestScanGenericSSEStream_FinalMultilineCredential(t *testing.T) {
 	key := "ghp_" + strings.Repeat("D", 40)
 	body := "event: " + key[:4] + "\ndata: " + key[4:8] + "\ndata: " + key[8:] + "\n\n"

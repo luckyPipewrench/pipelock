@@ -431,19 +431,33 @@ func ScanGenericSSEStreamWithOptions(
 	}
 }
 
-// dropSelfMatchingSSETail returns "" when tail alone already carries an
-// unsuppressed DLP match, and tail unchanged otherwise. The quiet scan keeps
-// this bookkeeping check out of warn telemetry.
+// dropSelfMatchingSSETail keeps only the bytes after a match already reported
+// for the current event. That suffix may begin another credential. The quiet
+// scans keep this bookkeeping check out of warn telemetry.
 func dropSelfMatchingSSETail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
-	if tail == "" {
-		return "", nil
-	}
-	result, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail), opts.Target, opts.Suppress)
-	if err := checkSSEDLPContext(ctx); err != nil {
-		return "", err
-	}
-	if result.Clean {
-		return tail, nil
+	for tail != "" {
+		result, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail), opts.Target, opts.Suppress)
+		if err := checkSSEDLPContext(ctx); err != nil {
+			return "", err
+		}
+		if result.Clean {
+			return tail, nil
+		}
+		matchEnd := len(tail)
+		for end := 1; end <= len(tail); end++ {
+			if end < len(tail) && !utf8.RuneStart(tail[end]) {
+				continue
+			}
+			prefix, _ := keepUnsuppressedDLP(sc.ScanTextForDLPQuiet(ctx, tail[:end]), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return "", err
+			}
+			if !prefix.Clean {
+				matchEnd = end
+				break
+			}
+		}
+		tail = tail[matchEnd:]
 	}
 	return "", nil
 }

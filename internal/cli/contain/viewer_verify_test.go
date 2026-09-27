@@ -87,8 +87,12 @@ func TestViewerServiceProbe(t *testing.T) {
 		}
 		return os.Lstat(path)
 	}
-	env := &probeEnv{configPath: cfgPath, displayUnitPath: displayPath, agentHome: install.agentHome, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, pipelockTarget: install.pipelockTarget, readFile: os.ReadFile, stat: statSocket, lstat: statSocket, lookupUser: func(string) (*user.User, error) {
-		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+	env := &probeEnv{configPath: cfgPath, displayUnitPath: displayPath, agentHome: install.agentHome, agentUserName: install.agentUserName, proxyUserName: install.proxyUserName, pipelockTarget: install.pipelockTarget, readFile: os.ReadFile, stat: statSocket, lstat: statSocket, lookupUser: func(name string) (*user.User, error) {
+		gid := os.Getgid()
+		if name == "operator" {
+			gid++
+		}
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(gid)}, nil
 	}, runCmd: func(context.Context, string, ...string) (string, int, error) { return "active\n", 0, nil }}
 	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
@@ -102,6 +106,17 @@ func TestViewerServiceProbe(t *testing.T) {
 	if status, detail := probeViewerService(context.Background(), env); status != statusPass {
 		t.Fatalf("valid service: %s %s", status, detail)
 	}
+	originalLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator" {
+			return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+		}
+		return originalLookup(name)
+	}
+	if status, detail := probeViewerService(context.Background(), env); status != statusFail || !strings.Contains(detail, "primary group") {
+		t.Fatalf("operator primary viewer group: %s %s", status, detail)
+	}
+	env.lookupUser = originalLookup
 	env.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
 			return "user::rw-\ngroup::---\nother::---\n", 0, nil

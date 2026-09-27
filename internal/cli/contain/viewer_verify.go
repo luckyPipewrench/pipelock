@@ -104,6 +104,13 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if err := checkViewerGroup(ctx, env.runCmd, account.Gid); err != nil {
 		return statusFail, err.Error()
 	}
+	operator, err := env.lookupUser(cfg.Containment.Display.Viewer.OperatorUser)
+	if err != nil {
+		return statusFail, fmt.Sprintf("viewer operator lookup: %v", err)
+	}
+	if operator.Gid != "" && operator.Gid == account.Gid {
+		return statusFail, "viewer operator must not have the viewer group as primary group"
+	}
 	if err := checkViewerProxyIsolation(ctx, env.runCmd, env.proxyUserName); err != nil {
 		return statusFail, err.Error()
 	}

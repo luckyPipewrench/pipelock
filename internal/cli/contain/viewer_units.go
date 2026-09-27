@@ -115,6 +115,9 @@ func checkViewerOperatorIdentity(env *installEnv) error {
 		if operator.Uid == peer.Uid {
 			return errors.New("viewer operator must have a distinct identity from containment service accounts")
 		}
+		if name == viewerUserName && operator.Gid != "" && operator.Gid == peer.Gid {
+			return errors.New("viewer operator must not have the viewer group as primary group")
+		}
 	}
 	return nil
 }

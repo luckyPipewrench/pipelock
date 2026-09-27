@@ -54,6 +54,23 @@ func TestViewerOperatorIdentityRejectsSharedUID(t *testing.T) {
 	}
 }
 
+func TestViewerOperatorIdentityRejectsPrimaryViewerGroup(t *testing.T) {
+	yes := true
+	env := &installEnv{agentUserName: "agent", proxyUserName: "proxy", displayConfig: config.ContainmentDisplay{Viewer: config.ContainmentDisplayViewer{Enabled: &yes, OperatorUser: "operator"}}}
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == viewerUserName {
+			return &user.User{Uid: "900", Gid: "901"}, nil
+		}
+		if name == "operator" {
+			return &user.User{Uid: "1000", Gid: "901"}, nil
+		}
+		return &user.User{Uid: "1001", Gid: "1001"}, nil
+	}
+	if err := checkViewerOperatorIdentity(env); err == nil || !strings.Contains(err.Error(), "primary group") {
+		t.Fatalf("operator primary viewer group accepted: %v", err)
+	}
+}
+
 func TestViewerIdentityProvisioning(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.displayUnitPath = filepath.Join(t.TempDir(), "display.service")

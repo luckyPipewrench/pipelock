@@ -147,26 +147,15 @@ func (s *issuerQueryStore) allows(session string, target *url.URL, name, value s
 const issuerQueryMaxDepth = 33
 
 func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, body []byte, delivered bool) {
-	if !delivered || ic == nil || response == nil || response.Request == nil || response.Request.URL == nil || len(body) == 0 {
+	if !delivered || ic == nil || response == nil || response.Request == nil || response.Request.URL == nil {
 		return
 	}
 	store := ic.issuerQueryStore()
 	if store == nil {
 		return
 	}
-	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
-	if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
-		return
-	}
 	issuerHost, issuerPort, ok := issuerCookieOrigin(response.Request.URL)
 	if !ok {
-		return
-	}
-	// Walk the JSON as a token stream rather than decoding it into generic
-	// maps and slices, which would cost several times the body size on every
-	// intercepted JSON response. json.Valid keeps the old rule that a body
-	// which is not valid JSON issues nothing.
-	if !json.Valid(body) {
 		return
 	}
 	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
@@ -195,6 +184,29 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				remaining--
 			}
 		}
+	}
+	// A redirect issues its target in the Location header, usually with an
+	// empty body: an authorization server hands out an OAuth state value
+	// exactly this way. The same origin check applies, so a redirect to
+	// another host issues nothing.
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		if location := response.Header.Get("Location"); location != "" {
+			observe(location)
+		}
+	}
+	if len(body) == 0 {
+		return
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+		return
+	}
+	// Walk the JSON as a token stream rather than decoding it into generic
+	// maps and slices, which would cost several times the body size on every
+	// intercepted JSON response. json.Valid keeps the old rule that a body
+	// which is not valid JSON issues nothing.
+	if !json.Valid(body) {
+		return
 	}
 	// Only string VALUES issue links. An object key is not a value the
 	// server handed out, so keys are skipped. Each open container records

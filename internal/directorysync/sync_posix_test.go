@@ -7,9 +7,8 @@ package directorysync
 
 import (
 	"errors"
-	"testing"
-
 	"syscall"
+	"testing"
 )
 
 func TestDarwinDirectoryFullSyncFallback(t *testing.T) {

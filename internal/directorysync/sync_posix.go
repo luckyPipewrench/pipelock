@@ -8,7 +8,6 @@ package directorysync
 import (
 	"errors"
 	"path/filepath"
-
 	"syscall"
 )
 

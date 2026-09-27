@@ -317,6 +317,17 @@ func NewManager(cfg Config) (*Manager, error) {
 
 // Reconfigure updates tunables without clearing learned or locked profiles.
 func (m *Manager) Reconfigure(cfg Config) error {
+	apply, err := m.PrepareReconfigure(cfg)
+	if err != nil {
+		return err
+	}
+	apply()
+	return nil
+}
+
+// PrepareReconfigure completes all validation and I/O before returning an
+// infallible state update. The caller may discard the update on reload failure.
+func (m *Manager) PrepareReconfigure(cfg Config) (func(), error) {
 	if cfg.LearningWindow <= 0 {
 		cfg.LearningWindow = 10
 	}
@@ -327,16 +338,16 @@ func (m *Manager) Reconfigure(cfg Config) error {
 		cfg.DeviationAction = deviationActionWarn
 	}
 	if err := validateDeviationAction(cfg.DeviationAction); err != nil {
-		return err
+		return nil, err
 	}
 	if cfg.SeasonalityMode == "" {
 		cfg.SeasonalityMode = seasonalityNone
 	}
 	if err := normalizeIntegrityConfig(&cfg); err != nil {
-		return err
+		return nil, err
 	}
 	if cfg.SeasonalityMode != seasonalityNone {
-		return fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
+		return nil, fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
 	}
 	validDims := make(map[string]bool, len(supportedDimensions))
 	for _, d := range supportedDimensions {
@@ -344,41 +355,43 @@ func (m *Manager) Reconfigure(cfg Config) error {
 	}
 	for _, d := range cfg.LockDimensions {
 		if !validDims[d] {
-			return fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, supportedDimensions)
+			return nil, fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, supportedDimensions)
 		}
 	}
 	if cfg.ProfileDir != "" {
 		if err := os.MkdirAll(cfg.ProfileDir, 0o750); err != nil {
-			return fmt.Errorf("creating profile dir: %w", err)
+			return nil, fmt.Errorf("creating profile dir: %w", err)
 		}
 		candidate := &Manager{
 			cfg:    cfg,
 			agents: make(map[string]*agentState),
 		}
 		if err := candidate.loadProfiles(); err != nil {
-			return fmt.Errorf("loading profiles: %w", err)
+			return nil, fmt.Errorf("loading profiles: %w", err)
 		}
 
-		m.mu.Lock()
-		profileDirChanged := !sameProfileDir(m.cfg.ProfileDir, cfg.ProfileDir)
-		m.cfg = cfg
-		if profileDirChanged {
-			m.agents = candidate.agents
-		} else {
-			for agentKey, loaded := range candidate.agents {
-				if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
-					m.agents[agentKey] = loaded
+		return func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			profileDirChanged := !sameProfileDir(m.cfg.ProfileDir, cfg.ProfileDir)
+			m.cfg = cfg
+			if profileDirChanged {
+				m.agents = candidate.agents
+			} else {
+				for agentKey, loaded := range candidate.agents {
+					if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
+						m.agents[agentKey] = loaded
+					}
 				}
 			}
-		}
-		m.mu.Unlock()
-		return nil
+		}, nil
 	}
 
-	m.mu.Lock()
-	m.cfg = cfg
-	m.mu.Unlock()
-	return nil
+	return func() {
+		m.mu.Lock()
+		m.cfg = cfg
+		m.mu.Unlock()
+	}, nil
 }
 
 func sameProfileDir(a, b string) bool {

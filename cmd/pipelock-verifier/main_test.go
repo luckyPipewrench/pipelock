@@ -512,11 +512,30 @@ func TestAuditPacket_OfflineMode(t *testing.T) {
 	}
 
 	stdout, stderr, code := runRoot(t, "audit-packet", "--offline", pkt)
-	if code != cliutil.ExitOK {
-		t.Fatalf("offline mode failed: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	if code == cliutil.ExitOK {
+		t.Fatalf("offline mode unexpectedly succeeded: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "chain:        skipped") {
 		t.Errorf("expected chain skipped marker, got %s", stdout)
+	}
+	if !strings.Contains(stdout, "schema_checked_trust_unverified") {
+		t.Fatalf("missing unverified status: %s", stdout)
+	}
+}
+
+func TestAuditPacket_OfflineSharedFixture(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "sdk", "audit-packet", "example.json")
+	stdout, _, code := runRoot(t, "audit-packet", "--offline", "--json", path)
+	if code == cliutil.ExitOK {
+		t.Fatal("schema-only check returned success")
+	}
+	var report auditPacketReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.SchemaCheck != statusPass || report.Verdict != statusSchemaCheckedTrustUnverified || report.Valid || report.Trusted {
+		t.Fatalf("offline report = %+v", report)
 	}
 }
 

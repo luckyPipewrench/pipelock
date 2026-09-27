@@ -66,3 +66,11 @@ cannot establish its own provenance. The explicitly weaker
 `--allow-self-consistent-only` and `--no-trust-required` modes retain their
 documented opt-in behavior. `--offline` skips receipt-chain verification while
 still validating the schema and packet-level trust fields.
+
+### Schema-only Audit Packet checks
+
+`audit-packet --offline` checks the packet schema without authenticating its
+signer or verdict. The report uses `verdict: schema_checked_trust_unverified`,
+`trusted: false`, and `valid: false`; the CLI exits nonzero. JSON and CI
+consumers must require full chain verification before accepting a trusted
+verdict.

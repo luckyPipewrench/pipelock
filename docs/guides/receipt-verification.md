@@ -372,6 +372,15 @@ verified.
 report describes one chain: `--clean-report` selects a lone run, and requires
 `--session` when several runs are present. An empty report is an error.
 
+Clean report v1 requires `schema_version: pipelock.clean_report.v1` and an explicit
+`verification_mode`: `pinned_provenance` means the receipt signer matched an
+operator-supplied key; `unpinned_structural` means `--allow-unpinned` accepted
+a self-consistent chain without signer provenance. The required fields are in
+[`clean-report-v1.schema.json`](../evidence/clean-report-v1.schema.json).
+The terminal label also says `CLEAN REPORT UNPINNED` for structural verification.
+Upgrade report parsers to require both fields. For older reports with no mode,
+treat trust as unknown and require re-verification before accepting provenance.
+
 ## Anchoring receipts
 
 `pipelock anchor receipts` verifies a receipt chain with pinned signer keys,
@@ -605,7 +614,12 @@ After chain re-verification, its `lifecycle` line reports the lifecycle status
 and reason, such as `LIMITED (abnormal_end)` when a valid in-flight chain has
 no signed `session_close`. That status does not change the packet's integrity
 verdict. With `--offline`, the report says lifecycle was not assessed because
-it did not re-read the receipt chain.
+it did not re-read the receipt chain. The Go, Rust, and TypeScript
+verifiers emit `verdict: schema_checked_trust_unverified`, `trusted: false`,
+and `valid: false` in this mode, and their CLIs exit nonzero. This means only
+the packet schema was checked; the packet-authored verdict was not verified.
+Upgrade JSON consumers and CI jobs to treat this status as untrusted and
+require full chain verification for an authenticated verdict.
 
 For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
 key. Without `--key`, the verifier can check structure, hash linkage, sequence

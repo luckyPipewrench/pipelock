@@ -1823,6 +1823,9 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	// (e.g. key rotation). Cross-restart the chain restarts at genesis; the
 	// recorder's outer hash chain provides tamper-evidence across restarts.
 	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
+	if healthErr := p.v2EmitterPtr.Load().HealthError(); healthErr != nil {
+		return receiptEmitterStage{}, fmt.Errorf("resume proxy_decision chain: %w", healthErr)
+	}
 	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
 	if current := p.receiptEmitterPtr.Load(); current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
 		v2 := p.v2EmitterPtr.Load()
@@ -2264,6 +2267,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		airlockCfg = &cfg.Airlock
 	}
 	var stagedSessionMgr *SessionManager
+	var reconfigureBaseline *SessionManager
+	var applyBaseline func()
 	if oldCfg != nil {
 		wasSessionProfilingEnabled := oldCfg.SessionProfiling.Enabled
 		isSessionProfilingEnabled := cfg.SessionProfiling.Enabled
@@ -2285,17 +2290,18 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 				stagedSessionMgr.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 			}
 		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
-			if sm := p.sessionMgrPtr.Load(); sm != nil {
-				if err := sm.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
-					p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-						fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+			reconfigureBaseline = p.sessionMgrPtr.Load()
+			if reconfigureBaseline != nil {
+				var err error
+				applyBaseline, err = reconfigureBaseline.PrepareBaselineReconfigure(&cfg.BehavioralBaseline)
+				if err != nil {
+					p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("baseline reload failed, keeping old config: %w", err))
 					sc.Close()
 					if newEd != nil {
 						newEd.Close()
 					}
 					return false
 				}
-				sm.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 			}
 		}
 	}
@@ -2342,6 +2348,30 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 			return false
 		}
+	}
+	// Requests emit v2 receipts without reloadMu, so the chain head staged
+	// above can be stale by now. Retire the live emitter as the last fallible
+	// step and resume its replacement from the head it actually reached; a
+	// request still holding the old pointer then fails instead of forking.
+	if oldV2 := p.v2EmitterPtr.Load(); cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil &&
+		oldV2 != nil && receiptStage.v2 != nil && receiptStage.v2 != oldV2 {
+		seq, prev, err := oldV2.Retire()
+		if err != nil {
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+				fmt.Errorf("proxy_decision chain hand-off failed, keeping old config: %w", err))
+			sc.Close()
+			if newEd != nil {
+				newEd.Close()
+			}
+			return false
+		}
+		receiptStage.v2.ResumeAt(seq, prev)
+	}
+	// Apply only after receipt emission and chain hand-off succeed. Preparation
+	// completed validation and I/O before either receipt was written.
+	if applyBaseline != nil {
+		applyBaseline()
+		reconfigureBaseline.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 	}
 
 	// Publish both emitters now that staging has fully succeeded. The

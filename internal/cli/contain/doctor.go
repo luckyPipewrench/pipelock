@@ -70,10 +70,13 @@ type doctorEnv struct {
 	readFile       func(path string) ([]byte, error)
 	stat           func(path string) (os.FileInfo, error)
 	configPath     string
-	agentHome      string
-	rfbSocketPath  string
-	lookPath       func(string) (string, error)
-	platformFamily string
+	// displayUnitPath locates the managed display unit and, beside it, the
+	// viewer units. Empty means the installed default.
+	displayUnitPath string
+	agentHome       string
+	rfbSocketPath   string
+	lookPath        func(string) (string, error)
+	platformFamily  string
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -311,7 +314,11 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 }
 
 func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
-	return &probeEnv{configPath: env.configPath, displayUnitPath: defaultDisplayUnitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+	unitPath := env.displayUnitPath
+	if unitPath == "" {
+		unitPath = defaultDisplayUnitPath
+	}
+	return &probeEnv{configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
 }
 
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {

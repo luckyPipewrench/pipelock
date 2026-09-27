@@ -72,29 +72,12 @@ func normalizeConductor(c *Conductor) {
 func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
-		// Primary unmarshal already succeeded; treat parse errors as "all omitted"
-		// so we fail closed with all security defaults enabled.
-		cfg.DLP.ScanEnv = true
-		cfg.ResponseScanning.Enabled = true
-		cfg.RequestBodyScanning.Enabled = true
-		cfg.RequestBodyScanning.ScanHeaders = true
-		cfg.RequestBodyScanning.ContentEntropyEnabled = true
-		cfg.GitProtection.PrePushScan = true
-		cfg.Logging.IncludeAllowed = true
-		cfg.Logging.IncludeBlocked = true
-		cfg.ScanAPI.Kinds.URL = true
-		cfg.ScanAPI.Kinds.DLP = true
-		cfg.ScanAPI.Kinds.PromptInjection = true
-		cfg.ScanAPI.Kinds.ToolCall = true
-		cfg.Taint.Enabled = true
-		cfg.Learn.Privacy.PublicAllowlistDefault = true
-		cfg.HealthWatchdog.Enabled = true
-		cfg.Conductor.HonorRemoteKillSwitch = true
-		cfg.FlightRecorder.Enabled = true
-		cfg.Defer.Enabled = true
-		cfg.Rules.TrustEmbeddedKeys = true
-		cfg.Rules.AllowUnversionedBundleLoad = true
-		return
+		// Primary unmarshal already succeeded; treat parse errors as "all
+		// omitted" so we fail closed with every security default enabled. A nil
+		// map makes every section lookup below nil, and setBoolDefault turns a
+		// nil section into true, so this path and the normal path share one list
+		// and cannot drift apart.
+		raw = nil
 	}
 
 	setBoolDefault := func(section map[string]interface{}, key string, target *bool) {
@@ -118,6 +101,10 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	setBoolDefault(reqBody, "enabled", &cfg.RequestBodyScanning.Enabled)
 	setBoolDefault(reqBody, "scan_headers", &cfg.RequestBodyScanning.ScanHeaders)
 	setBoolDefault(reqBody, "content_entropy_enabled", &cfg.RequestBodyScanning.ContentEntropyEnabled)
+	// Issuer-bound session cookies default on (Defaults() and the configuration
+	// guide both say true). Without this line any config file loaded false, so
+	// the feature only existed on the no-config path.
+	setBoolDefault(reqBody, "issuer_bound_session_cookies", &cfg.RequestBodyScanning.IssuerBoundSessionCookies)
 
 	git, _ := raw["git_protection"].(map[string]interface{})
 	setBoolDefault(git, "pre_push_scan", &cfg.GitProtection.PrePushScan)
@@ -182,6 +169,14 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
 	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
 	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
+
+	// Browser Shield rewrite passes default on. An operator who enables the
+	// shield in a config file without naming these got a shield that stripped
+	// no hidden prompt traps, extension probes or tracking pixels.
+	shield, _ := raw["browser_shield"].(map[string]interface{})
+	setBoolDefault(shield, "strip_extension_probing", &cfg.BrowserShield.StripExtensionProbing)
+	setBoolDefault(shield, "strip_hidden_traps", &cfg.BrowserShield.StripHiddenTraps)
+	setBoolDefault(shield, "strip_tracking_pixels", &cfg.BrowserShield.StripTrackingPixels)
 
 	// Taint defaults to enabled when omitted, matching Defaults().
 	taint, _ := raw["taint"].(map[string]interface{})

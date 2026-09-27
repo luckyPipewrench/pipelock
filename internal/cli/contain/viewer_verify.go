@@ -16,18 +16,15 @@ import (
 )
 
 func probeLegacyViewerACL(ctx context.Context, env *probeEnv) (string, string) {
-	operator := ""
-	cfg, err := config.LoadForInspection(env.configPath)
-	if err == nil {
-		operator = cfg.Containment.Display.Viewer.OperatorUser
-	} else if !errors.Is(err, os.ErrNotExist) {
+	_, err := config.LoadForInspection(env.configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return statusFail, fmt.Sprintf("viewer config: %v", err)
 	}
 	lstat := env.lstat
 	if lstat == nil {
 		lstat = env.stat
 	}
-	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, operator); err != nil {
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, env.proxyUserName); err != nil {
 		return statusFail, err.Error()
 	}
 	return statusPass, "obsolete agent-home viewer access is absent"
@@ -42,7 +39,7 @@ func probeViewerService(ctx context.Context, env *probeEnv) (string, string) {
 	if lstat == nil {
 		lstat = env.stat
 	}
-	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, cfg.Containment.Display.Viewer.OperatorUser); err != nil {
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, env.proxyUserName); err != nil {
 		return statusFail, err.Error()
 	}
 	service, socket := viewerUnitPaths(&installEnv{displayUnitPath: env.displayUnitPath})

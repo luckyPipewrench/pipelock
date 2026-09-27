@@ -303,56 +303,30 @@ func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) e
 	if err != nil {
 		return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
 	}
-	if env.proxyUserName != "" {
+	if env.proxyUserName != "" && aclHasNamedUser(acl, env.proxyUserName) {
 		if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
 			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
 		}
 	}
-	for _, raw := range strings.Split(acl, "\n") {
-		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
-		parts := strings.Split(line, ":")
-		prefix := ""
-		if len(parts) == 4 && parts[0] == "default" {
-			prefix, parts = "d:", parts[1:]
-		}
-		if len(parts) != 3 || parts[1] == "" || (parts[0] != "user" && parts[0] != "group") {
-			continue
-		}
-		if parts[0] == "user" && parts[1] == env.operatorUser {
-			continue
-		}
-		if parts[0] == "user" && parts[1] == env.proxyUserName && prefix == "" {
-			continue
-		}
-		entry := prefix + string(parts[0][0]) + ":" + parts[1]
-		if err := runOrErr(ctx, env, "setfacl", "-x", entry, dir); err != nil {
-			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
-		}
-	}
-	// setfacl normally recalculates the mask after -x. An old mask with no
-	// remaining named entries must not retain permissions beyond group::.
-	groupPerms := aclGroupPermissions(acl)
-	if groupPerms == "" {
-		return fmt.Errorf("legacy viewer ACL on %s lacks group permissions", dir)
-	}
-	if err := runOrErr(ctx, env, "setfacl", "--mask", "-m", "g::"+groupPerms, dir); err != nil {
-		return fmt.Errorf("restore legacy viewer ACL mask on %s: %w", dir, err)
-	}
 	return nil
 }
 
-func aclGroupPermissions(acl string) string {
-	for _, line := range strings.Split(acl, "\n") {
-		if strings.HasPrefix(line, "group::") {
-			return strings.TrimSpace(strings.SplitN(strings.TrimPrefix(line, "group::"), "#", 2)[0])
+func aclHasNamedUser(acl, name string) bool {
+	for _, raw := range strings.Split(acl, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if strings.HasPrefix(line, "user:"+name+":") {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
-func checkLegacyViewerACL(ctx context.Context, run runCommand, stat func(string) (os.FileInfo, error), home, operator string) error {
+func checkLegacyViewerACL(ctx context.Context, run runCommand, stat func(string) (os.FileInfo, error), home, proxy string) error {
 	if home == "" {
 		return nil
+	}
+	if proxy == "" {
+		proxy = defaultProxyUser
 	}
 	if stat == nil {
 		return errors.New("legacy viewer ACL stat unavailable")
@@ -372,34 +346,8 @@ func checkLegacyViewerACL(ctx context.Context, run runCommand, stat func(string)
 		if err != nil {
 			return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
 		}
-		group, mask, operatorEntry := "", "", false
-		for _, raw := range strings.Split(acl, "\n") {
-			line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
-			parts := strings.Split(line, ":")
-			// getfacl -p prints the unqualified group and mask entries as
-			// "group::perm" / "mask::perm" (tag, empty qualifier, perms), so
-			// these are 3 fields with an empty middle field, not 2.
-			if len(parts) == 3 && parts[1] == "" {
-				switch parts[0] {
-				case "group":
-					group = parts[2]
-				case "mask":
-					mask = parts[2]
-				}
-			}
-			if len(parts) == 4 && parts[0] == "default" && (parts[1] == "user" || parts[1] == "group") && parts[2] != "" && (parts[1] != "user" || parts[2] != operator) {
-				return fmt.Errorf("legacy viewer ACL retains default named entry on %s", dir)
-			}
-			if len(parts) == 3 && parts[1] != "" {
-				if parts[0] == "user" && parts[1] == operator {
-					operatorEntry = true
-				} else if parts[0] == "user" || parts[0] == "group" {
-					return fmt.Errorf("legacy viewer ACL retains non-operator entry on %s", dir)
-				}
-			}
-		}
-		if group == "" || (!operatorEntry && mask != "" && mask != group) {
-			return fmt.Errorf("legacy viewer ACL mask is not restored on %s", dir)
+		if proxy != "" && aclHasNamedUser(acl, proxy) {
+			return fmt.Errorf("legacy viewer ACL retains proxy entry on %s", dir)
 		}
 	}
 	socket := legacyViewerSocketPath(home)

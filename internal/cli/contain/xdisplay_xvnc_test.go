@@ -159,6 +159,7 @@ func TestDisplayBackendMigrationRestoresActiveXvfbOnFailure(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
 			prepareMigrationAuthority(t, env)
 			env.agentHome = filepath.Join(shortDisplayTestDir(t), "agent")
+			runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 			if err := os.MkdirAll(env.agentHome, 0o750); err != nil {
 				t.Fatal(err)
 			}
@@ -273,12 +274,8 @@ func TestRemoveViewerTraverseACLRevokesExistingChainOnly(t *testing.T) {
 			got = append(got, strings.Join(call.args, " "))
 		}
 	}
-	want := []string{
-		"-x u:" + env.proxyUserName + " " + env.agentHome,
-		"--mask -m g::r-x " + env.agentHome,
-		"-x u:" + env.proxyUserName + " " + filepath.Join(env.agentHome, ".local"),
-		"--mask -m g::r-x " + filepath.Join(env.agentHome, ".local"),
-	}
+	// No Pipelock grant exists, so unrelated ACLs and masks are untouched.
+	want := []string{}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("setfacl calls = %q, want %q", got, want)
 	}
@@ -304,6 +301,7 @@ func TestDisplayBackendMigrationRestoresActiveXvncOnFailure(t *testing.T) {
 			env, runner, out := newFakeEnv(t)
 			prepareMigrationAuthority(t, env)
 			env.agentHome = filepath.Join(shortDisplayTestDir(t), "agent")
+			runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 			if err := os.MkdirAll(env.agentHome, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -833,6 +831,7 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.on("setfacl -x u:"+env.proxyUserName+" "+env.agentHome, "", 1, errors.New("ACL unavailable"))
+	runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 	err := removeViewerTraverseACL(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "revoke viewer traverse ACL") || !strings.Contains(err.Error(), env.agentHome) {
 		t.Fatalf("ACL revocation error = %v", err)
@@ -982,6 +981,7 @@ func TestXvncResolutionIgnoresPATHAndMatchesVerify(t *testing.T) {
 func TestDisabledDisplayWithoutUnitRevokesViewerTraverseACL(t *testing.T) {
 	env, runner, out := newFakeEnv(t)
 	env.agentHome = filepath.Join(shortDisplayTestDir(t), "agent")
+	runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 	if err := os.MkdirAll(env.agentHome, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -1031,7 +1031,7 @@ func TestLegacyViewerACLRetryAfterMigratedUnit(t *testing.T) {
 	if _, err := stepProvisionAgentDisplay().apply(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{revoke, "setfacl -x u:other " + env.agentHome, "setfacl --mask -m g::--- " + env.agentHome, "setfacl -x u:" + env.proxyUserName + " " + legacySocket} {
+	for _, want := range []string{revoke} {
 		if !runnerSaw(runner, want) {
 			t.Fatalf("cleanup did not issue %q", want)
 		}
@@ -1056,12 +1056,12 @@ func TestLegacyViewerACLFailsVerifyAndDoctor(t *testing.T) {
 	}
 	run := func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
-			return "user::rwx\nuser:proxy:--x\ngroup::---\nmask::--x\nother::---\n", 0, nil
+			return "user::rwx\nuser:" + defaultProxyUser + ":--x\ngroup::---\nmask::--x\nother::---\n", 0, nil
 		}
 		return "", 0, nil
 	}
 	probe := &probeEnv{configPath: cfg, displayUnitPath: filepath.Join(t.TempDir(), "display.service"), agentHome: home, lstat: os.Lstat, runCmd: run}
-	if status, detail := probeViewerService(context.Background(), probe); status != statusFail || !strings.Contains(detail, "non-operator") {
+	if status, detail := probeViewerService(context.Background(), probe); status != statusFail || !strings.Contains(detail, "proxy entry") {
 		t.Fatalf("verify accepted old ACL: %s %s", status, detail)
 	}
 	doctor := &doctorEnv{configPath: cfg, agentHome: home, lstat: os.Lstat, runCmd: run}
@@ -1086,7 +1086,7 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		env.lstat = nil
-		runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
+		runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 		if err := removeViewerTraverseACL(context.Background(), env); err != nil {
 			t.Fatalf("stat fallback: %v", err)
 		}
@@ -1154,7 +1154,7 @@ func TestRemoveViewerTraverseACLErrorPaths(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		runner.on(argvFor("getfacl", "-p", env.agentHome), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
-		runner.on(argvFor("getfacl", "-p", socket), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
+		runner.on(argvFor("getfacl", "-p", socket), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil)
 		runner.on(argvFor("setfacl", "-x", "u:"+env.proxyUserName, socket), "denied", 1, nil)
 		if err := removeViewerTraverseACL(context.Background(), env); err == nil || !strings.Contains(err.Error(), "revoke viewer traverse ACL on "+socket) {
 			t.Fatalf("failed socket revoke = %v", err)
@@ -1190,52 +1190,67 @@ func TestRevokeViewerTraverseDirErrorPaths(t *testing.T) {
 			t.Fatalf("getfacl failure = %v", err)
 		}
 	})
-	t.Run("revokes a default-scoped named entry and a non-operator entry, keeps the operator", func(t *testing.T) {
+	t.Run("revokes only the proxy grant", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
 		env.operatorUser = "operator"
 		dir := shortDisplayTestDir(t)
-		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\ndefault:user:other:rwx\nuser:extra:--x\nuser:operator:--x\ngroup::r-x\nother::---\n", 0, nil)
+		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\ndefault:user:other:rwx\nuser:extra:--x\nuser:operator:--x\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nother::---\n", 0, nil)
 		if err := revokeViewerTraverseDir(context.Background(), env, dir); err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"setfacl -x u:" + env.proxyUserName + " " + dir, "setfacl -x d:u:other " + dir, "setfacl -x u:extra " + dir} {
-			if !runnerSaw(runner, want) {
-				t.Fatalf("missing revoke call %q in %v", want, runner.calls)
-			}
+		if !runnerSaw(runner, "setfacl -x u:"+env.proxyUserName+" "+dir) {
+			t.Fatalf("proxy grant not revoked: %v", runner.calls)
 		}
-		if runnerSaw(runner, "setfacl -x u:operator "+dir) {
-			t.Fatal("revoke removed the operator's own entry")
+		for _, entry := range []string{"d:u:other", "u:extra", "u:operator"} {
+			if runnerSaw(runner, "setfacl -x "+entry+" "+dir) {
+				t.Fatalf("unrelated grant %s removed", entry)
+			}
 		}
 	})
 	t.Run("named entry revoke failure", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
 		dir := shortDisplayTestDir(t)
-		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\nuser:extra:--x\ngroup::r-x\nother::---\n", 0, nil)
-		runner.on(argvFor("setfacl", "-x", "u:extra", dir), "denied", 1, nil)
+		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\nuser:"+env.proxyUserName+":--x\ngroup::r-x\nother::---\n", 0, nil)
+		runner.on(argvFor("setfacl", "-x", "u:"+env.proxyUserName, dir), "denied", 1, nil)
 		if err := revokeViewerTraverseDir(context.Background(), env, dir); err == nil || !strings.Contains(err.Error(), "revoke viewer traverse ACL on "+dir) {
 			t.Fatalf("named entry revoke failure = %v", err)
 		}
 	})
-	t.Run("missing group permissions", func(t *testing.T) {
+	t.Run("missing proxy entry is a no-op", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
 		dir := shortDisplayTestDir(t)
 		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\nother::---\n", 0, nil)
-		if err := revokeViewerTraverseDir(context.Background(), env, dir); err == nil || !strings.Contains(err.Error(), "lacks group permissions") {
-			t.Fatalf("missing group perms = %v", err)
+		if err := revokeViewerTraverseDir(context.Background(), env, dir); err != nil {
+			t.Fatalf("absent proxy entry: %v", err)
+		}
+		if runnerSaw(runner, "setfacl -x u:"+env.proxyUserName+" "+dir) {
+			t.Fatal("absent proxy grant triggered setfacl")
 		}
 	})
-	t.Run("mask restore failure", func(t *testing.T) {
+	t.Run("unrelated mask is untouched", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
 		dir := shortDisplayTestDir(t)
 		runner.on(argvFor("getfacl", "-p", dir), "user::rwx\ngroup::r-x\nother::---\n", 0, nil)
 		runner.on(argvFor("setfacl", "--mask", "-m", "g::r-x", dir), "denied", 1, nil)
-		if err := revokeViewerTraverseDir(context.Background(), env, dir); err == nil || !strings.Contains(err.Error(), "restore legacy viewer ACL mask") {
-			t.Fatalf("mask restore failure = %v", err)
+		if err := revokeViewerTraverseDir(context.Background(), env, dir); err != nil {
+			t.Fatalf("unrelated mask: %v", err)
+		}
+		if runnerSaw(runner, "setfacl --mask -m g::r-x "+dir) {
+			t.Fatal("unrelated mask was changed")
 		}
 	})
 }
 
 func TestCheckLegacyViewerACLErrorPaths(t *testing.T) {
+	t.Run("retains the proxy grant", func(t *testing.T) {
+		home := shortDisplayTestDir(t)
+		run := func(context.Context, string, ...string) (string, int, error) {
+			return "user::rwx\nuser:proxy:--x\nuser:other:--x\ngroup::r-x\nmask::r-x\nother::---\n", 0, nil
+		}
+		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "proxy"); err == nil || !strings.Contains(err.Error(), "proxy entry") {
+			t.Fatalf("proxy grant accepted: %v", err)
+		}
+	})
 	t.Run("stat unavailable", func(t *testing.T) {
 		if err := checkLegacyViewerACL(context.Background(), nil, nil, shortDisplayTestDir(t), "operator"); err == nil || !strings.Contains(err.Error(), "stat unavailable") {
 			t.Fatalf("nil stat = %v", err)
@@ -1267,30 +1282,30 @@ func TestCheckLegacyViewerACLErrorPaths(t *testing.T) {
 			t.Fatalf("getfacl failure = %v", err)
 		}
 	})
-	t.Run("retains a default named entry", func(t *testing.T) {
+	t.Run("preserves a default named entry", func(t *testing.T) {
 		home := shortDisplayTestDir(t)
 		run := func(context.Context, string, ...string) (string, int, error) {
 			return "user::rwx\ndefault:user:other:rwx\ngroup::r-x\nother::---\n", 0, nil
 		}
-		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "operator"); err == nil || !strings.Contains(err.Error(), "retains default named entry") {
+		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "proxy"); err != nil {
 			t.Fatalf("default entry retained = %v", err)
 		}
 	})
-	t.Run("retains a non-operator named entry", func(t *testing.T) {
+	t.Run("preserves an unrelated named entry", func(t *testing.T) {
 		home := shortDisplayTestDir(t)
 		run := func(context.Context, string, ...string) (string, int, error) {
 			return "user::rwx\nuser:extra:--x\ngroup::r-x\nother::---\n", 0, nil
 		}
-		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "operator"); err == nil || !strings.Contains(err.Error(), "retains non-operator entry") {
+		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "proxy"); err != nil {
 			t.Fatalf("non-operator entry retained = %v", err)
 		}
 	})
-	t.Run("mask not restored", func(t *testing.T) {
+	t.Run("unrelated mask is permitted", func(t *testing.T) {
 		home := shortDisplayTestDir(t)
 		run := func(context.Context, string, ...string) (string, int, error) {
 			return "user::rwx\ngroup::r-x\nmask::rwx\nother::---\n", 0, nil
 		}
-		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "operator"); err == nil || !strings.Contains(err.Error(), "mask is not restored") {
+		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "proxy"); err != nil {
 			t.Fatalf("stale mask = %v", err)
 		}
 	})
@@ -1299,7 +1314,7 @@ func TestCheckLegacyViewerACLErrorPaths(t *testing.T) {
 		run := func(context.Context, string, ...string) (string, int, error) {
 			return "user::rwx\nuser:operator:--x\ngroup::r-x\nmask::rwx\nother::---\n", 0, nil
 		}
-		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "operator"); err != nil {
+		if err := checkLegacyViewerACL(context.Background(), run, os.Lstat, home, "proxy"); err != nil {
 			t.Fatalf("operator entry should tolerate its own mask: %v", err)
 		}
 	})
@@ -1389,9 +1404,9 @@ func TestProbeLegacyViewerACL(t *testing.T) {
 	t.Run("fails when the legacy grant remains", func(t *testing.T) {
 		root := shortDisplayTestDir(t)
 		env := &probeEnv{configPath: filepath.Join(root, "missing.yaml"), agentHome: root, lstat: os.Lstat, runCmd: func(context.Context, string, ...string) (string, int, error) {
-			return "user::rwx\nuser:extra:--x\ngroup::---\nother::---\n", 0, nil
+			return "user::rwx\nuser:" + defaultProxyUser + ":--x\ngroup::---\nother::---\n", 0, nil
 		}}
-		if status, detail := probeLegacyViewerACL(context.Background(), env); status != statusFail || !strings.Contains(detail, "non-operator") {
+		if status, detail := probeLegacyViewerACL(context.Background(), env); status != statusFail || !strings.Contains(detail, "proxy entry") {
 			t.Fatalf("dirty ACL = %s %s", status, detail)
 		}
 	})

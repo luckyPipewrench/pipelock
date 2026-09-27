@@ -280,8 +280,12 @@ func TestProbeViewerServiceGroupAndProxyIsolationFailures(t *testing.T) {
 			return os.Lstat(actual)
 		}
 		return os.Lstat(path)
-	}, lookupUser: func(string) (*user.User, error) {
-		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(os.Getgid())}, nil
+	}, lookupUser: func(name string) (*user.User, error) {
+		gid := os.Getgid()
+		if name == "operator" {
+			gid++
+		}
+		return &user.User{Uid: strconv.Itoa(os.Getuid()), Gid: strconv.Itoa(gid)}, nil
 	}, runCmd: func(_ context.Context, name string, _ ...string) (string, int, error) {
 		if name == "getfacl" {
 			return "user::rw-\nuser:operator:rw-\ngroup::---\nmask::rw-\nother::---\n", 0, nil

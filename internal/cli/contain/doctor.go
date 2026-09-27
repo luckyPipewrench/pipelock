@@ -255,19 +255,15 @@ func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
 }
 
 func checkDoctorLegacyViewerACL(ctx context.Context, env *doctorEnv) doctorResult {
-	cfg, err := config.LoadForInspection(env.configPath)
+	_, err := config.LoadForInspection(env.configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fail(classInfra, "viewer config: "+err.Error(), "check display viewer configuration")
-	}
-	operator := ""
-	if err == nil {
-		operator = cfg.Containment.Display.Viewer.OperatorUser
 	}
 	lstat := env.lstat
 	if lstat == nil {
 		lstat = env.stat
 	}
-	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, operator); err != nil {
+	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, env.proxyUserName); err != nil {
 		return fail(classInfra, err.Error(), "rerun contain install")
 	}
 	return pass("obsolete agent-home viewer access is absent")

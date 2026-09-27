@@ -152,6 +152,9 @@ func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
 // calls this directly: a geometry or user value that reached a unit line
 // unvalidated could add X server flags or unit directives.
 func (d ContainmentDisplay) Validate() error {
+	if d.Enabled != nil && !*d.Enabled && d.Viewer.Enabled != nil && *d.Viewer.Enabled {
+		return fmt.Errorf("containment.display.viewer.enabled requires an enabled display")
+	}
 	if number := d.Number; number != nil && (*number < 0 || *number > 999) {
 		return fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
 	}

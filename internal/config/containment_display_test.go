@@ -58,6 +58,13 @@ func TestContainmentDisplayRejectsServiceOperators(t *testing.T) {
 	}
 }
 
+func TestContainmentDisplayRejectsViewerWithDisabledDisplay(t *testing.T) {
+	_, err := LoadBytes([]byte("containment:\n  display:\n    enabled: false\n    viewer:\n      enabled: true\n      operator_user: operator\n"))
+	if err == nil || !strings.Contains(err.Error(), "containment.display.viewer.enabled requires an enabled display") {
+		t.Fatalf("disabled display with enabled viewer: %v", err)
+	}
+}
+
 func TestContainmentDisplayReloadStates(t *testing.T) {
 	off, err := LoadBytes([]byte("containment:\n  display:\n    enabled: false\n"))
 	if err != nil {

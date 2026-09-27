@@ -686,6 +686,9 @@ func TestDoctorDisplayChecksFollowConfiguredViewer(t *testing.T) {
 	env := &doctorEnv{configPath: cfgPath, agentHome: root, stat: os.Stat, lstat: os.Lstat, runCmd: func(context.Context, string, ...string) (string, int, error) {
 		return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
 	}}
+	// Keep the viewer unit lookup off the host: a workstation with a real
+	// contained viewer installed would otherwise decide the disabled case.
+	env.displayUnitPath = filepath.Join(root, "pipelock-contain-display.service")
 	if got := doctorChecksForEnv(&doctorEnv{}); len(got) != 8 {
 		t.Fatalf("unconfigured checks = %d", len(got))
 	}

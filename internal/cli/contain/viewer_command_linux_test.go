@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -52,8 +53,15 @@ func TestViewerControlProtocolAndPeer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = conn.Close() }()
+			// A rejected peer is answered and closed before the server reads
+			// anything, so the client's write can land after the close. The
+			// answer is already in the client's receive buffer, so the read
+			// below still decides the case.
 			if _, err := conn.Write([]byte(tc.mode)); err != nil {
-				t.Fatal(err)
+				rejected := tc.response == "denied\n" && tc.uid != currentViewerUID()
+				if !rejected || (!errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET)) {
+					t.Fatal(err)
+				}
 			}
 			line, err := bufio.NewReader(conn).ReadString('\n')
 			if err != nil || line != tc.response {

@@ -5002,7 +5002,7 @@ func TestKnownValueWindowBudget_OversizedValueIsSampledAcrossItsLength(t *testin
 		if len(value) <= maxKnownValuePartialInputBytes {
 			t.Fatalf("fixture length = %d, want greater than %d", len(value), maxKnownValuePartialInputBytes)
 		}
-		windows, err := collectValueWindowsBounded(value, 0, maxKnownValueWindowEntries)
+		windows, err := collectValueWindowsBounded(value, maxKnownValueWindowEntries)
 		if err != nil {
 			t.Fatalf("len %d: oversized known value refused: %v", len(value), err)
 		}
@@ -5035,7 +5035,7 @@ func TestKnownValueWindowBudget_OversizedValueIsSampledAcrossItsLength(t *testin
 	}
 	// Positive control: a value at the ceiling keeps every window (stride 1).
 	atCap := highEntropyKnownValue(maxKnownValuePartialInputBytes + 1200)[:maxKnownValuePartialInputBytes]
-	capWindows, err := collectValueWindowsBounded(atCap, 0, maxKnownValueWindowEntries)
+	capWindows, err := collectValueWindowsBounded(atCap, maxKnownValueWindowEntries)
 	if err != nil {
 		t.Fatalf("value at the ceiling: %v", err)
 	}
@@ -5058,7 +5058,7 @@ func TestKnownValueWindowBudget_FailsBeforePartialIndex(t *testing.T) {
 
 func TestCollectValueWindowsBounded_DeduplicatesBeforeBudgetDecision(t *testing.T) {
 	value := strings.Repeat("A1b2C3d4E5f6G7h8", 3)
-	windows, err := collectValueWindowsBounded(value, 0, 0)
+	windows, err := collectValueWindowsBounded(value, 0)
 	if err != nil {
 		t.Fatalf("fully repeated windows consumed budget: %v", err)
 	}
@@ -7357,5 +7357,63 @@ func TestQueryValueEntropyASCIISplitting(t *testing.T) {
 				t.Fatalf("blocked=%v, want %v", blocked, tc.blocked)
 			}
 		})
+	}
+}
+
+// A URL-shaped value is windowed per credential-bearing part, but the anchor
+// bound applies to the whole value: many long high-entropy path segments must
+// not add up to more anchors than one long value of the same length gets.
+func TestKnownValueWindowBudget_LongURLSharesOneAnchorBound(t *testing.T) {
+	const segments = 200
+	var b strings.Builder
+	b.WriteString("https://api.vendor.example")
+	for i := range segments {
+		sum := sha256.Sum256([]byte(strconv.Itoa(i)))
+		b.WriteString("/")
+		b.WriteString(hex.EncodeToString(sum[:]))
+	}
+	value := b.String()
+	windows, err := knownValueWindowsBounded(value, maxKnownValueWindowEntries)
+	if err != nil {
+		t.Fatalf("long URL value refused: %v", err)
+	}
+	anchors := 0
+	highest := -1
+	for _, offsets := range windows {
+		anchors += len(offsets)
+		for _, off := range offsets {
+			highest = max(highest, off)
+		}
+	}
+	// Rounding the shared stride up can add at most one anchor per part.
+	if limit := maxKnownValuePartialAnchors + segments; anchors > limit {
+		t.Fatalf("long URL produced %d anchors, want at most %d", anchors, limit)
+	}
+	// Positive control: sampling still reaches the last segment.
+	if highest < len(value)-2*64 {
+		t.Fatalf("anchors end at offset %d of %d, want coverage through the last segment", highest, len(value))
+	}
+}
+
+// Encoded forms of a known value are never shorter than the value, so a value
+// longer than every scanned text is not re-encoded on each scan.
+func TestMatchSecretEncodingSpan_SkipsEncodingsLongerThanText(t *testing.T) {
+	secret := highEntropyKnownValue(64 * 1024)
+	short := []spanTextView{{text: "payload=nothing to see here", viewLabel: "raw"}}
+	allocs := testing.AllocsPerRun(20, func() {
+		if _, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, short, short); ok {
+			t.Fatal("short unrelated text matched a long secret")
+		}
+	})
+	if allocs > 2 {
+		t.Fatalf("matching a 64 KiB secret against short text allocated %.0f times per scan, want encodings skipped", allocs)
+	}
+	// Positive control: the same secret base64-encoded inside a long enough
+	// text is still found, so the guard only skips impossible encodings.
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	long := []spanTextView{{text: "payload=" + encoded, viewLabel: "raw"}}
+	match, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, long, long)
+	if !ok || match.encoding != encodingBase64 {
+		t.Fatalf("base64 of a long secret in a long text: ok=%v encoding=%q, want base64 match", ok, match.encoding)
 	}
 }

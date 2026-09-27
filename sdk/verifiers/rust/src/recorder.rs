@@ -5,7 +5,6 @@ use crate::types::Receipt;
 use crate::util::{
     parse_json_line, read_verifier_text, reject_duplicate_keys, Result, VerifierError,
 };
-use std::fs;
 use std::path::Path;
 
 const ACTION_RECEIPT_TYPE: &str = "action_receipt";
@@ -178,61 +177,22 @@ pub(crate) fn extract_typed_receipts(path: &Path) -> Result<ExtractedReceipts> {
     Ok(extracted)
 }
 
+/// Returns one session's selected receipt chain. Membership is Go's
+/// parsed-equality rule (`evidencename.Parse`), shared with the chain-set
+/// reader: for session `s`, `evidence-s-evil-0.jsonl` belongs to session
+/// `s-evil` and is not read, although it starts with `evidence-s-`.
 pub fn extract_receipts_from_session_dir(dir: &Path, session_id: &str) -> Result<Vec<Receipt>> {
-    let prefix = format!("evidence-{session_id}-");
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", dir.display())))?
-    {
-        let entry =
-            entry.map_err(|err| VerifierError::Runtime(format!("read dir entry: {err}")))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if entry
-            .file_type()
-            .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", name)))?
-            .is_dir()
-            || !name.starts_with(&prefix)
-            || !name.ends_with(".jsonl")
-        {
-            continue;
-        }
-        files.push(entry.path());
-    }
-    let mut files = files
-        .into_iter()
-        .map(|path| seq_start(&path).map(|seq| (seq, path)))
-        .collect::<Result<Vec<_>>>()?;
-    files.sort_by_key(|(seq, _)| *seq);
-    let mut combined = ExtractedReceipts::default();
-    for (_, file) in files {
-        let extracted = extract_typed_receipts(&file)?;
-        combined.action.extend(extracted.action);
-        combined.evidence.extend(extracted.evidence);
-    }
-    Ok(combined.select_chain())
+    Ok(extract_typed_receipts_from_session_dir(dir, session_id)?.select_chain())
 }
 
-fn seq_start(path: &Path) -> Result<u64> {
-    let name = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    let suffix = name
-        .rsplit_once('-')
-        .map(|(_, suffix)| suffix)
-        .unwrap_or("");
-    if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(VerifierError::Runtime(format!(
-            "evidence file has non-numeric sequence suffix: {}",
-            display_path(path)
-        )));
-    }
-    suffix.parse::<u64>().map_err(|_| {
-        VerifierError::Runtime(format!(
-            "evidence file has non-numeric sequence suffix: {}",
-            display_path(path)
-        ))
-    })
+/// Returns one session's action-receipt and evidence-receipt chains.
+pub(crate) fn extract_typed_receipts_from_session_dir(
+    dir: &Path,
+    session_id: &str,
+) -> Result<ExtractedReceipts> {
+    let (action, evidence) =
+        crate::chain_set::read_session_receipts(dir, session_id).map_err(VerifierError::Runtime)?;
+    Ok(ExtractedReceipts { action, evidence })
 }
 
 fn errors_unsupported(line: usize, version: Option<u64>) -> Result<()> {
@@ -299,8 +259,4 @@ fn validate_projected_strings(entry: &serde_json::Value, line: usize, version: u
         }
     }
     Ok(())
-}
-
-fn display_path(path: &Path) -> String {
-    path.display().to_string()
 }

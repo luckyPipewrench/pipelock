@@ -11,7 +11,9 @@ use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt};
 use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
-use crate::recorder::{extract_receipts, extract_receipts_from_session_dir};
+use crate::recorder::{
+    extract_typed_receipts, extract_typed_receipts_from_session_dir, ExtractedReceipts,
+};
 use crate::rotation::{
     load_rotation_endorsement_file, verify_chain_with_endorsements, RotationEndorsement,
 };
@@ -144,6 +146,115 @@ fn chain_report_for(
     }
 }
 
+/// Picks the key an EvidenceReceipt v2 chain is verified against. A v2 chain
+/// has one signer and is verified against one key. Given a trusted set
+/// (directory mode passes each run its scoped trust, which includes an
+/// endorsed successor key), it is the trusted key equal to the chain's
+/// declared `signer_key_id`. The declared id only selects: every receipt is
+/// still verified against that key, and a signer outside the set gets the
+/// first trusted key, which then fails. A single key is returned unchanged.
+fn evidence_chain_key(key_hex: &str, receipts: &[Receipt]) -> String {
+    let keys: Vec<String> = key_hex
+        .split(',')
+        .map(|key| key.trim().to_ascii_lowercase())
+        .filter(|key| !key.is_empty())
+        .collect();
+    if keys.len() <= 1 {
+        return key_hex.to_string();
+    }
+    let declared = receipts
+        .first()
+        .and_then(|r| r.get("signature"))
+        .and_then(|sig| sig.get("signer_key_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    keys.iter()
+        .find(|key| **key == declared)
+        .unwrap_or(&keys[0])
+        .clone()
+}
+
+/// Verifies every receipt chain one session or file holds. A current run
+/// writes an ActionReceipt v1 chain and an EvidenceReceipt v2 chain into the
+/// same files, each signed on its own, so a forged receipt in one leaves the
+/// other intact: verifying only the chain `select_chain` picks reported a
+/// session valid while its v2 chain was forged. Both chains must verify. The
+/// action report stays the primary one, so a session whose chains both pass
+/// prints exactly what it did before, and a failure names the chain it came
+/// from.
+fn typed_chain_report(
+    label: String,
+    typed: ExtractedReceipts,
+    key_hex: &str,
+    allow_unpinned: bool,
+    endorsements: &[RotationEndorsement],
+    session_id: &str,
+) -> ChainCommandReport {
+    if typed.action.is_empty() {
+        let key = evidence_chain_key(key_hex, &typed.evidence);
+        return chain_report_for(
+            label,
+            &typed.evidence,
+            &key,
+            allow_unpinned,
+            endorsements,
+            session_id,
+        );
+    }
+    let primary = chain_report_for(
+        label.clone(),
+        &typed.action,
+        key_hex,
+        allow_unpinned,
+        endorsements,
+        session_id,
+    );
+    if typed.evidence.is_empty() {
+        return primary;
+    }
+    let evidence = chain_report_for(
+        label,
+        &typed.evidence,
+        &evidence_chain_key(key_hex, &typed.evidence),
+        allow_unpinned,
+        endorsements,
+        session_id,
+    );
+    if primary.valid && evidence.valid {
+        return primary;
+    }
+    // Without a key and without --allow-unpinned both chains fail only for
+    // being unpinned; the action report already says so.
+    if primary.unpinned == Some(true) && evidence.unpinned == Some(true) {
+        return primary;
+    }
+    let mut reasons = Vec::new();
+    if !primary.valid {
+        reasons.push(format!(
+            "action receipt chain: {}",
+            primary.error.as_deref().unwrap_or("")
+        ));
+    }
+    if !evidence.valid {
+        reasons.push(format!(
+            "evidence receipt chain: {}",
+            evidence.error.as_deref().unwrap_or("")
+        ));
+    }
+    ChainCommandReport {
+        valid: false,
+        unpinned: None,
+        error: Some(reasons.join("; ")),
+        broken_at_seq: if primary.valid {
+            evidence.broken_at_seq
+        } else {
+            primary.broken_at_seq
+        },
+        ..primary
+    }
+}
+
 fn load_endorsements(paths: &[String], allow_unpinned: bool) -> Result<Vec<RotationEndorsement>> {
     if !paths.is_empty() && allow_unpinned {
         return Err(VerifierError::Usage(
@@ -187,17 +298,14 @@ fn run_chain_set_command(
         let label = format!("{} (session {session})", dir.display());
         let (keys, own) = chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
         let chain = match read_session_receipts(dir, session) {
-            Ok((action, evidence)) => {
-                let receipts = if action.is_empty() { evidence } else { action };
-                chain_report_for(
-                    label,
-                    &receipts,
-                    &keys.join(","),
-                    parsed.allow_unpinned,
-                    &own,
-                    session,
-                )
-            }
+            Ok((action, evidence)) => typed_chain_report(
+                label,
+                ExtractedReceipts { action, evidence },
+                &keys.join(","),
+                parsed.allow_unpinned,
+                &own,
+                session,
+            ),
             Err(err) => ChainCommandReport {
                 path: label,
                 valid: false,
@@ -263,9 +371,9 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
             return run_chain_set_command(&clean, &parsed.session_id, &key_hex, &parsed);
         }
     }
-    let (receipts, label) = if parsed.dir {
+    let (typed, label) = if parsed.dir {
         (
-            extract_receipts_from_session_dir(&clean, &parsed.session_id)
+            extract_typed_receipts_from_session_dir(&clean, &parsed.session_id)
                 .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?,
             format!("{} (session {})", clean.display(), parsed.session_id),
         )
@@ -279,22 +387,22 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
             )));
         }
         (
-            extract_receipts(&clean)
+            extract_typed_receipts(&clean)
                 .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?,
             clean.display().to_string(),
         )
     };
 
-    if receipts.is_empty() {
-        let report = chain_report_for(label, &receipts, &key_hex, false, &[], &parsed.session_id);
+    if typed.action.is_empty() && typed.evidence.is_empty() {
+        let report = chain_report_for(label, &[], &key_hex, false, &[], &parsed.session_id);
         emit_chain(&report, parsed.json)?;
         return Ok(1);
     }
 
     let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
-    let report = chain_report_for(
+    let report = typed_chain_report(
         label,
-        &receipts,
+        typed,
         &key_hex,
         parsed.allow_unpinned,
         &endorsements,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_blocked": false,
+  "release_blocked": true,
   "verifiers": [
     {
       "language": "Go",
@@ -19,29 +19,29 @@
     {
       "language": "TypeScript",
       "package": "@pipelock/verifier-ts",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "install_source": "npm",
-      "artifact_digest": "sha512-/aA/k+f2OUixk2MvXhKRU39+HFFQ9Gn5j44VORyBYWCAufHyRNhS0m7nScamvADX19DV5QwXokvRgI8qmRaqaQ==",
+      "artifact_digest": "REPLACE_WITH_NPM_DIST_INTEGRITY",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.3.1",
-        "source_commit": "d794fb901796702dea0e7a4a62b36756f52efbc0"
+        "source_ref": "verifier-v0.4.0",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_4_0_TAG_COMMIT"
       }
     },
     {
       "language": "Rust",
       "package": "pipelock-verifier-rs",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "install_source": "crates.io",
-      "artifact_digest": "2e194db775db730eed1fe107f18ab5087341b10e755ea95f32d9ef0771b98e51",
+      "artifact_digest": "REPLACE_WITH_CRATES_IO_SHA256",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.3.1",
-        "source_commit": "d794fb901796702dea0e7a4a62b36756f52efbc0"
+        "source_ref": "verifier-v0.4.0",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_4_0_TAG_COMMIT"
       }
     },
     {

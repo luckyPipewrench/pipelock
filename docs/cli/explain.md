@@ -80,6 +80,25 @@ pipelock explain mcp-response \
 
 Both A2A flags must be supplied together. Without them, the report covers generic MCP response scanning and explicitly says A2A policy was not evaluated. A one-shot explanation has no previous Agent Card baseline and cannot evaluate stateful card drift.
 
+## `pipelock explain response`
+
+`pipelock explain response` reads a saved HTTP response body from standard input and runs the raw-body response scanner that the forward proxy, TLS interception, the reverse proxy and non-HTML fetch use. It names every matching pattern, the scanner view it matched in, the byte position and length inside that view, a SHA-256 of the body and a SHA-256 of the retained match text. It never fetches a URL and never prints the matched text, because a blocked response can carry attacker instructions or credentials.
+
+```bash
+pipelock explain response --config /etc/pipelock/pipelock.yaml < saved-response.bin
+pipelock explain response --config /etc/pipelock/pipelock.yaml --json < saved-response.bin
+```
+
+Position, length and match SHA-256 index the named scanner view, not the raw stdin bytes, so slice that view rather than the saved file when you compare fingerprints. The report states the action the loaded config applies: under `response_scanning.action: warn` a match is reported as allowed with a note that runtime forwards the response and logs the finding.
+
+This isn't a replay of a fetch HTML block. Fetch scans HTML after hidden-content extraction and readability and applies destination-scoped suppressions using the final response URL, so a saved HTML document can disagree with a live fetch verdict. Reconstruct the extracted text when diagnosing a fetch HTML block.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | The loaded config lets the response through (no match, or only matches the configured action forwards). |
+| 2 | The config failed to load. |
+| 3 | The loaded config blocks the response. |
+
 ## URL explanation exit codes
 
 These exit codes apply to `pipelock explain <url>`. `pipelock explain event`

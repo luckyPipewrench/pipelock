@@ -7,6 +7,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-09-27
+
+### Breaking Changes / Upgrade Notes
+
+- **Building from source requires Go 1.26 or newer.** Go 1.25 no longer receives upstream security fixes and current `golang.org/x` modules require 1.26. Release binaries are built with Go 1.26.8, the same toolchain the vulnerability scan checks, and CI tests Go 1.26 and 1.27. (#1670, #1673)
+- **A config file that omits `fetch_proxy.monitoring.blocklist` now gets the shipped blocklist.** Before this only the no-config path carried it, so a config file without the key (including the Helm chart's default values) ran with an empty blocklist. Destinations on the shipped list that were reachable under 3.5.0 will now block. Set `blocklist: []` to keep it off. (#1655)
+- **Request-body trust has its own list.** On a destination in `request_body_scanning.trusted_hosts`, request-body injection and a fully redacted critical credential follow the configured action instead of the hard block. The request side no longer reads `response_scanning.exempt_domains`, so an operator who relied on a response exemption to relax outbound bodies must add the host to `trusted_hosts`. (#1454, #1637)
+- **Host patterns are validated against how they're matched.** Allow, deny, trust and bypass lists refuse a pattern that isn't an ASCII hostname before case folding, that carries a URL, `host:port`, fragment, interior wildcard or malformed label, or whose validated form differs from what the matcher compares. A destination with an empty DNS label (an extra trailing dot) is refused as invalid on every transport. (#1524, #1541, #1548, #1569)
+- **`tls_interception.passthrough_domains` refuses a wildcard over a public suffix,** including private-section suffixes shared by many tenants, because passthrough turns off body and response scanning for everything under it. List exact hosts or intercept with a trusted local CA. (#1595)
+- **Temporary exceptions have a maximum expiry.** Six expiry fields whose exception is expected to end now carry a per-field horizon enforced at load and reload; the refusal names the field, the date and the maximum. A config-sourced `sandbox.best_effort_expiry` must be an absolute RFC3339 time at most 30 days out, a best-effort sandbox needs a reason and expiry from one source, and a per-agent `sandbox.best_effort` needs its own reason and expiry. (#1447, #1520, #1600)
+- **`session_profiling.volume_spike_ratio` is removed.** Nothing ever read it. A config that still sets it, top-level or per agent, is refused at load with a message naming the key. The canonical policy hash changes because the config shape changed; enforcement doesn't. (#1527)
+- **A custom DLP pattern that reuses a core pattern name can't carry `exempt_domains`.** Config validation refuses it at startup and reload instead of accepting an exemption the core floor never honored. (#1451)
+- **`pipelock run` refuses `file_sentry.action: block` on the server listener.** That listener has no child process to stop, so block could only log. A reload asking for it is rejected atomically. Subprocess MCP mode and `action: warn` are unchanged. (#1452)
+- **Named agent policy follows bound identity only (Enterprise).** A per-agent listener or `source_cidrs` match selects the named profile. A self-declared `X-Pipelock-Agent` name is still recorded for attribution but gets the fallback policy, and its session state folds to the client IP so rotating names can't reset adaptive scoring. (#1461, #1530, #1578)
+- **A core build refuses a named-agent config in `pipelock check`,** so `contain install` can't swap a working enterprise binary for one that can't enforce its listeners. (#1629)
+- **External action grants must state `not_before`** and a validity window of at most five minutes, following the single-action lifetime in the OAuth Transaction Tokens BCP. Refusals carry `not_yet_valid` and `lifetime_exceeded`. (#1617)
+- **Each Pipelock process writes its own receipt chain.** Processes sharing one flight-recorder directory no longer fork a chain; a restart is recorded as a signed link naming the tail it continues. `verify-receipt --chain` and `evidence doctor` follow the links. Tools that read a single session file must read the run chains instead. (#1654)
+- **Activating the kill switch blocks held MCP approvals** that haven't started sending. A held call that previously forwarded after activation now resolves as blocked. (#1699)
+- **When MCP receipts are required, a request forwards only after its receipt is durably written.** A failed or unsupported receipt write now blocks the request. (#1696)
+- **`audit-packet --offline` no longer reports a packet as trusted.** The Go, Rust and TypeScript verifiers return `verdict: schema_checked_trust_unverified` with `trusted` and `valid` false and exit non-zero, and clean reports carry a required `verification_mode` (`pinned_provenance` or `unpinned_structural`). CI jobs that read the old success must require a full chain check. (#1700)
+- **The Scan API can return `decision: "warn"`** for a `tool_call` that matches a warn-configured tool-policy rule, matching what the live MCP proxy does. Consumers that expected only `allow` or `deny` must handle `warn`. (#1572)
+- **Contained hosts need `pipelock contain install` with the new binary** to adopt the private network namespace, private temporary directories, the `0600` config mode and the refreshed CA export. (#1558, #1624, #1640, #1677)
+
+### Added
+
+- **Contained agents run in their own network namespace.** The agent reaches Pipelock and declared host services only through doorway sockets Pipelock forwards. The namespace is verified at launch, survives a binary swap and is restored on rollback. `containment.published_services` publishes agent services to the operator, and `containment.display` provisions a screen inside the namespace for a contained browser. (#1677)
+- **`pipelock contain view [--control]`** lets an operator watch or take over a contained agent's screen with any VNC client through a caller-only local socket. A view-only session can't type or click, and at most one controller holds the display. `containment.display.geometry` sets the screen size. (#1691)
+- **Declared loopback services for contained agents.** `containment.loopback_services` names each extra local destination with host, port, owner, reason and expiry. Replies are allowed only on the reply path, a privileged timer removes an entry when it expires, and `contain verify` fails when either half of a pair is missing or misordered. A contained agent can also reach its own subprocess on any loopback port while unrelated host listeners stay unreachable. (#1603, #1610, #1618, #1625)
+- **`pipelock contain run` prints a session contract before launch** listing the agent user, egress posture, capsule path, private `/tmp` state, tools and workspace grants with expiry. `--dry-run` runs preflight and prints it without launching, and expired grants refuse. (#1536)
+- **A signed workspace change statement after each contained session,** bound to the posture capsule, listing files the agent created, modified or deleted. `pipelock posture verify --workspace-statement` checks the pair and fails an incomplete statement with exit 2. (#1601)
+- **Contained agents get private `/tmp` and `/var/tmp`** through a transient systemd service, verified before launch. (#1558)
+- **Browser CA trust for contained agents.** `contain install` adds the interception CA to the agent's Chromium certificate database, verification reports it as probe 20, and rollback removes only what install added. (#1619)
+- **`systemctl reload pipelock` waits for the verdict** on systemd 253 and newer. The unit is `Type=notify-reload` and reports whether a reload was applied or rejected in `systemctl status`. (#1562)
+- **`pipelock contain doctor` gains checks 7 and 8.** Check 7 reads the managed chain structure on its own; check 8 proves the contained agent can reach its own loopback listener. A definite agent bypass rule now reports FAIL instead of UNKNOWN. (#1560, #1659)
+- **Credential audiences.** Built-in provider keys, the chat-platform bot token, Slack tokens, Google OAuth bearer tokens and GitHub and GitLab tokens are allowed when sent to the API authority that issued them and blocked everywhere else, with an audited allow and receipt. The audience sets are compiled in and can't be set from YAML. `dlp.github_enterprise_hosts` and `dlp.gitlab_hosts` name exact self-hosted instances. (#1523, #1644, #1657, #1672)
+- **AWS Signature Version 4 requests reach their own AWS endpoint.** The Authorization header envelope and presigned-URL credential scopes are parsed to the shape AWS publishes, shared between the scanner and the redactor, and `request_body_scanning.sigv4_credential_routes` now applies on the reverse proxy too. (#1453, #1529, #1551, #1561)
+- **Issuer-bound session cookies.** With TLS interception on, a cookie is left out of header DLP only when the same session received that exact name and value from the same host over HTTPS and returns it within its domain, path and expiry. `request_body_scanning.issuer_bound_session_cookies` defaults to `true`. (#1676)
+- **Issued paging tokens pass the query entropy gate.** A query value that an intercepted JSON response from the same host handed out, such as a next-page link, isn't blocked by query entropy when sent back to that host in the same session. Search text is scored word by word. DLP still runs. (#1689)
+- **`response_scanning.core_observe_exceptions`** observes one core response pattern on one exact host with a reason, owner and expiry of at most 30 days. The pattern still runs and the finding is kept under its own `core_observed` reason; only the block is withheld. (#1620)
+- **`fetch_proxy.monitoring.path_entropy_exclusions`** exempts one host plus one literal path prefix from the path entropy gate only, and ships defaults for ordinary document-sharing links. Operator entries add to the shipped routes. (#1522, #1539, #1671)
+- **Scoped block rules can exempt one exact JSON string value** for a specified request. Missing, unreadable, ambiguous and other values stay blocked, including inside batch requests. (#1692)
+- **`mcp_tool_scanning.new_tool_admission`** (`admit` or `withhold`) governs a tool name that appears after the drift baseline is established. `withhold` keeps it out of the baseline until a signed listener drift reset. (#1584, #1588, #1598)
+- **`pipelock explain response`** reads a saved HTTP response body on stdin and reports which response pattern matched, in which scanner view, at which offset, with digests instead of the matched text. Response explanations also cover recorded findings and A2A response policy. (#1576, #1613)
+- **`pipelock verify-receipt --whole-recorder`** verifies every recorder entry, the receipt chain and the clean-shutdown transcript seal, and says which mode it ran. (#1573)
+- **`X-Pipelock-Receipt` response header** carries the `action_id` of the signed receipt that covers a response, set only after the receipt is recorded. Blocks set it on every transport; allows set it under `flight_recorder.require_receipts`. (#1486, #1604)
+- **`X-Pipelock-Shield-Rewrite` response header** lists the categories Browser Shield rewrote, and the fetch envelope carries the same value as `shield_rewrite`. (#1455)
+- **Browser Shield can deliver SVG in sanitized form** after the complete decoded body and its rewrite pass structural validation. Anything else refuses, and SVG stays refused while Shield is off. (#1661)
+- **Scan API `context.session_id` accumulates across requests** with the same bearer token, so a secret split across `dlp`, `prompt_injection` or `tool_call` requests is caught on the request that completes it. (#1582)
+- **DNS-over-HTTPS is inspected as DNS.** A strict RFC 8484 GET or POST message is checked by DLP and the entropy gate on every name, record payload and option. (#1683)
+- **Partial disclosure of a known secret is detected.** A contiguous piece of a canary or configured environment or file secret above a length floor, or a secret spelled as decimal character codes, now matches. (#1494)
+- **URL destinations inside query parameters are evaluated** with the same allowlist, blocklist and SSRF checks as the outer host, through raw, percent, hex, base64 and base32 layers. (#1435)
+- **Failed bearer guesses are rate limited per client address** on the kill-switch API, Scan API, session admin API and MCP HTTP listener: ten wrong credentials in a minute get 429 with `Retry-After`. (#1555)
+- **Integrations for Pi and Continue.dev.** `pipelock pi install` configures a named proxy listener, and `pipelock continue install` wraps every MCP server Continue declares, both with `remove` and `--dry-run`. A Grok CLI guide covers forward-proxy and MCP wrapping. (#1476, #1487, #1589, #1602)
+- **`pipelock hermes install` sets browser launch defaults** that stop agent-browser advertising the automation marker, reported by `hermes verify` and reversed by `hermes rollback`. `--no-browser-defaults` skips it. (#1662)
+- **`pipelock doctor` checks file-sentry coverage** by walking the configured roots without installing watches. (#1498)
+- **`pipelock init --no-auditor`** skips the evidence auditor timer, and init now discloses the timer before installing it. (#1593)
+- **Released Helm charts carry build provenance** bound to the pushed digest, verifiable with `gh attestation verify`. (#1685)
+- **License service:** a 60-day self-serve Enterprise trial tier, operator commands to inspect, resend and revoke trial access, a provider-backed `/ready` endpoint, a customer self-serve resend endpoint that is off unless enabled, and `license-service audit-summary`. Provider API calls pin a dated version. (#1456, #1538, #1599, #1631, #1678, #1690)
+- **Containment conformance fixtures can supply nft chain text** that runs through the same recognizer `contain verify` uses. (#1581)
+- **Signed references may declare `jcs-rfc8785-nfc` canonicalization.** (#1575)
+- **`whoami` reports identity provenance** (bound, self-declared or unknown) and resolves identity the way proxied traffic does. (#1591)
+
+### Changed
+
+- **Reverse-proxy traffic joins session enforcement.** Session profiling, adaptive enforcement, cross-request entropy and taint apply to it, source CIDR bindings attribute it, and reverse DLP denials emit signed receipts. (#1477, #1532)
+- **Listener and CIDR identities are graded `bound`,** so audit, OCSF and CEF fields name them correctly. Bound identities no longer fill the shared per-IP burst bucket. (#1461, #1483)
+- **Identical blocked retries add threat score once,** and destination-scoped airlock transitions apply consistently and survive recorder replacement. `session reset` clears destination-scoped state. (#1531, #1534, #1607)
+- **Response scanning is faster on large bodies** without changing what it detects: patterns that can't match without a missing literal are skipped, the rest run in parallel, and a clean verdict for an identical body is cached per pattern set. (#1668, #1580)
+- **Response injection patterns for system prompts, persistence and credential concealment need directive phrasing,** so descriptive tool output passes while direct instructions still block. The core injection regex is one constant shared by the core floor, the defaults and every preset. (#1446, #1609)
+- **Browser Shield reads HTML the way a browser does.** It uses the HTML tokenizer, reads inline `style` with the CSS Syntax Level 3 algorithm, leaves JavaScript byte for byte, keeps interface markup in hidden application views, and stops breaking pages and bot checks. An intervention it can't record is refused. (#1616, #1641, #1666, #1682)
+- **Response bodies are classified from their bytes,** so image pixels and opaque binary data don't match prose-only detections while image metadata, embedded text and UTF-16 text keep being scanned. (#1634)
+- **Compressed responses are decoded and scanned** instead of refused for gzip and deflate, every `Content-Encoding` value is read, and an encoding with no decoder still fails closed. (#1642, #1650)
+- **The fetch hidden-content surface is built from an HTML parse tree,** and executable JavaScript bodies are no longer scanned as hidden page text. (#1623)
+- **Block reasons name the finding that blocked.** Query entropy blocks carry `query_entropy`, a body block names entropy only when entropy's own action blocked, rate-limit and data-budget blocks name the shared base domain, and scanner errors are reported as errors instead of injection detections. (#1475, #1638, #1663, #1667)
+- **Audit mode observes request-body prompt injection.** With `enforce: false` it follows `request_body_scanning.action`, and each finding is reported once. (#1681)
+- **The core response floor runs when `response_scanning.enabled` is false** on the reverse proxy and in agent hooks, matching every other transport. (#1628)
+- **A2A agent-card drift judges what a change introduced.** Structural changes still block; a descriptive change blocks only when it introduces a new cue class. (#1537, #1633)
+- **Tool policy recognizes namespaced tool names** and terminal execution in chain detection. (#1571)
+- **Hot-reload refusals name the field** that would have weakened a required mode and say a restart applies it. Rejected trust expansion is explicit in diagnostics. (#1478, #1652)
+- **Host sets are canonicalized** (case, duplicates, trailing dots, IDNA) before policy hashing and matching. (#1460, #1569)
+- **Conductor followers** require a verifiable version before applying a bundle with a minimum version, restore and re-verify cached policy before serving, keep live and durable policy consistent, and bind rollback authorizations to their target stream without resetting the replay counter. (#1471, #1627, #1630, #1693)
+- **Receipt resume across a key change** trusts only a key this process loaded earlier in the same run. Final checkpoints survive shard rotation, and non-Rekor anchor proofs are verified before they're persisted. (#1535, #1577, #1687)
+- **MCP startup is recorded.** Initialization and tool-list requests and the initialized notification record correlated outcomes, and a required recording failure stops forwarding. (#1467)
+- **Emitter and SIEM health snapshots** publish counters, degraded state and error details together. (#1481, #1484)
+- **Every dropped DLP finding is recorded** in `pipelock_dlp_dropped_matches_total` and a `dlp_warn` audit line. (#1458)
+- **Containment probes that can't establish a cause report UNKNOWN** with a non-zero exit, Podman is recognized, and the managed nftables ruleset is reconciled instead of appended. (#1466, #1507, #1621)
+- **The dashboard requires exactly one `Authorization` header,** and an embedder that disables its own auth must name the outer boundary. (#1474, #1553, #1590)
+- **Setup integrations** parse Codex warnings separately, find packaged Claude Desktop on Windows, preserve runtime-resolved VS Code configuration, replace recoverable older wrappers, and report bundle-load problems from every hook. (#1465, #1546, #1554, #1568)
+- **`pipelock hermes install` and `rollback` take an exclusive lock** so two runs can't interleave. (#1665)
+- **File-sentry startup failures** name every unreachable subtree and summarize the remedies first. (#1498, #1545)
+- **`pipelock init` waits briefly for user systemd** before skipping the evidence auditor. (#1626)
+- **A rules bundle fetch blocked by Pipelock says so** and names the reason. A bundle whose `min_pipelock` can't be checked on a development build warns and loads. (#1447, #1540)
+- **The sandbox bridge closes relays idle in both directions** after the largest configured proxy idle bound. (#1701)
+
+### Fixed
+
+- **Tool policy protected-path rules cover equivalent operations.** Move, rename, copy, delete, permission-change and link-creation tools now match rules that protect a destination path, patch targets come from patch headers, and backslash separators are recognized. (#1557)
+- **The core DLP floor covers MCP input and the A2A-only forward branch,** so a core credential in a tool call blocks even where the preset warns. (#1528)
+- **MCP scanning covers content it used to skip:** numeric leaves and tool definitions in responses, structured values under media-typed fields, the whole forwarded JSON-RPC envelope and session header, `structuredContent` keys, and SSE events with no data line. The listener enforces its state-token requirement on its own. (#1493, #1521, #1694)
+- **A2A header scanning checks every `A2A-Extensions` line.** (#1686)
+- **Cross-request detection** uses a keyed per-session bucket digest, requires classified identities, inspects a completing fragment before eviction, keeps exact contributors, clears the keys production writes on reset, and keys MCP state on the session key alone. Cross-request blocks emit receipts with a neutral client message. (#1489, #1517, #1526, #1547, #1563, #1579)
+- **Partial (206) responses fail closed** when Shield, media stripping or redaction would change their bytes, and decoding or truncating a partial body is refused. (#1653)
+- **Empty and mistyped media responses** pass or block with a named reason instead of a parse error. (#1643)
+- **False positives in ordinary work:** spaced assignments as URL credentials, prose read as AWS resource IDs, environment lookups in tool commands, base64 identifiers, bot checks, the jailbreak pattern inside encoded data, percent-encoded query exclusion keys, OAuth `redirect_uri`, PKCE challenges and static asset hashes. (#1482, #1664, #1669, #1671, #1680, #1683)
+- **WebSocket relays end as soon as either side leaves** instead of waiting out the idle timeout, and scoped DLP controls apply to frame scans. (#1604, #1674)
+- **Go 1.27 builds are safe to run,** and signed evidence stays verifiable when it records invalid UTF-8. (#1673)
+- **TLS interception finds its default CA in the Pipelock home** (`--home`, `PIPELOCK_HOME`, then `~/.pipelock`) and refuses to guess when two exist. (#1651)
+- **Containment hardening:** the per-agent listener accepts only the relay account and root, the managed display requires X authorization, the exported CA stays current, `NODE_EXTRA_CA_CERTS` uses the combined bundle, the config installs at `0600` so admin commands work, and YAML null or aliased containment settings count as absent. (#1624, #1635, #1636, #1640, #1679)
+- **MCP subprocess handling:** descendant cleanup is reported before startup, active approval resolvers survive child cleanup, binary locations report unknown instead of not-suspicious, and tool rules reload from one snapshot. (#1516, #1550, #1586, #1596, #1639)
+- **Evidence auditor targets survive `init` reruns.** (#1490)
+- **The runtime fails closed on a reload that fails partway,** leaving the behavioral baseline action unchanged, and the support bundle refuses an output path that already exists. (#1696)
+- **SDK verifiers agree with the Go reference:** they verify default run chains with the `ext` bag, reject same-key transitions, bound evidence reads, and match the AARP timestamp grammar. The anchor-bundle schema loads under strict validators. (#1611, #1656, #1658, #1697)
+- **Rekor anchoring accepts sharded logs** whose entry index differs from the tree index. (#1470, #1622)
+- **License service:** one active trial per email across writers, the trial slot table as the only eligibility authority, atomic webhook revocation, and removal of a stale founding deadline. (#1556, #1597, #1606, #1698)
+- **The GitHub Action escapes repository-derived text** in annotations and the job summary. (#1698)
+- **Playground:** the durable signing root stays off visitor VMs, delegated runs seal against their root, published replays stay verifiable, a broker without a usable root refuses to start, visitors get their own evidence unedited, and kits stay downloadable. Runs record the requested and provider-reported model, and the broker's admin listener, key cache, artifact reads and VM slots are hardened. (#1442, #1444, #1449, #1450, #1459, #1583, #1646, #1647, #1649, #1695)
+- **The receipt example's tamper step edits a signed field,** so it now proves tamper detection. (#1445)
+- **The logo PNG renders transparent and scaled,** with a generated raster ladder and `.ico`. (#1519)
+
+### Removed
+
+- The never-imported `internal/abom` and `internal/manifest` packages. (#1518)
+
+### Documentation
+
+- Install and release examples, receipt anchoring and SCITT scope, and the MCP upstream SSRF exception are corrected. (#1431, #1432, #1468, #1594)
+
+### Dependencies
+
+- Weekly dependency updates, `fast-uri` 3.1.7 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492)
+
 ## [3.5.0] - 2026-08-31
 
 ### Breaking Changes / Upgrade Notes

@@ -82,7 +82,7 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 - You need to **prevent credential exfiltration** from AI agents with API keys
 - You want **content inspection** (DLP, injection detection) on what agents fetch
 - You need **audit logging** for network activity mediated by the proxy
-- You want a **single Go binary**. `make stats` reports 27 direct Go module dependencies; a statically linked build doesn't need a separate Go runtime.
+- You want a **single Go binary**. `make stats` reports 26 direct Go module dependencies; a statically linked build doesn't need a separate Go runtime.
 - You're running agents in **CI/CD** and need machine-readable output
 - You want **workspace integrity monitoring** to detect file tampering
 

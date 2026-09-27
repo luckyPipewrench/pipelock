@@ -22,7 +22,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 The highest-protection mode. Designed for AI agents that need web content.
 
 **Scanning:**
-- Ordered URL scan (length/parsing, scheme, CRLF injection, path traversal, destination policy, immutable SSRF/DLP floors, configured DLP, entropy, DNS SSRF/rebinding, rate limit, data budget, and context checks)
+- Ordered URL scan (length/parsing, scheme, CRLF injection, path traversal, destination policy, immutable SSRF/DLP floors, configured DLP, entropy, nested query-parameter destinations, DNS SSRF/rebinding, rate limit, data budget, and context checks)
 - `request_policy` route and operation checks, including followed redirect hops
 - Hidden-content scan built from the HTML parse tree: comments, `style` and `noscript` bodies, non-executable data `<script>` bodies, and text inside elements hidden by the `hidden` attribute or inline `display:none`/`visibility:hidden` (executable JavaScript bodies are not scanned as hidden text)
 - Readability text extraction (strips HTML, returns clean text)

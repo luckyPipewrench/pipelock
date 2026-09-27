@@ -12,7 +12,7 @@ The remediation guidance is the point of the command: a hint must name a knob th
 
 ## No network access
 
-`explain` does not resolve DNS or fetch anything. It runs the layers that fire **before** DNS resolution: scheme, CRLF injection, path traversal, allowlist, blocklist, the immutable core SSRF literal check, core and URL DLP, and path/subdomain entropy. The hostname-based SSRF layer (layer 8) resolves DNS at runtime, so `explain` reports when a verdict would *additionally* depend on resolution rather than reaching out itself. Standard and legacy numeric IP forms such as `8.8` are deterministic literals, so they are not marked `dns_dependent`. IP literals that fall in private/loopback/link-local ranges are still caught here by the immutable core SSRF literal check, which needs no resolution.
+`explain` does not resolve DNS or fetch anything. It runs the layers that fire **before** DNS resolution: scheme, CRLF injection, path traversal, allowlist, blocklist, the immutable core SSRF literal check, core and URL DLP, path/query/subdomain entropy, and nested query-parameter destinations (allowlist, blocklist, and the literal-IP floor; nested DNS is not resolved). The hostname-based SSRF layer resolves DNS at runtime, so `explain` reports when a verdict would *additionally* depend on resolution rather than reaching out itself. Standard and legacy numeric IP forms such as `8.8` are deterministic literals, so they are not marked `dns_dependent`. IP literals that fall in private/loopback/link-local ranges are still caught here by the immutable core SSRF literal check, which needs no resolution.
 
 ## Per-scanner remediation mapping
 
@@ -27,9 +27,9 @@ The remediation guidance is the point of the command: a hint must name a knob th
 | `allowlist` | Strict mode and the host is not allowlisted | Add the host to `api_allowlist`. | Switching `mode` from `strict` to `balanced` permits monitored browsing for all destinations. |
 | `ssrf` / `ssrf_metadata` | The host resolves (at runtime) to a private/metadata IP | Top-level `trusted_domains` (hostname) or `ssrf.ip_allowlist` (IP range). This verdict depends on DNS resolution. | Disabling SSRF (`internal: []`) removes private-range protection for all destinations. |
 | `core_ssrf` | A private/loopback/link-local IP literal | `ssrf.ip_allowlist` is the only override (honored even by the core check). The floor cannot be disabled wholesale. | — |
-| `ratelimit` | Per-domain request ceiling reached | `fetch_proxy.monitoring.max_requests_per_minute`, or retry after the window. | — |
+| `ratelimit` | Per-base-domain request ceiling reached (all subdomains share it) | `fetch_proxy.monitoring.max_requests_per_minute`, retry after the window, or (Pro) `agents.<name>.rate_limit.max_requests_per_minute`; an agent `rate_limit` block replaces both per-minute ceilings. | — |
 | `length` | URL exceeds the max length | `fetch_proxy.monitoring.max_url_length`, or inspect for query-param data stuffing. | — |
-| `databudget` | Per-domain data ceiling reached | Adjust the session data-budget configuration. | — |
+| `databudget` | Per-base-domain data ceiling reached (all subdomains share it) | `fetch_proxy.monitoring.max_data_per_minute` (0 disables it), or (Pro) `agents.<name>.rate_limit.max_data_per_minute`; an agent `rate_limit` block replaces both per-minute ceilings. | — |
 | `crlf_injection` / `path_traversal` | A header-injection or directory-escape sequence | None — never legitimate in a normal URL. Correct the URL at its source. | — |
 | `scheme` | A non-http/https scheme | None — use an `http`/`https` URL. | — |
 

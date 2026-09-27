@@ -131,7 +131,7 @@ canonicalization, the current order is:
 7. SigV4 presigned-URL credential carve-out
 8. Core DLP floor
 9. Configured DLP
-10. Path entropy
+10. Path and query entropy
 11. Subdomain entropy
 12. Nested URL destinations named inside query components
 13. DNS-based SSRF, private-address, metadata, and rebinding checks

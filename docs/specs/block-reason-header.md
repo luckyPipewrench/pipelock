@@ -53,15 +53,15 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 |---|---|---|---|
 | `scheme_blocked` | URL scheme other than http/https. | `warn` | `none` |
 | `domain_blocklist` | Hostname matched the configured blocklist. | `critical` | `policy` |
-| `ssrf_private_ip` | Resolved IP is in private/loopback/link-local range. | `critical` | `none` |
+| `ssrf_private_ip` | Resolved IP is in private/loopback/link-local range. Also emitted when DNS resolution fails, including when nested query-parameter destinations exceed their shared resolution budget; that case is resolver availability and a retry may succeed even though this reports `none`. | `critical` | `none` |
 | `ssrf_metadata` | Resolved IP is a cloud metadata endpoint (169.254.169.254, etc.). | `critical` | `none` |
 | `ssrf_dns_rebind` | DNS resolution flipped between scan and dial (TOCTOU). | `critical` | `transient` |
 | `path_entropy` | URL path entropy exceeded configured ceiling (covert channel signal). | `warn` | `policy` |
 | `query_entropy` | URL query key or value entropy exceeded the configured ceiling. | `warn` | `policy` |
 | `subdomain_entropy` | Hostname subdomain entropy exceeded configured ceiling. | `warn` | `policy` |
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
-| `rate_limit` | Per-session or per-host rate limit exceeded. | `warn` | `transient` |
-| `data_budget` | Per-session data budget exceeded. | `warn` | `policy` |
+| `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate limit exceeded (every subdomain of a site shares one URL-scanner budget). | `warn` | `transient` |
+| `data_budget` | Per-session data budget exceeded, or (HTTP 503) the session store is at capacity (`session capacity exhausted; release active quarantine or increase max_sessions`); raise `session_profiling.max_sessions` for the latter. | `warn` | `policy` |
 | `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`. | `warn` | `policy` |
 
 ### Content / payload layer

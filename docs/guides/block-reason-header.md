@@ -27,15 +27,15 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 |---|---|
 | `scheme_blocked` | URL scheme is not http/https. |
 | `domain_blocklist` | Hostname matches a configured blocklist or rule. |
-| `ssrf_private_ip` | DNS resolves to a private / loopback / link-local address. |
+| `ssrf_private_ip` | DNS resolves to a private / loopback / link-local address. Also emitted when DNS resolution fails, including when nested query-parameter destinations exceed their shared resolution budget; that case is resolver availability and a retry may succeed even though `retry` reports `none`. |
 | `ssrf_metadata` | DNS resolves to a cloud metadata endpoint (169.254.169.254, etc.). |
 | `ssrf_dns_rebind` | Hostname's DNS answer differs between resolution and connect, indicating rebinding. |
 | `path_entropy` | URL path triggers the high-entropy detector. |
 | `query_entropy` | URL query key or value triggers the high-entropy detector. |
 | `subdomain_entropy` | Subdomain triggers the high-entropy detector. |
 | `url_length` | URL exceeds `monitoring.max_url_length`. |
-| `rate_limit` | Per-session or per-target rate ceiling exceeded. |
-| `data_budget` | Per-session data budget exhausted. |
+| `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate ceiling exceeded; every subdomain of a site shares the URL scanner's budget. |
+| `data_budget` | Per-session data or capacity budget exhausted, or the URL scanner's per-base-domain `max_data_per_minute` ceiling reached (shared by all subdomains). |
 
 ### Content / payload
 

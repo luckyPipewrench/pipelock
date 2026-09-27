@@ -20,7 +20,7 @@ Scanner types:
 |---------|---------------|
 | `dlp` | Secret patterns (API keys, tokens, credentials, crypto keys) |
 | `response_scan` | Injection patterns in content returned to the agent |
-| `entropy` | Path and subdomain entropy (high-randomness URL segments) |
+| `entropy` | Path and query entropy (high-randomness URL segments); header reason `path_entropy` or `query_entropy`. Subdomain entropy reports separately as `subdomain_entropy`. |
 | `ssrf` | Private IPs, cloud metadata endpoints, DNS rebinding |
 | `tool_policy` | MCP tool call rules (destructive ops, credential access) |
 | `tool_chain` | Sequences of MCP tool calls matching attack patterns |

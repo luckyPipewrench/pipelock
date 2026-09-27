@@ -146,11 +146,11 @@ fetch_proxy:
 | `user_agent` | `Pipelock Fetch/1.0` | User-Agent header sent upstream |
 | `monitoring.max_url_length` | `2048` | URLs longer than this are blocked |
 | `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments. A configured value must be greater than 0; omit the field to take the default. No upper bound is enforced. |
-| `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
-| `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
+| `monitoring.max_requests_per_minute` | `60` | Per-base-domain rate limit; every subdomain shares one budget. Per-agent override: `agents.<name>.rate_limit` (Pro), which replaces both ceilings |
+| `monitoring.max_data_per_minute` | `0` | Per-base-domain byte budget (0 = disabled); every subdomain shares one budget. Per-agent override: `agents.<name>.rate_limit` (Pro), which replaces both ceilings |
 | `monitoring.blocklist` | 6 domains | Blocked exfiltration targets. Omit the field to keep the shipped list; override to replace it, or set an empty list to disable it. Removing entries on hot reload is a security downgrade: strict mode and required-contract modes refuse it, so apply it with a restart |
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
-| `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query parameter values as destinations |
+| `monitoring.scan_nested_urls` | `true` (nil) | Evaluate URL-shaped query keys and values as destinations |
 | `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
 | `monitoring.path_entropy_exclusions` | 6 vendor routes | Host plus literal path-prefix exemptions for the URL-path entropy gate only; subdomain entropy, query entropy, DLP and SSRF still apply. Optional `expires` is temporary and capped at 180 days. Ships with Google Docs, Sheets, Slides, Forms and Drive file routes and the Cloudflare challenge route; your own entries are added to the shipped routes, and an empty list disables them |
 | `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply. Optional `expires` is temporary and capped at 180 days |
@@ -2402,7 +2402,7 @@ Resolution precedence with binding enabled: context override > `default_agent_id
 
 ## Agent Profiles
 
-Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. `mcp_tool_policy` replaces the base section entirely when set on an agent profile (no deep merge). `session_profiling` replaces the per-agent fields (`domain_burst`, `anomaly_action`) unconditionally while preserving global-only fields (`max_sessions`, `session_ttl_minutes`, `cleanup_interval_seconds`). `rate_limit` overrides individual rate limit fields (non-zero values win). DLP merging follows separate rules (see below).
+Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. `mcp_tool_policy` replaces the base section entirely when set on an agent profile (no deep merge). `session_profiling` replaces the per-agent fields (`domain_burst`, `anomaly_action`) unconditionally while preserving global-only fields (`max_sessions`, `session_ttl_minutes`, `cleanup_interval_seconds`). `rate_limit` replaces both base per-minute ceilings when set: an omitted or zero `max_requests_per_minute` or `max_data_per_minute` means unlimited for that agent, so set both fields if the base config limits both. DLP merging follows separate rules (see below).
 
 Per-agent burst detection separates callers only when their identity is infrastructure-bound. Domain-burst detection runs a second, IP-level counter that catches a single caller rotating a self-declared `X-Pipelock-Agent` header to evade the per-agent counter: it emits an `ip_domain_burst` anomaly and, with `anomaly_action: block`, returns HTTP 403 once `domain_burst` unique domains are seen within `window_minutes`. That IP-level counter groups all self-declared and header-matched callers on one client IP together, because a request-supplied name cannot be trusted to partition state. Distinct callers that share one client IP are counted separately only when each is bound by its own per-agent listener; a `source_cidrs` match separates distinct source addresses, not callers that share one address (see the [mediation envelope guide](guides/mediation-envelope.md) for identity grades). Several listener-bound callers on one host therefore do not false-positive as one bursting agent.
 
@@ -2420,7 +2420,7 @@ agents:
           regex: 'internal_[a-zA-Z0-9]{32}'
           severity: critical
     rate_limit:
-      max_requests_per_minute: 30
+      max_requests_per_minute: 30 # replaces both ceilings for this agent; max_data_per_minute is unlimited here since it is omitted
     session_profiling:
       domain_burst: 3
       anomaly_action: block

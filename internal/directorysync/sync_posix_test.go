@@ -9,7 +9,7 @@ import (
 	"errors"
 	"testing"
 
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
 func TestDarwinDirectoryFullSyncFallback(t *testing.T) {
@@ -20,11 +20,11 @@ func TestDarwinDirectoryFullSyncFallback(t *testing.T) {
 		wantErr  error
 	}{
 		{"full flush", nil, false, nil},
-		{"unsupported", unix.ENOTSUP, true, nil},
-		{"invalid for descriptor", unix.EINVAL, true, nil},
-		{"not a tty", unix.ENOTTY, true, nil},
-		{"fallback I/O error", unix.ENOTSUP, true, unix.EIO},
-		{"I/O error", unix.EIO, false, unix.EIO},
+		{"unsupported", syscall.ENOTSUP, true, nil},
+		{"invalid for descriptor", syscall.EINVAL, true, nil},
+		{"not a tty", syscall.ENOTTY, true, nil},
+		{"fallback I/O error", syscall.ENOTSUP, true, syscall.EIO},
+		{"I/O error", syscall.EIO, false, syscall.EIO},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

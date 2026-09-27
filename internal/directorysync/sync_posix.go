@@ -9,7 +9,7 @@ import (
 	"errors"
 	"path/filepath"
 
-	"golang.org/x/sys/unix"
+	"syscall"
 )
 
 type directorySyncer interface {
@@ -35,7 +35,7 @@ func syncDarwinDirectory(fd int, fullSync, fsync func(int) error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTTY) {
+	if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTTY) {
 		return fsync(fd)
 	}
 	return err

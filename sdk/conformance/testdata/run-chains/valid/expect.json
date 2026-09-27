@@ -1,0 +1,27 @@
+{
+  "note": "Generated from the Go reference (receipt.VerifyBase). outer_chain_broken comes from the recorder entry hash chain, which only the Go verifiers check.",
+  "valid": true,
+  "healthy": true,
+  "chains": [
+    {
+      "session": "proxy.run.b684334b834ef3faf86816cb54b23195",
+      "valid": true
+    },
+    {
+      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e",
+      "valid": true
+    }
+  ],
+  "linked": [
+    {
+      "session": "proxy.run.c2a5598a7ba0d7da1765c9fa72bb238e",
+      "predecessor_session": "proxy.run.b684334b834ef3faf86816cb54b23195",
+      "predecessor_tail_seq": 4,
+      "trust": "same_key"
+    }
+  ],
+  "unlinked": [
+    "proxy.run.b684334b834ef3faf86816cb54b23195"
+  ],
+  "findings": []
+}

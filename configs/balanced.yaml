@@ -559,6 +559,8 @@ mcp_session_binding:
   enabled: false
 
 # Kill switch — emergency deny-all. Activate via config, SIGUSR1, sentinel file, or API.
+# A held MCP approval that has not claimed its upstream send is denied on activation;
+# a send already claimed is in flight and cannot be recalled.
 # kill_switch:
 #   enabled: false
 #   sentinel_file: /tmp/pipelock-kill

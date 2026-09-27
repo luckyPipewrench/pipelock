@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,6 +55,23 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	env.readFile = func(string) ([]byte, error) { return nil, errors.New("no read") }
 	env.stat = func(string) (os.FileInfo, error) { return nil, nil } // shim present
 	return env
+}
+
+func TestDoctorViewerMissingConfigurationAndRFB(t *testing.T) {
+	root := t.TempDir()
+	env := &doctorEnv{
+		configPath: filepath.Join(root, "missing.yaml"),
+		agentHome:  root,
+		stat:       os.Stat,
+	}
+	service := checkDoctorViewerService(context.Background(), env)
+	if service.status != statusFail || !strings.Contains(service.detail, "viewer config missing:") || !strings.Contains(service.remediation, "check display viewer configuration") {
+		t.Fatalf("missing viewer config = %+v", service)
+	}
+	rfb := checkDoctorDisplayRFB(context.Background(), env)
+	if rfb.status != statusFail || !strings.Contains(rfb.detail, "TigerVNC Xvnc missing") {
+		t.Fatalf("missing RFB server = %+v", rfb)
+	}
 }
 
 func TestDoctorCounterProbeEnvUsesLiveDoctorOverrides(t *testing.T) {
@@ -1054,4 +1072,27 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 			return "200", 0, nil // proxied curl/python/node
 		}
 	})
+}
+
+func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
+	env := allPassDoctorEnv(t)
+	env.configPath = filepath.Join(t.TempDir(), "config.yaml")
+	env.stat = os.Lstat
+	env.lstat = os.Lstat
+	if err := os.WriteFile(env.configPath, []byte("containment:\n  display:\n    enabled: true\n    backend: xvnc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	cmd.SetContext(context.Background())
+	_ = runDoctor(cmd, env, doctorOpts{jsonOutput: true})
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var agg aggregateRecord
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
+		t.Fatal(err)
+	}
+	if agg.Aggregate.Total != 12 || len(lines) != 13 {
+		t.Fatalf("aggregate total = %d, records = %d; want 12 checks", agg.Aggregate.Total, len(lines)-1)
+	}
 }

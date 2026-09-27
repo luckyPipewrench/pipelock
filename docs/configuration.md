@@ -708,6 +708,25 @@ Semantics, all fail-closed:
 
 A rule may set both `graphql` and `discriminator`; when it does, both predicates must match (in addition to the route). The discriminator predicate is evaluated on every HTTP transport and per WebSocket text frame, the same surfaces as the GraphQL predicate, and it folds into the canonical policy hash.
 
+### Exact JSON exception on a block rule
+
+Use `except` when a narrowly scoped block rule must permit one exact top-level JSON string value. The exception applies only after the body is fully read and parsed. A missing or duplicate key, different value or case, non-string value, malformed JSON, or unreadable body keeps the block active, even if `on_parse_error` or `on_opaque_operation` is `warn` or `allow`.
+
+```yaml
+  rules:
+    - name: "block-move-except-archive"
+      action: block
+      route:
+        hosts: ["api.service.example.com"]
+        methods: ["POST"]
+        path_patterns: ["/items/.+/move$"]
+      except:
+        field: "destinationId"
+        values: ["archive"]
+```
+
+`except` requires an enforced `block` rule scoped by host, a body-carrying method (`POST`, `PUT`, `PATCH`, `DELETE`, or `QUERY`), and path. It cannot be combined with `graphql` or `discriminator`. Values are exact and case-sensitive. A batch sub-request is inspected with the same rule. This exception is a narrow allowance within the named rule; other matching rules still apply.
+
 ### Batch endpoints
 
 A JSON batch endpoint wraps multiple sub-requests in one outer request, each carrying its own method, URL, and body. When an outer request route-matches a `batch` entry, request policy parses the envelope and evaluates **every** sub-request against the full rule set: host inherited from the outer request, plus the sub-request's effective method, normalized path, and any GraphQL operation in its body or URL query. The strictest decision across all sub-requests wins, so a dangerous operation cannot evade a rule by being wrapped in a batch.
@@ -1741,6 +1760,28 @@ containment:
 `allowed_source_cidrs` lists the only sources that may read `/metrics`. Use exact CIDRs for the scraper hosts. Wildcard source ranges, wildcard binds, and hostname binds are rejected. `owner`, `reason`, and `expires_at` make the exception reviewable during an incident. The expiry is RFC3339 and the listener stops serving remote metrics when it passes. `/stats` remains loopback-only.
 
 The proxy will not dial its own configured metrics address and port. That rule runs before trusted domains, `ssrf.ip_allowlist`, and grants, so a generic SSRF exception cannot expose metrics to a contained agent through the proxy.
+
+### Contained agent display (containment)
+
+`containment.display` installs an agent-owned X display for browser tools. With no display settings, installation uses Xvfb only when it is present, as before. `enabled: false` disables provisioning; `number` defaults to `99` and accepts `0` through `999`. `geometry` defaults to `1280x1024` and accepts one `WxH` token with width 320–32768 and height 200–32768, with at most 16,777,216 pixels (64 MiB at four bytes per pixel).
+
+Changes to the display backend, geometry, or viewer settings require `pipelock contain install`. Configuration reload retains the installed display settings and does not apply those changes.
+
+```yaml
+containment:
+  display:
+    enabled: true
+    backend: xvnc
+    geometry: 1280x1024
+    viewer:
+      enabled: true
+      operator_user: operator
+      clipboard: false
+```
+
+`backend` accepts `xvfb` or `xvnc`; enabling the viewer defaults the backend to `xvnc`, and an explicit `xvfb` conflicts with it. Xvnc disables TCP RFB and creates `/run/pipelock-agent-display/rfb.sock`. A privileged systemd pre-start step creates that directory as root:`pipelock-viewer` with mode `0730`. Xvnc runs with the viewer group and can create the socket; contained agent processes cannot enter or change the directory. The socket is `0600` without a viewer and `0660` with one. The viewer service runs as the dedicated `pipelock-viewer` user, never as the proxy user. Its own directory under `/run/pipelock-contain-viewer/` remains private to that user; the control socket has an exact operator `rw-` ACL and a peer-UID check. The operator must have a different identity from the agent, proxy, and viewer accounts. The viewer enforces view-only mode and the control lease. `pipelock contain view` exposes a local Unix socket for a standard VNC client. `clipboard: false` disables clipboard transfer in both directions at the Xvnc display server.
+
+Rerun `pipelock contain install` after upgrading a host that uses the old home-directory RFB socket. Install moves Xvnc to the root-owned runtime directory, removes obsolete named ACL grants and the old socket from the agent home, and restarts the viewer under its dedicated identity. This cleanup runs again on every install, disable, and rollback, even after the unit has been migrated; verify and doctor fail if old access remains. An install failure restores the previous managed units and their active state. `pipelock contain rollback` stops both services and removes the viewer account only when install created that same account, unless `--keep-users` is set. A pre-existing viewer account is preserved. Configuration reload does not change this access model; use `contain install` for display or viewer changes.
 
 ### Contained agent identity (containment)
 

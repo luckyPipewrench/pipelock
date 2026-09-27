@@ -21,6 +21,8 @@ import (
 const (
 	displayUnitMarker = "# Managed by `pipelock contain install`."
 	defaultXvfbPath   = "/usr/bin/Xvfb"
+	defaultXvncPath   = "/usr/bin/Xvnc"
+	viewerRFBSocket   = "/run/pipelock-agent-display/rfb.sock"
 	// displaySocketWaitAttempts and displaySocketWaitInterval bound how long
 	// ExecStartPost polls for the Xvfb Unix socket before chmod-ing it. Xvfb
 	// on a slow or loaded first-boot host (cold page cache, contended CPU
@@ -88,6 +90,68 @@ func xvfbInstalled(env *installEnv) bool {
 	return err == nil
 }
 
+// xvncCandidates is the one search order install, verify, and doctor share.
+// It deliberately ignores PATH: install runs as root, whose PATH puts
+// /usr/local/bin first, while verify rebuilds the expected unit from this
+// list. Two different lookups would render one ExecStart and expect another,
+// failing every verify on hosts where they disagree. Debian ships the binary
+// as Xtigervnc with Xvnc as an optional alternative.
+var xvncCandidates = []string{defaultXvncPath, "/usr/bin/Xtigervnc", "/usr/local/bin/Xvnc"}
+
+// resolveXvncPath returns the first installed candidate, or "" when none is.
+func resolveXvncPath(stat func(string) (os.FileInfo, error)) string {
+	for _, path := range xvncCandidates {
+		if _, err := stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func findXvnc(env *installEnv) (string, error) {
+	if env.xvncPath != "" {
+		if _, err := env.stat(env.xvncPath); err == nil {
+			return env.xvncPath, nil
+		}
+	}
+	if path := resolveXvncPath(env.stat); path != "" {
+		return path, nil
+	}
+	return "", fmt.Errorf("TigerVNC Xvnc missing; install %s", xvncPackage(env.platformFamily))
+}
+
+func xvncPackage(family string) string {
+	if family == platformFamilyDebian {
+		return "tigervnc-standalone-server"
+	}
+	body, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "TigerVNC Xvnc"
+	}
+	return xvncPackageForOSRelease(string(body))
+}
+
+func xvncPackageForOSRelease(body string) string {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(body, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			fields[key] = strings.Trim(value, `"'`)
+		}
+	}
+	if fields["ID"] != "fedora" {
+		return "TigerVNC Xvnc"
+	}
+	version, err := strconv.Atoi(fields["VERSION_ID"])
+	if err != nil {
+		return "TigerVNC Xvnc"
+	}
+	if version >= 44 {
+		return "tigervnc-x11-server"
+	}
+	return "tigervnc-server-minimal"
+}
+
 func loadContainmentDisplay(env *installEnv) (config.ContainmentDisplay, error) {
 	cfg, err := config.LoadForInspection(managedPipelockConfigPath(env))
 	if err != nil {
@@ -96,12 +160,49 @@ func loadContainmentDisplay(env *installEnv) (config.ContainmentDisplay, error) 
 		}
 		return config.ContainmentDisplay{}, fmt.Errorf("load containment display config: %w", err)
 	}
+	if err := cfg.Containment.Display.Validate(); err != nil {
+		return config.ContainmentDisplay{}, err
+	}
 	return cfg.Containment.Display, nil
 }
+
+// managedXSocketMode is the X socket mode the display unit sets after start:
+// only the agent may connect, so no other local user can reach its display.
+const managedXSocketMode os.FileMode = 0o700
 
 func renderAgentDisplayUnit(env *installEnv) string {
 	number := env.displayNumber
 	socket := displaySocketPath(number)
+	if env.displayConfig.EffectiveBackend() == "xvnc" {
+		rfbSocket := displayRFBPath(env.rfbSocketPath)
+		xvnc := env.xvncPath
+		if xvnc == "" {
+			xvnc = defaultXvncPath
+		}
+		rfbGroup, rfbMode := viewerUserName, "0600"
+		if viewerRFBEnabled(env.displayConfig) {
+			rfbMode = "0660"
+		}
+		clipboard := " -AcceptCutText=0 -SendCutText=0 -SendPrimary=0 -SetPrimary=0"
+		if env.displayConfig.Viewer.Clipboard != nil && *env.displayConfig.Viewer.Clipboard {
+			clipboard = ""
+		}
+		post := "chmod 0700 \"$1\" || exit 1"
+		// TigerVNC Xvnc.man documents the RFB socket, TCP disable, and clipboard parameters:
+		// https://github.com/TigerVNC/tigervnc/blob/master/unix/xserver/hw/vnc/Xvnc.man
+		return strings.Join([]string{
+			displayUnitMarker, "[Unit]", "Description=Pipelock contained agent X display",
+			"After=systemd-tmpfiles-setup.service", "", "[Service]", "Type=simple",
+			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
+			// RuntimeDirectory with User= would make the directory agent-owned.
+			// A privileged pre-start action owns it as root while Xvnc gets only
+			// group create/traverse access. Contained agent processes lack that gid.
+			"ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display",
+			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode " + rfbMode + " -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
+			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
+			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
+		}, "\n")
+	}
 	return strings.Join([]string{
 		displayUnitMarker,
 		"[Unit]",
@@ -113,7 +214,7 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		"User=" + env.agentUserName,
 		"Group=" + env.agentUserName,
 		"UMask=0077",
-		"ExecStart=" + env.xvfbPath + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix",
+		"ExecStart=" + env.xvfbPath + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -screen 0 " + env.displayConfig.EffectiveGeometry() + "x24 -nolisten tcp -nolisten local -listen unix",
 		"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ]; then chmod 0700 \"$1\"; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket,
 		"Restart=on-failure",
 		"RestartSec=2",
@@ -122,6 +223,103 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		"WantedBy=multi-user.target",
 		"",
 	}, "\n")
+}
+
+func displayRFBPath(override string) string {
+	if override != "" {
+		return override
+	}
+	return viewerRFBSocket
+}
+
+func legacyViewerSocketPath(agentHome string) string {
+	return filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")
+}
+
+// viewerTraverseDirs lists the legacy home-directory ACL chain for upgrade cleanup.
+func viewerTraverseDirs(agentHome string) []string {
+	dirs := []string{agentHome}
+	rel, err := filepath.Rel(agentHome, filepath.Dir(filepath.Join(agentHome, ".local/state/pipelock/display/rfb.sock")))
+	if err != nil {
+		return dirs
+	}
+	dir := agentHome
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		dir = filepath.Join(dir, part)
+		dirs = append(dirs, dir)
+	}
+	return dirs
+}
+
+// removeViewerTraverseACL removes the obsolete home-socket access independently
+// of the unit text. A failed cleanup is retried on the next install or rollback.
+func removeViewerTraverseACL(ctx context.Context, env *installEnv) error {
+	return removeViewerTraverseACLNoFollow(ctx, env)
+}
+
+func revokeViewerTraverseDir(ctx context.Context, env *installEnv, dir string) error {
+	acl, err := readAccessACL(ctx, env.runCmd, dir)
+	if err != nil {
+		return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
+	}
+	if env.proxyUserName != "" && aclHasNamedUser(acl, env.proxyUserName) {
+		if err := runOrErr(ctx, env, "setfacl", "-x", "u:"+env.proxyUserName, dir); err != nil {
+			return fmt.Errorf("revoke viewer traverse ACL on %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func aclHasNamedUser(acl, name string) bool {
+	for _, raw := range strings.Split(acl, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if strings.HasPrefix(line, "user:"+name+":") {
+			return true
+		}
+	}
+	return false
+}
+
+func checkLegacyViewerACL(ctx context.Context, run runCommand, stat func(string) (os.FileInfo, error), home, proxy string) error {
+	if home == "" {
+		return nil
+	}
+	if proxy == "" {
+		proxy = defaultProxyUser
+	}
+	if stat == nil {
+		return errors.New("legacy viewer ACL stat unavailable")
+	}
+	for _, dir := range viewerTraverseDirs(home) {
+		info, err := stat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect legacy viewer ACL: %w", err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("legacy viewer path %s is not a real directory", dir)
+		}
+		acl, err := readAccessACL(ctx, run, dir)
+		if err != nil {
+			return fmt.Errorf("read legacy viewer ACL on %s: %w", dir, err)
+		}
+		if proxy != "" && aclHasNamedUser(acl, proxy) {
+			return fmt.Errorf("legacy viewer ACL retains proxy entry on %s", dir)
+		}
+	}
+	socket := legacyViewerSocketPath(home)
+	if _, err := stat(socket); err == nil {
+		return fmt.Errorf("legacy RFB socket remains at %s", socket)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect legacy RFB socket: %w", err)
+	}
+	return nil
+}
+
+func viewerRFBEnabled(display config.ContainmentDisplay) bool {
+	return display.Viewer.Enabled != nil && *display.Viewer.Enabled
 }
 
 func captureDisplayPreState(ctx context.Context, env *installEnv) error {
@@ -159,9 +357,24 @@ func stepProvisionAgentDisplay() step {
 				return false, err
 			}
 			enabled := display.IsEnabled(xvfbInstalled(env))
+			env.displayConfig = display
+			if err := checkViewerOperatorIdentity(env); err != nil {
+				return false, err
+			}
+			if display.EffectiveBackend() == "xvnc" && enabled {
+				path, findErr := findXvnc(env)
+				if findErr != nil {
+					return false, findErr
+				}
+				env.xvncPath = path
+			}
 			env.displayEnabled = enabled
 			env.displayNumber = display.EffectiveNumber()
 			if err := captureDisplayPreState(ctx, env); err != nil {
+				return false, err
+			}
+			// Revoke before changing the unit so a failed revoke remains retryable.
+			if err := removeViewerTraverseACL(ctx, env); err != nil {
 				return false, err
 			}
 			if !enabled {
@@ -196,8 +409,10 @@ func stepProvisionAgentDisplay() step {
 				}
 				return true, runOrErr(ctx, env, "systemctl", "daemon-reload")
 			}
-			if _, err := env.stat(env.xvfbPath); err != nil {
-				return false, fmt.Errorf("display provisioning requires %s: %w", env.xvfbPath, err)
+			if display.EffectiveBackend() == "xvfb" {
+				if _, err := env.stat(env.xvfbPath); err != nil {
+					return false, fmt.Errorf("display provisioning requires %s: %w", env.xvfbPath, err)
+				}
 			}
 			previousAuthority, previousAuthorityExisted, err = readDisplayAuthority(env)
 			if err != nil {
@@ -216,9 +431,58 @@ func stepProvisionAgentDisplay() step {
 			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.displayUnitPath)); err != nil {
 				return true, err
 			}
+			// Every run writes a fresh cookie, so a running display restarts to read it.
 			if env.prevDisplayActive {
 				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.displayUnitPath)); err != nil {
 					return true, err
+				}
+			}
+			// A prior install may have granted the proxy traverse access to the
+			// agent home. The runtime socket never needs that grant, including
+			// when the viewer remains enabled across an upgrade.
+			if display.EffectiveBackend() == "xvnc" {
+				stat := env.lstat
+				if stat == nil {
+					stat = env.stat
+				}
+				if err := checkDisplaySocket(stat, displaySocketPath(env.displayNumber), managedXSocketMode); err != nil {
+					return true, fmt.Errorf("x display socket: %w", err)
+				}
+				rfb := displayRFBPath(env.rfbSocketPath)
+				if err := checkRFBRuntimeDirectory(stat, env.lookupUser, rfb); err != nil {
+					return true, err
+				}
+				mode := os.FileMode(0o600)
+				if viewerRFBEnabled(display) {
+					mode = 0o660
+				}
+				if err := checkDisplaySocket(stat, rfb, mode); err != nil {
+					return true, fmt.Errorf("RFB socket: %w", err)
+				}
+				if viewerRFBEnabled(display) {
+					if err := checkViewerRFBGroup(stat, env.lookupUser, rfb); err != nil {
+						return true, err
+					}
+				}
+				if env.lookupUser != nil {
+					user, err := env.lookupUser(env.agentUserName)
+					if err != nil {
+						return true, fmt.Errorf("lookup RFB owner: %w", err)
+					}
+					uid, err := strconv.ParseUint(user.Uid, 10, 32)
+					if err != nil {
+						return true, fmt.Errorf("parse RFB owner uid: %w", err)
+					}
+					for _, path := range []string{displaySocketPath(env.displayNumber), rfb} {
+						info, err := stat(path)
+						if err != nil {
+							return true, fmt.Errorf("stat display socket %s: %w", path, err)
+						}
+						ownerUID, ok := fileOwnerUID(info)
+						if !ok || uint64(ownerUID) != uid {
+							return true, fmt.Errorf("display socket %s is not owned by the contained agent", path)
+						}
+					}
 				}
 			}
 			return true, nil
@@ -255,6 +519,44 @@ func stepProvisionAgentDisplay() step {
 	}
 }
 
+func checkDisplaySocket(stat func(string) (os.FileInfo, error), path string, mode os.FileMode) error {
+	info, err := stat(path)
+	if err != nil {
+		return fmt.Errorf("%s missing: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
+		return fmt.Errorf("%s is %s, want socket %04o", path, info.Mode(), mode)
+	}
+	return nil
+}
+
+func checkRFBRuntimeDirectory(stat func(string) (os.FileInfo, error), lookup lookupUserFunc, socket string) error {
+	info, err := stat(filepath.Dir(socket))
+	if err != nil {
+		return fmt.Errorf("RFB runtime directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o730 {
+		return fmt.Errorf("RFB runtime directory mode is %s, want 0730", info.Mode())
+	}
+	if lookup == nil {
+		return errors.New("RFB runtime identity lookup unavailable")
+	}
+	viewer, err := lookup(viewerUserName)
+	if err != nil {
+		return fmt.Errorf("RFB runtime group: %w", err)
+	}
+	group, err := strconv.ParseUint(viewer.Gid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("RFB runtime group: %w", err)
+	}
+	uid, uidOK := fileOwnerUID(info)
+	gid, gidOK := fileOwnerGID(info)
+	if !uidOK || !gidOK || uid != 0 || uint64(gid) != group {
+		return errors.New("RFB runtime directory has wrong owner or group")
+	}
+	return nil
+}
+
 func restoreAgentDisplay(ctx context.Context, env *installEnv) error {
 	unit := filepath.Base(env.displayUnitPath)
 	if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
@@ -283,13 +585,13 @@ func actionRemoveAgentDisplay() step {
 		desc: "stop and remove the managed agent display unit",
 		undo: func(ctx context.Context, env *installEnv) error {
 			if env.displayUnitPath == "" {
-				return nil
+				return removeViewerTraverseACL(ctx, env)
 			}
 			env.prevDisplayStateKnown = false
-			if err := restoreAgentDisplay(ctx, env); err != nil {
-				return err
-			}
-			return removeDisplayAuthority(env)
+			restoreErr := restoreAgentDisplay(ctx, env)
+			authorityErr := removeDisplayAuthority(env)
+			aclErr := removeViewerTraverseACL(ctx, env)
+			return errors.Join(restoreErr, authorityErr, aclErr)
 		},
 	}
 }
@@ -516,14 +818,18 @@ func isManagedDisplayUnitFile(readFile func(string) ([]byte, error), path, agent
 	}
 	for key, value := range map[string]string{
 		"User":  agentUserName,
-		"Group": agentUserName,
 		"UMask": "0077",
 	} {
 		if !unitHasExactEntry(text, "Service", key, value) {
 			return false
 		}
 	}
-	return strings.Contains(text, "ExecStart=") && strings.Contains(text, " -nolisten tcp -nolisten local -listen unix")
+	agentGroup := unitHasExactEntry(text, "Service", "Group", agentUserName)
+	viewerGroup := unitHasExactEntry(text, "Service", "Group", viewerUserName) && strings.Contains(text, " -rfbunixpath "+viewerRFBSocket)
+	if agentGroup || viewerGroup {
+		return strings.Contains(text, "ExecStart=") && strings.Contains(text, " -nolisten tcp -nolisten local -listen unix")
+	}
+	return false
 }
 
 func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
@@ -564,13 +870,24 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	// Carry the probe's own X server path into the expectation, or the
 	// rendered comparison asks for an empty ExecStart and every real unit
 	// fails a check that looks like a tampering alarm.
-	checkEnv := &installEnv{agentUserName: env.agentUserName, displayNumber: number, xvfbPath: env.xvfbPath}
+	checkEnv := &installEnv{agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, displayNumber: number, xvfbPath: env.xvfbPath, xvncPath: env.xvncPath, displayConfig: display}
 	renderedLines := strings.Split(renderAgentDisplayUnit(checkEnv), "\n")
-	wantExec := strings.TrimPrefix(renderedLines[10], "ExecStart=")
-	wantExecPost := strings.TrimPrefix(renderedLines[11], "ExecStartPost=")
+	wantExec, wantExecPost := "", ""
+	wantGroup := env.agentUserName
+	if display.EffectiveBackend() == "xvnc" {
+		wantGroup = viewerUserName
+	}
+	for _, line := range renderedLines {
+		if strings.HasPrefix(line, "ExecStart=") {
+			wantExec = strings.TrimPrefix(line, "ExecStart=")
+		}
+		if strings.HasPrefix(line, "ExecStartPost=") {
+			wantExecPost = strings.TrimPrefix(line, "ExecStartPost=")
+		}
+	}
 	for key, value := range map[string]string{
 		"User":          env.agentUserName,
-		"Group":         env.agentUserName,
+		"Group":         wantGroup,
 		"UMask":         "0077",
 		"ExecStart":     wantExec,
 		"ExecStartPost": wantExecPost,
@@ -596,7 +913,7 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	if err != nil {
 		return statusFail, fmt.Sprintf("stat display socket: %v", err)
 	}
-	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o700 {
+	if info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != managedXSocketMode {
 		return statusFail, fmt.Sprintf("display socket mode is %s, want socket 0700", info.Mode())
 	}
 	agent, err := env.lookupUser(env.agentUserName)
@@ -611,5 +928,60 @@ func probeAgentDisplay(ctx context.Context, env *probeEnv) (string, string) {
 	if !ok || uint64(ownerUID) != wantUID {
 		return statusFail, "display socket is not owned by the contained agent uid"
 	}
-	return statusPass, fmt.Sprintf("display %s is active with an agent-owned 0700 Unix socket", displayName(number))
+	return statusPass, fmt.Sprintf("%s display %s is active with an agent-owned 0700 Unix socket", display.EffectiveBackend(), displayName(number))
+}
+
+func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err != nil {
+		return statusFail, fmt.Sprintf("read containment display config: %v", err)
+	}
+	if cfg.Containment.Display.EffectiveBackend() != "xvnc" {
+		return statusPass, "RFB display is not configured"
+	}
+	body, err := env.readFile(env.displayUnitPath)
+	if err != nil {
+		return statusFail, fmt.Sprintf("read display unit: %v", err)
+	}
+	path := displayRFBPath(env.rfbSocketPath)
+	modeText := "0600"
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		modeText = "0660"
+	}
+	if !strings.Contains(string(body), " -rfbunixpath "+path+" -rfbunixmode "+modeText+" -rfbport -1 ") {
+		return statusFail, "display unit must disable TCP RFB and use the managed Unix socket"
+	}
+	lstat := env.lstat
+	if lstat == nil {
+		lstat = env.stat
+	}
+	info, err := lstat(path)
+	if err != nil {
+		return statusFail, fmt.Sprintf("RFB socket missing; rerun contain install: %v", err)
+	}
+	mode := os.FileMode(0o600)
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		mode = 0o660
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != mode {
+		return statusFail, fmt.Sprintf("RFB socket mode is %s, want socket %04o", info.Mode(), mode)
+	}
+	if viewerRFBEnabled(cfg.Containment.Display) {
+		if err := checkViewerRFBGroup(lstat, env.lookupUser, path); err != nil {
+			return statusFail, err.Error()
+		}
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return statusFail, fmt.Sprintf("lookup RFB owner: %v", err)
+	}
+	uid, err := strconv.ParseUint(agent.Uid, 10, 32)
+	if err != nil {
+		return statusFail, fmt.Sprintf("parse RFB owner uid: %v", err)
+	}
+	ownerUID, ok := fileOwnerUID(info)
+	if !ok || uint64(ownerUID) != uid {
+		return statusFail, "RFB socket is not owned by the contained agent uid"
+	}
+	return statusPass, "agent-owned RFB Unix socket is private and TCP RFB is disabled"
 }

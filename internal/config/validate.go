@@ -41,6 +41,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+var containmentGeometryPattern = regexp.MustCompile(`^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$`)
+
 // ValidateTrustedDomains validates and normalizes a slice of trusted domain
 // entries. Each entry is lowercased, trimmed, and checked for: empty values,
 // URL/host:port formats, bare wildcards, over-broad wildcards (e.g. *.com),
@@ -661,8 +663,8 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateContainmentPublishedServices(); err != nil {
 		return warnings, err
 	}
-	if number := c.Containment.Display.Number; number != nil && (*number < 0 || *number > 999) {
-		return warnings, fmt.Errorf("containment.display.number %d must be between 0 and 999", *number)
+	if err := c.Containment.Display.Validate(); err != nil {
+		return warnings, err
 	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err
@@ -2817,6 +2819,23 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 				return err
 			}
 		}
+		if r.Except != nil {
+			if r.Action != ActionBlock || r.Shadow || r.GraphQL != nil || r.Discriminator != nil ||
+				len(r.Route.Hosts) == 0 || len(r.Route.Methods) == 0 ||
+				(len(r.Route.PathPrefixes) == 0 && len(r.Route.PathPatterns) == 0) {
+				return fmt.Errorf("request_policy rule %q except requires an enforced block rule scoped by host, method, and path without another predicate", r.Name)
+			}
+			for _, method := range r.Route.Methods {
+				switch method {
+				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
+				default:
+					return fmt.Errorf("request_policy rule %q except requires a body-carrying HTTP method", r.Name)
+				}
+			}
+			if err := validateRequestPolicyException(r.Name, r.Except); err != nil {
+				return err
+			}
+		}
 		if rp.Enabled {
 			c.warnRequestPolicyVisibility(r, warnings)
 		}
@@ -2940,6 +2959,19 @@ func validateRequestPolicyDiscriminator(rule string, d *RequestPolicyDiscriminat
 	return nil
 }
 
+func validateRequestPolicyException(rule string, e *RequestPolicyException) error {
+	e.Field = strings.TrimSpace(e.Field)
+	if e.Field == "" || len(e.Values) == 0 {
+		return fmt.Errorf("request_policy rule %q except requires a field and at least one exact value", rule)
+	}
+	for _, value := range e.Values {
+		if value == "" || strings.TrimSpace(value) != value {
+			return fmt.Errorf("request_policy rule %q except values must be non-empty exact strings without surrounding whitespace", rule)
+		}
+	}
+	return nil
+}
+
 // methodQuery is the HTTP QUERY method (draft-ietf-httpbis-safe-method-w-body).
 // Go's net/http has no constant for it. It is a safe method that carries a
 // request body, so operators may want to name it in request_policy rules and
@@ -3020,7 +3052,7 @@ func validateRequestPolicyFailureAction(field, action string) error {
 }
 
 func requestPolicyRuleNeedsInnerHTTP(r *RequestPolicyRule) bool {
-	if r.GraphQL != nil || r.Discriminator != nil {
+	if r.GraphQL != nil || r.Discriminator != nil || r.Except != nil {
 		return true
 	}
 	return requestPolicyRouteNeedsInnerHTTP(r.Route)

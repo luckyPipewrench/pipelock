@@ -50,6 +50,18 @@ the config files differ:
   path, activating the kill switch blocks both. Use distinct sentinel paths if
   you need independent kill control.
 
+## Deferred approvals during emergency activation
+
+An approved MCP call remains held until it claims its upstream send. Kill-switch
+activation rejects held calls that have not claimed that send. A send that claimed
+before activation is recorded as in flight and cannot be recalled; inspect the
+upstream service if you need to determine whether it completed.
+
+Upgrade note: previously held approvals could be forwarded after activation.
+After upgrading, those approvals resolve as blocked, including after a policy
+reload. Operators should reissue a denied call only after clearing the kill switch
+and verifying that the upstream did not already act on an in-flight call.
+
 Per-config separation is a coarse tool: it isolates servers but does not, by
 itself, lift a specific pattern for one server. Parts 2 and 3 do that.
 

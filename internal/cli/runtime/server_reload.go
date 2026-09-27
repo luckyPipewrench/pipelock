@@ -153,6 +153,12 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
 			}
 		}
+		// Display provisioning owns a systemd unit and Unix sockets. A config
+		// reload cannot switch those resources; contain install does that.
+		if !reflect.DeepEqual(oldCfg.Containment.Display, newCfg.Containment.Display) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.display changed — run `pipelock contain install`; ignoring until install")
+			newCfg.Containment.Display = oldCfg.Containment.Display
+		}
 		// Config reload only swaps the in-memory Config.Containment.LoopbackServices
 		// value; it never touches the kernel nftables state. The declared set
 		// only reaches the agent's actual egress boundary through

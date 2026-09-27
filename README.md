@@ -345,7 +345,7 @@ pipelock contain verify
 pipelock contain run -- claude-code
 ```
 
-`pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` manages a 3-UID operator / proxy / agent model: the agent runs in a private network namespace with no route off-host, reaching only the Pipelock proxy through a doorway socket, with nftables owner-match rules as the fallback backstop, plus systemd service setup, wrapper commands, workspace ACLs, CA refresh, and posture evidence. See [`docs/contain-cli.md`](docs/contain-cli.md).
+`pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) manages a 3-UID operator / proxy / agent model: the agent runs in a private network namespace with no route off-host, reaching only the Pipelock proxy through a doorway socket, with nftables owner-match rules as the fallback backstop, plus systemd service setup, wrapper commands, workspace ACLs, CA refresh, and posture evidence. See [`docs/contain-cli.md`](docs/contain-cli.md).
 
 ### Evidence And Receipts
 
@@ -415,7 +415,7 @@ pipelock contain run -- claude-code
 | **Wedge-Detection Watchdog** (v2.4) | `health_watchdog` returns `/health` 503 when a subsystem heartbeat goes stale. See [health endpoint guide](docs/guides/health.md). |
 | **Redaction Provider Plugin Shape** (v2.4) | First-party redaction parsers for Anthropic, OpenAI, and Gemini chat APIs, with a provider-plugin shape for third-party parsers. |
 | **Audit Packet v0 Schema + Verifiers** (v2.5) | First-party canonical Audit Packet schema with Go, TypeScript, and Rust verifier implementations, plus standalone [`pipelock-verifier`](cmd/pipelock-verifier/) CLI. Schema lives under [`sdk/audit-packet/`](sdk/audit-packet/); verifier packages live under [`sdk/verifiers/`](sdk/verifiers/). |
-| **Host Containment Lifecycle** (v2.5) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` manages the 3-UID containment model: a private network namespace with no route off-host is the primary boundary, nftables owner-match rules are the fallback. See [`docs/contain-cli.md`](docs/contain-cli.md). |
+| **Host Containment Lifecycle** (v2.5) | `pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) manages the 3-UID containment model: a private network namespace with no route off-host is the primary boundary, nftables owner-match rules are the fallback. See [`docs/contain-cli.md`](docs/contain-cli.md). |
 | **MCP Integrity Manifests** (v2.5) | `pipelock mcp integrity manifest generate / verify / sign / verify-signature` pins MCP server binaries/scripts by hash and can require a trusted manifest signature before subprocess launch. See [`docs/cli/mcp-integrity.md`](docs/cli/mcp-integrity.md). |
 | **Kubernetes MCP Launcher Contract** (v2.5) | `pipelock init sidecar --mcp-upstream` emits companion listener configuration, service port, workload annotations, NetworkPolicy allowance, `PIPELOCK_MCP_PROXY_URL`, and mounted `PIPELOCK_MCP_CONFIG`. See [`docs/cli/init-sidecar.md`](docs/cli/init-sidecar.md). |
 | **Federation Strict Mode** (v2.5) | Inbound mediation-envelope verification requires SPIFFE-format actors by default, contract tombstones are enforced, and `pipelock envelope trust add/list/remove/verify` manages local trust. See [federation guide](docs/guides/federation.md). |
@@ -680,7 +680,7 @@ Full docs directory: [docs/](docs/)
 | [Federation](docs/guides/federation.md) | Inbound mediation envelope verification, SPIFFE actor format, RFC 9421 well-known directory (v2.4) |
 | [Block-Reason Header](docs/guides/block-reason-header.md) | `X-Pipelock-Block-Reason` schema, reason vocabulary, retry hints (v2.4) |
 | [Health Endpoint](docs/guides/health.md) | `/health` 503 wedge detection, subsystem heartbeats, operator dashboard config (v2.4) |
-| [Host Containment](docs/contain-cli.md) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID containment (private network namespace as the primary boundary, nftables owner-match as the fallback) with kernel-observed posture attestation (v2.5) |
+| [Host Containment](docs/contain-cli.md) | `pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) for 3-UID containment (private network namespace as the primary boundary, nftables owner-match as the fallback) with kernel-observed posture attestation (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
 | [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, Enterprise) |

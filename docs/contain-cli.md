@@ -99,7 +99,7 @@ Exit codes:
 
 - **0**, preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
 - **1**, containment was broken, posture emission failed, or the launched agent exited non-zero.
-- **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
+- **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port. A launch refused because a recorded workspace grant has expired also exits 2, with or without `--dry-run`; the error names the expired grants and the `grant-workspace` or `revoke-workspace` command that clears them.
 
 Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.
 
@@ -124,6 +124,8 @@ Flags:
 | `--config` | (required if not already in place) | Source `pipelock.yaml` copied to `/etc/pipelock/pipelock.yaml`. |
 
 Install steps run in order; each one is idempotent. If any step fails, every previously-applied step is rolled back before exit so the system never settles in a partial state.
+
+Before any of these steps changes the host, install runs `pipelock check` from the binary it is about to install against the config it is about to install (with `--dry-run`, against your `--config` file). If that binary can parse the config but cannot enforce it, for example named `agents.<profile>` entries under a build without agent profiles, install refuses before replacing the service binary, writing the system unit, restarting Pipelock, or loading nftables rules.
 
 1. Create `pipelock-proxy` and `pipelock-agent` system users.
 2. Lay down `/etc/pipelock/` and `/var/lib/pipelock/` with strict ownership and permissions, copy `pipelock.yaml`, and set proxy ownership on the config/data roots. Agent-readable config artifacts stay traversable under `/etc/pipelock`; proxy-owned runtime state stays private under `/var/lib/pipelock`.

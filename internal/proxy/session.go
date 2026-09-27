@@ -1486,12 +1486,22 @@ func baselineActionOrDefault(action string) string {
 // ReconfigureBaseline applies behavioral_baseline hot-reload changes without
 // resetting learned or locked profiles.
 func (sm *SessionManager) ReconfigureBaseline(cfg *config.BehavioralBaseline) error {
+	apply, err := sm.PrepareBaselineReconfigure(cfg)
+	if err != nil {
+		return err
+	}
+	apply()
+	return nil
+}
+
+// PrepareBaselineReconfigure performs all fallible baseline work without
+// changing the live snapshot. The returned update cannot fail.
+func (sm *SessionManager) PrepareBaselineReconfigure(cfg *config.BehavioralBaseline) (func(), error) {
 	if cfg == nil || !cfg.Enabled {
-		sm.baselinePtr.Store(nil)
-		return nil
+		return func() { sm.baselinePtr.Store(nil) }, nil
 	}
 	if snap := sm.baselinePtr.Load(); snap != nil && snap.mgr != nil {
-		if err := snap.mgr.Reconfigure(baseline.Config{
+		apply, err := snap.mgr.PrepareReconfigure(baseline.Config{
 			Enabled:          cfg.Enabled,
 			LearningWindow:   cfg.LearningWindow,
 			DeviationAction:  cfg.DeviationAction,
@@ -1501,13 +1511,20 @@ func (sm *SessionManager) ReconfigureBaseline(cfg *config.BehavioralBaseline) er
 			LockDimensions:   cfg.LockDimensions,
 			PoisonResistance: cfg.PoisonResistance,
 			SeasonalityMode:  cfg.SeasonalityMode,
-		}); err != nil {
-			return fmt.Errorf("baseline reconfigure: %w", err)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("baseline reconfigure: %w", err)
 		}
-		sm.baselinePtr.Store(&baselineSnapshot{mgr: snap.mgr, action: baselineActionOrDefault(cfg.DeviationAction)})
-		return nil
+		return func() {
+			apply()
+			sm.baselinePtr.Store(&baselineSnapshot{mgr: snap.mgr, action: baselineActionOrDefault(cfg.DeviationAction)})
+		}, nil
 	}
-	return sm.EnableBaseline(cfg)
+	snap, err := newBaselineSnapshot(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return func() { sm.baselinePtr.Store(snap) }, nil
 }
 
 // BaselineManager returns the baseline manager, or nil if not enabled.

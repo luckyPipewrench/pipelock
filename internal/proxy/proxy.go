@@ -2268,6 +2268,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	var stagedSessionMgr *SessionManager
 	var reconfigureBaseline *SessionManager
+	var applyBaseline func()
 	if oldCfg != nil {
 		wasSessionProfilingEnabled := oldCfg.SessionProfiling.Enabled
 		isSessionProfilingEnabled := cfg.SessionProfiling.Enabled
@@ -2290,6 +2291,18 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			}
 		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
 			reconfigureBaseline = p.sessionMgrPtr.Load()
+			if reconfigureBaseline != nil {
+				var err error
+				applyBaseline, err = reconfigureBaseline.PrepareBaselineReconfigure(&cfg.BehavioralBaseline)
+				if err != nil {
+					p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+					sc.Close()
+					if newEd != nil {
+						newEd.Close()
+					}
+					return false
+				}
+			}
 		}
 	}
 	// Staging above may load keys and build evidence components. Keep that I/O
@@ -2354,19 +2367,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		receiptStage.v2.ResumeAt(seq, prev)
 	}
-	// The baseline update is last: a failed hand-off must not leave the live
-	// baseline at an unpublished action. Receipt emitters already retired by
-	// this point remain fail-closed if baseline reconfiguration then fails.
-	if reconfigureBaseline != nil {
-		if err := reconfigureBaseline.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
-			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-				fmt.Errorf("baseline reload failed, keeping old config: %w", err))
-			sc.Close()
-			if newEd != nil {
-				newEd.Close()
-			}
-			return false
-		}
+	// Apply only after receipt emission and chain hand-off succeed. Preparation
+	// completed validation and I/O before either receipt was written.
+	if applyBaseline != nil {
+		applyBaseline()
 		reconfigureBaseline.WarnUnproducibleBaselineProfiles(baselineConfiguredIdentityNames(cfg))
 	}
 

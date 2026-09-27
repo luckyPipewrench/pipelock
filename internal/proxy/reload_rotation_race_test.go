@@ -6,6 +6,7 @@ package proxy
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,8 @@ const rotationTestPolicyHash = "sha256:0123456789abcdef0123456789abcdef012345678
 type rotationFixture struct {
 	p        *Proxy
 	cfg      *config.Config
+	rec      *recorder.Recorder
+	recDir   string
 	keyPathB string
 	v1       *receipt.Emitter
 	v2       *proxydecision.Emitter
@@ -76,7 +79,7 @@ func newRotationFixture(t *testing.T) rotationFixture {
 		t.Fatalf("proxy.New: %v", err)
 	}
 	t.Cleanup(p.Close)
-	return rotationFixture{p: p, cfg: cfg, keyPathB: keyPathB, v1: v1, v2: v2}
+	return rotationFixture{p: p, cfg: cfg, rec: rec, recDir: recDir, keyPathB: keyPathB, v1: v1, v2: v2}
 }
 
 func rotationTestDecision() proxydecision.Decision {
@@ -92,10 +95,32 @@ func rotationTestDecision() proxydecision.Decision {
 	}
 }
 
-// A baseline failure after a signer rotation already wrote the replacement
-// session_open must not leave the old v1 emitter live on a stale chain head.
-func TestReloadRotationBaselineFailureBricksOldReceiptEmitter(t *testing.T) {
+func rotationSessionOpenCount(t *testing.T, dir string) int {
+	t.Helper()
+	count := 0
+	for _, entry := range readAllEntries(t, dir) {
+		if entry.Type != receiptEntryType {
+			continue
+		}
+		body, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatalf("marshal receipt: %v", err)
+		}
+		got, err := receipt.Unmarshal(body)
+		if err != nil {
+			t.Fatalf("unmarshal receipt: %v", err)
+		}
+		if got.ActionRecord.SessionControl != nil && got.ActionRecord.SessionControl.Kind == receipt.SessionControlOpen {
+			count++
+		}
+	}
+	return count
+}
+
+func TestReloadRotationBaselinePrepareFailureWritesNoReceipt(t *testing.T) {
 	f := newRotationFixture(t)
+	beforeEntries := rotationSessionOpenCount(t, f.recDir)
+	before := f.p.sessionMgrPtr.Load().baselinePtr.Load()
 	blockedDir := filepath.Join(t.TempDir(), "regular-file")
 	if err := os.WriteFile(filepath.Clean(blockedDir), []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -109,11 +134,45 @@ func TestReloadRotationBaselineFailureBricksOldReceiptEmitter(t *testing.T) {
 	if f.p.receiptEmitterPtr.Load() != f.v1 {
 		t.Fatal("failed reload published a new receipt emitter")
 	}
-	if f.v1.HealthError() == nil {
-		t.Fatal("old receipt emitter stayed healthy after the replacement session_open was written")
+	if got := rotationSessionOpenCount(t, f.recDir); got != beforeEntries {
+		t.Fatalf("session opens after failed prepare = %d, want %d", got, beforeEntries)
 	}
-	if err := f.v2.Emit(rotationTestDecision()); err == nil {
-		t.Fatal("old v2 emitter accepted an emit after failed baseline reconfiguration")
+	if got := f.p.sessionMgrPtr.Load().baselinePtr.Load(); got != before || got.action != config.ActionBlock {
+		t.Fatalf("live baseline changed after failed prepare: %+v", got)
+	}
+}
+
+func TestReloadRotationReceiptFailureKeepsBaseline(t *testing.T) {
+	f := newRotationFixture(t)
+	before := f.p.sessionMgrPtr.Load().baselinePtr.Load()
+	if err := f.rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	next := *f.cfg
+	next.FlightRecorder.SigningKeyPath = f.keyPathB
+	next.BehavioralBaseline.DeviationAction = config.ActionWarn
+	if f.p.Reload(&next, scanner.MustNew(&next)) {
+		t.Fatal("reload succeeded despite closed recorder")
+	}
+	if got := f.p.sessionMgrPtr.Load().baselinePtr.Load(); got != before || got.action != config.ActionBlock {
+		t.Fatalf("live baseline changed after receipt failure: %+v", got)
+	}
+}
+
+func TestReloadRotationReceiptSuccessAppliesBaseline(t *testing.T) {
+	f := newRotationFixture(t)
+	beforeEntries := rotationSessionOpenCount(t, f.recDir)
+	next := *f.cfg
+	next.FlightRecorder.SigningKeyPath = f.keyPathB
+	next.BehavioralBaseline.DeviationAction = config.ActionWarn
+	if !f.p.Reload(&next, scanner.MustNew(&next)) {
+		t.Fatal("rotation reload failed")
+	}
+	if got := f.p.sessionMgrPtr.Load().baselinePtr.Load(); got == nil || got.action != config.ActionWarn {
+		t.Fatalf("live baseline action after rotation: %+v", got)
+	}
+	if got := rotationSessionOpenCount(t, f.recDir); got != beforeEntries+1 {
+		t.Fatalf("session opens after successful rotation = %d, want %d", got, beforeEntries+1)
 	}
 }
 

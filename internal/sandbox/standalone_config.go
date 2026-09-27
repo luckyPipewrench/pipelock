@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -29,6 +30,9 @@ type StandaloneLaunchConfig struct {
 	Strict bool
 	// BestEffort permits supported degraded containment.
 	BestEffort bool
+	// BridgeIdleTimeout bounds how long a bridged connection may carry no bytes
+	// in either direction. Zero uses DefaultBridgeIdleTimeout.
+	BridgeIdleTimeout time.Duration
 	// BestEffortReason and BestEffortExpiry authorize an advisory network
 	// override at launch admission. Expiry never terminates a running child;
 	// each later launch needs a fresh authorization.

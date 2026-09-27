@@ -358,6 +358,17 @@ test("audit packet detects verdict-vs-chain disagreement", async () => {
   assert.ok(report.errors?.some((err) => err.includes("verdict=invalid")));
 });
 
+test("shared example packet is schema checked but untrusted offline", async () => {
+  const report = await verifyAuditPacket("../../audit-packet/example.json", {
+    ...defaultOptions,
+    offline: true,
+  });
+  assert.equal(report.schema_check, "pass");
+  assert.equal(report.verdict, "schema_checked_trust_unverified");
+  assert.equal(report.trusted, false);
+  assert.equal(report.valid, false);
+});
+
 test("--offline skips chain verification", async () => {
   const report = await verifyAuditPacket(
     writePacket((packet) => {
@@ -365,7 +376,9 @@ test("--offline skips chain verification", async () => {
     }),
     { ...defaultOptions, offline: true },
   );
-  assert.equal(report.valid, true);
+  assert.equal(report.valid, false);
+  assert.equal(report.verdict, "schema_checked_trust_unverified");
+  assert.equal(report.trusted, false);
   assert.equal(report.chain_check, "skipped");
   assert.equal(report.cross_check, "skipped");
   assert.equal(report.lifecycle_assessment, "not_assessed");

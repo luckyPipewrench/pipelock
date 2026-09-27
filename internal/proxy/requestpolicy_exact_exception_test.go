@@ -34,6 +34,8 @@ func TestRequestPolicy_ForwardExactException(t *testing.T) {
 		{"archive", `{"destinationId":"archive"}`, false},
 		{"deleted items", `{"destinationId":"deleteditems"}`, true},
 		{"duplicate target", `{"destinationId":"archive","destinationId":"archive"}`, true},
+		{"duplicate target blocked first", `{"destinationId":"deleteditems","destinationId":"archive"}`, true},
+		{"duplicate target blocked last", `{"destinationId":"archive","destinationId":"deleteditems"}`, true},
 		{"invalid json", `{"destinationId":`, true},
 		{"absent", `{"other":"archive"}`, true},
 	} {

@@ -412,7 +412,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 		if clearInjectionTailAfterCurrent {
-			for i, current := range []string{rollingInjectionText, payloadText} {
+			for i, current := range []string{rollingInjectionText, string(event)} {
 				next, err := dropSelfMatchingSSEInjectionTail(ctx, sc, current, opts)
 				if err != nil {
 					return err

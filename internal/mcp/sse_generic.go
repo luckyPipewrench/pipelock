@@ -206,6 +206,7 @@ func ScanGenericSSEStreamWithOptions(
 				if opts.OnFinding != nil {
 					opts.OnFinding(findingErr)
 				}
+				reader.ClearInvalidLastEventID()
 				continue
 			}
 			return findingErr

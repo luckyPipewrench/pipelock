@@ -1543,7 +1543,7 @@ func TestScanGenericSSEStream_NonUTF8MetadataFailsClosed(t *testing.T) {
 				body = append(body, 0xff)
 				body = append(body, []byte("\ndata: unsafe\n\n")...)
 				if field == "id" {
-					body = append(body, []byte("id: valid\ndata: safe\n\n")...)
+					body = append(body, []byte("data: safe-without-id\n\nid: valid\ndata: safe-with-id\n\n")...)
 				} else {
 					body = append(body, []byte("data: safe\n\n")...)
 				}
@@ -1556,7 +1556,8 @@ func TestScanGenericSSEStream_NonUTF8MetadataFailsClosed(t *testing.T) {
 						t.Fatalf("block err=%v out=%x", err, out.Bytes())
 					}
 				} else if err != nil || len(findings) != 1 || !errors.Is(findings[0], ErrSSEInvalidUTF8) ||
-					bytes.Contains(out.Bytes(), []byte{0xff}) || !strings.Contains(out.String(), "data: safe") || strings.Contains(out.String(), "data: unsafe") {
+					bytes.Contains(out.Bytes(), []byte{0xff}) || !strings.Contains(out.String(), "data: safe") || strings.Contains(out.String(), "data: unsafe") ||
+					(field == "id" && (!strings.Contains(out.String(), "data: safe-without-id") || !strings.Contains(out.String(), "data: safe-with-id"))) {
 					t.Fatalf("warn err=%v findings=%v out=%x", err, findings, out.Bytes())
 				}
 			})

@@ -1,0 +1,525 @@
+{
+  "description": "encoding/json.Marshal of a one-character string, as hex, for every code point listed",
+  "entries": [
+    {
+      "codepoint": "0000",
+      "go_json_hex": "225c753030303022"
+    },
+    {
+      "codepoint": "0001",
+      "go_json_hex": "225c753030303122"
+    },
+    {
+      "codepoint": "0002",
+      "go_json_hex": "225c753030303222"
+    },
+    {
+      "codepoint": "0003",
+      "go_json_hex": "225c753030303322"
+    },
+    {
+      "codepoint": "0004",
+      "go_json_hex": "225c753030303422"
+    },
+    {
+      "codepoint": "0005",
+      "go_json_hex": "225c753030303522"
+    },
+    {
+      "codepoint": "0006",
+      "go_json_hex": "225c753030303622"
+    },
+    {
+      "codepoint": "0007",
+      "go_json_hex": "225c753030303722"
+    },
+    {
+      "codepoint": "0008",
+      "go_json_hex": "225c6222"
+    },
+    {
+      "codepoint": "0009",
+      "go_json_hex": "225c7422"
+    },
+    {
+      "codepoint": "000a",
+      "go_json_hex": "225c6e22"
+    },
+    {
+      "codepoint": "000b",
+      "go_json_hex": "225c753030306222"
+    },
+    {
+      "codepoint": "000c",
+      "go_json_hex": "225c6622"
+    },
+    {
+      "codepoint": "000d",
+      "go_json_hex": "225c7222"
+    },
+    {
+      "codepoint": "000e",
+      "go_json_hex": "225c753030306522"
+    },
+    {
+      "codepoint": "000f",
+      "go_json_hex": "225c753030306622"
+    },
+    {
+      "codepoint": "0010",
+      "go_json_hex": "225c753030313022"
+    },
+    {
+      "codepoint": "0011",
+      "go_json_hex": "225c753030313122"
+    },
+    {
+      "codepoint": "0012",
+      "go_json_hex": "225c753030313222"
+    },
+    {
+      "codepoint": "0013",
+      "go_json_hex": "225c753030313322"
+    },
+    {
+      "codepoint": "0014",
+      "go_json_hex": "225c753030313422"
+    },
+    {
+      "codepoint": "0015",
+      "go_json_hex": "225c753030313522"
+    },
+    {
+      "codepoint": "0016",
+      "go_json_hex": "225c753030313622"
+    },
+    {
+      "codepoint": "0017",
+      "go_json_hex": "225c753030313722"
+    },
+    {
+      "codepoint": "0018",
+      "go_json_hex": "225c753030313822"
+    },
+    {
+      "codepoint": "0019",
+      "go_json_hex": "225c753030313922"
+    },
+    {
+      "codepoint": "001a",
+      "go_json_hex": "225c753030316122"
+    },
+    {
+      "codepoint": "001b",
+      "go_json_hex": "225c753030316222"
+    },
+    {
+      "codepoint": "001c",
+      "go_json_hex": "225c753030316322"
+    },
+    {
+      "codepoint": "001d",
+      "go_json_hex": "225c753030316422"
+    },
+    {
+      "codepoint": "001e",
+      "go_json_hex": "225c753030316522"
+    },
+    {
+      "codepoint": "001f",
+      "go_json_hex": "225c753030316622"
+    },
+    {
+      "codepoint": "0020",
+      "go_json_hex": "222022"
+    },
+    {
+      "codepoint": "0021",
+      "go_json_hex": "222122"
+    },
+    {
+      "codepoint": "0022",
+      "go_json_hex": "225c2222"
+    },
+    {
+      "codepoint": "0023",
+      "go_json_hex": "222322"
+    },
+    {
+      "codepoint": "0024",
+      "go_json_hex": "222422"
+    },
+    {
+      "codepoint": "0025",
+      "go_json_hex": "222522"
+    },
+    {
+      "codepoint": "0026",
+      "go_json_hex": "225c753030323622"
+    },
+    {
+      "codepoint": "0027",
+      "go_json_hex": "222722"
+    },
+    {
+      "codepoint": "0028",
+      "go_json_hex": "222822"
+    },
+    {
+      "codepoint": "0029",
+      "go_json_hex": "222922"
+    },
+    {
+      "codepoint": "002a",
+      "go_json_hex": "222a22"
+    },
+    {
+      "codepoint": "002b",
+      "go_json_hex": "222b22"
+    },
+    {
+      "codepoint": "002c",
+      "go_json_hex": "222c22"
+    },
+    {
+      "codepoint": "002d",
+      "go_json_hex": "222d22"
+    },
+    {
+      "codepoint": "002e",
+      "go_json_hex": "222e22"
+    },
+    {
+      "codepoint": "002f",
+      "go_json_hex": "222f22"
+    },
+    {
+      "codepoint": "0030",
+      "go_json_hex": "223022"
+    },
+    {
+      "codepoint": "0031",
+      "go_json_hex": "223122"
+    },
+    {
+      "codepoint": "0032",
+      "go_json_hex": "223222"
+    },
+    {
+      "codepoint": "0033",
+      "go_json_hex": "223322"
+    },
+    {
+      "codepoint": "0034",
+      "go_json_hex": "223422"
+    },
+    {
+      "codepoint": "0035",
+      "go_json_hex": "223522"
+    },
+    {
+      "codepoint": "0036",
+      "go_json_hex": "223622"
+    },
+    {
+      "codepoint": "0037",
+      "go_json_hex": "223722"
+    },
+    {
+      "codepoint": "0038",
+      "go_json_hex": "223822"
+    },
+    {
+      "codepoint": "0039",
+      "go_json_hex": "223922"
+    },
+    {
+      "codepoint": "003a",
+      "go_json_hex": "223a22"
+    },
+    {
+      "codepoint": "003b",
+      "go_json_hex": "223b22"
+    },
+    {
+      "codepoint": "003c",
+      "go_json_hex": "225c753030336322"
+    },
+    {
+      "codepoint": "003d",
+      "go_json_hex": "223d22"
+    },
+    {
+      "codepoint": "003e",
+      "go_json_hex": "225c753030336522"
+    },
+    {
+      "codepoint": "003f",
+      "go_json_hex": "223f22"
+    },
+    {
+      "codepoint": "0040",
+      "go_json_hex": "224022"
+    },
+    {
+      "codepoint": "0041",
+      "go_json_hex": "224122"
+    },
+    {
+      "codepoint": "0042",
+      "go_json_hex": "224222"
+    },
+    {
+      "codepoint": "0043",
+      "go_json_hex": "224322"
+    },
+    {
+      "codepoint": "0044",
+      "go_json_hex": "224422"
+    },
+    {
+      "codepoint": "0045",
+      "go_json_hex": "224522"
+    },
+    {
+      "codepoint": "0046",
+      "go_json_hex": "224622"
+    },
+    {
+      "codepoint": "0047",
+      "go_json_hex": "224722"
+    },
+    {
+      "codepoint": "0048",
+      "go_json_hex": "224822"
+    },
+    {
+      "codepoint": "0049",
+      "go_json_hex": "224922"
+    },
+    {
+      "codepoint": "004a",
+      "go_json_hex": "224a22"
+    },
+    {
+      "codepoint": "004b",
+      "go_json_hex": "224b22"
+    },
+    {
+      "codepoint": "004c",
+      "go_json_hex": "224c22"
+    },
+    {
+      "codepoint": "004d",
+      "go_json_hex": "224d22"
+    },
+    {
+      "codepoint": "004e",
+      "go_json_hex": "224e22"
+    },
+    {
+      "codepoint": "004f",
+      "go_json_hex": "224f22"
+    },
+    {
+      "codepoint": "0050",
+      "go_json_hex": "225022"
+    },
+    {
+      "codepoint": "0051",
+      "go_json_hex": "225122"
+    },
+    {
+      "codepoint": "0052",
+      "go_json_hex": "225222"
+    },
+    {
+      "codepoint": "0053",
+      "go_json_hex": "225322"
+    },
+    {
+      "codepoint": "0054",
+      "go_json_hex": "225422"
+    },
+    {
+      "codepoint": "0055",
+      "go_json_hex": "225522"
+    },
+    {
+      "codepoint": "0056",
+      "go_json_hex": "225622"
+    },
+    {
+      "codepoint": "0057",
+      "go_json_hex": "225722"
+    },
+    {
+      "codepoint": "0058",
+      "go_json_hex": "225822"
+    },
+    {
+      "codepoint": "0059",
+      "go_json_hex": "225922"
+    },
+    {
+      "codepoint": "005a",
+      "go_json_hex": "225a22"
+    },
+    {
+      "codepoint": "005b",
+      "go_json_hex": "225b22"
+    },
+    {
+      "codepoint": "005c",
+      "go_json_hex": "225c5c22"
+    },
+    {
+      "codepoint": "005d",
+      "go_json_hex": "225d22"
+    },
+    {
+      "codepoint": "005e",
+      "go_json_hex": "225e22"
+    },
+    {
+      "codepoint": "005f",
+      "go_json_hex": "225f22"
+    },
+    {
+      "codepoint": "0060",
+      "go_json_hex": "226022"
+    },
+    {
+      "codepoint": "0061",
+      "go_json_hex": "226122"
+    },
+    {
+      "codepoint": "0062",
+      "go_json_hex": "226222"
+    },
+    {
+      "codepoint": "0063",
+      "go_json_hex": "226322"
+    },
+    {
+      "codepoint": "0064",
+      "go_json_hex": "226422"
+    },
+    {
+      "codepoint": "0065",
+      "go_json_hex": "226522"
+    },
+    {
+      "codepoint": "0066",
+      "go_json_hex": "226622"
+    },
+    {
+      "codepoint": "0067",
+      "go_json_hex": "226722"
+    },
+    {
+      "codepoint": "0068",
+      "go_json_hex": "226822"
+    },
+    {
+      "codepoint": "0069",
+      "go_json_hex": "226922"
+    },
+    {
+      "codepoint": "006a",
+      "go_json_hex": "226a22"
+    },
+    {
+      "codepoint": "006b",
+      "go_json_hex": "226b22"
+    },
+    {
+      "codepoint": "006c",
+      "go_json_hex": "226c22"
+    },
+    {
+      "codepoint": "006d",
+      "go_json_hex": "226d22"
+    },
+    {
+      "codepoint": "006e",
+      "go_json_hex": "226e22"
+    },
+    {
+      "codepoint": "006f",
+      "go_json_hex": "226f22"
+    },
+    {
+      "codepoint": "0070",
+      "go_json_hex": "227022"
+    },
+    {
+      "codepoint": "0071",
+      "go_json_hex": "227122"
+    },
+    {
+      "codepoint": "0072",
+      "go_json_hex": "227222"
+    },
+    {
+      "codepoint": "0073",
+      "go_json_hex": "227322"
+    },
+    {
+      "codepoint": "0074",
+      "go_json_hex": "227422"
+    },
+    {
+      "codepoint": "0075",
+      "go_json_hex": "227522"
+    },
+    {
+      "codepoint": "0076",
+      "go_json_hex": "227622"
+    },
+    {
+      "codepoint": "0077",
+      "go_json_hex": "227722"
+    },
+    {
+      "codepoint": "0078",
+      "go_json_hex": "227822"
+    },
+    {
+      "codepoint": "0079",
+      "go_json_hex": "227922"
+    },
+    {
+      "codepoint": "007a",
+      "go_json_hex": "227a22"
+    },
+    {
+      "codepoint": "007b",
+      "go_json_hex": "227b22"
+    },
+    {
+      "codepoint": "007c",
+      "go_json_hex": "227c22"
+    },
+    {
+      "codepoint": "007d",
+      "go_json_hex": "227d22"
+    },
+    {
+      "codepoint": "007e",
+      "go_json_hex": "227e22"
+    },
+    {
+      "codepoint": "007f",
+      "go_json_hex": "227f22"
+    },
+    {
+      "codepoint": "2028",
+      "go_json_hex": "225c753230323822"
+    },
+    {
+      "codepoint": "2029",
+      "go_json_hex": "225c753230323922"
+    }
+  ]
+}

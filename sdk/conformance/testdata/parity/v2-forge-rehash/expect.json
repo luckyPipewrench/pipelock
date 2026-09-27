@@ -1,0 +1,76 @@
+{
+  "description": "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. A named run A still passes: B's own receipt chains are not part of A's base checks.",
+  "recorder_chain": "rehashed",
+  "symlinks": [],
+  "cells": [
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [],
+      "errors": [
+        {
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+          "kind": "evidence_receipt_chain"
+        }
+      ]
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [],
+      "errors": [
+        {
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+          "kind": "evidence_receipt_chain"
+        }
+      ]
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [],
+      "errors": [
+        {
+          "kind": "evidence_receipt_chain"
+        }
+      ]
+    }
+  ]
+}

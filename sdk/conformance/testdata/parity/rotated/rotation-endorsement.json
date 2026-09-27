@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "session_id": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+  "prior_signer_key": "026e37b56c724ac0a60f015673e108972a0efd68462c580a5e648eee3cf54815",
+  "prior_final_seq": 4,
+  "prior_tail_hash": "28916933c67ec3bebd8eb101d28274731b0d0995edc2ef6061cb3eb83a129137",
+  "new_signer_key": "fed3786a6c9c07372fa46cdc8a0cefa6bffa8a225e7000243fae1fa93cdfaa4b",
+  "rotated_at": "2026-09-27T17:28:06.597652384Z",
+  "endorsement": "ed25519:1b0f218bcfecb2c4a056c537a048a86dc678dce250b7d0a8a5ca740cb649016c8627aed744fe573587ed295287a8035d4610dbe4916701ce29261710619bf301"
+}

@@ -1,0 +1,98 @@
+{
+  "description": "Run B's honest file split into three shards at entry boundaries; the middle shard holds only one EvidenceReceipt v2. The run verifies as one chain across its shards. Read alone, the v2-only shard is verified as a v2 chain, never reported as holding no receipts; it and the last shard fail file mode because their first entry does not start the recorder hash chain.",
+  "recorder_chain": "intact",
+  "symlinks": [],
+  "cells": [
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.03b13ee13e01e7f770480f62ea42f1fe",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-4.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [],
+      "errors": [
+        {
+          "kind": "outer_chain_broken"
+        }
+      ]
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-5.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [],
+      "errors": [
+        {
+          "kind": "outer_chain_broken"
+        },
+        {
+          "kind": "action_receipt_chain"
+        },
+        {
+          "kind": "evidence_receipt_chain"
+        }
+      ]
+    }
+  ]
+}

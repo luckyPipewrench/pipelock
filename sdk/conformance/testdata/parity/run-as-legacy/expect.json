@@ -1,0 +1,99 @@
+{
+  "description": "Run A's file renamed to the legacy base session name. Its entries still name run A, so it is refused, and B's link now names a predecessor that is not present.",
+  "recorder_chain": "intact",
+  "symlinks": [],
+  "cells": [
+    {
+      "mode": "dir",
+      "target": ".",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy"
+        },
+        {
+          "kind": "dangling_link",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": [
+        {
+          "session": "proxy",
+          "kind": "session_mismatch"
+        }
+      ]
+    },
+    {
+      "mode": "session",
+      "target": "proxy",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy"
+        },
+        {
+          "kind": "dangling_link",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": [
+        {
+          "session": "proxy",
+          "kind": "session_mismatch"
+        }
+      ]
+    },
+    {
+      "mode": "session",
+      "target": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy"
+        },
+        {
+          "kind": "dangling_link",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    },
+    {
+      "mode": "file",
+      "target": "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl",
+      "keys": [
+        "signer-key.hex"
+      ],
+      "endorsements": [],
+      "valid": true,
+      "findings": [],
+      "errors": []
+    }
+  ]
+}

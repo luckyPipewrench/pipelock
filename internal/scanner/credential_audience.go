@@ -415,3 +415,28 @@ func deduplicateCredentialAudienceAllows(allows []CredentialAudienceAllow) []Cre
 	}
 	return unique
 }
+
+// queryValueIsAudienceCredential reports whether a decoded query value is, in
+// its entirety, one compiled provider credential whose audience accepts this
+// destination on the URL surface. DLP already allows that delivery; without
+// this, query entropy would block the same value for looking random. The
+// match must span the whole value, so any extra bytes beside the credential
+// keep the value under entropy scoring. Every other scanner still runs.
+func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, p := range s.dlpPatterns {
+		if len(p.credentialAudienceHosts) == 0 {
+			continue
+		}
+		start, end, ok := p.matchSpanInView(value, value)
+		if !ok || start != 0 || end != len(value) {
+			continue
+		}
+		if _, allowed := s.credentialAudienceAllows(p, target, "url"); allowed {
+			return true
+		}
+	}
+	return false
+}

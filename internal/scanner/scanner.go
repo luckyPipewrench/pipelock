@@ -4014,7 +4014,7 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 				continue
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
-				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) {
+				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) || s.queryValueIsAudienceCredential(parsed.String(), v) {
 					continue
 				}
 				return s.queryEntropyParamResult(key, finding)

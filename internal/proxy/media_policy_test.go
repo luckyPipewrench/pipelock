@@ -1204,3 +1204,15 @@ func TestApplyMediaPolicy_RelabeledDisallowedBlockedWithoutStripping(t *testing.
 		t.Fatalf("positive control: honest PNG blocked with stripping off: %s", v.BlockReason)
 	}
 }
+
+func TestApplyMediaPolicy_ICOUnderPNGLabelBlockedWithoutStripping(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	off := false
+	cfg.MediaPolicy.StripImageMetadata = &off
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/x-icon"}
+	ico := append([]byte{0, 0, 1, 0, 1, 0}, make([]byte, 32)...)
+	if v := applyMediaPolicy(cfg, "image/png", ico); !v.Blocked || !strings.Contains(v.BlockReason, "image/x-icon") {
+		t.Fatalf("ICO labeled PNG with stripping off: blocked=%v %q", v.Blocked, v.BlockReason)
+	}
+}

@@ -1224,3 +1224,15 @@ func TestApplyMCPMediaPolicy_RelabeledDisallowedBlockedWithoutStripping(t *testi
 		t.Fatalf("positive control: allowed WebP labeled PNG blocked: %s", v.BlockReason)
 	}
 }
+
+func TestApplyMCPMediaPolicy_ICOUnderPNGLabelBlockedWithoutStripping(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	off := false
+	cfg.MediaPolicy.StripImageMetadata = &off
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/x-icon"}
+	ico := append([]byte{0, 0, 1, 0, 1, 0}, make([]byte, 32)...)
+	if v := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", ico, testMCPMediaTransport); !v.Blocked || !strings.Contains(v.BlockReason, "image/x-icon") {
+		t.Fatalf("ICO labeled PNG with stripping off: blocked=%v %q", v.Blocked, v.BlockReason)
+	}
+}

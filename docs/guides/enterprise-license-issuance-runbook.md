@@ -12,6 +12,10 @@ license that grants the `fleet` feature.
 
 The license service keeps `GET /health` as unconditional liveness, while `GET /ready` reports whether a Polar provider read has succeeded within `PROVIDER_SUCCESS_WINDOW` (default `15m`). Point readiness probes at `/ready` and liveness probes at `/health` so a provider outage removes the pod from service without restarting it.
 
+## Polar API version
+
+Every Polar read is pinned via the `Polar-Version` header, default `2026-04`, overridable with `POLAR_API_VERSION` (must be a `YYYY-MM` date). Polar retires versions on a schedule; once the pinned version is retired, every subscription and order read fails with `404`. Re-pin `POLAR_API_VERSION` to a supported version before that happens.
+
 ## License recovery
 
 A customer who lost their license email can ask the service to send it again. The endpoint is off by default; set `SELF_SERVE_RESEND_ENABLED=true` to expose `POST /v1/license/resend`.
@@ -29,6 +33,18 @@ Admitted requests are limited per address (one per 15 minutes, three per 24 hour
 When the pending-request queue is full, or the service is shutting down, the endpoint answers `503 Service Unavailable` with `Retry-After`. That depends only on load, not on the address. On shutdown the service drains accepted requests while the shutdown deadline permits. Requests still queued or running when the deadline expires may be abandoned.
 
 Each caller may make five requests per 15 minutes before anything is queued or looked up; more get `429 Too Many Requests` with `Retry-After`, which depends only on the caller. The caller is the connection's remote address. When the service is reachable only through an ingress that records the client address in a header, set `SELF_SERVE_RESEND_CLIENT_IP_HEADER` to that header; the last comma-separated value is used, because the ingress appends it and the caller cannot. Do not set it when callers can reach the service directly, or they can choose their own identity. A per-client limit at the ingress is still a sensible second layer.
+
+## Trial support operations
+
+The license-service admin binary has three commands for handling a no-card trial support case, keyed by Polar's trial order ID (`--subscription-id`):
+
+```bash
+license-service inspect-trial --subscription-id <id>
+license-service resend-trial --subscription-id <id> --reason "<support reason>"
+license-service revoke-trial --subscription-id <id> --reason "<revocation reason>"
+```
+
+`inspect-trial` prints the trial's subscription ID, customer email, tier, status, license ID, expiry, delivery status, and whether it has been revoked. `resend-trial` re-sends the existing trial access without minting a new token or extending its expiry. `revoke-trial` is a durable revocation; a cached CRL response can still validate the license for up to one minute after the revocation is recorded.
 
 ## Feature Mapping
 

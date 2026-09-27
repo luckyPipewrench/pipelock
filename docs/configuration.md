@@ -982,6 +982,8 @@ When `scan_env: true`, pipelock reads all environment variables at startup and f
 
 This catches leaked API keys even without a specific DLP pattern for that provider.
 
+A copied fragment of such a value is caught too, starting at 16 bytes. A value longer than 4,096 bytes, such as an inline certificate or JSON key, is indexed at up to 4,081 evenly spaced 16-byte positions instead of every position, so a fragment is caught once it is long enough to cover one of them: about 18 bytes for an 8 KiB value and about 48 bytes for the largest single environment string Linux allows (128 KiB). Canary tokens use the same index. A single long value no longer stops Pipelock from starting.
+
 DLP decoding accepts hex, percent-encoding, standard and URL-safe base64, RFC 4648 base32 in any ASCII case, RFC 4648 base32hex, JSON `\uXXXX` escapes, and HTML character references in URL query values. It does not decode Crockford base32, z-base-32, base58, ascii85, rot13, or reversed text.
 
 ## Seed Phrase Detection

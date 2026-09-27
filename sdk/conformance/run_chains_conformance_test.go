@@ -26,10 +26,6 @@ const (
 	runChainsDir       = "testdata/run-chains"
 	runChainsBase      = "proxy"
 	runChainExpectFile = "expect.json"
-	// runChainGoOnlyFinding is found from the recorder file's own entry hash
-	// chain. Only the Go verifiers check that chain; the SDK verifiers check
-	// the receipt chain inside it.
-	runChainGoOnlyFinding = receipt.FindingOuterChainBroken
 )
 
 var runChainVariants = []string{
@@ -94,7 +90,7 @@ type runChainExpectFind struct {
 
 func runChainKeyFile(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(runChainsDir, name))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(runChainsDir, name)))
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
@@ -125,7 +121,7 @@ func runChainExpectFor(t *testing.T, c runChainCase) runChainExpect {
 		t.Fatalf("VerifyBase %s: %v", dir, err)
 	}
 	exp := runChainExpect{
-		Note:     "Generated from the Go reference (receipt.VerifyBase). outer_chain_broken comes from the recorder entry hash chain, which only the Go verifiers check.",
+		Note:     "Generated from the Go reference (receipt.VerifyBase). " + receipt.FindingOuterChainBroken + " comes from the recorder entry hash chain, which only the Go verifiers check.",
 		Healthy:  report.Healthy(),
 		Valid:    report.Healthy(),
 		Linked:   []runChainExpectLink{},

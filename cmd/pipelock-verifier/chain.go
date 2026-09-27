@@ -31,6 +31,9 @@ type chainOptions struct {
 	jsonOutput    bool
 	asDir         bool
 	allowUnpinned bool
+	// sessionExplicit records that --session was given. Without it, a
+	// directory whose base has per-run chains is verified as a whole.
+	sessionExplicit bool
 }
 
 func newChainCmd() *cobra.Command {
@@ -53,6 +56,7 @@ key.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runChain(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
@@ -105,6 +109,11 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
 		clean = location.Dir
+		if !opts.sessionExplicit {
+			if handled, setErr := runChainSetIfRuns(stdout, stderr, location, keyHex, opts); handled || setErr != nil {
+				return setErr
+			}
+		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, keyHex, opts); handled || handleErr != nil {
 			return handleErr
@@ -191,10 +200,17 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 	if opts.anySet() {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
 	}
+	report, err := actionChainReport(label, receipts, keyHex, opts)
+	emitChainReport(stdout, stderr, report, opts.jsonOutput)
+	return err
+}
+
+// actionChainReport verifies an ActionReceipt v1 chain and returns its report
+// and the command error, without printing.
+func actionChainReport(label string, receipts []actionreceipt.Receipt, keyHex string, opts chainOptions) (chainReport, error) {
 	if len(receipts) == 0 {
 		report := chainReport{Path: label, Valid: false, Error: "no receipts in chain"}
-		emitChainReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("empty chain"))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("empty chain"))
 	}
 
 	res := actionreceipt.VerifyChain(receipts, keyHex)
@@ -232,21 +248,19 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		if lintErr := lintDeferredCascadeReceipts(receipts); lintErr != nil {
 			report.Valid = false
 			report.Error = lintErr.Error()
-			emitChainReport(stdout, stderr, report, opts.jsonOutput)
-			return cliutil.ExitCodeError(cliutil.ExitGeneral, lintErr)
+			return report, cliutil.ExitCodeError(cliutil.ExitGeneral, lintErr)
 		}
 	}
-	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
 	}
 	if completenessReport.Status == completeness.StatusBroken {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain lifecycle broken: %s", completenessReport.Error))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain lifecycle broken: %s", completenessReport.Error))
 	}
 	if keyHex == "" && !opts.allowUnpinned {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain verification unpinned"))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain verification unpinned"))
 	}
-	return nil
+	return report, nil
 }
 
 // evidenceExtractorFunc is the signature for functions that extract evidence
@@ -284,6 +298,14 @@ func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []cont
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence verification options: %w", err))
 	}
+	report, verifyErr := evidenceChainReport(label, receipts, chainOpts, opts)
+	emitChainReport(stdout, stderr, report, opts.jsonOutput)
+	return verifyErr
+}
+
+// evidenceChainReport verifies an EvidenceReceipt v2 chain and returns its
+// report and the command error, without printing.
+func evidenceChainReport(label string, receipts []contractreceipt.EvidenceReceipt, chainOpts contractreceipt.ChainVerifyOptions, opts chainOptions) (chainReport, error) {
 	res := contractreceipt.VerifyChain(receipts, chainOpts)
 	report := chainReport{
 		Path:               label,
@@ -303,12 +325,11 @@ func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []cont
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned
 	}
-	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
 	}
 	if !res.SignaturesVerified && !opts.allowUnpinned {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain verification unpinned"))
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain verification unpinned"))
 	}
-	return nil
+	return report, nil
 }

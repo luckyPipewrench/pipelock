@@ -50,19 +50,19 @@ func bridgeIdleTimeoutEnvEntry(d time.Duration) []string {
 func parseBridgeIdleTimeout(raw string) time.Duration {
 	secs, err := strconv.ParseInt(raw, 10, 64)
 	if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
-		return maxBridgeIdleTimeout
+		return MaxBridgeIdleTimeout
 	}
 	if err != nil || secs <= 0 {
 		return DefaultBridgeIdleTimeout
 	}
-	if secs > int64(maxBridgeIdleTimeout/time.Second) {
-		return maxBridgeIdleTimeout
+	if secs > int64(MaxBridgeIdleTimeout/time.Second) {
+		return MaxBridgeIdleTimeout
 	}
 	return time.Duration(secs) * time.Second
 }
 
-// maxBridgeIdleTimeout is the largest whole-second bound time.Duration holds.
-const maxBridgeIdleTimeout = time.Duration(math.MaxInt64/int64(time.Second)) * time.Second
+// MaxBridgeIdleTimeout is the largest whole-second bound time.Duration holds.
+const MaxBridgeIdleTimeout = time.Duration(math.MaxInt64/int64(time.Second)) * time.Second
 
 // BridgeProxy runs inside the sandboxed child process. It listens on
 // loopback and bridges each TCP connection to the parent's Unix domain
@@ -339,7 +339,18 @@ type relayActivity struct {
 
 func newRelayActivity() *relayActivity { return &relayActivity{start: time.Now()} }
 
-func (a *relayActivity) touch() { a.last.Store(int64(time.Since(a.start))) }
+// touch advances the clock to now. Both directions call it concurrently, so it
+// only ever moves forward: a reader that sampled earlier cannot overwrite a
+// later observation and make an active relay look idle.
+func (a *relayActivity) touch() {
+	now := int64(time.Since(a.start))
+	for {
+		prev := a.last.Load()
+		if now <= prev || a.last.CompareAndSwap(prev, now) {
+			return
+		}
+	}
+}
 
 func (a *relayActivity) idleFor() time.Duration {
 	return time.Since(a.start) - time.Duration(a.last.Load())

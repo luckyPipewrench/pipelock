@@ -319,5 +319,10 @@ func sandboxBridgeIdleTimeout(cfg *config.Config) time.Duration {
 	if secs <= 0 {
 		return 0
 	}
+	// Saturate rather than let the multiplication wrap to a negative or short
+	// duration. Validation already bounds these fields far below this.
+	if int64(secs) > int64(sandbox.MaxBridgeIdleTimeout/time.Second) {
+		return sandbox.MaxBridgeIdleTimeout
+	}
 	return time.Duration(secs) * time.Second
 }

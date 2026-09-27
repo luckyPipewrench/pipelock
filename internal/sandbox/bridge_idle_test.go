@@ -237,7 +237,7 @@ func TestBridgeIdle_DefaultAndReset(t *testing.T) {
 }
 
 func TestParseBridgeIdleTimeout(t *testing.T) {
-	maxSecs := strconv.FormatInt(int64(maxBridgeIdleTimeout/time.Second), 10)
+	maxSecs := strconv.FormatInt(int64(MaxBridgeIdleTimeout/time.Second), 10)
 	tests := []struct {
 		raw  string
 		want time.Duration
@@ -247,13 +247,13 @@ func TestParseBridgeIdleTimeout(t *testing.T) {
 		{"0", DefaultBridgeIdleTimeout},
 		{"-5", DefaultBridgeIdleTimeout},
 		{"1.5", DefaultBridgeIdleTimeout},
-		{"99999999999999999999", maxBridgeIdleTimeout},
+		{"99999999999999999999", MaxBridgeIdleTimeout},
 		{"-99999999999999999999", DefaultBridgeIdleTimeout},
-		{maxSecs + "0", maxBridgeIdleTimeout},
+		{maxSecs + "0", MaxBridgeIdleTimeout},
 		{"6048000", 6048000 * time.Second},
 		{"1", time.Second},
 		{"120", 120 * time.Second},
-		{maxSecs, maxBridgeIdleTimeout},
+		{maxSecs, MaxBridgeIdleTimeout},
 	}
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {
@@ -277,6 +277,16 @@ func TestRelayActivityIdleForIsMonotonic(t *testing.T) {
 	}
 	if !strings.Contains(a.start.String(), "m=") {
 		t.Fatal("activity clock lost its monotonic reading")
+	}
+}
+
+func TestRelayActivityTouchNeverMovesBackward(t *testing.T) {
+	a := newRelayActivity()
+	later := int64(time.Hour)
+	a.last.Store(later)
+	a.touch() // samples a time far earlier than the stored observation
+	if got := a.last.Load(); got != later {
+		t.Fatalf("touch moved the activity clock backward: %d < %d", got, later)
 	}
 }
 

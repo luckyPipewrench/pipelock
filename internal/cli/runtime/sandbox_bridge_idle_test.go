@@ -4,10 +4,12 @@
 package runtime
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
 func TestSandboxBridgeIdleTimeout(t *testing.T) {
@@ -20,6 +22,7 @@ func TestSandboxBridgeIdleTimeout(t *testing.T) {
 		{"forward larger", 900, 300, 30, 900 * time.Second},
 		{"websocket larger", 60, 600, 30, 600 * time.Second},
 		{"raised fetch timeout wins", 120, 300, 900, 900 * time.Second},
+		{"overflowing value saturates", math.MaxInt, 0, 0, sandbox.MaxBridgeIdleTimeout},
 		{"unset falls through to sandbox default", 0, 0, 0, 0},
 	}
 	for _, tt := range tests {

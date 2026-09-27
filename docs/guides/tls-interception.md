@@ -176,7 +176,7 @@ tls_interception:
 
 Passthrough connections are spliced (bidirectional byte copy) without decryption. Hostname-level scanning (blocklist, SSRF, SNI verification) still applies.
 
-Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and `deep.sub.example.com`, but not the apex `example.com`).
+Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and `deep.sub.example.com`, but not the apex `example.com`). Entries must be ASCII hostnames with no whitespace and at most one trailing dot. A wildcard over any public suffix (`*.com`, `*.co.uk`, `*.github.io`, `*.s3.amazonaws.com`) is refused at load; list exact hosts instead (`mybucket.s3.amazonaws.com`), or keep intercepting that traffic with a trusted local CA.
 
 ### Fail-Closed Behavior
 

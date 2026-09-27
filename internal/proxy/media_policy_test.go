@@ -18,6 +18,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const testMediaBlockReason = "test"
@@ -1143,5 +1145,41 @@ func TestApplyMediaPolicy_RelabeledTypeIsForwarded(t *testing.T) {
 		if v := applyMediaPolicy(cfg, "image/png", body); !v.Blocked || v.Relabeled != "" {
 			t.Fatalf("%s served as image/png: blocked=%v relabeled=%q", name, v.Blocked, v.Relabeled)
 		}
+	}
+}
+
+// TestFetchEndpoint_PublishesRelabeledType proves the fetch JSON names the
+// type the bytes prove, not the upstream's mislabel.
+func TestFetchEndpoint_PublishesRelabeledType(t *testing.T) {
+	body := relabeledWebP()
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(body)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png", "image/jpeg", "image/webp"}
+	p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/icon.png", nil)
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode FetchResponse: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Blocked || !strings.HasPrefix(resp.ContentType, "image/webp") {
+		t.Fatalf("fetch published blocked=%v reason=%q content_type=%q, want image/webp", resp.Blocked, resp.BlockReason, resp.ContentType)
 	}
 }

@@ -1177,6 +1177,7 @@ func TestApplyMCPResponseMediaPolicy_RelabelsProvenImageType(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString(webp)
 	for _, tc := range []struct{ name, line, want string }{
 		{"image block", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png"}]}}`, `"mimeType":"image/webp"`},
+		{"image block with mediaType", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"image","data":"` + b64 + `","mimeType":"image/png","mediaType":"image/png"}]}}`, `"mediaType":"image/webp"`},
 		{"resource blob", `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"resource","resource":{"uri":"file:///x.png","mimeType":"image/png","blob":"` + b64 + `"}}]}}`, `"mimeType":"image/webp"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

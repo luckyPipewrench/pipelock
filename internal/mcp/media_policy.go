@@ -172,6 +172,11 @@ func setMCPMediaMimeType(block map[string]json.RawMessage, field, mimeType strin
 	}
 	if field != "resource.blob" {
 		block["mimeType"] = value
+		// Some servers also send mediaType; a stale copy would still name
+		// the declared format, so rewrite it when present.
+		if _, ok := block["mediaType"]; ok {
+			block["mediaType"] = value
+		}
 		return nil
 	}
 	var resource map[string]json.RawMessage
@@ -179,6 +184,9 @@ func setMCPMediaMimeType(block map[string]json.RawMessage, field, mimeType strin
 		return fmt.Errorf("parse resource for mimeType")
 	}
 	resource["mimeType"] = value
+	if _, ok := resource["mediaType"]; ok {
+		resource["mediaType"] = value
+	}
 	updated, err := json.Marshal(resource)
 	if err != nil {
 		return fmt.Errorf("re-marshal resource: %w", err)

@@ -6240,6 +6240,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyRelabeledContentType(resp.Header, mediaVerdict)
+	if mediaVerdict.Relabeled != "" && !mediaVerdict.Blocked {
+		// The fetch contract publishes contentType in its JSON, not the header.
+		contentType = mediaVerdict.Relabeled
+	}
 	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 		body = mediaVerdict.Body
 	}

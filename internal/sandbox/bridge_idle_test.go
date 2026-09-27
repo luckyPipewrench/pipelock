@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -249,8 +250,10 @@ func TestParseBridgeIdleTimeout(t *testing.T) {
 		{"0", DefaultBridgeIdleTimeout},
 		{"-5", DefaultBridgeIdleTimeout},
 		{"1.5", DefaultBridgeIdleTimeout},
-		{"99999999999999999999", DefaultBridgeIdleTimeout},
-		{maxSecs + "0", DefaultBridgeIdleTimeout},
+		{"99999999999999999999", maxBridgeIdleTimeout},
+		{"-99999999999999999999", DefaultBridgeIdleTimeout},
+		{maxSecs + "0", maxBridgeIdleTimeout},
+		{"6048000", 6048000 * time.Second},
 		{"1", time.Second},
 		{"120", 120 * time.Second},
 		{maxSecs, maxBridgeIdleTimeout},
@@ -261,6 +264,22 @@ func TestParseBridgeIdleTimeout(t *testing.T) {
 				t.Fatalf("parseBridgeIdleTimeout(%q) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRelayActivityIdleForIsMonotonic(t *testing.T) {
+	a := newRelayActivity()
+	a.touch()
+	if idle := a.idleFor(); idle < 0 || idle > time.Second {
+		t.Fatalf("fresh idleFor = %v", idle)
+	}
+	// Rewinding start simulates elapsed monotonic time without the wall clock.
+	a.start = a.start.Add(-time.Minute)
+	if idle := a.idleFor(); idle < time.Minute {
+		t.Fatalf("idleFor after a minute = %v", idle)
+	}
+	if !strings.Contains(a.start.String(), "m=") {
+		t.Fatal("activity clock lost its monotonic reading")
 	}
 }
 

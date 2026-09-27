@@ -12,20 +12,22 @@ import (
 
 func TestSandboxBridgeIdleTimeout(t *testing.T) {
 	tests := []struct {
-		name        string
-		forward, ws int
-		want        time.Duration
+		name               string
+		forward, ws, fetch int
+		want               time.Duration
 	}{
-		{"defaults take the larger websocket value", 120, 300, 300 * time.Second},
-		{"forward larger", 900, 300, 900 * time.Second},
-		{"websocket larger", 60, 600, 600 * time.Second},
-		{"unset falls through to sandbox default", 0, 0, 0},
+		{"defaults take the larger websocket value", 120, 300, 30, 300 * time.Second},
+		{"forward larger", 900, 300, 30, 900 * time.Second},
+		{"websocket larger", 60, 600, 30, 600 * time.Second},
+		{"raised fetch timeout wins", 120, 300, 900, 900 * time.Second},
+		{"unset falls through to sandbox default", 0, 0, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.ForwardProxy.IdleTimeoutSeconds = tt.forward
 			cfg.WebSocketProxy.IdleTimeoutSeconds = tt.ws
+			cfg.FetchProxy.TimeoutSeconds = tt.fetch
 			if got := sandboxBridgeIdleTimeout(cfg); got != tt.want {
 				t.Fatalf("sandboxBridgeIdleTimeout = %v, want %v", got, tt.want)
 			}

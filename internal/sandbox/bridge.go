@@ -5,10 +5,13 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,17 +44,25 @@ func bridgeIdleTimeoutEnvEntry(d time.Duration) []string {
 
 // parseBridgeIdleTimeout reads the value sandbox-init received. A missing,
 // malformed, or non-positive value falls back to the default rather than to
-// an unbounded relay.
+// an unbounded relay. A value too large for time.Duration is clamped to the
+// largest representable bound, never shortened to the default: the bridge
+// must not become stricter than the parent timeout the operator configured.
 func parseBridgeIdleTimeout(raw string) time.Duration {
 	secs, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || secs <= 0 || secs > int64(maxBridgeIdleTimeout/time.Second) {
+	if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(raw, "-") {
+		return maxBridgeIdleTimeout
+	}
+	if err != nil || secs <= 0 {
 		return DefaultBridgeIdleTimeout
+	}
+	if secs > int64(maxBridgeIdleTimeout/time.Second) {
+		return maxBridgeIdleTimeout
 	}
 	return time.Duration(secs) * time.Second
 }
 
-// maxBridgeIdleTimeout keeps a parsed value far from time.Duration overflow.
-const maxBridgeIdleTimeout = 7 * 24 * time.Hour
+// maxBridgeIdleTimeout is the largest whole-second bound time.Duration holds.
+const maxBridgeIdleTimeout = time.Duration(math.MaxInt64/int64(time.Second)) * time.Second
 
 // BridgeProxy runs inside the sandboxed child process. It listens on
 // loopback and bridges each TCP connection to the parent's Unix domain
@@ -277,8 +288,7 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 
 	// Bridge data bidirectionally. Both directions share one activity clock:
 	// a long download while the agent sends nothing is still an active relay.
-	activity := &relayActivity{}
-	activity.touch()
+	activity := newRelayActivity()
 	relayDone := make(chan struct{})
 	defer close(relayDone)
 	go watchRelayIdle(idleTimeout, activity, relayDone, conn, parentConn)
@@ -306,13 +316,20 @@ func (bp *BridgeProxy) handleConn(conn net.Conn) {
 	wg.Wait()
 }
 
-// relayActivity records when a relay last moved bytes in either direction.
-type relayActivity struct{ last atomic.Int64 }
+// relayActivity records when a relay last moved bytes in either direction,
+// as monotonic nanoseconds since start so a wall-clock step cannot close a
+// live relay or postpone reaping an idle one.
+type relayActivity struct {
+	start time.Time
+	last  atomic.Int64
+}
 
-func (a *relayActivity) touch() { a.last.Store(time.Now().UnixNano()) }
+func newRelayActivity() *relayActivity { return &relayActivity{start: time.Now()} }
+
+func (a *relayActivity) touch() { a.last.Store(int64(time.Since(a.start))) }
 
 func (a *relayActivity) idleFor() time.Duration {
-	return time.Since(time.Unix(0, a.last.Load()))
+	return time.Since(a.start) - time.Duration(a.last.Load())
 }
 
 // activityReader marks the relay active whenever a read returns bytes. Being a

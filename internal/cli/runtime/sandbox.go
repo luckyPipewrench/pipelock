@@ -309,11 +309,13 @@ func printJSON(w io.Writer, v interface{}) error {
 }
 
 // sandboxBridgeIdleTimeout is the idle bound for the sandbox-side bridge
-// relay. The bridge carries both forward-proxy and WebSocket traffic, so it
-// takes the larger of their idle timeouts: the parent proxy remains the
-// policy authority, and the bridge only reaps relays the parent already let go.
+// relay. The bridge carries CONNECT tunnels, WebSocket traffic, and plain
+// HTTP requests whose response the parent may wait fetch_proxy.timeout_seconds
+// for, so it takes the largest of those parent timers: the parent proxy
+// remains the policy authority, and the bridge only reaps relays the parent
+// has already let go.
 func sandboxBridgeIdleTimeout(cfg *config.Config) time.Duration {
-	secs := max(cfg.ForwardProxy.IdleTimeoutSeconds, cfg.WebSocketProxy.IdleTimeoutSeconds)
+	secs := max(cfg.ForwardProxy.IdleTimeoutSeconds, cfg.WebSocketProxy.IdleTimeoutSeconds, cfg.FetchProxy.TimeoutSeconds)
 	if secs <= 0 {
 		return 0
 	}

@@ -283,6 +283,10 @@ func RunHTTPProxy(
 				continue
 			}
 			deferredReq := decision.Deferred
+			var deferredGeneration uint64
+			if fwdOpts.KillSwitch != nil {
+				deferredGeneration = fwdOpts.KillSwitch.DeferredGeneration()
+			}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    deferredReq.DeferID,
 				ActionID:   deferredReq.DeferID,
@@ -305,7 +309,7 @@ func RunHTTPProxy(
 					if fwdOpts.KillSwitch == nil {
 						return func() {}, true
 					}
-					return fwdOpts.KillSwitch.ClaimDeferredSend()
+					return fwdOpts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false

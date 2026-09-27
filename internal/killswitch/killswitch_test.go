@@ -76,6 +76,21 @@ func TestDeferredSendClaimOrdersActivation(t *testing.T) {
 	}
 }
 
+func TestDeferredSendClaimRejectsActivationAfterClear(t *testing.T) {
+	c := New(testConfig())
+	generation := c.DeferredGeneration()
+	c.SetAPI(true)
+	c.SetAPI(false)
+	if _, ok := c.ClaimDeferredSendAt(generation); ok {
+		t.Fatal("held send claimed after activation was cleared")
+	}
+	if release, ok := c.ClaimDeferredSendAt(c.DeferredGeneration()); !ok {
+		t.Fatal("new hold could not claim after clear")
+	} else {
+		release()
+	}
+}
+
 func TestDecisionChecksShareReadLock(t *testing.T) {
 	c := New(testConfig())
 	c.deferredMu.RLock()

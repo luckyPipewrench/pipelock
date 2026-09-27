@@ -37,13 +37,14 @@ type Decision struct {
 
 // Controller manages the kill switch state across seven activation sources.
 type Controller struct {
-	deferredMu       sync.RWMutex // serializes activation with deferred upstream send claims
-	deferredInFlight atomic.Int64
-	cfg              atomic.Pointer[runtime]
-	api              atomic.Bool
-	sigusr1          atomic.Bool
-	conductor        atomic.Bool
-	conductorMsg     atomic.Value
+	deferredMu         sync.RWMutex // serializes activation with deferred upstream send claims
+	deferredInFlight   atomic.Int64
+	deferredGeneration uint64 // guarded by deferredMu
+	cfg                atomic.Pointer[runtime]
+	api                atomic.Bool
+	sigusr1            atomic.Bool
+	conductor          atomic.Bool
+	conductorMsg       atomic.Value
 	// conductorStale is the autonomous fail-closed source: the follower's active
 	// policy bundle aged past its grace window with no fresh bundle from the
 	// leader. It is independent of conductorRemote (operator-driven remote kill)
@@ -265,9 +266,21 @@ func (c *Controller) IsActiveMCP(msg []byte) Decision {
 // activation. A successful claim is in flight and cannot be recalled. The
 // caller must invoke release when its upstream send has completed or aborted.
 func (c *Controller) ClaimDeferredSend() (release func(), ok bool) {
+	return c.ClaimDeferredSendAt(c.DeferredGeneration())
+}
+
+// DeferredGeneration records the activation epoch when a call is held.
+func (c *Controller) DeferredGeneration() uint64 {
+	c.deferredMu.RLock()
+	defer c.deferredMu.RUnlock()
+	return c.deferredGeneration
+}
+
+// ClaimDeferredSendAt rejects holds created before any subsequent activation.
+func (c *Controller) ClaimDeferredSendAt(generation uint64) (release func(), ok bool) {
 	c.deferredMu.Lock()
 	defer c.deferredMu.Unlock()
-	if c.computeDecision(c.cfg.Load()).Active {
+	if generation != c.deferredGeneration || c.computeDecision(c.cfg.Load()).Active {
 		return nil, false
 	}
 	c.deferredInFlight.Add(1)
@@ -287,6 +300,9 @@ func (c *Controller) ToggleSignal() bool {
 	for {
 		current := c.sigusr1.Load()
 		if c.sigusr1.CompareAndSwap(current, !current) {
+			if !current {
+				c.deferredGeneration++
+			}
 			return !current
 		}
 	}
@@ -325,6 +341,9 @@ func (c *Controller) Reload(cfg *config.Config) {
 	c.deferredMu.Lock()
 	defer c.deferredMu.Unlock()
 	c.cfg.Store(buildRuntime(cfg))
+	if c.computeDecision(c.cfg.Load()).Active {
+		c.deferredGeneration++
+	}
 }
 
 // SetAPI sets the API activation source.
@@ -332,6 +351,9 @@ func (c *Controller) SetAPI(active bool) {
 	c.deferredMu.Lock()
 	defer c.deferredMu.Unlock()
 	c.api.Store(active)
+	if active {
+		c.deferredGeneration++
+	}
 }
 
 // SetConductorRemote sets the Conductor remote-kill activation source.
@@ -340,6 +362,9 @@ func (c *Controller) SetConductorRemote(active bool, message string) {
 	defer c.deferredMu.Unlock()
 	c.conductorMsg.Store(message)
 	c.conductor.Store(active)
+	if active {
+		c.deferredGeneration++
+	}
 }
 
 // SetConductorStale sets the Conductor stale-bundle activation source. The
@@ -353,6 +378,9 @@ func (c *Controller) SetConductorStale(active bool, message string) {
 	defer c.deferredMu.Unlock()
 	c.conductorStaleMsg.Store(message)
 	c.conductorStale.Store(active)
+	if active {
+		c.deferredGeneration++
+	}
 }
 
 // SetConductorApplyFailure controls the independent fail-closed source used
@@ -363,6 +391,9 @@ func (c *Controller) SetConductorApplyFailure(active bool, message string) {
 	defer c.deferredMu.Unlock()
 	c.conductorApplyFailureMsg.Store(message)
 	c.conductorApplyFailure.Store(active)
+	if active {
+		c.deferredGeneration++
+	}
 }
 
 // ConductorApplyFailure reports the same uncertainty state used by admission.

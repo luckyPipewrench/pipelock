@@ -1399,6 +1399,10 @@ func ForwardScannedInput(
 			heldAuthorityFrame := frame
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
+			var deferredGeneration uint64
+			if opts.KillSwitch != nil {
+				deferredGeneration = opts.KillSwitch.DeferredGeneration()
+			}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    actionID,
 				ActionID:   actionID,
@@ -1421,7 +1425,7 @@ func ForwardScannedInput(
 					if opts.KillSwitch == nil {
 						return func() {}, true
 					}
-					return opts.KillSwitch.ClaimDeferredSend()
+					return opts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false

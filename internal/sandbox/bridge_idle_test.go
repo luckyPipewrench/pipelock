@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const testIdleTimeout = 150 * time.Millisecond
@@ -123,13 +125,8 @@ func trackedConns(bp *BridgeProxy) int {
 
 func waitNoTrackedConns(t *testing.T, bp *BridgeProxy, within time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for trackedConns(bp) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("bridge still holds %d connections after %v", trackedConns(bp), within)
-		}
-		time.Sleep(5 * time.Millisecond) // poll-with-deadline
-	}
+	testwait.For(t, within, func() bool { return trackedConns(bp) == 0 },
+		"bridge still holds tracked connections")
 }
 
 func TestBridgeIdle_StalledRelayIsClosed(t *testing.T) {

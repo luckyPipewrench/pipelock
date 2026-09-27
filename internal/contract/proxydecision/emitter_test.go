@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +34,37 @@ const (
 type captureRecorder struct {
 	entries []recorder.Entry
 	err     error
+}
+
+type partialErrorRecorder struct {
+	entries []recorder.Entry
+	calls   int
+}
+
+func (r *partialErrorRecorder) Record(entry recorder.Entry) error {
+	r.calls++
+	r.entries = append(r.entries, entry)
+	return errTestRecorder
+}
+
+func TestEmitPartialRecordErrorBlocksChainHandoff(t *testing.T) {
+	rec := &partialErrorRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.Emit(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("Emit error = %v, want partial record error", err)
+	}
+	if len(rec.entries) != 1 {
+		t.Fatalf("written entries = %d, want 1", len(rec.entries))
+	}
+	if _, _, err := em.Retire(); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("Retire error = %v, want uncertain record error", err)
+	}
+	if err := em.Emit(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("retry error = %v, want poisoned emitter", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("recorder calls = %d, want 1", rec.calls)
+	}
 }
 
 func (c *captureRecorder) Record(e recorder.Entry) error {
@@ -606,12 +639,116 @@ func TestNewEmitter_DisabledWhenMissingDeps(t *testing.T) {
 
 func TestNilEmitter_IsNoOp(t *testing.T) {
 	var em *Emitter
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("nil HealthError = %v, want nil", err)
+	}
 	if err := em.Emit(Decision{Verdict: "block"}); err != nil {
 		t.Errorf("nil Emit returned %v, want nil", err)
+	}
+	if err := em.EmitDurable(validDecision()); err != nil {
+		t.Errorf("nil EmitDurable returned %v, want nil", err)
 	}
 	seq, head := em.ChainState()
 	if seq != 0 || head != recorder.GenesisHash {
 		t.Errorf("nil ChainState = (%d,%q), want (0,genesis)", seq, head)
+	}
+}
+
+func TestEmitDurableRequiresDurableRecorder(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	err := em.EmitDurable(validDecision())
+	if err == nil || !strings.Contains(err.Error(), "does not support durable writes") {
+		t.Fatalf("EmitDurable error = %v, want unsupported recorder", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries despite unsupported durable write", len(rec.entries))
+	}
+	if seq, head := em.ChainState(); seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("chain advanced on failed durable write: (%d, %q)", seq, head)
+	}
+}
+
+func TestEmitDurableSyncFailureStopsRetryAtSameChainPosition(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("healthy emitter error = %v, want nil", err)
+	}
+	var calls int
+	rec.SetSyncForTest(func(*os.File) error {
+		calls++
+		if calls == 1 {
+			return errors.New("injected sync failure")
+		}
+		return nil
+	})
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("first emit = %v, want durability error", err)
+	}
+	if !errors.Is(em.HealthError(), recorder.ErrDurability) {
+		t.Fatalf("health error = %v, want durability error", em.HealthError())
+	}
+	if err := em.EmitDurable(validDecision()); err == nil {
+		t.Fatal("retry emitted at an uncertain chain position")
+	}
+	if calls != 1 {
+		t.Fatalf("sync calls = %d, want 1", calls)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts int
+	for _, file := range files {
+		data, readErr := os.ReadFile(filepath.Clean(file))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		receipts += strings.Count(string(data), `"type":"evidence_receipt"`)
+	}
+	if receipts != 1 {
+		t.Fatalf("recorded v2 receipts = %d, want 1", receipts)
+	}
+}
+
+type durableCaptureRecorder struct {
+	captureRecorder
+	durableCalls int
+}
+
+func (r *durableCaptureRecorder) RecordDurable(entry recorder.Entry) error {
+	r.durableCalls++
+	return r.Record(entry)
+}
+
+func TestEmitDurableRecordsAndAdvancesOnlyOnSuccess(t *testing.T) {
+	rec := &durableCaptureRecorder{captureRecorder: captureRecorder{err: errTestRecorder}}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("failed durable write error = %v, want recorder error", err)
+	}
+	if seq, head := em.ChainState(); seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("chain advanced on failed durable write: (%d, %q)", seq, head)
+	}
+	rec.err = nil
+	if err := em.EmitDurable(validDecision()); !errors.Is(err, errTestRecorder) {
+		t.Fatalf("retry after uncertain write = %v, want original recorder error", err)
+	}
+	if rec.durableCalls != 1 || len(rec.entries) != 0 {
+		t.Fatalf("durable calls = %d, entries = %d, want 1 and 0", rec.durableCalls, len(rec.entries))
 	}
 }
 
@@ -797,4 +934,37 @@ func validDecision() Decision {
 		PolicySources: []string{SourceScanner},
 		PolicyHash:    testSpanDigest,
 	}
+}
+
+func TestRetireHandsOffHeadAndStopsEmission(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.Emit(validDecision()); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	wantSeq, wantHead := em.ChainState()
+	seq, head, err := em.Retire()
+	if err != nil || seq != wantSeq || head != wantHead {
+		t.Fatalf("Retire = (%d, %q, %v), want (%d, %q, nil)", seq, head, err, wantSeq, wantHead)
+	}
+	if err := em.Emit(validDecision()); !errors.Is(err, ErrEmitterRetired) {
+		t.Fatalf("Emit after Retire = %v, want ErrEmitterRetired", err)
+	}
+	if _, _, err := em.Retire(); !errors.Is(err, ErrEmitterRetired) {
+		t.Fatalf("second Retire = %v, want ErrEmitterRetired", err)
+	}
+	next, _, _ := newTestEmitter(t, rec, nil)
+	next.ResumeAt(seq, head)
+	if gotSeq, gotHead := next.ChainState(); gotSeq != seq || gotHead != head {
+		t.Fatalf("ResumeAt state = (%d, %q), want (%d, %q)", gotSeq, gotHead, seq, head)
+	}
+}
+
+func TestRetireAndResumeAtNilEmitter(t *testing.T) {
+	var em *Emitter
+	seq, head, err := em.Retire()
+	if err != nil || seq != 0 || head != recorder.GenesisHash {
+		t.Fatalf("nil Retire = (%d, %q, %v)", seq, head, err)
+	}
+	em.ResumeAt(3, "head")
 }

@@ -134,7 +134,7 @@ What it does not cover: the same value in any other header (including `Authoriza
 
 An API may accept an AWS SigV4 presigned URL in a request body so it can fetch an attachment. That URL contains an AWS access-key ID, so the immutable DLP floor blocks it even though the full URL is a scoped capability. Do not add a core-pattern suppression.
 
-Add an exact, expiring `request_body_scanning.sigv4_credential_routes` entry for the outbound HTTPS endpoint instead. Pin the host, canonical path, HTTP method, and content type. Pipelock exempts only the access-key ID inside a complete, structurally valid presigned URL on that route. A malformed URL, bare key, second credential, header value, different route, or non-HTTPS request still blocks.
+Add an exact, expiring `request_body_scanning.sigv4_credential_routes` entry for the outbound HTTPS endpoint instead. Pin the host, canonical path, HTTP method, and content type. Pipelock exempts only the access-key ID inside a complete, structurally valid presigned URL on that route. A malformed URL, bare key, second credential, a header value other than a valid SigV4 `Authorization` envelope to an AWS endpoint, different route, or non-HTTPS request still blocks.
 
 ```yaml
 request_body_scanning:

@@ -16,7 +16,7 @@
 //! records carry the same `run_nonce` are reported (finding
 //! `duplicate_run_nonce`), because a process run writes exactly one chain.
 
-use crate::chain::{receipt_hash, verify_chain_with_options};
+use crate::chain::{evidence_chain_key, receipt_hash, verify_chain_with_options};
 use crate::recorder::{
     extract_typed_from_lines, read_entry_lines, ExtractedReceipts, RecorderLine,
 };
@@ -322,6 +322,50 @@ fn read_session_lines(
         }
     }
     Ok(out)
+}
+
+/// Applies the session rule to one evidence file read on its own, as Go's
+/// `receipt.CheckRecorderFile` does: when the file name claims a session, every
+/// entry must carry it, and a file whose name claims none must hold one
+/// session. A file named for run X that holds run Y's entries is not run X's
+/// evidence, read alone or in its directory.
+pub(crate) fn check_file_entry_sessions(
+    name: &str,
+    lines: &[RecorderLine],
+) -> Result<(), SessionReadError> {
+    let session_of = |line: &RecorderLine| line.entry.get("session_id").cloned();
+    let show = |v: Option<Value>| v.map_or_else(|| "null".to_string(), |v| v.to_string());
+    if let Some((claimed, _)) = parse_evidence_filename(name) {
+        for line in lines {
+            let got = line.entry.get("session_id");
+            if got.and_then(Value::as_str) != Some(claimed.as_str()) {
+                return Err(refused(format!(
+                    "reading {name}: entry seq {} session_id {} does not match requested session {}",
+                    line.entry
+                        .get("seq")
+                        .map_or_else(|| "null".to_string(), Value::to_string),
+                    show(got.cloned()),
+                    Value::String(claimed.clone())
+                )));
+            }
+        }
+        return Ok(());
+    }
+    let Some(first) = lines.first() else {
+        return Ok(());
+    };
+    let first_session = session_of(first);
+    for line in &lines[1..] {
+        let got = session_of(line);
+        if got != first_session {
+            return Err(refused(format!(
+                "evidence file mixes recorder sessions {} and {}",
+                show(first_session),
+                show(got)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Reads one session of `dir` with the refusals above, returning the recorder
@@ -636,6 +680,9 @@ fn check_linked_tail(receipts: &[Receipt], link: &ChainLink) -> Result<(), Strin
 struct BaseChainData {
     chain: BaseChain,
     receipts: Vec<Receipt>,
+    /// The run's EvidenceReceipt v2 chain, verified beside its ActionReceipt
+    /// v1 chain: a forged v2 receipt leaves the v1 chain intact.
+    evidence: Vec<Receipt>,
 }
 
 fn chain_acceptable(res: &ChainResult) -> bool {
@@ -693,6 +740,7 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
                 error: String::new(),
             },
             receipts: Vec::new(),
+            evidence: Vec::new(),
         };
         load_base_chain(&ix, &mut d, &mut add);
         data.insert(s.clone(), d);
@@ -950,18 +998,19 @@ fn load_base_chain(
     {
         add(FINDING_OUTER_CHAIN_BROKEN, &s, outer);
     }
-    let loaded = extract_typed_from_lines(lines)
-        .map(|typed| typed.action)
-        .map_err(|err| err.to_string());
+    let loaded = extract_typed_from_lines(lines).map_err(|err| err.to_string());
     match loaded {
         Err(err) => {
             d.chain.error = err.clone();
             add(FINDING_CORRUPT_CHAIN, &s, err);
         }
-        Ok(receipts) => {
-            d.receipts = receipts;
+        Ok(typed) => {
+            d.receipts = typed.action;
+            d.evidence = typed.evidence;
             let Some(last) = d.receipts.last() else {
-                d.chain.valid = true;
+                // A chain holding only EvidenceReceipt v2 entries is decided
+                // by verify_base_chain, never passed with nothing verified.
+                d.chain.valid = d.evidence.is_empty();
                 return;
             };
             d.chain.receipts = d.receipts.len();
@@ -979,7 +1028,7 @@ fn verify_base_chain(
     is_endorsed: bool,
     add: &mut dyn FnMut(&str, &str, String),
 ) {
-    if !d.chain.error.is_empty() || d.receipts.is_empty() {
+    if !d.chain.error.is_empty() || (d.receipts.is_empty() && d.evidence.is_empty()) {
         return;
     }
     let mut keys = trusted.to_vec();
@@ -989,22 +1038,42 @@ fn verify_base_chain(
         }
     }
     let joined = keys.join(",");
-    let res = if own.is_empty() {
-        verify_chain_with_options(&d.receipts, &joined, keys.is_empty())
-    } else {
-        verify_chain_with_endorsements(&d.receipts, &d.chain.session, own, &joined)
-    };
-    if !chain_acceptable(&res) {
-        d.chain.valid = false;
-        d.chain.error = res
-            .error
-            .unwrap_or_else(|| "chain verification failed".to_string());
-        add(
-            FINDING_CORRUPT_CHAIN,
-            &d.chain.session,
-            d.chain.error.clone(),
-        );
-        return;
+    if !d.receipts.is_empty() {
+        let res = if own.is_empty() {
+            verify_chain_with_options(&d.receipts, &joined, keys.is_empty())
+        } else {
+            verify_chain_with_endorsements(&d.receipts, &d.chain.session, own, &joined)
+        };
+        if !chain_acceptable(&res) {
+            d.chain.valid = false;
+            d.chain.error = res
+                .error
+                .unwrap_or_else(|| "chain verification failed".to_string());
+            add(
+                FINDING_CORRUPT_CHAIN,
+                &d.chain.session,
+                d.chain.error.clone(),
+            );
+            return;
+        }
+    }
+    if !d.evidence.is_empty() {
+        let key = evidence_chain_key(&joined, &d.evidence);
+        let res = verify_chain_with_options(&d.evidence, &key, keys.is_empty());
+        if !res.valid {
+            d.chain.valid = false;
+            d.chain.error = format!(
+                "evidence receipt chain: {}",
+                res.error
+                    .unwrap_or_else(|| "chain verification failed".to_string())
+            );
+            add(
+                FINDING_CORRUPT_CHAIN,
+                &d.chain.session,
+                d.chain.error.clone(),
+            );
+            return;
+        }
     }
     d.chain.valid = true;
 }

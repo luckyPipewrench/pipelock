@@ -1,5 +1,5 @@
 {
-  "description": "Run A's file renamed to the legacy base session name. Its entries still name run A, so it is refused, and B's link now names a predecessor that is not present.",
+  "description": "Run A's file renamed to the legacy base session name. Its entries still name run A, so it is refused, read alone too, and B's link now names a predecessor that is not present.",
   "recorder_chain": "intact",
   "symlinks": [],
   "cells": [
@@ -80,9 +80,13 @@
         "signer-key.hex"
       ],
       "endorsements": [],
-      "valid": true,
+      "valid": false,
       "findings": [],
-      "errors": []
+      "errors": [
+        {
+          "kind": "session_mismatch"
+        }
+      ]
     },
     {
       "mode": "file",

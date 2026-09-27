@@ -327,6 +327,9 @@ func parityClasses() []parityClass {
 	outerB := func(src paritySource) []parityFinding {
 		return []parityFinding{{Kind: receipt.FindingOuterChainBroken, Session: src.b}}
 	}
+	corruptB := func(src paritySource) []parityFinding {
+		return []parityFinding{{Kind: receipt.FindingCorruptChain, Session: src.b}}
+	}
 	allValid := func(src paritySource) []parityCell {
 		return twoRunCells(src, nil, "", nil, nil)
 	}
@@ -337,9 +340,9 @@ func parityClasses() []parityClass {
 			build: editB(forgeV2, false),
 			expect: func(src paritySource) parityExpect {
 				return parityExpect{
-					Description:   "Run B's last EvidenceReceipt v2 verdict edited from block to allow; its signature no longer verifies. The recorder hash chain was not recomputed.",
+					Description:   "Run B's last EvidenceReceipt v2 verdict edited from block to allow; its signature no longer verifies. The recorder hash chain was not recomputed. The base check verifies B's v2 chain, so every mode that reads the base reports it.",
 					RecorderChain: chainBroken,
-					Cells: twoRunCells(src, outerB(src), src.b, []string{errEvidenceChain},
+					Cells: twoRunCells(src, append(outerB(src), corruptB(src)...), src.b, []string{errEvidenceChain},
 						map[string][]string{src.b: {errOuterChain, errEvidenceChain}}),
 				}
 			},
@@ -350,9 +353,9 @@ func parityClasses() []parityClass {
 			build: editB(forgeV2, true),
 			expect: func(src paritySource) parityExpect {
 				return parityExpect{
-					Description:   "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. A named run A still passes: B's own receipt chains are not part of A's base checks.",
+					Description:   "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. The base check verifies every run's v2 chain, so a named run A fails too: a named run fails on any finding in its base.",
 					RecorderChain: chainRehashed,
-					Cells: twoRunCells(src, nil, src.b, []string{errEvidenceChain},
+					Cells: twoRunCells(src, corruptB(src), src.b, []string{errEvidenceChain},
 						map[string][]string{src.b: {errEvidenceChain}}),
 				}
 			},
@@ -441,7 +444,7 @@ func parityClasses() []parityClass {
 				f := []parityFinding{{Kind: receipt.FindingCorruptChain, Session: replaySession}}
 				e := parityError{Session: replaySession, Kind: errSessionMatch}
 				return parityExpect{
-					Description:   "Run A's file copied verbatim under a new run name. Its entries still name run A, so the copy is refused as the new run's evidence. File mode reads a named file as given.",
+					Description:   "Run A's file copied verbatim under a new run name. Its entries still name run A, so the copy is refused as the new run's evidence, in its directory and read alone.",
 					RecorderChain: chainIntact,
 					Cells: cellsFor(
 						cell("dir", ".", keyOnly, false, f, e),
@@ -451,7 +454,7 @@ func parityClasses() []parityClass {
 							cell("session", src.b, keyOnly, false, f),
 						},
 						[]parityCell{
-							fileCell(evidenceName(replaySession, 0), keyOnly),
+							fileCell(evidenceName(replaySession, 0), keyOnly, parityError{Kind: errSessionMatch}),
 							fileCell(evidenceName(src.a, 0), keyOnly),
 							fileCell(evidenceName(src.b, 0), keyOnly),
 						}),
@@ -478,7 +481,7 @@ func parityClasses() []parityClass {
 				}
 				e := parityError{Session: renamedSession, Kind: errSessionMatch}
 				return parityExpect{
-					Description:   "Run B's file moved to a new run name. Its entries still name run B, so it is refused, and A's link now names a successor that is not present.",
+					Description:   "Run B's file moved to a new run name. Its entries still name run B, so it is refused, read alone too, and A's link now names a successor that is not present.",
 					RecorderChain: chainIntact,
 					Cells: cellsFor(
 						cell("dir", ".", keyOnly, false, f, e),
@@ -488,7 +491,7 @@ func parityClasses() []parityClass {
 						},
 						[]parityCell{
 							fileCell(evidenceName(src.a, 0), keyOnly),
-							fileCell(evidenceName(renamedSession, 0), keyOnly),
+							fileCell(evidenceName(renamedSession, 0), keyOnly, parityError{Kind: errSessionMatch}),
 						}),
 				}
 			},
@@ -513,7 +516,7 @@ func parityClasses() []parityClass {
 				}
 				e := parityError{Session: legacySession, Kind: errSessionMatch}
 				return parityExpect{
-					Description:   "Run A's file renamed to the legacy base session name. Its entries still name run A, so it is refused, and B's link now names a predecessor that is not present.",
+					Description:   "Run A's file renamed to the legacy base session name. Its entries still name run A, so it is refused, read alone too, and B's link now names a predecessor that is not present.",
 					RecorderChain: chainIntact,
 					Cells: cellsFor(
 						cell("dir", ".", keyOnly, false, f, e),
@@ -522,7 +525,7 @@ func parityClasses() []parityClass {
 							cell("session", src.b, keyOnly, false, f),
 						},
 						[]parityCell{
-							fileCell(evidenceName(legacySession, 0), keyOnly),
+							fileCell(evidenceName(legacySession, 0), keyOnly, parityError{Kind: errSessionMatch}),
 							fileCell(evidenceName(src.b, 0), keyOnly),
 						}),
 				}

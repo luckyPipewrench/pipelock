@@ -19,7 +19,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
-import { receiptHash, verifyChain } from "./chain.js";
+import { evidenceChainKey, receiptHash, verifyChain } from "./chain.js";
 import {
   extractTypedFromEntries,
   readEntryLines,
@@ -258,6 +258,33 @@ function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLin
     }
   }
   return out;
+}
+
+// checkFileEntrySessions applies the session rule to one evidence file read on
+// its own, as Go's receipt.CheckRecorderFile does: when the file name claims a
+// session, every entry must carry it, and a file whose name claims none must
+// hold one session. A file named for run X that holds run Y's entries is not
+// run X's evidence, read alone or in its directory.
+export function checkFileEntrySessions(name: string, lines: ParsedRecorderLine[]): void {
+  const claimed = parseEvidenceFilename(name);
+  if (claimed !== undefined) {
+    for (const l of lines) {
+      if (l.entry.session_id !== claimed.session) {
+        throw new EvidenceRefusedError(
+          `reading ${name}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(claimed.session)}`,
+        );
+      }
+    }
+    return;
+  }
+  const first = lines[0]?.entry.session_id;
+  for (const l of lines.slice(1)) {
+    if (l.entry.session_id !== first) {
+      throw new EvidenceRefusedError(
+        `evidence file mixes recorder sessions ${JSON.stringify(first ?? null)} and ${JSON.stringify(l.entry.session_id ?? null)}`,
+      );
+    }
+  }
 }
 
 // SessionEvidence is one session's recorder entries and the two receipt
@@ -620,6 +647,9 @@ function checkLinkedTail(receipts: Receipt[], link: ChainLink): string | undefin
 interface BaseChainData {
   chain: BaseChain;
   receipts: Receipt[];
+  // The run's EvidenceReceipt v2 chain, verified beside its ActionReceipt v1
+  // chain: a forged v2 receipt leaves the v1 chain intact.
+  evidence: Receipt[];
 }
 
 function chainAcceptable(res: ChainResult): boolean {
@@ -668,6 +698,7 @@ export async function verifyBase(
         error: "",
       },
       receipts: [],
+      evidence: [],
     };
     data.set(s, d);
     loadBaseChain(ix, d, add);
@@ -849,15 +880,20 @@ function loadBaseChain(
   const outer = verifyRecorderChain(lines);
   if (outer !== undefined) add(FindingOuterChainBroken, s, outer);
   try {
-    d.receipts = extractTypedFromEntries(lines.map((l) => l.entry)).action;
+    const typed = extractTypedFromEntries(lines.map((l) => l.entry));
+    d.receipts = typed.action;
+    d.evidence = typed.evidence;
   } catch (err) {
     d.receipts = [];
+    d.evidence = [];
     d.chain.error = (err as Error).message;
     add(FindingCorruptChain, s, d.chain.error);
     return;
   }
   if (d.receipts.length === 0) {
-    d.chain.valid = true;
+    // A chain holding only EvidenceReceipt v2 entries is decided by
+    // verifyBaseChain, never passed with nothing verified.
+    d.chain.valid = d.evidence.length === 0;
     return;
   }
   const last = d.receipts[d.receipts.length - 1] as Receipt;
@@ -874,23 +910,36 @@ async function verifyBaseChain(
   isEndorsed: boolean,
   add: (kind: string, session: string, detail: string) => void,
 ): Promise<void> {
-  if (d.chain.error !== "" || d.receipts.length === 0) return;
+  if (d.chain.error !== "" || (d.receipts.length === 0 && d.evidence.length === 0)) return;
   let keys = trusted;
-  if (isEndorsed && trusted.length > 0) {
-    keys = [...trusted, (d.chain.link as ChainLink).successor_signer_key];
+  if (isEndorsed && trusted.length > 0 && d.chain.link !== undefined) {
+    keys = [...trusted, d.chain.link.successor_signer_key];
   }
-  const res =
-    own.length > 0
-      ? await verifyChainWithEndorsements(d.receipts, keys.join(","), {
-          sessionID: d.chain.session,
-          endorsements: own,
-        })
-      : await verifyChain(d.receipts, keys.join(","), { allowUnpinned: keys.length === 0 });
-  if (!chainAcceptable(res)) {
-    d.chain.valid = false;
-    d.chain.error = res.error ?? "chain verification failed";
-    add(FindingCorruptChain, d.chain.session, d.chain.error);
-    return;
+  if (d.receipts.length > 0) {
+    const res =
+      own.length > 0
+        ? await verifyChainWithEndorsements(d.receipts, keys.join(","), {
+            sessionID: d.chain.session,
+            endorsements: own,
+          })
+        : await verifyChain(d.receipts, keys.join(","), { allowUnpinned: keys.length === 0 });
+    if (!chainAcceptable(res)) {
+      d.chain.valid = false;
+      d.chain.error = res.error ?? "chain verification failed";
+      add(FindingCorruptChain, d.chain.session, d.chain.error);
+      return;
+    }
+  }
+  if (d.evidence.length > 0) {
+    const res = await verifyChain(d.evidence, evidenceChainKey(keys.join(","), d.evidence), {
+      allowUnpinned: keys.length === 0,
+    });
+    if (!res.valid) {
+      d.chain.valid = false;
+      d.chain.error = `evidence receipt chain: ${res.error ?? "chain verification failed"}`;
+      add(FindingCorruptChain, d.chain.session, d.chain.error);
+      return;
+    }
   }
   d.chain.valid = true;
 }

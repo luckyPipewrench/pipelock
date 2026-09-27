@@ -1,5 +1,5 @@
 {
-  "description": "Run B's file moved to a new run name. Its entries still name run B, so it is refused, and A's link now names a successor that is not present.",
+  "description": "Run B's file moved to a new run name. Its entries still name run B, so it is refused, read alone too, and A's link now names a successor that is not present.",
   "recorder_chain": "intact",
   "symlinks": [],
   "cells": [
@@ -91,9 +91,13 @@
         "signer-key.hex"
       ],
       "endorsements": [],
-      "valid": true,
+      "valid": false,
       "findings": [],
-      "errors": []
+      "errors": [
+        {
+          "kind": "session_mismatch"
+        }
+      ]
     }
   ]
 }

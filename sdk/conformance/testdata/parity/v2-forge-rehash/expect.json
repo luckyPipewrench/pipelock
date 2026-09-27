@@ -1,5 +1,5 @@
 {
-  "description": "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. A named run A still passes: B's own receipt chains are not part of A's base checks.",
+  "description": "Run B's last EvidenceReceipt v2 verdict edited from block to allow, and the recorder hash chain recomputed. Only the v2 signature catches it. The base check verifies every run's v2 chain, so a named run A fails too: a named run fails on any finding in its base.",
   "recorder_chain": "rehashed",
   "symlinks": [],
   "cells": [
@@ -11,7 +11,12 @@
       ],
       "endorsements": [],
       "valid": false,
-      "findings": [],
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
       "errors": [
         {
           "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",
@@ -26,8 +31,13 @@
         "signer-key.hex"
       ],
       "endorsements": [],
-      "valid": true,
-      "findings": [],
+      "valid": false,
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
       "errors": []
     },
     {
@@ -38,7 +48,12 @@
       ],
       "endorsements": [],
       "valid": false,
-      "findings": [],
+      "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        }
+      ],
       "errors": [
         {
           "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0",

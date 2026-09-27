@@ -1,5 +1,5 @@
 {
-  "description": "Run B's last EvidenceReceipt v2 verdict edited from block to allow; its signature no longer verifies. The recorder hash chain was not recomputed.",
+  "description": "Run B's last EvidenceReceipt v2 verdict edited from block to allow; its signature no longer verifies. The recorder hash chain was not recomputed. The base check verifies B's v2 chain, so every mode that reads the base reports it.",
   "recorder_chain": "broken",
   "symlinks": [],
   "cells": [
@@ -12,6 +12,10 @@
       "endorsements": [],
       "valid": false,
       "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        },
         {
           "kind": "outer_chain_broken",
           "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
@@ -34,6 +38,10 @@
       "valid": false,
       "findings": [
         {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        },
+        {
           "kind": "outer_chain_broken",
           "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
         }
@@ -49,6 +57,10 @@
       "endorsements": [],
       "valid": false,
       "findings": [
+        {
+          "kind": "corrupt_chain",
+          "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+        },
         {
           "kind": "outer_chain_broken",
           "session": "proxy.run.f7b327337534352a514bd0a256b1d1c0"

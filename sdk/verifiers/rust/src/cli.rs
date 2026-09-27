@@ -4,8 +4,9 @@
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
-    chain_scoped_trust, read_session_evidence, read_session_receipts, resolve_base_sessions,
-    run_session_base, verify_base, BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
+    chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
+    resolve_base_sessions, run_session_base, verify_base, BaseVerifyOptions, SessionReadError,
+    FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
@@ -526,6 +527,11 @@ fn read_file_evidence(
         refused: false,
         message: err.to_string(),
     })?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    check_file_entry_sessions(&name, &lines)?;
     let outer = verify_recorder_chain(&lines.iter().map(|l| l.line.as_str()).collect::<Vec<_>>());
     let typed = extract_typed_from_lines(lines).map_err(|err| SessionReadError {
         refused: false,

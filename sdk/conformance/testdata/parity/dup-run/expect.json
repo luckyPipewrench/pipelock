@@ -1,5 +1,5 @@
 {
-  "description": "Run A's file copied verbatim under a new run name. Its entries still name run A, so the copy is refused as the new run's evidence. File mode reads a named file as given.",
+  "description": "Run A's file copied verbatim under a new run name. Its entries still name run A, so the copy is refused as the new run's evidence, in its directory and read alone.",
   "recorder_chain": "intact",
   "symlinks": [],
   "cells": [
@@ -84,9 +84,13 @@
         "signer-key.hex"
       ],
       "endorsements": [],
-      "valid": true,
+      "valid": false,
       "findings": [],
-      "errors": []
+      "errors": [
+        {
+          "kind": "session_mismatch"
+        }
+      ]
     },
     {
       "mode": "file",

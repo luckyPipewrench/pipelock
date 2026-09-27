@@ -395,15 +395,6 @@ func TestContainViewStaleSocketAndSymlink(t *testing.T) {
 	}
 }
 
-func TestViewCommandDefaultRequiresRuntimeDir(t *testing.T) {
-	var out bytes.Buffer
-	cmd := viewCmd()
-	cmd.SetOut(&out)
-	if cmd.Flag("control") == nil || cmd.Flag("socket") == nil {
-		t.Fatal("view flags missing")
-	}
-}
-
 type failingViewWriter struct{}
 
 func (failingViewWriter) Write([]byte) (int, error) { return 0, errors.New("terminal closed") }

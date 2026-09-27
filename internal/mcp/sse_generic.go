@@ -412,8 +412,17 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 		if clearInjectionTailAfterCurrent {
-			injectionTail = ""
-			payloadInjectionTail = ""
+			for i, current := range []string{rollingInjectionText, payloadText} {
+				next, err := dropSelfMatchingSSEInjectionTail(ctx, sc, current, opts)
+				if err != nil {
+					return err
+				}
+				if i == 0 {
+					injectionTail = next
+				} else {
+					payloadInjectionTail = next
+				}
+			}
 		} else {
 			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")
 			payloadInjectionTail = advanceSSERollingTail(payloadInjectionTail, event, resetInjectionTail, " ")
@@ -430,6 +439,44 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+// dropSelfMatchingSSEInjectionTail keeps text after a finding already reported
+// for this event so a later event can complete another phrase without a repeat.
+func dropSelfMatchingSSEInjectionTail(ctx context.Context, sc *scanner.Scanner, tail string, opts GenericSSEScanOptions) (string, error) {
+	result := sc.ScanResponseWithSuppress(ctx, tail, opts.Target, opts.Suppress)
+	if result.Failed() {
+		return "", fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+	}
+	if result.Clean {
+		return advanceSSERollingTail("", []byte(tail), true, " "), nil
+	}
+	end := 0
+	// ForMatching preserves byte offsets only for ASCII input with no
+	// length-changing normalization. Other views cannot index the raw event.
+	if len(normalize.ForMatching(tail)) == len(tail) && isASCII(tail) {
+		for _, match := range result.Matches {
+			span := match.Span()
+			if span.ViewLabel == scanner.ViewForMatching && span.ByteEnd > end && span.ByteEnd <= len(tail) {
+				end = span.ByteEnd
+			}
+		}
+	}
+	if end == 0 {
+		// Unknown coordinates: keep the bounded tail rather than silently
+		// discard a possible second phrase.
+		return advanceSSERollingTail("", []byte(tail), true, " "), nil
+	}
+	return advanceSSERollingTail("", []byte(tail[end:]), true, " "), nil
+}
+
+func isASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // dropSelfMatchingSSETail keeps only the bytes after a match already reported

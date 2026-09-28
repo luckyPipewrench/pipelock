@@ -494,10 +494,16 @@ func stepWriteCredentialGuard() step {
 	// those: a rerun that wrote nothing must not delete or disable a guard
 	// that was already installed and current.
 	var touched []string
+	var modeChanges []struct {
+		path string
+		mode os.FileMode
+	}
 	// prevActive records a guard that was already running, so a rollback
 	// that restores its previous files starts it again instead of leaving
 	// the operator's credentials unguarded.
 	prevActive := false
+	prevEnabled := false
+	prevEnabledRuntime := false
 	return step{
 		name: "write-credential-guard",
 		desc: "write and enable contain credential guard",
@@ -520,25 +526,66 @@ func stepWriteCredentialGuard() step {
 				{env.guardPathUnit, renderCredentialGuardPathUnit(home, filepath.Base(env.guardServiceUnit)), modeUnitFile},
 			}
 			touched = nil
+			modeChanges = nil
+			rememberMode := func(path string, mode os.FileMode) {
+				for _, change := range modeChanges {
+					if change.path == path {
+						return
+					}
+				}
+				modeChanges = append(modeChanges, struct {
+					path string
+					mode os.FileMode
+				}{path, mode})
+			}
 			activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.guardPathUnit))
 			prevActive = activeErr == nil && strings.TrimSpace(activeOut) == systemctlActive
+			prevEnabled = false
+			prevEnabledRuntime = false
+			if pathExists(env, env.guardPathUnit) {
+				enabledOut, enabledCode, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.guardPathUnit))
+				if enabledErr == nil && enabledCode == 0 {
+					state := strings.TrimSpace(enabledOut)
+					prevEnabled = state == systemctlEnabled || state == "enabled-runtime"
+					prevEnabledRuntime = state == "enabled-runtime"
+				}
+			}
 			// Every error below reports the files already written, so the
 			// orchestrator runs undo and restores them.
 			for _, item := range writes {
-				if err := env.mkdirAll(filepath.Dir(item.path), modeDirReadable); err != nil {
-					return len(touched) > 0, fmt.Errorf("mkdir %s: %w", filepath.Dir(item.path), err)
+				dir := filepath.Dir(item.path)
+				var priorDirMode os.FileMode
+				priorDirExists := false
+				if info, err := env.lstat(dir); err == nil {
+					priorDirMode = info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+					priorDirExists = true
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("stat %s: %w", dir, err)
 				}
-				if err := env.chmod(filepath.Dir(item.path), modeDirReadable); err != nil {
-					return len(touched) > 0, fmt.Errorf("chmod %s: %w", filepath.Dir(item.path), err)
+				if err := env.mkdirAll(dir, modeDirReadable); err != nil {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("mkdir %s: %w", dir, err)
+				}
+				if priorDirExists && priorDirMode != modeDirReadable {
+					rememberMode(dir, priorDirMode)
+				}
+				if err := env.chmod(dir, modeDirReadable); err != nil {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("chmod %s: %w", dir, err)
 				}
 				if existing, err := env.readFile(item.path); err == nil && string(existing) == item.body {
+					info, statErr := env.lstat(item.path)
+					if statErr != nil {
+						return len(touched)+len(modeChanges) > 0, fmt.Errorf("stat %s: %w", item.path, statErr)
+					}
+					if prior := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); prior != item.mode {
+						rememberMode(item.path, prior)
+					}
 					if err := env.chmod(item.path, item.mode); err != nil {
-						return len(touched) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
+						return len(touched)+len(modeChanges) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
 					}
 					continue
 				}
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
-					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
 				touched = append(touched, item.path)
 			}
@@ -561,32 +608,48 @@ func stepWriteCredentialGuard() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			if len(touched) == 0 {
+			if len(touched) == 0 && len(modeChanges) == 0 {
 				// Nothing on disk changed. The guard run and enable only
 				// re-assert protection, so leave the existing guard running.
 				return nil
 			}
 			unit := filepath.Base(env.guardPathUnit)
+			var errs []error
 			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
-				return fmt.Errorf("disable credential guard %s: %w", unit, err)
+				errs = append(errs, fmt.Errorf("disable credential guard %s: %w", unit, err))
 			}
 			for i := len(touched) - 1; i >= 0; i-- {
 				if err := restoreBackup(env, touched[i]); err != nil {
-					return err
+					errs = append(errs, err)
+				}
+			}
+			for i := len(modeChanges) - 1; i >= 0; i-- {
+				if err := env.chmod(modeChanges[i].path, modeChanges[i].mode); err != nil {
+					errs = append(errs, fmt.Errorf("restore mode %s: %w", modeChanges[i].path, err))
 				}
 			}
 			// Restore files before reloading so either manager outcome leaves the
 			// on-disk guard in its pre-install state. A failed reload is still
 			// returned; systemd may retain stale unit contents until it recovers.
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err)
+				errs = append(errs, fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err))
 			}
-			if prevActive {
-				if err := runOrErr(ctx, env, "systemctl", "enable", "--now", unit); err != nil {
-					return fmt.Errorf("restart previous credential guard %s: %w", unit, err)
+			if prevEnabled {
+				args := []string{"enable"}
+				if prevEnabledRuntime {
+					args = append(args, "--runtime")
+				}
+				args = append(args, unit)
+				if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
+					errs = append(errs, fmt.Errorf("restore credential guard %s enabled state: %w", unit, err))
 				}
 			}
-			return nil
+			if prevActive {
+				if err := runOrErr(ctx, env, "systemctl", "start", unit); err != nil {
+					errs = append(errs, fmt.Errorf("restart previous credential guard %s: %w", unit, err))
+				}
+			}
+			return errors.Join(errs...)
 		},
 	}
 }

@@ -92,7 +92,7 @@ func withRollbackError(stepErr, rollbackErr error) error {
 // better than a half-installed state with an early exit - and are returned
 // joined, so a failed undo cannot read as a clean rollback.
 func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied []step) error {
-	if len(applied) == 0 {
+	if len(applied) == 0 && len(env.failedWriteRestores) == 0 {
 		return nil
 	}
 	var errs []error
@@ -111,6 +111,10 @@ func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied 
 			continue
 		}
 		_, _ = fmt.Fprintf(w, "  [ OK ] undo %s\n", s.name)
+	}
+	if err := retryFailedWriteRestores(env); err != nil {
+		_, _ = fmt.Fprintf(w, "  [FAIL] restore failed writes: %v\n", err)
+		errs = append(errs, err)
 	}
 	env.deferServiceRestart = false
 	restartPending := env.serviceRestartPending

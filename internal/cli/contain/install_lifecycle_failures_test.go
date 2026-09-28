@@ -38,7 +38,7 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		env.chmod = func(string, os.FileMode) error { return os.ErrPermission }
 		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
-		if err == nil || applied || !strings.Contains(err.Error(), "chmod") {
+		if err == nil || !strings.Contains(err.Error(), "chmod") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
 		}
 	})
@@ -59,7 +59,7 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 			return originalChmod(path, mode)
 		}
 		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
-		if err == nil || applied || !strings.Contains(err.Error(), "chmod") {
+		if err == nil || !applied || !strings.Contains(err.Error(), "chmod") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
 		}
 	})
@@ -68,7 +68,7 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		env.writeFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
 		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
-		if err == nil || applied || !strings.Contains(err.Error(), "write") {
+		if err == nil || !strings.Contains(err.Error(), "write") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
 		}
 	})

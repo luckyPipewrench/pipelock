@@ -167,8 +167,123 @@ func TestCredentialGuardRollbackRestartsPreviouslyActiveGuard(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Clean(env.guardScriptPath)); string(got) != old {
 		t.Fatalf("guard script after rollback = %q, want previous", got)
 	}
-	if enableCalls != 2 {
-		t.Fatalf("enable --now %s calls = %d, want the failed install plus the rollback restart\n%s", unit, enableCalls, out.String())
+	if enableCalls != 1 || !rollbackRunnerCalled(runner, testSystemctl, "start "+unit) {
+		t.Fatalf("enable --now calls = %d, start called = %t; want one failed install enable and a rollback start\n%s", enableCalls, rollbackRunnerCalled(runner, testSystemctl, "start "+unit), out.String())
+	}
+}
+
+func TestCredentialGuardRollbackContinuesAfterRestoreError(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	prior := map[string]string{
+		env.guardScriptPath:  "#!/bin/sh\n# previous guard\n",
+		env.guardServiceUnit: "[Service]\nExecStart=/bin/true\n",
+		env.guardPathUnit:    "[Path]\nPathChanged=/previous\n",
+	}
+	for path, body := range prior {
+		if err := os.MkdirAll(filepath.Dir(path), modeDirReadable); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), modeUnitFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unit := filepath.Base(env.guardPathUnit)
+	runner.on(argvFor(testSystemctl, "is-active", unit), "active\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", unit), "enabled\n", 0, nil)
+	renamed := 0
+	rename := env.rename
+	env.rename = func(from, to string) error {
+		if from == env.guardPathUnit+".bak" && to == env.guardPathUnit {
+			renamed++
+			return errors.New("path unit restore denied")
+		}
+		return rename(from, to)
+	}
+	failingStep := step{name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
+		return false, errors.New("later step failed")
+	}}
+	_, err := runSteps(context.Background(), env, out, []step{stepWriteCredentialGuard(), failingStep})
+	if err == nil || !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "path unit restore denied") {
+		t.Fatalf("rollback error = %v, want the restore failure reported", err)
+	}
+	if renamed == 0 {
+		t.Fatal("positive control: the path-unit restore did not run")
+	}
+	for _, path := range []string{env.guardServiceUnit, env.guardScriptPath} {
+		got, readErr := os.ReadFile(filepath.Clean(path))
+		if readErr != nil || string(got) != prior[path] {
+			t.Fatalf("later backup %s = %q, %v; want previous content", path, got, readErr)
+		}
+	}
+	if !rollbackRunnerCalled(runner, testSystemctl, "daemon-reload") ||
+		!rollbackRunnerCalled(runner, testSystemctl, "enable "+unit) ||
+		!rollbackRunnerCalled(runner, testSystemctl, "start "+unit) {
+		t.Fatalf("rollback did not reload and restore the previous enabled and active guard\n%s", out.String())
+	}
+}
+
+func TestCredentialGuardRollbackRestoresModeOnlyChanges(t *testing.T) {
+	env, _, out := newFakeEnv(t)
+	operator, err := env.lookupUser(env.operatorUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := []struct {
+		path string
+		body string
+		mode os.FileMode
+	}{
+		{env.guardScriptPath, renderCredentialGuardScript(env.agentUserName, filepath.Clean(operator.HomeDir), env.bashPath), 0o600},
+		{env.guardServiceUnit, renderCredentialGuardService(env.guardScriptPath), modeUnitFile},
+		{env.guardPathUnit, renderCredentialGuardPathUnit(filepath.Clean(operator.HomeDir), filepath.Base(env.guardServiceUnit)), modeUnitFile},
+	}
+	for _, item := range writes {
+		if err := os.MkdirAll(filepath.Dir(item.path), modeDirReadable); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(item.path, []byte(item.body), item.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(env.guardScriptPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	failingStep := step{name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
+		return false, errors.New("later step failed")
+	}}
+	_, err = runSteps(context.Background(), env, out, []step{stepWriteCredentialGuard(), failingStep})
+	if err == nil || !strings.Contains(err.Error(), "later step failed") {
+		t.Fatalf("runSteps error = %v, want later failure", err)
+	}
+	info, err := os.Stat(env.guardScriptPath)
+	if err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("guard script mode after rollback = %v, %v; want 0400", info, err)
+	}
+	if _, err := os.Stat(env.guardScriptPath + ".bak"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mode-only change created a content backup: %v", err)
+	}
+}
+
+func TestCredentialGuardRollbackPreservesRuntimeEnable(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.guardPathUnit), modeDirReadable); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.guardPathUnit, []byte("previous path unit"), modeUnitFile); err != nil {
+		t.Fatal(err)
+	}
+	unit := filepath.Base(env.guardPathUnit)
+	runner.on(argvFor(testSystemctl, "is-enabled", unit), "enabled-runtime\n", 0, nil)
+	failingStep := step{name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
+		return false, errors.New("later step failed")
+	}}
+	_, err := runSteps(context.Background(), env, out, []step{stepWriteCredentialGuard(), failingStep})
+	if err == nil || !strings.Contains(err.Error(), "later step failed") {
+		t.Fatalf("runSteps error = %v, want later failure", err)
+	}
+	if !rollbackRunnerCalled(runner, testSystemctl, "enable --runtime "+unit) ||
+		rollbackRunnerCalled(runner, testSystemctl, "enable "+unit) {
+		t.Fatalf("rollback did not preserve runtime enable state\n%s", out.String())
 	}
 }
 

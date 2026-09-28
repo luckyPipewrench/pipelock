@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -212,7 +213,11 @@ type installEnv struct {
 	// back into place. A second restoreBackup for the same path (a step's own
 	// recovery followed by rollback) then only finishes the pending archive
 	// restore instead of finding no .bak and deleting the restored file.
-	restoredBackups      map[string]bool
+	restoredBackups map[string]bool
+	// failedWriteRestores records a write whose immediate cleanup failed. A
+	// failed install retries these paths after its step undos, including when
+	// the step did not report itself applied.
+	failedWriteRestores  map[string]bool // value says a prior file was backed up
 	serviceBinaryChanged bool
 	serviceConfigChanged bool
 	serviceUnitChanged   bool
@@ -503,11 +508,45 @@ func backupAndWrite(env *installEnv, path string, contents []byte, mode os.FileM
 			restoreErr = fmt.Errorf("remove failed write %s: %w", clean, removeErr)
 		}
 		if restoreErr != nil {
+			if env.failedWriteRestores == nil {
+				env.failedWriteRestores = make(map[string]bool)
+			}
+			env.failedWriteRestores[clean] = backedUp
 			return errors.Join(fmt.Errorf("write %s: %w", clean, err), restoreErr)
 		}
 		return fmt.Errorf("write %s: %w", clean, err)
 	}
 	return nil
+}
+
+// retryFailedWriteRestores finishes only cleanup that backupAndWrite tried and
+// failed to complete. A fresh file must be removed even if an older stale
+// .bak exists; only a file backed up by this attempt may use restoreBackup.
+func retryFailedWriteRestores(env *installEnv) error {
+	paths := make([]string, 0, len(env.failedWriteRestores))
+	for path := range env.failedWriteRestores {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var errs []error
+	for i := len(paths) - 1; i >= 0; i-- {
+		path := paths[i]
+		var err error
+		if env.failedWriteRestores[path] {
+			err = restoreBackup(env, path)
+		} else {
+			err = env.removeFile(path)
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("restore failed write %s: %w", path, err))
+			continue
+		}
+		delete(env.failedWriteRestores, path)
+	}
+	return errors.Join(errs...)
 }
 
 // backupCurrentToBak ensures path.bak contains path's current content. If a

@@ -88,6 +88,35 @@ jobs:
           node -e "const pkg=require('./package.json'); const m=require('./pack-manifest.json')[0].files.map(f=>f.path); for (const need of ['dist/src/cli.js','dist/src/v0.schema.json']) { if(!m.includes(need)){ console.error('MISSING from npm package:',need); process.exit(1);} } if(pkg.bin?.['pipelock-verifier-ts']!=='dist/src/cli.js'){ console.error('bad bin mapping (npm strips a leading ./):',JSON.stringify(pkg.bin)); process.exit(1);} console.log('npm package contains CLI + bundled schema + valid bin');"
           rm -f pack-manifest.json
 
+  typescript-macos:
+    name: TypeScript directory paths (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/verifiers/ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/verifiers/ts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify directory paths on a case-insensitive volume
+        run: |
+          npm run build
+          node --test dist/tests/pinned-directory.test.js
+        env:
+          PIPELOCK_REQUIRE_CASE_ALIAS: '1'
+
   rust:
     name: Rust verifier
     runs-on: ubuntu-latest

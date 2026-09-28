@@ -152,13 +152,14 @@ test("directory entry accepts the filesystem's case-insensitive spelling", async
   mkdirSync(canonical);
   writeFileSync(join(canonical, "evidence.jsonl"), "inside");
   try {
-    if (!existsSync(alias)) {
-      t.skip("temporary volume is case-sensitive");
-      return;
-    }
-    const aliasID = statSync(alias, { bigint: true });
     const canonicalID = statSync(canonical, { bigint: true });
-    if (aliasID.dev !== canonicalID.dev || aliasID.ino !== canonicalID.ino) {
+    const aliasID = existsSync(alias) ? statSync(alias, { bigint: true }) : undefined;
+    if (!aliasID || aliasID.dev !== canonicalID.dev || aliasID.ino !== canonicalID.ino) {
+      assert.notEqual(
+        process.env.PIPELOCK_REQUIRE_CASE_ALIAS,
+        "1",
+        "macOS CI must exercise a case-insensitive directory alias",
+      );
       t.skip("temporary volume is case-sensitive");
       return;
     }

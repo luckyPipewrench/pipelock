@@ -482,9 +482,9 @@ class TestReleaseArtifacts(unittest.TestCase):
         promote_runs = self._job_runs("release-promote")
         publish = parsed["jobs"]["release-publish"]
         publish_runs = self._job_runs("release-publish")
-        # The consumer-facing publishes wait for the approved promotion AND the
-        # chart attestation, so a failed attestation leaves the release a draft.
-        self.assertEqual(publish["needs"], ["release-promote", "release-attest-chart"])
+        # Consumer-facing publishes wait for promotion, attestation, and the
+        # digest-verified chart publication; any failure leaves a draft.
+        self.assertEqual(publish["needs"], ["release-promote", "release-attest-chart", "release-publish-chart"])
         self.assertNotIn("if", publish, "publish must require both successful dependencies")
         self.assertEqual(publish["permissions"], {"contents": "write"})
         self.assertNotIn("environment", publish)
@@ -504,7 +504,6 @@ class TestReleaseArtifacts(unittest.TestCase):
         inputs_verified = names.index("Verify promotion image inputs")
         for public_write in (
             "Promote verified image manifests",
-            "Publish Helm chart",
         ):
             self.assertLess(verify, names.index(public_write))
             self.assertLess(inputs_verified, names.index(public_write))
@@ -571,7 +570,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             "Verify release manifest signature before promotion",
             "Verify promotion image inputs",
             "Promote verified image manifests",
-            "Publish Helm chart",
+            "Stage Helm chart locally",
         ):
             self.assertLess(download, promote_step_names.index(consumer))
         publish_step_names = [step.get("name", "") for step in publish["steps"]]
@@ -762,16 +761,23 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotIn("attestations", promote["permissions"])
         self.assertEqual(
             promote["outputs"]["chart_digest"],
-            "${{ steps.publish-helm-chart.outputs.chart_digest }}",
+            "${{ steps.stage-helm-chart.outputs.chart_digest }}",
         )
-        publish = next(step for step in promote["steps"] if step.get("id") == "publish-helm-chart")
-        self.assertIn("could not read the chart digest from helm output", publish["run"])
-        # Both branches take the digest from helm's own output, and the step
-        # exports it for the attestation job.
+        stage = next(step for step in promote["steps"] if step.get("id") == "stage-helm-chart")
+        self.assertIn("crane registry serve", stage["run"])
+        self.assertIn("crane pull --insecure --format=oci", stage["run"])
+        self.assertIn('helm push "$chart_archive" oci://127.0.0.1:5000/charts --plain-http', stage["run"])
+        self.assertNotIn('helm push "$chart_archive" oci://ghcr.io', stage["run"])
+        self.assertNotIn("crane push", stage["run"])
+        # The staged digest comes from Helm; a rerun may reuse an existing
+        # public digest only after comparing the published archive.
         extract = """awk '$1 == "Digest:" { print $2 }'"""
-        self.assertIn(f'printf \'%s\\n\' "$chart_lookup_output" | {extract}', publish["run"])
-        self.assertIn(f'printf \'%s\\n\' "$push_output" | {extract}', publish["run"])
-        self.assertIn('echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"', publish["run"])
+        self.assertIn(f'printf \'%s\\n\' "$stage_output" | {extract}', stage["run"])
+        self.assertIn(f'printf \'%s\\n\' "$chart_lookup_output" | {extract}', stage["run"])
+        self.assertIn('cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz"', stage["run"])
+        self.assertIn('echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"', stage["run"])
+        saved = next(step for step in promote["steps"] if step.get("name") == "Save staged Helm chart OCI layout")
+        self.assertEqual(saved["with"]["name"], "staged-helm-chart-oci")
 
         attest_job = parsed["jobs"]["release-attest-chart"]
         self.assertEqual(attest_job["needs"], ["release-promote"])
@@ -809,12 +815,28 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotIn("continue-on-error", gates[0])
         self.assertTrue(attest.get("continue-on-error"), "the gate reads the attest step's outcome")
 
+        chart_publish = parsed["jobs"]["release-publish-chart"]
+        self.assertEqual(chart_publish["needs"], ["release-promote", "release-attest-chart"])
+        self.assertEqual(chart_publish["permissions"], {"contents": "read", "packages": "write"})
+        self.assertNotIn("continue-on-error", chart_publish)
+        self.assertNotIn("if", chart_publish)
+        publish_step = next(step for step in chart_publish["steps"] if step.get("name") == "Publish and verify attested Helm chart")
+        self.assertIn('crane push dist-chart-oci "$target"', publish_step["run"])
+        self.assertIn('test "$(crane digest "$target")" = "$CHART_DIGEST"', publish_step["run"])
+        self.assertIn('gh attestation verify "oci://${target}"', publish_step["run"])
+        self.assertIn('helm registry login ghcr.io', publish_step["run"])
+        self.assertEqual(
+            publish_step["env"]["CHART_DIGEST"],
+            "${{ needs.release-promote.outputs.chart_digest }}",
+        )
+
         # Nothing a consumer reads may move before the attestation succeeds.
         publish_job = parsed["jobs"]["release-publish"]
         self.assertIn("release-attest-chart", publish_job["needs"])
+        self.assertIn("release-publish-chart", publish_job["needs"])
         self.assertNotIn("id-token", publish_job["permissions"])
         self.assertNotIn("attestations", publish_job["permissions"])
-        for job_name in ("release-promote", "release-attest-chart"):
+        for job_name in ("release-promote", "release-attest-chart", "release-publish-chart"):
             script = "\n".join(run for _, run in self._job_runs(job_name))
             for consumer_write in (
                 'gh release edit "$GITHUB_REF_NAME" --draft=false',

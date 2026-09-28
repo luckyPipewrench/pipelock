@@ -860,7 +860,8 @@ jobs:
       contents: write
       packages: write
     outputs:
-      chart_digest: ${{ steps.publish-helm-chart.outputs.chart_digest }}
+      chart_digest: ${{ steps.stage-helm-chart.outputs.chart_digest }}
+      chart_version: ${{ steps.stage-helm-chart.outputs.chart_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1061,30 +1062,10 @@ jobs:
           promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" amd64
           promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" arm64
 
-      # Deliberately placed after the attestation gate. The chart is the least
-      # critical artifact in the release, and an earlier position would let a
-      # registry hiccup on the chart abort the job with binaries and images
-      # already published but their provenance never attested. Publishing
-      # unattested images because a chart push failed is the wrong failure
-      # direction for this project, so provenance completes first.
-      #
-      # The chart is published to the same registry as the images it deploys, as
-      # an OCI artifact, so there is no chart index to host and no gh-pages
-      # branch to keep in sync. `helm push` of pipelock-<v>.tgz to
-      # oci://ghcr.io/luckypipewrench/charts yields
-      # ghcr.io/luckypipewrench/charts/pipelock:<v>, which is the reference
-      # Artifact Hub indexes.
-      #
-      # Both appVersion and the chart version are release-gated to the tag being
-      # published. OCI charts are addressed by chart version, so this prevents
-      # a later release from replacing an already-published chart tag.
-      #
-      # The first run creates a new GHCR package, and new packages are private
-      # by default, so the chart is not installable until that package is made
-      # public once in the GitHub UI. There is no REST endpoint for that, and it
-      # is irreversible, so it stays a deliberate human step.
-      - name: Publish Helm chart
-        id: publish-helm-chart
+      # Build the OCI manifest in a runner-local registry. Its digest is
+      # attested before any versioned chart is sent to public GHCR.
+      - name: Stage Helm chart locally
+        id: stage-helm-chart
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
@@ -1104,12 +1085,40 @@ jobs:
             echo "::error::chart appVersion ${chart_app_version} does not match ${app_version}"
             exit 1
           }
+          echo "chart_version=${chart_version}" >>"$GITHUB_OUTPUT"
+
+          registry_log="$RUNNER_TEMP/chart-registry.log"
+          crane registry serve --address 127.0.0.1:5000 >"$registry_log" 2>&1 &
+          registry_pid=$!
+          trap 'kill "$registry_pid" 2>/dev/null || true; wait "$registry_pid" 2>/dev/null || true; helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$registry_pid" 2>/dev/null || break
+            if curl --fail --silent http://127.0.0.1:5000/v2/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1 || {
+            echo "::error::local chart registry did not start"
+            cat "$registry_log" >&2
+            exit 1
+          }
+          stage_output="$(helm push "$chart_archive" oci://127.0.0.1:5000/charts --plain-http 2>&1)"
+          chart_digest="$(printf '%s\n' "$stage_output" | awk '$1 == "Digest:" { print $2 }')"
+          [[ "$chart_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::could not read the staged chart digest from helm output"
+            exit 1
+          }
+          crane pull --insecure --format=oci \
+            "127.0.0.1:5000/charts/pipelock:${chart_version}" dist-chart-oci
+          test "$(jq -r '.manifests[0].digest' dist-chart-oci/index.json)" = "$chart_digest"
+
           helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
-          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
           existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
           candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
           mkdir -p "$existing_dir" "$candidate_dir"
-          chart_digest=""
           if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
             cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz" || {
               echo "::error::published chart archive ${chart_version} differs from the staged release archive"
@@ -1123,44 +1132,40 @@ jobs:
             }
             chart_digest="$(printf '%s\n' "$chart_lookup_output" | awk '$1 == "Digest:" { print $2 }')"
           elif printf '%s\n' "$chart_lookup_output" | grep -qE ': not found$'; then
-            push_output="$(helm push "$chart_archive" oci://ghcr.io/luckypipewrench/charts 2>&1)"
-            printf '%s\n' "$push_output"
-            chart_digest="$(printf '%s\n' "$push_output" | awk '$1 == "Digest:" { print $2 }')"
+            echo "chart not published yet; attestation must succeed first"
           else
             echo "::error::could not determine whether chart ${chart_version} exists"
             exit 1
           fi
 
-          # The digest helm reported for the exact manifest it just pushed, or
-          # for the published one it just pulled and verified byte-identical
-          # above. Taking it from that operation, not re-reading the tag,
-          # binds the attestation to the bytes this job checked.
+          # On a rerun, reuse the existing public digest after comparing the
+          # archive. A fresh chart stays local until the attestation succeeds.
           [[ "$chart_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             echo "::error::could not read the chart digest from helm output"
             exit 1
           }
           echo "chart_digest=${chart_digest}" >>"$GITHUB_OUTPUT"
 
-          # A brand-new GHCR package is private, and the install command in the
-          # READMEs fails with an authorization error until it is made public.
-          # The reminder belongs here, in front of whoever ran the release, at
-          # the moment it becomes actionable. It deliberately does not go in the
-          # install docs: the condition is true once, during bootstrap, and a
-          # caveat left in user-facing docs would be permanently wrong
-          # afterwards.
           {
-            echo "### Helm chart published"
+            echo "### Helm chart staged for attestation"
             echo
             echo "\`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\` (appVersion ${app_version})."
             echo
-            echo "If this is the first published chart, the package is PRIVATE and"
-            echo "\`helm install oci://ghcr.io/luckypipewrench/charts/pipelock\` fails for"
-            echo "everyone until it is made public once under Package settings."
+            echo "The public chart is published only after attestation succeeds."
           } >>"$GITHUB_STEP_SUMMARY"
 
-  # Signs the published Helm chart with the same provenance mechanism the
+      - name: Save staged Helm chart OCI layout
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staged-helm-chart-oci
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+          path: dist-chart-oci/
+
+  # Signs the staged Helm chart with the same provenance mechanism the
   # container images use (actions/attest-build-provenance, GitHub's
-  # OIDC-backed Sigstore identity), bound to the digest release-promote pushed
+  # OIDC-backed Sigstore identity), bound to the digest release-promote staged
   # or verified. It is its own job so the signing permissions (id-token,
   # attestations) are held only while GitHub's first-party attestation action
   # runs, never by the third-party actions in release-promote. The chart is
@@ -1195,16 +1200,115 @@ jobs:
           echo "::error::Helm chart attestation failed"
           exit 1
 
+  # Publish the exact staged OCI manifest only after its digest was attested.
+  # This job has registry write permission but no signing permission.
+  release-publish-chart:
+    needs: [release-promote, release-attest-chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: staged-helm-chart-oci
+          path: dist-chart-oci
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-promotion-inputs
+
+      - name: Install verified crane
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRANE_VERSION: v0.21.9
+          CRANE_LINUX_AMD64_SHA256: 5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/crane-${CRANE_VERSION}"
+          archive="go-containerregistry_Linux_x86_64.tar.gz"
+          mkdir -p "$tool_dir"
+          gh release download "$CRANE_VERSION" --repo google/go-containerregistry --pattern "$archive" --dir "$tool_dir"
+          printf '%s  %s\n' "$CRANE_LINUX_AMD64_SHA256" "$tool_dir/$archive" | sha256sum --check
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir" crane
+          test "$("$tool_dir/crane" version)" = "${CRANE_VERSION#v}"
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.21.3
+
+      - name: Publish and verify attested Helm chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHART_DIGEST: ${{ needs.release-promote.outputs.chart_digest }}
+          CHART_VERSION: ${{ needs.release-promote.outputs.chart_version }}
+        run: |
+          set -euo pipefail
+          repository=ghcr.io/luckypipewrench/charts/pipelock
+          target="${repository}:${CHART_VERSION}"
+          [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$CHART_VERSION" = "${GITHUB_REF_NAME#v}"
+          chart_archive="dist-chart/pipelock-${CHART_VERSION}.tgz"
+          test -s "$chart_archive"
+          if existing_digest="$(crane digest "$target" 2>"$RUNNER_TEMP/chart-lookup.err")"; then
+            test "$existing_digest" = "$CHART_DIGEST" || {
+              echo "::error::published chart digest differs from the attested digest"
+              exit 1
+            }
+          elif grep -q 'not found' "$RUNNER_TEMP/chart-lookup.err"; then
+            test "$(jq -r '.manifests[0].digest' dist-chart-oci/index.json)" = "$CHART_DIGEST"
+            test -s "dist-chart-oci/blobs/sha256/${CHART_DIGEST#sha256:}"
+            crane push dist-chart-oci "$target"
+          else
+            cat "$RUNNER_TEMP/chart-lookup.err" >&2
+            echo "::error::could not determine whether the chart version exists"
+            exit 1
+          fi
+          # The registry digest identifies the exact OCI manifest bytes.
+          test "$(crane digest "$target")" = "$CHART_DIGEST"
+          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          mkdir -p "$RUNNER_TEMP/pulled-chart"
+          pull_output="$(helm pull "oci://${repository}" --version "$CHART_VERSION" --destination "$RUNNER_TEMP/pulled-chart" 2>&1)"
+          test "$(printf '%s\n' "$pull_output" | awk '$1 == "Digest:" { print $2 }')" = "$CHART_DIGEST"
+          cmp -s "$chart_archive" "$RUNNER_TEMP/pulled-chart/pipelock-${CHART_VERSION}.tgz"
+          release_commit="$(git rev-parse "${GITHUB_REF_NAME}^{}")"
+          verified_digest="$(gh attestation verify "oci://${target}" \
+            --repo luckyPipewrench/pipelock \
+            --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+            --source-ref "refs/tags/${GITHUB_REF_NAME}" \
+            --source-digest "$release_commit" --deny-self-hosted-runners \
+            --format json --jq '.[0].verificationResult.statement.subject[0].digest.sha256')"
+          test "sha256:${verified_digest}" = "$CHART_DIGEST"
+          {
+            echo "### Helm chart published and attested"
+            echo
+            echo "\`${target}\`"
+            echo
+            echo "If this creates the GHCR chart package, make it public under Package settings before sharing the install command."
+          } >>"$GITHUB_STEP_SUMMARY"
+
   # The consumer-facing publishes: the Homebrew formula, the GitHub Release
   # leaving draft (which is what `pipelock update` reads), and the floating
-  # major tag. They wait for release-attest-chart so a failed chart
-  # attestation stops the release while it is still a draft, instead of
-  # turning the run red after an unattested chart, a public release and a
-  # moved v<major> tag are already out. The job holds no signing permissions
+  # major tag. They wait for chart attestation and publication so either
+  # failure stops the release while it is still a draft. The job holds no signing permissions
   # and needs no environment approval: it runs only after the approved
   # release-promote job succeeded.
   release-publish:
-    needs: [release-promote, release-attest-chart]
+    needs: [release-promote, release-attest-chart, release-publish-chart]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

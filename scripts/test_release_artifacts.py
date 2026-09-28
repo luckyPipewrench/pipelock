@@ -234,7 +234,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                     for value in block.values()
                 ):
                     holders.append((job_name, step.get("name", "")))
-        self.assertEqual(holders, [("release-promote", "Publish Homebrew formula")])
+        self.assertEqual(holders, [("release-publish", "Publish Homebrew formula")])
 
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
@@ -389,9 +389,14 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('if [[ "$latest_digest" != "$index_digest" ]]; then', self.workflow)
         runs = self._job_runs("release-promote")
         image_promotion = dict(runs)["Promote verified image manifests"]
+        publish_job_runs = self._job_runs("release-publish")
         self.assertIn("git ls-remote --tags --refs origin 'refs/tags/v*'", image_promotion)
         self.assertNotIn("printf '%s\\n%s\\n' \"$tags\" \"$version\"", image_promotion)
-        floating_steps = [script for name, script in runs if name == "Update floating major tag for GitHub Action"]
+        floating_steps = [
+            script
+            for name, script in publish_job_runs
+            if name == "Update floating major tag for GitHub Action"
+        ]
         self.assertEqual(len(floating_steps), 1, "expected exactly one floating-tag step")
         floating_lines = self._executable_lines(floating_steps[0])
         self.assertTrue(any("git ls-remote --tags --refs origin" in line for line in floating_lines))
@@ -475,6 +480,13 @@ class TestReleaseArtifacts(unittest.TestCase):
 
         build_runs = self._job_runs("release-build")
         promote_runs = self._job_runs("release-promote")
+        publish = parsed["jobs"]["release-publish"]
+        publish_runs = self._job_runs("release-publish")
+        # The consumer-facing publishes wait for the approved promotion AND the
+        # chart attestation, so a failed attestation leaves the release a draft.
+        self.assertEqual(publish["needs"], ["release-promote", "release-attest-chart"])
+        self.assertEqual(publish["permissions"], {"contents": "write"})
+        self.assertNotIn("environment", publish)
         build_script = "\n".join(script for _, script in build_runs)
         for forbidden in (
             "helm push ",
@@ -492,12 +504,25 @@ class TestReleaseArtifacts(unittest.TestCase):
         for public_write in (
             "Promote verified image manifests",
             "Publish Helm chart",
+        ):
+            self.assertLess(verify, names.index(public_write))
+            self.assertLess(inputs_verified, names.index(public_write))
+        publish_names = [name for name, _ in publish_runs]
+        self.assertEqual(
+            publish_names,
+            [
+                "Verify Go version",
+                "Publish Homebrew formula",
+                "Reverify the release manifest signature and publish",
+                "Update floating major tag for GitHub Action",
+            ],
+        )
+        for consumer_write in (
             "Publish Homebrew formula",
             "Reverify the release manifest signature and publish",
             "Update floating major tag for GitHub Action",
         ):
-            self.assertLess(verify, names.index(public_write))
-            self.assertLess(inputs_verified, names.index(public_write))
+            self.assertNotIn(consumer_write, names)
 
         self.assertIn("actions/upload-artifact@043fb46d", self.workflow)
         self.assertIn("actions/download-artifact@3e5f45b", self.workflow)
@@ -546,9 +571,13 @@ class TestReleaseArtifacts(unittest.TestCase):
             "Verify promotion image inputs",
             "Promote verified image manifests",
             "Publish Helm chart",
-            "Publish Homebrew formula",
         ):
             self.assertLess(download, promote_step_names.index(consumer))
+        publish_step_names = [step.get("name", "") for step in publish["steps"]]
+        self.assertLess(
+            publish_step_names.index("Download promotion inputs"),
+            publish_step_names.index("Publish Homebrew formula"),
+        )
 
         self.assertIn(
             'test "$("$tool_dir/crane" version)" = "${CRANE_VERSION#v}"',
@@ -604,7 +633,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         verify_cmd = "go run ./cmd/pipelock-release-manifest --verify --manifest"
         promotion_steps = [
             script
-            for name, script in promote_runs
+            for name, script in publish_runs
             if name == "Reverify the release manifest signature and publish"
         ]
         self.assertEqual(len(promotion_steps), 1, "expected exactly one promotion step")
@@ -614,12 +643,14 @@ class TestReleaseArtifacts(unittest.TestCase):
         # else could publish before verification while a check scoped to this
         # step still passed.
         undrafting_steps = [
-            name for name, script in promote_runs
+            (job_name, name)
+            for job_name in parsed["jobs"]
+            for name, script in self._job_runs(job_name)
             if any(undraft_cmd in line for line in self._executable_lines(script))
         ]
         self.assertEqual(
             undrafting_steps,
-            ["Reverify the release manifest signature and publish"],
+            [("release-publish", "Reverify the release manifest signature and publish")],
             f"draft removal must happen only in the promotion step, found {undrafting_steps}",
         )
 
@@ -671,11 +702,12 @@ class TestReleaseArtifacts(unittest.TestCase):
         commit_bind = (
             'test "$manifest_commit" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")" || {'
         )
+        gate_runs = {**dict(promote_runs), **dict(publish_runs)}
         for gate in (
             "Verify release manifest signature before promotion",
             "Reverify the release manifest signature and publish",
         ):
-            lines = self._executable_lines(dict(promote_runs)[gate])
+            lines = self._executable_lines(gate_runs[gate])
             self.assertIn('manifest_tag="$(jq -r .tag "$verify_dir/release.json")"', lines)
             self.assertIn(
                 'manifest_commit="$(jq -r .commit "$verify_dir/release.json")"', lines
@@ -700,7 +732,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.workflow,
         )
         self.assertIn('test "$chart_app_version" = "$app_version"', self.workflow)
-        homebrew = dict(promote_runs)["Publish Homebrew formula"]
+        homebrew = dict(publish_runs)["Publish Homebrew formula"]
         self.assertIn("git ls-remote --tags --refs origin 'refs/tags/v*'", homebrew)
         self.assertIn('if [[ "$version" != "$newest_stable" ]]; then', homebrew)
         self.assertLess(
@@ -758,10 +790,32 @@ class TestReleaseArtifacts(unittest.TestCase):
             "${{ needs.release-promote.outputs.chart_digest }}",
         )
         self.assertNotIn("push-to-registry", attest["with"])
-        self.assertIn(
-            "steps.attest-helm-chart.outcome != 'success'",
-            str([step.get("if") for step in attest_job["steps"]]),
-        )
+        # The gate must both select a failed attestation and exit non-zero.
+        # Matching the condition alone passed with the gate's `exit 1` edited
+        # to `exit 0`, which would leave a failed attestation green.
+        gates = [
+            step
+            for step in attest_job["steps"]
+            if step.get("if") == "always() && steps.attest-helm-chart.outcome != 'success'"
+        ]
+        self.assertEqual(len(gates), 1, "expected one attestation failure gate")
+        self.assertIn("exit 1", self._executable_lines(gates[0]["run"]))
+        self.assertNotIn("continue-on-error", gates[0])
+        self.assertTrue(attest.get("continue-on-error"), "the gate reads the attest step's outcome")
+
+        # Nothing a consumer reads may move before the attestation succeeds.
+        publish_job = parsed["jobs"]["release-publish"]
+        self.assertIn("release-attest-chart", publish_job["needs"])
+        self.assertNotIn("id-token", publish_job["permissions"])
+        self.assertNotIn("attestations", publish_job["permissions"])
+        for job_name in ("release-promote", "release-attest-chart"):
+            script = "\n".join(run for _, run in self._job_runs(job_name))
+            for consumer_write in (
+                'gh release edit "$GITHUB_REF_NAME" --draft=false',
+                "repos/luckyPipewrench/homebrew-tap/contents/",
+                'git push origin "$floating_ref"',
+            ):
+                self.assertNotIn(consumer_write, script, f"{consumer_write} runs in {job_name}")
 
 if __name__ == "__main__":
     unittest.main()

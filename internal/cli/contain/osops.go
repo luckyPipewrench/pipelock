@@ -177,28 +177,45 @@ type installEnv struct {
 	// nftTableMutatedByInstall records that this install attempt successfully
 	// loaded or rewrote the containment table. Rollback uses it
 	// to tell a table this attempt created from one that never existed.
-	nftTableMutatedByInstall     bool
-	prevNFTTableStateKnown       bool
-	prevNFTPersistEnabled        bool
-	prevNFTPersistStateKnown     bool
-	prevNFTPersistUnitExisted    bool
-	prevNFTExpiryTimerEnabled    bool
-	prevNFTExpiryTimerActive     bool
-	prevNFTExpiryTimerStateKnown bool
-	prevNFTExpiryServiceExisted  bool
-	prevNFTExpiryTimerExisted    bool
-	prevNFTUnitFilesStateKnown   bool
-	prevDisplayUnitExisted       bool
-	prevDisplayEnabled           bool
-	prevDisplayActive            bool
-	prevDisplayStateKnown        bool
-	displayEnabled               bool
-	displayNumber                int
-	preflightBinaryHash          string
-	archivedBackups              map[string][]string
-	serviceBinaryChanged         bool
-	serviceConfigChanged         bool
-	serviceUnitChanged           bool
+	nftTableMutatedByInstall bool
+	// nftTableLoadedBeforeInstall records that the containment chain was live
+	// when this attempt started. Rollback must never delete such a table,
+	// even when its previous contents could not be captured.
+	nftTableLoadedBeforeInstall bool
+	// The *WrittenByInstall flags record which containment files this
+	// attempt actually wrote, so rollback restores only those. The step can
+	// report applied without writing a file, and restoring an unwritten file
+	// deletes it or swaps in an older release's backup.
+	nftRulesWrittenByInstall         bool
+	nftPersistUnitWrittenByInstall   bool
+	nftExpiryServiceWrittenByInstall bool
+	nftExpiryTimerWrittenByInstall   bool
+	prevNFTTableStateKnown           bool
+	prevNFTPersistEnabled            bool
+	prevNFTPersistStateKnown         bool
+	prevNFTPersistUnitExisted        bool
+	prevNFTExpiryTimerEnabled        bool
+	prevNFTExpiryTimerActive         bool
+	prevNFTExpiryTimerStateKnown     bool
+	prevNFTExpiryServiceExisted      bool
+	prevNFTExpiryTimerExisted        bool
+	prevNFTUnitFilesStateKnown       bool
+	prevDisplayUnitExisted           bool
+	prevDisplayEnabled               bool
+	prevDisplayActive                bool
+	prevDisplayStateKnown            bool
+	displayEnabled                   bool
+	displayNumber                    int
+	preflightBinaryHash              string
+	archivedBackups                  map[string][]string
+	// restoredBackups records paths whose backup this attempt already moved
+	// back into place. A second restoreBackup for the same path (a step's own
+	// recovery followed by rollback) then only finishes the pending archive
+	// restore instead of finding no .bak and deleting the restored file.
+	restoredBackups      map[string]bool
+	serviceBinaryChanged bool
+	serviceConfigChanged bool
+	serviceUnitChanged   bool
 	// systemdVersion is the running systemd major version read from
 	// `systemctl --version` before the unit is rendered. Zero means unknown,
 	// which renders the legacy simple unit because that shape loads everywhere.
@@ -500,6 +517,8 @@ func backupAndWrite(env *installEnv, path string, contents []byte, mode os.FileM
 // current file, it is left in place and the caller can overwrite/remove path.
 func backupCurrentToBak(env *installEnv, path string) (bool, error) {
 	clean := filepath.Clean(path)
+	// A new write supersedes any restore this attempt already made.
+	delete(env.restoredBackups, clean)
 	if err := ensureSafeWriteTarget(env, clean); err != nil {
 		return false, err
 	}
@@ -673,9 +692,16 @@ func ensureSafeDirectory(env *installEnv, path string) error {
 // If path.bak exists, restore it over path. If path.bak does not exist,
 // remove path (the install created it fresh). Errors that don't matter for
 // rollback (target already gone) are swallowed.
+//
+// It is safe to call again for the same path after a partial failure: once
+// the backup is back in place, a retry only completes the archived-backup
+// restore and never removes the restored file.
 func restoreBackup(env *installEnv, path string) error {
 	clean := filepath.Clean(path)
 	bak := clean + ".bak"
+	if env.restoredBackups[clean] {
+		return restoreLatestArchivedBackup(env, bak)
+	}
 	if info, err := env.lstat(bak); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("backup %s is a symlink; refusing restore", bak)
@@ -686,6 +712,7 @@ func restoreBackup(env *installEnv, path string) error {
 		if err := env.rename(bak, clean); err != nil {
 			return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 		}
+		markBackupRestored(env, clean)
 		return restoreLatestArchivedBackup(env, bak)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", bak, err)
@@ -703,6 +730,9 @@ func restoreBackup(env *installEnv, path string) error {
 func restoreBackupIfPresent(env *installEnv, path string) error {
 	clean := filepath.Clean(path)
 	bak := clean + ".bak"
+	if env.restoredBackups[clean] {
+		return restoreLatestArchivedBackup(env, bak)
+	}
 	info, err := env.lstat(bak)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -717,17 +747,44 @@ func restoreBackupIfPresent(env *installEnv, path string) error {
 	if err := env.rename(bak, clean); err != nil {
 		return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 	}
+	markBackupRestored(env, clean)
 	return restoreLatestArchivedBackup(env, bak)
 }
 
+// restoreTouchedInline restores touched in reverse after a failed apply. When
+// every restore succeeds the step reports not applied. When one fails it
+// reports applied, so rollback retries the restore (restoreBackup is safe to
+// repeat) and reports it as incomplete if it still cannot finish.
+func restoreTouchedInline(env *installEnv, touched []string, cause error) (bool, error) {
+	errs := []error{cause}
+	for i := len(touched) - 1; i >= 0; i-- {
+		if err := restoreBackup(env, touched[i]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return len(errs) > 1, errors.Join(errs...)
+}
+
+func markBackupRestored(env *installEnv, clean string) {
+	if env.restoredBackups == nil {
+		env.restoredBackups = make(map[string]bool)
+	}
+	env.restoredBackups[clean] = true
+}
+
+// restoreLatestArchivedBackup moves the newest archived backup recorded for
+// bak back to bak. The archive stays recorded until that rename succeeds, so
+// a failed attempt can be retried.
 func restoreLatestArchivedBackup(env *installEnv, bak string) error {
-	archive := popArchivedBackup(env, filepath.Clean(bak))
+	clean := filepath.Clean(bak)
+	archive := latestArchivedBackup(env, clean)
 	if archive == "" {
 		return nil
 	}
 	info, err := env.lstat(archive)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			forgetArchivedBackup(env, clean, archive)
 			return nil
 		}
 		return fmt.Errorf("stat archived backup %s: %w", archive, err)
@@ -738,7 +795,16 @@ func restoreLatestArchivedBackup(env *installEnv, bak string) error {
 	if err := env.rename(archive, bak); err != nil {
 		return fmt.Errorf("restore archived backup %s -> %s: %w", archive, bak, err)
 	}
+	forgetArchivedBackup(env, clean, archive)
 	return nil
+}
+
+func latestArchivedBackup(env *installEnv, bak string) string {
+	archives := env.archivedBackups[bak]
+	if len(archives) == 0 {
+		return ""
+	}
+	return archives[len(archives)-1]
 }
 
 func popArchivedBackup(env *installEnv, bak string) string {

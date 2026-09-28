@@ -245,6 +245,9 @@ func TestStepInstallNFTRulesUndoReportsExpiryUnitRestoreFailures(t *testing.T) {
 			if target == "service" {
 				path = env.nftExpiryServicePath
 			}
+			// Model an attempt that wrote both expiry units.
+			env.nftExpiryTimerWrittenByInstall = true
+			env.nftExpiryServiceWrittenByInstall = true
 			removeFile := env.removeFile
 			env.removeFile = func(candidate string) error {
 				if candidate == path {
@@ -292,6 +295,9 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 			env.prevNFTExpiryTimerStateKnown = true
 			env.prevNFTExpiryTimerEnabled = tc.enabled
 			env.prevNFTExpiryTimerActive = tc.active
+			// Model an attempt that wrote both expiry units.
+			env.nftExpiryTimerWrittenByInstall = true
+			env.nftExpiryServiceWrittenByInstall = true
 			originalTimer := "[Timer]\nOnCalendar=hourly\n"
 			originalService := "[Service]\nExecStart=/bin/true\n"
 			if err := os.WriteFile(env.nftExpiryTimerPath+".bak", []byte(originalTimer), modeUnitFile); err != nil {

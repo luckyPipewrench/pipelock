@@ -949,7 +949,8 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			for _, item := range paths {
 				if existing, err := env.readFile(item.path); err == nil && string(existing) == item.body {
 					if err := env.chmod(item.path, item.mode); err != nil {
-						return false, fmt.Errorf("chmod %s: %w", item.path, err)
+						// Earlier items may already be written; report them.
+						return len(touched) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
 					}
 					continue
 				}
@@ -966,7 +967,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 				touched = append(touched, item.path)
 			}
+			staleRetired := false
 			for _, unit := range staleLoopbackUnits(env, unitDir, oldInventory, desiredUnits) {
+				staleRetired = true
 				// Stop the in-namespace listener before its host socket: it
 				// Requires= the socket, so leaving it enabled after the socket is
 				// gone makes a unit that fails on every start.
@@ -998,7 +1001,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return len(touched) > 0, fmt.Errorf("reload systemd after installing contained network namespace: %w", err)
+				// Retiring a stale forwarder disabled it and restored its files
+				// even when no managed file was written; report that too.
+				return len(touched) > 0 || staleRetired, fmt.Errorf("reload systemd after installing contained network namespace: %w", err)
 			}
 			if namespaceDefinitionChanged && previousNamespace.active {
 				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.networkNamespaceUnitPath)); err != nil {

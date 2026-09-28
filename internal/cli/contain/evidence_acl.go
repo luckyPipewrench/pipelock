@@ -131,10 +131,16 @@ func evidenceACLRevokeCommands(operator, dataDir string, dirs []string) []worksp
 // dir is created and chowned to pipelock-proxy. Idempotent: re-running
 // re-asserts the same ACL and rewrites the same inventory.
 func stepGrantEvidenceACLs() step {
+	// granted is the grant this attempt started applying, kept in memory so
+	// undo can revoke it even when the on-disk inventory was never written.
+	var granted *evidenceACLInventory
+	inventoryWritten := false
 	return step{
 		name: "grant-evidence-acls",
 		desc: "grant operator read+traverse ACL on logs + recorder evidence dirs",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			granted = nil
+			inventoryWritten = false
 			operator, ok := resolveEvidenceOperator(env)
 			if !ok {
 				// FAIL CLOSED: never fall back to a group or world grant.
@@ -166,19 +172,28 @@ func stepGrantEvidenceACLs() step {
 			// host had before it started.
 			env.evidenceACLPreexisting = evidenceACLInventoryCovers(env, operator, dirs)
 			commands := evidenceACLCommands(operator, env.dataDir, dirs)
+			// From here on some ACLs may be applied, so every error reports
+			// applied and undo revokes the grant.
+			granted = &evidenceACLInventory{Operator: operator, Dirs: dirs}
 			if err := runWorkspaceCommands(ctx, env, commands); err != nil {
-				return false, fmt.Errorf("apply operator evidence ACL: %w", err)
+				return true, fmt.Errorf("apply operator evidence ACL: %w", err)
 			}
-			if err := writeEvidenceACLInventory(env, evidenceACLInventory{Operator: operator, Dirs: dirs}); err != nil {
-				return false, fmt.Errorf("record evidence ACL inventory: %w", err)
+			if err := writeEvidenceACLInventory(env, *granted); err != nil {
+				return true, fmt.Errorf("record evidence ACL inventory: %w", err)
 			}
+			inventoryWritten = true
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			if env.evidenceACLPreexisting {
 				return nil
 			}
-			return revokeEvidenceACLs(ctx, env, false)
+			if granted == nil || inventoryWritten {
+				return revokeEvidenceACLs(ctx, env, false)
+			}
+			// The inventory write failed, so revoke from the in-memory grant
+			// and leave any earlier inventory file as it was.
+			return revokeEvidenceACLDirs(ctx, env, *granted)
 		},
 	}
 }
@@ -250,8 +265,25 @@ func revokeEvidenceACLs(ctx context.Context, env *installEnv, keepData bool) err
 	if inv.Operator == "" || len(inv.Dirs) == 0 {
 		return nil
 	}
-	// Only revoke from dirs that still exist; skip removed ones to avoid
-	// erroring on a half-removed install.
+	if err := revokeEvidenceACLDirs(ctx, env, inv); err != nil {
+		return err
+	}
+	if keepData {
+		return nil
+	}
+	if err := env.removeFile(env.evidenceACLInvPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", env.evidenceACLInvPath, err)
+	}
+	_ = env.removeFile(env.evidenceACLInvPath + ".bak")
+	return nil
+}
+
+// revokeEvidenceACLDirs removes inv's operator ACL from the dirs that still
+// exist, skipping removed ones to avoid erroring on a half-removed install.
+func revokeEvidenceACLDirs(ctx context.Context, env *installEnv, inv evidenceACLInventory) error {
+	if inv.Operator == "" || len(inv.Dirs) == 0 {
+		return nil
+	}
 	var dirs []string
 	for _, dir := range inv.Dirs {
 		if _, statErr := env.stat(dir); statErr == nil {
@@ -266,13 +298,6 @@ func revokeEvidenceACLs(ctx context.Context, env *installEnv, keepData bool) err
 			return err
 		}
 	}
-	if keepData {
-		return nil
-	}
-	if err := env.removeFile(env.evidenceACLInvPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", env.evidenceACLInvPath, err)
-	}
-	_ = env.removeFile(env.evidenceACLInvPath + ".bak")
 	return nil
 }
 

@@ -364,6 +364,7 @@ func TestStepInstallNFTRulesUndoLeavesUntouchedPriorTable(t *testing.T) {
 	env.prevNFTTableStateKnown = true
 	env.prevNFTTableDump = "table inet " + defaultNFTTable + " {\n}\n"
 	env.nftTableMutatedByInstall = false
+	env.nftRulesWrittenByInstall = true
 
 	if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
@@ -399,6 +400,7 @@ func TestStepInstallNFTRulesUndoLeavesTableWhenPriorStateUnknown(t *testing.T) {
 	// failed before any nft batch ran.
 	env.prevNFTTableStateKnown = false
 	env.nftTableMutatedByInstall = false
+	env.nftRulesWrittenByInstall = true
 
 	if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)

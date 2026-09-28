@@ -1542,16 +1542,26 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 		{
 			name: "credential guard disable",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				// Undo acts only on a guard this attempt wrote, so apply first.
+				step := stepWriteCredentialGuard()
+				if _, err := step.apply(context.Background(), env); err != nil {
+					t.Fatal(err)
+				}
 				unit := filepath.Base(env.guardPathUnit)
 				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
-				return stepWriteCredentialGuard().undo(context.Background(), env)
+				return step.undo(context.Background(), env)
 			},
 		},
 		{
 			name: "credential guard daemon reload",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				// Undo acts only on a guard this attempt wrote, so apply first.
+				step := stepWriteCredentialGuard()
+				if _, err := step.apply(context.Background(), env); err != nil {
+					t.Fatal(err)
+				}
 				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
-				return stepWriteCredentialGuard().undo(context.Background(), env)
+				return step.undo(context.Background(), env)
 			},
 		},
 		{

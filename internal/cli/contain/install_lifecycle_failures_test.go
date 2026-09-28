@@ -150,9 +150,18 @@ func TestCreateDirectoryFailuresDoNotReportSuccess(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		path := filepath.Join(t.TempDir(), "new")
 		env.chmod = func(string, os.FileMode) error { return os.ErrPermission }
-		applied, err := stepCreateDir("test", func(*installEnv) string { return path }, modeDirPrivate).apply(context.Background(), env)
-		if err == nil || applied || !strings.Contains(err.Error(), "chmod") {
+		step := stepCreateDir("test", func(*installEnv) string { return path }, modeDirPrivate)
+		applied, err := step.apply(context.Background(), env)
+		// The directory now exists, so the step reports applied and its undo
+		// removes it.
+		if err == nil || !applied || !strings.Contains(err.Error(), "chmod") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
+		}
+		if err := step.undo(context.Background(), env); err != nil {
+			t.Fatalf("undo: %v", err)
+		}
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("undo left the directory this attempt created: %v", statErr)
 		}
 	})
 }

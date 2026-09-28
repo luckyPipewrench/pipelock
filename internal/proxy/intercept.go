@@ -765,7 +765,7 @@ func newInterceptHandler(
 						// The store survives an enabled reload, so a value
 						// recorded before the operator turned on body entropy
 						// blocking is checked against the current policy too.
-						if !oauthCrossHostAllowed(ic.Config) {
+						if !ic.oauthCrossHostPermitted() {
 							return false
 						}
 						allowKind = kind

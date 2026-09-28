@@ -253,6 +253,22 @@ func (s *issuerQueryStore) redirectDeclared(session string, server, redirect *ur
 	return false
 }
 
+// oauthCrossHostPermitted applies oauthCrossHostAllowed to both the request's
+// configuration and the one the live issuer runtime was built from. A CONNECT
+// captures them separately, so a reload between the two can pair an old
+// permissive configuration with a newer runtime; either one blocking wins.
+func (ic *InterceptContext) oauthCrossHostPermitted() bool {
+	if ic == nil || !oauthCrossHostAllowed(ic.Config) {
+		return false
+	}
+	if ic.Proxy != nil {
+		if runtime := ic.Proxy.issuerCookieRuntime.Load(); runtime != nil && !oauthCrossHostAllowed(runtime.cfg) {
+			return false
+		}
+	}
+	return true
+}
+
 // oauthCrossHostAllowed reports whether cross-host OAuth issuance may run.
 // A server that echoes request-body data into a redirect can carry that data
 // to another host in a URL. While request-body content entropy only warns,
@@ -384,7 +400,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		if host != issuerHost || port != issuerPort {
 			// A value may cross to another host only on a redirect that is
 			// one of the two OAuth authorization-code hops.
-			if !redirectHop || !oauthCrossHostAllowed(ic.Config) {
+			if !redirectHop || !ic.oauthCrossHostPermitted() {
 				return
 			}
 			names, hop := oauthCrossHostHop(store, session, response.Request.URL, candidate)

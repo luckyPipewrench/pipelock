@@ -571,3 +571,51 @@ func TestOAuthCrossHostParameterAllowlist(t *testing.T) {
 		}
 	})
 }
+
+// A CONNECT captures its configuration and the issuer runtime separately, so a
+// reload between them can pair an old permissive configuration with a newer
+// runtime. Cross-host OAuth relief then needs both to allow it.
+func TestOAuthCrossHostPolicyChecksBothConfigs(t *testing.T) {
+	const server = "https://login.vendor.example"
+	for _, tc := range []struct {
+		name            string
+		request, active string
+		want            bool
+	}{
+		{"both warn", config.ActionWarn, config.ActionWarn, true},
+		{"reload to block after capture", config.ActionWarn, config.ActionBlock, false},
+		{"request captured block", config.ActionBlock, config.ActionWarn, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ic, session := oauthTestStore(t)
+			ic.Config.RequestBodyScanning.ContentEntropyAction = tc.active
+			requestCfg := config.Defaults()
+			requestCfg.TLSInterception.Enabled = true
+			requestCfg.RequestBodyScanning.ContentEntropyAction = tc.request
+			ic.IssuerRuntime = ic.Proxy.issuerCookieRuntime.Load()
+			ic.Config = requestCfg
+			store := ic.issuerQueryStore()
+			if store == nil {
+				t.Fatal("captured runtime did not expose its query store")
+			}
+			decl := oauthAuthorizeURL(t, server)
+			redirect, ok := oauthRedirectDeclaration(decl)
+			if !ok {
+				t.Fatal("authorization request did not parse")
+			}
+			store.declareRedirect(session, decl, redirect, time.Now())
+			code := issuedTestToken()
+			recordDeliveredIssuerQuery(ic, &http.Response{
+				Request:    &http.Request{URL: mustIssuerQueryURL(t, server+"/u/login")},
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": {oauthTestCallback + "?code=" + code}},
+			}, nil, true)
+			if _, got := store.match(session, mustIssuerQueryURL(t, oauthTestCallback), "code", code); got != tc.want {
+				t.Fatalf("callback allowed=%v, want %v", got, tc.want)
+			}
+			if got := ic.oauthCrossHostPermitted(); got != tc.want {
+				t.Fatalf("permitted=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}

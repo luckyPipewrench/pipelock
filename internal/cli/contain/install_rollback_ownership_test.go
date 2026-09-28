@@ -227,15 +227,17 @@ func TestNFTApplyReportsKernelReloadWhenSystemctlFailsAfter(t *testing.T) {
 
 func TestNFTApplyReportsFailedEnableWithoutFileOrTableChange(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		failTimer bool
-		unknown   bool
-		runtime   bool
-		disabled  bool
+		name               string
+		failTimer          bool
+		unknown            bool
+		runtime            bool
+		disabled           bool
+		failRuntimeCleanup bool
 	}{
 		{name: "persist known"},
 		{name: "persist unknown", unknown: true},
 		{name: "persist runtime", runtime: true},
+		{name: "persist runtime cleanup failure", runtime: true, failRuntimeCleanup: true},
 		{name: "persist disabled", disabled: true},
 		{name: "timer known", failTimer: true},
 		{name: "timer unknown", failTimer: true, unknown: true},
@@ -287,34 +289,47 @@ func TestNFTApplyReportsFailedEnableWithoutFileOrTableChange(t *testing.T) {
 				// The injected failure is one-shot; the rollback retry succeeds.
 				runner.on(argvFor(testSystemctl, args...), "", 0, nil)
 			}
+			if tc.failRuntimeCleanup {
+				runner.on(argvFor(testSystemctl, "disable", filepath.Base(env.nftPersistUnitPath)), "permission denied", 1, nil)
+			}
 			beforeUndo := len(runner.calls)
 			undoErr := stepInstallNFTRulesUndo(context.Background(), env)
 			if tc.unknown {
 				if undoErr == nil || !strings.Contains(undoErr.Error(), "unknown") {
 					t.Fatalf("undo error = %v, want unknown previous unit state", undoErr)
 				}
+			} else if tc.failRuntimeCleanup {
+				if undoErr == nil || !strings.Contains(undoErr.Error(), "remove persistent") {
+					t.Fatalf("undo error = %v, want failed persistent enablement cleanup", undoErr)
+				}
 			} else if undoErr != nil {
 				t.Fatalf("undo: %v", undoErr)
 			}
-			if tc.runtime {
+			if tc.runtime && !tc.failRuntimeCleanup {
 				unit := env.nftPersistUnitPath
 				if tc.failTimer {
 					unit = env.nftExpiryTimerPath
 				}
-				foundRuntime := false
-				for _, call := range runner.calls[beforeUndo:] {
+				lastDisable, runtimeEnable := -1, -1
+				for i, call := range runner.calls[beforeUndo:] {
 					if call.name != testSystemctl {
 						continue
 					}
 					if slices.Equal(call.args, []string{"enable", filepath.Base(unit)}) {
 						t.Fatalf("rollback made runtime-only enablement permanent: %+v", call)
 					}
+					if slices.Equal(call.args, []string{"disable", filepath.Base(unit)}) {
+						lastDisable = i
+					}
 					if slices.Equal(call.args, []string{"enable", "--runtime", filepath.Base(unit)}) {
-						foundRuntime = true
+						runtimeEnable = i
 					}
 				}
-				if !foundRuntime {
+				if runtimeEnable < 0 {
 					t.Fatal("rollback did not restore runtime-only enablement")
+				}
+				if !tc.failTimer && (lastDisable < 0 || lastDisable >= runtimeEnable) {
+					t.Fatal("rollback did not remove persistent enablement before restoring runtime-only state")
 				}
 			}
 			if tc.disabled {

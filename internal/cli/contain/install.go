@@ -2425,6 +2425,11 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 		} else if env.nftPersistEnableAttempted {
 			args := []string{"enable"}
 			if env.prevNFTPersistEnabledRuntime {
+				// The attempted plain enable may have added persistent links.
+				// Remove them before restoring the prior runtime-only state.
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
+					return errors.Join(incomplete, fmt.Errorf("remove persistent %s enablement: %w", persistUnit, err))
+				}
 				args = append(args, "--runtime")
 			}
 			args = append(args, persistUnit)

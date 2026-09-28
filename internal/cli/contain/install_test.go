@@ -1976,6 +1976,8 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.prevNFTTableStateKnown = true
+	// This attempt loaded rules over the captured table, so undo restores it.
+	env.nftTableMutatedByInstall = true
 	env.prevNFTTableDump = "table inet " + defaultNFTTable + " {\n"
 	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
 		t.Fatalf("mkdir rules parent: %v", err)
@@ -2001,6 +2003,8 @@ func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable
 func TestStepInstallNFTRules_UndoRejectsWrongCapturedTableBeforeDeletingLiveTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.prevNFTTableStateKnown = true
+	// This attempt loaded rules over the captured table, so undo restores it.
+	env.nftTableMutatedByInstall = true
 	env.prevNFTTableDump = `table inet other_containment {
 		chain output_filter {
 			meta skuid 987 drop

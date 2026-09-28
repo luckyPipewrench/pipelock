@@ -346,3 +346,39 @@ func TestRunStepsReportsIncompleteSudoersRollback(t *testing.T) {
 		t.Fatalf("positive control: rejected sudoers file was not left in place: %v", statErr)
 	}
 }
+
+func TestStepInstallNFTRulesUndoLeavesUntouchedPriorTable(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const oldRules = "# previous managed rules\n"
+	if err := os.WriteFile(env.nftRulesPath+".bak", []byte(oldRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte("# this attempt's rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A table existed before the attempt, and the attempt failed before any
+	// nft batch changed it.
+	env.prevNFTTableStateKnown = true
+	env.prevNFTTableDump = "table inet " + defaultNFTTable + " {\n}\n"
+	env.nftTableMutatedByInstall = false
+
+	if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	got, err := os.ReadFile(env.nftRulesPath)
+	if err != nil || string(got) != oldRules {
+		t.Fatalf("rules after rollback = %q, %v; want previous rules", got, err)
+	}
+	for _, call := range runner.calls {
+		if call.name != testNFT {
+			continue
+		}
+		args := strings.Join(call.args, " ")
+		if strings.Contains(args, "delete table") || strings.HasSuffix(args, ".restore") {
+			t.Fatalf("rollback changed a table this attempt never touched: nft %s", args)
+		}
+	}
+}

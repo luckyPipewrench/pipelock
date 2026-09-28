@@ -272,6 +272,103 @@ func TestChain_DirectorySymlinkRefusedAsVerificationFailure(t *testing.T) {
 	}
 }
 
+func TestChain_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
+	t.Parallel()
+	key := readRunChainFixture(t, "signer-key.hex")
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+	for _, path := range []string{a, filepath.Join(b, "sub")} {
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := filepath.Base(runFileIn("", parityRun1))
+	valid, err := os.ReadFile(filepath.Join(runChainFixtures, "valid", name)) // #nosec G304 -- name comes from a test fixture constant.
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathA := filepath.Join(a, name)
+	pathB := filepath.Join(b, name)
+	link := filepath.Join(a, "link")
+	if err := os.Symlink(filepath.Join(b, "sub"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	input := link + string(filepath.Separator) + ".." + string(filepath.Separator) + name
+	for _, tc := range []struct {
+		name   string
+		aData  []byte
+		bData  []byte
+		wantOK bool
+	}{
+		{name: "invalid reached target", aData: valid, bData: []byte("not-json\n")},
+		{name: "valid reached target", aData: []byte("not-json\n"), bData: valid, wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(pathA, tc.aData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pathB, tc.bData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := filepath.EvalSymlinks(input)
+			if err != nil || resolved != pathB {
+				t.Fatalf("path resolves to %q, want %q: %v", resolved, pathB, err)
+			}
+			stdout, stderr, code := runRoot(t, "chain", input, "--key", key, "--json")
+			if (code == 0) != tc.wantOK {
+				t.Fatalf("exit %d, want valid=%t\n%s%s", code, tc.wantOK, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestReceipt_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 1)
+	valid, err := receipt.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+	for _, path := range []string{a, filepath.Join(b, "sub")} {
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pathA := filepath.Join(a, "receipt.json")
+	pathB := filepath.Join(b, "receipt.json")
+	link := filepath.Join(a, "link")
+	if err := os.Symlink(filepath.Join(b, "sub"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	input := link + string(filepath.Separator) + ".." + string(filepath.Separator) + "receipt.json"
+	for _, tc := range []struct {
+		name   string
+		aData  []byte
+		bData  []byte
+		wantOK bool
+	}{
+		{name: "invalid reached target", aData: valid, bData: []byte("not-json\n")},
+		{name: "valid reached target", aData: []byte("not-json\n"), bData: valid, wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(pathA, tc.aData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pathB, tc.bData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runRoot(t, "receipt", input, "--key", fix.keyHex, "--json")
+			if (code == 0) != tc.wantOK {
+				t.Fatalf("exit %d, want valid=%t\n%s%s", code, tc.wantOK, stdout, stderr)
+			}
+		})
+	}
+}
+
 // writeRunPacket wraps one run's evidence file in a v0 Audit Packet whose
 // claims match its action chain.
 func writeRunPacket(t *testing.T, evidence []byte, keyHex string) string {

@@ -319,7 +319,10 @@ func populateReportFromPacket(r *auditPacketReport, p *auditpacket.Packet) {
 // resolvePacketPath accepts either a directory or a packet.json path and
 // returns (packet.json path, sibling-artifact base directory).
 func resolvePacketPath(target string) (string, string, error) {
-	clean := filepath.Clean(target)
+	clean, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %q: %w", target, err)
+	}
 	info, err := os.Stat(clean)
 	if err != nil {
 		return "", "", fmt.Errorf("stat %q: %w", target, err)

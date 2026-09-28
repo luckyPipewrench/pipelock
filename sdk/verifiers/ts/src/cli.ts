@@ -39,7 +39,13 @@ import {
 import type { Receipt } from "./types.js";
 import { runAARPCommand } from "./aarp/cli.js";
 import { comparableProvenance, runProvenanceFixture } from "./provenance-proof.js";
-import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
+import {
+  RuntimeError,
+  UsageError,
+  errorMessage,
+  resolveOperatorFilePath,
+  resolveSignerKey,
+} from "./util.js";
 
 export interface ChainCommandReport {
   path: string;
@@ -414,7 +420,9 @@ async function runChainCommand(args: string[]): Promise<number> {
   const allowUnpinned = parsed.values["allow-unpinned"] === true;
   const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
   const json = parsed.values.json === true;
-  const clean = path.normalize(target);
+  // Resolve an explicit file before normalizing it: symlink/.. can reach a
+  // different file from the one selected by lexical normalization.
+  const clean = asDir ? path.normalize(target) : resolveOperatorFilePath(target);
   // A directory whose base has per-run chains is verified as a base, as the Go
   // reference does: the base of a run session is its prefix, and any other
   // session is its own base. Without --session-id every chain of the base is

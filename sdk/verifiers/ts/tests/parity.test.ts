@@ -4,6 +4,7 @@
 import {
   cpSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -76,6 +77,45 @@ const classes = readdirSync(PARITY, { withFileTypes: true })
 
 test("the parity fixture set covers every contract class", () => {
   assert.equal(classes.length, 15, classes.join(" "));
+});
+
+test("explicit file paths resolve symlinks before parent traversal", () => {
+  const dir = mkdtempSync(join(tmpdir(), "verifier-path-"));
+  try {
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    mkdirSync(a);
+    mkdirSync(join(b, "sub"), { recursive: true });
+    const name = "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl";
+    const valid = readFileSync(
+      resolve(packageRoot, "../../conformance/testdata/run-chains/valid", name),
+    );
+    const key = resolve(packageRoot, "../../conformance/testdata/run-chains/signer-key.hex");
+    const pathA = join(a, name);
+    const pathB = join(b, name);
+    const link = join(a, "link");
+    symlinkSync(join(b, "sub"), link);
+    const input = `${link}/../${name}`;
+    for (const { aData, bData, wantOK } of [
+      { aData: valid, bData: Buffer.from("not-json\n"), wantOK: false },
+      { aData: Buffer.from("not-json\n"), bData: valid, wantOK: true },
+    ]) {
+      writeFileSync(pathA, aData);
+      writeFileSync(pathB, bData);
+      const r = spawnSync("node", [CLI, "chain", input, "--key", key, "--json"], {
+        encoding: "utf8",
+      });
+      if (wantOK) {
+        assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+        assert.equal((JSON.parse(r.stdout) as ChainReport).valid, true);
+      } else {
+        assert.notEqual(r.status, 0, `${r.stdout}${r.stderr}`);
+        assert.doesNotMatch(r.stdout, /"valid":\s*true/u);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 for (const name of classes) {

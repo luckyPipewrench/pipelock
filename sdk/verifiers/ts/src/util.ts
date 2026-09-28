@@ -32,8 +32,29 @@ export function sha256Hex(data: Buffer | string): string {
 
 export const maxVerifierInputBytes = 8 << 20;
 
+// Node normalizes "symlink/.." before realpathSync sees it. Walk each path
+// component so a parent traversal applies to the symlink's target, as it does
+// when the operating system opens the path supplied by the operator.
+export function resolveOperatorFilePath(file: string): string {
+  const root = path.parse(file).root;
+  let current = root || process.cwd();
+  const components = file.slice(root.length).split(path.sep === "\\" ? /[\\/]/u : /\//u);
+  for (const component of components) {
+    if (component === "" || component === ".") continue;
+    if (component === "..") {
+      if (!statSync(current).isDirectory()) {
+        throw new RuntimeError(`path component is not a directory: ${current}`);
+      }
+      current = path.dirname(current);
+    } else {
+      current = realpathSync(path.join(current, component));
+    }
+  }
+  return current;
+}
+
 export function readVerifierBytes(file: string): Buffer {
-  const clean = path.normalize(file);
+  const clean = resolveOperatorFilePath(file);
   const fd = openSync(clean, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const info = fstatSync(fd);
@@ -239,9 +260,10 @@ function parseSignerKeyValue(value: string): string {
 }
 
 export function resolvePacketPath(target: string): { packetPath: string; baseDir: string } {
-  const clean = path.normalize(target);
+  let clean: string;
   let info;
   try {
+    clean = resolveOperatorFilePath(target);
     info = statSync(clean);
   } catch (err) {
     throw new RuntimeError(`stat ${target}: ${(err as Error).message}`);

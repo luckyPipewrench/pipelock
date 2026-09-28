@@ -6,7 +6,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -86,34 +85,33 @@ func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) er
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
 
-	clean := filepath.Clean(target)
-	data, err := readVerifierFile(clean)
+	data, err := readVerifierFile(target)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read receipt: %w", err))
 	}
 	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
-		report := receiptReport{Path: clean, Valid: false, Error: err.Error()}
+		report := receiptReport{Path: target, Valid: false, Error: err.Error()}
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("parse receipt: %w", err))
 	}
 
 	recordType, detectErr := detectSingleReceiptRecordType(data)
 	if detectErr != nil {
-		report := receiptReport{Path: clean, Valid: false, Error: detectErr.Error()}
+		report := receiptReport{Path: target, Valid: false, Error: detectErr.Error()}
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
 	}
 
 	switch recordType {
 	case recordTypeEvidenceV2:
-		return runEvidenceReceipt(stdout, stderr, clean, data, keyHex, opts)
+		return runEvidenceReceipt(stdout, stderr, target, data, keyHex, opts)
 	case recordTypeActionV1, "":
 		if opts.anySet() || opts.recheckSource != "" {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
 		}
-		return runActionReceipt(stdout, stderr, clean, data, keyHex, opts)
+		return runActionReceipt(stdout, stderr, target, data, keyHex, opts)
 	default:
-		report := receiptReport{Path: clean, Valid: false, Error: "unsupported receipt record_type"}
+		report := receiptReport{Path: target, Valid: false, Error: "unsupported receipt record_type"}
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unsupported receipt record_type"))
 	}

@@ -219,10 +219,19 @@ Examples:
 				return configError(fmt.Errorf("--location requires --chain"))
 			}
 
-			path := args[0]
+			// Resolve the operator's path before any reader cleans it. Cleaning
+			// symlink/.. first can select a different file from the one opened by
+			// normal filesystem path traversal.
+			path, resolveErr := filepath.EvalSymlinks(args[0])
+			if resolveErr != nil {
+				if wholeRecorder && strings.HasSuffix(args[0], ".jsonl") {
+					return configError(fmt.Errorf("reading recorder file: resolve %q: %w", args[0], resolveErr))
+				}
+				return configError(fmt.Errorf("reading receipt: resolve %q: %w", args[0], resolveErr))
+			}
 
 			// JSONL files: extract receipts and verify the full chain.
-			if strings.HasSuffix(path, ".jsonl") {
+			if strings.HasSuffix(args[0], ".jsonl") {
 				if cleanReport != "" {
 					receipts, evidenceReceipts, extractErr := extractFileChains(path)
 					if extractErr != nil {

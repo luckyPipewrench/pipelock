@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -42,6 +42,37 @@ test("receipt command accepts a valid Go-generated receipt", async () => {
   assert.equal(report.valid, false);
   assert.equal(report.unpinned, true);
   assert.match(report.error ?? "", /UNPINNED/u);
+});
+
+test("single receipt paths resolve symlinks before parent traversal", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "receipt-path-"));
+  try {
+    const a = join(dir, "a");
+    const b = join(dir, "b");
+    mkdirSync(a);
+    mkdirSync(join(b, "sub"), { recursive: true });
+    const valid = readFileSync(validSingle);
+    const pathA = join(a, "receipt.json");
+    const pathB = join(b, "receipt.json");
+    const link = join(a, "link");
+    symlinkSync(join(b, "sub"), link);
+    const input = `${link}/../receipt.json`;
+    for (const { aData, bData, wantOK } of [
+      { aData: valid, bData: Buffer.from("not-json\n"), wantOK: false },
+      { aData: Buffer.from("not-json\n"), bData: valid, wantOK: true },
+    ]) {
+      writeFileSync(pathA, aData);
+      writeFileSync(pathB, bData);
+      if (wantOK) {
+        const report = await runReceipt(input, "", true);
+        assert.equal(report.valid, true, JSON.stringify(report));
+      } else {
+        await assert.rejects(runReceipt(input, "", true), /receipt json/u);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("receipt command bounds untrusted input before parsing", async () => {

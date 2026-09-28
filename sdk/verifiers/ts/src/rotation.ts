@@ -3,12 +3,11 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { receiptHash, verifyChain } from "./chain.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { decodeHex, InvalidError, RuntimeError } from "./util.js";
+import { decodeHex, InvalidError, RuntimeError, resolveOperatorFilePath } from "./util.js";
 
 const endorsementVersion = 1;
 const endorsementDomain = "pipelock-rotation-endorsement-v1\u0000";
@@ -240,7 +239,7 @@ export async function verifyRotationEndorsement(
 }
 
 export async function loadRotationEndorsementFile(file: string): Promise<RotationEndorsement> {
-  const normalized = path.normalize(file);
+  const normalized = resolveOperatorFilePath(file);
   let descriptor: number;
   try {
     descriptor = openSync(normalized, constants.O_RDONLY | constants.O_NONBLOCK);

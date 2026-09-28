@@ -356,6 +356,56 @@ func TestVerifyReceipt_SymlinkPolicy(t *testing.T) {
 	}
 }
 
+func TestVerifyReceipt_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
+	key := parityKey(t)
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+	for _, path := range []string{a, filepath.Join(b, "sub")} {
+		if err := os.MkdirAll(path, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := filepath.Base(parityFile("", parityRun1))
+	valid, err := os.ReadFile(filepath.Join(parityFixtureDir, "valid", name)) // #nosec G304 -- name comes from a test fixture constant.
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathA := filepath.Join(a, name)
+	pathB := filepath.Join(b, name)
+	link := filepath.Join(a, "link")
+	if err := os.Symlink(filepath.Join(b, "sub"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	input := link + string(filepath.Separator) + ".." + string(filepath.Separator) + name
+	for _, tc := range []struct {
+		name   string
+		aData  []byte
+		bData  []byte
+		wantOK bool
+	}{
+		{name: "invalid reached target", aData: valid, bData: []byte("not-json\n")},
+		{name: "valid reached target", aData: []byte("not-json\n"), bData: valid, wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(pathA, tc.aData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pathB, tc.bData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := filepath.EvalSymlinks(input)
+			if err != nil || resolved != pathB {
+				t.Fatalf("path resolves to %q, want %q: %v", resolved, pathB, err)
+			}
+			out, err := runParityVerify(t, input, "--key", key)
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("want valid=%t, got %v\n%s", tc.wantOK, err, out)
+			}
+		})
+	}
+}
+
 func TestVerifyReceipt_ConfigErrorsExitTwo(t *testing.T) {
 	dir := parityFixture(t)
 	for name, args := range map[string][]string{

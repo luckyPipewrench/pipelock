@@ -62,6 +62,59 @@ impl Drop for TempDir {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn explicit_file_path_resolves_symlink_before_parent_traversal() {
+    use std::os::unix::fs::symlink;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = TempDir(std::env::temp_dir().join(format!(
+        "parity-operator-path-{}-{unique}",
+        std::process::id()
+    )));
+    let a = dir.0.join("a");
+    let b = dir.0.join("b");
+    fs::create_dir_all(&a).expect("mkdir a");
+    fs::create_dir_all(b.join("sub")).expect("mkdir b/sub");
+    let name = "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl";
+    let source = common::repo_root().join("sdk/conformance/testdata/run-chains");
+    let valid = fs::read(source.join("valid").join(name)).expect("signed fixture");
+    let key = source.join("signer-key.hex").display().to_string();
+    let path_a = a.join(name);
+    let path_b = b.join(name);
+    let link = a.join("link");
+    symlink(b.join("sub"), &link).expect("symlink");
+    let input = format!("{}/../{name}", link.display());
+
+    for (a_data, b_data, valid_target) in [
+        (valid.as_slice(), b"not-json\n".as_slice(), false),
+        (b"not-json\n".as_slice(), valid.as_slice(), true),
+    ] {
+        fs::write(&path_a, a_data).expect("write a");
+        fs::write(&path_b, b_data).expect("write b");
+        let (code, stdout, stderr) = run_cli(&[
+            "chain".to_string(),
+            input.clone(),
+            "--key".to_string(),
+            key.clone(),
+            "--json".to_string(),
+        ]);
+        if valid_target {
+            assert_eq!(code, 0, "{stdout}{stderr}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&stdout).unwrap()["valid"],
+                true
+            );
+        } else {
+            assert_ne!(code, 0, "{stdout}{stderr}");
+            assert!(!stdout.contains("\"valid\":true"), "{stdout}{stderr}");
+        }
+    }
+}
+
 fn pairs(list: &Value) -> Vec<String> {
     let mut out: Vec<String> = list
         .as_array()

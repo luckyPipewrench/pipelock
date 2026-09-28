@@ -153,7 +153,7 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires --dir"))
 	}
 	clean := filepath.Clean(target)
-	info, statErr := os.Stat(clean)
+	info, statErr := os.Stat(target)
 	if statErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", target, statErr))
 	}
@@ -163,11 +163,11 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 	// A file the operator names is read as given, even through a symlink:
 	// the symlink refusal protects a directory scan from redirection, and an
 	// explicit path has no scan to redirect.
-	resolved, evalErr := filepath.EvalSymlinks(clean)
+	resolved, evalErr := filepath.EvalSymlinks(target)
 	if evalErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve %q: %w", target, evalErr))
 	}
-	label = clean
+	label = target
 	isBareV1, bareData, detectErr := isBareActionReceiptJSONL(resolved)
 	if detectErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)

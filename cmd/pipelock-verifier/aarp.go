@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -115,8 +114,7 @@ func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
 		}
 	}
 
-	clean := filepath.Clean(target)
-	data, err := readVerifierFile(clean)
+	data, err := readVerifierFile(target)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read envelope: %w", err))
 	}

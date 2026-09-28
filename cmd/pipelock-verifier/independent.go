@@ -72,6 +72,13 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
+	if !opts.asDir {
+		resolved, resolveErr := filepath.EvalSymlinks(target)
+		if resolveErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve %q: %w", target, resolveErr))
+		}
+		target = resolved
+	}
 	receipts, err := independentReceipts(target, opts)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))

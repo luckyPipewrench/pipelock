@@ -16,7 +16,10 @@ import (
 const maxVerifierInputBytes int64 = 8 << 20
 
 func readVerifierFile(path string) ([]byte, error) {
-	clean := filepath.Clean(path)
+	clean, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
 	root, err := os.OpenRoot(filepath.Dir(clean))
 	if err != nil {
 		return nil, err

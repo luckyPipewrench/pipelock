@@ -1,7 +1,6 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import * as path from "node:path";
 import type { Receipt } from "./types.js";
 import { unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { validateV1Receipt } from "./strict.js";
@@ -10,6 +9,7 @@ import {
   parseJSON,
   readVerifierBytes,
   rejectDuplicateKeys,
+  resolveOperatorFilePath,
   resolveSignerKey,
 } from "./util.js";
 
@@ -31,7 +31,7 @@ export async function runReceipt(
   signerKey: string,
   allowUnpinned = false,
 ): Promise<ReceiptReport> {
-  const clean = path.normalize(pathname);
+  const clean = resolveOperatorFilePath(pathname);
   const keyHex = resolveSignerKey(signerKey);
   const report: ReceiptReport = {
     path: clean,

@@ -40,7 +40,7 @@ func parityKey(t *testing.T) string {
 func parityFixture(t *testing.T) string {
 	t.Helper()
 	src := filepath.Join(parityFixtureDir, "valid")
-	dst := t.TempDir()
+	dst := physicalTempDir(t)
 	des, err := os.ReadDir(src)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +58,18 @@ func parityFixture(t *testing.T) string {
 		}
 	}
 	return dst
+}
+
+// physicalTempDir returns t.TempDir() with symlinks resolved. An evidence root
+// may not pass through a symlink, and the system temp directory does on some
+// platforms (macOS /var is a symlink to /private/var).
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func parityFile(dir, session string) string {
@@ -358,7 +370,7 @@ func TestVerifyReceipt_SymlinkPolicy(t *testing.T) {
 
 func TestVerifyReceipt_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
 	key := parityKey(t)
-	dir := t.TempDir()
+	dir := physicalTempDir(t)
 	a := filepath.Join(dir, "a")
 	b := filepath.Join(dir, "b")
 	for _, path := range []string{a, filepath.Join(b, "sub")} {
@@ -424,7 +436,7 @@ func TestVerifyReceipt_ConfigErrorsExitTwo(t *testing.T) {
 
 func TestVerifyReceipt_ChainRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
 	key := parityKey(t)
-	base := t.TempDir()
+	base := physicalTempDir(t)
 	realEv := filepath.Join(base, "a", "ev")
 	if err := os.MkdirAll(filepath.Dir(realEv), 0o750); err != nil {
 		t.Fatal(err)
@@ -500,5 +512,22 @@ func TestVerifyReceipt_SymlinkNamedForOtherRunRefused(t *testing.T) {
 				t.Fatalf("refused file reported valid:\n%s", out)
 			}
 		})
+	}
+}
+
+// A file named as a directory ("receipt.json/", "receipt.json/.") is refused,
+// as the operating system refuses to open it and as every verifier refuses it.
+func TestVerifyReceipt_FileNamedAsDirectoryRefused(t *testing.T) {
+	file := filepath.Join(physicalTempDir(t), "receipt.json")
+	copyParityFile(t, filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "valid-single.json"), file)
+	if out, err := runParityVerify(t, file, "--allow-unpinned"); err != nil {
+		t.Fatalf("positive control: %v\n%s", err, out)
+	}
+	sep := string(filepath.Separator)
+	for _, input := range []string{file + sep, file + sep + "."} {
+		out, err := runParityVerify(t, input, "--allow-unpinned")
+		if err == nil || cliutil.ExitCodeOf(err) != cliutil.ExitConfig || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("%q: want exit 2 not-a-directory, got %v (code %d)\n%s", input, err, cliutil.ExitCodeOf(err), out)
+		}
 	}
 }

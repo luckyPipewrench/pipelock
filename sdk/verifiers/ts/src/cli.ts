@@ -518,6 +518,14 @@ async function runReceiptCommand(args: string[]): Promise<number> {
     },
   });
   const target = requireOneArg(parsed.positionals, "receipt");
+  // An input the operating system cannot open is exit 2 with no report, as in
+  // the Go and Rust verifiers. The library call reports it as a failed
+  // verification instead of rejecting.
+  try {
+    resolveOperatorFilePath(target);
+  } catch (err) {
+    throw new RuntimeError(errorMessage(err));
+  }
   const report = await runReceipt(
     target,
     parsed.values.key ?? "",

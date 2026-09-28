@@ -277,7 +277,7 @@ func TestChain_DirectorySymlinkRefusedAsVerificationFailure(t *testing.T) {
 func TestChain_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
 	t.Parallel()
 	key := readRunChainFixture(t, "signer-key.hex")
-	dir := t.TempDir()
+	dir := physicalTempDir(t)
 	a := filepath.Join(dir, "a")
 	b := filepath.Join(dir, "b")
 	for _, path := range []string{a, filepath.Join(b, "sub")} {
@@ -479,7 +479,7 @@ func TestExecute_EveryFailurePrintsReason(t *testing.T) {
 func TestChain_DirectoryRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
 	t.Parallel()
 	key := readRunChainFixture(t, "signer-key.hex")
-	base := t.TempDir()
+	base := physicalTempDir(t)
 	valid := copyFixtureDir(t, "valid")
 	tampered := copyFixtureDir(t, "tampered-predecessor")
 	realEv := filepath.Join(base, "a", "ev")
@@ -526,6 +526,18 @@ func TestChain_DirectoryRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
 // A --key file path is read as the operating system opens it, as every
 // receipt verifier reads it: "link/../keys/k.hex" names the key under the
 // link's target, not the lexical keys/k.hex.
+// physicalTempDir returns t.TempDir() with symlinks resolved. An evidence root
+// may not pass through a symlink, and the system temp directory does on some
+// platforms (macOS /var is a symlink to /private/var).
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestChain_KeyFileResolvesSymlinkBeforeDotDot(t *testing.T) {
 	t.Parallel()
 	signer := readRunChainFixture(t, "signer-key.hex")
@@ -568,5 +580,29 @@ func TestChain_KeyFileResolvesSymlinkBeforeDotDot(t *testing.T) {
 				t.Fatalf("exit %d, want valid=%t\n%s%s", code, tc.wantOK, stdout, stderr)
 			}
 		})
+	}
+}
+
+// A file named as a directory ("receipt.json/", "receipt.json/.") is refused,
+// as the operating system refuses to open it and as every verifier refuses it.
+func TestReceipt_FileNamedAsDirectoryRefused(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(physicalTempDir(t), "receipt.json")
+	data, err := os.ReadFile(filepath.Join("..", "..", "sdk", "conformance", "testdata", "valid-single.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := runRoot(t, "receipt", file, "--allow-unpinned"); code != 0 {
+		t.Fatalf("positive control: exit %d\n%s%s", code, stdout, stderr)
+	}
+	sep := string(filepath.Separator)
+	for _, input := range []string{file + sep, file + sep + "."} {
+		stdout, stderr, code := runRoot(t, "receipt", input, "--allow-unpinned")
+		if code != 2 || !strings.Contains(stdout+stderr, "not a directory") {
+			t.Fatalf("%q: exit %d, want 2 not-a-directory\n%s%s", input, code, stdout, stderr)
+		}
 	}
 }

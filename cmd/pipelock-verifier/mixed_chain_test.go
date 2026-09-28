@@ -29,7 +29,7 @@ func mixedRunFile(dir string) string {
 func copyFixtureDir(t *testing.T, name string) string {
 	t.Helper()
 	src := filepath.Join(runChainFixtures, name)
-	dst := t.TempDir()
+	dst := physicalTempDir(t)
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		t.Fatal(err)

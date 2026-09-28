@@ -1,7 +1,15 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -202,7 +210,7 @@ test("a rotation endorsement requires an operator-pinned root", () => {
 });
 
 test("a missing rotation link does not corrupt the predecessor run report", () => {
-  const dir = mkdtempSync(join(tmpdir(), "run-chains-missing-rotation-link-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "run-chains-missing-rotation-link-"));
   try {
     cpSync(join(FIXTURES, "key-rotated"), dir, { recursive: true });
     const link = readdirSync(dir).find((name) => name.startsWith("chain-link-"));
@@ -288,7 +296,7 @@ test("an explicit --session-id verifies that run and checks its base", () => {
 });
 
 test("a directory with no run chains keeps single-session verification", () => {
-  const dir = mkdtempSync(join(tmpdir(), "run-chains-legacy-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "run-chains-legacy-"));
   try {
     const r = runCLI(["chain", dir, "--dir", "--key", KEY, "--json"]);
     assert.equal(r.status, 1);
@@ -329,7 +337,7 @@ test("malformed link files are findings, not skipped", async () => {
     ["not an object", "[]", /not a JSON object/u],
   ];
   for (const [name, body, detail] of cases) {
-    const dir = mkdtempSync(join(tmpdir(), "run-chains-link-"));
+    const dir = mkdtempSync(join(realpathSync(tmpdir()), "run-chains-link-"));
     try {
       cpSync(valid, dir, { recursive: true });
       writeFileSync(join(dir, linkName), body);

@@ -82,7 +82,7 @@ func parityNamesAReason(out string, c parityFixtureCell) bool {
 // creates the symlinks its expect.json names. The repository holds no links.
 func copyParityClass(t *testing.T, src string, exp parityFixtureExpect) string {
 	t.Helper()
-	dst := t.TempDir()
+	dst := physicalTempDir(t)
 	// The fixture tree holds no symlinks; CopyFS reads it through a rooted fs.FS.
 	err := os.CopyFS(dst, os.DirFS(src))
 	if err != nil {

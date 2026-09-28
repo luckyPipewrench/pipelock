@@ -505,15 +505,17 @@ fn malformed_link_files_are_findings_not_skipped() {
 }
 
 fn tempdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "run-chains-{}-{}-{}",
-        tag.replace(' ', "-"),
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = std::fs::canonicalize(std::env::temp_dir())
+        .expect("canonical temp dir")
+        .join(format!(
+            "run-chains-{}-{}-{}",
+            tag.replace(' ', "-"),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
     fs::create_dir_all(&dir).expect("mkdir");
     dir
 }

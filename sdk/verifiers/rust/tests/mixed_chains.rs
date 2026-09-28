@@ -25,14 +25,16 @@ impl Drop for TempDir {
 }
 
 fn temp_dir(tag: &str) -> TempDir {
-    let dir = std::env::temp_dir().join(format!(
-        "mixed-chains-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = std::fs::canonicalize(std::env::temp_dir())
+        .expect("canonical temp dir")
+        .join(format!(
+            "mixed-chains-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
     fs::create_dir_all(&dir).expect("mkdir");
     TempDir(dir)
 }

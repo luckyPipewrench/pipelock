@@ -11,8 +11,20 @@ import (
 	"testing"
 )
 
+// physicalTempDir returns t.TempDir() with symlinks resolved. An evidence root
+// may not pass through a symlink, and the system temp directory does on some
+// platforms (macOS /var is a symlink to /private/var).
+func physicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestRefuseSymlinkInWalkedRootPath(t *testing.T) {
-	base := t.TempDir()
+	base := physicalTempDir(t)
 	realEv := filepath.Join(base, "real", "ev")
 	other := filepath.Join(base, "other", "sub")
 	for _, dir := range []string{realEv, other} {
@@ -56,7 +68,7 @@ func TestRefuseSymlinkInWalkedRootPath(t *testing.T) {
 }
 
 func TestRefuseSymlinkInWalkedRootPathRelative(t *testing.T) {
-	base := t.TempDir()
+	base := physicalTempDir(t)
 	if err := os.MkdirAll(filepath.Join(base, "real", "ev"), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +93,7 @@ func TestRefuseSymlinkInWalkedRootPathRelative(t *testing.T) {
 // directory, so nothing the operator typed is redirected and the root is
 // accepted. A symlink inside the relative path itself is still refused.
 func TestRefuseSymlinkInWalkedRootPathLogicalWorkingDir(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := physicalTempDir(t)
 	realEv := filepath.Join(base, "real", "ev")
 	if err := os.MkdirAll(realEv, 0o750); err != nil {
 		t.Fatal(err)
@@ -125,7 +134,7 @@ func TestRefuseSymlinkInWalkedRootPathLogicalWorkingDir(t *testing.T) {
 // The operating system climbs out of directories only: "file/../ev" fails
 // with ENOTDIR, so the walk must fail rather than verify the lexical ev.
 func TestRefuseSymlinkInWalkedRootPathFileBeforeDotDot(t *testing.T) {
-	base := t.TempDir()
+	base := physicalTempDir(t)
 	if err := os.MkdirAll(filepath.Join(base, "real", "ev"), 0o750); err != nil {
 		t.Fatal(err)
 	}

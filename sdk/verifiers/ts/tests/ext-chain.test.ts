@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -74,7 +74,7 @@ test("goRawMessageBytes compacts and HTML-escapes like encoding/json", () => {
 });
 
 test("interleaved evidence_receipt entries are skipped like the Go receipt-chain mode", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-ext-mixed-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "pipelock-ts-ext-mixed-"));
   try {
     const lines = readFileSync(extChain, "utf8").trimEnd().split("\n");
     const evidence = JSON.parse(readFileSync(validPlainV2, "utf8")) as unknown;

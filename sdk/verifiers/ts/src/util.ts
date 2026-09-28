@@ -40,7 +40,15 @@ export function resolveOperatorFilePath(file: string): string {
   let current = root || process.cwd();
   const components = file.slice(root.length).split(path.sep === "\\" ? /[\\/]/u : /\//u);
   for (const component of components) {
-    if (component === "" || component === ".") continue;
+    if (component === "" || component === ".") {
+      // "file/" and "file/." name the file as a directory, which the
+      // operating system refuses to open (ENOTDIR). The root or working
+      // directory the walk starts from is always a directory.
+      if (!statSync(current).isDirectory()) {
+        throw new RuntimeError(`path component is not a directory: ${current}`);
+      }
+      continue;
+    }
     if (component === "..") {
       if (!statSync(current).isDirectory()) {
         throw new RuntimeError(`path component is not a directory: ${current}`);

@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -46,7 +46,7 @@ function v2TamperedDir(root: string): string {
 }
 
 test("a session holding both receipt chains is valid only when both verify", () => {
-  const root = mkdtempSync(join(tmpdir(), "mixed-chains-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "mixed-chains-"));
   try {
     const cases: [string, string, string][] = [
       ["valid", join(FIXTURES, "valid"), ""],
@@ -113,7 +113,7 @@ test("an unpinned mixed session reports the unpinned banner once", () => {
 // the base pass refuses it by entry session_id, and a named run fails on any
 // finding in its base while its own chain stays valid.
 test("an explicit session does not read a prefix-sibling session's files", () => {
-  const dir = mkdtempSync(join(tmpdir(), "session-prefix-"));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "session-prefix-"));
   try {
     cpSync(runFile(join(FIXTURES, "valid")), runFile(dir));
     const control = runCLI(["chain", dir, "--dir", "--session-id", SESSION, "--key", KEY]);

@@ -3014,6 +3014,16 @@ type spanTextView struct {
 	viewLabel string
 }
 
+func longestSpanTextView(viewSets ...[]spanTextView) int {
+	longest := 0
+	for _, views := range viewSets {
+		for _, view := range views {
+			longest = max(longest, len(view.text))
+		}
+	}
+	return longest
+}
+
 func indexAnyView(needle string, views []spanTextView) (int, int, string, bool) {
 	for _, view := range views {
 		if start := strings.Index(view.text, needle); start >= 0 {
@@ -3043,14 +3053,10 @@ func knownValueWindowsBounded(value string, maxEntries int) (map[string][]int, e
 	if len(value) < minKnownSecretSubstringLen || ShannonEntropy(value) <= envLeakMinEntropy {
 		return nil, nil
 	}
-	if len(value) > maxKnownValuePartialInputBytes {
-		return nil, fmt.Errorf("%w: known value is %d bytes; partial matching accepts at most %d bytes per value",
-			errKnownValueWindowBudget, len(value), maxKnownValuePartialInputBytes)
-	}
 	if strings.Contains(value, "://") {
 		return urlCredentialWindowsBounded(value, maxEntries)
 	}
-	return collectValueWindowsBounded(value, 0, maxEntries)
+	return collectValueWindowsBounded(value, maxEntries)
 }
 
 func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
@@ -3059,7 +3065,7 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 		// Unparseable URL-shaped secrets still have to partial-match as a
 		// blob. Skipping them would hide a leaked token that happens to
 		// sit next to "://".
-		return collectValueWindowsBounded(value, 0, maxEntries)
+		return collectValueWindowsBounded(value, maxEntries)
 	}
 	var parts []string
 	if u.User != nil {
@@ -3080,8 +3086,15 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 			}
 		}
 	}
-	out := make(map[string][]int)
-	entryCount := 0
+	// Every credential-bearing part, decoded and raw, shares one anchor budget:
+	// the per-value bound applies to the whole URL, not to each part, so a
+	// long URL with many high-entropy segments samples like any long value.
+	type urlPart struct {
+		part, raw string
+		idx       int
+	}
+	var eligible []urlPart
+	totalSpan := 0
 	for _, part := range parts {
 		if len(part) < minKnownSecretSubstringLen || ShannonEntropy(part) <= envLeakMinEntropy {
 			continue
@@ -3090,24 +3103,92 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 		if idx < 0 {
 			continue
 		}
-		partWindows, windowErr := collectValueWindowsBounded(part, idx, maxEntries-entryCount)
-		if windowErr != nil {
-			return nil, windowErr
+		eligible = append(eligible, urlPart{part: part, raw: raw, idx: idx})
+		totalSpan += len(part) - minKnownSecretSubstringLen + 1
+		if raw != part && len(raw) >= minKnownSecretSubstringLen {
+			totalSpan += len(raw) - minKnownSecretSubstringLen + 1
 		}
-		for window, offsets := range partWindows {
+	}
+	// u.Query() is a map, so eligible holds query values in a random order.
+	// Sampling follows the order the parts appear in the value, which keeps
+	// the retained anchors the same on every build of the scanner. Two parts
+	// can be located at one offset when one is a prefix of the other, so the
+	// part text breaks the tie.
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].idx != eligible[j].idx {
+			return eligible[i].idx < eligible[j].idx
+		}
+		if eligible[i].part != eligible[j].part {
+			return eligible[i].part < eligible[j].part
+		}
+		return eligible[i].raw < eligible[j].raw
+	})
+	// Each part, and its raw encoded form when that differs, is one sequence
+	// of window starts.
+	type urlSeq struct {
+		text string
+		base int
+	}
+	var seqs []urlSeq
+	for _, p := range eligible {
+		seqs = append(seqs, urlSeq{text: p.part, base: p.idx})
+		if p.raw != p.part && len(p.raw) >= minKnownSecretSubstringLen {
+			seqs = append(seqs, urlSeq{text: p.raw, base: p.idx})
+		}
+	}
+	out := make(map[string][]int)
+	entryCount := 0
+	add := func(text string, base, stride, phase int) (int, error) {
+		windows, next, err := collectValueWindowsPhased(text, base, maxEntries-entryCount, stride, phase)
+		if err != nil {
+			return 0, err
+		}
+		for window, offsets := range windows {
 			out[window] = append(out[window], offsets...)
 			entryCount += len(offsets)
 		}
-		if raw != part {
-			rawWindows, rawErr := collectValueWindowsBounded(raw, idx, maxEntries-entryCount)
-			if rawErr != nil {
-				return nil, rawErr
+		return next, nil
+	}
+	// phase carries the sampling position from one sequence into the next, so
+	// the sequences are sampled as one continuous span and yield at most
+	// maxKnownValuePartialAnchors anchors in total. Restarting at offset zero
+	// in every sequence would give each its own anchor, and thousands of short
+	// segments would exceed the bound.
+	phase := 0
+	if totalSpan <= maxKnownValuePartialAnchors || len(seqs) > maxKnownValuePartialAnchors {
+		// Either every window fits (stride 1), or there are more parts than
+		// anchors and some part cannot be given one.
+		stride := knownValueStride(totalSpan)
+		for _, q := range seqs {
+			next, err := add(q.text, q.base, stride, phase)
+			if err != nil {
+				return nil, err
 			}
-			for window, offsets := range rawWindows {
-				out[window] = append(out[window], offsets...)
-				entryCount += len(offsets)
-			}
+			phase = next
 		}
+		return out, nil
+	}
+	// A sampled URL keeps each part's first window, so a whole credential part
+	// copied on its own is always found even when the stride is wider than the
+	// part. The remaining anchors sample the rest of every part as one span.
+	reserve := len(seqs)
+	rest := totalSpan - reserve
+	stride := 0
+	if left := maxKnownValuePartialAnchors - reserve; left > 0 && rest > 0 {
+		stride = (rest + left - 1) / left
+	}
+	for _, q := range seqs {
+		if _, err := add(q.text[:minKnownSecretSubstringLen], q.base, 1, 0); err != nil {
+			return nil, err
+		}
+		if stride == 0 || len(q.text) == minKnownSecretSubstringLen {
+			continue
+		}
+		next, err := add(q.text[1:], q.base+1, stride, phase)
+		if err != nil {
+			return nil, err
+		}
+		phase = next
 	}
 	return out, nil
 }
@@ -3127,8 +3208,41 @@ func locateURLPart(value, part string) (int, string) {
 	return -1, ""
 }
 
-func collectValueWindowsBounded(value string, base, maxEntries int) (map[string][]int, error) {
-	capacity := len(value) - minKnownSecretSubstringLen + 1
+// knownValueStride spaces window starts so that span candidate starts yield at
+// most maxKnownValuePartialAnchors anchors. A value longer than
+// maxKnownValuePartialInputBytes is sampled rather than refused: its anchors are
+// spaced evenly across the whole value, so the temporary maps built from it stay
+// within the same bound as a value at the ceiling, and a copied fragment of at
+// least stride+minKnownSecretSubstringLen-1 bytes always contains an anchor.
+// Refusing instead stopped the scanner from being built, so one long
+// environment variable (an inline certificate or JSON key) kept Pipelock from
+// starting under the default scan_env. Values at or under the ceiling keep
+// every window (stride 1).
+func knownValueStride(span int) int {
+	if span <= maxKnownValuePartialAnchors {
+		return 1
+	}
+	return (span + maxKnownValuePartialAnchors - 1) / maxKnownValuePartialAnchors
+}
+
+func collectValueWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
+	windows, _, err := collectValueWindowsPhased(value, 0, maxEntries, 1, 0)
+	return windows, err
+}
+
+// collectValueWindowsPhased indexes value's windows at least minStride apart,
+// widening the stride when value alone exceeds the anchor bound. The first
+// window starts at phase, and the returned phase is where the next window
+// would fall past the end of value, so a caller sampling several parts as one
+// span passes it to the next part.
+func collectValueWindowsPhased(value string, base, maxEntries, minStride, phase int) (map[string][]int, int, error) {
+	stride := max(minStride, knownValueStride(len(value)-minKnownSecretSubstringLen+1), 1)
+	starts := len(value) - minKnownSecretSubstringLen + 1
+	phase = max(phase, 0)
+	capacity := 0
+	if starts > phase {
+		capacity = (starts - phase + stride - 1) / stride
+	}
 	if maxEntries <= 0 {
 		capacity = 0
 	} else if capacity > maxEntries {
@@ -3136,7 +3250,8 @@ func collectValueWindowsBounded(value string, base, maxEntries int) (map[string]
 	}
 	windows := make(map[string][]int, capacity)
 	repeated := make(map[string]struct{})
-	for start := 0; start <= len(value)-minKnownSecretSubstringLen; start++ {
+	start := phase
+	for ; start < starts; start += stride {
 		window := value[start : start+minKnownSecretSubstringLen]
 		// The whole-value entropy floor does not protect a low-entropy prefix
 		// or a repeated 16-byte block inside an otherwise high-entropy secret.
@@ -3154,12 +3269,12 @@ func collectValueWindowsBounded(value string, base, maxEntries int) (map[string]
 		windows[window] = []int{base + start}
 	}
 	if len(windows) > maxEntries {
-		return nil, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
+		return nil, 0, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
 			errKnownValueWindowBudget,
 			len(windows), len(windows)*knownValueWindowEntryBytes,
 			maxEntries, maxEntries*knownValueWindowEntryBytes)
 	}
-	return windows, nil
+	return windows, max(start-starts, 0), nil
 }
 
 // knownValueWindow is one exact partial-match candidate. Keeping its bytes and
@@ -3226,10 +3341,12 @@ const (
 	maxKnownValueWindowEntries = maxSecretsFileEntries * maxSecretsFileLineLen * 2
 	knownValueWindowEntryBytes = 32
 	maxKnownValueWindowBytes   = maxKnownValueWindowEntries * knownValueWindowEntryBytes
-	// The secrets-file loader already enforces this per-value ceiling. Applying
-	// it to every partial-match source also bounds the temporary exact-dedup maps
-	// used during construction; whole-value-only low-entropy inputs bypass it.
+	// The secrets-file loader already enforces this per-value ceiling. Every
+	// other partial-match source samples a longer value down to the anchor
+	// count of a value at the ceiling, which bounds the temporary exact-dedup
+	// maps used during construction.
 	maxKnownValuePartialInputBytes = maxSecretsFileLineLen
+	maxKnownValuePartialAnchors    = maxKnownValuePartialInputBytes - minKnownSecretSubstringLen + 1
 )
 
 var errKnownValueWindowBudget = errors.New("known-value window index memory budget exceeded")
@@ -3500,6 +3617,16 @@ func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts
 	}
 	if start, end, length, viewLabel, ok := indexKnownValueSubstring(secret, windows, texts); ok {
 		return knownSecretMatch{partialLen: length}, start, end, viewLabel, true
+	}
+
+	// Every encoding below is at least as long as the secret (base64 4/3,
+	// base32 8/5, hex and its delimited forms 2x or more, decimal codes at
+	// least one digit per byte), and the token matchers only skip text bytes,
+	// so none can occur in a text shorter than the secret. Skipping them keeps
+	// a long known value, such as an inline certificate in the environment,
+	// from being re-encoded on every scan of a short request.
+	if len(secret) > longestSpanTextView(texts, lowerTexts) {
+		return knownSecretMatch{}, 0, 0, "", false
 	}
 
 	// Base64 standard (padded + unpadded).

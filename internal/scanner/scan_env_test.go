@@ -5,9 +5,11 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -513,5 +515,48 @@ func TestScan_EnvLeakDetection_ZeroWidthBypass(t *testing.T) {
 	}
 	if result.Scanner != ScannerDLP {
 		t.Errorf("expected scanner=dlp, got %s", result.Scanner)
+	}
+}
+
+// An environment value above the per-value partial-matching ceiling must not
+// stop the scanner from being built under the default scan_env. Its exact value
+// is still detected, and so is a fragment copied from its middle, because long
+// values are sampled across their length instead of dropped.
+func TestScan_EnvLeakDetection_OversizedValueKeepsScannerAndPartialMatch(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+
+	raw := make([]byte, 3900)
+	for i := 0; i < len(raw); i += sha256.Size {
+		sum := sha256.Sum256([]byte(strconv.Itoa(i)))
+		copy(raw[i:], sum[:])
+	}
+	value := base64.StdEncoding.EncodeToString(raw)
+	if len(value) <= maxKnownValuePartialInputBytes {
+		t.Fatalf("fixture length = %d, want greater than %d", len(value), maxKnownValuePartialInputBytes)
+	}
+	t.Setenv("PIPELOCK_TEST_OVERSIZED_SECRET", value)
+
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("scanner refused an oversized environment value: %v", err)
+	}
+	t.Cleanup(s.Close)
+
+	whole := s.ScanTextForDLP(context.Background(), "payload="+value)
+	if whole.Clean {
+		t.Fatal("exact oversized environment value was not detected")
+	}
+	// 48 bytes from the middle: longer than stride+15 for this value, so the
+	// fragment must contain a sampled anchor.
+	mid := len(value) / 2
+	part := s.ScanTextForDLP(context.Background(), "payload="+value[mid:mid+48])
+	if part.Clean {
+		t.Fatal("a 48-byte fragment from the middle of an oversized environment value was not detected")
+	}
+	// Positive control: text that shares no fragment with the value stays clean.
+	if clean := s.ScanTextForDLP(context.Background(), "payload=nothing secret here at all, only prose"); !clean.Clean {
+		t.Fatalf("unrelated text flagged: %+v", clean.Matches)
 	}
 }

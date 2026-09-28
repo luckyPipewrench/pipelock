@@ -799,7 +799,10 @@ class TestReleaseArtifacts(unittest.TestCase):
             if step.get("if") == "always() && steps.attest-helm-chart.outcome != 'success'"
         ]
         self.assertEqual(len(gates), 1, "expected one attestation failure gate")
-        self.assertIn("exit 1", self._executable_lines(gates[0]["run"]))
+        gate_lines = self._executable_lines(gates[0]["run"])
+        exit_1_at = gate_lines.index("exit 1")
+        self.assertEqual(exit_1_at, len(gate_lines) - 1, "exit 1 must be the gate's last command")
+        self.assertNotIn("exit 0", gate_lines[:exit_1_at])
         self.assertNotIn("continue-on-error", gates[0])
         self.assertTrue(attest.get("continue-on-error"), "the gate reads the attest step's outcome")
 

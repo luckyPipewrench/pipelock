@@ -864,6 +864,7 @@ func TestStepInstallNFTRulesUndo_ToleratesPartialAndMissingUnits(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
+			env.nftTableMutatedByInstall = true // this attempt loaded the table
 			env.prevNFTPersistStateKnown = tc.persistStateWasKnown
 			env.prevNFTPersistEnabled = false
 			for _, missing := range []struct {

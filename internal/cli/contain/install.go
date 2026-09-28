@@ -2270,10 +2270,12 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
 			return err
 		}
-	} else if env.prevNFTTableStateKnown && !env.nftTableMutatedByInstall {
-		// An atomic nft batch that failed did not change the table. Leave a
-		// pre-existing table alone, or skip deletion if none existed. A failed
-		// delete or restore here would skip the file restores below.
+	} else if !env.nftTableMutatedByInstall {
+		// This attempt never changed the table: an atomic nft batch that failed
+		// leaves it as it was. Leave any table alone, including when its prior
+		// state could not be captured, so rollback cannot remove a live table
+		// this attempt did not create. A failed delete or restore here would
+		// also skip the file restores below.
 	} else {
 		// Report a failed drop. Every other branch of this rollback returns
 		// its error; discarding this one meant an install that failed on a

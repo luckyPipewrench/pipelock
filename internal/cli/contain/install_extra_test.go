@@ -1130,6 +1130,7 @@ func TestStepWriteLaunchWrapper_IdempotentAndUndoable(t *testing.T) {
 
 func TestStepInstallNFTRules_UndoDropsTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	env.nftTableMutatedByInstall = true // this attempt loaded the table
 	s := stepInstallNFTRules()
 	if err := s.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)

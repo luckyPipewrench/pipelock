@@ -2252,6 +2252,7 @@ func TestStepInstallNFTRulesKeepsHardenedDirModeWhenRulesChange(t *testing.T) {
 func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 	t.Run("a failed drop is reported", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
+		env.nftTableMutatedByInstall = true // this attempt loaded the table
 		env.prevNFTTableStateKnown = false
 		runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "", 1, fmt.Errorf("device or resource busy"))
 
@@ -2269,6 +2270,7 @@ func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 	// check must fail this test rather than being masked by an error return.
 	t.Run("a non-zero exit is reported", func(t *testing.T) {
 		env, runner, _ := newFakeEnv(t)
+		env.nftTableMutatedByInstall = true // this attempt loaded the table
 		env.prevNFTTableStateKnown = false
 		runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "", 1, nil)
 

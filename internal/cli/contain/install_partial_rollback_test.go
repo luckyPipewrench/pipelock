@@ -89,7 +89,7 @@ func TestStepInstallNFTRulesUnitFailureAfterRulesWriteRestoresRules(t *testing.T
 			if err != nil || string(got) != oldRules {
 				t.Fatalf("rules after rollback = %q, %v; want previous rules", got, err)
 			}
-			if nftCalled(runner, "delete table inet "+defaultNFTTable) {
+			if nftDeletedTable(runner) {
 				t.Fatal("rollback deleted a table this attempt never loaded")
 			}
 		})
@@ -115,7 +115,7 @@ func TestStepInstallNFTRulesUndoStillDropsTableThisAttemptLoaded(t *testing.T) {
 	if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	if !nftCalled(runner, "delete table inet "+defaultNFTTable) {
+	if !nftDeletedTable(runner) {
 		t.Fatal("rollback left the table this attempt loaded")
 	}
 }
@@ -140,7 +140,7 @@ func TestRunStepsFailedAtomicNFTLoadRestoresRulesFile(t *testing.T) {
 	if strings.Contains(err.Error(), "rollback incomplete") {
 		t.Fatalf("runSteps error = %v, want file rollback after failed atomic batch", err)
 	}
-	if nftCalled(runner, "delete table inet "+defaultNFTTable) {
+	if nftDeletedTable(runner) {
 		t.Fatal("rollback tried to delete a table the failed batch never loaded")
 	}
 	got, readErr := os.ReadFile(env.nftRulesPath)
@@ -258,11 +258,11 @@ func TestRunStepsReportsIncompleteRollback(t *testing.T) {
 	}
 }
 
-// nftCalled reports whether the fake runner saw an nft invocation with
-// exactly these arguments. runnerCalled matches systemctl only.
-func nftCalled(runner *fakeRunner, args string) bool {
+// nftDeletedTable reports whether the fake runner saw rollback drop the
+// containment table. runnerCalled matches systemctl only.
+func nftDeletedTable(runner *fakeRunner) bool {
 	for _, call := range runner.calls {
-		if call.name == testNFT && strings.Join(call.args, " ") == args {
+		if call.name == testNFT && strings.Join(call.args, " ") == "delete table inet "+defaultNFTTable {
 			return true
 		}
 	}
@@ -380,5 +380,57 @@ func TestStepInstallNFTRulesUndoLeavesUntouchedPriorTable(t *testing.T) {
 		if strings.Contains(args, "delete table") || strings.HasSuffix(args, ".restore") {
 			t.Fatalf("rollback changed a table this attempt never touched: nft %s", args)
 		}
+	}
+}
+
+func TestStepInstallNFTRulesUndoLeavesTableWhenPriorStateUnknown(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const oldRules = "# previous managed rules\n"
+	if err := os.WriteFile(env.nftRulesPath+".bak", []byte(oldRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte("# this attempt's rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Capture failed, so nothing is known about a live table, and the attempt
+	// failed before any nft batch ran.
+	env.prevNFTTableStateKnown = false
+	env.nftTableMutatedByInstall = false
+
+	if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if nftDeletedTable(runner) {
+		t.Fatal("rollback deleted a table whose owner it could not establish")
+	}
+	got, err := os.ReadFile(env.nftRulesPath)
+	if err != nil || string(got) != oldRules {
+		t.Fatalf("rules after rollback = %q, %v; want previous rules", got, err)
+	}
+}
+
+func TestRunStepsReportsIncompleteRollbackAfterCancellation(t *testing.T) {
+	env, _, out := newFakeEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	steps := []step{
+		{
+			name: "first", desc: "first",
+			apply: func(context.Context, *installEnv) (bool, error) {
+				cancel()
+				return true, nil
+			},
+			undo: func(context.Context, *installEnv) error { return errors.New("restore denied") },
+		},
+		{name: "second", desc: "second", apply: func(context.Context, *installEnv) (bool, error) { return true, nil }},
+	}
+	_, err := runSteps(ctx, env, out, steps)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSteps error = %v, want cancellation", err)
+	}
+	if !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "undo first") {
+		t.Fatalf("runSteps error = %v, want the failed undo named", err)
 	}
 }

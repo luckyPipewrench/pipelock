@@ -503,3 +503,61 @@ func TestOAuthCrossHostOffWhenBodyEntropyBlocks(t *testing.T) {
 		})
 	}
 }
+
+// Only the named OAuth parameters of each hop cross hosts. A server appending
+// any other parameter to a qualifying redirect exempts nothing, so a secret
+// under an unrelated name keeps the ordinary gate.
+func TestOAuthCrossHostParameterAllowlist(t *testing.T) {
+	const server = "https://login.vendor.example"
+	value := issuedTestToken()
+	t.Run("callback hop", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			want bool
+		}{{"code", true}, {"state", true}, {"iss", true}, {"session", false}, {"next", false}, {"nonce", false}} {
+			t.Run(tc.name, func(t *testing.T) {
+				ic, session := oauthTestStore(t)
+				store := ic.issuerQueryStore()
+				decl := oauthAuthorizeURL(t, server)
+				redirect, ok := oauthRedirectDeclaration(decl)
+				if !ok {
+					t.Fatal("authorization request did not parse")
+				}
+				store.declareRedirect(session, decl, redirect, time.Now())
+				location := oauthTestCallback + "?" + tc.name + "=" + value
+				recordDeliveredIssuerQuery(ic, &http.Response{
+					Request:    &http.Request{URL: mustIssuerQueryURL(t, server+"/u/login")},
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": {location}},
+				}, nil, true)
+				if _, got := store.match(session, mustIssuerQueryURL(t, location), tc.name, value); got != tc.want {
+					t.Fatalf("%s allowed=%v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("authorize hop", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			want bool
+		}{{"state", true}, {"nonce", true}, {"code", false}, {"login_hint", false}, {"client_id", false}} {
+			t.Run(tc.name, func(t *testing.T) {
+				ic, session := oauthTestStore(t)
+				location := server + "/authorize?response_type=code&redirect_uri=" + url.QueryEscape(oauthTestCallback)
+				if tc.name == "client_id" {
+					location += "&client_id=" + value
+				} else {
+					location += "&client_id=client-one&" + tc.name + "=" + value
+				}
+				recordDeliveredIssuerQuery(ic, &http.Response{
+					Request:    &http.Request{URL: mustIssuerQueryURL(t, "https://app.vendor.example/login")},
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": {location}},
+				}, nil, true)
+				if _, got := ic.issuerQueryStore().match(session, mustIssuerQueryURL(t, server+"/authorize"), tc.name, value); got != tc.want {
+					t.Fatalf("%s allowed=%v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+}

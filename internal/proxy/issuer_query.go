@@ -263,24 +263,41 @@ func oauthCrossHostAllowed(cfg *config.Config) bool {
 	return cfg != nil && cfg.RequestBodyScanning.ContentEntropyAction != config.ActionBlock
 }
 
+// The query parameters a cross-host OAuth hop may carry past the entropy gate.
+// Any other parameter on the same redirect keeps the ordinary gate, so a
+// server cannot ride a qualifying redirect to exempt an arbitrary value.
+var (
+	// The authorization response (RFC 6749 section 4.1.2) and the issuer
+	// identifier that accompanies it (RFC 9207).
+	oauthCallbackParams = map[string]bool{"code": true, "state": true, "iss": true}
+	// The client-generated values of an authorization request (RFC 6749
+	// section 4.1.1, OpenID Connect Core section 3.1.2.1). code_challenge has
+	// its own shape-based relief and client_id is not a generated value.
+	oauthAuthorizeParams = map[string]bool{"state": true, "nonce": true}
+)
+
 // oauthCrossHostHop reports whether a redirect from one origin to another is
-// an OAuth authorization-code hop whose values the redirecting server issued:
+// an OAuth authorization-code hop whose values the redirecting server issued,
+// and returns the query parameters that hop may carry:
 //   - the client sending the browser to an authorization server, when the
 //     authorization request's redirect_uri is on the client's own origin, so
 //     the client issued the values and asked for the code to come back to it;
 //   - the authorization server returning to the exact redirect_uri origin and
 //     path that this session declared to that server.
-func oauthCrossHostHop(store *issuerQueryStore, session string, from, to *url.URL) bool {
+func oauthCrossHostHop(store *issuerQueryStore, session string, from, to *url.URL) (map[string]bool, bool) {
 	if store.redirectDeclared(session, from, to) {
-		return true
+		return oauthCallbackParams, true
 	}
 	redirect, ok := oauthRedirectDeclaration(to)
 	if !ok {
-		return false
+		return nil, false
 	}
 	fromHost, fromPort, fromOK := issuerCookieOrigin(from)
 	redirectHost, redirectPort, redirectOK := issuerCookieOrigin(redirect)
-	return fromOK && redirectOK && fromHost == redirectHost && fromPort == redirectPort
+	if fromOK && redirectOK && fromHost == redirectHost && fromPort == redirectPort {
+		return oauthAuthorizeParams, true
+	}
+	return nil, false
 }
 
 // oauthRedirectDeclaration returns the redirect_uri of an OAuth authorization
@@ -363,16 +380,24 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			return
 		}
 		kind := issuerQueryObserved
+		var allowed map[string]bool // nil: every parameter, for same-host values
 		if host != issuerHost || port != issuerPort {
 			// A value may cross to another host only on a redirect that is
 			// one of the two OAuth authorization-code hops.
-			if !redirectHop || !oauthCrossHostAllowed(ic.Config) ||
-				!oauthCrossHostHop(store, session, response.Request.URL, candidate) {
+			if !redirectHop || !oauthCrossHostAllowed(ic.Config) {
+				return
+			}
+			names, hop := oauthCrossHostHop(store, session, response.Request.URL, candidate)
+			if !hop {
 				return
 			}
 			kind = issuerQueryOAuthRedirect
+			allowed = names
 		}
 		for name, values := range candidate.Query() {
+			if allowed != nil && !allowed[name] {
+				continue
+			}
 			for _, queryValue := range values {
 				if remaining == 0 {
 					return

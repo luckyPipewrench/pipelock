@@ -21,10 +21,10 @@ Bundles are stored in `$XDG_DATA_HOME/pipelock/rules/` by default (typically `~/
 
 ## Installing a bundle through a Pipelock proxy
 
-A rules bundle is a list of detection patterns, so the bundle's own contents read as injection text to a response scanner. If `pipelock rules install` runs behind a Pipelock proxy whose `response_scanning.action` is `block` or `ask` — the `strict`, `hostile-model`, `claude-code`, and `cursor` presets — that proxy scans the bundle it is fetching and refuses to release it. A proxy left on the default `warn` logs the finding and passes the bundle through, but adaptive enforcement can upgrade a warn to a block, so the same install can start failing on a session that has escalated. When it is refused, the install fails with a 403 and the command reports which side made that decision:
+A rules bundle is a list of detection patterns, so the bundle's own contents read as injection text to a response scanner. If `pipelock rules install` runs behind a Pipelock proxy whose `response_scanning.action` is `block` or `ask` — the `strict`, `hostile-model`, `claude-code`, and `cursor` presets — that proxy scans the bundle it is fetching and refuses to release it. A proxy left on the default `warn` logs the finding and passes the bundle through, but adaptive enforcement can upgrade a warn to a block, so the same install can start failing on a session that has escalated. When it is refused, the install fails with a 403 and the command names the block-reason headers it saw without claiming to know who sent them:
 
 ```
-HTTP GET https://pipelab.org/rules/pipelock-community/bundle.yaml: status 403: blocked by Pipelock, not by the server (reason=prompt_injection, layer=response_scan)
+HTTP GET https://pipelab.org/rules/pipelock-community/bundle.yaml: status 403: the response carries Pipelock block-reason headers (reason=prompt_injection, layer=response_scan), which points to a Pipelock proxy in front of this fetch refusing to release the bundle rather than the registry being down; any server can send these headers, so confirm the refusal in that proxy's log
 ```
 
 The fix belongs in the **proxy's** config, not in the rules directory on the machine running the install. Name the exact artifact under `response_scanning.authenticated_artifacts`:

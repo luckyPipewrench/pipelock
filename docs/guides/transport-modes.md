@@ -22,9 +22,9 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 The highest-protection mode. Designed for AI agents that need web content.
 
 **Scanning:**
-- Ordered URL scan (length/parsing, scheme, CRLF injection, path traversal, destination policy, immutable SSRF/DLP floors, configured DLP, entropy, DNS SSRF/rebinding, rate limit, data budget, and context checks)
+- Ordered URL scan (length/parsing, scheme, CRLF injection, path traversal, destination policy, immutable SSRF/DLP floors, configured DLP, entropy, nested query-parameter destinations, DNS SSRF/rebinding, rate limit, data budget, and context checks)
 - `request_policy` route and operation checks, including followed redirect hops
-- Raw HTML scan for injection in hidden elements (script, style, comments, hidden divs)
+- Hidden-content scan built from the HTML parse tree: comments, `style` and `noscript` bodies, non-executable data `<script>` bodies, and text inside elements hidden by the `hidden` attribute or inline `display:none`/`visibility:hidden` (executable JavaScript bodies are not scanned as hidden text)
 - Readability text extraction (strips HTML, returns clean text)
 - Response injection detection on extracted content
 - Redirect chain: each hop traverses the ordered URL scanner pipeline
@@ -53,7 +53,7 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 - Authority enforcement (Host must match CONNECT target)
 - `request_policy` route and operation checks on the inner HTTP request
 - Response injection detection (buffered scan-then-send)
-- Compressed response blocking (fail-closed)
+- Compressed response bodies decoded (gzip/deflate) then scanned; undecodable encodings fail closed
 
 **What the agent receives:** Without interception: raw HTTPS response from the origin server. With interception: response re-encrypted by pipelock after scanning.
 
@@ -76,7 +76,7 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 **Scanning:**
 - Ordered URL scan on the full URL
 - `request_policy` route and operation checks
-- Response injection scanning (buffer-then-scan-then-send, fail-closed on compressed responses)
+- Response injection scanning (buffer-then-scan-then-send); compressed responses decoded (gzip/deflate) then scanned, undecodable encodings fail closed
 - Response body buffered (up to MaxResponseMB), scanned for injection, then forwarded; oversized buffered responses are blocked fail-closed
 - Data budget tracking on response size
 

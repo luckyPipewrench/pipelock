@@ -158,7 +158,7 @@ AARP therefore:
     within `uint64`;
   - amount: fixed-point decimal, optional minus, no leading/trailing zeros, no
     exponent, no negative zero;
-  - time: RFC 3339 with a mandatory zone (`RFC3339Nano`).
+  - time: Go `time.RFC3339Nano` form with a mandatory zone: uppercase `T` and `Z` only, seconds 00-59 (no leap second), and a numeric offset with hour ≤ 23 and minute ≤ 59.
 
 A raw JSON number outside the safe range, anywhere in the envelope, is rejected
 at decode. The same value as the typed-string grammar verifies identically

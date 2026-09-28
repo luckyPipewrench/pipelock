@@ -13,7 +13,7 @@
 
 Landlock is mandatory for the normal Linux sandbox. A host that cannot apply it refuses the launch because the process would otherwise retain access to host files the sandbox claims to fence off. Use host-level `pipelock contain` when that is the deployment boundary available on an older kernel.
 
-`--strict` requires seccomp as well as the network namespace. On `linux/arm64`, the normal non-strict launch can be `partial` because the seccomp filter is not built for that architecture. Do not describe that launch as fully contained.
+`--strict` requires seccomp and descendant cleanup (the Linux child subreaper) as well as the network namespace; it refuses to start without either. A non-strict launch prints one startup warning when descendant cleanup is degraded: a detached descendant can then outlive the session and hold proxy shutdown open. On `linux/arm64`, the normal non-strict launch can be `partial` because the seccomp filter is not built for that architecture. Do not describe that launch as fully contained.
 
 ## Advisory network override
 

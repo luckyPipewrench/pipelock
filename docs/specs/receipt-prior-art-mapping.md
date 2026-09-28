@@ -193,7 +193,7 @@ authority delegation, action classification, action mediation, and evidence rete
 
 | AARM concept | Receipt primitive | Notes |
 |---|---|---|
-| Authority delegation | `principal`, `actor`, `delegation_chain` | Pipelock's flat fields express AARM authority transfer with no transformation. |
+| Authority delegation | `principal`, `actor`, `delegation_chain` | Pipelock's flat fields can express AARM authority transfer with no transformation. `principal` and `actor` are populated today; `delegation_chain` is reserved and currently empty. |
 | Action classification | `action_type`, `side_effect_class`, `reversibility` | Pipelock's enums are a candidate vocabulary; the AARM taxonomy is still settling. |
 | Action mediation | `verdict`, `policy_hash`, `transport` | Receipt verdicts express mediator decisions; `policy_hash` binds the policy generation. |
 | Evidence retention | Receipt chain + Audit Packet | Pipelock's signed chain + posture-bound packet is one concrete model for the evidence layer AARM names. |
@@ -232,7 +232,7 @@ through tool outputs, and so on).
 | Top 10 concept | Receipt primitive | Notes |
 |---|---|---|
 | Skill inventory drift | EvidenceReceipt v2 `contract_drift` payload | A divergence between observed action and active contract emits a signed drift receipt. |
-| Scope inflation | `delegation_chain`, `authority_kind` | The chain records which grants authorized the action; scope-inflated actions are visible against the recorded chain. |
+| Scope inflation | `delegation_chain`, `authority_kind` | Reserved: `delegation_chain` is part of the signed record but Pipelock does not populate it yet, so every emitted receipt carries an empty chain and scope inflation is not detectable from it. `authority_kind`, set on MCP tool calls the taint policy evaluates, records which authority the policy credited for the action, such as `policy`, `user_exact` or `operator_override`. |
 | Exfiltration via tool output | `verdict=block`, `layer=dlp`, `data_classes_out` | Receipts capture DLP blocks with the matched layer and data class. |
 | Poisoned tool description | EvidenceReceipt v2 `contract_drift` payload (drift_kind variants) | Drift kinds cover poisoned tool descriptions and rug-pull updates. |
 

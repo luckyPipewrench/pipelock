@@ -5,9 +5,11 @@ benchmarks below. The proxy is generally I/O bound while waiting for upstream
 responses. Response scanning and MCP scanning on large payloads can use
 measurable CPU at high throughput (see tables below).
 
-All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Go 1.25 / Linux. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
+Numbers are from Go benchmarks on an AMD Ryzen 7 7800X3D (8 cores / 16 threads) on Linux. The single-request latency tables were measured at pre-release v3.6.0 commit `7283f25e7` with Go 1.26.0 in a process limited to four CPUs; later changes aren't represented by that measurement. The CPU limit matters for response scanning because it evaluates patterns in parallel. The Unicode normalization rows, concurrent scaling sections and HTTP proxy overhead section are older measurements on Go 1.25 with 16 CPUs and weren't refreshed for v3.6.0. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
 
 ## Scanning Latency (single request)
+
+Throughput in these tables is the reciprocal of latency for requests handled one after another. It is not a one-core capacity figure: the measurements had four CPUs available, and response and MCP scanning evaluate their patterns in parallel. See the concurrent scaling section for multi-request throughput.
 
 ### URL Scanning (fetch/forward proxy hot path)
 
@@ -16,36 +18,36 @@ traversal, allowlist/blocklist policy, immutable SSRF and DLP floors, configured
 DLP, path and subdomain entropy, DNS SSRF/rebinding, rate limit, data budget,
 and final context checks.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Full pipeline (allowed URL) | ~40 μs | ~25,000/sec |
-| Blocklist block (early exit) | ~2 μs | ~510,000/sec |
-| DLP pattern match (65 patterns, pre-filtered) | ~5.4 μs | ~184,000/sec |
-| DLP pre-filter only (clean text, zero alloc) | ~500 ns | ~2,000,000/sec |
-| Entropy detection | ~85 μs | ~12,000/sec |
-| Complex URL (ports, query params) | ~80 μs | ~12,000/sec |
+| Allowed URL (DNS SSRF, rate limit and data budget off) | ~53 μs | ~19,000/sec |
+| Blocklist block (early exit) | ~2.8 μs | ~355,000/sec |
+| DLP pattern match (65 patterns, pre-filtered) | ~15 μs | ~66,000/sec |
+| DLP pre-filter only (clean text, two small allocations) | ~1.1 μs | ~897,000/sec |
+| Entropy detection | ~91 μs | ~11,000/sec |
+| Complex URL (ports, query params) | ~255 μs | ~3,900/sec |
 
 ### MCP Scanning (tool call/response inspection)
 
 JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Clean tool response | ~126 μs | ~8,000/sec |
-| Injection detected (early exit) | ~25 μs | ~41,000/sec |
-| Text extraction | ~2.4 μs | ~414,000/sec |
+| Clean tool response | ~316 μs | ~3,200/sec |
+| Injection detected (early exit) | ~280 μs | ~3,600/sec |
+| Text extraction | ~9.5 μs | ~106,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
-Pattern matching against 32 prompt-injection and state/control patterns on
+Pattern matching against 34 prompt-injection and state/control patterns on
 fetched page content.
 
-| Operation | Latency | Throughput (1 core) |
+| Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~139 μs | ~7,200/sec |
-| 10KB clean text | ~17.7 ms | ~56/sec |
-| Injection detected (early exit) | ~27 μs | ~36,000/sec |
-| State/control clean | ~236 μs | ~4,200/sec |
+| Short clean text (~90B) | ~66 μs | ~15,000/sec |
+| 10KB clean text | ~5.5 ms | ~180/sec |
+| Injection detected (early exit) | ~67 μs | ~15,000/sec |
+| State/control clean | ~384 μs | ~2,600/sec |
 
 The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no injection keywords are present in the normalized text. This cut clean-text latency by 29%, large-content latency by 27%, and injection-detected latency by 3.1x (early keyword match skips later normalization passes). The 10KB response scan remains the current ceiling due to 6 sequential normalization passes. Content size tiering (skipping passes 3-6 for large content) is planned.
 
@@ -56,9 +58,9 @@ The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no
 | Unicode normalization (DLP mode) | ~1.1 μs |
 | Unicode normalization (matching mode) | ~1.3 μs |
 | Unicode normalization (tool text mode) | ~2.1 μs |
-| Shannon entropy calculation | ~2.3 μs |
-| Domain matching (exact) | ~50 ns |
-| Domain matching (wildcard) | ~54 ns |
+| Shannon entropy calculation | ~2.2 μs |
+| Domain matching (exact) | ~267 ns |
+| Domain matching (wildcard) | ~341 ns |
 
 ## Concurrent Scaling
 

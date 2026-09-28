@@ -13,14 +13,16 @@ Detection applies these normalization passes in order:
 
 1. Direct match on the normalized string
 2. URL-decoded match (iterative, catches `%41%57%53...`)
-3. Subdomain match (strips dots, catches `AK.IA.IO.SF...` in hostnames)
-4. Separator-collapsed match (strips `./-\_@%+#:;,` and more, catches tokens split across URL components)
-5. Base64 / hex decoded match (via the shared encoding decoder)
-6. Segment-level encoding decode (checks each URL path/query segment independently)
+3. HTML-entity decoded match
+4. Subdomain match (strips dots, catches `AK.IA.IO.SF...` in hostnames)
+5. Separator-collapsed match (strips `./-\_@%+#:;,` and more, catches tokens split across URL components)
+6. Recursive decode (base64, hex, base32, URL) until nothing changes, run on the same bounded fixpoint the rest of DLP uses
+7. Decimal character-code match (e.g. `65,75,73,...`), checked on each decoded view above as well as the plain text
+8. Segment-level encoding decode (checks each URL path/query segment independently)
 
 A match at any pass triggers a `blocked` event with severity `critical` and pattern name `Canary Token (<name>)`.
 
-Unlike DLP regex patterns, canary matching is exact string containment after normalization. There are no false positives from substring collisions.
+Canary matching looks for the whole value after normalization. For a canary of 16+ bytes with entropy above 3.0, a contiguous piece of 16 bytes or more of it also matches, and the finding records `partial_len`. A 16-byte stem shared by two canaries is ignored as a common stem. URL-shaped canaries are matched in part only on their credential-bearing parts.
 
 ## Configuration
 

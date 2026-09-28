@@ -46,3 +46,9 @@ pipelock adaptive whoami [--json]
 
 Shows the client IP and session key the admin API assigns to the caller. Use it
 to confirm which identity a proxy-side operator command will affect.
+
+`--json` also includes `provenance`, the identity grade resolved the same way
+as proxied traffic (`bound` for a per-agent listener or `source_cidrs` match;
+a forged `X-Pipelock-Agent` header cannot present as `bound`). The text
+output does not print it. For a self-declared caller the session key is the
+bare client IP.

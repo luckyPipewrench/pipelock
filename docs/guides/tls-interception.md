@@ -50,7 +50,7 @@ This creates two files in your pipelock home directory: `~/.pipelock/` by defaul
 - `ca.pem`: the CA certificate (share this, it's public)
 - `ca-key.pem`: the CA private key (protect this, `0600` permissions)
 
-`pipelock run` resolves the default CA path the same way, so the proxy loads the CA that `tls init` wrote as long as both commands use the same `--home` or `PIPELOCK_HOME`. The examples below assume the plain `~/.pipelock` default.
+`pipelock run` and `pipelock check` resolve the default CA path the same way, so the proxy loads the CA that `tls init` wrote as long as both commands use the same `--home` or `PIPELOCK_HOME`. If the resolved home has no CA but `~/.pipelock` does (for example you set `--home`/`PIPELOCK_HOME` after already running `tls init` once), startup refuses rather than silently loading the older CA; the error names both directories and suggests setting `tls_interception.ca_cert`/`ca_key` to keep using the older CA, or running `pipelock tls init` with the new home. The examples below assume the plain `~/.pipelock` default.
 
 Options:
 
@@ -176,12 +176,12 @@ tls_interception:
 
 Passthrough connections are spliced (bidirectional byte copy) without decryption. Hostname-level scanning (blocklist, SSRF, SNI verification) still applies.
 
-Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and `deep.sub.example.com`, but not the apex `example.com`).
+Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and `deep.sub.example.com`, but not the apex `example.com`). Entries must be ASCII hostnames with no whitespace and at most one trailing dot. A wildcard over any public suffix (`*.com`, `*.co.uk`, `*.github.io`, `*.s3.amazonaws.com`) is refused at load; list exact hosts instead (`mybucket.s3.amazonaws.com`), or keep intercepting that traffic with a trusted local CA.
 
 ### Fail-Closed Behavior
 
 TLS interception is fail-closed:
-- Compressed responses (Content-Encoding other than identity): blocked (scanning would be bypassed)
+- Compressed responses Pipelock cannot decode (anything other than single-layer gzip or deflate): blocked (scanning would be bypassed)
 - Responses larger than `max_response_bytes`: blocked
 - TLS handshake failures: connection closed
 - Certificate generation errors: connection closed
@@ -218,7 +218,7 @@ The hostname in the request doesn't match what pipelock generated. This usually 
 
 ### Compressed response blocked
 
-Pipelock blocks compressed responses during interception because it can't scan content it can't read. The upstream server sent `Content-Encoding: gzip` (or similar). Pipelock's transport sets `Accept-Encoding: identity` to request uncompressed responses, but some servers ignore this.
+Pipelock decodes a single-layer gzip or deflate response and scans it normally. It blocks a response during interception when it can't decode it: the upstream sent an encoding Pipelock cannot decode, such as `br` or `zstd`, or a stacked or malformed body. Pipelock's transport sets `Accept-Encoding: identity` to request uncompressed responses, but some servers ignore this.
 
 If you trust the domain, add it to `passthrough_domains`.
 

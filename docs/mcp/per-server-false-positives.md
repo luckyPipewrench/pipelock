@@ -90,7 +90,10 @@ suppression only takes effect once the server has a name to scope it to.
 With the server named, add a top-level `suppress:` entry scoped to that server's
 response target. The `rule` must be the exact blocking pattern name (use
 `explain mcp-response`, part 4, to get it). Core response floor names cannot be
-suppressed and require a pattern precision fix:
+suppressed. Instead, declare a `response_scanning.core_observe_exceptions`
+entry for that server and pattern; the host for an MCP server is its
+`--server-name` value. See "Observing one core pattern on one host" in
+[configuration.md](../configuration.md):
 
 ```yaml
 suppress:

@@ -488,6 +488,13 @@ pipelock conductor publish \
 The command computes the canonical `policy_hash` / `payload_sha256`, stamps the
 validity window from `--validity`, and carries the operator-supplied monotonic
 `--version`.
+
+A follower that cannot prove its own released version (a dev or source build)
+always refuses a bundle carrying `--min-pipelock-version` and keeps its
+currently active policy. This refusal ignores `rules.allow_unversioned_bundle_load`,
+which governs only standalone rule-bundle loading (`pipelock rules install`)
+and defaults to warn-and-load there; Conductor's minimum-version check is
+stricter and has no equivalent setting.
 Add `--rule-bundle <path>` (repeatable) to ship signed rule bundles alongside the
 config, `--audience` to narrow the addressed followers, and
 `--previous-bundle-hash <hex>` to pin continuity against the prior bundle (the
@@ -642,6 +649,10 @@ Pass `--state-snapshot snapshot.json` to replay the publish preflight against a
 captured follower/runtime-status snapshot. The snapshot applies only to bundle
 replay preflight; the policy-bundle store chain is still evaluated against
 current Conductor state.
+
+## 9b. Follower startup and consistency
+
+On restart, a follower does not trust its cached last-known-good bundle blindly: it re-verifies the signature, audience, `not_before`, and local-version gates against that cached bundle before reloading it into the running proxy, the same checks a fresh apply runs. Admission is marked uncertain for the duration of that reload; if the reload fails, the follower denies admission and reports live policy as uncertain rather than serving traffic under an unconfirmed config. A failed activation during a normal (non-startup) apply reverts to the prior live policy when a restore path is available, rather than leaving the runtime and the durable "active" pointer disagreeing about which policy is live. See [§10](#10-recover-follower-bundle-state) if a follower gets stuck in this state and needs its local bundle cache reset.
 
 ## 10. Recover follower bundle state
 

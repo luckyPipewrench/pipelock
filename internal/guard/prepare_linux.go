@@ -25,9 +25,12 @@ import (
 // the window between the floor check and the grant: the name can be pointed
 // somewhere else in between, and the rule lands on the attacker's target. A
 // descriptor names an inode, so once it is pinned the name is irrelevant.
-// Proven on Linux 7.1.5: after a grant, repointing the symlink it was declared
-// through leaves the workload denied through that same pathname, with no
-// writes reaching either target.
+// What the tests show is narrower: the symlink-repoint scenario (run on Linux
+// 7.1.5) retargets the declared name after Prepare has already resolved it, so
+// the grant follows the resolved object rather than the new target. That would
+// also hold if the resolved path were simply reopened. The pin is what protects
+// against a later swap of the resolved path itself, and no test exercises that
+// swap yet.
 type preparedRule struct {
 	fd       int
 	access   uint64

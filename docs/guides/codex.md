@@ -274,6 +274,8 @@ pipelock codex remove --dry-run
 pipelock codex remove
 ```
 
+Re-running install after upgrading Pipelock also recovers and re-wraps an older Pipelock-authored registration using the current binary's invocation shape; a registration it cannot safely normalize is refused with a message naming it, and nothing is changed.
+
 The installer replaces each server registration and attempts to restore the
 previous registration if that replacement fails. If it reports that rollback
 also failed, stop and inspect `codex mcp list` before retrying or editing the

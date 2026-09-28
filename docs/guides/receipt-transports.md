@@ -19,6 +19,9 @@ For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-min
 | `fetch` | Session deny | `session_deny` | Adaptive escalation block_all |
 | `fetch` | Budget | `budget` | Request/domain budget exceeded |
 | `fetch` | Cross-request | `cross_request` | CEE exfiltration detection |
+| `fetch` | Shield capacity | `session_capacity` | Shield rewrite could not record its adaptive signal; 503 |
+| `fetch` | Shield uninspectable | `shield_uninspectable` | Partial or undecodable shieldable response |
+| `fetch` | Response scan error | `response_scan_error` | Response could not be fully scanned; fail-closed block, not an injection finding |
 | `fetch` | Allow | (empty) | Successful fetch |
 | `websocket` | URL block | scanner layer name | URL scan finding |
 | `websocket` | Header DLP | `dlp_header` | Secret in forwarded headers |
@@ -35,6 +38,7 @@ For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-min
 | `websocket` | Cross-request | `cross_request` | CEE exfiltration in frame |
 | `websocket` | Injection | `response_scan` | Prompt injection in upstream frame |
 | `websocket` | Session close | `session_close` | Connection closed (verdict reflects blocked status) |
+| `websocket` | Response scan error | `response_scan_error` | Response could not be fully scanned; fail-closed block, not an injection finding |
 | `connect` | CONNECT deny / allow | scanner layer name, `airlock`, `kill_switch` | CONNECT tunnel admission decisions before interception |
 | `forward` | URL block | scanner layer name | URL scan finding |
 | `forward` | Request body | `dlp`, `address_protection`, or `redaction` | Request-body DLP, address finding, or redaction fail-closed before upstream |
@@ -42,15 +46,33 @@ For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-min
 | `forward` | A2A stream | `a2a_stream` | SSE stream finding or compressed stream |
 | `forward` | A2A response | `a2a_response` | A2A response body finding |
 | `forward` | Response scan | `response_scan` | Prompt injection in response |
+| `forward` | Response scan error | `response_scan_error` | Response could not be fully scanned; fail-closed block, not an injection finding |
+| `forward` | Cross-request | `cross_request` | CEE exfiltration detection |
 | `forward` | Allow | (empty) | Successful forward |
 | `intercept` | Request / response / A2A scanning | various | TLS-intercepted traffic inside CONNECT tunnels, including request-body redaction, response-scan, DLP, media policy, and A2A coverage |
+| `intercept` | Response scan error | `response_scan_error` | Response could not be fully scanned; fail-closed block, not an injection finding |
 | `intercept` | Allow | (empty) | Successful inner HTTP request; under `require_receipts`, the durable intent is emitted before the upstream request |
+| `reverse` | URL block | scanner layer name | URL scan finding on the joined upstream path |
+| `reverse` | Request body | `dlp`, `dlp_header`, or `redaction` | Request-body DLP, header DLP, or redaction fail-closed before upstream |
+| `reverse` | Airlock | `airlock` | Quarantine admission denied |
+| `reverse` | Session profiling / deny | `session_profiling`, `session_deny` | Session recorder blocked the request or adaptive escalation block_all |
+| `reverse` | Cross-request | `cross_request` | CEE exfiltration detection |
+| `reverse` | Taint | `taint_policy` | Taint policy denial |
+| `reverse` | Response scan | `reverse_response_blocked` | Prompt injection or media-policy block in the upstream response |
+| `reverse` | Response scan error | `response_scan_error` | Response could not be fully scanned; fail-closed block, not an injection finding |
+| `reverse` | Shield oversize | `shield_oversize` | Shieldable response exceeded `browser_shield.max_shield_bytes` |
+| `reverse` | Shield uninspectable | `shield_uninspectable` | Partial or undecodable shieldable response |
+| `reverse` | Shield capacity | `session_capacity` | Shield rewrite could not record its adaptive signal; 503 |
+| `reverse` | Mediation envelope | `mediation_envelope` | Envelope injection failure |
+| `reverse` | Budget | `request_scan_inflight_budget` | Scan admission capacity exhausted; 503 |
+| `reverse` | Allow | (empty) | Successful reverse-proxy request |
 | `mcp_stdio` | Input scan | `mcp_input_scanning` | DLP, injection, or tools/call redaction block |
 | `mcp_stdio` | Tool scan | `mcp_response_scan` | Poisoned `tools/list` response or schema drift (rug-pull) |
 | `mcp_stdio` | Tool policy | `mcp_tool_policy` | Pre-execution allow/deny/redirect decision |
 | `mcp_stdio` | Chain detection | `chain_detection` | Multi-call subsequence match |
 | `mcp_stdio` | Session binding | `session_binding` | Unknown tool appeared mid-session |
 | `mcp_stdio` | Response scan | `mcp_response_scan` | Prompt injection in tool result |
+| `mcp_stdio` | Cross-request | `cross_request` | CEE block; `pattern` is the matched DLP pattern name or a block-kind token (`entropy_budget`, `inspection_depth`, `session_capacity`, `fragment_owner_mismatch`) |
 | `mcp_http_upstream` | All of the above | same as stdio | Stdio client bridged to an upstream HTTP / SSE MCP server |
 | `mcp_http_listener` | All of the above | same as stdio | Listener-bound HTTP / SSE MCP proxy variant |
 | `mcp_http_listener` | A2A header block | `mcp_a2a_scanning` | A2A-Extensions header URI rejected by the URL scanner |

@@ -45,7 +45,11 @@ pipelock mcp integrity manifest verify \
 ```
 
 The command exits non-zero if any resolved binary or script hash is missing or
-mismatched. Use `--json` for automation.
+mismatched. It also exits non-zero when the binary's location relative to
+`--workdir` cannot be determined (`location: unknown`, with the resolution
+error in `location_reason`). JSON reports include `location` (`inside`,
+`outside`, `unknown`, `not_checked`); only `inside` sets `suspicious`. Use
+`--json` for automation.
 
 ## Sign and Trust
 

@@ -372,8 +372,9 @@ func (l *cssLexer) token() cssToken {
 
 // cssDeclarations parses a style attribute as a list of declarations
 // (CSS Syntax 3, section 5.4.5). Malformed declarations are skipped to the
-// next semicolon, and input over the size cap yields no declarations, so an
-// unreadable style never counts as hiding.
+// next semicolon, and input over the size cap yields no declarations.
+// styleValueHides checks the cap first and treats an oversized style as
+// hiding, so this parser never sees one on that path.
 func cssDeclarations(style string) []cssDeclaration {
 	if len(style) > maxCSSStyleBytes {
 		return nil

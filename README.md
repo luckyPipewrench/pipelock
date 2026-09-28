@@ -291,14 +291,14 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 
 ### Detection And Scanning
 
-- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path and subdomain entropy analysis, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
+- **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path, query and subdomain entropy analysis, nested URL destinations in query parameters, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
 - **DLP:** 65 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment secrets, and financial identifiers with checksum validation. BIP-39 seed phrase detection uses dictionary lookup, sliding windows, and SHA-256 checksum validation.
-- **Response scanning:** 33 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
+- **Response scanning:** 34 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
 - **Streaming SSE:** `text/event-stream` responses from LLM gateways and MCP HTTP/SSE flow token by token with per-event and rolling cross-event DLP and injection scanning. A detection terminates the stream fail-closed. See [SSE streaming guide](docs/guides/sse-streaming.md).
 - **Request body scanning:** headers and bodies are scanned before they leave the protected path across JSON, form data, raw text, reverse proxy requests, TLS-intercepted CONNECT traffic, and outbound WebSocket client frames.
 - **Request redaction:** optional JSON rewriting replaces matched secret values with typed placeholders such as `<pl:aws-access-key:1>` across HTTP, WebSocket, and MCP `tools/call` arguments. Receipts record the active profile and per-class counts instead of plaintext secrets.
 - **Address protection:** ETH, BTC, SOL, and BNB address validation catches lookalike destination swaps using prefix/suffix fingerprinting and an operator allowlist.
-- **Explainable findings:** `pipelock explain <url>` (also `explain event <id>` and `explain mcp`) prints the scanner, layer, matching rule, inspected surface, and the narrowest available config knob for a false positive. See [`docs/cli/explain.md`](docs/cli/explain.md).
+- **Explainable findings:** `pipelock explain <url>` (also `explain event <id>`, `explain mcp-response`, and `explain response` for a saved HTTP response body) prints the scanner, layer, matching rule, inspected surface, and the narrowest available config knob for a false positive. See [`docs/cli/explain.md`](docs/cli/explain.md).
 - **Canary tokens:** `pipelock canary` generates honeytoken config. A synthetic secret showing up in outbound traffic proves an agent or something in its chain is exfiltrating environment variables. See [canary tokens](docs/guides/canary-tokens.md).
 - **Skill-file scanning:** `pipelock skill-scan` inventories agent skill files, compares them to an operator-owned lock file, and flags source-to-sink combinations such as credential-to-network-sink or shell-to-write with line evidence before anything runs. See [`docs/cli/skill-scan.md`](docs/cli/skill-scan.md).
 
@@ -320,7 +320,7 @@ pipelock run --config pipelock.yaml --mcp-listen 127.0.0.1:8889 --mcp-upstream h
 - **Input scanning:** MCP client requests are checked for DLP leaks and injection in tool arguments.
 - **Response scanning:** server responses are scanned before the agent sees them.
 - **Tool poisoning:** `tools/list` descriptions are checked for hidden instructions and mid-session rug-pull changes.
-- **Tool policy:** 17 built-in rules block destructive file deletes, credential access, reverse shells, persistence mechanisms, encoded command execution, and related high-risk tool calls before execution.
+- **Tool policy:** 30 built-in rules block destructive file deletes, credential access, reverse shells, persistence mechanisms, encoded command execution, and related high-risk tool calls before execution.
 - **Tool call chains:** 10 built-in category-axis patterns detect reconnaissance, credential theft, data staging, persistence, exfiltration, and callback chains with configurable gap tolerance.
 - **A2A inspection:** Google Agent-to-Agent protocol traffic is inspected on the forward and MCP paths; Pipelock is not a standalone A2A proxy.
 - **Authenticated MCP HTTP listeners (v3.2.0):** non-loopback MCP listeners fail closed by default and require `--mcp-auth-token-file`, or an explicit `--mcp-allow-unauthenticated` for network-policy-isolated deployments. Tokenless loopback listeners reject DNS-rebound and wrong-port Host authorities and scrub listener credentials from headers.
@@ -345,7 +345,7 @@ pipelock contain verify
 pipelock contain run -- claude-code
 ```
 
-`pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` manages a 3-UID operator / proxy / agent model with nftables owner-match routing, systemd service setup, wrapper commands, workspace ACLs, CA refresh, and posture evidence. See [`docs/contain-cli.md`](docs/contain-cli.md).
+`pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) manages a 3-UID operator / proxy / agent model: the agent runs in a private network namespace with no route off-host, reaching only the Pipelock proxy through a doorway socket, with nftables owner-match rules as the fallback backstop, plus systemd service setup, wrapper commands, workspace ACLs, CA refresh, and posture evidence. See [`docs/contain-cli.md`](docs/contain-cli.md).
 
 ### Evidence And Receipts
 
@@ -386,7 +386,7 @@ pipelock contain run -- claude-code
 | **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON/bundle reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
 | **Diagnose** | `pipelock diagnose` runs 7 local checks to verify your config end to end with no network. |
 | **Enforcement Doctor** (v2.5) | `pipelock doctor` reports configured-vs-enforceable status for proxying, TLS interception, request-body scanning, Browser Shield, MCP wrapping, MCP binary integrity, tool provenance, file_sentry, Sentry, and deployment-boundary signals. |
-| **Request Body Injection Blocking** (v2.5) | Request-body prompt-injection and critical-DLP findings hard-block non-provider destinations in enforce mode across forward, reverse, TLS-intercept, and WebSocket transports, with block-reason headers for operator-visible diagnosis. |
+| **Request Body Injection Blocking** (v2.5) | In enforce mode, request-body prompt-injection findings hard-block every destination except hosts listed in `request_body_scanning.trusted_hosts`, and immutable core DLP findings hard-block every destination except a provider credential sent to its compiled issuing audience on a permitted carrier, or a credential the redactor fully rewrote on a `trusted_hosts` host, across forward, reverse, TLS-intercept, and WebSocket transports, with block-reason headers for operator-visible diagnosis. |
 | **Request Policy** (v2.6) | Allow-by-default deny/warn rails on outbound API operations: match route plus GraphQL operation predicates, recurse into JSON `$batch` envelopes, fail closed on unparseable or opaque bodies, and run before the contract gate. See the [request policy guide](docs/guides/request-policy.md). |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` prints platform trust-store install steps. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses. |
@@ -415,7 +415,7 @@ pipelock contain run -- claude-code
 | **Wedge-Detection Watchdog** (v2.4) | `health_watchdog` returns `/health` 503 when a subsystem heartbeat goes stale. See [health endpoint guide](docs/guides/health.md). |
 | **Redaction Provider Plugin Shape** (v2.4) | First-party redaction parsers for Anthropic, OpenAI, and Gemini chat APIs, with a provider-plugin shape for third-party parsers. |
 | **Audit Packet v0 Schema + Verifiers** (v2.5) | First-party canonical Audit Packet schema with Go, TypeScript, and Rust verifier implementations, plus standalone [`pipelock-verifier`](cmd/pipelock-verifier/) CLI. Schema lives under [`sdk/audit-packet/`](sdk/audit-packet/); verifier packages live under [`sdk/verifiers/`](sdk/verifiers/). |
-| **Host Containment Lifecycle** (v2.5) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` manages the 3-UID containment model. See [`docs/contain-cli.md`](docs/contain-cli.md). |
+| **Host Containment Lifecycle** (v2.5) | `pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) manages the 3-UID containment model: a private network namespace with no route off-host is the primary boundary, nftables owner-match rules are the fallback. See [`docs/contain-cli.md`](docs/contain-cli.md). |
 | **MCP Integrity Manifests** (v2.5) | `pipelock mcp integrity manifest generate / verify / sign / verify-signature` pins MCP server binaries/scripts by hash and can require a trusted manifest signature before subprocess launch. See [`docs/cli/mcp-integrity.md`](docs/cli/mcp-integrity.md). |
 | **Kubernetes MCP Launcher Contract** (v2.5) | `pipelock init sidecar --mcp-upstream` emits companion listener configuration, service port, workload annotations, NetworkPolicy allowance, `PIPELOCK_MCP_PROXY_URL`, and mounted `PIPELOCK_MCP_CONFIG`. See [`docs/cli/init-sidecar.md`](docs/cli/init-sidecar.md). |
 | **Federation Strict Mode** (v2.5) | Inbound mediation-envelope verification requires SPIFFE-format actors by default, contract tombstones are enforced, and `pipelock envelope trust add/list/remove/verify` manages local trust. See [federation guide](docs/guides/federation.md). |
@@ -547,8 +547,8 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[Hermes](docs/guides/hermes.md):** full-plugin coverage or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
 - **[Grok Build](docs/guides/grok.md):** forward proxy via `HTTPS_PROXY` / `HTTP_PROXY` plus manual MCP wrap (`grok mcp add … -- pipelock mcp proxy`); no automatic installer
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
-- **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; use `--config` to embed a validated policy path and `pipelock cursor remove` to remove Pipelock-managed hooks. You can also use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
-- **VS Code:** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy; `--global` targets the user-level `mcp.json`
+- **[Cursor](docs/guides/cursor.md):** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; use `--config` to embed a validated policy path and `pipelock cursor remove` to remove Pipelock-managed hooks. You can also use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **[VS Code](docs/guides/vscode.md):** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy; `--global` targets the user-level `mcp.json`
 - **[OpenClaw](docs/guides/openclaw.md):** gateway sidecar, init container, config wrapping
 - **Any other MCP client:** `pipelock generate mcporter` reads any JSON file with a top-level `mcpServers` object and wraps every server through Pipelock's proxy, so a client that is not on the list above still routes through scanning in one command.
 
@@ -680,7 +680,7 @@ Full docs directory: [docs/](docs/)
 | [Federation](docs/guides/federation.md) | Inbound mediation envelope verification, SPIFFE actor format, RFC 9421 well-known directory (v2.4) |
 | [Block-Reason Header](docs/guides/block-reason-header.md) | `X-Pipelock-Block-Reason` schema, reason vocabulary, retry hints (v2.4) |
 | [Health Endpoint](docs/guides/health.md) | `/health` 503 wedge detection, subsystem heartbeats, operator dashboard config (v2.4) |
-| [Host Containment](docs/contain-cli.md) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID nftables owner-match containment with kernel-observed posture attestation (v2.5) |
+| [Host Containment](docs/contain-cli.md) | `pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) for 3-UID containment (private network namespace as the primary boundary, nftables owner-match as the fallback) with kernel-observed posture attestation (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
 | [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, Enterprise) |

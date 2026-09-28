@@ -62,6 +62,8 @@ Info-level events go to local logs only, with one exception noted below.
 | `response_scan` | Prompt injection detected in response | `url`, `client_ip`, `request_id`, `action`, `match_count`, `patterns` |
 | `ws_scan` | Prompt injection in WebSocket frame | `target`, `direction`, `client_ip`, `request_id`, `action`, `match_count`, `patterns` |
 | `adaptive_escalation`* | Session threat score escalated (not to block level) | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
+| `dlp_warn` | Warn-mode DLP match, or a finding deliberately not enforced | `mode` (`warn` or `informational`), `pattern`, `severity`, `transport`, `reason` (informational only: `suppressed`, `disabled`, or `low_confidence`), `client_ip`, `request_id` |
+| `response_scan_suppressed` | Response-scan finding withheld from enforcement | `mode`, `pattern`, `surface`, `reason` (`suppressed` or `core_observed`), `observe_host`, `observe_owner`, `observe_expires`, `observe_reason` (`core_observed` only), `client_ip`, `request_id` |
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
 ### Info (local logs only)

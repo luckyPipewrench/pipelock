@@ -86,7 +86,7 @@ does not make the overall format Rekor-specific.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `root_hash` | hexadecimal string | Merkle-tree root. Rekor verification requires it to match `proof.log_root_hash`. |
-| `log_index` | uint64 | Entry position within the tree covered by this inclusion proof. In sharded Rekor logs it can differ from the global entry position in `proof.log_index`. |
+| `log_index` | uint64 | Entry position within the tree covered by this inclusion proof. In sharded Rekor logs it can differ from the global entry position in `proof.log_index`. Verification requires `inclusion_proof.log_index ≤ proof.log_index` and `< tree_size`. |
 | `tree_size` | uint64 | Size of the tree covered by the proof. |
 | `hashes` | string array | Merkle audit-path hashes. |
 | `checkpoint` | string | Signed Rekor checkpoint text. |

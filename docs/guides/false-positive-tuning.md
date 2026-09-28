@@ -70,7 +70,9 @@ logger provides the canonical event format.
 
 When the hook is not configured, warn matches still allow traffic through
 and are reported in the scan result's `InformationalMatches` / `WarnMatches`
-fields, but no audit event is emitted.
+fields, but no audit event is emitted from the hook.
+
+`dlp_warn` is also emitted independently of this hook, with `mode: informational`, when a DLP finding is deliberately not enforced (`reason` is `suppressed`, `disabled`, or `low_confidence`). Every `dlp_warn` event carries `mode`, `pattern`, `severity`, `transport` (the scanning surface), and `reason`.
 
 ### Restrictions
 
@@ -88,19 +90,27 @@ fields, but no audit event is emitted.
 
 ### Exempt domains
 
-Use `exempt_domains` on a DLP pattern to skip enforcement for specific
-trusted destinations:
+Use `exempt_domains` on a custom, non-core DLP pattern to skip enforcement for
+specific trusted destinations:
 
 ```yaml
 dlp:
   patterns:
-    - name: github-token
-      regex: 'ghp_[A-Za-z0-9]{36}'
+    - name: internal-provider-token
+      regex: 'intprov_[A-Za-z0-9]{36}'
       severity: critical
       exempt_domains:
-        - "api.github.com"
-        - "*.github.com"
+        - "api.provider.example"
+        - "*.provider.example"
 ```
+
+Built-in GitHub, GitLab, Slack, and other provider-key patterns cannot use
+`exempt_domains`: they carry a compiled audience instead (see
+[Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md)) and are
+already allowed at their issuer on the documented header. A custom pattern
+whose regex also matches a core credential, such as `ghp_[A-Za-z0-9]{36}` for
+`GitHub Token`, is still blocked by the immutable core floor, which never
+reads exemptions.
 
 ### Suppression rules
 
@@ -114,6 +124,10 @@ DLP and core response floor names fail config validation. See the
 Sites often put values in their own cookies that look like credentials to DLP: a load-balancer cookie containing an AWS-key-shaped run, or a session cookie that is a JWT. When a browser signs in through Pipelock's TLS interception, header DLP would block the site's own cookie on the next request.
 
 A cookie the destination issued, and that goes back to that exact destination, discloses nothing the destination does not already hold. Pipelock therefore leaves such a cookie out of header DLP. The rule is `request_body_scanning.issuer_bound_session_cookies`, and it is on by default. It takes effect only when `tls_interception.enabled` is true and request body and header scanning are enabled, because intercepted HTTPS responses are the only place Pipelock can see a site issue a cookie. Set it to `false` to scan every cookie as before.
+
+This allowance applies only to an operator-established agent identity: a per-agent listener binding, a `source_cidrs` match, or `default_agent_identity`. A request whose identity is self-declared through the agent header or `?agent=`, or that carries no identity at all, never gets the allowance and is scanned in full even with the setting on. A default install with no listener binding, no `source_cidrs`, and no `default_agent_identity` resolves every caller to a self-declared identity, so the default-on setting does nothing there. Set `default_agent_identity` (or bind listeners) for the allowance to take effect.
+
+A plain, unencoded JWT in a `Cookie` header is separately treated as `warn` rather than `block` regardless of this setting, because JWT session cookies are ordinary browser authentication state; an encoded JWT, a JWT in any other header, or any other credential pattern in the cookie keeps normal enforcement.
 
 How it decides:
 
@@ -130,7 +144,7 @@ What it does not cover: the same value in any other header (including `Authoriza
 
 An API may accept an AWS SigV4 presigned URL in a request body so it can fetch an attachment. That URL contains an AWS access-key ID, so the immutable DLP floor blocks it even though the full URL is a scoped capability. Do not add a core-pattern suppression.
 
-Add an exact, expiring `request_body_scanning.sigv4_credential_routes` entry for the outbound HTTPS endpoint instead. Pin the host, canonical path, HTTP method, and content type. Pipelock exempts only the access-key ID inside a complete, structurally valid presigned URL on that route. A malformed URL, bare key, second credential, header value, different route, or non-HTTPS request still blocks.
+Add an exact, expiring `request_body_scanning.sigv4_credential_routes` entry for the outbound HTTPS endpoint instead. Pin the host, canonical path, HTTP method, and content type. Pipelock exempts only the access-key ID inside a complete, structurally valid presigned URL on that route. A malformed URL, bare key, second credential, a header value other than a valid SigV4 `Authorization` envelope to an AWS endpoint, different route, or non-HTTPS request still blocks.
 
 ```yaml
 request_body_scanning:

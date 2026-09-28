@@ -41,7 +41,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 **Pipelock coverage:**
 
 - **DLP pattern matching:** 65 built-in patterns detect API keys, tokens, and credentials in outbound URLs and request bodies. Covers AWS, GCP, GitHub, GitLab, Stripe, OpenAI, Anthropic, Groq, xAI, and 30+ other providers.
-- **Environment variable leak detection:** detects the proxy's own env var values in outbound traffic (raw + base64 encoded). Catches secrets passed via environment that the agent tries to exfiltrate.
+- **Environment variable leak detection:** detects the proxy's own env var values in outbound traffic (raw, base64, hex, base32, decimal character codes, and contiguous partial disclosures). Catches secrets passed via environment that the agent tries to exfiltrate.
 - **Entropy analysis:** flags high-entropy URL segments and subdomains that look like encoded secrets, even if they don't match known patterns.
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh, requestbin, ngrok) are blocked by default.
 - **Cross-request exfiltration detection (CEE):** tracks secret fragments across multiple requests. An agent that splits a key across 5 separate URLs is still caught.

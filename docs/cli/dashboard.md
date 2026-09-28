@@ -88,8 +88,11 @@ enabled, each rejected dashboard request emits the warning event
 `dashboard_auth_failed`. Its structured fields are the event timestamp,
 `remote_addr` as the dashboard server received it, `path`, `failure_reason`
 (`missing`, `malformed`, or `mismatch`), and `auth_mode` (`operator_token`,
-`oidc`, or `none` when no credential was presented). The presented credential
-is never included. A count of
+`oidc`, or `none` when no credential was presented or when more than one
+`Authorization` header was sent, reported as `failure_reason: malformed`).
+The presented credential is never included. The credential must arrive in
+exactly one `Authorization` header; a request with more than one is rejected
+as malformed and is not included in the `operator_token` count. A count of
 `auth_mode=operator_token` events is the operator-token attack count; OIDC
 failures are attributed separately. Delivery is asynchronous and does not
 delay the authentication response. The dashboard does not apply rate limiting,
@@ -322,16 +325,21 @@ the server is running stops serving.
   required even on loopback.
 - **The license check is entitlement, not identity.** Token-only mode requires
   the operator token (constant-time comparison), as a `Bearer` header or as the
-  Basic-auth password. OIDC mode requires a verified bearer token whose mapped
+  Basic-auth password, sent in exactly one `Authorization` header; more than one
+  is rejected as malformed. OIDC mode requires a verified bearer token whose mapped
   roles grant bounded dashboard permissions. With mutual TLS enabled, every
   connection must present a verified certificate mapped to a role. Missing or
   invalid authentication gets no evidence.
 - **Embedded handlers fail closed without an auth boundary.** The
   `pipelock dashboard serve` command wires its configured token, OIDC, or mTLS
   auth boundary into the dashboard handler. Go embedders that construct the
-  dashboard handler directly and authenticate in an outer router must explicitly
-  set `TrustedOuterAuth`; otherwise, leaving both authorization callbacks nil
-  returns `403` for every route instead of serving unauthenticated.
+  dashboard handler directly and authenticate in an outer router must set both
+  `TrustedOuterAuth` and `TrustedOuterAuthBoundary`, naming the external
+  authentication boundary; construction panics if `TrustedOuterAuth` is set
+  and the boundary is empty, and the handler logs one startup line naming the
+  declared boundary. The declaration is not verified. With neither set,
+  leaving both authorization callbacks nil returns `403` for every route
+  instead of serving unauthenticated.
 - **Cleartext refusal.** Without TLS the listener only accepts loopback
   addresses; serving a non-loopback address over plain HTTP is refused at
   startup because the operator token would transit in cleartext.

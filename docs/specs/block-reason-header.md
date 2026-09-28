@@ -18,7 +18,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | Receipt ID for fetching the matching receipt (via the receipt-transports endpoint) for additional context. Either a 26-character Crockford-base32 ULID (`0-9` plus `A-Z` minus `I`, `L`, `O`, `U`) **or** a canonical 36-character hyphenated UUIDv7 — the receipt subsystem's correlation handle (`action_id`) uses that UUIDv7 form. Both accepted forms are fixed-length and drawn from a bounded alphabet, so the slot stays opaque and attacker-controlled metadata cannot reach agent-visible response headers. |
 | `X-Pipelock-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | The proxy-minted `action_id` of a receipt successfully recorded before this response was written. It is a caller correlation handle, never proof by itself; verify the signed receipt before relying on it. Browser callers can read it when the proxy exposes it with `Access-Control-Expose-Headers: X-Pipelock-Receipt`. |
 
-Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
+"Every block" means every block that returns HTTP headers, with one exception: some reverse-proxy response-side blocks carry the reason only in the JSON body's `block_reason` field (see the transport table below). Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
 
 ## Layer-label vocabulary
 
@@ -37,6 +37,9 @@ The optional `X-Pipelock-Block-Reason-Layer` header reuses `internal/scanner/` `
 | `length` | `scanner.ScannerLength` | `url_length` |
 | `databudget` | `scanner.ScannerDataBudget` | `data_budget` |
 | `parser` | `scanner.ScannerParser` | `parse_error` |
+| `response_scan` | proxy response-scan layer | `prompt_injection` |
+| `response_scan_error` | proxy response-scan layer | `parse_error` (response could not be fully scanned; fail-closed) |
+| `body_prompt_injection` | proxy request-body scan layer | `prompt_injection` (outbound request body) |
 
 Layers without a `Scanner*` constant (MCP layer, posture layer) leave the layer header unset; the reason code already conveys the layer at the granularity agents need.
 
@@ -50,15 +53,15 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 |---|---|---|---|
 | `scheme_blocked` | URL scheme other than http/https. | `warn` | `none` |
 | `domain_blocklist` | Hostname matched the configured blocklist. | `critical` | `policy` |
-| `ssrf_private_ip` | Resolved IP is in private/loopback/link-local range. | `critical` | `none` |
+| `ssrf_private_ip` | Resolved IP is in private/loopback/link-local range. Also emitted when DNS resolution fails, including when nested query-parameter destinations exceed their shared resolution budget; that case is resolver availability and a retry may succeed even though this reports `none`. | `critical` | `none` |
 | `ssrf_metadata` | Resolved IP is a cloud metadata endpoint (169.254.169.254, etc.). | `critical` | `none` |
 | `ssrf_dns_rebind` | DNS resolution flipped between scan and dial (TOCTOU). | `critical` | `transient` |
 | `path_entropy` | URL path entropy exceeded configured ceiling (covert channel signal). | `warn` | `policy` |
 | `query_entropy` | URL query key or value entropy exceeded the configured ceiling. | `warn` | `policy` |
 | `subdomain_entropy` | Hostname subdomain entropy exceeded configured ceiling. | `warn` | `policy` |
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
-| `rate_limit` | Per-session or per-host rate limit exceeded. | `warn` | `transient` |
-| `data_budget` | Per-session data budget exceeded. | `warn` | `policy` |
+| `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate limit exceeded (every subdomain of a site shares one URL-scanner budget). | `warn` | `transient` |
+| `data_budget` | Per-session data budget exceeded, the URL scanner's per-base-domain `fetch_proxy.monitoring.max_data_per_minute` budget exceeded, or (HTTP 503) the session store is at capacity (`session capacity exhausted; release active quarantine or increase max_sessions`); raise `session_profiling.max_sessions` for the latter. | `warn` | `policy` |
 | `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`. | `warn` | `policy` |
 
 ### Content / payload layer
@@ -67,7 +70,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 |---|---|---|---|
 | `dlp_match` | Outbound payload matched a DLP pattern (secret, credential, PII). | `critical` | `none` |
 | `body_entropy` | Body, WebSocket frame, or A2A payload matched the opaque-content detector: entropy exceeded the configured ceiling or a long all-hex value was observed. | `warn` | `policy` |
-| `prompt_injection` | Inbound response matched an injection pattern. | `critical` | `none` |
+| `prompt_injection` | Inbound response, or an outbound request body (layer `body_prompt_injection`), matched an injection pattern. | `critical` | `none` |
 | `redaction_failure` | Outbound redaction stage encountered an unrecoverable parse error and fail-closed. | `critical` | `transient` |
 | `media_policy` | Image / audio / video policy block (size, type, count). | `warn` | `policy` |
 
@@ -99,14 +102,14 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 
 | Code | When | Severity | Retry |
 |---|---|---|---|
-| `parse_error` | Unparseable input on a fail-closed surface. | `warn` | `none` |
+| `parse_error` | Unparseable input on a fail-closed surface, or a response that could not be fully scanned (layer `response_scan_error`; HTTP 503 on fetch and forward proxy). | `warn` | `none` |
 | `timeout` | Scanner or HITL timed out (fail-closed default). | `warn` | `transient` |
 | `pattern_unavailable` | Scanner pattern set unavailable at startup; fail-closed until ready. | `warn` | `transient` |
 | `not_enabled` | Endpoint exists but the feature is disabled in config. | `info` | `policy` |
 | `bad_request` | Malformed client request (missing parameter, invalid URL, etc.). | `info` | `none` |
-| `compressed_response` | Compressed (gzip/br/zstd) response cannot be scanned safely. Operator must enable upstream decompression in pipelock or change the upstream's `Accept-Encoding` policy to clear the block. | `warn` | `policy` |
+| `compressed_response` | Response used an encoding Pipelock cannot decode (e.g. br, zstd, stacked, or malformed; gzip and deflate are decoded and scanned). Change the upstream's encoding, or add the host to `tls_interception.passthrough_domains` if it is trusted. | `warn` | `policy` |
 | `browser_shield_oversize` | Response body exceeded the configured Browser Shield size limit. Operator must raise the limit or exempt the host to clear the block. | `warn` | `policy` |
-| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, or scan-head mode refused a valid UTF-16 response because a partial character stream is not safely inspectable. Correct the upstream encoding, raise the Browser Shield size limit so the full response can be inspected, or use the existing whole-host `browser_shield.exempt_domains` control when the host must intentionally bypass Browser Shield. | `warn` | `policy` |
+| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, scan-head mode refused a valid UTF-16 response because a partial character stream is not safely inspectable, or the response was a partial (`206`) response that Shield would have to rewrite. Correct the upstream encoding, request the complete resource, raise the Browser Shield size limit so the full response can be inspected, or use the existing whole-host `browser_shield.exempt_domains` control when the host must intentionally bypass Browser Shield. | `warn` | `policy` |
 | `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
 ### Contract / learn-and-lock layer
@@ -176,7 +179,7 @@ HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP
 | Forward proxy (CONNECT + absolute-URI) | HTTP response headers on the 403/etc. |
 | TLS-intercept (MITM) | HTTP response headers on the synthetic block response. |
 | Fetch endpoint (`/fetch?url=...`) | HTTP response headers on the 403 JSON body. |
-| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on the synthetic block response (request-side and response-side). |
+| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on request-side blocks and on Browser Shield `browser_shield_uninspectable` response blocks. Other response-side blocks (prompt injection, media policy, a compressed or unscannable body, a scan error) return a JSON body whose `block_reason` field carries the reason, without the block-reason headers. |
 | MCP HTTP / SSE | HTTP response headers on the 403. |
 | WebSocket | Close-frame reason payload as a JSON document carrying the same fields (see below). |
 

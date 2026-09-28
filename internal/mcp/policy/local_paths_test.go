@@ -440,7 +440,7 @@ func TestLocalPathIdentity_NewBareNameInProtectedBase(t *testing.T) {
 
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
 	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
-	if v := checkPath(pc, testWriteTool, "path", "authorized_keys"); slices.Contains(v.Rules, testKeyReadRule) {
+	if v := checkPath(pc, testReadTool, "path", "authorized_keys"); slices.Contains(v.Rules, testKeyReadRule) {
 		t.Fatalf("matched without the protected base: %+v", v)
 	}
 	pc.AddLocalPathBases(root)
@@ -475,5 +475,29 @@ func TestResolveLocalPath_PlatformRoot(t *testing.T) {
 	root, rest := splitVolumeRoot(dir)
 	if root != filepath.VolumeName(dir)+string(filepath.Separator) || len(rest) == 0 {
 		t.Errorf("splitVolumeRoot(%q) = %q, %q", dir, root, rest)
+	}
+}
+
+func TestLinkTargetStart(t *testing.T) {
+	sep := string(filepath.Separator)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	volume := filepath.VolumeName(dir)
+
+	start, parts := linkTargetStart(dir, "child"+sep+"leaf")
+	if start != dir || !slices.Equal(parts, []string{"child", "leaf"}) {
+		t.Errorf("relative target: %q, %q", start, parts)
+	}
+	start, parts = linkTargetStart(dir, dir+sep+"leaf")
+	if wantRoot, wantParts := splitVolumeRoot(dir + sep + "leaf"); start != wantRoot || !slices.Equal(parts, wantParts) {
+		t.Errorf("absolute target: %q, %q", start, parts)
+	}
+	// A separator-rooted target with no drive starts at the link's own root.
+	// On POSIX this is simply absolute; on Windows it is the drive-less form.
+	start, parts = linkTargetStart(dir, sep+"Users"+sep+"x")
+	if start != volume+sep || !slices.Contains(parts, "Users") || parts[len(parts)-1] != "x" {
+		t.Errorf("root-relative target: %q, %q", start, parts)
 	}
 }

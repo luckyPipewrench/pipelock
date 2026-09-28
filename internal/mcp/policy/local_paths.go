@@ -269,7 +269,6 @@ func resolveLocalPath(path string) (string, bool) {
 	if !filepath.IsAbs(path) {
 		return "", false
 	}
-	sep := string(filepath.Separator)
 	current, rest := splitVolumeRoot(path)
 	hops := 0
 	for len(rest) > 0 {
@@ -301,14 +300,9 @@ func resolveLocalPath(path string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
-			target = filepath.FromSlash(target)
-			if filepath.IsAbs(target) {
-				var targetRest []string
-				current, targetRest = splitVolumeRoot(target)
-				rest = append(targetRest, rest...)
-			} else {
-				rest = append(strings.Split(target, sep), rest...)
-			}
+			var targetRest []string
+			current, targetRest = linkTargetStart(current, target)
+			rest = append(targetRest, rest...)
 			continue
 		}
 		if hasRealComponent(rest) && !info.IsDir() {
@@ -317,6 +311,24 @@ func resolveLocalPath(path string) (string, bool) {
 		current = next
 	}
 	return current, true
+}
+
+// linkTargetStart returns the directory a symlink target is walked from and
+// the target's components. An absolute target starts at its own root. A
+// Windows target rooted at a separator but carrying no drive (`\Users\x`) is
+// not absolute to filepath.IsAbs, yet names the root of the link's own drive,
+// so it starts there. Any other target is relative to the link's directory.
+func linkTargetStart(linkDir, target string) (string, []string) {
+	target = filepath.FromSlash(target)
+	sep := string(filepath.Separator)
+	switch {
+	case filepath.IsAbs(target):
+		return splitVolumeRoot(target)
+	case strings.HasPrefix(target, sep):
+		return filepath.VolumeName(linkDir) + sep, strings.Split(target, sep)
+	default:
+		return linkDir, strings.Split(target, sep)
+	}
 }
 
 // splitVolumeRoot returns the root of an absolute path, including a Windows

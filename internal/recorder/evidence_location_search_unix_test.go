@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestEvidenceLocationReadsThroughSearchOnlyAncestor(t *testing.T) {
@@ -22,10 +24,10 @@ func TestEvidenceLocationReadsThroughSearchOnlyAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeDiscoveryShard(t, root)
-	if err := os.Chmod(ancestor, 0o111); err != nil {
+	if err := unix.Chmod(ancestor, 0o111); err != nil {
 		t.Skipf("chmod unavailable: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(ancestor, 0o700) })
+	t.Cleanup(func() { _ = unix.Chmod(ancestor, 0o700) })
 	locations, err := DiscoverEvidenceLocations(root)
 	if err != nil {
 		t.Fatalf("discover through search-only ancestor: %v", err)

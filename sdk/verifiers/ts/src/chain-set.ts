@@ -196,10 +196,7 @@ export function refuseSymlinkInEvidenceRootPath(root: string): void {
 // previously observed identity. A renamed parent cannot redirect later reads.
 // A search-only ancestor need not grant read access to open a directory handle.
 let evidenceDirectoryActive = false;
-export async function withPinnedEvidenceDirectory<T>(
-  root: string,
-  read: () => Promise<T>,
-): Promise<T> {
+function enterPinnedEvidenceDirectory(root: string): () => void {
   if (evidenceDirectoryActive)
     throw new Error("concurrent evidence directory reads are unsupported");
   evidenceDirectoryActive = true;
@@ -256,13 +253,43 @@ export async function withPinnedEvidenceDirectory<T>(
       }
       parents.push(entered);
     }
-    return await read();
-  } finally {
+  } catch (err) {
     try {
       process.chdir(original);
     } finally {
       evidenceDirectoryActive = false;
     }
+    throw err;
+  }
+  return () => {
+    try {
+      process.chdir(original);
+    } finally {
+      evidenceDirectoryActive = false;
+    }
+  };
+}
+
+// The one-shot CLI owns its process while verification awaits. A caller that
+// shares a process with other filesystem work must use the synchronous form.
+export async function withPinnedEvidenceDirectory<T>(
+  root: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  const leave = enterPinnedEvidenceDirectory(root);
+  try {
+    return await read();
+  } finally {
+    leave();
+  }
+}
+
+export function withPinnedEvidenceDirectorySync<T>(root: string, read: () => T): T {
+  const leave = enterPinnedEvidenceDirectory(root);
+  try {
+    return read();
+  } finally {
+    leave();
   }
 }
 

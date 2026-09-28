@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pipelock run` refuses `file_sentry.action: block` on the server listener.** That listener has no child process to stop, so block could only log. A reload asking for it is rejected atomically. Subprocess MCP mode and `action: warn` are unchanged. (#1452)
 - **Named agent policy follows bound identity only (Enterprise).** A per-agent listener or `source_cidrs` match selects the named profile. A self-declared `X-Pipelock-Agent` name is still recorded for attribution but gets the fallback policy, and its session state folds to the client IP so rotating names can't reset adaptive scoring. (#1461, #1530, #1578)
 - **A core build refuses a named-agent config in `pipelock check`,** so `contain install` can't swap a working enterprise binary for one that can't enforce its listeners. (#1629)
-- **External action grants must state `not_before`** and a validity window of at most five minutes, following the single-action lifetime in the OAuth Transaction Tokens BCP. Refusals carry `not_yet_valid` and `lifetime_exceeded`. (#1617)
 - **Each Pipelock process writes its own receipt chain.** Processes sharing one flight-recorder directory no longer fork a chain; a restart is recorded as a signed link naming the tail it continues. `verify-receipt --chain` and `evidence doctor` follow the links. Tools that read a single session file must read the run chains instead. (#1654)
 - **Activating the kill switch blocks held MCP approvals** that haven't started sending. A held call that previously forwarded after activation now resolves as blocked. (#1699)
 - **When MCP receipts are required, a request forwards only after its receipt is durably written.** A failed or unsupported receipt write now blocks the request. (#1696)
@@ -67,7 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Released Helm charts carry build provenance** bound to the pushed digest, verifiable with `gh attestation verify`. (#1685)
 - **License service:** a 60-day self-serve Enterprise trial tier, operator commands to inspect, resend and revoke trial access, a provider-backed `/ready` endpoint, a customer self-serve resend endpoint that is off unless enabled, and `license-service audit-summary`. Provider API calls pin a dated version. (#1456, #1538, #1599, #1631, #1678, #1690)
 - **Containment conformance fixtures can supply nft chain text** that runs through the same recognizer `contain verify` uses. (#1581)
-- **Signed references may declare `jcs-rfc8785-nfc` canonicalization.** (#1575)
 - **`whoami` reports identity provenance** (bound, self-declared or unknown) and resolves identity the way proxied traffic does. (#1591)
 
 ### Changed
@@ -77,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Identical blocked retries add threat score once,** and destination-scoped airlock transitions apply consistently and survive recorder replacement. `session reset` clears destination-scoped state. (#1531, #1534, #1607)
 - **Response scanning is faster on large bodies** without changing what it detects: patterns that can't match without a missing literal are skipped, the rest run in parallel, and a clean verdict for an identical body is cached per pattern set. (#1668, #1580)
 - **Response injection patterns for system prompts, persistence and credential concealment need directive phrasing,** so descriptive tool output passes while direct instructions still block. The core injection regex is one constant shared by the core floor, the defaults and every preset. (#1446, #1609)
-- **Browser Shield reads HTML the way a browser does.** It uses the HTML tokenizer, reads inline `style` with the CSS Syntax Level 3 algorithm, leaves JavaScript byte for byte, keeps interface markup in hidden application views, and stops breaking pages and bot checks. An intervention it can't record is refused. (#1616, #1641, #1666, #1682)
+- **Browser Shield reads HTML the way a browser does.** It uses the HTML tokenizer, reads inline `style` with the CSS Syntax Level 3 algorithm, leaves JavaScript byte for byte under every JavaScript media type RFC 9239 lists, keeps interface markup in hidden application views, and stops breaking pages and bot checks. An intervention it can't record is refused. (#1570, #1616, #1641, #1666, #1682)
 - **Response bodies are classified from their bytes,** so image pixels and opaque binary data don't match prose-only detections while image metadata, embedded text and UTF-16 text keep being scanned. (#1634)
 - **Compressed responses are decoded and scanned** instead of refused for gzip and deflate, every `Content-Encoding` value is read, and an encoding with no decoder still fails closed. (#1642, #1650)
 - **The fetch hidden-content surface is built from an HTML parse tree,** and executable JavaScript bodies are no longer scanned as hidden page text. (#1623)
@@ -90,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Host sets are canonicalized** (case, duplicates, trailing dots, IDNA) before policy hashing and matching. (#1460, #1569)
 - **Conductor followers** require a verifiable version before applying a bundle with a minimum version, restore and re-verify cached policy before serving, keep live and durable policy consistent, and bind rollback authorizations to their target stream without resetting the replay counter. (#1471, #1627, #1630, #1693)
 - **Receipt resume across a key change** trusts only a key this process loaded earlier in the same run. Final checkpoints survive shard rotation, and non-Rekor anchor proofs are verified before they're persisted. (#1535, #1577, #1687)
+- **The external action grant verifier's contract now requires `not_before` and caps a grant's lifetime at five minutes,** following the single-action lifetime in the OAuth Transaction Tokens BCP, and refuses with `not_yet_valid` or `lifetime_exceeded`. The signed references it checks may declare `jcs-rfc8785-nfc` canonicalization. No shipped configuration enables the verifier yet. (#1575, #1617)
 - **MCP startup is recorded.** Initialization and tool-list requests and the initialized notification record correlated outcomes, and a required recording failure stops forwarding. (#1467)
 - **Emitter and SIEM health snapshots** publish counters, degraded state and error details together. (#1481, #1484)
 - **Every dropped DLP finding is recorded** in `pipelock_dlp_dropped_matches_total` and a `dlp_warn` audit line. (#1458)

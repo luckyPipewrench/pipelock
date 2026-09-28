@@ -278,6 +278,38 @@ def _selected_by(selectors: dict[str, str], name: str) -> list[str]:
     return [shard for shard, selector in selectors.items() if selector_selects(selector, name)]
 
 
+def _go_split_regexp(pattern: str) -> list[list[str]]:
+    """Mirror testing.splitRegexp: alternatives of '/'-separated elements."""
+    alternatives: list[list[str]] = []
+    elements: list[str] = []
+    start = paren = bracket = 0
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\":
+            index += 2
+            continue
+        if bracket > 0:
+            if char == "]":
+                bracket -= 1
+        elif char == "[":
+            bracket += 1
+        elif char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+        elif paren == 0 and char in "/|":
+            elements.append(pattern[start:index])
+            start = index + 1
+            if char == "|":
+                alternatives.append(elements)
+                elements = []
+        index += 1
+    elements.append(pattern[start:])
+    alternatives.append(elements)
+    return alternatives
+
+
 class TestTestNameSplit(unittest.TestCase):
     NAMES = [f"Test{word}{index}" for word in ("Scan", "Proxy", "Fetch") for index in range(40)] + [
         "TestScan",
@@ -361,6 +393,18 @@ class TestTestNameSplit(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(re.search(pattern, name))
         self.assertNotIn("/", pattern)
+
+    def test_real_selectors_are_one_top_level_alternative(self) -> None:
+        # go test splits -run/-skip on '|' and '/' outside parentheses and
+        # brackets (splitRegexp in testing/match.go). A top-level '|' drops the
+        # anchors from each piece, so `^(?:TestA)|^(?:TestB)$` also runs
+        # TestAExtra. Every generated selector must stay one piece.
+        for shard in ("proxy-0", "proxy-1", "scanner-0", "scanner-1"):
+            with self.subTest(shard=shard):
+                pattern = shard_selector(shard).partition("=")[2]
+                self.assertEqual(_go_split_regexp(pattern), [[pattern]])
+        self.assertEqual(len(_go_split_regexp("^(?:TestA)|^(?:TestB)$")), 2)
+        self.assertEqual(_go_split_regexp("^(?:TestA)$/sub"), [["^(?:TestA)$", "sub"]])
 
     def test_prefix_collision_across_sub_shards_selects_each_once(self) -> None:
         names = ["TestScan", "TestScanTextForDLP"]

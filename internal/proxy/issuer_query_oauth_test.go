@@ -157,7 +157,6 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 		server   = "https://login.vendor.example"
 		callback = "https://app.vendor.example/auth/callback"
 	)
-	target := mustIssuerQueryURL(t, callback)
 	for _, tc := range []struct {
 		name        string
 		declaration *url.URL // request that declares; nil declares nothing
@@ -226,7 +225,9 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 			if tc.checkValue != "" {
 				value = tc.checkValue
 			}
-			kind, got := store.match(session, target, name, value)
+			// Check where the redirect would send the value, not only the
+			// declared callback, so a mismatched target cannot pass unseen.
+			kind, got := store.match(session, mustIssuerQueryURL(t, tc.location), name, value)
 			if got != tc.want {
 				t.Fatalf("allowed=%v, want %v", got, tc.want)
 			}

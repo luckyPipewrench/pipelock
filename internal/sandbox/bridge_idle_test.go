@@ -18,6 +18,12 @@ import (
 
 const testIdleTimeout = 150 * time.Millisecond
 
+// trafficIdleTimeout is the idle timeout for tests that keep a relay open with
+// steady traffic. Those tests fail if the scheduler stalls the sender for a
+// whole timeout, so they need far more slack than the close tests: a shared CI
+// runner can pause a goroutine for well over the 150 ms testIdleTimeout.
+const trafficIdleTimeout = time.Second
+
 // idleBridge starts a bridge with a short idle timeout in front of a parent
 // Unix listener. Accepted parent-side connections arrive on the channel.
 func idleBridge(t *testing.T, timeout time.Duration) (*BridgeProxy, <-chan net.Conn, context.CancelFunc) {
@@ -168,9 +174,10 @@ func TestBridgeIdle_StalledRelayIsClosed(t *testing.T) {
 	waitNoTrackedConns(t, bp, 3*time.Second)
 }
 
-// keepAlive sends a byte every tick for the given span, several idle timeouts
-// long, so only a shared activity clock keeps the relay open.
-func keepAlive(t *testing.T, from, to net.Conn, span time.Duration) {
+// keepAlive sends a byte every tenth of the idle timeout for three timeouts,
+// so only a shared activity clock keeps the relay open, and a sender stall must
+// last most of a timeout before the relay can close early.
+func keepAlive(t *testing.T, from, to net.Conn, timeout time.Duration) {
 	t.Helper()
 	readErr := make(chan error, 1)
 	go func() {
@@ -182,9 +189,9 @@ func keepAlive(t *testing.T, from, to net.Conn, span time.Duration) {
 			}
 		}
 	}()
-	ticker := time.NewTicker(testIdleTimeout / 4)
+	ticker := time.NewTicker(timeout / 10)
 	defer ticker.Stop()
-	end := time.After(span)
+	end := time.After(3 * timeout)
 	for {
 		select {
 		case <-end:
@@ -203,17 +210,17 @@ func keepAlive(t *testing.T, from, to net.Conn, span time.Duration) {
 }
 
 func TestBridgeIdle_ParentToAgentTrafficKeepsRelayOpen(t *testing.T) {
-	bp, accepted, _ := idleBridge(t, testIdleTimeout)
+	bp, accepted, _ := idleBridge(t, trafficIdleTimeout)
 	agent, parent := dialBridge(t, bp, accepted)
-	keepAlive(t, parent, agent, 5*testIdleTimeout)
+	keepAlive(t, parent, agent, trafficIdleTimeout)
 	expectOpen(t, agent, parent)
 	expectIdleCloseAfterTraffic(t, bp, agent, parent)
 }
 
 func TestBridgeIdle_AgentToParentTrafficKeepsRelayOpen(t *testing.T) {
-	bp, accepted, _ := idleBridge(t, testIdleTimeout)
+	bp, accepted, _ := idleBridge(t, trafficIdleTimeout)
 	agent, parent := dialBridge(t, bp, accepted)
-	keepAlive(t, agent, parent, 5*testIdleTimeout)
+	keepAlive(t, agent, parent, trafficIdleTimeout)
 	expectOpen(t, agent, parent)
 	expectIdleCloseAfterTraffic(t, bp, agent, parent)
 }

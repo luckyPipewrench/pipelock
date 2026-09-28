@@ -25,11 +25,23 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 		return nil, fmt.Errorf("resolve evidence root: %w", err)
 	}
 	anchor := filepath.VolumeName(root) + string(filepath.Separator)
+	parts := strings.Split(strings.TrimPrefix(root, anchor), string(filepath.Separator))
+	parts = append(parts, strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator))...)
+	remaining := 0
+	for _, part := range parts {
+		if part != "" && part != "." {
+			remaining++
+		}
+	}
 	pointer, err := windows.UTF16PtrFromString(anchor)
 	if err != nil {
 		return nil, err
 	}
-	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	access := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	if remaining == 0 {
+		access = windows.GENERIC_READ
+	}
+	handle, err := windows.CreateFile(pointer, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open evidence volume: %w", err)
 	}
@@ -45,13 +57,12 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 	// A full-path CreateFile can follow a replaced ancestor even with
 	// FILE_FLAG_OPEN_REPARSE_POINT. Walk root and location from the volume
 	// handle, rejecting every reparse point through openWindowsRelative.
-	parts := strings.Split(strings.TrimPrefix(root, anchor), string(filepath.Separator))
-	parts = append(parts, strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator))...)
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}
-		next, openErr := openWindowsRelative(current, part, true, filepath.Join(root, filepath.FromSlash(location.ID)))
+		remaining--
+		next, openErr := openWindowsRelative(current, part, true, remaining == 0, filepath.Join(root, filepath.FromSlash(location.ID)))
 		_ = current.Close()
 		if openErr != nil {
 			return nil, fmt.Errorf("open evidence location component %q: %w", part, openErr)
@@ -70,7 +81,7 @@ func openEvidenceLocationFile(location EvidenceLocation, name string) (*os.File,
 		return nil, nil, err
 	}
 	defer func() { _ = directory.Close() }()
-	file, err := openWindowsRelative(directory, name, false, filepath.Join(location.Dir, name))
+	file, err := openWindowsRelative(directory, name, false, true, filepath.Join(location.Dir, name))
 	if err != nil {
 		return nil, nil, fmt.Errorf("open evidence file %q: %w", name, err)
 	}
@@ -113,7 +124,7 @@ func validateWindowsHandle(file *os.File, wantDirectory bool) error {
 	return nil
 }
 
-func openWindowsRelative(parent *os.File, name string, directory bool, displayPath string) (*os.File, error) {
+func openWindowsRelative(parent *os.File, name string, directory, readAccess bool, displayPath string) (*os.File, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return nil, err
@@ -132,9 +143,13 @@ func openWindowsRelative(parent *os.File, name string, directory bool, displayPa
 	}
 	var handle windows.Handle
 	var status windows.IO_STATUS_BLOCK
+	access := uint32(windows.FILE_TRAVERSE | windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE)
+	if readAccess {
+		access = windows.FILE_GENERIC_READ
+	}
 	err = windows.NtCreateFile(
 		&handle,
-		windows.FILE_GENERIC_READ,
+		access,
 		&attributes,
 		&status,
 		nil,

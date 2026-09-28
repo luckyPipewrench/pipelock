@@ -15,15 +15,7 @@
 // records carry the same run_nonce are reported (finding duplicate_run_nonce),
 // because a process run writes exactly one chain.
 
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readdirSync,
-  statSync,
-} from "node:fs";
+import { lstatSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
@@ -200,9 +192,9 @@ export function refuseSymlinkInEvidenceRootPath(root: string): void {
 }
 
 // Directory mode runs in one CLI process. Enter each component from the
-// kernel-held working directory, then compare the entered directory with the
-// handle opened before chdir. A renamed parent cannot redirect later reads.
-// This also works on platforms where Node does not expose openat.
+// kernel-held working directory, then compare the entered directory with its
+// previously observed identity. A renamed parent cannot redirect later reads.
+// A search-only ancestor need not grant read access to open a directory handle.
 let evidenceDirectoryActive = false;
 export async function withPinnedEvidenceDirectory<T>(
   root: string,
@@ -212,44 +204,35 @@ export async function withPinnedEvidenceDirectory<T>(
     throw new Error("concurrent evidence directory reads are unsupported");
   evidenceDirectoryActive = true;
   const original = process.cwd();
-  const directoryFlags =
-    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
-  const parents: number[] = [];
+  const parents: { dev: bigint; ino: bigint }[] = [];
   try {
     const parsed = path.parse(root);
     if (parsed.root !== "") process.chdir(parsed.root);
-    parents.push(openSync(".", directoryFlags));
+    parents.push(statSync(".", { bigint: true }));
     const separators = path.sep === "\\" ? /[\\/]/u : /\//u;
     for (const component of root.slice(parsed.root.length).split(separators)) {
       if (component === "" || component === ".") continue;
       if (component === "..") {
-        // Keep the selected parent open while climbing. A rename can move the
+        // Compare the selected parent after climbing. A rename can move the
         // current child under a different parent between these two steps.
         const initialParent = parents.length === 1;
         const expected = initialParent
-          ? openSync("..", directoryFlags)
-          : (parents[parents.length - 2] as number);
-        try {
-          process.chdir("..");
-          const pinned = fstatSync(expected, { bigint: true });
-          const entered = statSync(".", { bigint: true });
-          if (
-            !entered.isDirectory() ||
-            entered.dev !== pinned.dev ||
-            entered.ino !== pinned.ino ||
-            entered.ino === 0n
-          ) {
-            throw new EvidenceRefusedError("evidence root parent changed while entering");
-          }
-          if (initialParent) {
-            closeSync(parents[0] as number);
-            parents[0] = expected;
-          } else {
-            closeSync(parents[parents.length - 1] as number);
-            parents.pop();
-          }
-        } finally {
-          if (initialParent && parents[0] !== expected) closeSync(expected);
+          ? statSync("..", { bigint: true })
+          : (parents[parents.length - 2] as { dev: bigint; ino: bigint });
+        process.chdir("..");
+        const entered = statSync(".", { bigint: true });
+        if (
+          !entered.isDirectory() ||
+          entered.dev !== expected.dev ||
+          entered.ino !== expected.ino ||
+          entered.ino === 0n
+        ) {
+          throw new EvidenceRefusedError("evidence root parent changed while entering");
+        }
+        if (initialParent) {
+          parents[0] = expected;
+        } else {
+          parents.pop();
         }
         continue;
       }
@@ -259,43 +242,26 @@ export async function withPinnedEvidenceDirectory<T>(
       }
       if (!before.isDirectory())
         throw new Error(`evidence root component "${component}" is not a directory`);
-      const fd = openSync(component, directoryFlags);
-      let retained = false;
-      try {
-        const opened = fstatSync(fd, { bigint: true });
-        if (
-          !opened.isDirectory() ||
-          opened.dev !== before.dev ||
-          opened.ino !== before.ino ||
-          opened.ino === 0n
-        ) {
-          throw new EvidenceRefusedError(
-            `evidence root component changed while opening: "${component}"`,
-          );
-        }
-        process.chdir(component);
-        const entered = statSync(".", { bigint: true });
-        if (entered.dev !== opened.dev || entered.ino !== opened.ino) {
-          throw new EvidenceRefusedError(
-            `evidence root component changed while entering: "${component}"`,
-          );
-        }
-        parents.push(fd);
-        retained = true;
-      } finally {
-        if (!retained) closeSync(fd);
+      process.chdir(component);
+      const entered = statSync(".", { bigint: true });
+      if (
+        !entered.isDirectory() ||
+        entered.dev !== before.dev ||
+        entered.ino !== before.ino ||
+        entered.ino === 0n
+      ) {
+        throw new EvidenceRefusedError(
+          `evidence root component changed while entering: "${component}"`,
+        );
       }
+      parents.push(entered);
     }
     return await read();
   } finally {
     try {
-      for (const fd of parents) closeSync(fd);
+      process.chdir(original);
     } finally {
-      try {
-        process.chdir(original);
-      } finally {
-        evidenceDirectoryActive = false;
-      }
+      evidenceDirectoryActive = false;
     }
   }
 }

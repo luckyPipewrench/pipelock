@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -70,6 +71,29 @@ test("directory child read refuses a symlink", async (t) => {
       assert.throws(() => readVerifierBytes("evidence.jsonl", true), /refuse symlink/u);
     });
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("directory reads through a search-only ancestor", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("requires Unix directory permissions for a non-root user");
+    return;
+  }
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-search-only-"));
+  const ancestor = join(base, "search-only");
+  const root = join(ancestor, "evidence");
+  mkdirSync(ancestor);
+  mkdirSync(root);
+  writeFileSync(join(root, "evidence.jsonl"), "inside");
+  chmodSync(ancestor, 0o111);
+  try {
+    const result = await withPinnedEvidenceDirectory(root, async () =>
+      readVerifierBytes("evidence.jsonl", true).toString(),
+    );
+    assert.equal(result, "inside");
+  } finally {
+    chmodSync(ancestor, 0o700);
     rmSync(base, { recursive: true, force: true });
   }
 });

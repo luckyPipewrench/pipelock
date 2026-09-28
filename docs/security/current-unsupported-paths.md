@@ -30,7 +30,7 @@ MCP servers spoken to over a child-process stdio pipe are not on the network. Pi
 
 ### First-party installer coverage of a remote MCP server's `headers` block
 
-The installers above are not uniform in how they carry a remote (`url`-based) MCP server's HTTP headers, such as an `Authorization` header, through the rewrite. This table is the executable contract enforced by `internal/cli/setup/host_capabilities_test.go`; a mismatch between this table and the installer's actual behavior fails that test.
+The installers above are not uniform in how they carry a remote (`url`-based) MCP server's HTTP headers, such as an `Authorization` header, through the rewrite. The installer declarations in `internal/cli/setup/host_capabilities.go` are the source of truth, and `host_capabilities_test.go` fails when an installer's behavior drifts from its declaration. The test does not read this table, so this table must be kept in step with those declarations by hand.
 
 | Host | Headers | Env vars (stdio server) |
 |---|---|---|
@@ -39,7 +39,7 @@ The installers above are not uniform in how they carry a remote (`url`-based) MC
 | Zed | Same as VS Code (shares the same wrap function). | Same as VS Code. |
 | OpenCode | Same sidecar mechanism as VS Code. | Same as VS Code. |
 | JetBrains | Rejected: a remote server with a `headers` block is skipped with a warning rather than wrapped, because this installer has no sidecar mechanism. | Same as VS Code. |
-| Continue | **Not rejected and not moved to a sidecar.** The `headers` field is copied verbatim into the rewritten `config.yaml` entry, but the generated wrapped command never reads it, so the header rides through looking preserved while being inert once Pipelock's proxy is in the loop. Treat any credential in a Continue remote server's `headers` block as unprotected until this changes. | Same as VS Code. |
+| Continue | Rejected: a remote server with a nonempty `headers` block is refused before any config file is written, including a `headers` field left on an entry an older installer already wrapped. Wrap it by hand with `pipelock mcp proxy --upstream <url> --header-file <path>`. | Same as VS Code. |
 | Codex | Rejected: a remote server with HTTP auth/header settings is left un-wrapped (`codex mcp add` has no header passthrough). | The literal value is written into the `codex mcp add --env KEY=VALUE` invocation, because Codex's own storage is not a config file Pipelock rewrites — it is reached only through that CLI call. |
 
 ## Cluster MCP clients that ignore the launcher contract

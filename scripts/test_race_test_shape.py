@@ -107,6 +107,8 @@ def ci_race_shape_errors(ci: str) -> list[str]:
             direct_count
             and '-p="$package_parallelism" -parallel=2' in job
             and "-timeout=20m -count=1" in job
+            and 'ci_test_packages.py --shard "$TEST_SHARD" --selector' in job
+            and '${test_selector:+"$test_selector"}' in job
         ):
             inline.append(name)
         else:
@@ -263,6 +265,22 @@ class TestRaceTestShape(unittest.TestCase):
     def test_ci_keeps_the_same_race_shape_until_it_delegates_to_the_runner(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
         self.assertEqual(ci_race_shape_errors(ci), [])
+
+    def test_dropping_the_shard_selector_fails_the_contract(self) -> None:
+        # Sub-shard package lists are identical. Without the selector each
+        # sub-shard runs the whole tree, so the split silently doubles work
+        # and the release partition check still passes: it builds its own
+        # selectors and never reads this command line.
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        first_producer = "test-oss-go126" if "  test-oss-go126:\n" in ci else "test-oss"
+        original_job = job_block(ci, first_producer)
+        dropped = original_job.replace('${test_selector:+"$test_selector"}', "")
+        self.assertNotEqual(dropped, original_job)
+        drifted = ci.replace(original_job, dropped, 1)
+        self.assertIn(
+            f"CI race jobs drifted from shared shape: ['{first_producer}']",
+            ci_race_shape_errors(drifted),
+        )
 
     def test_one_drifted_ci_race_job_fails_the_contract(self) -> None:
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")

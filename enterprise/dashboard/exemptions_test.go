@@ -243,13 +243,15 @@ func TestExemptions_EnumeratesConfiguredKnobFamiliesAndJoinsFindings(t *testing.
 	if inventory.ConfiguredCount != 30 {
 		t.Fatalf("ConfiguredCount = %d, want 30; entries=%+v", inventory.ConfiguredCount, inventory.Entries)
 	}
-	if inventory.InertCount != 7 {
-		t.Fatalf("InertCount = %d, want 7", inventory.InertCount)
+	// A response exempt_domains entry with response scanning off is advisory,
+	// not inert: it still downgrades core response findings on that host.
+	if inventory.InertCount != 6 {
+		t.Fatalf("InertCount = %d, want 6", inventory.InertCount)
 	}
 	if inventory.MisdirectedCount != 0 {
 		t.Fatalf("MisdirectedCount = %d, want 0", inventory.MisdirectedCount)
 	}
-	assertEntryState(t, inventory, "response_scanning.exempt_domains", "responses.vendor.example", ExemptionStateInert)
+	assertEntryState(t, inventory, "response_scanning.exempt_domains", "responses.vendor.example", ExemptionStateActive)
 	assertEntryState(t, inventory, "adaptive_enforcement.exempt_domains", "adaptive.vendor.example", ExemptionStateInert)
 	assertEntryState(t, inventory, "cross_request_detection.entropy_budget.exempt_domains", "entropy.vendor.example", ExemptionStateInert)
 	assertEntryState(t, inventory, "browser_shield.exempt_domains", "browser.vendor.example", ExemptionStateInert)
@@ -604,7 +606,7 @@ func TestHandler_ExemptionsLongOpaqueValuesUseOverflowGuards(t *testing.T) {
 	longInertDomain := "responses-" + strings.Repeat("0123456789abcdef", 16) + ".vendor.example\"><script>alert(1)</script>"
 	longRule := "dlp_" + strings.Repeat("0123456789abcdef", 16)
 	cfg := &config.Config{
-		ResponseScanning: config.ResponseScanning{
+		AdaptiveEnforcement: config.AdaptiveEnforcement{
 			Enabled:       false,
 			ExemptDomains: []string{longInertDomain},
 		},
@@ -622,7 +624,7 @@ func TestHandler_ExemptionsLongOpaqueValuesUseOverflowGuards(t *testing.T) {
 		`<div class="opaque-cell"><span class="opaque-value">` + escapedGlob + `</span></div>`,
 		`<div class="dim mono opaque-cell"><span class="opaque-value">` + escapedInertDomain + `</span></div>`,
 		`<span class="mono opaque-cell"><span class="opaque-value">` + longRule + `</span></span>`,
-		`<td class="mono knob-cell" title="` + diag.ConfigScopeResponseExemptDomains + `"><div class="opaque-cell"><span class="opaque-value">` + diag.ConfigScopeResponseExemptDomains + `</span></div></td>`,
+		`<td class="mono knob-cell" title="` + diag.ConfigScopeAdaptiveExemptDomains + `"><div class="opaque-cell"><span class="opaque-value">` + diag.ConfigScopeAdaptiveExemptDomains + `</span></div></td>`,
 		`.knob-cell .opaque-value { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; overflow-wrap: normal; }`,
 		`word-break: break-all`,
 		`overflow-x: auto`,

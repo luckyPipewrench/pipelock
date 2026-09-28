@@ -264,6 +264,79 @@ func TestStepGrantEvidenceACLs_UndoKeepsPreexistingGrant(t *testing.T) {
 	})
 }
 
+func TestStepGrantEvidenceACLs_RollbackRestoresPartialPriorInventory(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	priorDir := filepath.Join(env.dataDir, "older-evidence")
+	missingPriorDir := filepath.Join(env.dataDir, "removed-evidence")
+	if err := os.MkdirAll(priorDir, modeDirPrivate); err != nil {
+		t.Fatal(err)
+	}
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: []string{env.logsDir(), priorDir, missingPriorDir}}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	priorBytes, err := os.ReadFile(env.evidenceACLInvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || !slices.Contains(current.Dirs, priorDir) || !slices.Contains(current.Dirs, env.recorderDir()) {
+		t.Fatalf("successful install discarded earlier inventory: %+v, %v", current, err)
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	restored, err := os.ReadFile(env.evidenceACLInvPath)
+	if err != nil || string(restored) != string(priorBytes) {
+		t.Fatalf("prior inventory after rollback = %q, %v; want %q", restored, err, priorBytes)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+priorDir) {
+		t.Fatalf("rollback did not restore prior ACL: %+v", runner.calls)
+	}
+}
+
+func TestStepGrantEvidenceACLs_OperatorRotationRestoresPriorOnRollback(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || current.Operator != "operator2" {
+		t.Fatalf("current inventory = %+v, %v", current, err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not revoked: %+v", runner.calls)
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := loadEvidenceACLInventory(env)
+	if err != nil || restored.Operator != prior.Operator || !slices.Equal(restored.Dirs, prior.Dirs) {
+		t.Fatalf("restored inventory = %+v, %v", restored, err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not restored: %+v", runner.calls)
+	}
+}
+
 // TestStepGrantEvidenceACLs_FailClosedOnUnresolvedOperator proves the ACL step
 // is skipped (no setfacl, no group/world fallback) when the operator user
 // cannot be resolved.

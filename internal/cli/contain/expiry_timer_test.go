@@ -351,12 +351,19 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 				}
 			}
 			timer := filepath.Base(env.nftExpiryTimerPath)
-			enable := "enable " + timer
+			persistentEnable := "enable " + timer
+			runtimeEnable := "enable --runtime " + timer
+			enable := persistentEnable
+			otherEnable := runtimeEnable
 			if tc.runtimeOnly {
-				enable = "enable --runtime " + timer
+				enable = runtimeEnable
+				otherEnable = persistentEnable
 			}
 			if got := runnerCalled(runner, enable); got != tc.enabled {
 				t.Errorf("enable restored = %v, want %v: %+v", got, tc.enabled, runner.calls)
+			}
+			if runnerCalled(runner, otherEnable) {
+				t.Errorf("rollback also used unrecorded enable mode %q: %+v", otherEnable, runner.calls)
 			}
 			if got := runnerCalled(runner, "start "+timer); got != tc.active {
 				t.Errorf("start restored = %v, want %v: %+v", got, tc.active, runner.calls)

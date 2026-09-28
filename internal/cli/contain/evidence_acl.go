@@ -129,22 +129,39 @@ func evidenceACLRevokeCommands(operator, dataDir string, dirs []string) []worksp
 // stepGrantEvidenceACLs is the install step that grants the resolved operator
 // user a durable read+traverse ACL on the evidence dirs. It runs after the data
 // dir is created and chowned to pipelock-proxy. Idempotent: re-running
-// re-asserts the same ACL and rewrites the same inventory.
+// re-asserts the same ACL and preserves any existing inventory entries.
 func stepGrantEvidenceACLs() step {
 	// granted is the grant this attempt started applying, kept in memory so
 	// undo can revoke it even when the on-disk inventory was never written.
 	var granted *evidenceACLInventory
 	inventoryWritten := false
+	var priorInventory evidenceACLInventory
+	priorInventoryExisted := false
 	return step{
 		name: "grant-evidence-acls",
 		desc: "grant operator read+traverse ACL on logs + recorder evidence dirs",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			granted = nil
 			inventoryWritten = false
+			priorInventory = evidenceACLInventory{}
+			priorInventoryExisted = false
 			operator, ok := resolveEvidenceOperator(env)
 			if !ok {
 				// FAIL CLOSED: never fall back to a group or world grant.
 				return false, nil
+			}
+			if info, err := env.lstat(env.evidenceACLInvPath); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return false, fmt.Errorf("evidence ACL inventory %s is a symlink", env.evidenceACLInvPath)
+				}
+				priorInventoryExisted = true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("stat evidence ACL inventory %s: %w", env.evidenceACLInvPath, err)
+			}
+			var err error
+			priorInventory, err = loadEvidenceACLInventory(env)
+			if err != nil {
+				return false, err
 			}
 
 			dirs := env.evidenceACLDirs()
@@ -170,7 +187,7 @@ func stepGrantEvidenceACLs() step {
 			// A reinstall re-asserts a grant that already exists. Remember that,
 			// so a rollback of this install does not strip operator access the
 			// host had before it started.
-			env.evidenceACLPreexisting = evidenceACLInventoryCovers(env, operator, dirs)
+			env.evidenceACLPreexisting = evidenceACLInventoryValueCovers(priorInventory, operator, dirs)
 			commands := evidenceACLCommands(operator, env.dataDir, dirs)
 			// From here on some ACLs may be applied, so every error reports
 			// applied and undo revokes the grant.
@@ -178,7 +195,19 @@ func stepGrantEvidenceACLs() step {
 			if err := runWorkspaceCommands(ctx, env, commands); err != nil {
 				return true, fmt.Errorf("apply operator evidence ACL: %w", err)
 			}
-			if err := writeEvidenceACLInventory(env, *granted); err != nil {
+			if priorInventory.Operator != "" && priorInventory.Operator != operator {
+				if err := revokeEvidenceACLDirs(ctx, env, priorInventory); err != nil {
+					return true, fmt.Errorf("revoke prior operator evidence ACL: %w", err)
+				}
+			}
+			if env.evidenceACLPreexisting {
+				return true, nil
+			}
+			inventory := *granted
+			if priorInventory.Operator == operator {
+				inventory.Dirs = append(append([]string{}, priorInventory.Dirs...), dirs...)
+			}
+			if err := writeEvidenceACLInventory(env, inventory); err != nil {
 				return true, fmt.Errorf("record evidence ACL inventory: %w", err)
 			}
 			inventoryWritten = true
@@ -188,12 +217,39 @@ func stepGrantEvidenceACLs() step {
 			if env.evidenceACLPreexisting {
 				return nil
 			}
-			if granted == nil || inventoryWritten {
-				return revokeEvidenceACLs(ctx, env, false)
+			if granted == nil {
+				return nil
 			}
-			// The inventory write failed, so revoke from the in-memory grant
-			// and leave any earlier inventory file as it was.
-			return revokeEvidenceACLDirs(ctx, env, *granted)
+			if err := revokeEvidenceACLDirs(ctx, env, *granted); err != nil {
+				return err
+			}
+			if priorInventory.Operator != "" && len(priorInventory.Dirs) > 0 {
+				var existingDirs []string
+				for _, dir := range priorInventory.Dirs {
+					if _, err := env.stat(dir); err == nil {
+						existingDirs = append(existingDirs, dir)
+					} else if !errors.Is(err, os.ErrNotExist) {
+						return fmt.Errorf("stat prior evidence dir %s: %w", dir, err)
+					}
+				}
+				if len(existingDirs) > 0 {
+					if err := runWorkspaceCommands(ctx, env, evidenceACLCommands(priorInventory.Operator, env.dataDir, existingDirs)); err != nil {
+						return fmt.Errorf("restore prior evidence ACLs: %w", err)
+					}
+				}
+			}
+			if !inventoryWritten {
+				// backupAndWrite restored a failed write inline (or recorded it
+				// for retry), so there is no successful inventory to undo here.
+				return nil
+			}
+			if priorInventoryExisted {
+				return restoreBackup(env, env.evidenceACLInvPath)
+			}
+			if err := env.removeFile(env.evidenceACLInvPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove evidence ACL inventory: %w", err)
+			}
+			return nil
 		},
 	}
 }
@@ -203,7 +259,14 @@ func stepGrantEvidenceACLs() step {
 // counts as not covered, so rollback revokes what this install applied.
 func evidenceACLInventoryCovers(env *installEnv, operator string, dirs []string) bool {
 	inv, err := loadEvidenceACLInventory(env)
-	if err != nil || inv.Operator != operator {
+	if err != nil {
+		return false
+	}
+	return evidenceACLInventoryValueCovers(inv, operator, dirs)
+}
+
+func evidenceACLInventoryValueCovers(inv evidenceACLInventory, operator string, dirs []string) bool {
+	if inv.Operator != operator {
 		return false
 	}
 	for _, dir := range dirs {

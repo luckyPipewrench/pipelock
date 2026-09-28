@@ -49,16 +49,21 @@ test("directory reads stay on the entered directory after its name is replaced",
   }
 });
 
-test("directory child read refuses a symlink", async () => {
+test("directory child read refuses a symlink", async (t) => {
   const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-pinned-link-"));
   const root = join(base, "root");
   mkdirSync(root);
   writeFileSync(join(base, "outside"), "outside");
   try {
-    symlinkSync(join(base, "outside"), join(root, "evidence.jsonl"));
-  } catch {
+    symlinkSync(join(base, "outside"), join(root, "evidence.jsonl"), "file");
+  } catch (err) {
     rmSync(base, { recursive: true, force: true });
-    return;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
+      t.skip("file symlinks unavailable");
+      return;
+    }
+    throw err;
   }
   try {
     await withPinnedEvidenceDirectory(root, async () => {

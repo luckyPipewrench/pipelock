@@ -194,6 +194,14 @@ func refuseSymlinkInWalkedRootPath(root string) error {
 			return fmt.Errorf("resolve evidence root: %w", err)
 		}
 		raw = driveWD + string(filepath.Separator) + raw[len(volume):]
+	} else if len(raw) > 0 && os.IsPathSeparator(raw[0]) && !filepath.IsAbs(raw) {
+		// A Windows path rooted at a separator uses the current volume's root.
+		// Resolve only that root; cleaning the full path would hide link/...
+		volumeRoot, err := filepath.Abs(string(filepath.Separator))
+		if err != nil {
+			return fmt.Errorf("resolve evidence root: %w", err)
+		}
+		raw = volumeRoot + raw[1:]
 	} else if !filepath.IsAbs(raw) {
 		wd, err := os.Getwd()
 		if err != nil {

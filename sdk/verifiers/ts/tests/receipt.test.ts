@@ -52,7 +52,7 @@ test("receipt command accepts a valid Go-generated receipt", async () => {
   assert.match(report.error ?? "", /UNPINNED/u);
 });
 
-test("single receipt paths resolve symlinks before parent traversal", async () => {
+test("single receipt paths resolve symlinks before parent traversal", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "receipt-path-"));
   try {
     const a = join(dir, "a");
@@ -63,7 +63,16 @@ test("single receipt paths resolve symlinks before parent traversal", async () =
     const pathA = join(a, "receipt.json");
     const pathB = join(b, "receipt.json");
     const link = join(a, "link");
-    symlinkSync(join(b, "sub"), link);
+    try {
+      symlinkSync(join(b, "sub"), link, "dir");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
+        t.skip("directory symlinks unavailable");
+        return;
+      }
+      throw err;
+    }
     const input = `${link}/../receipt.json`;
     for (const { aData, bData, wantOK } of [
       { aData: valid, bData: Buffer.from("not-json\n"), wantOK: false },

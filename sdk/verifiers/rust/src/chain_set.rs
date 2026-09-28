@@ -410,10 +410,21 @@ fn enter_pinned_parent(expected: &fs::File) -> VerifierResult<fs::File> {
 fn open_pinned_directory(path: &Path) -> VerifierResult<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
+    // These handles establish directory identity; only the final cwd needs
+    // read permission for indexing. Ancestors may grant search only.
+    #[cfg(target_os = "linux")]
+    options.custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW);
+    #[cfg(target_os = "macos")]
+    options.custom_flags(libc::O_SEARCH | libc::O_NOFOLLOW);
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
     options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
     #[cfg(windows)]
-    options.custom_flags(0x0200_0000 | 0x0020_0000); // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    {
+        // Access mode 0 permits metadata queries without directory listing.
+        options
+            .access_mode(0)
+            .custom_flags(0x0200_0000 | 0x0020_0000); // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    }
     let file = options
         .open(path)
         .map_err(|err| VerifierError::Runtime(format!("open evidence directory: {err}")))?;
@@ -434,6 +445,7 @@ mod pinned_directory_tests {
     use crate::util::{read_verifier_bytes, same_open_file};
     use std::fs;
     use std::os::unix::fs::symlink;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
 
@@ -526,6 +538,42 @@ mod pinned_directory_tests {
         );
         std::env::set_current_dir(&base).expect("leave alternate parent");
         fs::remove_dir_all(&base).expect("remove test base");
+    }
+
+    #[test]
+    fn traverse_only_ancestor_allows_evidence_read() {
+        if std::env::var_os("PIPELOCK_TRAVERSE_ONLY_CHILD").is_none() {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .arg("--exact")
+                .arg("chain_set::pinned_directory_tests::traverse_only_ancestor_allows_evidence_read")
+                .env("PIPELOCK_TRAVERSE_ONLY_CHILD", "1")
+                .output()
+                .expect("start isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let base = fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp dir")
+            .join(format!("pipelock-traverse-only-{}", std::process::id()));
+        let ancestor = base.join("search-only");
+        let root = ancestor.join("evidence");
+        fs::create_dir_all(&root).expect("create evidence root");
+        fs::write(root.join("evidence.jsonl"), b"inside").expect("write evidence");
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o100))
+            .expect("remove ancestor read permission");
+        let result = with_pinned_evidence_directory(&root, || {
+            assert_eq!(read_verifier_bytes(Path::new("evidence.jsonl"))?, b"inside");
+            Ok(())
+        });
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o700))
+            .expect("restore ancestor permissions");
+        fs::remove_dir_all(&base).expect("remove test base");
+        result.expect("traverse-only ancestor");
     }
 }
 

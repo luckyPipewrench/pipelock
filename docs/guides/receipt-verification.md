@@ -169,8 +169,6 @@ trusted key:
 
 The `evidence-proxy-0.jsonl` filenames in the historical examples below are legacy samples. A current process writes `evidence-proxy.run.<id>-0.jsonl`. A file argument checks only that shard; use `--chain DIR --session proxy.run.<id>` to check every shard of one run, or omit `--session` to check every run and link in the directory.
 
-A file argument, including a `--key` or `--rotation-endorsement` file, is read as the operating system opens it, following any symlink before a `..` that comes after it. A `--chain DIR` argument can't be a symlink or pass through one, even when a later `..` cancels it lexically; such a directory is refused rather than verified, and `pipelock-verifier chain --dir` and the TypeScript and Rust verifiers apply the same rule. A relative directory is resolved from the physical working directory, so a shell that entered its directory through a symlink is not refused for it.
-
 ```bash
 pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
 ```

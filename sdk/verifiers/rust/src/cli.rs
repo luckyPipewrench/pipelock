@@ -6,7 +6,8 @@ use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
     chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
     refuse_symlink_in_evidence_root_path, resolve_base_sessions, run_session_base, verify_base,
-    BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
+    with_pinned_evidence_directory, BaseVerifyOptions, SessionReadError,
+    FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
@@ -268,6 +269,16 @@ fn load_endorsements(
     allow_unpinned: bool,
     key_hex: &str,
 ) -> Result<Vec<RotationEndorsement>> {
+    check_endorsement_usage(paths, allow_unpinned, key_hex)?;
+    paths
+        .iter()
+        .map(|path| load_rotation_endorsement_file(&PathBuf::from(path)))
+        .collect()
+}
+
+/// Usage errors outrank path resolution, so a bad flag combination reports
+/// the same exit status whether or not the endorsement file exists.
+fn check_endorsement_usage(paths: &[String], allow_unpinned: bool, key_hex: &str) -> Result<()> {
     if !paths.is_empty() && allow_unpinned {
         return Err(VerifierError::Usage(
             "--rotation-endorsement cannot be combined with --allow-unpinned".to_string(),
@@ -278,10 +289,7 @@ fn load_endorsements(
             "--rotation-endorsement requires --key: an endorsement is authority only under a trusted root key".to_string(),
         ));
     }
-    paths
-        .iter()
-        .map(|path| load_rotation_endorsement_file(&PathBuf::from(path)))
-        .collect()
+    Ok(())
 }
 
 /// Verifies chains of `base` in `dir` and the base's restart continuity,
@@ -293,6 +301,7 @@ fn load_endorsements(
 /// predecessor's tail, a second successor, a replayed copy of it).
 fn run_chain_set_command(
     dir: &Path,
+    display_dir: &Path,
     base: &str,
     key_hex: &str,
     parsed: &ParsedArgs,
@@ -322,7 +331,7 @@ fn run_chain_set_command(
         })?;
     let mut chains = Vec::new();
     for session in targets.as_ref().unwrap_or(&sessions) {
-        let label = format!("{} (session {session})", dir.display());
+        let label = format!("{} (session {session})", display_dir.display());
         let (keys, own) = chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
         let chain = match read_session_receipts(dir, session) {
             Ok((action, evidence)) => typed_chain_report(
@@ -346,7 +355,7 @@ fn run_chain_set_command(
     }
     let healthy = base_report.healthy();
     let report = ChainSetReport {
-        path: dir.display().to_string(),
+        path: display_dir.display().to_string(),
         base: base.to_string(),
         valid: healthy && chains.iter().all(|c| c.report.valid),
         chains,
@@ -402,7 +411,11 @@ fn run_chain_set_command(
                     .join(", ")
             ));
         }
-        report_failure(&format!("{}: {}", dir.display(), reasons.join("; ")));
+        report_failure(&format!(
+            "{}: {}",
+            display_dir.display(),
+            reasons.join("; ")
+        ));
     }
     Ok(if report.valid { 0 } else { 1 })
 }
@@ -456,7 +469,7 @@ fn resolve_signer_keys(values: &[String]) -> Result<String> {
 }
 
 fn run_chain_command(args: &[String]) -> Result<i32> {
-    let parsed = parse_args(args, "chain")?;
+    let mut parsed = parse_args(args, "chain")?;
     let target = require_one_arg(&parsed.positionals, "chain")?;
     let key_hex = resolve_signer_keys(&parsed.keys)?;
     let clean = PathBuf::from(target);
@@ -478,14 +491,45 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
                 )))
             }
         }
+        // Endorsements are read after the working directory is pinned, so
+        // resolve them against the operator's directory first.
+        check_endorsement_usage(
+            &parsed.rotation_endorsements,
+            parsed.allow_unpinned,
+            &key_hex,
+        )?;
+        parsed.rotation_endorsements = parsed
+            .rotation_endorsements
+            .iter()
+            .map(|p| {
+                fs::canonicalize(p)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|err| {
+                        VerifierError::Runtime(format!("resolve rotation endorsement {p}: {err}"))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return with_pinned_evidence_directory(&clean, || {
+            run_chain_at(Path::new("."), &clean, target, &parsed, &key_hex)
+        });
     }
+    run_chain_at(&clean, &clean, target, &parsed, &key_hex)
+}
+
+fn run_chain_at(
+    clean: &Path,
+    display: &Path,
+    target: &str,
+    parsed: &ParsedArgs,
+    key_hex: &str,
+) -> Result<i32> {
     // A directory whose base has per-run chains is verified as a base, as the
     // Go reference does: the base of a run session is its prefix, and any
     // other session is its own base. Without --session-id every chain of the
     // base is verified; with it only that chain, plus the whole-base checks.
     if parsed.dir {
         let base = run_session_base(&parsed.session_id).unwrap_or(&parsed.session_id);
-        let has_runs = resolve_base_sessions(&clean, base)
+        let has_runs = resolve_base_sessions(clean, base)
             .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?
             .iter()
             .any(|s| run_session_base(s).is_some());
@@ -493,18 +537,18 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
             let targets = parsed
                 .session_explicit
                 .then(|| vec![parsed.session_id.clone()]);
-            return run_chain_set_command(&clean, base, &key_hex, &parsed, targets);
+            return run_chain_set_command(clean, display, base, key_hex, parsed, targets);
         }
     }
     let label = if parsed.dir {
-        format!("{} (session {})", clean.display(), parsed.session_id)
+        format!("{} (session {})", display.display(), parsed.session_id)
     } else {
         clean.display().to_string()
     };
     let read = if parsed.dir {
-        read_session_evidence(&clean, &parsed.session_id)
+        read_session_evidence(clean, &parsed.session_id)
     } else {
-        if fs::metadata(&clean)
+        if fs::metadata(clean)
             .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", clean.display())))?
             .is_dir()
         {
@@ -514,7 +558,7 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         }
         // A file named on the command line is read as given, even through a
         // symlink: the operator chose it.
-        read_file_evidence(&clean)
+        read_file_evidence(clean)
     };
     let (outer, typed) = match read {
         Ok(read) => read,
@@ -535,19 +579,19 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
     };
 
     if typed.action.is_empty() && typed.evidence.is_empty() {
-        let report = chain_report_for(label, &[], &key_hex, false, &[], &parsed.session_id);
+        let report = chain_report_for(label, &[], key_hex, false, &[], &parsed.session_id);
         return emit_chain_result(&with_recorder_chain(report, outer), parsed.json);
     }
 
     let endorsements = load_endorsements(
         &parsed.rotation_endorsements,
         parsed.allow_unpinned,
-        &key_hex,
+        key_hex,
     )?;
     let report = typed_chain_report(
         label,
         typed,
-        &key_hex,
+        key_hex,
         parsed.allow_unpinned,
         &endorsements,
         &parsed.session_id,

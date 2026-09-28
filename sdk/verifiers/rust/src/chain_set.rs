@@ -27,12 +27,20 @@ use crate::rotation::{
     RotationEndorsement,
 };
 use crate::types::{ChainResult, Receipt};
-use crate::util::{read_verifier_bytes, reject_duplicate_keys, string_at, u64_at};
+use crate::util::{
+    read_verifier_bytes, reject_duplicate_keys, same_open_file, set_pinned_evidence_directory,
+    string_at, u64_at, Result as VerifierResult, VerifierError,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 pub const FINDING_CORRUPT_CHAIN: &str = "corrupt_chain";
@@ -302,6 +310,143 @@ pub fn refuse_symlink_in_evidence_root_path(root: &Path) -> Result<(), SessionRe
         }
     }
     Ok(())
+}
+
+/// Pins each directory component as the process working directory. The CLI
+/// uses one process per command; all later directory reads use "." and child
+/// base names. A rename of the original path then cannot redirect a read.
+pub(crate) fn with_pinned_evidence_directory<T>(
+    root: &Path,
+    read: impl FnOnce() -> VerifierResult<T>,
+) -> VerifierResult<T> {
+    let original =
+        std::env::current_dir().map_err(|err| VerifierError::Runtime(err.to_string()))?;
+    let result = (|| {
+        use std::path::Component;
+        let anchor: PathBuf = root
+            .components()
+            .take_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+            .collect();
+        if !anchor.as_os_str().is_empty() {
+            std::env::set_current_dir(&anchor)
+                .map_err(|err| VerifierError::Runtime(format!("enter evidence root: {err}")))?;
+        }
+        for part in root.components() {
+            match part {
+                Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+                Component::ParentDir => std::env::set_current_dir("..").map_err(|err| {
+                    VerifierError::Runtime(format!("enter evidence parent: {err}"))
+                })?,
+                Component::Normal(name) => {
+                    let name = Path::new(name);
+                    let before = fs::symlink_metadata(name).map_err(|err| {
+                        VerifierError::Runtime(format!("stat evidence root component: {err}"))
+                    })?;
+                    if before.file_type().is_symlink() {
+                        return Err(VerifierError::Invalid(
+                            "refuse symlink in evidence root path".to_string(),
+                        ));
+                    }
+                    if !before.is_dir() {
+                        return Err(VerifierError::Runtime(
+                            "evidence root component is not a directory".to_string(),
+                        ));
+                    }
+                    // open_pinned_directory refuses a non-directory itself.
+                    let opened = open_pinned_directory(name)?;
+                    std::env::set_current_dir(name).map_err(|err| {
+                        VerifierError::Runtime(format!("enter evidence root component: {err}"))
+                    })?;
+                    let entered = open_pinned_directory(Path::new("."))?;
+                    if !same_open_file(&opened, &entered)? {
+                        return Err(VerifierError::Invalid(
+                            "evidence root component changed while entering".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        set_pinned_evidence_directory(true);
+        read()
+    })();
+    set_pinned_evidence_directory(false);
+    let _ = std::env::set_current_dir(original);
+    result
+}
+
+fn open_pinned_directory(path: &Path) -> VerifierResult<fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    options.custom_flags(0x0200_0000 | 0x0020_0000); // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+    let file = options
+        .open(path)
+        .map_err(|err| VerifierError::Runtime(format!("open evidence directory: {err}")))?;
+    let kind = file
+        .metadata()
+        .map_err(|err| VerifierError::Runtime(format!("stat opened evidence directory: {err}")))?;
+    if !kind.is_dir() || kind.file_type().is_symlink() {
+        return Err(VerifierError::Invalid(
+            "opened evidence path is not a directory".to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(all(test, unix))]
+mod pinned_directory_tests {
+    use super::with_pinned_evidence_directory;
+    use crate::util::read_verifier_bytes;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
+    use std::process::Command;
+
+    #[test]
+    fn directory_rename_does_not_redirect_read() {
+        // The helper changes process cwd, so run the proof in a dedicated
+        // test process instead of changing the cwd of parallel unit tests.
+        if std::env::var_os("PIPELOCK_PINNED_DIR_CHILD").is_none() {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .arg("--exact")
+                .arg("chain_set::pinned_directory_tests::directory_rename_does_not_redirect_read")
+                .env("PIPELOCK_PINNED_DIR_CHILD", "1")
+                .output()
+                .expect("start isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let base = fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp dir")
+            .join(format!("pipelock-pinned-dir-{}", std::process::id()));
+        fs::create_dir(&base).expect("create test base");
+        let root = base.join("root");
+        let moved = base.join("moved");
+        let outside = base.join("outside");
+        fs::create_dir(&root).expect("create root");
+        fs::create_dir(&outside).expect("create outside");
+        fs::write(root.join("evidence.jsonl"), b"inside").expect("write inside");
+        fs::write(outside.join("evidence.jsonl"), b"outside").expect("write outside");
+        with_pinned_evidence_directory(&root, || {
+            fs::rename(&root, &moved).expect("move selected directory");
+            symlink(&outside, &root).expect("replace selected path");
+            assert_eq!(
+                fs::read(root.join("evidence.jsonl")).expect("outside control"),
+                b"outside"
+            );
+            assert_eq!(read_verifier_bytes(Path::new("evidence.jsonl"))?, b"inside");
+            Ok(())
+        })
+        .expect("pinned read");
+        fs::remove_dir_all(&base).expect("remove test base");
+    }
 }
 
 fn refused(message: String) -> SessionReadError {

@@ -57,6 +57,7 @@ interface Expect {
 }
 
 interface ChainReport {
+  path: string;
   session?: string;
   valid: boolean;
   error?: string;
@@ -273,7 +274,9 @@ test("an explicit symlink cannot claim a different recorder session", () => {
       encoding: "utf8",
     });
     assert.equal(matching.status, 0, `${matching.stdout}${matching.stderr}`);
-    assert.equal((JSON.parse(matching.stdout) as ChainReport).valid, true);
+    const matchingReport = JSON.parse(matching.stdout) as ChainReport;
+    assert.equal(matchingReport.valid, true);
+    assert.equal(matchingReport.path, matchingAlias);
 
     const mismatched = spawnSync("node", [CLI, "chain", mismatchedAlias, "--key", key, "--json"], {
       encoding: "utf8",

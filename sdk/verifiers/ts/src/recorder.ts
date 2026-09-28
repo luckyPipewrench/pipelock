@@ -44,8 +44,8 @@ export interface ParsedRecorderLine extends RecorderLine {
   entry: RecorderEntry;
 }
 
-export function readEntryLines(file: string): ParsedRecorderLine[] {
-  const text = decodeUTF8(readVerifierBytes(file), "evidence jsonl");
+export function readEntryLines(file: string, directoryChild = false): ParsedRecorderLine[] {
+  const text = decodeUTF8(readVerifierBytes(file, directoryChild), "evidence jsonl");
   const entries: ParsedRecorderLine[] = [];
   const lines = text.split(/\r?\n/u);
   for (let i = 0; i < lines.length; i++) {

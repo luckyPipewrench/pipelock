@@ -19,12 +19,21 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 	if err := validateEvidenceLocation(location); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Open(filepath.Clean(location.Root), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	root, err := filepath.Abs(filepath.Clean(location.Root))
+	if err != nil {
+		return nil, fmt.Errorf("resolve evidence root: %w", err)
+	}
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open evidence root: %w", err)
 	}
 	currentFD := fd
-	for _, part := range strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator)) {
+	// Open every ancestor from a pinned filesystem root. O_NOFOLLOW on the
+	// final pathname component alone does not protect earlier components from
+	// being replaced between discovery and this open.
+	parts := strings.Split(strings.TrimPrefix(root, string(filepath.Separator)), string(filepath.Separator))
+	parts = append(parts, strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator))...)
+	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}

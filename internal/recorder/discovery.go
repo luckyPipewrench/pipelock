@@ -34,12 +34,12 @@ type EvidenceLocation struct {
 // unreadable path or symlink fails closed so missing evidence cannot look
 // absent.
 func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
-	return discoverEvidenceLocations(root, nil)
+	return discoverEvidenceLocations(root, nil, nil)
 }
 
 // discoverEvidenceLocations anchors traversal to an opened root. The optional
-// hook lets tests replace the pathname after the handle is open.
-func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLocation, error) {
+// hooks let tests replace the pathname around the final root open.
+func discoverEvidenceLocations(root string, beforeRootOpen, afterRootOpen func()) ([]EvidenceLocation, error) {
 	if err := refuseSymlinkInWalkedRootPath(root); err != nil {
 		return nil, err
 	}
@@ -53,6 +53,20 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 	}
 	if !initialInfo.IsDir() {
 		return nil, fmt.Errorf("evidence root %q is not a directory", root)
+	}
+	// Pin every component before opening the root by pathname. A replaced
+	// ancestor can otherwise redirect OpenRoot after the pathname checks.
+	secureRoot, err := openEvidenceLocationDirectory(EvidenceLocation{Root: cleanRoot, Dir: cleanRoot})
+	if err != nil {
+		return nil, fmt.Errorf("open evidence root securely: %w", err)
+	}
+	defer func() { _ = secureRoot.Close() }()
+	secureInfo, err := secureRoot.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat securely opened evidence root: %w", err)
+	}
+	if beforeRootOpen != nil {
+		beforeRootOpen()
 	}
 	rootHandle, err := os.OpenRoot(cleanRoot)
 	if err != nil {
@@ -70,7 +84,7 @@ func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLoc
 	if err != nil {
 		return nil, fmt.Errorf("stat opened evidence root: %w", err)
 	}
-	if !os.SameFile(initialInfo, rootedInfo) || !os.SameFile(info, rootedInfo) {
+	if !os.SameFile(secureInfo, rootedInfo) || !os.SameFile(info, rootedInfo) {
 		return nil, fmt.Errorf("evidence root changed while opening: %q", root)
 	}
 

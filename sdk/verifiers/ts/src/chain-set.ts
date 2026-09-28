@@ -15,7 +15,15 @@
 // records carry the same run_nonce are reported (finding duplicate_run_nonce),
 // because a process run writes exactly one chain.
 
-import { lstatSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
@@ -191,6 +199,72 @@ export function refuseSymlinkInEvidenceRootPath(root: string): void {
   }
 }
 
+// Directory mode runs in one CLI process. Enter each component from the
+// kernel-held working directory, then compare the entered directory with the
+// handle opened before chdir. A renamed parent cannot redirect later reads.
+// This also works on platforms where Node does not expose openat.
+let evidenceDirectoryActive = false;
+export async function withPinnedEvidenceDirectory<T>(
+  root: string,
+  read: () => Promise<T>,
+): Promise<T> {
+  if (evidenceDirectoryActive)
+    throw new Error("concurrent evidence directory reads are unsupported");
+  evidenceDirectoryActive = true;
+  const original = process.cwd();
+  try {
+    const parsed = path.parse(root);
+    if (parsed.root !== "") process.chdir(parsed.root);
+    const separators = path.sep === "\\" ? /[\\/]/u : /\//u;
+    for (const component of root.slice(parsed.root.length).split(separators)) {
+      if (component === "" || component === ".") continue;
+      if (component === "..") {
+        process.chdir("..");
+        continue;
+      }
+      const before = lstatSync(component, { bigint: true });
+      if (before.isSymbolicLink()) {
+        throw new EvidenceRefusedError(`refuse symlink in evidence root path: "${component}"`);
+      }
+      if (!before.isDirectory())
+        throw new Error(`evidence root component "${component}" is not a directory`);
+      const fd = openSync(
+        component,
+        constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const opened = fstatSync(fd, { bigint: true });
+        if (
+          !opened.isDirectory() ||
+          opened.dev !== before.dev ||
+          opened.ino !== before.ino ||
+          opened.ino === 0n
+        ) {
+          throw new EvidenceRefusedError(
+            `evidence root component changed while opening: "${component}"`,
+          );
+        }
+        process.chdir(component);
+        const entered = statSync(".", { bigint: true });
+        if (entered.dev !== opened.dev || entered.ino !== opened.ino) {
+          throw new EvidenceRefusedError(
+            `evidence root component changed while entering: "${component}"`,
+          );
+        }
+      } finally {
+        closeSync(fd);
+      }
+    }
+    return await read();
+  } finally {
+    try {
+      process.chdir(original);
+    } finally {
+      evidenceDirectoryActive = false;
+    }
+  }
+}
+
 function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();
@@ -283,7 +357,7 @@ export class EvidenceRefusedError extends Error {}
 function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLine[] {
   const out: ParsedRecorderLine[] = [];
   for (const file of indexFiles(ix, session)) {
-    for (const l of readEntryLines(file)) {
+    for (const l of readEntryLines(file, evidenceDirectoryActive)) {
       if (l.entry.session_id !== session) {
         throw new EvidenceRefusedError(
           `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
@@ -584,7 +658,7 @@ async function readChainLinkFile(file: string): Promise<ChainLink> {
   if (info.size > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }
-  const bytes = readVerifierBytes(file);
+  const bytes = readVerifierBytes(file, evidenceDirectoryActive);
   if (bytes.length > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }

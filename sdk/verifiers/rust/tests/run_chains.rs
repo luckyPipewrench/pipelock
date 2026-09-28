@@ -117,6 +117,22 @@ fn run_cli(args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
+fn endorsement_usage_precedes_missing_file_in_directory_mode() {
+    let directory = fixtures().join("valid");
+    let missing = directory.join("missing-endorsement.json");
+    let (status, _, stderr) = run_cli(&[
+        "chain",
+        directory.to_str().expect("fixture path"),
+        "--dir",
+        "--allow-unpinned",
+        "--rotation-endorsement",
+        missing.to_str().expect("missing path"),
+    ]);
+    assert_eq!(status, 64, "{stderr}");
+    assert!(stderr.contains("cannot be combined"), "{stderr}");
+}
+
+#[test]
 fn run_chain_fixtures_match_go_reference() {
     for case in cases() {
         let name = format!("{}/{}", case.variant, case.expect_file);

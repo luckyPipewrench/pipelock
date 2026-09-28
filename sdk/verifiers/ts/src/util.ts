@@ -7,6 +7,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   openSync,
   readSync,
   realpathSync,
@@ -63,12 +64,28 @@ export function resolveOperatorFilePath(file: string): string {
   return current;
 }
 
-export function readVerifierBytes(file: string): Buffer {
-  const clean = resolveOperatorFilePath(file);
-  const fd = openSync(clean, constants.O_RDONLY | constants.O_NONBLOCK);
+export function readVerifierBytes(file: string, directoryChild = false): Buffer {
+  // Directory children are opened relative to the pinned working directory.
+  // Never resolve them by pathname: that would follow a replacement symlink.
+  if (directoryChild && (path.basename(file) !== file || file === "." || file === "..")) {
+    throw new RuntimeError("evidence filename must be a base name");
+  }
+  const clean = directoryChild ? file : resolveOperatorFilePath(file);
+  const before = directoryChild ? lstatSync(clean, { bigint: true }) : undefined;
+  if (before?.isSymbolicLink()) throw new RuntimeError("refuse symlink in evidence directory");
+  const fd = openSync(
+    clean,
+    constants.O_RDONLY | constants.O_NONBLOCK | (directoryChild ? (constants.O_NOFOLLOW ?? 0) : 0),
+  );
   try {
     const info = fstatSync(fd);
     if (!info.isFile()) throw new RuntimeError("input must be a regular file");
+    if (before !== undefined) {
+      const opened = fstatSync(fd, { bigint: true });
+      if (opened.dev !== before.dev || opened.ino !== before.ino || opened.ino === 0n) {
+        throw new RuntimeError("evidence file changed while opening");
+      }
+    }
     if (info.size > maxVerifierInputBytes) {
       throw new RuntimeError(`input exceeds ${maxVerifierInputBytes} bytes`);
     }

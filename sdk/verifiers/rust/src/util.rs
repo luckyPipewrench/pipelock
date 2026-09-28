@@ -4,7 +4,9 @@
 use base64::Engine;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::fs;
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
 #[cfg(unix)]
@@ -36,11 +38,111 @@ pub type Result<T> = std::result::Result<T, VerifierError>;
 
 pub const MAX_VERIFIER_INPUT_BYTES: u64 = 8 << 20;
 
+thread_local! { static PINNED_EVIDENCE_DIRECTORY: Cell<bool> = const { Cell::new(false) }; }
+
+pub(crate) fn pinned_evidence_directory() -> bool {
+    PINNED_EVIDENCE_DIRECTORY.with(Cell::get)
+}
+
+pub(crate) fn set_pinned_evidence_directory(active: bool) {
+    PINNED_EVIDENCE_DIRECTORY.with(|flag| flag.set(active));
+}
+
+pub(crate) fn same_open_file(a: &File, b: &File) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let a = a
+            .metadata()
+            .map_err(|err| VerifierError::Runtime(err.to_string()))?;
+        let b = b
+            .metadata()
+            .map_err(|err| VerifierError::Runtime(err.to_string()))?;
+        Ok(a.dev() == b.dev() && a.ino() == b.ino() && a.ino() != 0)
+    }
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        use std::os::windows::io::AsRawHandle;
+        #[repr(C)]
+        #[derive(Default, PartialEq, Eq)]
+        struct FileIdInfo {
+            volume: u64,
+            id: [u8; 16],
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandleEx(
+                handle: *mut c_void,
+                class: u32,
+                info: *mut c_void,
+                size: u32,
+            ) -> i32;
+        }
+        fn identity(file: &File) -> Result<FileIdInfo> {
+            let mut info = FileIdInfo::default();
+            // FileIdInfo = 0x12; an unsupported filesystem fails closed.
+            let ok = unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle(),
+                    0x12,
+                    (&mut info as *mut FileIdInfo).cast(),
+                    std::mem::size_of::<FileIdInfo>() as u32,
+                )
+            };
+            if ok == 0 || info.id == [0; 16] {
+                return Err(VerifierError::Runtime(
+                    "cannot identify opened evidence directory".to_string(),
+                ));
+            }
+            Ok(info)
+        }
+        return Ok(identity(a)? == identity(b)?);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (a, b);
+        Err(VerifierError::Runtime(
+            "unsupported evidence directory platform".to_string(),
+        ))
+    }
+}
+
 pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+    // Operator-supplied keys and endorsements were made absolute before the
+    // directory is entered. Only relative child names belong to the pinned
+    // evidence directory.
+    let pinned = pinned_evidence_directory() && !path.is_absolute();
+    if pinned {
+        let mut components = path
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir));
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(VerifierError::Runtime(
+                "evidence filename must be a base name".to_string(),
+            ));
+        }
+        if fs::symlink_metadata(path)
+            .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(VerifierError::Runtime(
+                "refuse symlink in evidence directory".to_string(),
+            ));
+        }
+    }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    options.custom_flags(libc::O_NONBLOCK);
+    options.custom_flags(libc::O_NONBLOCK | if pinned { libc::O_NOFOLLOW } else { 0 });
+    #[cfg(windows)]
+    if pinned {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
     let file = options
         .open(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
@@ -50,6 +152,11 @@ pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
     if !info.is_file() {
         return Err(VerifierError::Runtime(
             "input must be a regular file".to_string(),
+        ));
+    }
+    if pinned && info.file_type().is_symlink() {
+        return Err(VerifierError::Runtime(
+            "refuse symlink in evidence directory".to_string(),
         ));
     }
     if info.len() > MAX_VERIFIER_INPUT_BYTES {

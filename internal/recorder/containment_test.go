@@ -211,6 +211,29 @@ func TestResolvedEvidenceLocationRejectsRootSwap(t *testing.T) {
 	}
 }
 
+func TestResolvedEvidenceLocationRejectsAncestorSwap(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	ancestor := filepath.Join(parent, "selected")
+	root := filepath.Join(ancestor, "evidence")
+	writeDiscoveryShard(t, root)
+	location, err := ResolveEvidenceLocation(root, "")
+	if err != nil {
+		t.Fatalf("ResolveEvidenceLocation: %v", err)
+	}
+	if err := os.Rename(ancestor, ancestor+"-original"); err != nil {
+		t.Fatalf("move selected ancestor: %v", err)
+	}
+	external := t.TempDir()
+	writeDiscoveryShard(t, filepath.Join(external, "evidence"))
+	if err := os.Symlink(external, ancestor); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ReadEvidenceLocationEntries(location); err == nil {
+		t.Fatal("resolved location followed a substituted root ancestor")
+	}
+}
+
 func TestResolvedEvidenceLocationRejectsFileSwap(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

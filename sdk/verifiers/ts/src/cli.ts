@@ -15,6 +15,7 @@ import {
   checkFileEntrySessions,
   EvidenceRefusedError,
   refuseSymlinkInEvidenceRootPath,
+  withPinnedEvidenceDirectory,
   readSessionEvidence,
   readSessionReceipts,
   resolveBaseSessions,
@@ -265,6 +266,17 @@ async function loadEndorsements(
   allowUnpinned: boolean,
   keyHex: string,
 ): Promise<RotationEndorsement[]> {
+  checkEndorsementUsage(endorsementPaths, allowUnpinned, keyHex);
+  return Promise.all(
+    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
+  );
+}
+
+function checkEndorsementUsage(
+  endorsementPaths: string[],
+  allowUnpinned: boolean,
+  keyHex: string,
+): void {
   if (endorsementPaths.length > 0 && allowUnpinned) {
     throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
   }
@@ -273,9 +285,6 @@ async function loadEndorsements(
       "--rotation-endorsement requires --key: an endorsement is authority only under a trusted root key",
     );
   }
-  return Promise.all(
-    endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
-  );
 }
 
 // runChainSetCommand verifies chains of base in dir and the base's restart
@@ -287,6 +296,7 @@ async function loadEndorsements(
 // predecessor's tail, a second successor, a replayed copy of it).
 async function runChainSetCommand(
   dir: string,
+  displayDir: string,
   base: string,
   keyHex: string,
   allowUnpinned: boolean,
@@ -309,7 +319,7 @@ async function runChainSetCommand(
   }
   const chains: ChainSetReport["chains"] = [];
   for (const session of targets ?? sessions) {
-    const label = `${dir} (session ${session})`;
+    const label = `${displayDir} (session ${session})`;
     const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
     let chainReport: ChainCommandReport;
     try {
@@ -334,7 +344,7 @@ async function runChainSetCommand(
   }
   const healthy = baseHealthy(baseReport);
   const report: ChainSetReport = {
-    path: dir,
+    path: displayDir,
     base,
     valid: healthy && chains.every((c) => c.valid),
     chains,
@@ -369,7 +379,7 @@ async function runChainSetCommand(
           .join(", ")}`,
       );
     }
-    reportFailure(`${dir}: ${reasons.join("; ")}`);
+    reportFailure(`${displayDir}: ${reasons.join("; ")}`);
   }
   return report.valid ? 0 : 1;
 }
@@ -419,7 +429,7 @@ async function runChainCommand(args: string[]): Promise<number> {
   const explicitSession = parsed.values["session-id"] !== undefined;
   const sessionID = parsed.values["session-id"] ?? "proxy";
   const allowUnpinned = parsed.values["allow-unpinned"] === true;
-  const endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
+  let endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
   const json = parsed.values.json === true;
   // Resolve an explicit file before normalizing it: symlink/.. can reach a
   // different file from the one selected by lexical normalization.
@@ -435,76 +445,92 @@ async function runChainCommand(args: string[]): Promise<number> {
       }
       throw new RuntimeError(`resolve evidence location: ${errorMessage(err)}`);
     }
+    // Endorsements are read after the working directory is pinned, so
+    // resolve them against the operator's directory first. Usage errors
+    // outrank path resolution, as in the Rust verifier.
+    checkEndorsementUsage(endorsementPaths, allowUnpinned, keyHex);
+    endorsementPaths = endorsementPaths.map((p) => {
+      try {
+        return resolveOperatorFilePath(p);
+      } catch (err) {
+        throw new RuntimeError(`resolve rotation endorsement ${p}: ${errorMessage(err)}`);
+      }
+    });
   }
-  const clean = asDir ? path.normalize(target) : resolveOperatorFilePath(target);
-  // A directory whose base has per-run chains is verified as a base, as the Go
-  // reference does: the base of a run session is its prefix, and any other
-  // session is its own base. Without --session-id every chain of the base is
-  // verified; with it only that chain, plus the whole-base checks.
-  if (asDir) {
-    const base = runSessionBase(sessionID) ?? sessionID;
-    let runs: string[];
-    try {
-      runs = resolveBaseSessions(clean, base).filter((s) => runSessionBase(s) !== undefined);
-    } catch (err) {
-      throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
-    }
-    if (runs.length > 0) {
-      return runChainSetCommand(
-        clean,
-        base,
-        keyHex,
-        allowUnpinned,
-        endorsementPaths,
-        json,
-        explicitSession ? [sessionID] : undefined,
-      );
-    }
-  }
-  const label = asDir ? `${clean} (session ${sessionID})` : clean;
-  let typed: ExtractedReceipts;
-  let outer: string | undefined;
-  try {
+  const display = path.normalize(target);
+  const readPath = asDir ? "." : resolveOperatorFilePath(target);
+  const runAt = async (clean: string): Promise<number> => {
+    // A directory whose base has per-run chains is verified as a base, as the Go
+    // reference does: the base of a run session is its prefix, and any other
+    // session is its own base. Without --session-id every chain of the base is
+    // verified; with it only that chain, plus the whole-base checks.
     if (asDir) {
-      const evidence = readSessionEvidence(clean, sessionID);
-      typed = evidence.typed;
-      outer = verifyRecorderChain(evidence.lines);
-    } else {
-      if (statSync(clean).isDirectory()) {
-        throw new RuntimeError(
-          `${target} is a directory; pass --dir to verify a session directory`,
+      const base = runSessionBase(sessionID) ?? sessionID;
+      let runs: string[];
+      try {
+        runs = resolveBaseSessions(clean, base).filter((s) => runSessionBase(s) !== undefined);
+      } catch (err) {
+        throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
+      }
+      if (runs.length > 0) {
+        return runChainSetCommand(
+          clean,
+          display,
+          base,
+          keyHex,
+          allowUnpinned,
+          endorsementPaths,
+          json,
+          explicitSession ? [sessionID] : undefined,
         );
       }
-      // A file named on the command line is read as given, even through a
-      // symlink: the operator chose it.
-      const lines = readEntryLines(clean);
-      checkFileEntrySessions(path.basename(target), lines);
-      typed = extractTypedFromEntries(lines.map((l) => l.entry));
-      outer = verifyRecorderChain(lines);
     }
-  } catch (err) {
-    if (err instanceof EvidenceRefusedError) {
-      return emitChainResult(
-        { path: label, valid: false, receipt_count: 0, final_seq: 0, error: err.message },
-        json,
-      );
+    const label = asDir ? `${display} (session ${sessionID})` : display;
+    let typed: ExtractedReceipts;
+    let outer: string | undefined;
+    try {
+      if (asDir) {
+        const evidence = readSessionEvidence(clean, sessionID);
+        typed = evidence.typed;
+        outer = verifyRecorderChain(evidence.lines);
+      } else {
+        if (statSync(clean).isDirectory()) {
+          throw new RuntimeError(
+            `${target} is a directory; pass --dir to verify a session directory`,
+          );
+        }
+        // A file named on the command line is read as given, even through a
+        // symlink: the operator chose it.
+        const lines = readEntryLines(clean);
+        checkFileEntrySessions(path.basename(target), lines);
+        typed = extractTypedFromEntries(lines.map((l) => l.entry));
+        outer = verifyRecorderChain(lines);
+      }
+    } catch (err) {
+      if (err instanceof EvidenceRefusedError) {
+        return emitChainResult(
+          { path: label, valid: false, receipt_count: 0, final_seq: 0, error: err.message },
+          json,
+        );
+      }
+      throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
     }
-    throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
-  }
-  if (typed.action.length === 0 && typed.evidence.length === 0) {
-    const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
+    if (typed.action.length === 0 && typed.evidence.length === 0) {
+      const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
+      return emitChainResult(withRecorderChain(report, outer), json);
+    }
+    const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
+    const report = await typedChainReport(
+      label,
+      typed,
+      keyHex,
+      allowUnpinned,
+      endorsements,
+      sessionID,
+    );
     return emitChainResult(withRecorderChain(report, outer), json);
-  }
-  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
-  const report = await typedChainReport(
-    label,
-    typed,
-    keyHex,
-    allowUnpinned,
-    endorsements,
-    sessionID,
-  );
-  return emitChainResult(withRecorderChain(report, outer), json);
+  };
+  return asDir ? withPinnedEvidenceDirectory(target, () => runAt(readPath)) : runAt(readPath);
 }
 
 async function runReceiptCommand(args: string[]): Promise<number> {

@@ -105,6 +105,19 @@ function runCLI(args: string[]): { status: number | null; stdout: string; stderr
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
+test("endorsement usage outranks a missing file in directory mode", () => {
+  const r = runCLI([
+    "chain",
+    join(FIXTURES, "valid"),
+    "--dir",
+    "--allow-unpinned",
+    "--rotation-endorsement",
+    join(FIXTURES, "valid", "missing-endorsement.json"),
+  ]);
+  assert.equal(r.status, 64, r.stdout + r.stderr);
+  assert.match(r.stderr, /cannot be combined/u);
+});
+
 for (const c of CASES) {
   const variant = c.variant;
   const name = `${variant}/${c.expectFile}`;

@@ -182,3 +182,42 @@ func TestRefuseSymlinkInWalkedRootPathFileBeforeDotDot(t *testing.T) {
 		})
 	}
 }
+
+// A missing component before ".." cannot be erased by lexical cleaning:
+// the kernel fails while walking the missing name.
+func TestRefuseSymlinkInWalkedRootPathMissingBeforeDotDot(t *testing.T) {
+	base := physicalTempDir(t)
+	root := base + string(filepath.Separator) + "missing" + string(filepath.Separator) + ".." + string(filepath.Separator) + "ev"
+	if err := refuseSymlinkInWalkedRootPath(base); err != nil {
+		t.Fatalf("positive control refused: %v", err)
+	}
+	for _, err := range []error{refuseSymlinkInWalkedRootPath(root), func() error {
+		_, err := DiscoverEvidenceLocations(root)
+		return err
+	}()} {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing component before dot-dot = %v, want not-exist failure", err)
+		}
+	}
+}
+
+func TestValidateEvidenceRootComponentsRejectsChangedAncestor(t *testing.T) {
+	base := physicalTempDir(t)
+	realDir := filepath.Join(base, "real", "ev")
+	if err := os.MkdirAll(realDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateEvidenceRootComponents(realDir); err != nil {
+		t.Fatalf("positive control refused real directory: %v", err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(filepath.Join(base, "real"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := validateEvidenceRootComponents(filepath.Join(link, "ev")); !errors.Is(err, ErrEvidenceRefused) {
+		t.Fatalf("symlinked ancestor = %v, want evidence refusal", err)
+	}
+	if _, err := validateEvidenceRootComponents(filepath.Join(base, "missing", "ev")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing ancestor = %v, want not-exist failure", err)
+	}
+}

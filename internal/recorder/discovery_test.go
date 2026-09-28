@@ -205,7 +205,7 @@ func TestDiscoverEvidenceLocationsRejectsRootSwapAfterOpen(t *testing.T) {
 	writeDiscoveryShard(t, root)
 	writeDiscoveryShard(t, replacement)
 
-	locations, err := discoverEvidenceLocations(root, func() {
+	locations, err := discoverEvidenceLocations(root, nil, func() {
 		if renameErr := os.Rename(root, moved); renameErr != nil {
 			t.Fatalf("move opened evidence root: %v", renameErr)
 		}
@@ -215,6 +215,31 @@ func TestDiscoverEvidenceLocationsRejectsRootSwapAfterOpen(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
 		t.Fatalf("discover after root swap = %+v, %v; want fail-closed identity error", locations, err)
+	}
+}
+
+func TestDiscoverEvidenceLocationsRejectsAncestorSwapBeforeOpen(t *testing.T) {
+	parent := t.TempDir()
+	ancestor := filepath.Join(parent, "ancestor")
+	root := filepath.Join(ancestor, "evidence")
+	outside := filepath.Join(parent, "outside")
+	writeDiscoveryShard(t, root)
+	writeDiscoveryShard(t, filepath.Join(outside, "evidence"))
+	if _, err := DiscoverEvidenceLocations(root); err != nil {
+		t.Fatalf("positive control refused unchanged root: %v", err)
+	}
+	var swapErr error
+	locations, err := discoverEvidenceLocations(root, func() {
+		if swapErr = os.Rename(ancestor, filepath.Join(parent, "moved")); swapErr != nil {
+			return
+		}
+		swapErr = os.Rename(outside, ancestor)
+	}, nil)
+	if swapErr != nil {
+		t.Skipf("ancestor replacement unavailable: %v", swapErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed while opening") || len(locations) != 0 {
+		t.Fatalf("discover after ancestor swap = %+v, %v; want pinned-root identity refusal", locations, err)
 	}
 }
 

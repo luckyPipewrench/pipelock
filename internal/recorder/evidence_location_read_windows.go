@@ -20,16 +20,20 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 	if err := validateEvidenceLocation(location); err != nil {
 		return nil, err
 	}
-	root := filepath.Clean(location.Root)
-	pointer, err := windows.UTF16PtrFromString(root)
+	root, err := filepath.Abs(filepath.Clean(location.Root))
+	if err != nil {
+		return nil, fmt.Errorf("resolve evidence root: %w", err)
+	}
+	anchor := filepath.VolumeName(root) + string(filepath.Separator)
+	pointer, err := windows.UTF16PtrFromString(anchor)
 	if err != nil {
 		return nil, err
 	}
 	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open evidence root: %w", err)
+		return nil, fmt.Errorf("open evidence volume: %w", err)
 	}
-	current := os.NewFile(uintptr(handle), root)
+	current := os.NewFile(uintptr(handle), anchor)
 	if current == nil {
 		_ = windows.CloseHandle(handle)
 		return nil, errors.New("open evidence root: invalid handle")
@@ -38,7 +42,12 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 		_ = current.Close()
 		return nil, fmt.Errorf("validate evidence root: %w", err)
 	}
-	for _, part := range strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator)) {
+	// A full-path CreateFile can follow a replaced ancestor even with
+	// FILE_FLAG_OPEN_REPARSE_POINT. Walk root and location from the volume
+	// handle, rejecting every reparse point through openWindowsRelative.
+	parts := strings.Split(strings.TrimPrefix(root, anchor), string(filepath.Separator))
+	parts = append(parts, strings.Split(filepath.FromSlash(location.ID), string(filepath.Separator))...)
+	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
 		}

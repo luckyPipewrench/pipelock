@@ -1171,6 +1171,7 @@ pub fn chain_scoped_trust(
                     c.link
                         .as_ref()
                         .is_some_and(|l| verify_cross_chain_endorsement(e, l))
+                        || (c.session == session && binds_final_receipt(e, c))
                 })
         })
         .cloned()

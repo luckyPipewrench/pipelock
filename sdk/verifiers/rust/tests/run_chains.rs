@@ -275,6 +275,47 @@ fn rotation_endorsement_requires_operator_pinned_root() {
 }
 
 #[test]
+fn missing_rotation_link_does_not_corrupt_predecessor_run_report() {
+    let source = fixtures().join("key-rotated");
+    let dir = tempdir("missing-rotation-link");
+    for entry in fs::read_dir(&source).expect("read fixture") {
+        let entry = entry.expect("fixture entry");
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("chain-link-")
+        {
+            continue;
+        }
+        fs::copy(entry.path(), dir.join(entry.file_name())).expect("copy fixture");
+    }
+    let endorsement = source.join("rotation-endorsement.json");
+    let key = key();
+    let (code, stdout, _) = run_cli(&[
+        "chain",
+        dir.to_str().expect("utf8 path"),
+        "--dir",
+        "--key",
+        &key,
+        "--rotation-endorsement",
+        endorsement.to_str().expect("utf8 path"),
+        "--json",
+    ]);
+    assert_eq!(code, 1);
+    let report: Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["valid"], false);
+    let chains = report["chains"].as_array().expect("chains");
+    assert_eq!(
+        chains
+            .iter()
+            .map(|chain| chain["valid"].as_bool())
+            .collect::<Vec<_>>(),
+        vec![Some(true), Some(false)]
+    );
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
 fn run_chain_cli_human_output_lists_linked_and_unlinked_runs() {
     let dir = fixtures().join("valid");
     let key = key();

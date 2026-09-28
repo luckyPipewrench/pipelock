@@ -201,6 +201,35 @@ test("a rotation endorsement requires an operator-pinned root", () => {
   assert.doesNotMatch(r.stdout, /"valid": true/u);
 });
 
+test("a missing rotation link does not corrupt the predecessor run report", () => {
+  const dir = mkdtempSync(join(tmpdir(), "run-chains-missing-rotation-link-"));
+  try {
+    cpSync(join(FIXTURES, "key-rotated"), dir, { recursive: true });
+    const link = readdirSync(dir).find((name) => name.startsWith("chain-link-"));
+    assert.ok(link);
+    rmSync(join(dir, link));
+    const r = runCLI([
+      "chain",
+      dir,
+      "--dir",
+      "--key",
+      KEY,
+      "--rotation-endorsement",
+      join(FIXTURES, "key-rotated", "rotation-endorsement.json"),
+      "--json",
+    ]);
+    assert.equal(r.status, 1);
+    const report = JSON.parse(r.stdout) as { valid: boolean; chains: { valid: boolean }[] };
+    assert.equal(report.valid, false);
+    assert.deepEqual(
+      report.chains.map((chain) => chain.valid),
+      [true, false],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("run-chain CLI with a wrong key fails every run", () => {
   const wrong = "11".repeat(32);
   const r = runCLI(["chain", join(FIXTURES, "valid"), "--dir", "--key", wrong, "--json"]);

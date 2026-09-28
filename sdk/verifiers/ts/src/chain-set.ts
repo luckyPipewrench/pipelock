@@ -1019,6 +1019,10 @@ export async function chainScopedTrust(
         crossChain = true;
         break;
       }
+      if (c.session === session && bindsFinalReceipt(e, c)) {
+        crossChain = true;
+        break;
+      }
     }
     if (!crossChain) own.push(e);
   }

@@ -378,3 +378,67 @@ func TestLicenseGateViaLoad_LicenseFile(t *testing.T) {
 		t.Error("claude-code profile should be present")
 	}
 }
+
+// TestLoadUnlicensedContainedAgentListener drives the real license gate:
+// without a license the contained agent's profile is removed, the config is
+// still refused (nothing would bind the listener), and the refusal names the
+// license cause instead of claiming the listener is undeclared.
+func TestLoadUnlicensedContainedAgentListener(t *testing.T) {
+	t.Setenv(config.EnvLicenseKey, "")
+	token, pubHex := testLicenseKeyPair(t)
+	const body = "agents:\n  contained-agent:\n    listeners: [\"127.0.0.1:8889\"]\ncontainment:\n  agent_listener: \"%s\"\n"
+	for _, tc := range []struct {
+		name     string
+		prefix   string
+		listener string
+		want     []string
+		notWant  string
+	}{
+		{
+			name: "no license", listener: "127.0.0.1:8889",
+			want:    []string{"agents.contained-agent", "no license key is configured", config.LicenseDisabledProfileRefusal},
+			notWant: "not declared under any agents",
+		},
+		{
+			name: "no license, genuinely undeclared", listener: "127.0.0.1:8891",
+			want:    []string{"not declared under any agents.<name>.listeners"},
+			notWant: config.LicenseDisabledProfileRefusal,
+		},
+		{
+			name: "licensed", listener: "127.0.0.1:8889",
+			prefix: "license_key: " + token + "\nlicense_public_key: " + pubHex + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cfg.yaml")
+			data := tc.prefix + strings.Replace(body, "%s", tc.listener, 1)
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if len(tc.want) == 0 {
+				if err != nil {
+					t.Fatalf("Load() = %v, want accepted", err)
+				}
+				if _, ok := cfg.Agents["contained-agent"]; !ok {
+					t.Fatal("licensed profile was removed")
+				}
+				if len(cfg.LicenseDisabledAgents) != 0 {
+					t.Fatalf("licensed load recorded disabled agents: %v", cfg.LicenseDisabledAgents)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Load() accepted an agent_listener no active profile binds")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error = %q, want substring %q", err, w)
+				}
+			}
+			if strings.Contains(err.Error(), tc.notWant) {
+				t.Errorf("error = %q, must not contain %q", err, tc.notWant)
+			}
+		})
+	}
+}

@@ -134,3 +134,23 @@ func TestServer_ReloadUnverifiableLicenseInputPreservesAgents(t *testing.T) {
 		t.Fatalf("must not log a revocation shutdown for an unverifiable input:\n%s", buf.String())
 	}
 }
+
+// Restoring the old agents map on a restart-only license change must also
+// restore the license-gate record that describes it.
+func TestPreserveLicenseInputsRestartOnlyCopiesDisabledRecord(t *testing.T) {
+	oldCfg := &config.Config{
+		Agents:                map[string]config.AgentProfile{"contained-agent": {Listeners: []string{"127.0.0.1:8889"}}},
+		LicenseDisabledReason: "",
+	}
+	newCfg := &config.Config{
+		LicenseDisabledAgents: map[string][]string{"contained-agent": {"127.0.0.1:8889"}},
+		LicenseDisabledReason: "no license key is configured",
+	}
+	preserveLicenseInputsRestartOnly(newCfg, oldCfg)
+	if newCfg.LicenseDisabledAgents != nil || newCfg.LicenseDisabledReason != "" {
+		t.Fatalf("record = %v %q, want the old (empty) record", newCfg.LicenseDisabledAgents, newCfg.LicenseDisabledReason)
+	}
+	if _, ok := newCfg.Agents["contained-agent"]; !ok {
+		t.Fatal("old agents were not restored")
+	}
+}

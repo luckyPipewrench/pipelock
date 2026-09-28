@@ -1231,3 +1231,20 @@ func toolPolicyRuleNames(rules []ToolPolicyRule) []string {
 	}
 	return names
 }
+
+// The license-gate record describes the agents map, so a bundle that keeps
+// the follower's agents must keep the matching record too.
+func TestPreserveConductorBundleLocalRuntimeStateCopiesLicenseDisabledRecord(t *testing.T) {
+	t.Parallel()
+	oldCfg := &Config{
+		LicenseDisabledAgents: map[string][]string{"contained-agent": {"127.0.0.1:8889"}},
+		LicenseDisabledReason: "no license key is configured",
+	}
+	newCfg := &Config{LicenseDisabledReason: "bundle value"}
+	if err := PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg, "mode: balanced\n"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(newCfg.LicenseDisabledAgents, oldCfg.LicenseDisabledAgents) || newCfg.LicenseDisabledReason != oldCfg.LicenseDisabledReason {
+		t.Fatalf("record = %v %q, want %v %q", newCfg.LicenseDisabledAgents, newCfg.LicenseDisabledReason, oldCfg.LicenseDisabledAgents, oldCfg.LicenseDisabledReason)
+	}
+}

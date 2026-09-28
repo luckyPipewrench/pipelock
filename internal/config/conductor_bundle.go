@@ -76,6 +76,10 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config, bundleYAML
 	} else {
 		newCfg.Agents = nil
 	}
+	// The license-gate record describes the preserved agents map, so it
+	// follows that map rather than the bundle.
+	newCfg.LicenseDisabledAgents = oldCfg.LicenseDisabledAgents
+	newCfg.LicenseDisabledReason = oldCfg.LicenseDisabledReason
 	newCfg.LicenseKey = oldCfg.LicenseKey
 	newCfg.LicenseFile = oldCfg.LicenseFile
 

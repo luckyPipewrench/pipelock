@@ -516,8 +516,17 @@ type Config struct {
 	// LicenseAgentsFeature is true only after runtime license verification
 	// accepted FeatureAgents. Core code uses this to avoid applying named-agent
 	// paid overrides when enterprise license hooks are absent.
-	LicenseAgentsFeature    bool   `yaml:"-" json:"-"`
-	LicenseIntermediateCert []byte `yaml:"-" json:"-"`
+	LicenseAgentsFeature bool `yaml:"-" json:"-"`
+	// LicenseDisabledAgents records the named agent profiles the license
+	// gate removed, keyed by profile name with the listeners each declared,
+	// and LicenseDisabledReason says why the gate removed them. Both are set
+	// only by the enterprise license gate and are never read from YAML.
+	// Validation consults them solely to name the real cause when another
+	// setting refers to a profile that was disabled; they never make a
+	// disabled profile count as declared.
+	LicenseDisabledAgents   map[string][]string `yaml:"-" json:"-"`
+	LicenseDisabledReason   string              `yaml:"-" json:"-"`
+	LicenseIntermediateCert []byte              `yaml:"-" json:"-"`
 	// LicenseIntermediateLoadError records a configured cert file that could
 	// not be loaded. LicenseIntermediateCert stays non-empty in that state so
 	// verification fails closed instead of silently downgrading to root-only.

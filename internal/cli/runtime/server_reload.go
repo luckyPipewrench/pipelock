@@ -1229,6 +1229,10 @@ func hasNamedAgentProfiles(agents map[string]config.AgentProfile) bool {
 // unrelated reload see no diff and silently apply the staged license.
 func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 	newCfg.Agents = oldCfg.Agents
+	// The license-gate record describes the agents map, so it follows the
+	// preserved map rather than the candidate's stripped one.
+	newCfg.LicenseDisabledAgents = oldCfg.LicenseDisabledAgents
+	newCfg.LicenseDisabledReason = oldCfg.LicenseDisabledReason
 	newCfg.LicenseKey = oldCfg.LicenseKey
 	newCfg.LicenseFile = oldCfg.LicenseFile
 	newCfg.LicenseCRLFile = oldCfg.LicenseCRLFile

@@ -3959,7 +3959,7 @@ func (c *Config) validateContainmentPublishedServices() error {
 		if err != nil {
 			return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPortText, err)
 		}
-		if err := ValidateContainmentAgentListener(c.Containment.AgentListener, c.Agents, proxyPort); err != nil {
+		if err := validateContainmentAgentListener(c.Containment.AgentListener, c.Agents, c.LicenseDisabledAgents, c.LicenseDisabledReason, proxyPort); err != nil {
 			return err
 		}
 	}

@@ -202,6 +202,26 @@ environment_failure_reason() {
         fi
     fi
 
+    # An enterprise build without a license disables named agent profiles at
+    # load, so `check` refuses a setting that refers to one (for example
+    # containment.agent_listener). The refusal carries one fixed phrase from
+    # internal/config.LicenseDisabledProfileRefusal, and it is skippable only
+    # when it is the ONLY refusal line, so an entitlement refusal cannot hide an
+    # unrelated error. Unlike the build gates above, no per-block opt-in is
+    # required: an OSS build never disables profiles, so the OSS run of this
+    # gate still checks and boots every block this skip covers.
+    local license_profile_phrase='named agent profiles require a Pro license with the agents feature'
+    local license_profile_refusals
+    license_profile_refusals="$(grep -cF "$license_profile_phrase" "$out" || true)"
+    if [ "$phase" = "check" ] && [ "$license_profile_refusals" -gt 0 ]; then
+        other_refusals="$(grep -vF "$license_profile_phrase" "$out" \
+            | grep -ciE '(FAILED:|(^|[[:space:]])error:|invalid config:)' || true)"
+        if [ "$other_refusals" -eq 0 ]; then
+            echo "named agent profiles require a license"
+            return
+        fi
+    fi
+
     echo ""
 }
 

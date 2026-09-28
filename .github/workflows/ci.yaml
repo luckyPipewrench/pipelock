@@ -913,6 +913,13 @@ jobs:
       - name: Config example startability policy
         run: bash scripts/check-config-examples.sh
 
+      # Released binaries are built with the enterprise tag, so the shipped
+      # examples must also check and boot against that build shape.
+      - name: Config example startability policy (enterprise build)
+        run: |
+          go build -tags enterprise -o "$RUNNER_TEMP/pipelock-enterprise" ./cmd/pipelock
+          bash scripts/check-config-examples.sh "$RUNNER_TEMP/pipelock-enterprise"
+
       - name: Clock-dependent literal policy
         run: bash scripts/check-clock-literals.sh
 

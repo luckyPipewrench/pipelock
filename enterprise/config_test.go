@@ -732,6 +732,60 @@ func TestEnforceLicenseGate_NoLicenseKey(t *testing.T) {
 	}
 }
 
+func TestEnforceLicenseGate_RecordsDisabledAgents(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noAgents, err := license.Issue(license.License{
+		ID:        "lic_nofeature",
+		Email:     "test@example.com",
+		Features:  []string{"some-other-feature"},
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		key        string
+		pubHex     string
+		wantReason string
+	}{
+		{name: "no key", wantReason: "no license key is configured"},
+		{name: "no public key", key: noAgents, wantReason: "no license public key is available"},
+		{name: "invalid token", key: "not-a-token", pubHex: hex.EncodeToString(pub), wantReason: "license verification failed: "},
+		{name: "missing feature", key: noAgents, pubHex: hex.EncodeToString(pub), wantReason: "license lic_nofeature does not include the agents feature"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Agents = map[string]config.AgentProfile{
+				"_default":        {Mode: config.ModeBalanced},
+				"contained-agent": {Listeners: []string{"127.0.0.1:8889"}},
+				"listenerless":    {Mode: config.ModeStrict},
+			}
+			cfg.LicenseKey = tc.key
+			cfg.LicensePublicKey = tc.pubHex
+			EnforceLicenseGate(cfg)
+			if _, ok := cfg.Agents["contained-agent"]; ok {
+				t.Fatal("named profile survived the license gate")
+			}
+			if _, ok := cfg.LicenseDisabledAgents["_default"]; ok {
+				t.Error("_default is never disabled and must not be recorded")
+			}
+			if got := cfg.LicenseDisabledAgents["contained-agent"]; !slices.Equal(got, []string{"127.0.0.1:8889"}) {
+				t.Errorf("recorded listeners = %v, want [127.0.0.1:8889]", got)
+			}
+			if _, ok := cfg.LicenseDisabledAgents["listenerless"]; !ok {
+				t.Error("listenerless profile was not recorded")
+			}
+			if !strings.HasPrefix(cfg.LicenseDisabledReason, tc.wantReason) {
+				t.Errorf("reason = %q, want prefix %q", cfg.LicenseDisabledReason, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestEnforceLicenseGate_NoLicenseKey_PreservesDefault(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{

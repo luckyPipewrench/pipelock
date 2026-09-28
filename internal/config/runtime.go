@@ -282,6 +282,12 @@ func (c *Config) Clone() *Config {
 	if c.LicenseIntermediateCert != nil {
 		clone.LicenseIntermediateCert = append([]byte(nil), c.LicenseIntermediateCert...)
 	}
+	if c.LicenseDisabledAgents != nil {
+		clone.LicenseDisabledAgents = make(map[string][]string, len(c.LicenseDisabledAgents))
+		for name, listeners := range c.LicenseDisabledAgents {
+			clone.LicenseDisabledAgents[name] = append([]string(nil), listeners...)
+		}
+	}
 	if c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey != nil {
 		clone.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
 	}

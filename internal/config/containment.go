@@ -8,6 +8,7 @@ import (
 	"net"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,20 @@ type ContainmentConfig struct {
 // exactly matches a declared agents.<name>.listeners entry. An address no
 // profile binds would attribute the agent to nothing.
 func ValidateContainmentAgentListener(listener string, agents map[string]AgentProfile, proxyPort int) error {
+	return validateContainmentAgentListener(listener, agents, nil, "", proxyPort)
+}
+
+// LicenseDisabledProfileRefusal is the phrase every refusal caused by a
+// license-disabled agent profile carries, so tooling can tell an entitlement
+// refusal from a genuinely undeclared reference without parsing the rest.
+const LicenseDisabledProfileRefusal = "named agent profiles require a Pro license with the agents feature"
+
+// validateContainmentAgentListener is ValidateContainmentAgentListener with
+// the license gate's record of disabled profiles. A listener that only a
+// disabled profile declared is still refused, because nothing will bind it;
+// the refusal names the profile and the license cause instead of telling the
+// operator to declare a listener that is already declared.
+func validateContainmentAgentListener(listener string, agents map[string]AgentProfile, disabled map[string][]string, disabledReason string, proxyPort int) error {
 	if listener == "" {
 		return nil
 	}
@@ -78,17 +93,41 @@ func ValidateContainmentAgentListener(listener string, agents map[string]AgentPr
 	}
 	want := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 	for _, profile := range agents {
-		for _, declared := range profile.Listeners {
-			dHost, dPort, splitErr := net.SplitHostPort(declared)
-			if splitErr != nil {
-				continue
-			}
-			if dIP := net.ParseIP(dHost); dIP != nil && net.JoinHostPort(dIP.String(), dPort) == want {
-				return nil
-			}
+		if listenerListDeclares(profile.Listeners, want) {
+			return nil
 		}
 	}
+	names := make([]string, 0, len(disabled))
+	for name, listeners := range disabled {
+		if listenerListDeclares(listeners, want) {
+			names = append(names, name)
+		}
+	}
+	if len(names) > 0 {
+		sort.Strings(names)
+		reason := disabledReason
+		if reason == "" {
+			reason = "no valid license is loaded"
+		}
+		return fmt.Errorf("containment.agent_listener %q is declared only by agents.%s, which was disabled because %s; %s, and without it the listener is never bound",
+			listener, strings.Join(names, ", agents."), reason, LicenseDisabledProfileRefusal)
+	}
 	return fmt.Errorf("containment.agent_listener %q is not declared under any agents.<name>.listeners; declare it on the contained agent's profile", listener)
+}
+
+// listenerListDeclares reports whether any entry in listeners names the
+// canonical host:port want, comparing numeric hosts in canonical form.
+func listenerListDeclares(listeners []string, want string) bool {
+	for _, declared := range listeners {
+		dHost, dPort, splitErr := net.SplitHostPort(declared)
+		if splitErr != nil {
+			continue
+		}
+		if dIP := net.ParseIP(dHost); dIP != nil && net.JoinHostPort(dIP.String(), dPort) == want {
+			return true
+		}
+	}
+	return false
 }
 
 const DefaultContainmentAgentUser = "pipelock-agent"

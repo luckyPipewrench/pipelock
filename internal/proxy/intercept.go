@@ -751,11 +751,18 @@ func newInterceptHandler(
 			if store := ic.issuerQueryStore(); store != nil {
 				session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 				allowed := false
+				// The receipt names the widest rule that admitted a value:
+				// a cross-host OAuth callback outranks a same-host issue.
+				allowKind := issuerQueryObserved
 				allowCtx := scanner.WithIssuerQueryAllowance(interceptScanCtx, func(key, value string) bool {
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
-					if !store.allows(session, r.URL, key, value) {
+					kind, ok := store.match(session, r.URL, key, value)
+					if !ok {
 						return false
+					}
+					if kind == issuerQueryOAuthRedirect {
+						allowKind = kind
 					}
 					allowed = true
 					return true
@@ -764,7 +771,7 @@ func newInterceptHandler(
 				if allowed {
 					urlResult = rescanned
 					if rescanned.Allowed {
-						ic.Proxy.recordIssuerQueryAllow(actx, targetURL, ic.RequestID, ic.Agent, r.Method)
+						ic.Proxy.recordIssuerQueryAllow(actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind)
 					}
 				}
 			}

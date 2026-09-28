@@ -212,14 +212,45 @@ export async function withPinnedEvidenceDirectory<T>(
     throw new Error("concurrent evidence directory reads are unsupported");
   evidenceDirectoryActive = true;
   const original = process.cwd();
+  const directoryFlags =
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
+  const parents: number[] = [];
   try {
     const parsed = path.parse(root);
     if (parsed.root !== "") process.chdir(parsed.root);
+    parents.push(openSync(".", directoryFlags));
     const separators = path.sep === "\\" ? /[\\/]/u : /\//u;
     for (const component of root.slice(parsed.root.length).split(separators)) {
       if (component === "" || component === ".") continue;
       if (component === "..") {
-        process.chdir("..");
+        // Keep the selected parent open while climbing. A rename can move the
+        // current child under a different parent between these two steps.
+        const initialParent = parents.length === 1;
+        const expected = initialParent
+          ? openSync("..", directoryFlags)
+          : (parents[parents.length - 2] as number);
+        try {
+          process.chdir("..");
+          const pinned = fstatSync(expected, { bigint: true });
+          const entered = statSync(".", { bigint: true });
+          if (
+            !entered.isDirectory() ||
+            entered.dev !== pinned.dev ||
+            entered.ino !== pinned.ino ||
+            entered.ino === 0n
+          ) {
+            throw new EvidenceRefusedError("evidence root parent changed while entering");
+          }
+          if (initialParent) {
+            closeSync(parents[0] as number);
+            parents[0] = expected;
+          } else {
+            closeSync(parents[parents.length - 1] as number);
+            parents.pop();
+          }
+        } finally {
+          if (initialParent && parents[0] !== expected) closeSync(expected);
+        }
         continue;
       }
       const before = lstatSync(component, { bigint: true });
@@ -228,10 +259,8 @@ export async function withPinnedEvidenceDirectory<T>(
       }
       if (!before.isDirectory())
         throw new Error(`evidence root component "${component}" is not a directory`);
-      const fd = openSync(
-        component,
-        constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
-      );
+      const fd = openSync(component, directoryFlags);
+      let retained = false;
       try {
         const opened = fstatSync(fd, { bigint: true });
         if (
@@ -251,16 +280,22 @@ export async function withPinnedEvidenceDirectory<T>(
             `evidence root component changed while entering: "${component}"`,
           );
         }
+        parents.push(fd);
+        retained = true;
       } finally {
-        closeSync(fd);
+        if (!retained) closeSync(fd);
       }
     }
     return await read();
   } finally {
     try {
-      process.chdir(original);
+      for (const fd of parents) closeSync(fd);
     } finally {
-      evidenceDirectoryActive = false;
+      try {
+        process.chdir(original);
+      } finally {
+        evidenceDirectoryActive = false;
+      }
     }
   }
 }

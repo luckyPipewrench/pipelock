@@ -337,6 +337,39 @@ func TestStepGrantEvidenceACLs_OperatorRotationRestoresPriorOnRollback(t *testin
 	}
 }
 
+func TestStepGrantEvidenceACLs_RevocationFailureStillRestoresPriorOperator(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	runner.calls = nil
+	revoke := argvFor("setfacl", "-R", "-x", "u:operator2", env.logsDir())
+	runner.on(revoke, "injected revoke failure", 1, nil)
+	if err := step.undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "injected revoke failure") {
+		t.Fatalf("undo error = %v; want revocation failure", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not restored after revocation failure: %+v", runner.calls)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || current.Operator != "operator2" {
+		t.Fatalf("inventory after incomplete rollback = %+v, %v; want new operator retained", current, err)
+	}
+}
+
 // TestStepGrantEvidenceACLs_FailClosedOnUnresolvedOperator proves the ACL step
 // is skipped (no setfacl, no group/world fallback) when the operator user
 // cannot be resolved.

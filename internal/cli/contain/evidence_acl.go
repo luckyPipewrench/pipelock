@@ -220,23 +220,26 @@ func stepGrantEvidenceACLs() step {
 			if granted == nil {
 				return nil
 			}
-			if err := revokeEvidenceACLDirs(ctx, env, *granted); err != nil {
-				return err
-			}
+			// Restore the previous operator even if removing the new grant fails.
+			// Keep the current inventory on any error: a new ACL may still exist.
+			rollbackErr := revokeEvidenceACLDirs(ctx, env, *granted)
 			if priorInventory.Operator != "" && len(priorInventory.Dirs) > 0 {
 				var existingDirs []string
 				for _, dir := range priorInventory.Dirs {
 					if _, err := env.stat(dir); err == nil {
 						existingDirs = append(existingDirs, dir)
 					} else if !errors.Is(err, os.ErrNotExist) {
-						return fmt.Errorf("stat prior evidence dir %s: %w", dir, err)
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("stat prior evidence dir %s: %w", dir, err))
 					}
 				}
 				if len(existingDirs) > 0 {
 					if err := runWorkspaceCommands(ctx, env, evidenceACLCommands(priorInventory.Operator, env.dataDir, existingDirs)); err != nil {
-						return fmt.Errorf("restore prior evidence ACLs: %w", err)
+						rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore prior evidence ACLs: %w", err))
 					}
 				}
+			}
+			if rollbackErr != nil {
+				return rollbackErr
 			}
 			if !inventoryWritten {
 				// backupAndWrite restored a failed write inline (or recorded it

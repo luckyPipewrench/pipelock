@@ -450,3 +450,56 @@ func TestOAuthAuthorizeHopScope(t *testing.T) {
 		})
 	}
 }
+
+// Blocking request-body content entropy turns off both cross-host OAuth hops,
+// because a server that echoes body data into a redirect would otherwise carry
+// that data past the block. Same-host issuance is unaffected, and warn (the
+// default) keeps both hops as the positive control.
+func TestOAuthCrossHostOffWhenBodyEntropyBlocks(t *testing.T) {
+	code := issuedTestToken()
+	state := oauthTestState()
+	const server = "https://login.vendor.example"
+	authorize := server + "/authorize?response_type=code&client_id=client-one&redirect_uri=" + url.QueryEscape(oauthTestCallback) + "&state=" + state
+	for _, tc := range []struct {
+		action              string
+		wantCrossHost, same bool
+	}{
+		{action: config.ActionWarn, wantCrossHost: true, same: true},
+		{action: config.ActionBlock, wantCrossHost: false, same: true},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			ic, session := oauthTestStore(t)
+			ic.Config.RequestBodyScanning.ContentEntropyAction = tc.action
+			store := ic.issuerQueryStore()
+			redirect := func(from, location string) {
+				recordDeliveredIssuerQuery(ic, &http.Response{
+					Request:    &http.Request{URL: mustIssuerQueryURL(t, from)},
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": {location}},
+				}, nil, true)
+			}
+			// First hop: the client sends the browser to the authorization server.
+			redirect("https://app.vendor.example/login", authorize)
+			if _, got := store.match(session, mustIssuerQueryURL(t, server+"/authorize"), "state", state); got != tc.wantCrossHost {
+				t.Fatalf("authorize hop allowed=%v, want %v", got, tc.wantCrossHost)
+			}
+			// Second hop: the server returns the code to the declared callback.
+			decl := mustIssuerQueryURL(t, authorize)
+			declared, ok := oauthRedirectDeclaration(decl)
+			if !ok {
+				t.Fatal("authorization request did not parse")
+			}
+			store.declareRedirect(session, decl, declared, time.Now())
+			redirect(server+"/u/login", oauthTestCallback+"?code="+code)
+			if _, got := store.match(session, mustIssuerQueryURL(t, oauthTestCallback), "code", code); got != tc.wantCrossHost {
+				t.Fatalf("callback hop allowed=%v, want %v", got, tc.wantCrossHost)
+			}
+			// Same-host issuance does not depend on the body entropy action.
+			sameValue := issuedTestToken()
+			redirect(server+"/u/login", server+"/authorize/resume?state="+sameValue)
+			if _, got := store.match(session, mustIssuerQueryURL(t, server+"/authorize/resume"), "state", sameValue); got != tc.same {
+				t.Fatalf("same-host allowed=%v, want %v", got, tc.same)
+			}
+		})
+	}
+}

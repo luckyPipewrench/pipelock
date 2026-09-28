@@ -253,6 +253,16 @@ func (s *issuerQueryStore) redirectDeclared(session string, server, redirect *ur
 	return false
 }
 
+// oauthCrossHostAllowed reports whether cross-host OAuth issuance may run.
+// A server that echoes request-body data into a redirect can carry that data
+// to another host in a URL. While request-body content entropy only warns,
+// the agent could send the same data straight to that host, so the hop adds
+// nothing. When the operator blocks body content entropy, the hop would be the
+// way around that block, so cross-host values keep the ordinary URL gate.
+func oauthCrossHostAllowed(cfg *config.Config) bool {
+	return cfg != nil && cfg.RequestBodyScanning.ContentEntropyAction != config.ActionBlock
+}
+
 // oauthCrossHostHop reports whether a redirect from one origin to another is
 // an OAuth authorization-code hop whose values the redirecting server issued:
 //   - the client sending the browser to an authorization server, when the
@@ -356,7 +366,8 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		if host != issuerHost || port != issuerPort {
 			// A value may cross to another host only on a redirect that is
 			// one of the two OAuth authorization-code hops.
-			if !redirectHop || !oauthCrossHostHop(store, session, response.Request.URL, candidate) {
+			if !redirectHop || !oauthCrossHostAllowed(ic.Config) ||
+				!oauthCrossHostHop(store, session, response.Request.URL, candidate) {
 				return
 			}
 			kind = issuerQueryOAuthRedirect

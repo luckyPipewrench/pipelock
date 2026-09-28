@@ -1078,7 +1078,7 @@ response_scanning:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `true` | Enable the configurable response-scanning layer. With `false`, the immutable core response patterns still run on fetch, forward, CONNECT, reverse, WebSocket and agent hooks, and their findings block. |
+| `enabled` | `true` | Enable the configurable response-scanning layer. With `false`, the immutable core response patterns still run on fetch, forward, CONNECT, reverse, WebSocket and agent hooks, and their findings block unless a `core_observe_exceptions` entry covers that host and pattern. |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 34 built-in patterns |

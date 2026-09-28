@@ -12,7 +12,7 @@ Configuration (balanced defaults):
 - Response scanning: 34 prompt-injection and state/control-poisoning patterns
 - DLP: 65 patterns + BIP-39 seed phrase detection
 
-Run `make bench` to reproduce on your hardware. Single-request numbers below are the median of three runs of v3.6.0 at commit `7283f25e7` with Go 1.26.0 on the hardware listed at the bottom, in a process limited to four CPUs (`GOMAXPROCS=4`). Response scanning evaluates its patterns in parallel, so its figures depend on the CPUs available and can be lower on a machine that gives the process more. The parallel throughput section is still from v3.1.0 with 16 CPUs and says so.
+Run `make bench` to reproduce on your hardware. Single-request numbers below are the median of three runs at pre-release commit `7283f25e7` for v3.6.0, with Go 1.26.0 on the hardware listed at the bottom and a process limit of four CPUs (`GOMAXPROCS=4`). Later changes in the release branch are not represented by that measurement. Response scanning evaluates its patterns in parallel, so its figures depend on the CPUs available and can be lower on a machine that gives the process more. The parallel throughput section is still from v3.1.0 with 16 CPUs and says so.
 
 ## Scanner Pipeline (`Scanner.Scan()`)
 
@@ -111,7 +111,7 @@ True concurrent throughput across all available goroutines. Measured on v3.1.0; 
 
 ## Key Takeaways
 
-- **Typical URL scan with DNS-based SSRF, rate limiting, and data budget checks disabled: ~53 microseconds** (v3.6.0). Well under 1ms; network latency dominates real requests. It was ~39μs in v3.1.0.
+- **Typical URL scan with DNS-based SSRF, rate limiting, and data budget checks disabled: ~53 microseconds** (pre-release v3.6.0 commit `7283f25e7`). Well under 1ms; network latency dominates real requests. It was ~39μs in v3.1.0.
 - Blocked URLs short-circuit early: the blocklist check is ~3μs, and an over-length URL is rejected in ~320ns before any expensive layer runs.
 - A DLP block on a URL takes ~15μs. The pre-filter alone takes ~1.1μs on clean text with two small allocations.
 - Response scanning runs the full multi-pass normalization cascade: ~66μs on small clean content and ~67μs when injection is detected. State/control patterns add cost on clean text (~384μs). Large content (~10KB) takes ~5.5ms, down from ~46ms in v3.1.0.
@@ -121,7 +121,7 @@ True concurrent throughput across all available goroutines. Measured on v3.1.0; 
 
 ## Hardware
 
-AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Linux / Fedora 43. Single-request and seed-phrase tables: v3.6.0 at `7283f25e7`, Go 1.26.0, `GOMAXPROCS=4`. Parallel tables: v3.1.0, Go 1.25, 16 CPUs.
+AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Linux / Fedora 43. Single-request and seed-phrase tables: pre-release v3.6.0 commit `7283f25e7`, Go 1.26.0, `GOMAXPROCS=4`. Parallel tables: v3.1.0, Go 1.25, 16 CPUs.
 
 ## Running Benchmarks
 

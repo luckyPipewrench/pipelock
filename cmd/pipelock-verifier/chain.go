@@ -130,12 +130,13 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 
 	var label string
 	if opts.asDir {
-		clean := filepath.Clean(target)
-		location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
+		// Pass the operator's path unchanged: evidence location resolution
+		// checks it for symlinks as the operating system walks it.
+		location, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
 		if locationErr != nil {
 			return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
-		clean = location.Dir
+		clean := location.Dir
 		if handled, setErr := runChainSetIfRuns(stdout, stderr, location, trust, opts); handled || setErr != nil {
 			return setErr
 		}

@@ -5,8 +5,8 @@ use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
     chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
-    resolve_base_sessions, run_session_base, verify_base, BaseVerifyOptions, SessionReadError,
-    FINDING_OUTER_CHAIN_BROKEN,
+    refuse_symlink_in_evidence_root_path, resolve_base_sessions, run_session_base, verify_base,
+    BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
@@ -460,6 +460,25 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
     let target = require_one_arg(&parsed.positionals, "chain")?;
     let key_hex = resolve_signer_keys(&parsed.keys)?;
     let clean = PathBuf::from(target);
+    if parsed.dir {
+        match refuse_symlink_in_evidence_root_path(&clean) {
+            Ok(()) => {}
+            Err(err) if err.refused => {
+                let report = ChainCommandReport {
+                    path: target.to_string(),
+                    error: Some(err.message),
+                    ..ChainCommandReport::default()
+                };
+                return emit_chain_result(&report, parsed.json);
+            }
+            Err(err) => {
+                return Err(VerifierError::Runtime(format!(
+                    "resolve evidence location: {}",
+                    err.message
+                )))
+            }
+        }
+    }
     // A directory whose base has per-run chains is verified as a base, as the
     // Go reference does: the base of a run session is its prefix, and any
     // other session is its own base. Without --session-id every chain of the

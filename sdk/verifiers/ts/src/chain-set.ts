@@ -156,6 +156,29 @@ interface EvidenceIndex {
   symlinks: Map<string, string[]>;
 }
 
+// refuseSymlinkInEvidenceRootPath applies Go's no-symlink evidence-root rule
+// (recorder.refuseSymlinkInWalkedRootPath) to the path the operating system
+// walks, before path.normalize turns "link/../ev" into "ev" and hides the
+// symlink the open would follow.
+export function refuseSymlinkInEvidenceRootPath(root: string): void {
+  const raw = path.isAbsolute(root) ? root : `${process.cwd()}${path.sep}${root}`;
+  const parsedRoot = path.parse(raw).root;
+  let current = parsedRoot;
+  for (const component of raw.slice(parsedRoot.length).split(/[\\/]/u)) {
+    if (component === "" || component === ".") continue;
+    if (component === "..") {
+      // Every component walked so far is not a symlink, so the lexical parent
+      // is the physical parent.
+      current = path.dirname(current);
+      continue;
+    }
+    current = path.join(current, component);
+    if (lstatSync(current).isSymbolicLink()) {
+      throw new EvidenceRefusedError(`refuse symlink in evidence root path: "${current}"`);
+    }
+  }
+}
+
 function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();

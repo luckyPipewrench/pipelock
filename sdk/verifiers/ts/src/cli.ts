@@ -14,6 +14,7 @@ import {
   chainScopedTrust,
   checkFileEntrySessions,
   EvidenceRefusedError,
+  refuseSymlinkInEvidenceRootPath,
   readSessionEvidence,
   readSessionReceipts,
   resolveBaseSessions,
@@ -422,6 +423,19 @@ async function runChainCommand(args: string[]): Promise<number> {
   const json = parsed.values.json === true;
   // Resolve an explicit file before normalizing it: symlink/.. can reach a
   // different file from the one selected by lexical normalization.
+  if (asDir) {
+    try {
+      refuseSymlinkInEvidenceRootPath(target);
+    } catch (err) {
+      if (err instanceof EvidenceRefusedError) {
+        return emitChainResult(
+          { path: target, valid: false, receipt_count: 0, final_seq: 0, error: err.message },
+          json,
+        );
+      }
+      throw new RuntimeError(`resolve evidence location: ${errorMessage(err)}`);
+    }
+  }
   const clean = asDir ? path.normalize(target) : resolveOperatorFilePath(target);
   // A directory whose base has per-run chains is verified as a base, as the Go
   // reference does: the base of a run session is its prefix, and any other

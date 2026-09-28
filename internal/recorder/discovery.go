@@ -40,6 +40,9 @@ func DiscoverEvidenceLocations(root string) ([]EvidenceLocation, error) {
 // discoverEvidenceLocations anchors traversal to an opened root. The optional
 // hook lets tests replace the pathname after the handle is open.
 func discoverEvidenceLocations(root string, afterRootOpen func()) ([]EvidenceLocation, error) {
+	if err := refuseSymlinkInWalkedRootPath(root); err != nil {
+		return nil, err
+	}
 	cleanRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return nil, fmt.Errorf("resolve evidence root: %w", err)
@@ -123,6 +126,46 @@ func isReservedEvidenceCeremonyDir(name string) bool {
 // validateEvidenceRootComponents checks from the filesystem root down so a
 // symlinked ancestor is rejected before any descendant under its target is
 // inspected.
+// refuseSymlinkInWalkedRootPath applies the no-symlink root rule to the path
+// the operating system walks, before any lexical cleaning. filepath.Clean
+// turns "link/../ev" into "ev", so validating only the cleaned path never
+// sees the symlink the open would follow, and the verifier reads a different
+// directory from the one the operator's path names.
+func refuseSymlinkInWalkedRootPath(root string) error {
+	raw := root
+	if !filepath.IsAbs(raw) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve evidence root: %w", err)
+		}
+		raw = wd + string(filepath.Separator) + raw
+	}
+	volume := filepath.VolumeName(raw)
+	current := volume + string(filepath.Separator)
+	for _, component := range strings.FieldsFunc(raw[len(volume):], func(r rune) bool {
+		return r == filepath.Separator || r == '/'
+	}) {
+		switch component {
+		case ".":
+			continue
+		case "..":
+			// Every component walked so far was checked and is not a
+			// symlink, so the lexical parent is the physical parent.
+			current = filepath.Dir(current)
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("stat evidence root component %q: %w", current, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%w: refuse symlink in evidence root path: %q", ErrEvidenceRefused, current)
+		}
+	}
+	return nil
+}
+
 func validateEvidenceRootComponents(cleanRoot string) (fs.FileInfo, error) {
 	components := make([]string, 0)
 	for component := cleanRoot; ; component = filepath.Dir(component) {

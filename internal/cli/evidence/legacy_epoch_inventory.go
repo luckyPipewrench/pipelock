@@ -269,11 +269,11 @@ func resolveLegacyInventoryLocation(root, locationID, session string) (recorder.
 	if strings.TrimSpace(session) == "" {
 		return recorder.EvidenceLocation{}, errors.New("--session is required")
 	}
-	cleanRoot, err := validateReceiptDir(root)
+	_, err := validateReceiptDir(root)
 	if err != nil {
 		return recorder.EvidenceLocation{}, err
 	}
-	location, err := recorder.ResolveEvidenceLocation(cleanRoot, locationID)
+	location, err := recorder.ResolveEvidenceLocation(root, locationID)
 	if err != nil {
 		return recorder.EvidenceLocation{}, fmt.Errorf("resolve evidence location: %w", err)
 	}

@@ -421,3 +421,42 @@ func TestVerifyReceipt_ConfigErrorsExitTwo(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyReceipt_ChainRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
+	key := parityKey(t)
+	base := t.TempDir()
+	realEv := filepath.Join(base, "a", "ev")
+	if err := os.MkdirAll(filepath.Dir(realEv), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(parityFixture(t), realEv); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "b", "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "b", "ev"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "b", "sub"), filepath.Join(base, "a", "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(realEv, filepath.Join(base, "evlink")); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runParityVerify(t, "--chain", realEv, "--key", key); err != nil {
+		t.Fatalf("positive control: real directory failed: %v\n%s", err, out)
+	}
+	sep := string(filepath.Separator)
+	for name, target := range map[string]string{
+		"symlinked root":            filepath.Join(base, "evlink"),
+		"symlink hidden by dot-dot": filepath.Join(base, "a", "link") + sep + ".." + sep + "ev",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := runParityVerify(t, "--chain", target, "--key", key)
+			if err == nil || !strings.Contains(out+err.Error(), "refuse symlink in evidence root path") {
+				t.Fatalf("want refusal, got %v\n%s", err, out)
+			}
+		})
+	}
+}

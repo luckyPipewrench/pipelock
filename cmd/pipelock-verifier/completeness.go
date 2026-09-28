@@ -70,7 +70,7 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", clean, statErr))
 	}
 	if info.IsDir() {
-		location, locationErr := recorder.ResolveEvidenceLocation(clean, opts.locationID)
+		location, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
 		if locationErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence location: %w", locationErr))
 		}

@@ -100,11 +100,11 @@ cross-agent evidence console, see the Pro/Enterprise dashboard.`,
 }
 
 func runView(cmd *cobra.Command, opts viewOptions) error {
-	cleanDir, err := validateReceiptDir(opts.receiptDir)
+	_, err := validateReceiptDir(opts.receiptDir)
 	if err != nil {
 		return err
 	}
-	location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}
@@ -246,11 +246,11 @@ does not expose any route or query parameter that can select another session.`,
 }
 
 func runServe(cmd *cobra.Command, opts serveOptions) error {
-	cleanDir, err := validateReceiptDir(opts.receiptDir)
+	_, err := validateReceiptDir(opts.receiptDir)
 	if err != nil {
 		return err
 	}
-	location, locationErr := recorder.ResolveEvidenceLocation(cleanDir, opts.locationID)
+	location, locationErr := recorder.ResolveEvidenceLocation(opts.receiptDir, opts.locationID)
 	if locationErr != nil {
 		return fmt.Errorf("resolve evidence location: %w", locationErr)
 	}

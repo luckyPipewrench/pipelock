@@ -493,7 +493,7 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 		}
 		return receiptTail{}, fmt.Errorf("stat evidence directory: %w", statErr)
 	}
-	location, resolveErr := recorder.ResolveEvidenceLocation(clean, "")
+	location, resolveErr := recorder.ResolveEvidenceLocation(dir, "")
 	if resolveErr != nil {
 		return receiptTail{}, fmt.Errorf("resolve evidence location: %w", resolveErr)
 	}

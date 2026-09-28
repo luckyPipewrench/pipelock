@@ -7,7 +7,7 @@ import { validateV1Receipt } from "./strict.js";
 import { validateTimestamp } from "./aarp/numbers.js";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { bindRecorderLineExtSource } from "./rawjson.js";
-import { readSessionReceipts } from "./chain-set.js";
+import { readSessionReceipts, refuseSymlinkInEvidenceRootPath } from "./chain-set.js";
 import type { RecorderLine } from "./recorder-chain.js";
 import {
   InvalidError,
@@ -200,5 +200,6 @@ export function extractReceipts(file: string): Receipt[] {
 // chain-set reader: for session "s", "evidence-s-evil-0.jsonl" belongs to
 // session "s-evil" and is not read, although it starts with "evidence-s-".
 export function extractReceiptsFromSessionDir(dir: string, sessionId: string): Receipt[] {
+  refuseSymlinkInEvidenceRootPath(dir);
   return selectReceiptChain(readSessionReceipts(path.normalize(dir), sessionId));
 }

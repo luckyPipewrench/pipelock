@@ -473,3 +473,50 @@ func TestExecute_EveryFailurePrintsReason(t *testing.T) {
 		}
 	}
 }
+
+func TestChain_DirectoryRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
+	t.Parallel()
+	key := readRunChainFixture(t, "signer-key.hex")
+	base := t.TempDir()
+	valid := copyFixtureDir(t, "valid")
+	tampered := copyFixtureDir(t, "tampered-predecessor")
+	realEv := filepath.Join(base, "a", "ev")
+	otherEv := filepath.Join(base, "b", "ev")
+	for _, pair := range [][2]string{{valid, realEv}, {tampered, otherEv}} {
+		if err := os.MkdirAll(filepath.Dir(pair[1]), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(pair[0], pair[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(base, "b", "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "b", "sub"), filepath.Join(base, "a", "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(realEv, filepath.Join(base, "evlink")); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(filepath.Separator)
+	hidden := filepath.Join(base, "a", "link") + sep + ".." + sep + "ev"
+	for _, tc := range []struct {
+		name    string
+		target  string
+		code    int
+		wantOut string
+	}{
+		{name: "real directory", target: realEv, code: 0, wantOut: "CHAIN VALID"},
+		{name: "directory the hidden path opens", target: otherEv, code: 1, wantOut: "CHAIN BROKEN"},
+		{name: "symlinked root", target: filepath.Join(base, "evlink"), code: 1, wantOut: "refuse symlink in evidence root path"},
+		{name: "symlink hidden by dot-dot", target: hidden, code: 1, wantOut: "refuse symlink in evidence root path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runRoot(t, "chain", tc.target, "--dir", "--key", key)
+			if code != tc.code || !strings.Contains(stdout+stderr, tc.wantOut) {
+				t.Fatalf("exit %d, want %d with %q\n%s%s", code, tc.code, tc.wantOut, stdout, stderr)
+			}
+		})
+	}
+}

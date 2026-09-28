@@ -242,6 +242,50 @@ impl From<String> for SessionReadError {
     }
 }
 
+/// Applies Go's no-symlink evidence-root rule
+/// (`recorder.refuseSymlinkInWalkedRootPath`) along the path the operating
+/// system walks, so a symlink component is refused even when a later `..`
+/// would lexically cancel it.
+pub fn refuse_symlink_in_evidence_root_path(root: &Path) -> Result<(), SessionReadError> {
+    use std::path::Component;
+    let mut current = if root.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().map_err(|err| SessionReadError {
+            message: format!("resolve evidence root: {err}"),
+            refused: false,
+        })?
+    };
+    for component in root.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => {}
+            // Every component walked so far is not a symlink, so the lexical
+            // parent is the physical parent.
+            Component::ParentDir => {
+                current.pop();
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                let meta = fs::symlink_metadata(&current).map_err(|err| SessionReadError {
+                    message: format!(
+                        "stat evidence root component \"{}\": {err}",
+                        current.display()
+                    ),
+                    refused: false,
+                })?;
+                if meta.file_type().is_symlink() {
+                    return Err(refused(format!(
+                        "refuse symlink in evidence root path: \"{}\"",
+                        current.display()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn refused(message: String) -> SessionReadError {
     SessionReadError {
         refused: true,

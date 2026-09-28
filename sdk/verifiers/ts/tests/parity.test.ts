@@ -118,6 +118,39 @@ test("explicit file paths resolve symlinks before parent traversal", () => {
   }
 });
 
+test("directory mode refuses a symlink anywhere on the walked root path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "verifier-root-"));
+  try {
+    const fixtures = resolve(packageRoot, "../../conformance/testdata/run-chains");
+    const key = join(fixtures, "signer-key.hex");
+    const realEv = join(dir, "a", "ev");
+    const otherEv = join(dir, "b", "ev");
+    mkdirSync(join(dir, "a"));
+    mkdirSync(join(dir, "b", "sub"), { recursive: true });
+    cpSync(join(fixtures, "valid"), realEv, { recursive: true });
+    cpSync(join(fixtures, "tampered-predecessor"), otherEv, { recursive: true });
+    symlinkSync(join(dir, "b", "sub"), join(dir, "a", "link"));
+    symlinkSync(realEv, join(dir, "evlink"));
+    const run = (target: string) =>
+      spawnSync("node", [CLI, "chain", target, "--dir", "--key", key, "--json"], {
+        encoding: "utf8",
+      });
+    const ok = run(realEv);
+    assert.equal(ok.status, 0, `positive control: ${ok.stdout}${ok.stderr}`);
+    const opened = run(otherEv);
+    assert.equal(opened.status, 1, `${opened.stdout}${opened.stderr}`);
+    for (const target of [join(dir, "evlink"), `${join(dir, "a", "link")}/../ev`]) {
+      const r = run(target);
+      assert.equal(r.status, 1, `${target}: ${r.stdout}${r.stderr}`);
+      const report = JSON.parse(r.stdout) as ChainReport;
+      assert.equal(report.valid, false);
+      assert.match(report.error ?? "", /refuse symlink in evidence root path/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an explicit symlink cannot claim a different recorder session", () => {
   const dir = mkdtempSync(join(tmpdir(), "verifier-session-alias-"));
   try {

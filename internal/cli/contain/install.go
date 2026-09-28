@@ -82,7 +82,8 @@ Flags let CI and reviewers see the planned commands before running.
 
 Exit codes:
   0  All steps applied (or already in place).
-  1  A step failed; earlier applied steps were rolled back.
+  1  A step failed; earlier applied steps were rolled back. If an undo
+     also failed, the error names it and the host needs another install.
   2  Precondition error (not root, missing executable, bad --config).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -1588,8 +1589,11 @@ func stepWriteIntegrityPin() step {
 			}
 			// Pin file ownership: pipelock-proxy owns the private
 			// integrity directory and pin. pipelock-agent cannot traverse it.
+			// The pin is already rewritten, so report it applied: rollback
+			// must restore the previous pin, or a restored binary is refused
+			// by the pin that names the binary this attempt installed.
 			if err := ensureIntegrityOwnership(env); err != nil {
-				return false, err
+				return true, err
 			}
 			return true, nil
 		},
@@ -2202,13 +2206,17 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		rulesChanged = true
 	}
+	// Every error return below reports each file this step already changed,
+	// so the orchestrator runs this step's undo and restores them. Reporting
+	// false after a write left the new rules file on disk for the next boot
+	// to load while the kernel kept the old table.
 	persistUnitChanged, err := ensureNFTPersistUnit(env)
 	if err != nil {
-		return false, err
+		return rulesChanged || persistUnitChanged, err
 	}
 	expiryUnitChanged, err := ensureNFTExpiryUnits(env)
 	if err != nil {
-		return persistUnitChanged || expiryUnitChanged, err
+		return rulesChanged || persistUnitChanged || expiryUnitChanged, err
 	}
 	changed := rulesChanged || persistUnitChanged || expiryUnitChanged || !tableLoaded
 	if changed || !tableLoaded || liveRulesDrifted {
@@ -2218,12 +2226,14 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		reloadedManagedChain := false
 		if tableLoaded && (rulesChanged || liveRulesDrifted) {
+			env.nftTableMutatedByInstall = true
 			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, priorUIDs...); err != nil {
 				return changed, err
 			}
 			reloadedManagedChain = true
 		}
 		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
+			env.nftTableMutatedByInstall = true
 			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 				return changed, fmt.Errorf("nft load failed: %w", err)
 			}
@@ -2260,6 +2270,11 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
 			return err
 		}
+	} else if env.prevNFTTableStateKnown && !env.nftTableMutatedByInstall {
+		// No table existed before this attempt and this attempt never ran a
+		// load, so there is no table to drop. Deleting an absent table exits
+		// non-zero, and returning that here would skip the file restores
+		// below and leave this attempt's rules and units on disk.
 	} else {
 		// Report a failed drop. Every other branch of this rollback returns
 		// its error; discarding this one meant an install that failed on a
@@ -3275,7 +3290,9 @@ func stepInstallSudoers() step {
 				// Roll back inside the step so a malformed sudoers never
 				// ends up loaded. The orchestrator would also undo, but
 				// removing the bad file ourselves is cheaper and clearer.
-				_ = restoreBackup(env, env.sudoersPath)
+				if rerr := restoreBackup(env, env.sudoersPath); rerr != nil {
+					return false, errors.Join(fmt.Errorf("visudo rejected new sudoers: %w", err), fmt.Errorf("restore previous sudoers: %w", rerr))
+				}
 				return false, fmt.Errorf("visudo rejected new sudoers: %w", err)
 			}
 			return true, nil

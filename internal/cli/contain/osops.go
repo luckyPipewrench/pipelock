@@ -173,7 +173,11 @@ type installEnv struct {
 	lookPath               func(string) (string, error)
 	platformFamily         string
 
-	prevNFTTableDump             string
+	prevNFTTableDump string
+	// nftTableMutatedByInstall records that this install attempt ran a
+	// command that loads or rewrites the containment table. Rollback uses it
+	// to tell a table this attempt created from one that never existed.
+	nftTableMutatedByInstall     bool
 	prevNFTTableStateKnown       bool
 	prevNFTPersistEnabled        bool
 	prevNFTPersistStateKnown     bool

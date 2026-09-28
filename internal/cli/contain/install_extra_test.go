@@ -1208,7 +1208,10 @@ func TestRollbackApplied_HandlesUndoFailureNonFatally(t *testing.T) {
 		},
 	}
 	// applied[0] was first; rollbackApplied walks in reverse: boom then ok.
-	rollbackApplied(context.Background(), env, out, applied)
+	err := rollbackApplied(context.Background(), env, out, applied)
+	if err == nil || !strings.Contains(err.Error(), "undo boom") || !strings.Contains(err.Error(), "kaboom") {
+		t.Fatalf("rollbackApplied error = %v, want the failed undo named", err)
+	}
 	got := out.String()
 	if !strings.Contains(got, "[FAIL] undo boom") {
 		t.Errorf("missing fail line for boom: %q", got)
@@ -1220,7 +1223,9 @@ func TestRollbackApplied_HandlesUndoFailureNonFatally(t *testing.T) {
 
 func TestRollbackApplied_HandlesEmptySliceAsNoop(t *testing.T) {
 	env, _, out := newFakeEnv(t)
-	rollbackApplied(context.Background(), env, out, nil)
+	if err := rollbackApplied(context.Background(), env, out, nil); err != nil {
+		t.Fatalf("empty rollback: %v", err)
+	}
 	if out.Len() != 0 {
 		t.Errorf("expected no output: %q", out.String())
 	}
@@ -1229,7 +1234,9 @@ func TestRollbackApplied_HandlesEmptySliceAsNoop(t *testing.T) {
 func TestRollbackApplied_SkipsStepsWithNilUndo(t *testing.T) {
 	env, _, out := newFakeEnv(t)
 	applied := []step{{name: "nostep", desc: "nostep", undo: nil}}
-	rollbackApplied(context.Background(), env, out, applied)
+	if err := rollbackApplied(context.Background(), env, out, applied); err != nil {
+		t.Fatalf("nil-undo rollback: %v", err)
+	}
 	if !strings.Contains(out.String(), "[SKIP] undo nostep") {
 		t.Errorf("expected skip line: %q", out.String())
 	}

@@ -549,8 +549,10 @@ func stepWriteProfileScript() step {
 			if err := backupAndWrite(env, path, []byte(body), modeProfileScript); err != nil {
 				return false, err
 			}
+			// The new script is on disk; report it applied so rollback
+			// restores the previous one instead of leaving it half-owned.
 			if err := env.chown(path, 0, gid); err != nil {
-				return false, fmt.Errorf("chown %s: %w", path, err)
+				return true, fmt.Errorf("chown %s: %w", path, err)
 			}
 			return true, nil
 		},

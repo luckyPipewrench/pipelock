@@ -844,7 +844,7 @@ func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts v
 }
 
 func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned bool) error {
-	data, err := os.ReadFile(filepath.Clean(path))
+	data, err := readOperatorFile(path)
 	if err != nil {
 		return fmt.Errorf("reading fleet receipt: %w", err)
 	}
@@ -932,6 +932,17 @@ func fleetTrustedKeyMap(env fleetreceipt.Envelope, keys []string) (map[string]ed
 		}
 	}
 	return out, nil
+}
+
+// readOperatorFile reads a file argument as the operating system opens it:
+// symlinks are resolved before any lexical cleaning, so "link/../f" names the
+// file beside the link's target rather than the lexical f.
+func readOperatorFile(path string) ([]byte, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Clean(resolved))
 }
 
 func verifyChainFromFile(out io.Writer, path string, trustedKeys []string) error {
@@ -1552,7 +1563,7 @@ func containmentAssessmentForReceipts(receipts []receipt.Receipt, opts receiptPo
 	if strings.TrimSpace(opts.KeyHex) == "" {
 		return evidence.ContainmentAssessment{}, fmt.Errorf("--posture-key is required when --posture is supplied")
 	}
-	data, err := os.ReadFile(filepath.Clean(opts.Path))
+	data, err := readOperatorFile(opts.Path)
 	if err != nil {
 		return evidence.ContainmentAssessment{}, fmt.Errorf("reading posture capsule: %w", err)
 	}
@@ -1734,7 +1745,7 @@ func resolveExpectedKeyHex(expectedKey string) (string, error) {
 	if strings.TrimSpace(expectedKey) == "" {
 		return "", nil
 	}
-	key, err := sigutil.LoadPublicKey(expectedKey)
+	key, err := sigutil.LoadPublicKeyAsOpened(expectedKey)
 	if err != nil {
 		return "", err
 	}

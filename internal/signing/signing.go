@@ -353,6 +353,25 @@ func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
 // LoadPublicKey resolves either a filesystem path or an inline public key
 // value. Files may contain the versioned pipelock format or raw hex.
 func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
+	return loadPublicKey(pathOrValue, func(input string) (string, error) {
+		cleanPath := filepath.Clean(input)
+		_, err := os.Stat(cleanPath)
+		return cleanPath, err
+	})
+}
+
+// LoadPublicKeyAsOpened is LoadPublicKey for a verifier's trust anchors: a
+// file path is read as the operating system opens it. Symlinks are resolved
+// before any lexical cleaning, so "link/../keys/k.hex" names the file under
+// the link's target, as every receipt verifier reads it, rather than the
+// lexical keys/k.hex.
+func LoadPublicKeyAsOpened(pathOrValue string) (ed25519.PublicKey, error) {
+	return loadPublicKey(pathOrValue, filepath.EvalSymlinks)
+}
+
+// loadPublicKey parses an inline key or reads the file resolve returns. A
+// resolve error matching os.ErrNotExist means there is no such file.
+func loadPublicKey(pathOrValue string, resolve func(string) (string, error)) (ed25519.PublicKey, error) {
 	input := strings.TrimSpace(pathOrValue)
 	if input == "" {
 		return nil, fmt.Errorf("public key is empty")
@@ -365,9 +384,9 @@ func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
 		return key, nil
 	}
 
-	cleanPath := filepath.Clean(input)
-	if _, err := os.Stat(cleanPath); err == nil {
-		data, readErr := os.ReadFile(cleanPath)
+	filePath, err := resolve(input)
+	if err == nil {
+		data, readErr := os.ReadFile(filepath.Clean(filePath))
 		if readErr != nil {
 			return nil, fmt.Errorf("reading public key: %w", readErr)
 		}
@@ -385,7 +404,7 @@ func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
 	// instead of falling through to ParsePublicKey which would produce a
 	// confusing "invalid public key" error for typo'd file paths.
 	if strings.ContainsAny(input, "/\\") || strings.HasPrefix(input, ".") || filepath.Ext(input) != "" {
-		return nil, fmt.Errorf("reading public key file %s: %w", cleanPath, os.ErrNotExist)
+		return nil, fmt.Errorf("reading public key file %s: %w", filepath.Clean(input), os.ErrNotExist)
 	}
 
 	return ParsePublicKey(input)

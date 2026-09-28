@@ -528,3 +528,49 @@ func TestLoadRotationEndorsementFileBoundaries(t *testing.T) {
 		t.Fatalf("oversized file error = %v", err)
 	}
 }
+
+// The endorsement path is read as the operating system opens it:
+// "link/../rot/e.json" names the file under the link's target.
+func TestLoadRotationEndorsementFileResolvesSymlinkBeforeDotDot(t *testing.T) {
+	valid, err := os.ReadFile(filepath.Join("..", "..", "sdk", "conformance", "testdata", "g1-rotation-endorsement.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalRotationEndorsement(valid); err != nil {
+		t.Fatalf("fixture endorsement does not verify: %v", err)
+	}
+	dir := t.TempDir()
+	for _, sub := range []string{filepath.Join("a", "rot"), filepath.Join("b", "rot"), filepath.Join("b", "sub")} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "b", "sub"), filepath.Join(dir, "a", "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	sep := string(filepath.Separator)
+	input := filepath.Join(dir, "a", "link") + sep + ".." + sep + "rot" + sep + "e.json"
+	lexical := filepath.Join(dir, "a", "rot", "e.json")
+	opened := filepath.Join(dir, "b", "rot", "e.json")
+	for _, tc := range []struct {
+		name              string
+		lexData, openData []byte
+		wantOK            bool
+	}{
+		{name: "valid at the opened path", lexData: []byte("{}"), openData: valid, wantOK: true},
+		{name: "valid only at the lexical path", lexData: valid, openData: []byte("{}")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(lexical, tc.lexData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(opened, tc.openData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadRotationEndorsementFile(input)
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("want ok=%t, got %v", tc.wantOK, err)
+			}
+		})
+	}
+}

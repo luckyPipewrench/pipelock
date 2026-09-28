@@ -226,7 +226,7 @@ func resolveSignerKey(input string) (string, error) {
 	if input == "" {
 		return "", nil
 	}
-	key, err := sigutil.LoadPublicKey(input)
+	key, err := sigutil.LoadPublicKeyAsOpened(input)
 	if err != nil {
 		return "", err
 	}

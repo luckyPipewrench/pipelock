@@ -331,12 +331,32 @@ pub(crate) fn with_pinned_evidence_directory<T>(
             std::env::set_current_dir(&anchor)
                 .map_err(|err| VerifierError::Runtime(format!("enter evidence root: {err}")))?;
         }
+        // Retain each opened parent. A child can be renamed into another
+        // directory while we are inside it; `..` must return to the parent
+        // selected before that rename, not the child's new parent.
+        let mut parents = vec![open_pinned_directory(Path::new("."))?];
         for part in root.components() {
             match part {
                 Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
-                Component::ParentDir => std::env::set_current_dir("..").map_err(|err| {
-                    VerifierError::Runtime(format!("enter evidence parent: {err}"))
-                })?,
+                Component::ParentDir => {
+                    // An initial relative `..` has no descended parent yet;
+                    // open it before changing cwd and compare after entering.
+                    let initial_parent = if parents.len() == 1 {
+                        Some(open_pinned_directory(Path::new(".."))?)
+                    } else {
+                        None
+                    };
+                    let expected = match initial_parent.as_ref() {
+                        Some(parent) => parent,
+                        None => &parents[parents.len() - 2],
+                    };
+                    let entered = enter_pinned_parent(expected)?;
+                    if parents.len() > 1 {
+                        parents.pop();
+                    } else {
+                        parents[0] = entered;
+                    }
+                }
                 Component::Normal(name) => {
                     let name = Path::new(name);
                     let before = fs::symlink_metadata(name).map_err(|err| {
@@ -363,6 +383,7 @@ pub(crate) fn with_pinned_evidence_directory<T>(
                             "evidence root component changed while entering".to_string(),
                         ));
                     }
+                    parents.push(opened);
                 }
             }
         }
@@ -372,6 +393,18 @@ pub(crate) fn with_pinned_evidence_directory<T>(
     set_pinned_evidence_directory(false);
     let _ = std::env::set_current_dir(original);
     result
+}
+
+fn enter_pinned_parent(expected: &fs::File) -> VerifierResult<fs::File> {
+    std::env::set_current_dir("..")
+        .map_err(|err| VerifierError::Runtime(format!("enter evidence parent: {err}")))?;
+    let entered = open_pinned_directory(Path::new("."))?;
+    if !same_open_file(expected, &entered)? {
+        return Err(VerifierError::Invalid(
+            "evidence root parent changed while entering".to_string(),
+        ));
+    }
+    Ok(entered)
 }
 
 fn open_pinned_directory(path: &Path) -> VerifierResult<fs::File> {
@@ -397,8 +430,8 @@ fn open_pinned_directory(path: &Path) -> VerifierResult<fs::File> {
 
 #[cfg(all(test, unix))]
 mod pinned_directory_tests {
-    use super::with_pinned_evidence_directory;
-    use crate::util::read_verifier_bytes;
+    use super::{enter_pinned_parent, open_pinned_directory, with_pinned_evidence_directory};
+    use crate::util::{read_verifier_bytes, same_open_file};
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::Path;
@@ -445,6 +478,53 @@ mod pinned_directory_tests {
             Ok(())
         })
         .expect("pinned read");
+        with_pinned_evidence_directory(&base.join("outside").join("..").join("moved"), || {
+            assert_eq!(read_verifier_bytes(Path::new("evidence.jsonl"))?, b"inside");
+            Ok(())
+        })
+        .expect("ordinary parent path");
+        fs::remove_dir_all(&base).expect("remove test base");
+    }
+
+    #[test]
+    fn parent_step_refuses_a_relocated_child() {
+        if std::env::var_os("PIPELOCK_PINNED_PARENT_CHILD").is_none() {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .arg("--exact")
+                .arg("chain_set::pinned_directory_tests::parent_step_refuses_a_relocated_child")
+                .env("PIPELOCK_PINNED_PARENT_CHILD", "1")
+                .output()
+                .expect("start isolated test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let base = fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp dir")
+            .join(format!("pipelock-pinned-parent-{}", std::process::id()));
+        let selected_parent = base.join("selected");
+        let child = selected_parent.join("child");
+        let alternate_parent = base.join("alternate");
+        fs::create_dir_all(&child).expect("create selected child");
+        fs::create_dir(&alternate_parent).expect("create alternate parent");
+        let expected = open_pinned_directory(&selected_parent).expect("open selected parent");
+
+        std::env::set_current_dir(&child).expect("enter child");
+        let entered = enter_pinned_parent(&expected).expect("ordinary parent step");
+        assert!(same_open_file(&expected, &entered).expect("compare parent"));
+
+        std::env::set_current_dir(&child).expect("reenter child");
+        fs::rename(&child, alternate_parent.join("child")).expect("relocate child");
+        let err = enter_pinned_parent(&expected).expect_err("relocated parent must be refused");
+        assert!(
+            err.to_string().contains("parent changed while entering"),
+            "{err}"
+        );
+        std::env::set_current_dir(&base).expect("leave alternate parent");
         fs::remove_dir_all(&base).expect("remove test base");
     }
 }

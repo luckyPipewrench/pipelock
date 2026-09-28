@@ -2226,17 +2226,17 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		}
 		reloadedManagedChain := false
 		if tableLoaded && (rulesChanged || liveRulesDrifted) {
-			env.nftTableMutatedByInstall = true
 			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, priorUIDs...); err != nil {
 				return changed, err
 			}
+			env.nftTableMutatedByInstall = true
 			reloadedManagedChain = true
 		}
 		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
-			env.nftTableMutatedByInstall = true
 			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 				return changed, fmt.Errorf("nft load failed: %w", err)
 			}
+			env.nftTableMutatedByInstall = true
 		}
 	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
@@ -2266,15 +2266,14 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	// Restore any previous live table captured during this install
 	// attempt before deleting the newly installed table. If no
 	// previous table existed, drop the table created by this step.
-	if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
+	if env.prevNFTTableStateKnown && env.nftTableMutatedByInstall && strings.TrimSpace(env.prevNFTTableDump) != "" {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
 			return err
 		}
 	} else if env.prevNFTTableStateKnown && !env.nftTableMutatedByInstall {
-		// No table existed before this attempt and this attempt never ran a
-		// load, so there is no table to drop. Deleting an absent table exits
-		// non-zero, and returning that here would skip the file restores
-		// below and leave this attempt's rules and units on disk.
+		// An atomic nft batch that failed did not change the table. Leave a
+		// pre-existing table alone, or skip deletion if none existed. A failed
+		// delete or restore here would skip the file restores below.
 	} else {
 		// Report a failed drop. Every other branch of this rollback returns
 		// its error; discarding this one meant an install that failed on a
@@ -3291,7 +3290,7 @@ func stepInstallSudoers() step {
 				// ends up loaded. The orchestrator would also undo, but
 				// removing the bad file ourselves is cheaper and clearer.
 				if rerr := restoreBackup(env, env.sudoersPath); rerr != nil {
-					return false, errors.Join(fmt.Errorf("visudo rejected new sudoers: %w", err), fmt.Errorf("restore previous sudoers: %w", rerr))
+					return true, errors.Join(fmt.Errorf("visudo rejected new sudoers: %w", err), fmt.Errorf("restore previous sudoers: %w", rerr))
 				}
 				return false, fmt.Errorf("visudo rejected new sudoers: %w", err)
 			}

@@ -174,8 +174,8 @@ type installEnv struct {
 	platformFamily         string
 
 	prevNFTTableDump string
-	// nftTableMutatedByInstall records that this install attempt ran a
-	// command that loads or rewrites the containment table. Rollback uses it
+	// nftTableMutatedByInstall records that this install attempt successfully
+	// loaded or rewrote the containment table. Rollback uses it
 	// to tell a table this attempt created from one that never existed.
 	nftTableMutatedByInstall     bool
 	prevNFTTableStateKnown       bool

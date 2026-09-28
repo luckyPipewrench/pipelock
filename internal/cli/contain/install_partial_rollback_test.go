@@ -120,6 +120,35 @@ func TestStepInstallNFTRulesUndoStillDropsTableThisAttemptLoaded(t *testing.T) {
 	}
 }
 
+func TestRunStepsFailedAtomicNFTLoadRestoresRulesFile(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const oldRules = "# previous managed rules\n"
+	if err := os.WriteFile(env.nftRulesPath, []byte(oldRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+	runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "atomic batch rejected", 1, nil)
+	runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "no such table", 1, nil)
+
+	_, err := runSteps(context.Background(), env, out, []step{stepInstallNFTRules()})
+	if err == nil || !strings.Contains(err.Error(), "nft load failed") {
+		t.Fatalf("runSteps error = %v, want failed nft batch", err)
+	}
+	if strings.Contains(err.Error(), "rollback incomplete") {
+		t.Fatalf("runSteps error = %v, want file rollback after failed atomic batch", err)
+	}
+	if nftCalled(runner, "delete table inet "+defaultNFTTable) {
+		t.Fatal("rollback tried to delete a table the failed batch never loaded")
+	}
+	got, readErr := os.ReadFile(env.nftRulesPath)
+	if readErr != nil || string(got) != oldRules {
+		t.Fatalf("rules after rollback = %q, %v; want previous rules", got, readErr)
+	}
+}
+
 func TestStepWriteIntegrityPinOwnershipFailureRestoresPreviousPin(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	if err := os.MkdirAll(filepath.Dir(env.pipelockTarget), 0o750); err != nil {
@@ -259,5 +288,61 @@ func TestStepInstallSudoersReportsFailedRestoreAfterVisudoRejects(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "restore previous sudoers") {
 		t.Fatalf("apply error = %v, want the failed restore reported", err)
+	}
+}
+
+func TestRunStepsRetriesSudoersRestoreAfterVisudoRejects(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.sudoersPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	runner.on(argvFor("visudo", "-cf", env.sudoersPath), "parse error", 1, nil)
+	removeFile := env.removeFile
+	removeAttempts := 0
+	env.removeFile = func(path string) error {
+		if path == filepath.Clean(env.sudoersPath) {
+			removeAttempts++
+			if removeAttempts == 1 {
+				return errors.New("temporary remove failure")
+			}
+		}
+		return removeFile(path)
+	}
+
+	_, err := runSteps(context.Background(), env, out, []step{stepInstallSudoers()})
+	if err == nil || !strings.Contains(err.Error(), "visudo rejected") {
+		t.Fatalf("runSteps error = %v, want visudo rejection", err)
+	}
+	if strings.Contains(err.Error(), "rollback incomplete") {
+		t.Fatalf("runSteps error = %v, want successful retry", err)
+	}
+	if removeAttempts != 2 {
+		t.Fatalf("sudoers remove attempts = %d, want immediate restore plus orchestrator undo", removeAttempts)
+	}
+	if _, statErr := os.Stat(env.sudoersPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("sudoers remained after rollback: %v", statErr)
+	}
+}
+
+func TestRunStepsReportsIncompleteSudoersRollback(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.sudoersPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	runner.on(argvFor("visudo", "-cf", env.sudoersPath), "parse error", 1, nil)
+	env.removeFile = func(path string) error {
+		if path == filepath.Clean(env.sudoersPath) {
+			return errors.New("remove denied")
+		}
+		return os.Remove(path)
+	}
+
+	_, err := runSteps(context.Background(), env, out, []step{stepInstallSudoers()})
+	if err == nil || !strings.Contains(err.Error(), "visudo rejected") ||
+		!strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "undo install-sudoers") {
+		t.Fatalf("runSteps error = %v, want visudo failure and incomplete rollback", err)
+	}
+	if _, statErr := os.Stat(env.sudoersPath); statErr != nil {
+		t.Fatalf("positive control: rejected sudoers file was not left in place: %v", statErr)
 	}
 }

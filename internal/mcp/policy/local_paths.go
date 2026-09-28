@@ -183,8 +183,7 @@ func (l *localPathIdentity) expand(values []string) []string {
 	if len(extra) == 0 {
 		return values
 	}
-	out := make([]string, 0, len(values)+len(extra))
-	out = append(out, values...)
+	out := append([]string(nil), values...)
 	return append(out, extra...)
 }
 

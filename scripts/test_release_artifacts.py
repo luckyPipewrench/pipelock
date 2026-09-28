@@ -779,6 +779,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             attest_job["permissions"],
             {"contents": "read", "id-token": "write", "attestations": "write"},
         )
+        self.assertNotIn("continue-on-error", attest_job)
         uses = [step["uses"] for step in attest_job["steps"] if "uses" in step]
         self.assertTrue(uses)
         for action in uses:

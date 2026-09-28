@@ -172,6 +172,14 @@ func refuseSymlinkInWalkedRootPath(root string) error {
 			return fmt.Errorf("resolve evidence root: %w", err)
 		}
 		raw = wd + string(filepath.Separator) + raw
+	} else if volume := filepath.VolumeName(raw); !filepath.IsAbs(raw) && len(volume) == 2 && volume[1] == ':' {
+		// A Windows drive-relative path uses that drive's working directory,
+		// which can differ from the process working directory.
+		driveWD, err := filepath.Abs(volume + ".")
+		if err != nil {
+			return fmt.Errorf("resolve evidence root: %w", err)
+		}
+		raw = driveWD + string(filepath.Separator) + raw[len(volume):]
 	} else if !filepath.IsAbs(raw) {
 		wd, err := os.Getwd()
 		if err != nil {

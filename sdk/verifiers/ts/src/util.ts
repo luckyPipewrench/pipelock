@@ -37,7 +37,9 @@ export const maxVerifierInputBytes = 8 << 20;
 // when the operating system opens the path supplied by the operator.
 export function resolveOperatorFilePath(file: string): string {
   const root = path.parse(file).root;
-  let current = root || process.cwd();
+  // On Windows, "C:name" starts at C's working directory, which need not be
+  // the process working directory. Resolve the volume before walking.
+  let current = root ? path.resolve(root) : process.cwd();
   const components = file.slice(root.length).split(path.sep === "\\" ? /[\\/]/u : /\//u);
   for (const component of components) {
     if (component === "" || component === ".") {

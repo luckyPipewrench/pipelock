@@ -161,9 +161,14 @@ interface EvidenceIndex {
 // walks, before path.normalize turns "link/../ev" into "ev" and hides the
 // symlink the open would follow.
 export function refuseSymlinkInEvidenceRootPath(root: string): void {
-  const raw = path.isAbsolute(root) ? root : `${process.cwd()}${path.sep}${root}`;
+  const volumeRoot = path.parse(root).root;
+  const raw = path.isAbsolute(root)
+    ? root
+    : volumeRoot
+      ? `${path.resolve(volumeRoot)}${path.sep}${root.slice(volumeRoot.length)}`
+      : `${process.cwd()}${path.sep}${root}`;
   const parsedRoot = path.parse(raw).root;
-  let current = parsedRoot;
+  let current = path.resolve(parsedRoot);
   // Only the platform's separators split a path: on POSIX a backslash is an
   // ordinary filename character, so "s\.." names one entry, not "s" and "..".
   const separators = path.sep === "\\" ? /[\\/]/u : /\//u;

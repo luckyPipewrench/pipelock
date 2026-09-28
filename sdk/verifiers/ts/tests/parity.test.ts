@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findPackageRoot } from "./paths.js";
@@ -155,6 +155,34 @@ test("directory mode refuses a symlink anywhere on the walked root path", () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test(
+  "drive-relative file and directory paths use that drive's working directory",
+  { skip: process.platform !== "win32" },
+  () => {
+    const dir = mkdtempSync(join(physicalTmp, "verifier-drive-"));
+    try {
+      const drive = parse(dir).root.slice(0, 2);
+      const fixtures = resolve(packageRoot, "../../conformance/testdata/run-chains");
+      const key = join(fixtures, "signer-key.hex");
+      const name = "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl";
+      cpSync(join(fixtures, "valid"), join(dir, "ev"), { recursive: true });
+      for (const [target, flags] of [
+        [`${drive}ev`, ["--dir"]],
+        [`${drive}ev\\${name}`, []],
+      ] as const) {
+        const result = spawnSync("node", [CLI, "chain", target, ...flags, "--key", key, "--json"], {
+          cwd: dir,
+          encoding: "utf8",
+        });
+        assert.equal(result.status, 0, `${target}: ${result.stdout}${result.stderr}`);
+        assert.equal((JSON.parse(result.stdout) as ChainReport).valid, true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test(
   "directory mode does not split on a backslash where it is a filename character",

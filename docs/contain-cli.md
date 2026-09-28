@@ -123,7 +123,7 @@ Flags:
 | `--pipelock-binary` | current process | Pipelock binary to install. Hashed and pinned at install time. |
 | `--config` | (required if not already in place) | Source `pipelock.yaml` copied to `/etc/pipelock/pipelock.yaml`. |
 
-Install steps run in order; each one is idempotent. If any step fails, every previously-applied step is rolled back before exit so the system never settles in a partial state.
+Install steps run in order; each one is idempotent. If a step fails, install undoes what that attempt changed in reverse order. Rollback restores only files and state changed by the attempt. For a previously loaded containment table, it restores the captured prior contents; if those contents could not be captured, it keeps the loaded table and reports `rollback incomplete`. The error also names any file or unit restore that could not finish and tells the operator to rerun `pipelock contain install` as root.
 
 Before any of these steps changes the host, install runs `pipelock check` from the binary it is about to install against the config it is about to install (with `--dry-run`, against your `--config` file). If that binary can parse the config but cannot enforce it, for example named `agents.<profile>` entries under a build without agent profiles, install refuses before replacing the service binary, writing the system unit, restarting Pipelock, or loading nftables rules.
 
@@ -148,7 +148,7 @@ On systemd 253 or newer, newly installed `pipelock.service` units are `Type=noti
 Exit codes:
 
 - **0**, all steps applied (or already in place).
-- **1**, a step failed; earlier applied steps were rolled back.
+- **1**, a step failed; earlier applied steps were rolled back. If an undo also failed, the error says `rollback incomplete`, names the step, and the host needs another `pipelock contain install`.
 - **2**, precondition error: not root, missing executable, bad `--config`.
 
 ### Post-install output

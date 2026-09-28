@@ -562,7 +562,7 @@ func ParseEntryLine(line []byte) (Entry, error) {
 	var raw struct {
 		Version          int             `json:"v"`
 		Sequence         uint64          `json:"seq"`
-		Timestamp        time.Time       `json:"ts"`
+		Timestamp        json.RawMessage `json:"ts"`
 		SessionID        string          `json:"session_id"`
 		ChainKind        string          `json:"chain_kind,omitempty"`
 		WriterInstanceID string          `json:"writer_instance_id,omitempty"`
@@ -579,13 +579,22 @@ func ParseEntryLine(line []byte) (Entry, error) {
 	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return Entry{}, err
 	}
+	// Pass the original JSON token to time.Time. Decoding it through a struct
+	// can unescape the string first, changing which recorder timestamps verify
+	// across Go toolchain versions and the other-language verifiers.
+	var timestamp time.Time
+	if raw.Timestamp != nil {
+		if err := timestamp.UnmarshalJSON(raw.Timestamp); err != nil {
+			return Entry{}, err
+		}
+	}
 	if err := ValidateEntryJSONSchema(trimmed, raw.Version); err != nil {
 		return Entry{}, err
 	}
 	e := Entry{
 		Version:          raw.Version,
 		Sequence:         raw.Sequence,
-		Timestamp:        raw.Timestamp,
+		Timestamp:        timestamp,
 		SessionID:        raw.SessionID,
 		ChainKind:        raw.ChainKind,
 		WriterInstanceID: raw.WriterInstanceID,

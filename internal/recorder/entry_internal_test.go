@@ -16,6 +16,39 @@ import (
 	"time"
 )
 
+func TestParseEntryLineTimestampTokenIsStableAcrossGoVersions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		tsField  string
+		wantFail bool
+		wantZero bool
+	}{
+		{name: "literal zone", tsField: `"ts":"2026-09-27T18:36:18Z",`},
+		{name: "escaped zone", tsField: `"ts":"2026-09-27T18:36:18\u005a",`, wantFail: true},
+		{name: "escaped digit", tsField: `"ts":"2026-09-27T18:36:1\u0038Z",`, wantFail: true},
+		{name: "null timestamp", tsField: `"ts":null,`, wantZero: true},
+		{name: "missing timestamp", wantZero: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := fmt.Sprintf(`{"v":2,"seq":0,%s"session_id":"s","type":"decision","transport":"t","summary":"","detail":1,"prev_hash":"genesis","hash":"h"}`, tc.tsField)
+			entry, err := ParseEntryLine([]byte(line))
+			if tc.wantFail {
+				if err == nil {
+					t.Fatal("ParseEntryLine accepted an escaped timestamp")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseEntryLine: %v", err)
+			}
+			if entry.Timestamp.IsZero() != tc.wantZero {
+				t.Fatalf("timestamp zero = %t, want %t", entry.Timestamp.IsZero(), tc.wantZero)
+			}
+		})
+	}
+}
+
 func TestReadEntriesFromReaderRejectsUnrepresentableRawDetail(t *testing.T) {
 	t.Parallel()
 

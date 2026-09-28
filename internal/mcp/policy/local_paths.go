@@ -166,15 +166,31 @@ func (l *localPathIdentity) expand(values []string) []string {
 		seen[s] = struct{}{}
 		extra = append(extra, s)
 	}
+	loadCandidates := func() []localProtectedCandidate {
+		if !candidatesLoaded {
+			candidates = l.protectedCandidates()
+			candidatesLoaded = true
+		}
+		return candidates
+	}
+	// A base that is itself a protected location, or lies under one, makes any
+	// bare name a protected path, including one the call is about to create.
+	var protectedBases map[string]bool
+	baseIsProtected := func(base string) bool {
+		if protectedBases == nil {
+			protectedBases = make(map[string]bool, len(l.bases))
+			for _, b := range l.bases {
+				resolved, ok := resolveLocalPath(b)
+				protectedBases[b] = ok && len(protectedAliases(resolved, loadCandidates())) > 0
+			}
+		}
+		return protectedBases[base]
+	}
 	for _, value := range values {
-		for _, path := range l.paths(value) {
+		for _, path := range l.paths(value, baseIsProtected) {
 			for _, resolved := range resolveLocalPathViews(path) {
 				add(resolved)
-				if !candidatesLoaded {
-					candidates = l.protectedCandidates()
-					candidatesLoaded = true
-				}
-				for _, alias := range protectedAliases(resolved, candidates) {
+				for _, alias := range protectedAliases(resolved, loadCandidates()) {
 					add(alias)
 				}
 			}
@@ -191,7 +207,7 @@ func (l *localPathIdentity) expand(values []string) []string {
 // shaped like a filesystem path (command text, URLs, multi-line content). The
 // spellings are not cleaned: `..` after a symlinked directory means something
 // different to the kernel than to a lexical cleaner, and both are resolved.
-func (l *localPathIdentity) paths(value string) []string {
+func (l *localPathIdentity) paths(value string, baseIsProtected func(string) bool) []string {
 	if value == "" || len(value) > localPathMaxLen || strings.ContainsAny(value, "\x00\n\r") ||
 		strings.Contains(value, "://") {
 		return nil
@@ -206,15 +222,16 @@ func (l *localPathIdentity) paths(value string) []string {
 		return []string{value}
 	}
 	// A bare word is far more often content than a file name, so it counts only
-	// where it names something that exists. A relative value with a separator
-	// counts under every base, so a new file under a linked directory is still
-	// resolved.
-	bare := !strings.ContainsRune(value, filepath.Separator)
+	// where it names something that exists, or where its base is itself a
+	// protected location and any name there is protected. A relative value with
+	// a separator counts under every base, so a new file under a linked
+	// directory is still resolved.
+	bare := !strings.ContainsAny(value, "/"+string(filepath.Separator))
 	var out []string
 	for _, base := range l.bases {
 		joined := base + string(filepath.Separator) + value
 		if bare {
-			if _, err := os.Lstat(joined); err != nil {
+			if _, err := os.Lstat(joined); err != nil && !baseIsProtected(base) {
 				continue
 			}
 		}
@@ -253,8 +270,7 @@ func resolveLocalPath(path string) (string, bool) {
 		return "", false
 	}
 	sep := string(filepath.Separator)
-	current := sep
-	rest := strings.Split(path, sep)
+	current, rest := splitVolumeRoot(path)
 	hops := 0
 	for len(rest) > 0 {
 		component := rest[0]
@@ -285,10 +301,14 @@ func resolveLocalPath(path string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
+			target = filepath.FromSlash(target)
 			if filepath.IsAbs(target) {
-				current = sep
+				var targetRest []string
+				current, targetRest = splitVolumeRoot(target)
+				rest = append(targetRest, rest...)
+			} else {
+				rest = append(strings.Split(target, sep), rest...)
 			}
-			rest = append(strings.Split(target, sep), rest...)
 			continue
 		}
 		if hasRealComponent(rest) && !info.IsDir() {
@@ -297,6 +317,16 @@ func resolveLocalPath(path string) (string, bool) {
 		current = next
 	}
 	return current, true
+}
+
+// splitVolumeRoot returns the root of an absolute path, including a Windows
+// drive letter or UNC share, and the components that follow it. Forward
+// slashes are accepted as separators, as Windows itself accepts them.
+func splitVolumeRoot(path string) (root string, components []string) {
+	path = filepath.FromSlash(path)
+	volume := filepath.VolumeName(path)
+	sep := string(filepath.Separator)
+	return volume + sep, strings.Split(path[len(volume):], sep)
 }
 
 // hasRealComponent reports whether components still name something to walk

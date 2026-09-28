@@ -428,3 +428,52 @@ func TestResolveLocalPath_Edges(t *testing.T) {
 		t.Errorf("unprefixed patch target changed: %q", got)
 	}
 }
+
+func TestLocalPathIdentity_NewBareNameInProtectedBase(t *testing.T) {
+	f := newLocalPathFixture(t)
+	ssh := filepath.Join(f.home, ".ssh")
+	if err := os.MkdirAll(ssh, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(f.ws, "root")
+	f.link(t, ssh, root)
+
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	if v := checkPath(pc, testWriteTool, "path", "authorized_keys"); slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("matched without the protected base: %+v", v)
+	}
+	pc.AddLocalPathBases(root)
+	if v := checkPath(pc, testReadTool, "path", "authorized_keys"); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("new bare name under a base linked to ~/.ssh was not matched: %+v", v)
+	}
+	// An ordinary base still ignores a bare word that names nothing.
+	if got := newLocalPathIdentity(f.home, f.ws).expand([]string{"hello"}); !slices.Equal(got, []string{"hello"}) {
+		t.Fatalf("bare word under an ordinary base resolved: %q", got)
+	}
+}
+
+// TestResolveLocalPath_PlatformRoot runs on every platform, including Windows
+// drive-letter roots, with no links involved.
+func TestResolveLocalPath_PlatformRoot(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(dir, "file"), filepath.ToSlash(filepath.Join(dir, "file"))} {
+		got, ok := resolveLocalPath(path)
+		if !ok || got != filepath.Join(dir, "file") {
+			t.Errorf("resolveLocalPath(%q) = %q, %v; want %q", path, got, ok, filepath.Join(dir, "file"))
+		}
+	}
+	if got, ok := resolveLocalPath(filepath.Join(dir, "new")); !ok || got != filepath.Join(dir, "new") {
+		t.Errorf("new file: %q, %v", got, ok)
+	}
+	root, rest := splitVolumeRoot(dir)
+	if root != filepath.VolumeName(dir)+string(filepath.Separator) || len(rest) == 0 {
+		t.Errorf("splitVolumeRoot(%q) = %q, %q", dir, root, rest)
+	}
+}

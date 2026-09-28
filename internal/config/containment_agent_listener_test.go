@@ -15,6 +15,9 @@ func TestValidateContainmentAgentListener(t *testing.T) {
 	agents := map[string]AgentProfile{
 		"contained": {Listeners: []string{"127.0.0.1:8889"}},
 		"other":     {Listeners: []string{"[::1]:8890"}},
+		// A malformed declared entry is skipped rather than matched, so a
+		// valid listener declared after it on the same profile still counts.
+		"mixed": {Listeners: []string{"127.0.0.1", "127.0.0.1:8892"}},
 	}
 	for _, tc := range []struct {
 		name     string
@@ -24,6 +27,7 @@ func TestValidateContainmentAgentListener(t *testing.T) {
 		{name: "omitted keeps the shared listener", listener: ""},
 		{name: "declared ipv4 listener", listener: "127.0.0.1:8889"},
 		{name: "declared ipv6 listener", listener: "[::1]:8890"},
+		{name: "declared after a malformed entry", listener: "127.0.0.1:8892"},
 		{name: "undeclared listener", listener: "127.0.0.1:8891", wantErr: "not declared under any agents"},
 		{name: "shared proxy port", listener: "127.0.0.1:8888", wantErr: "shared proxy port"},
 		{name: "non-loopback host", listener: "10.0.0.5:8889", wantErr: "numeric loopback"},

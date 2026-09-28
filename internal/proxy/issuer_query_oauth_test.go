@@ -23,6 +23,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// oauthTestCallback is the client's registered redirect_uri in unit tests.
+const oauthTestCallback = "https://app.vendor.example/auth/callback"
+
 // oauthTestState is a second high-entropy value, distinct from the code, so
 // the tests can tell which of the two values a redirect carried.
 func oauthTestState() string {
@@ -54,7 +57,7 @@ func TestInterceptOAuthCallbackEndToEnd(t *testing.T) {
 	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/authorize":
-			http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code="+code+"&state="+state, http.StatusFound)
+			http.Redirect(w, r, callback+"?code="+code+"&state="+state, http.StatusFound)
 		case "/redirect":
 			// Not an authorization request: it declares nothing.
 			http.Redirect(w, r, callback+"?code="+code, http.StatusFound)
@@ -161,9 +164,9 @@ func oauthTestStore(t *testing.T) (*InterceptContext, string) {
 	return ic, sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
 }
 
-func oauthAuthorizeURL(t *testing.T, server, redirect string) *url.URL {
+func oauthAuthorizeURL(t *testing.T, server string) *url.URL {
 	t.Helper()
-	return mustIssuerQueryURL(t, server+"/authorize?response_type=code&client_id=client-one&redirect_uri="+url.QueryEscape(redirect))
+	return mustIssuerQueryURL(t, server+"/authorize?response_type=code&client_id=client-one&redirect_uri="+url.QueryEscape(oauthTestCallback))
 }
 
 // Each case changes one thing from the positive control, which runs first:
@@ -173,7 +176,7 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 	code := issuedTestToken()
 	const (
 		server   = "https://login.vendor.example"
-		callback = "https://app.vendor.example/auth/callback"
+		callback = oauthTestCallback
 	)
 	for _, tc := range []struct {
 		name        string
@@ -189,10 +192,10 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 	}{
 		{name: "positive control", status: http.StatusFound, location: callback + "?code=" + code, want: true},
 		{name: "303", status: http.StatusSeeOther, location: callback + "?code=" + code, want: true},
-		{name: "same response declares and redirects", declaration: oauthAuthorizeURL(t, server, callback), responder: "same", status: http.StatusFound, location: callback + "?code=" + code, want: true},
+		{name: "same response declares and redirects", declaration: oauthAuthorizeURL(t, server), responder: "same", status: http.StatusFound, location: callback + "?code=" + code, want: true},
 		{name: "no declaration", declaration: &url.URL{}, status: http.StatusFound, location: callback + "?code=" + code, want: false},
 		{name: "declared by another session", declSession: "other-session", status: http.StatusFound, location: callback + "?code=" + code, want: false},
-		{name: "declared to another server", declaration: oauthAuthorizeURL(t, "https://idp.vendor.example", callback), status: http.StatusFound, location: callback + "?code=" + code, want: false},
+		{name: "declared to another server", declaration: oauthAuthorizeURL(t, "https://idp.vendor.example"), status: http.StatusFound, location: callback + "?code=" + code, want: false},
 		{name: "redirect from another host", responder: "https://other.vendor.example/login", status: http.StatusFound, location: callback + "?code=" + code, want: false},
 		{name: "redirect from another port", responder: "https://login.vendor.example:8443/login", status: http.StatusFound, location: callback + "?code=" + code, want: false},
 		{name: "different callback path", status: http.StatusFound, location: "https://app.vendor.example/auth/other?code=" + code, want: false},
@@ -209,7 +212,7 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 			store := ic.issuerQueryStore()
 			declaration := tc.declaration
 			if declaration == nil {
-				declaration = oauthAuthorizeURL(t, server, callback)
+				declaration = oauthAuthorizeURL(t, server)
 			}
 			declSession := session
 			if tc.declSession != "" {
@@ -260,10 +263,10 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 // redirect_uri: only the redirect hop carries a callback.
 func TestOAuthRedirectBindingIgnoresBodyLinks(t *testing.T) {
 	code := issuedTestToken()
-	const callback = "https://app.vendor.example/auth/callback"
+	const callback = oauthTestCallback
 	ic, session := oauthTestStore(t)
 	store := ic.issuerQueryStore()
-	declaration := oauthAuthorizeURL(t, "https://login.vendor.example", callback)
+	declaration := oauthAuthorizeURL(t, "https://login.vendor.example")
 	redirect, _ := oauthRedirectDeclaration(declaration)
 	store.declareRedirect(session, declaration, redirect, time.Now())
 	response := &http.Response{

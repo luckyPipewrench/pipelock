@@ -259,6 +259,24 @@ function enterPinnedEvidenceDirectory(root: string): () => void {
       }
       if (!before.isDirectory())
         throw new Error(`evidence root component "${component}" is not a directory`);
+      const canonical = lstatSync(expectedPhysical, { bigint: true });
+      const parentPhysical = parents[parents.length - 1]!.physical;
+      const sameName =
+        process.platform === "darwin"
+          ? path.basename(expectedPhysical).toLowerCase() === component.toLowerCase()
+          : samePhysicalPath(expectedPhysical, expectedPath);
+      if (
+        !samePhysicalPath(path.dirname(expectedPhysical), parentPhysical) ||
+        !sameName ||
+        canonical.isSymbolicLink() ||
+        !canonical.isDirectory() ||
+        canonical.dev !== before.dev ||
+        canonical.ino !== before.ino
+      ) {
+        throw new EvidenceRefusedError(
+          `evidence root component changed while entering: "${component}"`,
+        );
+      }
       process.chdir(component);
       const entered = statSync(".", { bigint: true });
       const physical = realpathSync.native(".");

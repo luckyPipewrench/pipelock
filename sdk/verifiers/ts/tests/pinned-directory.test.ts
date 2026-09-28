@@ -12,6 +12,7 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -151,7 +152,13 @@ test("directory entry accepts the filesystem's case-insensitive spelling", async
   mkdirSync(canonical);
   writeFileSync(join(canonical, "evidence.jsonl"), "inside");
   try {
-    if (!existsSync(alias) || realpathSync(alias) !== realpathSync(canonical)) {
+    if (!existsSync(alias)) {
+      t.skip("temporary volume is case-sensitive");
+      return;
+    }
+    const aliasID = statSync(alias, { bigint: true });
+    const canonicalID = statSync(canonical, { bigint: true });
+    if (aliasID.dev !== canonicalID.dev || aliasID.ino !== canonicalID.ino) {
       t.skip("temporary volume is case-sensitive");
       return;
     }

@@ -87,6 +87,51 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 	})
 }
 
+func TestCredentialGuardStateProbeFailureStopsBeforeMutation(t *testing.T) {
+	for _, probe := range []string{"is-active", "is-enabled"} {
+		t.Run(probe, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			if probe == "is-enabled" {
+				mustWriteFile(t, env.guardPathUnit, "prior guard unit")
+			}
+			runCmd := env.runCmd
+			env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+				if name == "systemctl" && len(args) > 0 && args[0] == probe {
+					return "", -1, os.ErrPermission
+				}
+				return runCmd(ctx, name, args...)
+			}
+			applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
+			if err == nil || applied || !strings.Contains(err.Error(), probe) {
+				t.Fatalf("apply = (%t, %v), want an unapplied %s probe failure", applied, err, probe)
+			}
+			if runnerCalled(runner, "enable --now "+filepath.Base(env.guardPathUnit)) {
+				t.Fatalf("guard activation attempted after failed %s probe: %+v", probe, runner.calls)
+			}
+			if _, err := os.Stat(env.guardScriptPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("guard script changed after failed %s probe: %v", probe, err)
+			}
+		})
+	}
+	t.Run("guard unit stat", func(t *testing.T) {
+		env, runner, _ := newFakeEnv(t)
+		lstat := env.lstat
+		env.lstat = func(path string) (os.FileInfo, error) {
+			if path == env.guardPathUnit {
+				return nil, os.ErrPermission
+			}
+			return lstat(path)
+		}
+		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
+		if err == nil || applied || !strings.Contains(err.Error(), "stat credential guard unit") {
+			t.Fatalf("apply = (%t, %v), want unapplied guard stat failure", applied, err)
+		}
+		if runnerCalled(runner, "enable --now "+filepath.Base(env.guardPathUnit)) {
+			t.Fatalf("guard activation attempted after failed stat: %+v", runner.calls)
+		}
+	})
+}
+
 func TestCredentialGuardProcessFailuresRemainAppliedForRollback(t *testing.T) {
 	tests := []struct {
 		name      string

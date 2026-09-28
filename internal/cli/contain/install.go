@@ -539,16 +539,24 @@ func stepWriteCredentialGuard() step {
 				}{path, mode})
 			}
 			activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.guardPathUnit))
-			prevActive = activeErr == nil && strings.TrimSpace(activeOut) == systemctlActive
+			if activeErr != nil {
+				return false, fmt.Errorf("systemctl is-active credential guard: %w", activeErr)
+			}
+			prevActive = strings.TrimSpace(activeOut) == systemctlActive
 			prevEnabled = false
 			prevEnabledRuntime = false
-			if pathExists(env, env.guardPathUnit) {
+			if _, err := env.lstat(env.guardPathUnit); err == nil {
 				enabledOut, enabledCode, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.guardPathUnit))
-				if enabledErr == nil && enabledCode == 0 {
+				if enabledErr != nil {
+					return false, fmt.Errorf("systemctl is-enabled credential guard: %w", enabledErr)
+				}
+				if enabledCode == 0 {
 					state := strings.TrimSpace(enabledOut)
 					prevEnabled = state == systemctlEnabled || state == "enabled-runtime"
 					prevEnabledRuntime = state == "enabled-runtime"
 				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("stat credential guard unit %s: %w", env.guardPathUnit, err)
 			}
 			// Every error below reports the files already written, so the
 			// orchestrator runs undo and restores them.

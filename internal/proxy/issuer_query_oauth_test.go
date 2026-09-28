@@ -133,6 +133,16 @@ func TestInterceptOAuthCallbackEndToEnd(t *testing.T) {
 			}
 		})
 	}
+	// A value recorded under warn stops working once the policy blocks body
+	// content entropy, the state an enabled reload leaves behind.
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+	if got := do(app, cb, "agent-one"); got != http.StatusForbidden {
+		t.Fatalf("callback after body entropy block: status=%d, want %d", got, http.StatusForbidden)
+	}
+	cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+	if got := do(app, cb, "agent-one"); got != http.StatusOK {
+		t.Fatalf("callback after returning to warn: status=%d, want %d", got, http.StatusOK)
+	}
 	auditBytes, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatal(err)

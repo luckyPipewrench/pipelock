@@ -504,6 +504,7 @@ func stepWriteCredentialGuard() step {
 	prevActive := false
 	prevEnabled := false
 	prevEnabledRuntime := false
+	enableAttempted := false
 	return step{
 		name: "write-credential-guard",
 		desc: "write and enable contain credential guard",
@@ -527,6 +528,7 @@ func stepWriteCredentialGuard() step {
 			}
 			touched = nil
 			modeChanges = nil
+			enableAttempted = false
 			rememberMode := func(path string, mode os.FileMode) {
 				for _, change := range modeChanges {
 					if change.path == path {
@@ -608,6 +610,7 @@ func stepWriteCredentialGuard() step {
 				return true, fmt.Errorf("systemctl daemon-reload exit %d: %s", code, oneLine(out))
 			}
 			unit := filepath.Base(env.guardPathUnit)
+			enableAttempted = true
 			if out, code, err := env.runCmd(ctx, "systemctl", "enable", "--now", unit); err != nil {
 				return true, fmt.Errorf("systemctl enable %s: %w", unit, err)
 			} else if code != 0 {
@@ -616,9 +619,8 @@ func stepWriteCredentialGuard() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			if len(touched) == 0 && len(modeChanges) == 0 {
-				// Nothing on disk changed. The guard run and enable only
-				// re-assert protection, so leave the existing guard running.
+			if len(touched) == 0 && len(modeChanges) == 0 && !enableAttempted {
+				// No files or service state were changed by this attempt.
 				return nil
 			}
 			unit := filepath.Base(env.guardPathUnit)

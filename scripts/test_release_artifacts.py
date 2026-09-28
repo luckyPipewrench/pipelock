@@ -818,7 +818,7 @@ class TestReleaseArtifacts(unittest.TestCase):
 
         chart_publish = parsed["jobs"]["release-publish-chart"]
         self.assertEqual(chart_publish["needs"], ["release-promote", "release-attest-chart"])
-        self.assertEqual(chart_publish["permissions"], {"contents": "read", "packages": "write"})
+        self.assertEqual(chart_publish["permissions"], {"contents": "read", "packages": "write", "attestations": "read"})
         self.assertNotIn("continue-on-error", chart_publish)
         self.assertNotIn("if", chart_publish)
         publish_step = next(step for step in chart_publish["steps"] if step.get("name") == "Publish and verify attested Helm chart")

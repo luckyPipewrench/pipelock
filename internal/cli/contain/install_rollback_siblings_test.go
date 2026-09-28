@@ -287,6 +287,48 @@ func TestCredentialGuardRollbackPreservesRuntimeEnable(t *testing.T) {
 	}
 }
 
+func TestCredentialGuardRollbackRestoresServiceStateWithoutFileChanges(t *testing.T) {
+	env, runner, out := newFakeEnv(t)
+	operator, err := env.lookupUser(env.operatorUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		path string
+		body string
+		mode os.FileMode
+	}{
+		{env.guardScriptPath, renderCredentialGuardScript(env.agentUserName, filepath.Clean(operator.HomeDir), env.bashPath), modeWrapperExec},
+		{env.guardServiceUnit, renderCredentialGuardService(env.guardScriptPath), modeUnitFile},
+		{env.guardPathUnit, renderCredentialGuardPathUnit(filepath.Clean(operator.HomeDir), filepath.Base(env.guardServiceUnit)), modeUnitFile},
+	} {
+		if err := os.MkdirAll(filepath.Dir(item.path), modeDirReadable); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(item.path, []byte(item.body), item.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unit := filepath.Base(env.guardPathUnit)
+	runner.on(argvFor(testSystemctl, "is-active", unit), "inactive\n", 3, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", unit), "disabled\n", 1, nil)
+	failingStep := step{name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
+		return false, errors.New("later step failed")
+	}}
+	_, err = runSteps(context.Background(), env, out, []step{stepWriteCredentialGuard(), failingStep})
+	if err == nil || !strings.Contains(err.Error(), "later step failed") {
+		t.Fatalf("runSteps error = %v, want later failure", err)
+	}
+	if !rollbackRunnerCalled(runner, testSystemctl, "enable --now "+unit) ||
+		!rollbackRunnerCalled(runner, testSystemctl, "disable --now "+unit) {
+		t.Fatalf("service state was not restored after activation without file changes: %+v", runner.calls)
+	}
+	if rollbackRunnerCalled(runner, testSystemctl, "start "+unit) ||
+		rollbackRunnerCalled(runner, testSystemctl, "enable "+unit) {
+		t.Fatalf("rollback enabled a previously disabled guard: %+v", runner.calls)
+	}
+}
+
 // A current display unit on a rerun is not rewritten, so rollback must not
 // delete it.
 func TestDisplayRollbackLeavesUnitThisAttemptDidNotWrite(t *testing.T) {

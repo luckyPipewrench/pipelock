@@ -368,6 +368,51 @@ func TestStepGrantEvidenceACLs_RevocationFailureStillRestoresPriorOperator(t *te
 	if err != nil || current.Operator != "operator2" {
 		t.Fatalf("inventory after incomplete rollback = %+v, %v; want new operator retained", current, err)
 	}
+	priorBackup, err := loadEvidenceACLInventoryPath(env, env.evidenceACLInvPath+".bak")
+	if err != nil || priorBackup.Operator != containInstallOperatorUser {
+		t.Fatalf("prior inventory backup = %+v, %v", priorBackup, err)
+	}
+	runner.on(revoke, "", 0, nil)
+	runner.calls = nil
+	if err := revokeEvidenceACLs(context.Background(), env, false); err != nil {
+		t.Fatalf("later full rollback: %v", err)
+	}
+	for _, operator := range []string{"operator2", containInstallOperatorUser} {
+		if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+operator+" "+env.logsDir()) {
+			t.Fatalf("full rollback did not revoke %s: %+v", operator, runner.calls)
+		}
+	}
+	for _, path := range []string{env.evidenceACLInvPath, env.evidenceACLInvPath + ".bak"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inventory %s remains after full rollback: %v", path, err)
+		}
+	}
+}
+
+func TestStepGrantEvidenceACLs_JoinsRevokeAndRestoreFailures(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	runner.on(argvFor("setfacl", "-R", "-x", "u:operator2", env.logsDir()), "revoke denied", 1, nil)
+	runner.on(argvFor("setfacl", "-R", "-m", "u:"+containInstallOperatorUser+":"+evidenceReadPerms, env.logsDir()), "restore denied", 1, nil)
+	err := step.undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "revoke denied") || !strings.Contains(err.Error(), "restore denied") {
+		t.Fatalf("undo error = %v; want both failures", err)
+	}
 }
 
 // TestStepGrantEvidenceACLs_FailClosedOnUnresolvedOperator proves the ACL step

@@ -324,23 +324,32 @@ func ensureEvidenceDir(env *installEnv, dir string) error {
 // inventory. keepData preserves the inventory file (parallels the workspace ACL
 // revoke). It is safe to call when nothing was granted.
 func revokeEvidenceACLs(ctx context.Context, env *installEnv, keepData bool) error {
-	inv, err := loadEvidenceACLInventory(env)
-	if err != nil {
-		return err
+	// A failed operator rotation can restore the prior ACL while the current
+	// inventory still names the new operator. The backup records that prior
+	// grant, so a later full rollback must revoke both.
+	paths := []string{env.evidenceACLInvPath, env.evidenceACLInvPath + ".bak"}
+	var revokeErr error
+	for _, path := range paths {
+		inv, err := loadEvidenceACLInventoryPath(env, path)
+		if err != nil {
+			revokeErr = errors.Join(revokeErr, err)
+			continue
+		}
+		if err := revokeEvidenceACLDirs(ctx, env, inv); err != nil {
+			revokeErr = errors.Join(revokeErr, fmt.Errorf("revoke evidence ACLs from %s: %w", path, err))
+		}
 	}
-	if inv.Operator == "" || len(inv.Dirs) == 0 {
-		return nil
-	}
-	if err := revokeEvidenceACLDirs(ctx, env, inv); err != nil {
-		return err
+	if revokeErr != nil {
+		return revokeErr
 	}
 	if keepData {
 		return nil
 	}
-	if err := env.removeFile(env.evidenceACLInvPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", env.evidenceACLInvPath, err)
+	for _, path := range paths {
+		if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
 	}
-	_ = env.removeFile(env.evidenceACLInvPath + ".bak")
 	return nil
 }
 
@@ -368,7 +377,11 @@ func revokeEvidenceACLDirs(ctx context.Context, env *installEnv, inv evidenceACL
 }
 
 func loadEvidenceACLInventory(env *installEnv) (evidenceACLInventory, error) {
-	data, err := env.readFile(env.evidenceACLInvPath)
+	return loadEvidenceACLInventoryPath(env, env.evidenceACLInvPath)
+}
+
+func loadEvidenceACLInventoryPath(env *installEnv, path string) (evidenceACLInventory, error) {
+	data, err := env.readFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return evidenceACLInventory{}, nil
@@ -377,7 +390,7 @@ func loadEvidenceACLInventory(env *installEnv) (evidenceACLInventory, error) {
 	}
 	var inv evidenceACLInventory
 	if err := json.Unmarshal(data, &inv); err != nil {
-		return evidenceACLInventory{}, fmt.Errorf("parse %s: %w", env.evidenceACLInvPath, err)
+		return evidenceACLInventory{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return inv, nil
 }

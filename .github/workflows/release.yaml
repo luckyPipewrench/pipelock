@@ -138,8 +138,12 @@ jobs:
           diff -u "$tmpdir/all.txt" "$tmpdir/shards.sorted.txt"
 
           # Every test go test -list reports for this job's package tree must
-          # be selected by exactly one of the tree's sub-shards.
-          python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$TEST_SHARD" --check-partition
+          # be selected by exactly one of the tree's sub-shards. The check
+          # covers every sub-shard of the tree, so its first sub-shard runs it
+          # once instead of compiling the test list in each.
+          if [[ "$TEST_SHARD" == *-0 ]]; then
+            python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$TEST_SHARD" --check-partition
+          fi
 
       - name: Run tests
         env:

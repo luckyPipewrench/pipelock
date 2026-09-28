@@ -830,11 +830,11 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIsNotNone(missing_tag)
         matcher = re.compile(missing_tag.group(1), re.IGNORECASE)
         for error in (
-            "HEAD request: unexpected status code 404 Not Found",
             "GET manifest: MANIFEST_UNKNOWN",
             "GET package: NAME_UNKNOWN",
         ):
             self.assertRegex(error, matcher)
+        self.assertNotRegex("HEAD request: unexpected status code 404 Not Found", matcher)
         self.assertNotRegex("DENIED: access to package denied", matcher)
         self.assertEqual(
             publish_step["env"]["CHART_DIGEST"],

@@ -1269,9 +1269,8 @@ jobs:
               echo "::error::published chart digest differs from the attested digest"
               exit 1
             }
-          # crane reports a missing tag as MANIFEST_UNKNOWN (or NAME_UNKNOWN for
-          # a new package) after a HEAD "404 Not Found"; match codes, any case.
-          elif grep -qiE 'MANIFEST_UNKNOWN|NAME_UNKNOWN|404 Not Found' "$RUNNER_TEMP/chart-lookup.err"; then
+          # A HEAD 404 is ambiguous; the GET registry code identifies a missing tag.
+          elif grep -qiE 'MANIFEST_UNKNOWN|NAME_UNKNOWN' "$RUNNER_TEMP/chart-lookup.err"; then
             test "$(jq -r '.manifests[0].digest' dist-chart-oci/index.json)" = "$CHART_DIGEST"
             test -s "dist-chart-oci/blobs/sha256/${CHART_DIGEST#sha256:}"
             crane push dist-chart-oci "$target"

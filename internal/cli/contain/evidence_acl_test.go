@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -722,6 +723,47 @@ func TestLoadEvidenceACLInventory_Malformed(t *testing.T) {
 	}
 	if _, err := loadEvidenceACLInventory(env); err == nil || !strings.Contains(err.Error(), "evidence-acls.json") {
 		t.Fatalf("err = %v, want parse error", err)
+	}
+}
+
+func TestRevokeEvidenceACLs_MalformedBackupFailsClosed(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	dir := env.logsDir()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEvidenceACLInventory(env, evidenceACLInventory{Operator: "operator2", Dirs: []string{dir}}); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := env.evidenceACLInvPath + ".bak"
+	if err := os.WriteFile(backupPath, []byte("{malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := revokeEvidenceACLs(context.Background(), env, false)
+	if err == nil || !strings.Contains(err.Error(), backupPath) || !strings.Contains(err.Error(), "revoke residual ACLs manually") {
+		t.Fatalf("revoke error = %v; want malformed backup reported", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:operator2 "+dir) {
+		t.Fatalf("valid current grant was not revoked: %+v", runner.calls)
+	}
+	for _, path := range []string{env.evidenceACLInvPath, backupPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("inventory %s was removed despite incomplete cleanup: %v", path, err)
+		}
+	}
+	backup, err := json.Marshal(evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPath, backup, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = nil
+	if err := revokeEvidenceACLs(context.Background(), env, false); err != nil {
+		t.Fatalf("revoke after backup repair: %v", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+dir) {
+		t.Fatalf("prior grant was not revoked after backup repair: %+v", runner.calls)
 	}
 }
 

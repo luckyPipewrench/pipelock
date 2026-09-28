@@ -332,7 +332,10 @@ func revokeEvidenceACLs(ctx context.Context, env *installEnv, keepData bool) err
 	for _, path := range paths {
 		inv, err := loadEvidenceACLInventoryPath(env, path)
 		if err != nil {
-			revokeErr = errors.Join(revokeErr, err)
+			// The backup may be the only record of a restored prior grant.
+			// Keep it and report incomplete cleanup rather than leave that
+			// operator's access behind with a successful rollback.
+			revokeErr = errors.Join(revokeErr, fmt.Errorf("cannot verify evidence ACL cleanup from %s; repair the inventory or revoke residual ACLs manually: %w", path, err))
 			continue
 		}
 		if err := revokeEvidenceACLDirs(ctx, env, inv); err != nil {

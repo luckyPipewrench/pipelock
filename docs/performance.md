@@ -5,7 +5,7 @@ benchmarks below. The proxy is generally I/O bound while waiting for upstream
 responses. Response scanning and MCP scanning on large payloads can use
 measurable CPU at high throughput (see tables below).
 
-Numbers are from Go benchmarks on an AMD Ryzen 7 7800X3D (8 cores / 16 threads) on Linux. The single-request latency tables were measured on v3.6.0 at commit `7283f25e7` with Go 1.26.0 in a process limited to four CPUs, which matters for response scanning because it evaluates patterns in parallel; the Unicode normalization rows, the concurrent scaling sections and the HTTP proxy overhead section are older measurements on Go 1.25 with 16 CPUs and were not refreshed for v3.6.0. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
+Numbers are from Go benchmarks on an AMD Ryzen 7 7800X3D (8 cores / 16 threads) on Linux. The single-request latency tables were measured at pre-release v3.6.0 commit `7283f25e7` with Go 1.26.0 in a process limited to four CPUs; later changes aren't represented by that measurement. The CPU limit matters for response scanning because it evaluates patterns in parallel. The Unicode normalization rows, concurrent scaling sections and HTTP proxy overhead section are older measurements on Go 1.25 with 16 CPUs and weren't refreshed for v3.6.0. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
 
 ## Scanning Latency (single request)
 

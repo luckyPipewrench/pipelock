@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.6.0] - 2026-09-27
+## [3.6.0] - 2026-09-28
 
 ### Breaking Changes / Upgrade Notes
 
@@ -114,17 +114,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Empty and mistyped media responses** pass or block with a named reason instead of a parse error. (#1643)
 - **False positives in ordinary work:** spaced assignments as URL credentials, prose read as AWS resource IDs, environment lookups in tool commands, base64 identifiers, bot checks, the jailbreak pattern inside encoded data, percent-encoded query exclusion keys, OAuth `redirect_uri`, PKCE challenges and static asset hashes. (#1482, #1664, #1669, #1671, #1680, #1683)
 - **WebSocket relays end as soon as either side leaves** instead of waiting out the idle timeout, and scoped DLP controls apply to frame scans. (#1604, #1674)
-- **Go 1.27 builds are safe to run,** and signed evidence stays verifiable when it records invalid UTF-8. (#1673)
+- **Go 1.27 compatibility fixes preserve signed evidence** when it records invalid UTF-8. (#1673)
 - **TLS interception finds its default CA in the Pipelock home** (`--home`, `PIPELOCK_HOME`, then `~/.pipelock`) and refuses to guess when two exist. (#1651)
 - **Containment hardening:** the per-agent listener accepts only the relay account and root, the managed display requires X authorization, the exported CA stays current, `NODE_EXTRA_CA_CERTS` uses the combined bundle, the config installs at `0600` so admin commands work, and YAML null or aliased containment settings count as absent. (#1624, #1635, #1636, #1640, #1679)
 - **A provider key sent to its own issuer passes query entropy** when the entire value is one built-in credential that DLP already allows for that destination. Extra bytes, other parameters and every other scanner are unaffected, and the semicolon-separated query path stays strict. (#1708)
 - **An allowed image served under the wrong raster type** is classified by its complete image header, handled like the same bytes correctly labeled, and forwarded with the proven type in `Content-Type`, the fetch JSON response and MCP `mediaType`/`contentType`. (#1708)
 - **`pipelock contain view` reaches the display viewer again** for the configured operator, and a viewer socket permission error names both possible causes. (#1708)
 - **A long high-entropy environment value no longer stops Pipelock from starting.** A known value over 4,096 bytes, such as an inline certificate or JSON key under `scan_env`, is indexed at up to 4,081 evenly spaced positions instead of being refused, so a copied fragment is still caught once it covers one of them. A long URL-shaped value is sampled as one value in source order. (#1712)
+- **Mislabeled JPEG and PNG bodies are refused when their actual format is disallowed,** including when metadata stripping is off on the proxy or MCP path. (#1711)
+- **Issuer-returned query values use the URL entropy gate's exact-session allowance** for same-origin JSON links and redirect locations. OAuth authorization-code redirects can carry issued values between the declared authorization endpoint and callback; DLP and the other URL checks still run. (#1711)
 - **MCP subprocess handling:** descendant cleanup is reported before startup, active approval resolvers survive child cleanup, binary locations report unknown instead of not-suspicious, and tool rules reload from one snapshot. (#1516, #1550, #1586, #1596, #1639)
 - **Evidence auditor targets survive `init` reruns.** (#1490)
 - **The runtime fails closed on a reload that fails partway,** leaving the behavioral baseline action unchanged, and the support bundle refuses an output path that already exists. (#1696)
-- **SDK verifiers agree with the Go reference:** they verify default run chains with the `ext` bag, reject same-key transitions, bound evidence reads, and match the AARP timestamp grammar. The anchor-bundle schema loads under strict validators. (#1611, #1656, #1658, #1697)
+- **Go, TypeScript and Rust verifiers check every present receipt chain and recorder boundary** in directory, named-run and file modes. They agree on key rotation and unpinned signature checks, and a failed audit packet can't report trusted evidence. The anchor-bundle schema loads under strict validators. (#1611, #1656, #1658, #1697, #1713)
 - **Rekor anchoring accepts sharded logs** whose entry index differs from the tree index. (#1470, #1622)
 - **License service:** one active trial per email across writers, the trial slot table as the only eligibility authority, atomic webhook revocation, and removal of a stale founding deadline. (#1556, #1597, #1606, #1698)
 - **The GitHub Action keeps repository-derived text out of workflow commands.** Annotations and the job summary escape it, the audit report no longer prints file names into the job log, and config validation output runs with workflow commands stopped. (#1698, #1704)

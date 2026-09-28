@@ -181,8 +181,11 @@ test("directory entry keeps distinct names distinct on a case-sensitive volume",
   mkdirSync(upper);
   try {
     mkdirSync(lower);
-  } catch {
+  } catch (err) {
     rmSync(base, { recursive: true, force: true });
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw err;
+    }
     t.skip("temporary volume is case-insensitive");
     return;
   }

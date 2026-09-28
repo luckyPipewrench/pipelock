@@ -23,6 +23,73 @@ func physicalTempDir(t *testing.T) string {
 	return dir
 }
 
+func TestRelativeEvidenceRootFailsFromDeletedWorkingDirectory(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("Windows does not remove a process working directory")
+	}
+	base := physicalTempDir(t)
+	removed := filepath.Join(base, "removed")
+	if err := os.Mkdir(removed, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(removed); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(original); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	}()
+	if _, err := physicalWorkingDir(); err != nil {
+		t.Fatalf("positive control refused the live working directory: %v", err)
+	}
+	if err := os.Remove(removed); err != nil {
+		t.Fatal(err)
+	}
+	for name, check := range map[string]func() error{
+		"physical cwd":  func() error { _, err := physicalWorkingDir(); return err },
+		"absolute root": func() error { _, err := absEvidenceRoot("evidence"); return err },
+		"walked root":   func() error { return refuseSymlinkInWalkedRootPath("evidence") },
+		"discovery":     func() error { _, err := DiscoverEvidenceLocations("evidence"); return err },
+		"opened location": func() error {
+			_, err := openEvidenceLocationDirectory(EvidenceLocation{Root: "evidence", Dir: "evidence"})
+			return err
+		},
+	} {
+		if err := check(); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s from deleted cwd = %v, want not-exist refusal", name, err)
+		}
+	}
+}
+
+func TestDiscoverEvidenceLocationsRefusesUnreadableRoot(t *testing.T) {
+	if os.PathSeparator == '\\' || os.Geteuid() == 0 {
+		t.Skip("requires Unix directory permissions for a non-root user")
+	}
+	root := filepath.Join(physicalTempDir(t), "evidence")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DiscoverEvidenceLocations(root); err != nil {
+		t.Fatalf("positive control refused readable root: %v", err)
+	}
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chmod(root, 0o600); err != nil {
+			t.Errorf("restore root permissions: %v", err)
+		}
+	}()
+	if _, err := DiscoverEvidenceLocations(root); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("unreadable root = %v, want permission refusal", err)
+	}
+}
+
 func TestRefuseSymlinkInWalkedRootPath(t *testing.T) {
 	base := physicalTempDir(t)
 	realEv := filepath.Join(base, "real", "ev")

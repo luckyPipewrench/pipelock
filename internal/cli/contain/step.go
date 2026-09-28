@@ -52,8 +52,8 @@ func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) (
 	for i, s := range steps {
 		if err := ctx.Err(); err != nil {
 			outcomes = append(outcomes, stepOutcome{name: s.name, desc: s.desc, err: err})
-			rollbackApplied(context.Background(), env, w, applied)
-			return outcomes, fmt.Errorf("context cancelled before step %d (%s): %w", i+1, s.name, err)
+			rbErr := rollbackApplied(context.Background(), env, w, applied)
+			return outcomes, withRollbackError(fmt.Errorf("context cancelled before step %d (%s): %w", i+1, s.name, err), rbErr)
 		}
 
 		didApply, err := s.apply(ctx, env)
@@ -64,8 +64,8 @@ func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) (
 
 		if err != nil {
 			_, _ = fmt.Fprintf(w, "  [FAIL] step %d %s: %v\n", i+1, s.name, err)
-			rollbackApplied(context.Background(), env, w, applied)
-			return outcomes, fmt.Errorf("step %d (%s): %w", i+1, s.name, err)
+			rbErr := rollbackApplied(context.Background(), env, w, applied)
+			return outcomes, withRollbackError(fmt.Errorf("step %d (%s): %w", i+1, s.name, err), rbErr)
 		}
 
 		tag := "[SKIP]"
@@ -78,13 +78,24 @@ func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) (
 	return outcomes, nil
 }
 
-// rollbackApplied walks the applied steps in reverse and invokes each undo.
-// Errors are collected and printed but do not stop the chain - a partial
-// rollback is always better than a half-installed state with an early exit.
-func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied []step) {
-	if len(applied) == 0 {
-		return
+// withRollbackError joins an incomplete rollback onto the step failure that
+// triggered it, so the caller's error says the host was not restored.
+func withRollbackError(stepErr, rollbackErr error) error {
+	if rollbackErr == nil {
+		return stepErr
 	}
+	return errors.Join(stepErr, fmt.Errorf("rollback incomplete, rerun `pipelock contain install` as root: %w", rollbackErr))
+}
+
+// rollbackApplied walks the applied steps in reverse and invokes each undo.
+// Errors are printed and do not stop the chain - a partial rollback is always
+// better than a half-installed state with an early exit - and are returned
+// joined, so a failed undo cannot read as a clean rollback.
+func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied []step) error {
+	if len(applied) == 0 && len(env.failedWriteRestores) == 0 {
+		return nil
+	}
+	var errs []error
 	env.deferServiceRestart = true
 	env.serviceRestartPending = false
 	_, _ = fmt.Fprintln(w, "rolling back applied steps:")
@@ -96,17 +107,24 @@ func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied 
 		}
 		if err := s.undo(ctx, env); err != nil {
 			_, _ = fmt.Fprintf(w, "  [FAIL] undo %s: %v\n", s.name, err)
+			errs = append(errs, fmt.Errorf("undo %s: %w", s.name, err))
 			continue
 		}
 		_, _ = fmt.Fprintf(w, "  [ OK ] undo %s\n", s.name)
+	}
+	if err := retryFailedWriteRestores(env); err != nil {
+		_, _ = fmt.Fprintf(w, "  [FAIL] restore failed writes: %v\n", err)
+		errs = append(errs, err)
 	}
 	env.deferServiceRestart = false
 	restartPending := env.serviceRestartPending
 	if err := restartRestoredServiceAfterRollback(ctx, env); err != nil {
 		_, _ = fmt.Fprintf(w, "  [FAIL] restart restored pipelock service: %v\n", err)
+		errs = append(errs, fmt.Errorf("restart restored pipelock service: %w", err))
 	} else if restartPending {
 		_, _ = fmt.Fprintln(w, "  [ OK ] restart restored pipelock service")
 	}
+	return errors.Join(errs...)
 }
 
 // runUndo walks an explicit step list in REVERSE order and calls each undo.

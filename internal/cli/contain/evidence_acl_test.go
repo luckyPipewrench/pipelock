@@ -5,6 +5,8 @@ package contain
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"os/user"
@@ -261,6 +263,157 @@ func TestStepGrantEvidenceACLs_UndoKeepsPreexistingGrant(t *testing.T) {
 			t.Fatalf("rollback of a reinstall revoked the earlier operator grant (%d setfacl -x calls)", got)
 		}
 	})
+}
+
+func TestStepGrantEvidenceACLs_RollbackRestoresPartialPriorInventory(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	priorDir := filepath.Join(env.dataDir, "older-evidence")
+	missingPriorDir := filepath.Join(env.dataDir, "removed-evidence")
+	if err := os.MkdirAll(priorDir, modeDirPrivate); err != nil {
+		t.Fatal(err)
+	}
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: []string{env.logsDir(), priorDir, missingPriorDir}}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	priorBytes, err := os.ReadFile(env.evidenceACLInvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || !slices.Contains(current.Dirs, priorDir) || !slices.Contains(current.Dirs, env.recorderDir()) {
+		t.Fatalf("successful install discarded earlier inventory: %+v, %v", current, err)
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	restored, err := os.ReadFile(env.evidenceACLInvPath)
+	if err != nil || string(restored) != string(priorBytes) {
+		t.Fatalf("prior inventory after rollback = %q, %v; want %q", restored, err, priorBytes)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+priorDir) {
+		t.Fatalf("rollback did not restore prior ACL: %+v", runner.calls)
+	}
+}
+
+func TestStepGrantEvidenceACLs_OperatorRotationRestoresPriorOnRollback(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || current.Operator != "operator2" {
+		t.Fatalf("current inventory = %+v, %v", current, err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not revoked: %+v", runner.calls)
+	}
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := loadEvidenceACLInventory(env)
+	if err != nil || restored.Operator != prior.Operator || !slices.Equal(restored.Dirs, prior.Dirs) {
+		t.Fatalf("restored inventory = %+v, %v", restored, err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not restored: %+v", runner.calls)
+	}
+}
+
+func TestStepGrantEvidenceACLs_RevocationFailureStillRestoresPriorOperator(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	runner.calls = nil
+	revoke := argvFor("setfacl", "-R", "-x", "u:operator2", env.logsDir())
+	runner.on(revoke, "injected revoke failure", 1, nil)
+	if err := step.undo(context.Background(), env); err == nil || !strings.Contains(err.Error(), "injected revoke failure") {
+		t.Fatalf("undo error = %v; want revocation failure", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -m u:"+containInstallOperatorUser+":"+evidenceReadPerms+" "+env.logsDir()) {
+		t.Fatalf("prior operator was not restored after revocation failure: %+v", runner.calls)
+	}
+	current, err := loadEvidenceACLInventory(env)
+	if err != nil || current.Operator != "operator2" {
+		t.Fatalf("inventory after incomplete rollback = %+v, %v; want new operator retained", current, err)
+	}
+	priorBackup, err := loadEvidenceACLInventoryPath(env, env.evidenceACLInvPath+".bak")
+	if err != nil || priorBackup.Operator != containInstallOperatorUser {
+		t.Fatalf("prior inventory backup = %+v, %v", priorBackup, err)
+	}
+	runner.on(revoke, "", 0, nil)
+	runner.calls = nil
+	if err := revokeEvidenceACLs(context.Background(), env, false); err != nil {
+		t.Fatalf("later full rollback: %v", err)
+	}
+	for _, operator := range []string{"operator2", containInstallOperatorUser} {
+		if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+operator+" "+env.logsDir()) {
+			t.Fatalf("full rollback did not revoke %s: %+v", operator, runner.calls)
+		}
+	}
+	for _, path := range []string{env.evidenceACLInvPath, env.evidenceACLInvPath + ".bak"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inventory %s remains after full rollback: %v", path, err)
+		}
+	}
+}
+
+func TestStepGrantEvidenceACLs_JoinsRevokeAndRestoreFailures(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	prior := evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: env.evidenceACLDirs()}
+	if err := writeEvidenceACLInventory(env, prior); err != nil {
+		t.Fatal(err)
+	}
+	env.operatorUser = "operator2"
+	lookupUser := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == "operator2" {
+			return &user.User{Username: name}, nil
+		}
+		return lookupUser(name)
+	}
+	step := stepGrantEvidenceACLs()
+	if applied, err := step.apply(context.Background(), env); err != nil || !applied {
+		t.Fatalf("apply = (%t, %v)", applied, err)
+	}
+	runner.on(argvFor("setfacl", "-R", "-x", "u:operator2", env.logsDir()), "revoke denied", 1, nil)
+	runner.on(argvFor("setfacl", "-R", "-m", "u:"+containInstallOperatorUser+":"+evidenceReadPerms, env.logsDir()), "restore denied", 1, nil)
+	err := step.undo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "revoke denied") || !strings.Contains(err.Error(), "restore denied") {
+		t.Fatalf("undo error = %v; want both failures", err)
+	}
 }
 
 // TestStepGrantEvidenceACLs_FailClosedOnUnresolvedOperator proves the ACL step
@@ -520,16 +673,41 @@ func TestEnsureEvidenceDir_RejectsNonDir(t *testing.T) {
 }
 
 // TestStepGrantEvidenceACLs_PropagatesSetfaclFailure proves a failing setfacl
-// surfaces as an apply error (fail-closed, not silently applied).
+// surfaces as an apply error, and that the step reports applied so rollback
+// revokes the ACLs earlier commands already granted.
 func TestStepGrantEvidenceACLs_PropagatesSetfaclFailure(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor("setfacl", "-m", "u:"+containInstallOperatorUser+":"+evidenceTraversePerms, env.dataDir), "boom", 1, nil)
-	applied, err := stepGrantEvidenceACLs().apply(context.Background(), env)
+	dirs := env.evidenceACLDirs()
+	parentGrant := argvFor("setfacl", "-m", "u:"+containInstallOperatorUser+":"+evidenceTraversePerms, env.dataDir)
+	laterGrant := argvFor("setfacl", "-R", "-m", "u:"+containInstallOperatorUser+":"+evidenceReadPerms, dirs[0])
+	runner.on(parentGrant, "", 0, nil)
+	runner.on(laterGrant, "boom", 1, nil)
+	step := stepGrantEvidenceACLs()
+	applied, err := step.apply(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "operator evidence ACL") {
 		t.Fatalf("err = %v, want apply failure", err)
 	}
-	if applied {
-		t.Fatal("step must not report applied when setfacl fails")
+	if !applied {
+		t.Fatal("step must report applied once setfacl commands have started, so rollback revokes them")
+	}
+	if len(runner.calls) < 2 || runner.calls[len(runner.calls)-2].name != "setfacl" ||
+		argvFor(runner.calls[len(runner.calls)-2].name, runner.calls[len(runner.calls)-2].args...) != parentGrant ||
+		argvFor(runner.calls[len(runner.calls)-1].name, runner.calls[len(runner.calls)-1].args...) != laterGrant {
+		t.Fatalf("positive control: successful parent grant must precede the failed directory grant: %+v", runner.calls)
+	}
+	if _, statErr := os.Stat(env.evidenceACLInvPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("positive control: inventory should not exist after the failed grant: %v", statErr)
+	}
+	runner.calls = nil
+	if err := step.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	revoke := "-x u:" + containInstallOperatorUser + " " + env.dataDir
+	if !rollbackRunnerCalled(runner, "setfacl", revoke) {
+		t.Fatalf("undo did not revoke the operator grant with no inventory on disk: %+v", runner.calls)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+dirs[0]) {
+		t.Fatalf("undo did not revoke the directory grant after the later failure: %+v", runner.calls)
 	}
 }
 
@@ -545,6 +723,47 @@ func TestLoadEvidenceACLInventory_Malformed(t *testing.T) {
 	}
 	if _, err := loadEvidenceACLInventory(env); err == nil || !strings.Contains(err.Error(), "evidence-acls.json") {
 		t.Fatalf("err = %v, want parse error", err)
+	}
+}
+
+func TestRevokeEvidenceACLs_MalformedBackupFailsClosed(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	dir := env.logsDir()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEvidenceACLInventory(env, evidenceACLInventory{Operator: "operator2", Dirs: []string{dir}}); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := env.evidenceACLInvPath + ".bak"
+	if err := os.WriteFile(backupPath, []byte("{malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := revokeEvidenceACLs(context.Background(), env, false)
+	if err == nil || !strings.Contains(err.Error(), backupPath) || !strings.Contains(err.Error(), "revoke residual ACLs manually") {
+		t.Fatalf("revoke error = %v; want malformed backup reported", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:operator2 "+dir) {
+		t.Fatalf("valid current grant was not revoked: %+v", runner.calls)
+	}
+	for _, path := range []string{env.evidenceACLInvPath, backupPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("inventory %s was removed despite incomplete cleanup: %v", path, err)
+		}
+	}
+	backup, err := json.Marshal(evidenceACLInventory{Operator: containInstallOperatorUser, Dirs: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPath, backup, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = nil
+	if err := revokeEvidenceACLs(context.Background(), env, false); err != nil {
+		t.Fatalf("revoke after backup repair: %v", err)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+dir) {
+		t.Fatalf("prior grant was not revoked after backup repair: %+v", runner.calls)
 	}
 }
 

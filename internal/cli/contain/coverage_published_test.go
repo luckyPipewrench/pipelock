@@ -719,7 +719,12 @@ func TestCovPubInstallPipelockBinaryQuiesceAndUndoErrors(t *testing.T) {
 	if undoErr == nil {
 		t.Fatal("expected undo to report every injected failure")
 	}
-	for _, want := range []string{"stop denied", "lstat denied", "restart denied", "reset denied"} {
+	// The quiesce failed before the binary was written, so undo must not
+	// touch the binary backup; "lstat denied" on the .bak must not appear.
+	if strings.Contains(undoErr.Error(), "lstat denied") {
+		t.Fatalf("undo restored a binary this attempt never wrote: %v", undoErr)
+	}
+	for _, want := range []string{"stop denied", "restart denied", "reset denied"} {
 		if !strings.Contains(undoErr.Error(), want) {
 			t.Fatalf("undo err = %v, missing %q", undoErr, want)
 		}

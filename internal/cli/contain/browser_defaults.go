@@ -188,6 +188,13 @@ func ownAgentBrowserDirs(env *installEnv, root *os.Root, uid, gid int) error {
 }
 
 func restoreAgentBrowserDir(env *installEnv, dir *browserDir) error {
+	// A retry after a partial restore must not find no backup and delete the
+	// config the first attempt already put back; it only finishes the
+	// archived-backup restore.
+	key := filepath.Clean(agentBrowserConfigPath(env))
+	if env.restoredBackups[key] {
+		return restoreAgentBrowserArchive(env, dir)
+	}
 	if _, err := agentBrowserLeaf(dir, "config.json.bak"); err == nil {
 		if err := dir.remove("config.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove managed agent-browser config: %w", err)
@@ -195,22 +202,33 @@ func restoreAgentBrowserDir(env *installEnv, dir *browserDir) error {
 		if err := dir.rename("config.json.bak", "config.json"); err != nil {
 			return fmt.Errorf("restore agent-browser config: %w", err)
 		}
-		if archive := popArchivedBackup(env, agentBrowserConfigPath(env)+".bak"); archive != "" {
-			leaf := filepath.Base(archive)
-			if _, err := agentBrowserLeaf(dir, leaf); err != nil {
-				return fmt.Errorf("stat archived agent-browser backup: %w", err)
-			}
-			if err := dir.rename(leaf, "config.json.bak"); err != nil {
-				return fmt.Errorf("restore archived agent-browser backup: %w", err)
-			}
-		}
-		return nil
+		markBackupRestored(env, key)
+		return restoreAgentBrowserArchive(env, dir)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if err := dir.remove("config.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove agent-browser config: %w", err)
 	}
+	return nil
+}
+
+// restoreAgentBrowserArchive moves the newest archived backup back to
+// config.json.bak. The archive stays recorded until that rename succeeds.
+func restoreAgentBrowserArchive(env *installEnv, dir *browserDir) error {
+	bak := agentBrowserConfigPath(env) + ".bak"
+	archive := latestArchivedBackup(env, bak)
+	if archive == "" {
+		return nil
+	}
+	leaf := filepath.Base(archive)
+	if _, err := agentBrowserLeaf(dir, leaf); err != nil {
+		return fmt.Errorf("stat archived agent-browser backup: %w", err)
+	}
+	if err := dir.rename(leaf, "config.json.bak"); err != nil {
+		return fmt.Errorf("restore archived agent-browser backup: %w", err)
+	}
+	forgetArchivedBackup(env, bak, archive)
 	return nil
 }
 
@@ -227,6 +245,8 @@ func restoreAgentBrowserRoot(env *installEnv, root *os.Root) error {
 }
 
 func backupAndWriteAgentBrowserRoot(env *installEnv, root *os.Root, data []byte, uid, gid int) error {
+	// A new write supersedes any restore this attempt already made.
+	delete(env.restoredBackups, filepath.Clean(agentBrowserConfigPath(env)))
 	dir, err := openBrowserDir(env, root, true, uid, gid)
 	if err != nil {
 		return err
@@ -345,11 +365,15 @@ func stepWriteAgentBrowserDefaults() step {
 		wroteRecord bool
 		prevRecord  []byte
 	)
+	// restore clears each flag only once that part is restored, so a failed
+	// part stays pending and the rollback undo retries it.
 	restore := func(env *installEnv) error {
 		var errs []error
 		if wroteConfig {
 			if err := restoreAgentBrowserConfig(env); err != nil {
 				errs = append(errs, err)
+			} else {
+				wroteConfig = false
 			}
 		}
 		if wroteRecord {
@@ -361,9 +385,10 @@ func stepWriteAgentBrowserDefaults() step {
 			}
 			if err != nil {
 				errs = append(errs, err)
+			} else {
+				wroteRecord, prevRecord = false, nil
 			}
 		}
-		wroteConfig, wroteRecord, prevRecord = false, false, nil
 		return errors.Join(errs...)
 	}
 	return step{
@@ -371,9 +396,12 @@ func stepWriteAgentBrowserDefaults() step {
 		desc: "merge Chromium launch default into the agent's agent-browser user config",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			wroteConfig, wroteRecord, prevRecord = false, false, nil
+			// A part restored inline is not retried; a part that failed to
+			// restore is reported applied so rollback retries it and reports
+			// it if it still cannot.
 			fail := func(cause error) (bool, error) {
 				if rerr := restore(env); rerr != nil {
-					return false, errors.Join(cause, rerr)
+					return true, errors.Join(cause, rerr)
 				}
 				return false, cause
 			}

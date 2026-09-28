@@ -245,6 +245,9 @@ func TestStepInstallNFTRulesUndoReportsExpiryUnitRestoreFailures(t *testing.T) {
 			if target == "service" {
 				path = env.nftExpiryServicePath
 			}
+			// Model an attempt that wrote both expiry units.
+			env.nftExpiryTimerWrittenByInstall = true
+			env.nftExpiryServiceWrittenByInstall = true
 			removeFile := env.removeFile
 			env.removeFile = func(candidate string) error {
 				if candidate == path {
@@ -258,6 +261,35 @@ func TestStepInstallNFTRulesUndoReportsExpiryUnitRestoreFailures(t *testing.T) {
 				t.Fatalf("undo error = %v, want failed restore for %s", err, path)
 			}
 		})
+	}
+}
+
+func TestStepInstallNFTRulesUndoContinuesAfterRestoreFailures(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.nftRulesWrittenByInstall = true
+	env.nftExpiryTimerWrittenByInstall = true
+	env.nftExpiryServiceWrittenByInstall = true
+	env.prevNFTPersistStateKnown = true
+	env.prevNFTExpiryTimerStateKnown = true
+	env.prevNFTExpiryTimerEnabled = true
+	env.prevNFTExpiryTimerActive = true
+	removeFile := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == env.nftRulesPath || path == env.nftExpiryTimerPath {
+			return errors.New("restore denied")
+		}
+		return removeFile(path)
+	}
+
+	err := stepInstallNFTRulesUndo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), env.nftRulesPath) || !strings.Contains(err.Error(), env.nftExpiryTimerPath) {
+		t.Fatalf("undo error = %v, want both failed restores", err)
+	}
+	if !runnerCalled(runner, "disable "+filepath.Base(env.nftPersistUnitPath)) ||
+		!runnerCalled(runner, "daemon-reload") ||
+		!runnerCalled(runner, "enable "+filepath.Base(env.nftExpiryTimerPath)) ||
+		!runnerCalled(runner, "start "+filepath.Base(env.nftExpiryTimerPath)) {
+		t.Fatalf("rollback stopped before restoring remaining service state: %+v", runner.calls)
 	}
 }
 
@@ -276,14 +308,16 @@ func TestStepInstallNFTRulesUndoReportsDisabledExpiryTimerRestoreFailure(t *test
 
 func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 	states := []struct {
-		name    string
-		enabled bool
-		active  bool
+		name        string
+		enabled     bool
+		active      bool
+		runtimeOnly bool
 	}{
 		{name: "disabled inactive"},
 		{name: "disabled active", active: true},
 		{name: "enabled inactive", enabled: true},
 		{name: "enabled active", enabled: true, active: true},
+		{name: "runtime-only enabled inactive", enabled: true, runtimeOnly: true},
 	}
 
 	for _, tc := range states {
@@ -292,6 +326,10 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 			env.prevNFTExpiryTimerStateKnown = true
 			env.prevNFTExpiryTimerEnabled = tc.enabled
 			env.prevNFTExpiryTimerActive = tc.active
+			env.prevNFTExpiryTimerEnabledRuntime = tc.runtimeOnly
+			// Model an attempt that wrote both expiry units.
+			env.nftExpiryTimerWrittenByInstall = true
+			env.nftExpiryServiceWrittenByInstall = true
 			originalTimer := "[Timer]\nOnCalendar=hourly\n"
 			originalService := "[Service]\nExecStart=/bin/true\n"
 			if err := os.WriteFile(env.nftExpiryTimerPath+".bak", []byte(originalTimer), modeUnitFile); err != nil {
@@ -313,8 +351,19 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 				}
 			}
 			timer := filepath.Base(env.nftExpiryTimerPath)
-			if got := runnerCalled(runner, "enable "+timer); got != tc.enabled {
+			persistentEnable := "enable " + timer
+			runtimeEnable := "enable --runtime " + timer
+			enable := persistentEnable
+			otherEnable := runtimeEnable
+			if tc.runtimeOnly {
+				enable = runtimeEnable
+				otherEnable = persistentEnable
+			}
+			if got := runnerCalled(runner, enable); got != tc.enabled {
 				t.Errorf("enable restored = %v, want %v: %+v", got, tc.enabled, runner.calls)
+			}
+			if runnerCalled(runner, otherEnable) {
+				t.Errorf("rollback also used unrecorded enable mode %q: %+v", otherEnable, runner.calls)
 			}
 			if got := runnerCalled(runner, "start "+timer); got != tc.active {
 				t.Errorf("start restored = %v, want %v: %+v", got, tc.active, runner.calls)
@@ -864,6 +913,7 @@ func TestStepInstallNFTRulesUndo_ToleratesPartialAndMissingUnits(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
+			env.nftTableMutatedByInstall = true // this attempt loaded the table
 			env.prevNFTPersistStateKnown = tc.persistStateWasKnown
 			env.prevNFTPersistEnabled = false
 			for _, missing := range []struct {

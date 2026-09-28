@@ -82,7 +82,8 @@ Flags let CI and reviewers see the planned commands before running.
 
 Exit codes:
   0  All steps applied (or already in place).
-  1  A step failed; earlier applied steps were rolled back.
+  1  A step failed; earlier applied steps were rolled back. If an undo
+     also failed, the error names it and the host needs another install.
   2  Precondition error (not root, missing executable, bad --config).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -489,6 +490,21 @@ func stepWaitPipelockReady() step {
 }
 
 func stepWriteCredentialGuard() step {
+	// touched lists the guard files this attempt wrote. Undo restores only
+	// those: a rerun that wrote nothing must not delete or disable a guard
+	// that was already installed and current.
+	var touched []string
+	var modeChanges []struct {
+		path string
+		mode os.FileMode
+	}
+	// prevActive records a guard that was already running, so a rollback
+	// that restores its previous files starts it again instead of leaving
+	// the operator's credentials unguarded.
+	prevActive := false
+	prevEnabled := false
+	prevEnabledRuntime := false
+	enableAttempted := false
 	return step{
 		name: "write-credential-guard",
 		desc: "write and enable contain credential guard",
@@ -510,24 +526,78 @@ func stepWriteCredentialGuard() step {
 				{env.guardServiceUnit, renderCredentialGuardService(env.guardScriptPath), modeUnitFile},
 				{env.guardPathUnit, renderCredentialGuardPathUnit(home, filepath.Base(env.guardServiceUnit)), modeUnitFile},
 			}
-			appliedFiles := false
-			for _, item := range writes {
-				if err := env.mkdirAll(filepath.Dir(item.path), modeDirReadable); err != nil {
-					return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(item.path), err)
+			touched = nil
+			modeChanges = nil
+			enableAttempted = false
+			rememberMode := func(path string, mode os.FileMode) {
+				for _, change := range modeChanges {
+					if change.path == path {
+						return
+					}
 				}
-				if err := env.chmod(filepath.Dir(item.path), modeDirReadable); err != nil {
-					return false, fmt.Errorf("chmod %s: %w", filepath.Dir(item.path), err)
+				modeChanges = append(modeChanges, struct {
+					path string
+					mode os.FileMode
+				}{path, mode})
+			}
+			activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.guardPathUnit))
+			if activeErr != nil {
+				return false, fmt.Errorf("systemctl is-active credential guard: %w", activeErr)
+			}
+			prevActive = strings.TrimSpace(activeOut) == systemctlActive
+			prevEnabled = false
+			prevEnabledRuntime = false
+			if _, err := env.lstat(env.guardPathUnit); err == nil {
+				enabledOut, enabledCode, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.guardPathUnit))
+				if enabledErr != nil {
+					return false, fmt.Errorf("systemctl is-enabled credential guard: %w", enabledErr)
+				}
+				if enabledCode == 0 {
+					state := strings.TrimSpace(enabledOut)
+					prevEnabled = state == systemctlEnabled || state == "enabled-runtime"
+					prevEnabledRuntime = state == "enabled-runtime"
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("stat credential guard unit %s: %w", env.guardPathUnit, err)
+			}
+			// Every error below reports the files already written, so the
+			// orchestrator runs undo and restores them.
+			for _, item := range writes {
+				dir := filepath.Dir(item.path)
+				var priorDirMode os.FileMode
+				priorDirExists := false
+				if info, err := env.lstat(dir); err == nil {
+					priorDirMode = info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+					priorDirExists = true
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("stat %s: %w", dir, err)
+				}
+				if err := env.mkdirAll(dir, modeDirReadable); err != nil {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("mkdir %s: %w", dir, err)
+				}
+				if priorDirExists && priorDirMode != modeDirReadable {
+					rememberMode(dir, priorDirMode)
+				}
+				if err := env.chmod(dir, modeDirReadable); err != nil {
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("chmod %s: %w", dir, err)
 				}
 				if existing, err := env.readFile(item.path); err == nil && string(existing) == item.body {
+					info, statErr := env.lstat(item.path)
+					if statErr != nil {
+						return len(touched)+len(modeChanges) > 0, fmt.Errorf("stat %s: %w", item.path, statErr)
+					}
+					if prior := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky); prior != item.mode {
+						rememberMode(item.path, prior)
+					}
 					if err := env.chmod(item.path, item.mode); err != nil {
-						return false, fmt.Errorf("chmod %s: %w", item.path, err)
+						return len(touched)+len(modeChanges) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
 					}
 					continue
 				}
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
-					return appliedFiles, fmt.Errorf("write %s: %w", item.path, err)
+					return len(touched)+len(modeChanges) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
-				appliedFiles = true
+				touched = append(touched, item.path)
 			}
 			if out, code, err := env.runCmd(ctx, env.guardScriptPath); err != nil {
 				return true, fmt.Errorf("%s: %w", env.guardScriptPath, err)
@@ -540,6 +610,7 @@ func stepWriteCredentialGuard() step {
 				return true, fmt.Errorf("systemctl daemon-reload exit %d: %s", code, oneLine(out))
 			}
 			unit := filepath.Base(env.guardPathUnit)
+			enableAttempted = true
 			if out, code, err := env.runCmd(ctx, "systemctl", "enable", "--now", unit); err != nil {
 				return true, fmt.Errorf("systemctl enable %s: %w", unit, err)
 			} else if code != 0 {
@@ -548,22 +619,47 @@ func stepWriteCredentialGuard() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			unit := filepath.Base(env.guardPathUnit)
-			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
-				return fmt.Errorf("disable credential guard %s: %w", unit, err)
+			if len(touched) == 0 && len(modeChanges) == 0 && !enableAttempted {
+				// No files or service state were changed by this attempt.
+				return nil
 			}
-			for _, path := range []string{env.guardPathUnit, env.guardServiceUnit, env.guardScriptPath} {
-				if err := restoreBackup(env, path); err != nil {
-					return err
+			unit := filepath.Base(env.guardPathUnit)
+			var errs []error
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
+				errs = append(errs, fmt.Errorf("disable credential guard %s: %w", unit, err))
+			}
+			for i := len(touched) - 1; i >= 0; i-- {
+				if err := restoreBackup(env, touched[i]); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			for i := len(modeChanges) - 1; i >= 0; i-- {
+				if err := env.chmod(modeChanges[i].path, modeChanges[i].mode); err != nil {
+					errs = append(errs, fmt.Errorf("restore mode %s: %w", modeChanges[i].path, err))
 				}
 			}
 			// Restore files before reloading so either manager outcome leaves the
 			// on-disk guard in its pre-install state. A failed reload is still
 			// returned; systemd may retain stale unit contents until it recovers.
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-				return fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err)
+				errs = append(errs, fmt.Errorf("systemctl daemon-reload after restoring credential guard: %w", err))
 			}
-			return nil
+			if prevEnabled {
+				args := []string{"enable"}
+				if prevEnabledRuntime {
+					args = append(args, "--runtime")
+				}
+				args = append(args, unit)
+				if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
+					errs = append(errs, fmt.Errorf("restore credential guard %s enabled state: %w", unit, err))
+				}
+			}
+			if prevActive {
+				if err := runOrErr(ctx, env, "systemctl", "start", unit); err != nil {
+					errs = append(errs, fmt.Errorf("restart previous credential guard %s: %w", unit, err))
+				}
+			}
+			return errors.Join(errs...)
 		},
 	}
 }
@@ -1038,7 +1134,8 @@ func stepCreateDir(label string, pathFn func(*installEnv) string, mode os.FileMo
 				return false, fmt.Errorf("mkdir %s: %w", path, err)
 			}
 			if err := env.chmod(path, mode); err != nil {
-				return false, fmt.Errorf("chmod %s: %w", path, err)
+				// The directory now exists; report it so undo removes it.
+				return true, fmt.Errorf("chmod %s: %w", path, err)
 			}
 			return true, nil
 		},
@@ -1098,19 +1195,25 @@ func stepStagePipelockConfig(opts installOpts) step {
 			if err != nil {
 				return false, fmt.Errorf("read --config %s: %w", opts.configSource, err)
 			}
+			// Migration may already have written artifacts. Clean them up
+			// here; if that fails, report applied so rollback retries the
+			// cleanup and reports it if it still cannot.
+			cleanup := func(cause error) (bool, error) {
+				if cerr := cleanupMigratedConfigArtifacts(env, migrated); cerr != nil {
+					return true, errors.Join(cause, cerr)
+				}
+				return false, cause
+			}
 			data, migrated, err = migratePipelockConfigForContain(env, opts.configSource, data)
 			if err != nil {
-				_ = cleanupMigratedConfigArtifacts(env, migrated)
-				return false, err
+				return cleanup(err)
 			}
 			paths, err := containServiceReadOnlyPaths(data, env.proxyPort)
 			if err != nil {
-				_ = cleanupMigratedConfigArtifacts(env, migrated)
-				return false, fmt.Errorf("read file_sentry paths for service sandbox: %w", err)
+				return cleanup(fmt.Errorf("read file_sentry paths for service sandbox: %w", err))
 			}
 			if err := env.writeFile(stagedPipelockConfigPath(env), data, modeConfigSecret); err != nil {
-				_ = cleanupMigratedConfigArtifacts(env, migrated)
-				return false, fmt.Errorf("stage config candidate: %w", err)
+				return cleanup(fmt.Errorf("stage config candidate: %w", err))
 			}
 			env.serviceReadOnlyPaths = paths
 			staged = true
@@ -1479,11 +1582,16 @@ func walkAndChown(env *installEnv, root string, uid, gid int) error {
 func stepInstallPipelockBinary() step {
 	var managedUnits []managedNamespaceRuntimeUnit
 	var managedStates map[string]unitRuntimeState
+	// binaryWritten records that this attempt replaced the binary. Undo
+	// restores it only then: after a quiesce failure the binary is untouched,
+	// and restoring it would delete it or swap in an older release's backup.
+	binaryWritten := false
 	return step{
 		name: "install-pipelock-binary",
 		desc: "install pipelock binary to /usr/local/bin/pipelock (0o755)",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			env.serviceBinaryChanged = false
+			binaryWritten = false
 			if env.preflightBinaryHash != "" {
 				srcHash, err := env.hashFile(env.pipelockBinary)
 				if err != nil {
@@ -1528,6 +1636,7 @@ func stepInstallPipelockBinary() step {
 			if err := backupAndWrite(env, env.pipelockTarget, data, modeWrapperExec); err != nil {
 				return true, err
 			}
+			binaryWritten = true
 			env.serviceBinaryChanged = true
 			if err := restoreManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
 				return true, fmt.Errorf("restore managed namespace units after binary replacement: %w", err)
@@ -1539,8 +1648,10 @@ func stepInstallPipelockBinary() step {
 			if err := quiesceManagedNamespaceRuntimeUnits(ctx, env, managedUnits, managedStates); err != nil {
 				errs = append(errs, err)
 			}
-			if err := restoreBackup(env, env.pipelockTarget); err != nil {
-				errs = append(errs, err)
+			if binaryWritten {
+				if err := restoreBackup(env, env.pipelockTarget); err != nil {
+					errs = append(errs, err)
+				}
 			}
 			if err := restartRestoredServiceIfNeeded(ctx, env); err != nil {
 				errs = append(errs, err)
@@ -1588,8 +1699,11 @@ func stepWriteIntegrityPin() step {
 			}
 			// Pin file ownership: pipelock-proxy owns the private
 			// integrity directory and pin. pipelock-agent cannot traverse it.
+			// The pin is already rewritten, so report it applied: rollback
+			// must restore the previous pin, or a restored binary is refused
+			// by the pin that names the binary this attempt installed.
 			if err := ensureIntegrityOwnership(env); err != nil {
-				return false, err
+				return true, err
 			}
 			return true, nil
 		},
@@ -1945,18 +2059,16 @@ func stepExportPipelockCA() step {
 				return false, fmt.Errorf("write current Pipelock CA export: %w", err)
 			}
 			// Everything below runs AFTER the file has already been mutated, so
-			// each failure must restore the previous export itself. Returning
-			// (false, err) here would leave the new bytes on disk and skip undo
-			// entirely, because runSteps only rolls back steps whose apply
-			// reported didApply. A failed install would then replace a good
-			// export with an unverified one -- the opposite of what this step
-			// exists to guarantee.
+			// each failure restores the previous export itself. If that
+			// restore fails, report applied so rollback retries it (the
+			// restore is safe to repeat) and reports it if it still cannot.
 			restore := func(cause error) (bool, error) {
 				if !changed {
 					return false, cause
 				}
 				if rerr := restoreBackup(env, env.caExportPath); rerr != nil {
-					return false, fmt.Errorf("%w (and restoring the previous export failed: %w; rerun `pipelock contain install` as root)", cause, rerr)
+					wrote = true
+					return true, fmt.Errorf("%w (and restoring the previous export failed: %w)", cause, rerr)
 				}
 				return false, cause
 			}
@@ -2189,6 +2301,11 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 		return false, err
 	}
 	captureNFTPreState(ctx, env)
+	// Rollback must know the table was live before this attempt even when
+	// its contents could not be captured, so it never deletes it.
+	if tableLoaded && !env.nftTableMutatedByInstall {
+		env.nftTableLoadedBeforeInstall = true
+	}
 	rulesChanged := false
 	if !rulesMatch {
 		// No mkdir or chmod here. ensureNFTRulesDirSafe already ran, before
@@ -2201,14 +2318,19 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 			return false, err
 		}
 		rulesChanged = true
+		env.nftRulesWrittenByInstall = true
 	}
+	// Every error return below reports each file this step already changed,
+	// so the orchestrator runs this step's undo and restores them. Reporting
+	// false after a write left the new rules file on disk for the next boot
+	// to load while the kernel kept the old table.
 	persistUnitChanged, err := ensureNFTPersistUnit(env)
 	if err != nil {
-		return false, err
+		return rulesChanged || persistUnitChanged, err
 	}
 	expiryUnitChanged, err := ensureNFTExpiryUnits(env)
 	if err != nil {
-		return persistUnitChanged || expiryUnitChanged, err
+		return rulesChanged || persistUnitChanged || expiryUnitChanged, err
 	}
 	changed := rulesChanged || persistUnitChanged || expiryUnitChanged || !tableLoaded
 	if changed || !tableLoaded || liveRulesDrifted {
@@ -2221,22 +2343,32 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 			if err := reloadNFTManagedChain(ctx, env, body, operatorUID, proxyUID, agentUID, priorUIDs...); err != nil {
 				return changed, err
 			}
+			env.nftTableMutatedByInstall = true
 			reloadedManagedChain = true
 		}
 		if !reloadedManagedChain && (!tableLoaded || rulesChanged || liveRulesDrifted) {
 			if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 				return changed, fmt.Errorf("nft load failed: %w", err)
 			}
+			env.nftTableMutatedByInstall = true
 		}
 	}
+	// A drift-only reload changed the kernel table without changing a file,
+	// so these errors report the table too; otherwise rollback never runs.
+	// An enable command can change unit state before reporting failure. Undo
+	// must run even when no file or nft rule changed earlier in this step.
+	mutated := changed || env.nftTableMutatedByInstall
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-		return changed, fmt.Errorf("systemctl daemon-reload: %w", err)
+		return mutated, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
+	env.nftPersistEnableAttempted = true
+	mutated = true
 	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
+		return mutated, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
 	}
+	env.nftTimerEnableAttempted = true
 	if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
-		return changed, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
+		return mutated, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
 	}
 	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
 	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
@@ -2256,55 +2388,118 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	// Restore any previous live table captured during this install
 	// attempt before deleting the newly installed table. If no
 	// previous table existed, drop the table created by this step.
-	if env.prevNFTTableStateKnown && strings.TrimSpace(env.prevNFTTableDump) != "" {
+	var incomplete error
+	if env.nftPersistEnableAttempted && !env.prevNFTPersistStateKnown {
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: previous enabled state of %s is unknown; rerun `pipelock contain install` as root", filepath.Base(env.nftPersistUnitPath)))
+	}
+	if env.nftTimerEnableAttempted && !env.prevNFTExpiryTimerStateKnown {
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: previous enabled and active state of %s is unknown; rerun `pipelock contain install` as root", filepath.Base(env.nftExpiryTimerPath)))
+	}
+	if env.prevNFTTableStateKnown && env.nftTableMutatedByInstall && strings.TrimSpace(env.prevNFTTableDump) != "" {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
-			return err
+			incomplete = errors.Join(incomplete, err)
 		}
+	} else if env.nftTableMutatedByInstall && env.nftTableLoadedBeforeInstall {
+		// The table was live before this attempt reloaded it, but its
+		// previous contents could not be captured. Deleting it would leave the
+		// agent with no containment at all, so keep the table this attempt
+		// loaded, finish the file restores, and report the rollback as
+		// incomplete.
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: containment table inet %s was loaded before this install but its previous contents could not be captured; left the table this install loaded in place, rerun `pipelock contain install` as root", env.nftTableOrDefault()))
+	} else if !env.nftTableMutatedByInstall {
+		// This attempt never changed the table: an atomic nft batch that failed
+		// leaves it as it was. Leave any table alone, including when its prior
+		// state could not be captured, so rollback cannot remove a live table
+		// this attempt did not create. A failed delete or restore here would
+		// also skip the file restores below.
 	} else {
 		// Report a failed drop. Every other branch of this rollback returns
 		// its error; discarding this one meant an install that failed on a
 		// host with no prior table could report a clean rollback while the
 		// table this step created was still loaded in the kernel.
 		if _, code, err := env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault()); err != nil {
-			return fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err)
+			incomplete = errors.Join(incomplete, fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err))
 		} else if code != 0 {
-			return fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code)
+			incomplete = errors.Join(incomplete, fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code))
 		}
 	}
-	if err := restoreBackup(env, env.nftRulesPath); err != nil {
-		return err
+	if err := restoreNFTFilesWrittenByInstall(env); err != nil {
+		incomplete = errors.Join(incomplete, err)
 	}
-	if err := restoreNFTUnitBackup(env, env.nftPersistUnitPath, env.prevNFTPersistUnitExisted); err != nil {
-		return err
-	}
-	if err := restoreNFTUnitBackup(env, env.nftExpiryTimerPath, env.prevNFTExpiryTimerExisted); err != nil {
-		return err
-	}
-	if err := restoreNFTUnitBackup(env, env.nftExpiryServicePath, env.prevNFTExpiryServiceExisted); err != nil {
-		return err
-	}
-	if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
-		if err := runSystemctlCleanupUnit(ctx, env, "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-			return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
+	if env.prevNFTPersistStateKnown {
+		persistUnit := filepath.Base(env.nftPersistUnitPath)
+		if !env.prevNFTPersistEnabled {
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", persistUnit, err))
+			}
+		} else if env.nftPersistEnableAttempted {
+			args := []string{"enable"}
+			if env.prevNFTPersistEnabledRuntime {
+				// The attempted plain enable may have added persistent links.
+				// Remove them before restoring the prior runtime-only state.
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
+					incomplete = errors.Join(incomplete, fmt.Errorf("remove persistent %s enablement: %w", persistUnit, err))
+				}
+				args = append(args, "--runtime")
+			}
+			args = append(args, persistUnit)
+			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", persistUnit, err))
+			}
 		}
 	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err)
+		incomplete = errors.Join(incomplete, fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err))
 	}
 	if env.prevNFTExpiryTimerStateKnown {
 		timer := filepath.Base(env.nftExpiryTimerPath)
 		if env.prevNFTExpiryTimerEnabled {
-			if err := runOrErr(ctx, env, "systemctl", "enable", timer); err != nil {
-				return fmt.Errorf("restore %s enabled state: %w", timer, err)
+			args := []string{"enable"}
+			if env.prevNFTExpiryTimerEnabledRuntime {
+				args = append(args, "--runtime")
+			}
+			args = append(args, timer)
+			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", timer, err))
 			}
 		}
 		if env.prevNFTExpiryTimerActive {
 			if err := runOrErr(ctx, env, "systemctl", "start", timer); err != nil {
-				return fmt.Errorf("restore %s active state: %w", timer, err)
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s active state: %w", timer, err))
 			}
 		}
 	}
-	return nil
+	return incomplete
+}
+
+// restoreNFTFilesWrittenByInstall restores only the containment files this
+// attempt wrote. A file the attempt left alone still matches what the kernel
+// and the next boot need; restoring it would delete it or swap in an older
+// release's backup.
+func restoreNFTFilesWrittenByInstall(env *installEnv) error {
+	var incomplete error
+	if env.nftRulesWrittenByInstall {
+		if err := restoreBackup(env, env.nftRulesPath); err != nil {
+			incomplete = errors.Join(incomplete, err)
+		}
+	}
+	for _, unit := range []struct {
+		written bool
+		path    string
+		existed bool
+	}{
+		{env.nftPersistUnitWrittenByInstall, env.nftPersistUnitPath, env.prevNFTPersistUnitExisted},
+		{env.nftExpiryTimerWrittenByInstall, env.nftExpiryTimerPath, env.prevNFTExpiryTimerExisted},
+		{env.nftExpiryServiceWrittenByInstall, env.nftExpiryServicePath, env.prevNFTExpiryServiceExisted},
+	} {
+		if !unit.written {
+			continue
+		}
+		if err := restoreNFTUnitBackup(env, unit.path, unit.existed); err != nil {
+			incomplete = errors.Join(incomplete, err)
+		}
+	}
+	return incomplete
 }
 
 func captureNFTPreState(ctx context.Context, env *installEnv) {
@@ -2318,9 +2513,10 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 		}
 	}
 	if !env.prevNFTPersistStateKnown {
-		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftPersistUnitPath))
+		out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftPersistUnitPath))
 		if err == nil {
 			env.prevNFTPersistEnabled = code == 0
+			env.prevNFTPersistEnabledRuntime = strings.TrimSpace(out) == "enabled-runtime"
 			env.prevNFTPersistStateKnown = true
 		}
 	}
@@ -2328,7 +2524,9 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 		enabledOut, _, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
 		activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.nftExpiryTimerPath))
 		if enabledErr == nil && activeErr == nil {
-			env.prevNFTExpiryTimerEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			state := strings.TrimSpace(enabledOut)
+			env.prevNFTExpiryTimerEnabled = state == systemctlEnabled || state == "enabled-runtime"
+			env.prevNFTExpiryTimerEnabledRuntime = state == "enabled-runtime"
 			env.prevNFTExpiryTimerActive = strings.TrimSpace(activeOut) == systemctlActive
 			env.prevNFTExpiryTimerStateKnown = true
 		}
@@ -2530,15 +2728,25 @@ func nftRulesIncludeLine(path string) string {
 }
 
 func ensureNFTPersistUnit(env *installEnv) (bool, error) {
-	return ensureContainmentUnit(env, env.nftPersistUnitPath, renderNFTPersistUnit(env))
+	changed, err := ensureContainmentUnit(env, env.nftPersistUnitPath, renderNFTPersistUnit(env))
+	if changed {
+		env.nftPersistUnitWrittenByInstall = true
+	}
+	return changed, err
 }
 
 func ensureNFTExpiryUnits(env *installEnv) (bool, error) {
 	serviceChanged, err := ensureContainmentUnit(env, env.nftExpiryServicePath, renderNFTExpiryService(env))
+	if serviceChanged {
+		env.nftExpiryServiceWrittenByInstall = true
+	}
 	if err != nil {
 		return serviceChanged, err
 	}
 	timerChanged, err := ensureContainmentUnit(env, env.nftExpiryTimerPath, renderNFTExpiryTimer(env))
+	if timerChanged {
+		env.nftExpiryTimerWrittenByInstall = true
+	}
 	return serviceChanged || timerChanged, err
 }
 
@@ -3083,14 +3291,7 @@ func stepWriteToolWrappers() step {
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			touched = nil
 			restoreTouched := func(cause error) (bool, error) {
-				var errs []error
-				errs = append(errs, cause)
-				for i := len(touched) - 1; i >= 0; i-- {
-					if err := restoreBackup(env, touched[i]); err != nil {
-						errs = append(errs, err)
-					}
-				}
-				return false, errors.Join(errs...)
+				return restoreTouchedInline(env, touched, cause)
 			}
 			entries, err := readToolsList(env)
 			if err != nil {
@@ -3121,10 +3322,10 @@ func stepWriteToolWrappers() step {
 					if _, err := backupCurrentToBak(env, path); err != nil {
 						return restoreTouched(fmt.Errorf("backup stale wrapper %s: %w", path, err))
 					}
+					touched = append(touched, path)
 					if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 						return restoreTouched(fmt.Errorf("remove stale wrapper %s: %w", path, err))
 					}
-					touched = append(touched, path)
 				} else if !errors.Is(err, os.ErrNotExist) {
 					return restoreTouched(fmt.Errorf("stat stale wrapper %s: %w", path, err))
 				}
@@ -3273,9 +3474,12 @@ func stepInstallSudoers() step {
 			}
 			if err := runOrErr(ctx, env, "visudo", "-cf", env.sudoersPath); err != nil {
 				// Roll back inside the step so a malformed sudoers never
-				// ends up loaded. The orchestrator would also undo, but
-				// removing the bad file ourselves is cheaper and clearer.
-				_ = restoreBackup(env, env.sudoersPath)
+				// stays loaded. If that restore fails, report applied so the
+				// orchestrator retries it; restoreBackup is safe to repeat and
+				// never removes a file an earlier attempt already put back.
+				if rerr := restoreBackup(env, env.sudoersPath); rerr != nil {
+					return true, errors.Join(fmt.Errorf("visudo rejected new sudoers: %w", err), fmt.Errorf("restore previous sudoers: %w", rerr))
+				}
 				return false, fmt.Errorf("visudo rejected new sudoers: %w", err)
 			}
 			return true, nil

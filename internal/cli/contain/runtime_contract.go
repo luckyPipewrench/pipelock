@@ -549,8 +549,10 @@ func stepWriteProfileScript() step {
 			if err := backupAndWrite(env, path, []byte(body), modeProfileScript); err != nil {
 				return false, err
 			}
+			// The new script is on disk; report it applied so rollback
+			// restores the previous one instead of leaving it half-owned.
 			if err := env.chown(path, 0, gid); err != nil {
-				return false, fmt.Errorf("chown %s: %w", path, err)
+				return true, fmt.Errorf("chown %s: %w", path, err)
 			}
 			return true, nil
 		},
@@ -577,13 +579,7 @@ func stepWriteUtilityWrappers() step {
 				path := filepath.Join(env.wrapperDir, name)
 				body := renderUtilityWrapper(env, tool)
 				restoreTouched := func(cause error) (bool, error) {
-					errs := []error{cause}
-					for i := len(touched) - 1; i >= 0; i-- {
-						if rerr := restoreBackup(env, touched[i]); rerr != nil {
-							errs = append(errs, rerr)
-						}
-					}
-					return false, errors.Join(errs...)
+					return restoreTouchedInline(env, touched, cause)
 				}
 				if existing, err := env.readFile(path); err == nil && string(existing) == body {
 					// Re-assert the executable bit on rerun so a drifted wrapper
@@ -628,14 +624,10 @@ func stepWriteAgentToolConfigs() step {
 				return false, fmt.Errorf("resolve %s uid: %w", env.agentUserName, err)
 			}
 			home := agentHomeDir(env)
+			// touched includes a config whose chown just failed, so the
+			// inline restore puts that one back too.
 			restore := func(cause error) (bool, error) {
-				errs := []error{cause}
-				for i := len(touched) - 1; i >= 0; i-- {
-					if rerr := restoreBackup(env, touched[i]); rerr != nil {
-						errs = append(errs, rerr)
-					}
-				}
-				return false, errors.Join(errs...)
+				return restoreTouchedInline(env, touched, cause)
 			}
 			for _, cfg := range agentToolConfigs() {
 				path := filepath.Join(home, cfg.rel)
@@ -654,10 +646,10 @@ func stepWriteAgentToolConfigs() step {
 				if err := backupAndWrite(env, path, []byte(body), modeAgentConfig); err != nil {
 					return restore(fmt.Errorf("write %s: %w", path, err))
 				}
+				touched = append(touched, path)
 				if err := chownAgentConfigFile(env, path, uid, gid); err != nil {
 					return restore(fmt.Errorf("chown %s: %w", path, err))
 				}
-				touched = append(touched, path)
 			}
 			return len(touched) > 0, nil
 		},

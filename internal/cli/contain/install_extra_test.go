@@ -1130,6 +1130,7 @@ func TestStepWriteLaunchWrapper_IdempotentAndUndoable(t *testing.T) {
 
 func TestStepInstallNFTRules_UndoDropsTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	env.nftTableMutatedByInstall = true // this attempt loaded the table
 	s := stepInstallNFTRules()
 	if err := s.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
@@ -1208,7 +1209,10 @@ func TestRollbackApplied_HandlesUndoFailureNonFatally(t *testing.T) {
 		},
 	}
 	// applied[0] was first; rollbackApplied walks in reverse: boom then ok.
-	rollbackApplied(context.Background(), env, out, applied)
+	err := rollbackApplied(context.Background(), env, out, applied)
+	if err == nil || !strings.Contains(err.Error(), "undo boom") || !strings.Contains(err.Error(), "kaboom") {
+		t.Fatalf("rollbackApplied error = %v, want the failed undo named", err)
+	}
 	got := out.String()
 	if !strings.Contains(got, "[FAIL] undo boom") {
 		t.Errorf("missing fail line for boom: %q", got)
@@ -1220,7 +1224,9 @@ func TestRollbackApplied_HandlesUndoFailureNonFatally(t *testing.T) {
 
 func TestRollbackApplied_HandlesEmptySliceAsNoop(t *testing.T) {
 	env, _, out := newFakeEnv(t)
-	rollbackApplied(context.Background(), env, out, nil)
+	if err := rollbackApplied(context.Background(), env, out, nil); err != nil {
+		t.Fatalf("empty rollback: %v", err)
+	}
 	if out.Len() != 0 {
 		t.Errorf("expected no output: %q", out.String())
 	}
@@ -1229,7 +1235,9 @@ func TestRollbackApplied_HandlesEmptySliceAsNoop(t *testing.T) {
 func TestRollbackApplied_SkipsStepsWithNilUndo(t *testing.T) {
 	env, _, out := newFakeEnv(t)
 	applied := []step{{name: "nostep", desc: "nostep", undo: nil}}
-	rollbackApplied(context.Background(), env, out, applied)
+	if err := rollbackApplied(context.Background(), env, out, applied); err != nil {
+		t.Fatalf("nil-undo rollback: %v", err)
+	}
 	if !strings.Contains(out.String(), "[SKIP] undo nostep") {
 		t.Errorf("expected skip line: %q", out.String())
 	}
@@ -1534,16 +1542,26 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 		{
 			name: "credential guard disable",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				// Undo acts only on a guard this attempt wrote, so apply first.
+				step := stepWriteCredentialGuard()
+				if _, err := step.apply(context.Background(), env); err != nil {
+					t.Fatal(err)
+				}
 				unit := filepath.Base(env.guardPathUnit)
 				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
-				return stepWriteCredentialGuard().undo(context.Background(), env)
+				return step.undo(context.Background(), env)
 			},
 		},
 		{
 			name: "credential guard daemon reload",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				// Undo acts only on a guard this attempt wrote, so apply first.
+				step := stepWriteCredentialGuard()
+				if _, err := step.apply(context.Background(), env); err != nil {
+					t.Fatal(err)
+				}
 				runner.on(argvFor(testSystemctl, "daemon-reload"), "connection refused", 1, nil)
-				return stepWriteCredentialGuard().undo(context.Background(), env)
+				return step.undo(context.Background(), env)
 			},
 		},
 		{

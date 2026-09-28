@@ -348,10 +348,16 @@ func stepProvisionAgentDisplay() step {
 	var removedManagedBody []byte
 	var previousAuthority []byte
 	var previousAuthorityExisted bool
+	// unitWritten records that this attempt wrote the display unit, so undo
+	// restores the unit file only then instead of deleting a current unit or
+	// swapping in an older release's backup.
+	unitWritten := false
 	return step{
 		name: "provision-agent-display",
 		desc: "provision the optional agent-owned Xvfb fallback display",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			removedManagedBody = nil
+			unitWritten = false
 			display, err := loadContainmentDisplay(env)
 			if err != nil {
 				return false, err
@@ -419,9 +425,15 @@ func stepProvisionAgentDisplay() step {
 				return false, err
 			}
 			if err := writeDisplayAuthority(env, rand.Reader); err != nil {
-				return false, errors.Join(err, restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted))
+				// The inline restore rewrites the captured bytes, so undo can
+				// safely repeat it. Report applied only when it failed, so
+				// rollback retries it and reports a restore it cannot finish.
+				if rerr := restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted); rerr != nil {
+					return true, errors.Join(err, rerr)
+				}
+				return false, err
 			}
-			_, err = ensureContainmentUnit(env, env.displayUnitPath, renderAgentDisplayUnit(env))
+			unitWritten, err = ensureContainmentUnit(env, env.displayUnitPath, renderAgentDisplayUnit(env))
 			if err != nil {
 				return true, err
 			}
@@ -514,7 +526,7 @@ func stepProvisionAgentDisplay() step {
 			if err := restoreDisplayAuthority(env, previousAuthority, previousAuthorityExisted); err != nil {
 				return err
 			}
-			return restoreAgentDisplay(ctx, env)
+			return restoreAgentDisplayUnit(ctx, env, unitWritten)
 		},
 	}
 }
@@ -558,12 +570,20 @@ func checkRFBRuntimeDirectory(stat func(string) (os.FileInfo, error), lookup loo
 }
 
 func restoreAgentDisplay(ctx context.Context, env *installEnv) error {
+	return restoreAgentDisplayUnit(ctx, env, true)
+}
+
+// restoreAgentDisplayUnit stops the display, restores its unit file when
+// restoreFile is set, and returns the unit to its captured prior state.
+func restoreAgentDisplayUnit(ctx context.Context, env *installEnv, restoreFile bool) error {
 	unit := filepath.Base(env.displayUnitPath)
 	if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
 		return err
 	}
-	if err := restoreBackup(env, env.displayUnitPath); err != nil {
-		return err
+	if restoreFile {
+		if err := restoreBackup(env, env.displayUnitPath); err != nil {
+			return err
+		}
 	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 		return err

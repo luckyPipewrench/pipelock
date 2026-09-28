@@ -2,22 +2,91 @@
 # Copyright 2026 Pipelock contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Print the package list for a CI test shard."""
+"""Print the package list, or the test selector, for a CI test shard.
+
+Package shards
+--------------
+Three heavy package trees run on their own shards and every other package is
+spread round-robin over the rest shards. The union of all package shards is
+exactly `go list ./...`.
+
+Test sub-shards
+---------------
+The proxy and scanner trees are each too slow for one runner, so their tests
+are divided by top-level test name across sub-shards (`proxy-0`, `proxy-1`,
+...). Every sub-shard of a tree runs the same packages with a different
+selector:
+
+* sub-shard i < n-1 runs `-run` of the names whose stable hash lands in
+  bucket i;
+* the last sub-shard runs `-skip` of the union of every earlier bucket.
+
+That makes the split complete and disjoint by construction rather than by the
+accuracy of the name inventory. A test the inventory never saw (a new file, an
+unusual declaration) matches no `-run` bucket and is not skipped by the last
+sub-shard, so it still runs exactly once. The inventory only affects balance,
+which is why it is a cheap source scan rather than a compile of every test
+binary. `--check-partition` compares the selectors against `go test -list`
+under the real build tags for release verification.
+
+A name the inventory lists that does not exist under the current build tags is
+harmless: no test matches it. Benchmarks are not listed because these shards
+never pass -bench.
+"""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 
-HEAVY_SHARDS = {
+ROOT = Path(__file__).resolve().parents[1]
+
+HEAVY_TREES = {
     "proxy": "internal/proxy",
     "scanner": "internal/scanner",
     "mcp": "internal/mcp",
 }
+# Number of test-name sub-shards per heavy tree. A tree absent here runs as a
+# single shard named after the tree.
+TEST_SPLITS = {
+    "proxy": 2,
+    "scanner": 2,
+}
 REST_SHARDS = ("rest-0", "rest-1", "rest-2")
-SHARDS = (*HEAVY_SHARDS.keys(), *REST_SHARDS)
+
+
+def _heavy_shard_names() -> tuple[str, ...]:
+    names: list[str] = []
+    for tree in HEAVY_TREES:
+        count = TEST_SPLITS.get(tree, 1)
+        if count == 1:
+            names.append(tree)
+        else:
+            names.extend(f"{tree}-{index}" for index in range(count))
+    return tuple(names)
+
+
+HEAVY_SHARDS = _heavy_shard_names()
+SHARDS = (*HEAVY_SHARDS, *REST_SHARDS)
+
+# The kernel refuses a single argv entry longer than 128 KiB (MAX_ARG_STRLEN),
+# and `go test` forwards the selector to the test binary as one argument. Keep
+# clear of that with room for the flag prefix; a tree that outgrows it needs a
+# larger split count, and failing here says so instead of failing exec later.
+MAX_SELECTOR_BYTES = 120_000
+
+# Top-level functions `go test` runs under -run/-skip. Matching is deliberately
+# loose (a helper such as `func TestHelper(x int)` is also listed): an extra
+# name only shifts balance, while a missed name still runs in the last
+# sub-shard. Receivers (`func (r T) TestX`) are methods, never tests.
+TEST_FUNC_RE = re.compile(r"^func[ \t]+((?:Test|Fuzz|Example)\w*)[ \t]*[\[(]", re.MULTILINE)
+TEST_KIND_PREFIXES = ("Test", "Fuzz", "Example")
 
 
 def list_packages(tags: str) -> list[str]:
@@ -25,7 +94,7 @@ def list_packages(tags: str) -> list[str]:
     if tags:
         cmd.extend(["-tags", tags])
     cmd.append("./...")
-    result = subprocess.run(cmd, check=True, text=True, capture_output=True)
+    result = subprocess.run(cmd, check=True, text=True, capture_output=True, cwd=ROOT)
     return [line for line in result.stdout.splitlines() if line]
 
 
@@ -43,8 +112,28 @@ def package_in_tree(package: str, root: str) -> bool:
     return suffix == root or suffix.startswith(root + "/")
 
 
+def shard_tree(shard: str) -> tuple[str, int, int] | None:
+    """Return (tree, sub-shard index, sub-shard count) for a heavy shard."""
+    if shard in HEAVY_TREES and TEST_SPLITS.get(shard, 1) == 1:
+        return shard, 0, 1
+    tree, sep, index = shard.rpartition("-")
+    if sep and tree in TEST_SPLITS and index.isdigit():
+        count = TEST_SPLITS[tree]
+        position = int(index)
+        if 0 <= position < count and shard == f"{tree}-{position}":
+            return tree, position, count
+    return None
+
+
+# One shard per distinct package list: the first sub-shard of each split tree
+# stands for all of its sub-shards, which select the same packages.
+PACKAGE_SHARDS = tuple(
+    shard for shard in SHARDS if shard in REST_SHARDS or shard_tree(shard)[1] == 0
+)
+
+
 def select_packages(packages: list[str], shard: str) -> list[str]:
-    heavy_roots = tuple(HEAVY_SHARDS.values())
+    heavy_roots = tuple(HEAVY_TREES.values())
     if shard in REST_SHARDS:
         rest_packages = sorted(
             pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)
@@ -52,25 +141,187 @@ def select_packages(packages: list[str], shard: str) -> list[str]:
         shard_index = REST_SHARDS.index(shard)
         return [pkg for index, pkg in enumerate(rest_packages) if index % len(REST_SHARDS) == shard_index]
 
-    wanted = HEAVY_SHARDS[shard]
+    located = shard_tree(shard)
+    if located is None:
+        raise ValueError(f"unknown shard {shard!r}")
+    wanted = HEAVY_TREES[located[0]]
     selected = [pkg for pkg in packages if package_in_tree(pkg, wanted)]
     if not selected:
         raise ValueError(f"no packages matched shard {shard!r}")
     return selected
 
 
+def tree_test_names(root: Path) -> list[str]:
+    """Inventory top-level test, fuzz and example names under a package tree."""
+    names: set[str] = set()
+    for directory, subdirs, files in os.walk(root):
+        # testdata holds fixtures the go tool never compiles as package tests.
+        subdirs[:] = sorted(d for d in subdirs if d != "testdata")
+        for filename in files:
+            if filename.endswith("_test.go"):
+                text = (Path(directory) / filename).read_text(encoding="utf-8", errors="replace")
+                names.update(TEST_FUNC_RE.findall(text))
+    return sorted(names)
+
+
+def name_bucket(name: str, count: int) -> int:
+    """Stable bucket for a test name: independent of order, run, and hash seed."""
+    digest = hashlib.sha256(name.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % count
+
+
+def exact_names_regex(names: list[str]) -> str:
+    """Return a Go regexp that matches exactly the given top-level names.
+
+    Both anchors sit outside one group, so `TestScan` cannot match
+    `TestScanTextForDLP` and nothing can match a longer or shorter name. Names
+    are grouped under their kind prefix only to keep the argument short.
+    The pattern contains no `/`, so go test applies it to top-level names and
+    leaves every subtest of a selected test to run.
+    """
+    if not names:
+        raise ValueError("refusing to build a selector for an empty name set")
+    groups: dict[str, list[str]] = {}
+    other: list[str] = []
+    for name in sorted(set(names)):
+        prefix = next((p for p in TEST_KIND_PREFIXES if name.startswith(p)), None)
+        if prefix is None:
+            other.append(re.escape(name))
+        else:
+            groups.setdefault(prefix, []).append(re.escape(name[len(prefix):]))
+    alternatives = [f"{prefix}(?:{'|'.join(rests)})" for prefix, rests in groups.items()]
+    alternatives.extend(other)
+    return "^(?:" + "|".join(alternatives) + ")$"
+
+
+def partition_names(names: list[str], count: int) -> list[list[str]]:
+    buckets: list[list[str]] = [[] for _ in range(count)]
+    for name in sorted(set(names)):
+        buckets[name_bucket(name, count)].append(name)
+    return buckets
+
+
+def shard_selector(shard: str, names: list[str] | None = None) -> str:
+    """Return the go test selector flag for a shard, or "" when it runs all tests."""
+    located = shard_tree(shard)
+    if located is None or located[2] == 1:
+        if located is None and shard not in REST_SHARDS:
+            raise ValueError(f"unknown shard {shard!r}")
+        return ""
+    tree, index, count = located
+    if names is None:
+        names = tree_test_names(ROOT / HEAVY_TREES[tree])
+    buckets = partition_names(names, count)
+    for position, bucket in enumerate(buckets):
+        if not bucket:
+            raise ValueError(f"sub-shard {tree}-{position} would select no tests")
+    if index < count - 1:
+        selector = "-run=" + exact_names_regex(buckets[index])
+    else:
+        earlier = [name for bucket in buckets[:-1] for name in bucket]
+        selector = "-skip=" + exact_names_regex(earlier)
+    if len(selector.encode("utf-8")) > MAX_SELECTOR_BYTES:
+        raise ValueError(
+            f"selector for {shard} is {len(selector)} bytes, over {MAX_SELECTOR_BYTES}; "
+            f"raise TEST_SPLITS[{tree!r}]"
+        )
+    return selector
+
+
+def selector_selects(selector: str, name: str) -> bool:
+    """Evaluate a selector against a top-level name the way go test does."""
+    if not selector:
+        return True
+    flag, _, pattern = selector.partition("=")
+    matched = re.search(pattern, name) is not None
+    if flag == "-run":
+        return matched
+    if flag == "-skip":
+        return not matched
+    raise ValueError(f"unknown selector flag {flag!r}")
+
+
+def go_test_list(packages: list[str], tags: str) -> list[str]:
+    """Top-level names `go test -list` reports, one entry per (package, name)."""
+    cmd = ["go", "test"]
+    if tags:
+        cmd.extend(["-tags", tags])
+    cmd.extend(["-list", ".*", *packages])
+    result = subprocess.run(cmd, check=True, text=True, capture_output=True, cwd=ROOT)
+    names = []
+    for line in result.stdout.splitlines():
+        # Package status lines ("ok", "?") are not names. Benchmarks never run
+        # in these shards (no -bench), so they are not part of the partition.
+        if line.startswith(TEST_KIND_PREFIXES):
+            names.append(line)
+    return names
+
+
+def partition_errors(listed: list[str], selectors: dict[str, str]) -> list[str]:
+    """Return every listed name not selected by exactly one sub-shard."""
+    errors = []
+    for name in listed:
+        picked = [shard for shard, selector in selectors.items() if selector_selects(selector, name)]
+        if len(picked) != 1:
+            errors.append(f"{name}: selected by {picked or 'no sub-shard'}")
+    return errors
+
+
+def check_partition(tags: str, only_tree: str | None = None) -> int:
+    packages = list_packages(tags)
+    status = 0
+    for tree, count in TEST_SPLITS.items():
+        if only_tree is not None and tree != only_tree:
+            continue
+        shards = [f"{tree}-{index}" for index in range(count)]
+        tree_packages = select_packages(packages, shards[0])
+        listed = go_test_list(tree_packages, tags)
+        selectors = {shard: shard_selector(shard) for shard in shards}
+        counts = {
+            shard: sum(1 for name in listed if selector_selects(selectors[shard], name))
+            for shard in shards
+        }
+        errors = partition_errors(listed, selectors)
+        summary = " + ".join(f"{shard}={counts[shard]}" for shard in shards)
+        print(f"{tree} (tags={tags or 'none'}): listed={len(listed)} {summary}")
+        if errors or sum(counts.values()) != len(listed):
+            status = 1
+            for error in errors:
+                print(f"  PARTITION ERROR {error}", file=sys.stderr)
+    return status
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select CI package shard")
-    parser.add_argument(
-        "--shard",
-        required=True,
-        choices=SHARDS,
-        help="package shard to print",
-    )
+    parser.add_argument("--shard", choices=SHARDS, help="shard to print")
     parser.add_argument("--tags", default="", help="go build tags for go list")
+    parser.add_argument(
+        "--selector",
+        action="store_true",
+        help="print the go test -run/-skip flag for the shard instead of its packages",
+    )
+    parser.add_argument(
+        "--check-partition",
+        action="store_true",
+        help="verify sub-shard selectors against go test -list (scoped to --shard's tree if given)",
+    )
     args = parser.parse_args()
 
     try:
+        if args.check_partition:
+            tree = None
+            if args.shard:
+                located = shard_tree(args.shard)
+                if located is None or located[2] == 1:
+                    print(f"{args.shard} runs every test of its packages; no partition to check")
+                    return 0
+                tree = located[0]
+            return check_partition(args.tags, tree)
+        if not args.shard:
+            parser.error("--shard is required")
+        if args.selector:
+            print(shard_selector(args.shard))
+            return 0
         packages = select_packages(list_packages(args.tags), args.shard)
     except (subprocess.CalledProcessError, ValueError) as err:
         print(f"ci_test_packages.py: {err}", file=sys.stderr)

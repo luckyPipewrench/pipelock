@@ -23,7 +23,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
-SHARDS = {"proxy", "scanner", "mcp", "rest-0", "rest-1", "rest-2"}
+SHARDS = {
+    "proxy-0", "proxy-1", "scanner-0", "scanner-1", "mcp", "rest-0", "rest-1", "rest-2",
+}
 MINORS = ("126", "127")
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
@@ -271,9 +273,9 @@ def topology_errors(jobs: dict) -> list[str]:
             continue
 
         if set(jobs[oss]["strategy"]["matrix"]["shard"]) != SHARDS:
-            errors.append(f"{oss} does not preserve six shards")
+            errors.append(f"{oss} does not preserve the shard set")
         if set(jobs[enterprise]["strategy"]["matrix"]["shard"]) != SHARDS:
-            errors.append(f"{enterprise} does not preserve six shards")
+            errors.append(f"{enterprise} does not preserve the shard set")
 
         aggregate_needs = set(jobs[aggregate].get("needs", []))
         expected = {"security-scan", oss, enterprise, replay}

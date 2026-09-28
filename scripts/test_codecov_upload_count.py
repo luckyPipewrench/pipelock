@@ -63,7 +63,7 @@ class CodecovUploadCountTest(unittest.TestCase):
     def test_real_upload_count_matches(self):
         result = self.run_count_check(self.workflow, self.codecov)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(yaml.safe_load(self.codecov)["codecov"]["notify"]["after_n_builds"], 13)
+        self.assertEqual(yaml.safe_load(self.codecov)["codecov"]["notify"]["after_n_builds"], 17)
 
     def test_old_enterprise_only_count_is_rejected(self):
         document = yaml.safe_load(self.codecov)

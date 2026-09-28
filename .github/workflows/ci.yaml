@@ -162,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -187,8 +187,10 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          # proxy-N and scanner-N run disjoint halves of one package tree's tests.
+          test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
           package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
+          if [[ "$TEST_SHARD" == proxy-* ]]; then
             # The proxy shard has two race-instrumented packages. Running them
             # sequentially lowers peak memory without serializing t.Parallel
             # tests inside either package.
@@ -198,7 +200,7 @@ jobs:
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-oss-${TEST_SHARD}.out" -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-oss-${TEST_SHARD}.out" ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -234,7 +236,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -259,12 +261,14 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
+          # proxy-N and scanner-N run disjoint halves of one package tree's tests.
+          test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
           package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
+          if [[ "$TEST_SHARD" == proxy-* ]]; then
             package_parallelism=1
           fi
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
@@ -283,7 +287,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -308,8 +312,10 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          # proxy-N and scanner-N run disjoint halves of one package tree's tests.
+          test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
           package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
+          if [[ "$TEST_SHARD" == proxy-* ]]; then
             # The proxy shard has two race-instrumented packages. Running them
             # sequentially lowers peak memory without serializing t.Parallel
             # tests inside either package.
@@ -319,7 +325,7 @@ jobs:
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -coverprofile="coverage-${TEST_SHARD}.out" ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
@@ -357,7 +363,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -382,12 +388,14 @@ jobs:
           set -o pipefail
           set +e
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
+          # proxy-N and scanner-N run disjoint halves of one package tree's tests.
+          test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
           package_parallelism=2
-          if [ "$TEST_SHARD" = "proxy" ]; then
+          if [[ "$TEST_SHARD" == proxy-* ]]; then
             package_parallelism=1
           fi
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json

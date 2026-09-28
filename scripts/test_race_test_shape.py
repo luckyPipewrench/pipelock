@@ -200,10 +200,30 @@ class TestRaceTestShape(unittest.TestCase):
         )
 
     def test_oss_proxy_shape_limits_package_fanout(self) -> None:
-        command = printed_command("--shard", "proxy")
+        for shard, flag in (("proxy-0", "-run="), ("proxy-1", "-skip=")):
+            with self.subTest(shard=shard):
+                command = printed_command("--shard", shard)
 
-        self.assertIn("go test -race -p=1 -parallel=2 -count=1 -timeout=20m", command)
-        self.assertIn("github.com/luckyPipewrench/pipelock/internal/proxy", command)
+                self.assertIn("go test -race -p=1 -parallel=2 -count=1 -timeout=20m", command)
+                self.assertIn("github.com/luckyPipewrench/pipelock/internal/proxy", command)
+                self.assertIn(flag, command)
+
+    def test_unsplit_shard_has_no_test_selector(self) -> None:
+        command = printed_command("--shard", "mcp")
+
+        self.assertNotIn("-run", command)
+        self.assertNotIn("-skip", command)
+
+    def test_run_pattern_cannot_override_a_sub_shard_selector(self) -> None:
+        result = subprocess.run(
+            ["bash", str(RUNNER), "--shard", "scanner-1", "--run", "TestX", "--print-command"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("already selects its tests", result.stderr)
 
     def test_enterprise_rest_shape_uses_common_limits(self) -> None:
         command = printed_command("--shard", "rest-0", "--tags", "enterprise")

@@ -68,7 +68,7 @@ jobs:
             tags: ''
           - name: enterprise
             tags: enterprise
-        shard: ['proxy', 'scanner', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
         # 1.26.8 is the floor and mirrors the pin already verified in ci.yaml's
         # govulncheck job, which documents its own provenance: it is the newest
         # published 1.26 patch that job has confirmed, chosen there for stdlib
@@ -107,6 +107,7 @@ jobs:
       - name: Verify shard coverage
         env:
           GO_TEST_TAGS: ${{ matrix.suite.tags }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
 
@@ -121,8 +122,11 @@ jobs:
             go list ./... | sort > "$tmpdir/all.txt"
           fi
 
+          # Sub-shards of one package tree (proxy-N, scanner-N) share its
+          # package list, so the first stands for all of them here; the
+          # partition check below proves they divide its tests exactly.
           : > "$tmpdir/shards.txt"
-          for shard in proxy scanner mcp rest-0 rest-1 rest-2; do
+          for shard in proxy-0 scanner-0 mcp rest-0 rest-1 rest-2; do
             if [ -n "$GO_TEST_TAGS" ]; then
               python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$shard"
             else
@@ -132,6 +136,10 @@ jobs:
           sort "$tmpdir/shards.txt" > "$tmpdir/shards.sorted.txt"
 
           diff -u "$tmpdir/all.txt" "$tmpdir/shards.sorted.txt"
+
+          # Every test go test -list reports for this job's package tree must
+          # be selected by exactly one of the tree's sub-shards.
+          python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$TEST_SHARD" --check-partition
 
       - name: Run tests
         env:

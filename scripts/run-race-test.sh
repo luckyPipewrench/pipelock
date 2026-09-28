@@ -21,6 +21,7 @@ EOF
 }
 
 shard=""
+test_selector=""
 package_list=""
 tags=""
 run_pattern=""
@@ -83,7 +84,13 @@ if [[ -n "$shard" ]]; then
     package_args=(--tags "$tags" "${package_args[@]}")
   fi
   package_list="$(python3 scripts/ci_test_packages.py "${package_args[@]}")"
-  if [[ "$shard" == "proxy" ]]; then
+  # Sub-shards of a split package tree select a disjoint part of its tests.
+  test_selector="$(python3 scripts/ci_test_packages.py --shard "$shard" --selector)"
+  if [[ -n "$test_selector" && -n "$run_pattern" ]]; then
+    echo "run-race-test.sh: --run cannot narrow $shard, which already selects its tests; use --packages" >&2
+    exit 2
+  fi
+  if [[ "$shard" == proxy-* ]]; then
     # The proxy shard has two race-instrumented packages. Keep them sequential
     # while leaving t.Parallel tests inside each package at the common limit.
     package_parallelism=1
@@ -104,6 +111,9 @@ if [[ -n "$tags" ]]; then
 fi
 if [[ -n "$run_pattern" ]]; then
   cmd+=(-run "$run_pattern")
+fi
+if [[ -n "$test_selector" ]]; then
+  cmd+=("$test_selector")
 fi
 if [[ -n "$coverprofile" ]]; then
   cmd+=("-coverprofile=$coverprofile")

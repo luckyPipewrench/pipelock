@@ -7,11 +7,30 @@ from __future__ import annotations
 
 import ast
 import re
+import tempfile
 import unittest
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from scripts.ci_test_packages import SHARDS, package_in_tree, package_suffix, select_packages
+import os
+import subprocess
+import sys
+
+from scripts import ci_test_packages
+from scripts.ci_test_packages import (
+    PACKAGE_SHARDS,
+    SHARDS,
+    TEST_SPLITS,
+    exact_names_regex,
+    name_bucket,
+    package_in_tree,
+    package_suffix,
+    partition_errors,
+    select_packages,
+    selector_selects,
+    shard_selector,
+    tree_test_names,
+)
 
 
 def _defines_unittest_testcase(path: Path) -> bool:
@@ -137,7 +156,7 @@ class TestPackageSharding(unittest.TestCase):
         loop_shards = tuple(loop_match.group(1).split())
 
         self.assertEqual(matrix_shards, SHARDS)
-        self.assertEqual(loop_shards, SHARDS)
+        self.assertEqual(loop_shards, PACKAGE_SHARDS)
 
     def test_pr_ci_runs_all_script_unittests(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -185,7 +204,7 @@ class TestPackageSharding(unittest.TestCase):
 
         selected = [
             package
-            for shard in ("proxy", "scanner", "mcp", "rest-0", "rest-1", "rest-2")
+            for shard in PACKAGE_SHARDS
             for package in select_packages(packages, shard)
         ]
 
@@ -252,7 +271,167 @@ class TestPackageSharding(unittest.TestCase):
 
     def test_empty_heavy_shard_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "no packages matched shard"):
-            select_packages(["example.test/pipelock/internal/config"], "proxy")
+            select_packages(["example.test/pipelock/internal/config"], "proxy-0")
+
+
+def _selected_by(selectors: dict[str, str], name: str) -> list[str]:
+    return [shard for shard, selector in selectors.items() if selector_selects(selector, name)]
+
+
+class TestTestNameSplit(unittest.TestCase):
+    NAMES = [f"Test{word}{index}" for word in ("Scan", "Proxy", "Fetch") for index in range(40)] + [
+        "TestScan",
+        "TestScanTextForDLP",
+        "FuzzScanResponseContent",
+        "ExampleScanner",
+        "Test",
+    ]
+
+    def selectors(self, tree: str, names: list[str]) -> dict[str, str]:
+        return {
+            f"{tree}-{index}": shard_selector(f"{tree}-{index}", names)
+            for index in range(TEST_SPLITS[tree])
+        }
+
+    def test_split_trees_cover_every_package_exactly_once_per_sub_shard(self) -> None:
+        packages = [
+            "example.test/pipelock/internal/proxy",
+            "example.test/pipelock/internal/proxy/baseline",
+            "example.test/pipelock/internal/scanner",
+        ]
+        for tree in TEST_SPLITS:
+            expected = [pkg for pkg in packages if package_in_tree(pkg, f"internal/{tree}")]
+            for index in range(TEST_SPLITS[tree]):
+                with self.subTest(shard=f"{tree}-{index}"):
+                    self.assertEqual(select_packages(packages, f"{tree}-{index}"), expected)
+
+    def test_partition_is_disjoint_and_complete(self) -> None:
+        for tree in TEST_SPLITS:
+            with self.subTest(tree=tree):
+                selectors = self.selectors(tree, self.NAMES)
+                self.assertEqual(partition_errors(self.NAMES, selectors), [])
+                counts = [
+                    sum(1 for name in self.NAMES if selector_selects(sel, name))
+                    for sel in selectors.values()
+                ]
+                self.assertEqual(sum(counts), len(self.NAMES))
+                self.assertTrue(all(counts), counts)
+
+    def test_new_name_lands_in_exactly_one_sub_shard(self) -> None:
+        # A test added after the inventory was taken, or one the inventory
+        # cannot see, must still run exactly once.
+        selectors = self.selectors("scanner", self.NAMES)
+        for unseen in ("TestAddedLater", "TestScan2Extra", "FuzzNew", "ExampleLater"):
+            with self.subTest(name=unseen):
+                self.assertNotIn(unseen, self.NAMES)
+                self.assertEqual(len(_selected_by(selectors, unseen)), 1)
+                self.assertEqual(_selected_by(selectors, unseen), ["scanner-1"])
+
+    def test_partition_is_stable_across_order_and_process(self) -> None:
+        first = self.selectors("proxy", self.NAMES)
+        self.assertEqual(first, self.selectors("proxy", list(reversed(self.NAMES))))
+        self.assertEqual(first, self.selectors("proxy", self.NAMES + self.NAMES[:5]))
+        # Python's str hash is randomized per process; the bucket must not be.
+        code = (
+            "from scripts.ci_test_packages import name_bucket;"
+            "print([name_bucket(n, 2) for n in ('TestScan', 'TestProxy7', 'FuzzX')])"
+        )
+        outputs = {
+            subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=ci_test_packages.ROOT,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout
+            for seed in ("0", "1", "12345")
+        }
+        self.assertEqual(len(outputs), 1, outputs)
+        self.assertEqual(
+            outputs.pop().strip(),
+            str([name_bucket(n, 2) for n in ("TestScan", "TestProxy7", "FuzzX")]),
+        )
+
+    def test_regex_anchoring_rejects_prefix_and_suffix_collisions(self) -> None:
+        pattern = exact_names_regex(["TestScan", "FuzzScan"])
+        for name in ("TestScan", "FuzzScan"):
+            self.assertIsNotNone(re.search(pattern, name), name)
+        for name in ("TestScanTextForDLP", "XTestScan", "TestSca", "TestScanX", "FuzzScanner", "Test"):
+            with self.subTest(name=name):
+                self.assertIsNone(re.search(pattern, name))
+        self.assertNotIn("/", pattern)
+
+    def test_prefix_collision_across_sub_shards_selects_each_once(self) -> None:
+        names = ["TestScan", "TestScanTextForDLP"]
+        count = 2
+        # Find a pairing where the shorter name sits in the -run bucket, so an
+        # unanchored -run would also claim the longer name from the -skip side.
+        for suffix in range(200):
+            short, long_ = f"TestScan{suffix}", f"TestScan{suffix}TextForDLP"
+            if name_bucket(short, count) == 0 and name_bucket(long_, count) == 1:
+                names = [short, long_, "TestOther0", "TestOther1", "TestOther2", "TestOther3"]
+                break
+        else:
+            self.fail("no colliding pair found")
+        selectors = self.selectors("scanner", names)
+        if not all(selectors.values()):
+            self.skipTest("fixture produced an empty bucket")
+        self.assertEqual(partition_errors(names, selectors), [])
+        self.assertEqual(_selected_by(selectors, long_), ["scanner-1"])
+
+    def test_empty_bucket_and_oversize_selector_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "would select no tests"):
+            shard_selector("proxy-0", ["TestOnlyOne"])
+        with self.assertRaisesRegex(ValueError, "empty name set"):
+            exact_names_regex([])
+        huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
+        with self.assertRaisesRegex(ValueError, "raise TEST_SPLITS"):
+            shard_selector("proxy-0", huge)
+
+    def test_unsplit_shards_have_no_selector(self) -> None:
+        for shard in ("mcp", "rest-0", "rest-1", "rest-2"):
+            self.assertEqual(shard_selector(shard, self.NAMES), "")
+        with self.assertRaisesRegex(ValueError, "unknown shard"):
+            shard_selector("proxy", self.NAMES)
+
+    def test_partition_errors_report_missing_and_duplicate(self) -> None:
+        selectors = self.selectors("scanner", self.NAMES)
+        dropped = dict(selectors)
+        dropped["scanner-1"] = "-run=^(?:TestNothing)$"
+        errors = partition_errors(self.NAMES, dropped)
+        self.assertTrue(any("no sub-shard" in error for error in errors), errors)
+        doubled = dict(selectors)
+        doubled["scanner-1"] = ""
+        errors = partition_errors(self.NAMES, doubled)
+        self.assertTrue(any("scanner-0" in e and "scanner-1" in e for e in errors), errors)
+
+    def test_inventory_reads_real_trees_and_ignores_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sub").mkdir()
+            (root / "testdata").mkdir()
+            (root / "a_test.go").write_text(
+                "package a\n"
+                "func TestTop(t *testing.T) {}\n"
+                "func (s suite) TestMethod(t *testing.T) {}\n"
+                "func FuzzTop(f *testing.F) {}\n"
+                "func ExampleTop() {}\n"
+                "func BenchmarkTop(b *testing.B) {}\n"
+                "func helper() {}\n"
+            )
+            (root / "sub" / "b_test.go").write_text("package sub\nfunc TestSub(t *testing.T) {}\n")
+            (root / "testdata" / "c_test.go").write_text("func TestFixture(t *testing.T) {}\n")
+            (root / "d.go").write_text("func TestNotATestFile(t *testing.T) {}\n")
+            self.assertEqual(
+                tree_test_names(root), ["ExampleTop", "FuzzTop", "TestSub", "TestTop"]
+            )
+        for tree in TEST_SPLITS:
+            with self.subTest(tree=tree):
+                names = tree_test_names(ci_test_packages.ROOT / "internal" / tree)
+                self.assertGreater(len(names), 100)
+                selectors = self.selectors(tree, names)
+                self.assertEqual(partition_errors(names, selectors), [])
 
 
 if __name__ == "__main__":

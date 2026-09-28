@@ -53,6 +53,45 @@ test("directory reads stay on the entered directory after its name is replaced",
   }
 });
 
+test("directory entry refuses a component moved after it was entered", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows prevents renaming a process working directory");
+    return;
+  }
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-entry-rename-"));
+  const root = join(base, "root");
+  const moved = join(base, "moved");
+  const outside = join(base, "outside");
+  mkdirSync(root);
+  mkdirSync(outside);
+  writeFileSync(join(root, "evidence.jsonl"), "inside");
+  writeFileSync(join(outside, "evidence.jsonl"), "outside");
+  const originalChdir = process.chdir;
+  let swapped = false;
+  try {
+    process.chdir = ((directory: string) => {
+      originalChdir(directory);
+      if (directory === "root") {
+        renameSync(root, moved);
+        symlinkSync(outside, root, "dir");
+        swapped = true;
+      }
+    }) as typeof process.chdir;
+    await assert.rejects(
+      withPinnedEvidenceDirectory(root, async () => readVerifierBytes("evidence.jsonl", true)),
+      /component changed while entering/u,
+    );
+    assert.equal(swapped, true, "the root replacement must occur during entry");
+  } finally {
+    process.chdir = originalChdir;
+    if (existsSync(moved)) {
+      rmSync(root, { force: true });
+      renameSync(moved, root);
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("directory child read refuses a symlink", async (t) => {
   const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-pinned-link-"));
   const root = join(base, "root");
@@ -101,7 +140,7 @@ test("directory reads through a search-only ancestor", async (t) => {
   }
 });
 
-test("synchronous receipt extraction stays in the entered directory after a rename", (t) => {
+test("synchronous receipt extraction refuses a root moved during entry", (t) => {
   if (process.platform === "win32") {
     t.skip("Windows prevents renaming a process working directory");
     return;
@@ -125,7 +164,10 @@ test("synchronous receipt extraction stays in the entered directory after a rena
         swapped = true;
       }
     }) as typeof process.chdir;
-    assert.deepEqual(extractReceiptsFromSessionDir(selected, "proxy"), []);
+    assert.throws(
+      () => extractReceiptsFromSessionDir(selected, "proxy"),
+      /component changed while entering/u,
+    );
     assert.equal(swapped, true, "the root replacement must occur during the read");
     assert.equal(readFileSync(join(selected, "evidence-proxy-0.jsonl"), "utf8"), "not-json\n");
   } finally {

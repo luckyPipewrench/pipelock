@@ -15,7 +15,7 @@
 // records carry the same run_nonce are reported (finding duplicate_run_nonce),
 // because a process run writes exactly one chain.
 
-import { lstatSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import * as path from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
@@ -192,20 +192,30 @@ export function refuseSymlinkInEvidenceRootPath(root: string): void {
 }
 
 // Directory mode runs in one CLI process. Enter each component from the
-// kernel-held working directory, then compare the entered directory with its
-// previously observed identity. A renamed parent cannot redirect later reads.
+// kernel-held working directory, then compare its identity and physical path
+// with the selected child. A renamed parent cannot redirect later reads.
 // A search-only ancestor need not grant read access to open a directory handle.
 let evidenceDirectoryActive = false;
+function samePhysicalPath(actual: string, expected: string): boolean {
+  if (process.platform === "win32") {
+    return (
+      path.win32.normalize(actual).toLowerCase() === path.win32.normalize(expected).toLowerCase()
+    );
+  }
+  return actual === expected;
+}
+
 function enterPinnedEvidenceDirectory(root: string): () => void {
   if (evidenceDirectoryActive)
     throw new Error("concurrent evidence directory reads are unsupported");
   const original = process.cwd();
   evidenceDirectoryActive = true;
-  const parents: { dev: bigint; ino: bigint }[] = [];
+  const parents: { dev: bigint; ino: bigint; physical: string }[] = [];
   try {
     const parsed = path.parse(root);
     if (parsed.root !== "") process.chdir(parsed.root);
-    parents.push(statSync(".", { bigint: true }));
+    const anchor = statSync(".", { bigint: true });
+    parents.push({ dev: anchor.dev, ino: anchor.ino, physical: realpathSync.native(".") });
     const separators = path.sep === "\\" ? /[\\/]/u : /\//u;
     for (const component of root.slice(parsed.root.length).split(separators)) {
       if (component === "" || component === ".") continue;
@@ -214,20 +224,25 @@ function enterPinnedEvidenceDirectory(root: string): () => void {
         // current child under a different parent between these two steps.
         const initialParent = parents.length === 1;
         const expected = initialParent
-          ? statSync("..", { bigint: true })
-          : (parents[parents.length - 2] as { dev: bigint; ino: bigint });
+          ? {
+              ...statSync("..", { bigint: true }),
+              physical: realpathSync.native(".."),
+            }
+          : (parents[parents.length - 2] as { dev: bigint; ino: bigint; physical: string });
         process.chdir("..");
         const entered = statSync(".", { bigint: true });
+        const physical = realpathSync.native(".");
         if (
           !entered.isDirectory() ||
           entered.dev !== expected.dev ||
           entered.ino !== expected.ino ||
-          entered.ino === 0n
+          entered.ino === 0n ||
+          !samePhysicalPath(physical, expected.physical)
         ) {
           throw new EvidenceRefusedError("evidence root parent changed while entering");
         }
         if (initialParent) {
-          parents[0] = expected;
+          parents[0] = { dev: entered.dev, ino: entered.ino, physical };
         } else {
           parents.pop();
         }
@@ -239,19 +254,22 @@ function enterPinnedEvidenceDirectory(root: string): () => void {
       }
       if (!before.isDirectory())
         throw new Error(`evidence root component "${component}" is not a directory`);
+      const expectedPath = path.join(parents[parents.length - 1]!.physical, component);
       process.chdir(component);
       const entered = statSync(".", { bigint: true });
+      const physical = realpathSync.native(".");
       if (
         !entered.isDirectory() ||
         entered.dev !== before.dev ||
         entered.ino !== before.ino ||
-        entered.ino === 0n
+        entered.ino === 0n ||
+        !samePhysicalPath(physical, expectedPath)
       ) {
         throw new EvidenceRefusedError(
           `evidence root component changed while entering: "${component}"`,
         );
       }
-      parents.push(entered);
+      parents.push({ dev: entered.dev, ino: entered.ino, physical });
     }
   } catch (err) {
     try {

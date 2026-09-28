@@ -611,7 +611,7 @@ func statusError(url string, resp *http.Response) error {
 		return fmt.Errorf("HTTP GET %s: status %d", url, resp.StatusCode)
 	}
 	msg := fmt.Sprintf(
-		"HTTP GET %s: status %d: the response carries Pipelock block-reason headers (reason=%s, layer=%s), so a proxy in front of this fetch refused to release the bundle rather than the registry being down",
+		"HTTP GET %s: status %d: the response carries Pipelock block-reason headers (reason=%s, layer=%s), which points to a Pipelock proxy in front of this fetch refusing to release the bundle rather than the registry being down; any server can send these headers, so confirm the refusal in that proxy's log",
 		url, resp.StatusCode, info.Reason, layerOrUnset(info.Layer),
 	)
 	if remedy := authenticatedArtifactRemedy(url, info.Reason); remedy != "" {

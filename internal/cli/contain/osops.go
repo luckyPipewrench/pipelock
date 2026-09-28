@@ -193,9 +193,11 @@ type installEnv struct {
 	nftExpiryTimerWrittenByInstall   bool
 	prevNFTTableStateKnown           bool
 	prevNFTPersistEnabled            bool
+	prevNFTPersistEnabledRuntime     bool
 	prevNFTPersistStateKnown         bool
 	prevNFTPersistUnitExisted        bool
 	prevNFTExpiryTimerEnabled        bool
+	prevNFTExpiryTimerEnabledRuntime bool
 	prevNFTExpiryTimerActive         bool
 	prevNFTExpiryTimerStateKnown     bool
 	prevNFTExpiryServiceExisted      bool
@@ -209,6 +211,10 @@ type installEnv struct {
 	displayNumber                    int
 	preflightBinaryHash              string
 	archivedBackups                  map[string][]string
+
+	// A failed systemctl enable can still alter the unit's enabled state.
+	nftPersistEnableAttempted bool
+	nftTimerEnableAttempted   bool
 	// restoredBackups records paths whose backup this attempt already moved
 	// back into place. A second restoreBackup for the same path (a step's own
 	// recovery followed by rollback) then only finishes the pending archive

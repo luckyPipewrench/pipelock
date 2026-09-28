@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -68,9 +69,12 @@ func TestNFTUndoKeepsPreexistingTableWhenPriorDumpUnknown(t *testing.T) {
 			if !env.nftTableMutatedByInstall {
 				t.Fatal("positive control: apply did not record that it reloaded the table")
 			}
+			beforeUndo := len(runner.calls)
 			undoErr := stepInstallNFTRulesUndo(context.Background(), env)
-			if rollbackRunnerCalled(runner, testNFT, "delete table inet "+defaultNFTTable) {
-				t.Fatal("rollback deleted a containment table that existed before this install")
+			for _, call := range runner.calls[beforeUndo:] {
+				if call.name == testNFT {
+					t.Fatalf("rollback mutated or reopened a containment table whose prior state is unknown: %+v", call)
+				}
 			}
 			if undoErr == nil {
 				t.Fatal("undo reported success although the previous table could not be restored")
@@ -142,12 +146,11 @@ func TestNFTUndoLeavesRulesFileThisAttemptDidNotWrite(t *testing.T) {
 					}
 				}
 			}
-			// Mark every file as unchanged by this attempt: the apply above
-			// may have written the fixture's missing units, and this test is
-			// about files a rerun leaves as they were.
-			env.nftPersistUnitWrittenByInstall = false
-			env.nftExpiryServiceWrittenByInstall = false
-			env.nftExpiryTimerWrittenByInstall = false
+			// The fixture already installed every unit before apply. The
+			// ownership flags must be naturally false, not reset by the test.
+			if env.nftPersistUnitWrittenByInstall || env.nftExpiryServiceWrittenByInstall || env.nftExpiryTimerWrittenByInstall {
+				t.Fatal("positive control: apply unexpectedly rewrote a unit")
+			}
 			if err := stepInstallNFTRulesUndo(context.Background(), env); err != nil {
 				t.Fatalf("undo: %v", err)
 			}
@@ -217,6 +220,119 @@ func TestNFTApplyReportsKernelReloadWhenSystemctlFailsAfter(t *testing.T) {
 			}
 			if !applied {
 				t.Fatalf("applied=false after the kernel table was reloaded (%v)", err)
+			}
+		})
+	}
+}
+
+func TestNFTApplyReportsFailedEnableWithoutFileOrTableChange(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failTimer bool
+		unknown   bool
+		runtime   bool
+		disabled  bool
+	}{
+		{name: "persist known"},
+		{name: "persist unknown", unknown: true},
+		{name: "persist runtime", runtime: true},
+		{name: "persist disabled", disabled: true},
+		{name: "timer known", failTimer: true},
+		{name: "timer unknown", failTimer: true, unknown: true},
+		{name: "timer runtime", failTimer: true, runtime: true},
+		{name: "timer disabled", failTimer: true, disabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, body := rollbackNFTFixture(t, "")
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), body, 0, nil)
+			runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), body, 0, nil)
+			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
+			runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)
+			if tc.runtime || tc.disabled {
+				unit := env.nftPersistUnitPath
+				if tc.failTimer {
+					unit = env.nftExpiryTimerPath
+				}
+				state, code := "enabled-runtime\n", 0
+				if tc.disabled {
+					state, code = "disabled\n", 1
+				}
+				runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(unit)), state, code, nil)
+			}
+			if tc.unknown {
+				unit := env.nftPersistUnitPath
+				if tc.failTimer {
+					unit = env.nftExpiryTimerPath
+				}
+				runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(unit)), "", 0, errors.New("state query failed"))
+			}
+			args := []string{"enable", filepath.Base(env.nftPersistUnitPath)}
+			if tc.failTimer {
+				args = []string{"enable", "--now", filepath.Base(env.nftExpiryTimerPath)}
+			}
+			runner.on(argvFor(testSystemctl, args...), "", 1, nil)
+			applied, err := stepInstallNFTRulesApply(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), "enable") {
+				t.Fatalf("apply error = %v, want failed enable", err)
+			}
+			if env.nftTableMutatedByInstall || env.nftRulesWrittenByInstall || env.nftPersistUnitWrittenByInstall ||
+				env.nftExpiryServiceWrittenByInstall || env.nftExpiryTimerWrittenByInstall {
+				t.Fatal("positive control: this case must change no file or nft table")
+			}
+			if !applied {
+				t.Fatal("failed enable may mutate systemd state, so rollback must run")
+			}
+			if !tc.failTimer {
+				// The injected failure is one-shot; the rollback retry succeeds.
+				runner.on(argvFor(testSystemctl, args...), "", 0, nil)
+			}
+			beforeUndo := len(runner.calls)
+			undoErr := stepInstallNFTRulesUndo(context.Background(), env)
+			if tc.unknown {
+				if undoErr == nil || !strings.Contains(undoErr.Error(), "unknown") {
+					t.Fatalf("undo error = %v, want unknown previous unit state", undoErr)
+				}
+			} else if undoErr != nil {
+				t.Fatalf("undo: %v", undoErr)
+			}
+			if tc.runtime {
+				unit := env.nftPersistUnitPath
+				if tc.failTimer {
+					unit = env.nftExpiryTimerPath
+				}
+				foundRuntime := false
+				for _, call := range runner.calls[beforeUndo:] {
+					if call.name != testSystemctl {
+						continue
+					}
+					if slices.Equal(call.args, []string{"enable", filepath.Base(unit)}) {
+						t.Fatalf("rollback made runtime-only enablement permanent: %+v", call)
+					}
+					if slices.Equal(call.args, []string{"enable", "--runtime", filepath.Base(unit)}) {
+						foundRuntime = true
+					}
+				}
+				if !foundRuntime {
+					t.Fatal("rollback did not restore runtime-only enablement")
+				}
+			}
+			if tc.disabled {
+				unit := env.nftPersistUnitPath
+				wantArgs := []string{"disable", filepath.Base(unit)}
+				if tc.failTimer {
+					unit = env.nftExpiryTimerPath
+					wantArgs = []string{"disable", "--now", filepath.Base(unit)}
+				}
+				foundDisable := false
+				for _, call := range runner.calls[beforeUndo:] {
+					if call.name == testSystemctl && slices.Equal(call.args, wantArgs) {
+						foundDisable = true
+					}
+				}
+				if !foundDisable {
+					t.Fatal("rollback did not restore disabled unit state")
+				}
 			}
 		})
 	}

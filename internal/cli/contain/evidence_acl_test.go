@@ -525,7 +525,11 @@ func TestEnsureEvidenceDir_RejectsNonDir(t *testing.T) {
 // revokes the ACLs earlier commands already granted.
 func TestStepGrantEvidenceACLs_PropagatesSetfaclFailure(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor("setfacl", "-m", "u:"+containInstallOperatorUser+":"+evidenceTraversePerms, env.dataDir), "boom", 1, nil)
+	dirs := env.evidenceACLDirs()
+	parentGrant := argvFor("setfacl", "-m", "u:"+containInstallOperatorUser+":"+evidenceTraversePerms, env.dataDir)
+	laterGrant := argvFor("setfacl", "-R", "-m", "u:"+containInstallOperatorUser+":"+evidenceReadPerms, dirs[0])
+	runner.on(parentGrant, "", 0, nil)
+	runner.on(laterGrant, "boom", 1, nil)
 	step := stepGrantEvidenceACLs()
 	applied, err := step.apply(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "operator evidence ACL") {
@@ -533,6 +537,11 @@ func TestStepGrantEvidenceACLs_PropagatesSetfaclFailure(t *testing.T) {
 	}
 	if !applied {
 		t.Fatal("step must report applied once setfacl commands have started, so rollback revokes them")
+	}
+	if len(runner.calls) < 2 || runner.calls[len(runner.calls)-2].name != "setfacl" ||
+		argvFor(runner.calls[len(runner.calls)-2].name, runner.calls[len(runner.calls)-2].args...) != parentGrant ||
+		argvFor(runner.calls[len(runner.calls)-1].name, runner.calls[len(runner.calls)-1].args...) != laterGrant {
+		t.Fatalf("positive control: successful parent grant must precede the failed directory grant: %+v", runner.calls)
 	}
 	if _, statErr := os.Stat(env.evidenceACLInvPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("positive control: inventory should not exist after the failed grant: %v", statErr)
@@ -544,6 +553,9 @@ func TestStepGrantEvidenceACLs_PropagatesSetfaclFailure(t *testing.T) {
 	revoke := "-x u:" + containInstallOperatorUser + " " + env.dataDir
 	if !rollbackRunnerCalled(runner, "setfacl", revoke) {
 		t.Fatalf("undo did not revoke the operator grant with no inventory on disk: %+v", runner.calls)
+	}
+	if !rollbackRunnerCalled(runner, "setfacl", "-R -x u:"+containInstallOperatorUser+" "+dirs[0]) {
+		t.Fatalf("undo did not revoke the directory grant after the later failure: %+v", runner.calls)
 	}
 }
 

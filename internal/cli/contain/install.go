@@ -2345,17 +2345,20 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	}
 	// A drift-only reload changed the kernel table without changing a file,
 	// so these errors report the table too; otherwise rollback never runs.
-	// The persist unit counts once enable has switched it on from disabled.
+	// An enable command can change unit state before reporting failure. Undo
+	// must run even when no file or nft rule changed earlier in this step.
 	mutated := changed || env.nftTableMutatedByInstall
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 		return mutated, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
+	env.nftPersistEnableAttempted = true
+	mutated = true
 	if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
 		return mutated, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
 	}
-	persistEnabledNow := env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled
+	env.nftTimerEnableAttempted = true
 	if err := runOrErr(ctx, env, "systemctl", "enable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
-		return mutated || persistEnabledNow, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
+		return mutated, fmt.Errorf("enable %s: %w", filepath.Base(env.nftExpiryTimerPath), err)
 	}
 	timerReconciled := !env.prevNFTExpiryTimerStateKnown || !env.prevNFTExpiryTimerEnabled || !env.prevNFTExpiryTimerActive
 	persistReconciled := !env.prevNFTPersistStateKnown || !env.prevNFTPersistEnabled
@@ -2376,6 +2379,12 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	// attempt before deleting the newly installed table. If no
 	// previous table existed, drop the table created by this step.
 	var incomplete error
+	if env.nftPersistEnableAttempted && !env.prevNFTPersistStateKnown {
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: previous enabled state of %s is unknown; rerun `pipelock contain install` as root", filepath.Base(env.nftPersistUnitPath)))
+	}
+	if env.nftTimerEnableAttempted && !env.prevNFTExpiryTimerStateKnown {
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: previous enabled and active state of %s is unknown; rerun `pipelock contain install` as root", filepath.Base(env.nftExpiryTimerPath)))
+	}
 	if env.prevNFTTableStateKnown && env.nftTableMutatedByInstall && strings.TrimSpace(env.prevNFTTableDump) != "" {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
 			return err
@@ -2407,9 +2416,21 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	if err := restoreNFTFilesWrittenByInstall(env); err != nil {
 		return errors.Join(incomplete, err)
 	}
-	if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
-		if err := runSystemctlCleanupUnit(ctx, env, "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
-			return errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err))
+	if env.prevNFTPersistStateKnown {
+		persistUnit := filepath.Base(env.nftPersistUnitPath)
+		if !env.prevNFTPersistEnabled {
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
+				return errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", persistUnit, err))
+			}
+		} else if env.nftPersistEnableAttempted {
+			args := []string{"enable"}
+			if env.prevNFTPersistEnabledRuntime {
+				args = append(args, "--runtime")
+			}
+			args = append(args, persistUnit)
+			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
+				return errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", persistUnit, err))
+			}
 		}
 	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
@@ -2418,7 +2439,12 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	if env.prevNFTExpiryTimerStateKnown {
 		timer := filepath.Base(env.nftExpiryTimerPath)
 		if env.prevNFTExpiryTimerEnabled {
-			if err := runOrErr(ctx, env, "systemctl", "enable", timer); err != nil {
+			args := []string{"enable"}
+			if env.prevNFTExpiryTimerEnabledRuntime {
+				args = append(args, "--runtime")
+			}
+			args = append(args, timer)
+			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
 				return errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", timer, err))
 			}
 		}
@@ -2471,9 +2497,10 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 		}
 	}
 	if !env.prevNFTPersistStateKnown {
-		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftPersistUnitPath))
+		out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftPersistUnitPath))
 		if err == nil {
 			env.prevNFTPersistEnabled = code == 0
+			env.prevNFTPersistEnabledRuntime = strings.TrimSpace(out) == "enabled-runtime"
 			env.prevNFTPersistStateKnown = true
 		}
 	}
@@ -2481,7 +2508,9 @@ func captureNFTPreState(ctx context.Context, env *installEnv) {
 		enabledOut, _, enabledErr := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftExpiryTimerPath))
 		activeOut, _, activeErr := env.runCmd(ctx, "systemctl", "is-active", filepath.Base(env.nftExpiryTimerPath))
 		if enabledErr == nil && activeErr == nil {
-			env.prevNFTExpiryTimerEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			state := strings.TrimSpace(enabledOut)
+			env.prevNFTExpiryTimerEnabled = state == systemctlEnabled || state == "enabled-runtime"
+			env.prevNFTExpiryTimerEnabledRuntime = state == "enabled-runtime"
 			env.prevNFTExpiryTimerActive = strings.TrimSpace(activeOut) == systemctlActive
 			env.prevNFTExpiryTimerStateKnown = true
 		}

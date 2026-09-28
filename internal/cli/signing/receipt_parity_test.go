@@ -460,3 +460,45 @@ func TestVerifyReceipt_ChainRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
 		})
 	}
 }
+
+// A symlink the operator names is read at its target, but the recorder file
+// is bound to the session the operator's filename claims. A link named for
+// one run that points at another run's file is refused in every file mode.
+func TestVerifyReceipt_SymlinkNamedForOtherRunRefused(t *testing.T) {
+	key := parityKey(t)
+	dir := parityFixture(t)
+	links := t.TempDir()
+	misnamed := filepath.Join(links, filepath.Base(parityFile("", parityRun1)))
+	named := filepath.Join(links, filepath.Base(parityFile("", parityRun2)))
+	if err := os.Symlink(parityFile(dir, parityRun2), misnamed); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(parityFile(dir, parityRun2), named); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []struct {
+		name  string
+		extra func(t *testing.T) []string
+	}{
+		{name: "plain", extra: func(*testing.T) []string { return nil }},
+		{name: "clean report", extra: func(t *testing.T) []string {
+			return []string{"--clean-report", filepath.Join(t.TempDir(), "report.json")}
+		}},
+		{name: "whole recorder", extra: func(*testing.T) []string { return []string{"--whole-recorder"} }},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			args := append([]string{named, "--key", key}, mode.extra(t)...)
+			if out, err := runParityVerify(t, args...); err != nil {
+				t.Fatalf("positive control: link named for its target's run failed: %v\n%s", err, out)
+			}
+			args = append([]string{misnamed, "--key", key}, mode.extra(t)...)
+			out, err := runParityVerify(t, args...)
+			if err == nil || !errors.Is(err, recorder.ErrEvidenceRefused) || !strings.Contains(err.Error(), parityRun1) {
+				t.Fatalf("want refusal naming %s, got %v\n%s", parityRun1, err, out)
+			}
+			if strings.Contains(out, "VALID") && !strings.Contains(out, "INVALID") {
+				t.Fatalf("refused file reported valid:\n%s", out)
+			}
+		})
+	}
+}

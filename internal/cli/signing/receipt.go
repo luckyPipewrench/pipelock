@@ -221,8 +221,12 @@ Examples:
 
 			// Resolve the operator's path before any reader cleans it. Cleaning
 			// symlink/.. first can select a different file from the one opened by
-			// normal filesystem path traversal.
+			// normal filesystem path traversal. The file is read at the resolved
+			// path, but a recorder file is bound to the session named by the
+			// operator's own filename: a link named for one run that points at
+			// another run's file must not take the target's name.
 			path, resolveErr := filepath.EvalSymlinks(args[0])
+			name := filepath.Base(args[0])
 			if resolveErr != nil {
 				if wholeRecorder && strings.HasSuffix(args[0], ".jsonl") {
 					return configError(fmt.Errorf("reading recorder file: resolve %q: %w", args[0], resolveErr))
@@ -233,16 +237,16 @@ Examples:
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(args[0], ".jsonl") {
 				if cleanReport != "" {
-					receipts, evidenceReceipts, extractErr := extractFileChains(path)
+					receipts, evidenceReceipts, extractErr := extractFileChains(name, path)
 					if extractErr != nil {
 						return fmt.Errorf("extracting receipts: %w", extractErr)
 					}
 					return outputResult(out, verifyCleanReport(out, path, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
 				}
 				if wholeRecorder {
-					return outputResult(out, verifyWholeRecorderFromFile(out, path, trustedKeys, verifyOpts))
+					return outputResult(out, verifyWholeRecorderFromFile(out, name, path, trustedKeys, verifyOpts))
 				}
-				return outputResult(out, verifyChainFromFileDetailed(out, path, trustedKeys, verifyOpts))
+				return outputResult(out, verifyChainFromFileDetailed(out, name, path, trustedKeys, verifyOpts))
 			}
 
 			if cleanReport != "" {
@@ -350,7 +354,10 @@ type verifyReceiptOptions struct {
 	RotationEndorsements []receipt.RotationEndorsement
 }
 
-func verifyWholeRecorderFromFile(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
+// verifyWholeRecorderFromFile verifies every entry of one recorder file. name
+// is the filename the operator gave, which may differ from the base of the
+// resolved path when the operator named a symlink.
+func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
 	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading recorder file: %w", err)
@@ -361,6 +368,13 @@ func verifyWholeRecorderFromFile(out io.Writer, path string, trustedKeys []strin
 	entries, err := recorder.ReadEntriesFromReader(file)
 	if err != nil {
 		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
+	}
+	// A file named for a session holds only that session's entries.
+	if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
+		if err := recorder.CheckEntrySessions(entries, session); err != nil {
+			_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %s: %v\n", path, name, err)
+			return fmt.Errorf("whole-recorder verification failed: %s: %w", name, err)
+		}
 	}
 	result, err := receipt.VerifyWholeRecorderEntries(entries)
 	if err != nil {
@@ -925,10 +939,13 @@ func verifyChainFromFile(out io.Writer, path string, trustedKeys []string) error
 }
 
 func verifyChainFromFileWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned bool) error {
-	return verifyChainFromFileDetailed(out, path, trustedKeys, verifyReceiptOptions{AllowUnpinned: allowUnpinned})
+	return verifyChainFromFileDetailed(out, filepath.Base(path), path, trustedKeys, verifyReceiptOptions{AllowUnpinned: allowUnpinned})
 }
 
-func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
+// verifyChainFromFileDetailed verifies the receipt chains of one JSONL file
+// read at path. name is the filename the operator gave; a recorder file is
+// bound to the session that name claims.
+func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
 	// Recorder output: both receipt chains the file holds, after the checks a
 	// single file must pass on its own (entries belong to the session its
 	// name claims, and the recorder entry hash chain holds). The path the
@@ -937,7 +954,7 @@ func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []strin
 		if len(opts.RotationEndorsements) > 0 && len(entries) > 0 && entries[0].SessionID != opts.SessionID {
 			return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", opts.SessionID, entries[0].SessionID)
 		}
-		actions, evidenceReceipts, isRecorder, chainsErr := receipt.RecorderFileChains(filepath.Base(path), entries)
+		actions, evidenceReceipts, isRecorder, chainsErr := receipt.RecorderFileChains(name, entries)
 		if chainsErr != nil {
 			_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", path)
 			_, _ = fmt.Fprintf(out, "  Error:    %v\n", chainsErr)
@@ -1087,9 +1104,10 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 // extractFileChains reads both receipt chains of a JSONL file: recorder output
 // through the per-file checks, else the raw receipt JSONL compatibility path,
 // which has no EvidenceReceipt v2 chain.
-func extractFileChains(path string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+// name is the operator's filename, which binds a recorder file to its session.
+func extractFileChains(name, path string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
 	if entries, readErr := recorder.ReadEntries(filepath.Clean(path)); readErr == nil {
-		actions, evidenceReceipts, isRecorder, err := receipt.RecorderFileChains(filepath.Base(path), entries)
+		actions, evidenceReceipts, isRecorder, err := receipt.RecorderFileChains(name, entries)
 		if err != nil || isRecorder {
 			return actions, evidenceReceipts, err
 		}

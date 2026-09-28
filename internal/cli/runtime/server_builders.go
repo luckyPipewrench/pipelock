@@ -4,6 +4,9 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +19,35 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
+
+// localPathBasesFromArgs returns the directories among a subprocess server's
+// arguments, absolute or relative to base, including the value of a
+// `--flag=DIR` argument. A filesystem server resolves relative names against
+// such directories, so tool policy resolves them there too.
+func localPathBasesFromArgs(base string, argv []string) []string {
+	var dirs []string
+	for _, arg := range argv {
+		candidates := []string{arg}
+		if _, value, ok := strings.Cut(arg, "="); ok && value != "" {
+			candidates = append(candidates, value)
+		}
+		for _, candidate := range candidates {
+			if strings.HasPrefix(candidate, "-") {
+				continue
+			}
+			if !filepath.IsAbs(candidate) {
+				if base == "" {
+					continue
+				}
+				candidate = filepath.Join(base, candidate)
+			}
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				dirs = append(dirs, filepath.Clean(candidate))
+			}
+		}
+	}
+	return dirs
+}
 
 func buildToolPolicyCfg(cfg *config.Config) *policy.Config {
 	if cfg == nil || !cfg.MCPToolPolicy.Enabled {

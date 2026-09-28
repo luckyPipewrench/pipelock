@@ -646,6 +646,9 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 	}
 	defer sc.Close()
 	pc := policy.New(cfg.MCPToolPolicy)
+	// Explain answers what an agent hook on this host would decide, so it
+	// resolves paths here the same way the hooks do.
+	pc.EnableLocalPathIdentity()
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)
 
 	report.Allowed = decision.Outcome == decide.Allow

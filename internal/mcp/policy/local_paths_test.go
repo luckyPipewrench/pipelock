@@ -244,7 +244,7 @@ func TestLocalPathIdentity_OrdinaryValuesUnchanged(t *testing.T) {
 
 	for _, values := range [][]string{
 		{filepath.Join(f.ws, "plain.txt")},
-		{"plain.txt", "hello", "rm -rf /tmp/x", "https://api.vendor.example/.profile"},
+		{"hello", "rm -rf /tmp/x", "https://api.vendor.example/.profile"},
 		{"line one\nline two", ""},
 		{loopA},
 		{filepath.Join(f.ws, "missing-dir", "x")},
@@ -252,6 +252,9 @@ func TestLocalPathIdentity_OrdinaryValuesUnchanged(t *testing.T) {
 		if got := l.expand(values); !slices.Equal(got, values) {
 			t.Errorf("expand(%q) = %q, want unchanged", values, got)
 		}
+	}
+	if got := l.expand([]string{"plain.txt"}); !slices.Equal(got, []string{"plain.txt", filepath.Join(f.ws, "plain.txt")}) {
+		t.Errorf("existing relative name did not resolve under its base: %q", got)
 	}
 	if v := checkPath(f.policy(true), testWriteTool, "path", filepath.Join(f.ws, "plain.txt")); v.Matched {
 		t.Fatalf("ordinary workspace write matched: %+v", v)
@@ -299,6 +302,14 @@ func TestShellLinkCommandsToProtectedPaths(t *testing.T) {
 		{cmd: "ln -sf /etc/profile /work/p", wantRule: "Shell Profile Write via Command"},
 		{cmd: "ln -sf /dev/null /var/lib/pipelock/receipts.jsonl", wantRule: "Audit Log Tampering"},
 		{cmd: "ln -s /var/log/app/current.log ./app.log", wantRule: "Audit Log Tampering"},
+		{cmd: "link /home/u/.bashrc notes.txt", wantRule: "Shell Profile Write via Command"},
+		{cmd: "cp -s /home/u/.bashrc notes.txt", wantRule: "Shell Profile Write via Command"},
+		{cmd: "cp -rl /home/u/.profile notes.txt", wantRule: "Shell Profile Write via Command"},
+		{cmd: "cp --symbolic-link /etc/profile p", wantRule: "Shell Profile Write via Command"},
+		{cmd: "ln -s /var/log /tmp/logalias", wantRule: "Audit Log Tampering"},
+		{cmd: "ln -s var/log/auth.log ./a", wantRule: "Audit Log Tampering"},
+		{cmd: "cp -L /home/u/.bashrc backup"},
+		{cmd: "ln -s /var/logs-archive x"},
 		{cmd: "ln -s build/out dist"},
 		{cmd: "cat ~/.bashrc; ln -s a b"},
 		{cmd: "tail /var/log/syslog; ln -s a b"},
@@ -319,5 +330,97 @@ func TestShellLinkCommandsToProtectedPaths(t *testing.T) {
 				t.Fatalf("%q did not match %s: %+v", tc.cmd, tc.wantRule, v)
 			}
 		})
+	}
+}
+
+func TestLocalPathIdentity_RelativeNameResolvesAgainstWriterDirectory(t *testing.T) {
+	f := newLocalPathFixture(t)
+	root := filepath.Join(f.home, "server-root")
+	f.write(t, filepath.Join(root, ".profile"))
+	f.link(t, filepath.Join(root, ".profile"), filepath.Join(root, "notes.txt"))
+
+	// Pipelock's own directory (f.ws) holds no notes.txt; the writer resolves
+	// relative names against root.
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	for _, value := range []string{"notes.txt", "./notes.txt"} {
+		if v := checkPath(pc, testWriteTool, "path", value); slices.Contains(v.Rules, testShellProfileRule) {
+			t.Fatalf("%q matched without the writer's base: %+v", value, v)
+		}
+	}
+	pc.AddLocalPathBases(root, "relative-ignored")
+	for _, value := range []string{"notes.txt", "./notes.txt"} {
+		if v := checkPath(pc, testWriteTool, "path", value); !slices.Contains(v.Rules, testShellProfileRule) {
+			t.Fatalf("%q not resolved against the writer's base: %+v", value, v)
+		}
+	}
+	var nilCfg *Config
+	nilCfg.AddLocalPathBases(root)
+	New(config.MCPToolPolicy{Enabled: true, Rules: DefaultToolPolicyRules()}).AddLocalPathBases(root)
+}
+
+func TestLocalPathIdentity_DanglingProtectedLink(t *testing.T) {
+	f := newLocalPathFixture(t)
+	target := filepath.Join(f.ws, "dotfiles", "profile")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// .profile points at a file that does not exist yet; writing the target
+	// creates what the startup file exposes.
+	f.link(t, target, filepath.Join(f.home, ".profile"))
+	if v := checkPath(f.policy(false), testWriteTool, "path", target); slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("fixture matched by text alone: %+v", v)
+	}
+	if v := checkPath(f.policy(true), testWriteTool, "path", target); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("write creating a dangling protected link's target was not matched: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_DotDotAfterSymlinkedDirectory(t *testing.T) {
+	f := newLocalPathFixture(t)
+	// jump -> home/deep/inner. The kernel reads jump/../hit as home/deep/hit,
+	// a link to .profile; a lexical cleaner reads it as the ordinary ws/hit.
+	deep := filepath.Join(f.home, "deep")
+	if err := os.MkdirAll(filepath.Join(deep, "inner"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, filepath.Join(f.home, ".profile"))
+	f.link(t, filepath.Join(f.home, ".profile"), filepath.Join(deep, "hit"))
+	f.write(t, filepath.Join(f.ws, "hit"))
+	f.link(t, filepath.Join(deep, "inner"), filepath.Join(f.ws, "jump"))
+	value := f.ws + "/jump/../hit" // not filepath.Join, which would clean the .. away
+
+	// os.Stat goes through the kernel, so it is the oracle for what an open of
+	// value reaches.
+	opened, err := os.Stat(value)
+	profile, perr := os.Stat(filepath.Join(f.home, ".profile"))
+	if err != nil || perr != nil || !os.SameFile(opened, profile) {
+		t.Fatalf("fixture: kernel does not open .profile through %q (%v, %v)", value, err, perr)
+	}
+	if v := checkPath(f.policy(true), testWriteTool, "path", value); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("kernel view of .. through a symlinked directory was not matched: %+v", v)
+	}
+}
+
+func TestResolveLocalPath_Edges(t *testing.T) {
+	f := newLocalPathFixture(t)
+	if got, ok := resolveLocalPath(filepath.Join(f.ws, "missing", "x")); ok {
+		t.Errorf("path under a missing directory resolved to %q", got)
+	}
+	if got, ok := resolveLocalPath(f.ws + "/missing/.."); ok {
+		t.Errorf("dot-dot under a missing directory resolved to %q", got)
+	}
+	if got, ok := resolveLocalPath("relative/path"); ok {
+		t.Errorf("relative path resolved to %q", got)
+	}
+	f.write(t, filepath.Join(f.ws, "file"))
+	if got, ok := resolveLocalPath(filepath.Join(f.ws, "file", "child")); ok {
+		t.Errorf("path through a regular file resolved to %q", got)
+	}
+	if got, ok := resolveLocalPath(f.ws + "/./sub/"); !ok || got != filepath.Join(f.ws, "sub") {
+		t.Errorf("trailing separator and dot: got %q, %v", got, ok)
+	}
+	if got := withPatchPrefixStripped([]string{"plain"}); !slices.Equal(got, []string{"plain"}) {
+		t.Errorf("unprefixed patch target changed: %q", got)
 	}
 }

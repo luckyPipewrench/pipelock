@@ -287,3 +287,44 @@ func assertPolicyCall(t *testing.T, pc *Config, toolName string, args map[string
 		t.Fatalf("%s(%s) action = %q, want preserved action %q", toolName, raw, v.Action, wantAction)
 	}
 }
+
+// TestPresetShellLinkRulesMatchDefaults keeps the preset copies of the shell
+// rules that recognize link commands identical to the built-in defaults. The
+// patterns are long and hand-copied; a copy that drifts would silently drop a
+// link form in one preset.
+func TestPresetShellLinkRulesMatchDefaults(t *testing.T) {
+	want := map[string]string{}
+	for _, rule := range DefaultToolPolicyRules() {
+		switch rule.Name {
+		case "Shell Profile Write via Command", "Audit Log Tampering":
+			want[rule.Name] = rule.ArgPattern
+		}
+	}
+	if len(want) != 2 {
+		t.Fatalf("expected both link-aware defaults, found %d", len(want))
+	}
+	presets, err := filepath.Glob(filepath.Join("..", "..", "..", "configs", "*.yaml"))
+	if err != nil || len(presets) == 0 {
+		t.Fatalf("no presets found: %v", err)
+	}
+	for _, preset := range presets {
+		cfg, err := config.Load(preset)
+		if err != nil {
+			t.Fatalf("load %s: %v", preset, err)
+		}
+		seen := 0
+		for _, rule := range cfg.MCPToolPolicy.Rules {
+			pattern, ok := want[rule.Name]
+			if !ok {
+				continue
+			}
+			seen++
+			if rule.ArgPattern != pattern {
+				t.Errorf("%s: %q arg_pattern differs from the built-in default", filepath.Base(preset), rule.Name)
+			}
+		}
+		if seen != len(want) {
+			t.Errorf("%s: carries %d of %d link-aware shell rules", filepath.Base(preset), seen, len(want))
+		}
+	}
+}

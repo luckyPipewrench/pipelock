@@ -199,8 +199,8 @@ let evidenceDirectoryActive = false;
 function enterPinnedEvidenceDirectory(root: string): () => void {
   if (evidenceDirectoryActive)
     throw new Error("concurrent evidence directory reads are unsupported");
-  evidenceDirectoryActive = true;
   const original = process.cwd();
+  evidenceDirectoryActive = true;
   const parents: { dev: bigint; ino: bigint }[] = [];
   try {
     const parsed = path.parse(root);

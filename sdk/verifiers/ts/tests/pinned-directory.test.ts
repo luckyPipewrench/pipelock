@@ -4,11 +4,13 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -16,7 +18,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { withPinnedEvidenceDirectory } from "../src/chain-set.js";
+import { withPinnedEvidenceDirectory, withPinnedEvidenceDirectorySync } from "../src/chain-set.js";
+import { extractReceiptsFromSessionDir } from "../src/recorder.js";
 import { readVerifierBytes } from "../src/util.js";
 
 test("directory reads stay on the entered directory after its name is replaced", async (t) => {
@@ -95,6 +98,66 @@ test("directory reads through a search-only ancestor", async (t) => {
   } finally {
     chmodSync(ancestor, 0o700);
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("synchronous receipt extraction stays in the entered directory after a rename", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows prevents renaming a process working directory");
+    return;
+  }
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-sync-pinned-"));
+  const selected = join(base, "selected");
+  const moved = join(base, "moved");
+  const outside = join(base, "outside");
+  mkdirSync(selected);
+  mkdirSync(outside);
+  writeFileSync(join(selected, "evidence-proxy-0.jsonl"), "");
+  writeFileSync(join(outside, "evidence-proxy-0.jsonl"), "not-json\n");
+  const originalChdir = process.chdir;
+  let swapped = false;
+  try {
+    process.chdir = ((directory: string) => {
+      originalChdir(directory);
+      if (directory === "selected") {
+        renameSync(selected, moved);
+        symlinkSync(outside, selected, "dir");
+        swapped = true;
+      }
+    }) as typeof process.chdir;
+    assert.deepEqual(extractReceiptsFromSessionDir(selected, "proxy"), []);
+    assert.equal(swapped, true, "the root replacement must occur during the read");
+    assert.equal(readFileSync(join(selected, "evidence-proxy-0.jsonl"), "utf8"), "not-json\n");
+  } finally {
+    process.chdir = originalChdir;
+    if (existsSync(moved)) {
+      rmSync(selected, { force: true });
+      renameSync(moved, selected);
+    }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("failed cwd lookup does not leave directory pinning active", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows prevents removing a process working directory");
+    return;
+  }
+  const original = process.cwd();
+  const removed = mkdtempSync(join(realpathSync(tmpdir()), "verifier-deleted-cwd-"));
+  try {
+    process.chdir(removed);
+    rmdirSync(removed);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.throws(
+        () => withPinnedEvidenceDirectorySync(original, () => undefined),
+        (err: unknown) =>
+          (err as NodeJS.ErrnoException).code === "ENOENT" &&
+          !String(err).includes("concurrent evidence directory reads"),
+      );
+    }
+  } finally {
+    process.chdir(original);
   }
 });
 

@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Go 1.27 compatibility fixes preserve signed evidence** when it records invalid UTF-8. (#1673)
 - **TLS interception finds its default CA in the Pipelock home** (`--home`, `PIPELOCK_HOME`, then `~/.pipelock`) and refuses to guess when two exist. (#1651)
 - **Containment hardening:** the per-agent listener accepts only the relay account and root, the managed display requires X authorization, the exported CA stays current, `NODE_EXTRA_CA_CERTS` uses the combined bundle, the config installs at `0600` so admin commands work, and YAML null or aliased containment settings count as absent. (#1624, #1635, #1636, #1640, #1679)
+- **A contained agent's listener refused for a missing license now says so.** Without a license, named agent profiles are disabled at load, and a `containment.agent_listener` pointing at one was refused as undeclared. The config is still refused, but the error names the profile and says named profiles need a Pro license with the agents feature. (#1720)
 - **A provider key sent to its own issuer passes query entropy** when the entire value is one built-in credential that DLP already allows for that destination. Extra bytes, other parameters and every other scanner are unaffected, and the semicolon-separated query path stays strict. (#1708)
 - **An allowed image served under the wrong raster type** is classified by its complete image header, handled like the same bytes correctly labeled, and forwarded with the proven type in `Content-Type`, the fetch JSON response and MCP `mediaType`/`contentType`. (#1708)
 - **`pipelock contain view` reaches the display viewer again** for the configured operator, and a viewer socket permission error names both possible causes. (#1708)
@@ -157,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New benchmarks and transport proofs: response scanning at real page sizes, and identity-encoded scanned responses for browsers. (#1612, #1660)
 - The Gauntlet benchmark gate owns Pipelock's acceptance policy and tracks the current bench revision and record schema, and now pins Agent Egress Bench v1.1.0 (corpus v2.14.0) with a matching baseline and acceptance record. (#1433, #1434, #1436, #1440, #1443)
 - CI runs the Go floor on pull requests, proves both supported Go versions on main, proves compatibility gates fail closed, keeps full timeout diagnostics, and warms the MCP end-to-end package before timing. (#1448, #1480, #1592, #1614)
+- The proxy and scanner race-test shards are each split in two by test name, bringing both back well under the 20-minute shard timeout. The last half of each skips exactly what the first runs, so a new test still runs once, and CI fails if a shard command stops passing its selector. (#1721)
 - The pull-request AI review shows unfinished reviews on the current head, stays informational, retries rate-limited chunks, and uses current model tiers and budgets. (#1472, #1525, #1533, #1542, #1543, #1559, #1648)
 - An internal review record was removed from the source tree. (#1719)
 

@@ -45,6 +45,7 @@ func TestRefuseSymlinkInWalkedRootPath(t *testing.T) {
 		refused bool
 	}{
 		{name: "plain directory", root: realEv},
+		{name: "dot component", root: base + sep + "real" + sep + "." + sep + "ev"},
 		{name: "dot-dot through real directories", root: base + sep + "real" + sep + "ev" + sep + ".." + sep + "ev"},
 		{name: "symlinked root", root: filepath.Join(base, "evlink"), refused: true},
 		// Lexically this is real/ev; the open follows link to other/sub and
@@ -85,6 +86,22 @@ func TestRefuseSymlinkInWalkedRootPathRelative(t *testing.T) {
 	sep := string(filepath.Separator)
 	if err := refuseSymlinkInWalkedRootPath("real" + sep + "link" + sep + ".." + sep + "ev"); !errors.Is(err, ErrEvidenceRefused) {
 		t.Fatalf("relative symlink hidden by dot-dot = %v, want refused", err)
+	}
+}
+
+func TestRefuseSymlinkInWalkedRootPathMissingComponent(t *testing.T) {
+	base := physicalTempDir(t)
+	root := filepath.Join(base, "missing", "evidence")
+	if err := refuseSymlinkInWalkedRootPath(base); err != nil {
+		t.Fatalf("positive control refused the existing parent: %v", err)
+	}
+	for _, err := range []error{refuseSymlinkInWalkedRootPath(root), func() error {
+		_, err := DiscoverEvidenceLocations(root)
+		return err
+	}()} {
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing root component = %v, want not-exist failure", err)
+		}
 	}
 }
 

@@ -253,6 +253,26 @@ func (s *issuerQueryStore) redirectDeclared(session string, server, redirect *ur
 	return false
 }
 
+// oauthCrossHostHop reports whether a redirect from one origin to another is
+// an OAuth authorization-code hop whose values the redirecting server issued:
+//   - the client sending the browser to an authorization server, when the
+//     authorization request's redirect_uri is on the client's own origin, so
+//     the client issued the values and asked for the code to come back to it;
+//   - the authorization server returning to the exact redirect_uri origin and
+//     path that this session declared to that server.
+func oauthCrossHostHop(store *issuerQueryStore, session string, from, to *url.URL) bool {
+	if store.redirectDeclared(session, from, to) {
+		return true
+	}
+	redirect, ok := oauthRedirectDeclaration(to)
+	if !ok {
+		return false
+	}
+	fromHost, fromPort, fromOK := issuerCookieOrigin(from)
+	redirectHost, redirectPort, redirectOK := issuerCookieOrigin(redirect)
+	return fromOK && redirectOK && fromHost == redirectHost && fromPort == redirectPort
+}
+
 // oauthRedirectDeclaration returns the redirect_uri of an OAuth authorization
 // request carried in a URL query (RFC 6749 section 4.1.1): a response_type
 // that includes "code", a client_id and an absolute redirect_uri, each exactly
@@ -334,10 +354,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		}
 		kind := issuerQueryObserved
 		if host != issuerHost || port != issuerPort {
-			// A value may cross to another host only on the OAuth callback
-			// hop: a redirect from the authorization server to the exact
-			// redirect_uri origin and path this session declared to it.
-			if !redirectHop || !store.redirectDeclared(session, response.Request.URL, candidate) {
+			// A value may cross to another host only on a redirect that is
+			// one of the two OAuth authorization-code hops.
+			if !redirectHop || !oauthCrossHostHop(store, session, response.Request.URL, candidate) {
 				return
 			}
 			kind = issuerQueryOAuthRedirect

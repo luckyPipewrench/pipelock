@@ -35,8 +35,19 @@ func oauthTestState() string {
 // the authorization server's delivered redirect carried those exact values.
 func TestInterceptOAuthCallbackEndToEnd(t *testing.T) {
 	code, state := issuedTestToken(), oauthTestState()
-	app := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok")
+	var authorizeURL string
+	app := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			// The client starts the flow: its own redirect carries the
+			// state it issued to the authorization server.
+			http.Redirect(w, r, authorizeURL, http.StatusFound)
+		case "/login-elsewhere":
+			// Same shape, but the redirect_uri is not the client's origin.
+			http.Redirect(w, r, strings.Replace(authorizeURL, url.QueryEscape(r.Host), url.QueryEscape("elsewhere.vendor.example"), 1), http.StatusFound)
+		default:
+			_, _ = io.WriteString(w, "ok")
+		}
 	}))
 	defer app.Close()
 	callback := app.URL + "/cb"
@@ -83,7 +94,9 @@ func TestInterceptOAuthCallbackEndToEnd(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return resp.StatusCode
 	}
-	authorize := "/authorize?response_type=code&client_id=client-one&redirect_uri=" + url.QueryEscape(callback)
+	authorize := "/authorize?response_type=code&client_id=client-one&redirect_uri=" + url.QueryEscape(callback) + "&state=" + state
+	authorizeURL = idp.URL + authorize
+	elsewhere := "/authorize?response_type=code&client_id=client-one&redirect_uri=" + url.QueryEscape("https://elsewhere.vendor.example/cb") + "&state=" + state
 	cb := "/cb?code=" + code + "&state=" + state
 	for _, step := range []struct {
 		name   string
@@ -93,6 +106,11 @@ func TestInterceptOAuthCallbackEndToEnd(t *testing.T) {
 		want   int
 	}{
 		{"callback before authorization", app, cb, "agent-one", http.StatusForbidden},
+		{"authorization request before the client issued it", idp, authorize, "agent-one", http.StatusForbidden},
+		{"client redirect with a foreign redirect_uri", app, "/login-elsewhere", "agent-one", http.StatusFound},
+		{"authorization request for a foreign redirect_uri", idp, elsewhere, "agent-one", http.StatusForbidden},
+		{"client redirect", app, "/login", "agent-one", http.StatusFound},
+		{"authorization request for another agent", idp, authorize, "agent-two", http.StatusForbidden},
 		{"undeclared cross-host redirect", idp, "/redirect", "agent-one", http.StatusFound},
 		{"callback after undeclared redirect", app, "/cb?code=" + code, "agent-one", http.StatusForbidden},
 		{"authorization request", idp, authorize, "agent-one", http.StatusFound},
@@ -380,6 +398,51 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 			got := rph.requireReceipt(t, issuerQueryReceiptExtensionKey)
 			if !strings.Contains(string(got.Ext), `"`+tc.want+`"`) {
 				t.Fatalf("extension = %s, want %s", got.Ext, tc.want)
+			}
+		})
+	}
+}
+
+// The client's own redirect to the authorization server issues its values
+// for the authorization endpoint only when the authorization request's
+// redirect_uri is on the client's origin. The positive control runs first.
+func TestOAuthAuthorizeHopScope(t *testing.T) {
+	state := oauthTestState()
+	const client = "https://app.vendor.example/login"
+	authorize := func(redirect, extra string) string {
+		return "https://login.vendor.example/authorize?response_type=code&client_id=client-one&redirect_uri=" + url.QueryEscape(redirect) + "&state=" + state + extra
+	}
+	for _, tc := range []struct {
+		name     string
+		status   int
+		location string
+		body     string
+		want     bool
+	}{
+		{"positive control", http.StatusFound, authorize("https://app.vendor.example/auth/callback", ""), "", true},
+		{"redirect_uri on another host", http.StatusFound, authorize("https://evil.vendor.example/auth/callback", ""), "", false},
+		{"redirect_uri on another port", http.StatusFound, authorize("https://app.vendor.example:8443/auth/callback", ""), "", false},
+		{"not an authorization request", http.StatusFound, authorize("https://app.vendor.example/auth/callback", "&client_id=second"), "", false},
+		{"non-redirect status", http.StatusOK, authorize("https://app.vendor.example/auth/callback", ""), "", false},
+		{"link in a JSON body", http.StatusOK, "", `{"next":"` + authorize("https://app.vendor.example/auth/callback", "") + `"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ic, session := oauthTestStore(t)
+			header := http.Header{}
+			if tc.location != "" {
+				header.Set("Location", tc.location)
+			}
+			if tc.body != "" {
+				header.Set("Content-Type", "application/json")
+			}
+			response := &http.Response{Request: &http.Request{URL: mustIssuerQueryURL(t, client)}, StatusCode: tc.status, Header: header}
+			recordDeliveredIssuerQuery(ic, response, []byte(tc.body), true)
+			kind, got := ic.issuerQueryStore().match(session, mustIssuerQueryURL(t, "https://login.vendor.example/authorize"), "state", state)
+			if got != tc.want {
+				t.Fatalf("allowed=%v, want %v", got, tc.want)
+			}
+			if got && kind != issuerQueryOAuthRedirect {
+				t.Fatalf("kind=%q, want %q", kind, issuerQueryOAuthRedirect)
 			}
 		})
 	}

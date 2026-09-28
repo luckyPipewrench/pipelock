@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **When MCP receipts are required, a request forwards only after its receipt is durably written.** A failed or unsupported receipt write now blocks the request. (#1696)
 - **`audit-packet --offline` no longer reports a packet as trusted.** The Go, Rust and TypeScript verifiers return `verdict: schema_checked_trust_unverified` with `trusted` and `valid` false and exit non-zero, and clean reports carry a required `verification_mode` (`pinned_provenance` or `unpinned_structural`). CI jobs that read the old success must require a full chain check. (#1700)
 - **The Scan API can return `decision: "warn"`** for a `tool_call` that matches a warn-configured tool-policy rule, matching what the live MCP proxy does. Consumers that expected only `allow` or `deny` must handle `warn`. (#1572)
+- **Shipped presets now set `arg_source: patch_targets` on tool-policy rules, and a binary older than 3.6.0 refuses to load them.** The field is unknown to earlier releases, so copying a 3.6.0 preset onto an older binary, or sending a conductor bundle that uses it to an older follower, fails at config load instead of running without the rule. Upgrade the binary first, or keep older followers on bundles without the field. (#1557)
 - **Contained hosts need `pipelock contain install` with the new binary** to adopt the private network namespace, private temporary directories, the `0600` config mode and the refreshed CA export. (#1558, #1624, #1640, #1677)
 
 ### Added

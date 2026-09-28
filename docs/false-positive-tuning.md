@@ -72,11 +72,10 @@ suppress:
 
 Suppressed findings still appear in logs with `suppressed: true`, so you can review them later.
 
-For inline suppression in git-scanned files, add a `pipelock:ignore` comment on the line above:
+For inline suppression in git-scanned files, put a `pipelock:ignore` comment at the end of the flagged line itself. A comment on the line above does nothing. Any text after `pipelock:ignore` is read as the rule name to suppress, so leave it empty to suppress every rule on that line, or name the rule exactly:
 
 ```python
-# pipelock:ignore -- test fixture, not a real key
-TEST_KEY = "AKIA..."  # your test key here
+TEST_KEY = "AKIA..."  # pipelock:ignore AWS Access ID
 ```
 
 See [docs/guides/suppression.md](guides/suppression.md) for the full suppression reference.

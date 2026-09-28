@@ -237,9 +237,13 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	// layer to pin descriptors means owning that problem rather than inheriting
 	// the high-level helper's answer to it.
 	//
-	// The answer is TSYNC: the kernel applies the ruleset to every thread of
-	// the process atomically. It is available from ABI 8, which is exactly what
-	// ThreadSyncABI requires above, so it is always the path taken here.
+	// Two answers, one per caller. What ships is ApplyForExec (exec_linux.go):
+	// the guard restricts only the calling thread and then replaces the process
+	// image, so the exec'd program, and every thread it later creates, starts
+	// inside the domain; base ABI 5 is enough there. The in-process Apply path,
+	// which the enforcement tests drive, must cover threads that already exist,
+	// so it uses TSYNC: the kernel applies the ruleset to every thread of the
+	// process atomically, available from ABI 8, which ThreadSyncABI requires.
 	//
 	// The userspace alternative -- enumerate /proc/self/task and restrict each
 	// thread -- is not merely slower, it is self-defeating for Guard. That walk

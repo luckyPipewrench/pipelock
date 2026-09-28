@@ -179,7 +179,7 @@ HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP
 | Forward proxy (CONNECT + absolute-URI) | HTTP response headers on the 403/etc. |
 | TLS-intercept (MITM) | HTTP response headers on the synthetic block response. |
 | Fetch endpoint (`/fetch?url=...`) | HTTP response headers on the 403 JSON body. |
-| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on the synthetic block response (request-side and response-side). |
+| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on request-side blocks and on Browser Shield `browser_shield_uninspectable` response blocks. Other response-side blocks (prompt injection, media policy, a compressed or unscannable body, a scan error) return a JSON body whose `block_reason` field carries the reason, without the block-reason headers. |
 | MCP HTTP / SSE | HTTP response headers on the 403. |
 | WebSocket | Close-frame reason payload as a JSON document carrying the same fields (see below). |
 

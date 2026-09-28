@@ -1036,6 +1036,8 @@ Recommended rollout flow:
 
 Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection.
 
+Response scanning evaluates each HTTP response on its own. When a client builds one document from several partial (`206`) responses, content whose meaning appears only in the combined text may not be detected, so a client that joins partial responses should treat the completed document as untrusted and scan it before use.
+
 ```yaml
 response_scanning:
   enabled: true

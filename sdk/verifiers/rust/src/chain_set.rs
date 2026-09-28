@@ -261,8 +261,26 @@ pub fn refuse_symlink_in_evidence_root_path(root: &Path) -> Result<(), SessionRe
             Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
             Component::CurDir => {}
             // Every component walked so far is not a symlink, so the lexical
-            // parent is the physical parent.
+            // parent is the physical parent. The operating system climbs out
+            // of a directory only: "file/.." fails with ENOTDIR, so it fails
+            // here too, with the same message as the Go and TypeScript walks.
             Component::ParentDir => {
+                let meta = fs::symlink_metadata(&current).map_err(|err| SessionReadError {
+                    message: format!(
+                        "stat evidence root component \"{}\": {err}",
+                        current.display()
+                    ),
+                    refused: false,
+                })?;
+                if !meta.is_dir() {
+                    return Err(SessionReadError {
+                        message: format!(
+                            "evidence root component \"{}\" is not a directory",
+                            current.display()
+                        ),
+                        refused: false,
+                    });
+                }
                 current.pop();
             }
             Component::Normal(name) => {

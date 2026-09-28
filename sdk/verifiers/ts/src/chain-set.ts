@@ -164,11 +164,18 @@ export function refuseSymlinkInEvidenceRootPath(root: string): void {
   const raw = path.isAbsolute(root) ? root : `${process.cwd()}${path.sep}${root}`;
   const parsedRoot = path.parse(raw).root;
   let current = parsedRoot;
-  for (const component of raw.slice(parsedRoot.length).split(/[\\/]/u)) {
+  // Only the platform's separators split a path: on POSIX a backslash is an
+  // ordinary filename character, so "s\.." names one entry, not "s" and "..".
+  const separators = path.sep === "\\" ? /[\\/]/u : /\//u;
+  for (const component of raw.slice(parsedRoot.length).split(separators)) {
     if (component === "" || component === ".") continue;
     if (component === "..") {
       // Every component walked so far is not a symlink, so the lexical parent
-      // is the physical parent.
+      // is the physical parent. The operating system climbs out of a
+      // directory only: "file/.." fails with ENOTDIR, so it fails here too.
+      if (!lstatSync(current).isDirectory()) {
+        throw new Error(`evidence root component "${current}" is not a directory`);
+      }
       current = path.dirname(current);
       continue;
     }

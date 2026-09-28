@@ -170,6 +170,65 @@ fn directory_mode_refuses_symlink_anywhere_on_walked_root_path() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_mode_walk_matches_the_operating_system() {
+    use std::os::unix::fs::symlink;
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = TempDir(
+        std::env::temp_dir().join(format!("parity-root-walk-{}-{unique}", std::process::id())),
+    );
+    let source = common::repo_root().join("sdk/conformance/testdata/run-chains");
+    let key = source.join("signer-key.hex").display().to_string();
+    fs::create_dir_all(dir.0.join("s")).expect("mkdir s");
+    fs::create_dir_all(dir.0.join("ev")).expect("mkdir ev");
+    fs::create_dir_all(dir.0.join("elsewhere").join("ev")).expect("mkdir elsewhere/ev");
+    copy_dir(&source.join("valid"), &dir.0.join("ev"));
+    copy_dir(
+        &source.join("tampered-predecessor"),
+        &dir.0.join("elsewhere").join("ev"),
+    );
+    fs::write(dir.0.join("afile"), b"").expect("write afile");
+    // One entry named `s\..` on POSIX, a symlink the open follows.
+    symlink("elsewhere", dir.0.join("s\\..")).expect("symlink");
+    let run = |target: String| {
+        run_cli(&[
+            "chain".to_string(),
+            target,
+            "--dir".to_string(),
+            "--key".to_string(),
+            key.clone(),
+            "--json".to_string(),
+        ])
+    };
+    let (code, stdout, stderr) = run(dir.0.join("ev").display().to_string());
+    assert_eq!(code, 0, "positive control: {stdout}{stderr}");
+
+    let target = format!("{}/s\\../ev", dir.0.display());
+    let (code, stdout, stderr) = run(target.clone());
+    assert_eq!(code, 1, "{target}: {stdout}{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("json report");
+    assert!(
+        report["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("refuse symlink in evidence root path"),
+        "{target}: {stdout}"
+    );
+
+    let target = format!("{}/afile/../ev", dir.0.display());
+    let (code, stdout, stderr) = run(target.clone());
+    assert_eq!(code, 2, "{target}: {stdout}{stderr}");
+    assert!(
+        format!("{stdout}{stderr}").contains("is not a directory"),
+        "{target}: {stdout}{stderr}"
+    );
+}
+
 fn pairs(list: &Value) -> Vec<String> {
     let mut out: Vec<String> = list
         .as_array()

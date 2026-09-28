@@ -151,6 +151,58 @@ test("directory mode refuses a symlink anywhere on the walked root path", () => 
   }
 });
 
+test(
+  "directory mode does not split on a backslash where it is a filename character",
+  { skip: process.platform === "win32" },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "verifier-root-bs-"));
+    try {
+      const fixtures = resolve(packageRoot, "../../conformance/testdata/run-chains");
+      const key = join(fixtures, "signer-key.hex");
+      mkdirSync(join(dir, "s"));
+      cpSync(join(fixtures, "valid"), join(dir, "elsewhere", "ev"), { recursive: true });
+      cpSync(join(fixtures, "tampered-predecessor"), join(dir, "ev"), { recursive: true });
+      // One entry named `s\..`, a symlink the open follows to elsewhere/.
+      symlinkSync("elsewhere", join(dir, "s\\.."));
+      const r = spawnSync("node", [CLI, "chain", "s\\../ev", "--dir", "--key", key, "--json"], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
+      const report = JSON.parse(r.stdout) as ChainReport;
+      assert.equal(report.valid, false);
+      assert.match(report.error ?? "", /refuse symlink in evidence root path/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("directory mode fails when a non-directory precedes a parent step", () => {
+  const dir = mkdtempSync(join(tmpdir(), "verifier-root-notdir-"));
+  try {
+    const fixtures = resolve(packageRoot, "../../conformance/testdata/run-chains");
+    const key = join(fixtures, "signer-key.hex");
+    cpSync(join(fixtures, "valid"), join(dir, "ev"), { recursive: true });
+    writeFileSync(join(dir, "afile"), "");
+    const run = (target: string) =>
+      spawnSync("node", [CLI, "chain", target, "--dir", "--key", key, "--json"], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+    const ok = run("ev");
+    assert.equal(ok.status, 0, `positive control: ${ok.stdout}${ok.stderr}`);
+    for (const target of ["afile/../ev", `${join(dir, "afile")}/../ev`]) {
+      const r = run(target);
+      assert.equal(r.status, 2, `${target}: ${r.stdout}${r.stderr}`);
+      assert.doesNotMatch(r.stdout, /"valid":\s*true/u);
+      assert.match(`${r.stdout}${r.stderr}`, /is not a directory/u);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an explicit symlink cannot claim a different recorder session", () => {
   const dir = mkdtempSync(join(tmpdir(), "verifier-session-alias-"));
   try {

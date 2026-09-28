@@ -1090,3 +1090,24 @@ func TestDoctorConfigSemanticsAnalyzerRefactorGolden(t *testing.T) {
 		t.Fatalf("semantic doctor checks changed:\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// With response scanning off, a response exempt_domains entry still downgrades
+// core response findings on that host, so it is advisory, not inert.
+func TestDoctorResponseExemptWithScannerOffIsAdvisory(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.ExemptDomains = []string{testExemptHost}
+	var found bool
+	for _, f := range analyzeDoctorInertExemptions(cfg) {
+		if f.Scope != ConfigScopeResponseExemptDomains {
+			continue
+		}
+		found = true
+		if f.Kind != ConfigSemanticKindAdvisory {
+			t.Fatalf("kind = %q, want %q", f.Kind, ConfigSemanticKindAdvisory)
+		}
+	}
+	if !found {
+		t.Fatal("no response exempt_domains finding")
+	}
+}

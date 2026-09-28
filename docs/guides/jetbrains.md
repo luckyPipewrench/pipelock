@@ -94,8 +94,9 @@ values into a protected file. Wrap such a server by hand instead: put one
 
 ## Limitations
 
-- **Header passthrough:** HTTP/SSE servers with custom headers cannot be wrapped.
-  Use environment variable-based authentication instead.
+- **Header passthrough:** the installer cannot wrap HTTP/SSE servers that send
+  custom headers. Wrap them by hand with `pipelock mcp proxy --header-file`, as
+  above, or use a server that reads its credentials from the environment.
 - **Project-local configs** are not visible to `pipelock discover`. The default
   user-level install (omit `--project`) is visible to discover.
 - **IDE restart required** after install or remove. Junie reads MCP config at

@@ -18,7 +18,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | Receipt ID for fetching the matching receipt (via the receipt-transports endpoint) for additional context. Either a 26-character Crockford-base32 ULID (`0-9` plus `A-Z` minus `I`, `L`, `O`, `U`) **or** a canonical 36-character hyphenated UUIDv7 — the receipt subsystem's correlation handle (`action_id`) uses that UUIDv7 form. Both accepted forms are fixed-length and drawn from a bounded alphabet, so the slot stays opaque and attacker-controlled metadata cannot reach agent-visible response headers. |
 | `X-Pipelock-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | The proxy-minted `action_id` of a receipt successfully recorded before this response was written. It is a caller correlation handle, never proof by itself; verify the signed receipt before relying on it. Browser callers can read it when the proxy exposes it with `Access-Control-Expose-Headers: X-Pipelock-Receipt`. |
 
-Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
+"Every block" means every block that returns HTTP headers, with one exception: some reverse-proxy response-side blocks carry the reason only in the JSON body's `block_reason` field (see the transport table below). Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
 
 ## Layer-label vocabulary
 
@@ -61,7 +61,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `subdomain_entropy` | Hostname subdomain entropy exceeded configured ceiling. | `warn` | `policy` |
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
 | `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate limit exceeded (every subdomain of a site shares one URL-scanner budget). | `warn` | `transient` |
-| `data_budget` | Per-session data budget exceeded, or (HTTP 503) the session store is at capacity (`session capacity exhausted; release active quarantine or increase max_sessions`); raise `session_profiling.max_sessions` for the latter. | `warn` | `policy` |
+| `data_budget` | Per-session data budget exceeded, the URL scanner's per-base-domain `fetch_proxy.monitoring.max_data_per_minute` budget exceeded, or (HTTP 503) the session store is at capacity (`session capacity exhausted; release active quarantine or increase max_sessions`); raise `session_profiling.max_sessions` for the latter. | `warn` | `policy` |
 | `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`. | `warn` | `policy` |
 
 ### Content / payload layer

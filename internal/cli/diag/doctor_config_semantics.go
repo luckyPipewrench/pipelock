@@ -391,7 +391,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 	if !cfg.ResponseScanning.Enabled {
 		for _, domain := range cfg.ResponseScanning.ExemptDomains {
 			findings = append(findings, newConfigSemanticFinding(
-				ConfigSemanticKindInert,
+				ConfigSemanticKindAdvisory,
 				ConfigScopeResponseExemptDomains,
 				domain,
 				responseScanExemptDisabledDoctor,

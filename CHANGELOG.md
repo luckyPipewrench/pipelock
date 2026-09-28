@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Release binaries are built on a Go toolchain with no reachable known advisories.** (#1473)
 - **Reverse-proxy traffic joins session enforcement.** Session profiling, adaptive enforcement, cross-request entropy and taint apply to it, source CIDR bindings attribute it, and reverse DLP denials emit signed receipts. (#1477, #1532)
 - **Listener and CIDR identities are graded `bound`,** so audit, OCSF and CEF fields name them correctly. Bound identities no longer fill the shared per-IP burst bucket. (#1461, #1483)
 - **Identical blocked retries add threat score once,** and destination-scoped airlock transitions apply consistently and survive recorder replacement. `session reset` clears destination-scoped state. (#1531, #1534, #1607)
@@ -104,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every receipt verifier checks the file the operating system actually opens.** A path such as `link/../receipt.jsonl` was cleaned as text first and could verify different bytes from the resolved file; explicit files now follow the symlink before `..`, a symlinked evidence directory is refused, and the reference CLI, `pipelock-verifier`, and the TypeScript and Rust verifiers agree. Recorder timestamps are parsed from their original token, so Go 1.27 no longer accepts a timestamp Go 1.26 and the TypeScript verifier reject. (#1717)
 - **Default-on settings stay on when a config file omits them.** Enabling Browser Shield from a config file now strips hidden prompt traps, extension probes and tracking pixels as documented, and `request_body_scanning.issuer_bound_session_cookies` is on for config files as well as the no-config path. An explicit `false` is still honored. (#1703)
 - **Tool policy protected-path rules cover equivalent operations.** Move, rename, copy, delete, permission-change and link-creation tools now match rules that protect a destination path, patch targets come from patch headers, and backslash separators are recognized. (#1557)
 - **Tool policy matches the file a local path argument resolves to.** For a subprocess MCP server on the same host, or a Claude Code or Cursor hook, a symlink, hard link or relative name that reaches a protected file is matched as that file, and the shell startup-file and audit-log rules catch link-creating `ln`, `link` and `cp` commands in every preset. Remote upstreams and shell command text are still matched as written. (#1718)
@@ -142,10 +144,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 
 - Install and release examples, receipt anchoring and SCITT scope, and the MCP upstream SSRF exception are corrected. (#1431, #1432, #1468, #1594)
+- The internal release checklist moved out of the public repository. (#1608)
 
 ### Dependencies
 
 - Weekly dependency updates, `fast-uri` 3.1.7 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492)
+
+### Testing and CI
+
+- Fail-closed and error-path coverage across signed evidence, receipts, anchoring, containment, deferred resolution, sessions, guard setup, sidecar topology, config parsing, TLS files and rule updates. (#1497, #1499, #1500, #1501, #1502, #1503, #1504, #1505, #1506, #1508, #1509, #1510, #1511, #1512, #1513, #1514, #1515, #1549, #1552, #1574, #1585, #1684)
+- Flaky and timing-dependent tests fixed, including scanner drain, debounce, deadlines, subprocess timeouts, calendar-dated fixtures, sandbox bridge keep-open and contained display tests. (#1438, #1439, #1457, #1462, #1463, #1464, #1485, #1488, #1491, #1544, #1587, #1605, #1645, #1705, #1715)
+- New benchmarks and transport proofs: response scanning at real page sizes, and identity-encoded scanned responses for browsers. (#1612, #1660)
+- The Gauntlet benchmark gate owns Pipelock's acceptance policy and tracks the current bench revision and record schema. (#1433, #1434, #1436, #1440, #1443)
+- CI runs the Go floor on pull requests, proves both supported Go versions on main, proves compatibility gates fail closed, keeps full timeout diagnostics, and warms the MCP end-to-end package before timing. (#1448, #1480, #1592, #1614)
+- The pull-request AI review shows unfinished reviews on the current head, stays informational, retries rate-limited chunks, and uses current model tiers and budgets. (#1472, #1525, #1533, #1542, #1543, #1559, #1648)
+- An internal review record was removed from the source tree. (#1719)
 
 ## [3.5.0] - 2026-08-31
 

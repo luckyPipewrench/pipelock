@@ -109,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Default-on settings stay on when a config file omits them.** Enabling Browser Shield from a config file now strips hidden prompt traps, extension probes and tracking pixels as documented, and `request_body_scanning.issuer_bound_session_cookies` is on for config files as well as the no-config path. An explicit `false` is still honored. (#1703)
 - **Tool policy protected-path rules cover equivalent operations.** Move, rename, copy, delete, permission-change and link-creation tools now match rules that protect a destination path, patch targets come from patch headers, and backslash separators are recognized. (#1557)
 - **Tool policy matches the file a local path argument resolves to.** For a subprocess MCP server on the same host, or a Claude Code or Cursor hook, a symlink, hard link or relative name that reaches a protected file is matched as that file, and the shell startup-file and audit-log rules catch link-creating `ln`, `link` and `cp` commands in every preset. Remote upstreams and shell command text are still matched as written. (#1718)
+- **A release stays a draft until its Helm chart attestation succeeds.** The GitHub Release, the Homebrew formula and the floating major tag publish only after it, so a failed attestation stops the release before it's public. (#1716)
+- **A containment install that fails partway restores what it changed.** A step that edits the nft rules and their units, the integrity pin, the login profile script, the credential guard's service state or the evidence directory's access list and then fails reports the change so rollback restores it, and a rollback that can't finish is reported with the install error instead of only printed. (#1716)
 - **The core DLP floor covers MCP input and the A2A-only forward branch,** so a core credential in a tool call blocks even where the preset warns. (#1528)
 - **MCP scanning covers content it used to skip:** numeric leaves and tool definitions in responses, structured values under media-typed fields, the whole forwarded JSON-RPC envelope and session header, `structuredContent` keys, and SSE events with no data line. The listener enforces its state-token requirement on its own. (#1493, #1521, #1694)
 - **A2A header scanning checks every `A2A-Extensions` line.** (#1686)
@@ -150,6 +152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 
 - Weekly dependency updates, `fast-uri` 3.1.7 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492)
+- The init and license-service images use Alpine 3.24.2 (OpenSSL 3.5.8), and the source Dockerfile builds with Go 1.27.1. (#1716)
 
 ### Testing and CI
 

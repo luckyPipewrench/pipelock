@@ -12,6 +12,7 @@ that introduced the drift.
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -825,6 +826,16 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('test "$(crane digest "$target")" = "$CHART_DIGEST"', publish_step["run"])
         self.assertIn('gh attestation verify "oci://${target}"', publish_step["run"])
         self.assertIn('helm registry login ghcr.io', publish_step["run"])
+        missing_tag = re.search(r"elif grep -qiE '([^']+)'", publish_step["run"])
+        self.assertIsNotNone(missing_tag)
+        matcher = re.compile(missing_tag.group(1), re.IGNORECASE)
+        for error in (
+            "HEAD request: unexpected status code 404 Not Found",
+            "GET manifest: MANIFEST_UNKNOWN",
+            "GET package: NAME_UNKNOWN",
+        ):
+            self.assertRegex(error, matcher)
+        self.assertNotRegex("DENIED: access to package denied", matcher)
         self.assertEqual(
             publish_step["env"]["CHART_DIGEST"],
             "${{ needs.release-promote.outputs.chart_digest }}",

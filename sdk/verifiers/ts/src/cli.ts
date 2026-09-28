@@ -530,7 +530,18 @@ async function runChainCommand(args: string[]): Promise<number> {
     );
     return emitChainResult(withRecorderChain(report, outer), json);
   };
-  return asDir ? withPinnedEvidenceDirectory(target, () => runAt(readPath)) : runAt(readPath);
+  if (!asDir) return runAt(readPath);
+  try {
+    return await withPinnedEvidenceDirectory(target, () => runAt(readPath));
+  } catch (err) {
+    if (err instanceof EvidenceRefusedError) {
+      return emitChainResult(
+        { path: display, valid: false, receipt_count: 0, final_seq: 0, error: err.message },
+        json,
+      );
+    }
+    throw err;
+  }
 }
 
 async function runReceiptCommand(args: string[]): Promise<number> {

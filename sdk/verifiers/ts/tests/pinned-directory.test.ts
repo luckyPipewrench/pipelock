@@ -140,6 +140,58 @@ test("directory reads through a search-only ancestor", async (t) => {
   }
 });
 
+test("directory entry accepts the filesystem's case-insensitive spelling", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("case-insensitive macOS volume required");
+    return;
+  }
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-case-alias-"));
+  const canonical = join(base, "Evidence");
+  const alias = join(base, "evidence");
+  mkdirSync(canonical);
+  writeFileSync(join(canonical, "evidence.jsonl"), "inside");
+  try {
+    if (!existsSync(alias) || realpathSync(alias) !== realpathSync(canonical)) {
+      t.skip("temporary volume is case-sensitive");
+      return;
+    }
+    assert.equal(
+      await withPinnedEvidenceDirectory(alias, async () =>
+        readVerifierBytes("evidence.jsonl", true).toString(),
+      ),
+      "inside",
+    );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("directory entry keeps distinct names distinct on a case-sensitive volume", async (t) => {
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "verifier-case-distinct-"));
+  const upper = join(base, "Evidence");
+  const lower = join(base, "evidence");
+  mkdirSync(upper);
+  try {
+    mkdirSync(lower);
+  } catch {
+    rmSync(base, { recursive: true, force: true });
+    t.skip("temporary volume is case-insensitive");
+    return;
+  }
+  writeFileSync(join(upper, "evidence.jsonl"), "upper");
+  writeFileSync(join(lower, "evidence.jsonl"), "lower");
+  try {
+    assert.equal(
+      await withPinnedEvidenceDirectory(lower, async () =>
+        readVerifierBytes("evidence.jsonl", true).toString(),
+      ),
+      "lower",
+    );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("synchronous receipt extraction refuses a root moved during entry", (t) => {
   if (process.platform === "win32") {
     t.skip("Windows prevents renaming a process working directory");

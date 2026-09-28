@@ -248,13 +248,17 @@ function enterPinnedEvidenceDirectory(root: string): () => void {
         }
         continue;
       }
+      const expectedPath = path.join(parents[parents.length - 1]!.physical, component);
+      // Capture the filesystem's canonical spelling before pinning the entry.
+      // A case-insensitive volume may accept a spelling that differs from the
+      // stored name; resolving after entry would reopen the replacement race.
+      const expectedPhysical = realpathSync.native(expectedPath);
       const before = lstatSync(component, { bigint: true });
       if (before.isSymbolicLink()) {
         throw new EvidenceRefusedError(`refuse symlink in evidence root path: "${component}"`);
       }
       if (!before.isDirectory())
         throw new Error(`evidence root component "${component}" is not a directory`);
-      const expectedPath = path.join(parents[parents.length - 1]!.physical, component);
       process.chdir(component);
       const entered = statSync(".", { bigint: true });
       const physical = realpathSync.native(".");
@@ -263,7 +267,7 @@ function enterPinnedEvidenceDirectory(root: string): () => void {
         entered.dev !== before.dev ||
         entered.ino !== before.ino ||
         entered.ino === 0n ||
-        !samePhysicalPath(physical, expectedPath)
+        !samePhysicalPath(physical, expectedPhysical)
       ) {
         throw new EvidenceRefusedError(
           `evidence root component changed while entering: "${component}"`,

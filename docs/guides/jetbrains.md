@@ -85,8 +85,10 @@ receives them.
 
 **HTTP/SSE servers** without custom headers are converted to stdio with
 `--upstream`. Servers with authentication headers (e.g., `Authorization`) are
-skipped with a warning since header passthrough is not yet supported for the
-MCP proxy upstream path.
+skipped with a warning, because the JetBrains installer does not move header
+values into a protected file. Wrap such a server by hand instead: put one
+`Header-Name: value` per line in a file with mode `0600` and run
+`pipelock mcp proxy --upstream <url> --header-file <path>`.
 
 ## Limitations
 

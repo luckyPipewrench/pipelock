@@ -118,6 +118,36 @@ test("explicit file paths resolve symlinks before parent traversal", () => {
   }
 });
 
+test("an explicit symlink cannot claim a different recorder session", () => {
+  const dir = mkdtempSync(join(tmpdir(), "verifier-session-alias-"));
+  try {
+    const sourceName = "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl";
+    const otherName = "evidence-proxy.run.f7b327337534352a514bd0a256b1d1c0-0.jsonl";
+    const source = resolve(packageRoot, "../../conformance/testdata/run-chains/valid", sourceName);
+    const key = resolve(packageRoot, "../../conformance/testdata/run-chains/signer-key.hex");
+    const matchingAlias = join(dir, sourceName);
+    const mismatchedAlias = join(dir, otherName);
+    symlinkSync(source, matchingAlias);
+    symlinkSync(source, mismatchedAlias);
+
+    const matching = spawnSync("node", [CLI, "chain", matchingAlias, "--key", key, "--json"], {
+      encoding: "utf8",
+    });
+    assert.equal(matching.status, 0, `${matching.stdout}${matching.stderr}`);
+    assert.equal((JSON.parse(matching.stdout) as ChainReport).valid, true);
+
+    const mismatched = spawnSync("node", [CLI, "chain", mismatchedAlias, "--key", key, "--json"], {
+      encoding: "utf8",
+    });
+    assert.equal(mismatched.status, 1, `${mismatched.stdout}${mismatched.stderr}`);
+    const report = JSON.parse(mismatched.stdout) as ChainReport;
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /does not match requested session/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 for (const name of classes) {
   test(`parity ${name}: every cell reaches the contract verdict`, () => {
     const exp = JSON.parse(readFileSync(join(PARITY, name, "expect.json"), "utf8")) as Expect;

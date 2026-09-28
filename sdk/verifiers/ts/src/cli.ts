@@ -464,7 +464,7 @@ async function runChainCommand(args: string[]): Promise<number> {
       // A file named on the command line is read as given, even through a
       // symlink: the operator chose it.
       const lines = readEntryLines(clean);
-      checkFileEntrySessions(path.basename(clean), lines);
+      checkFileEntrySessions(path.basename(target), lines);
       typed = extractTypedFromEntries(lines.map((l) => l.entry));
       outer = verifyRecorderChain(lines);
     }

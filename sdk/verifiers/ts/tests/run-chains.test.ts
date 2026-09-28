@@ -182,6 +182,25 @@ test("run-chain CLI human output lists linked and unlinked runs", () => {
   assert.match(r.stdout, /result: {5}VALID/u);
 });
 
+test("a rotation endorsement requires an operator-pinned root", () => {
+  const exp = expectFor("key-rotated", "expect-endorsed.json");
+  const session = exp.linked[0]?.session;
+  assert.ok(session);
+  const r = runCLI([
+    "chain",
+    join(FIXTURES, "key-rotated"),
+    "--dir",
+    "--session-id",
+    session,
+    "--rotation-endorsement",
+    join(FIXTURES, "key-rotated", "rotation-endorsement.json"),
+    "--json",
+  ]);
+  assert.equal(r.status, 64, r.stdout + r.stderr);
+  assert.match(r.stderr, /requires --key/u);
+  assert.doesNotMatch(r.stdout, /"valid": true/u);
+});
+
 test("run-chain CLI with a wrong key fails every run", () => {
   const wrong = "11".repeat(32);
   const r = runCLI(["chain", join(FIXTURES, "valid"), "--dir", "--key", wrong, "--json"]);

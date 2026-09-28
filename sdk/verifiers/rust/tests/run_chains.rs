@@ -249,6 +249,32 @@ fn run_chain_cli_reaches_go_verdict() {
 }
 
 #[test]
+fn rotation_endorsement_requires_operator_pinned_root() {
+    let fixture = fixtures().join("key-rotated");
+    let endorsement = fixture.join("rotation-endorsement.json");
+    let exp: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.join("expect-endorsed.json")).expect("expectation"),
+    )
+    .expect("json expectation");
+    let session = exp["linked"][0]["session"]
+        .as_str()
+        .expect("successor session");
+    let (code, stdout, stderr) = run_cli(&[
+        "chain",
+        fixture.to_str().expect("fixture path"),
+        "--dir",
+        "--session-id",
+        session,
+        "--rotation-endorsement",
+        endorsement.to_str().expect("endorsement path"),
+        "--json",
+    ]);
+    assert_eq!(code, 64, "{stdout}{stderr}");
+    assert!(stderr.contains("requires --key"), "{stderr}");
+    assert!(!stdout.contains("\"valid\": true"), "{stdout}");
+}
+
+#[test]
 fn run_chain_cli_human_output_lists_linked_and_unlinked_runs() {
     let dir = fixtures().join("valid");
     let key = key();

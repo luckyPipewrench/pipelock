@@ -256,9 +256,15 @@ async function bothChainsReport(
 async function loadEndorsements(
   endorsementPaths: string[],
   allowUnpinned: boolean,
+  keyHex: string,
 ): Promise<RotationEndorsement[]> {
   if (endorsementPaths.length > 0 && allowUnpinned) {
     throw new UsageError("--rotation-endorsement cannot be combined with --allow-unpinned");
+  }
+  if (endorsementPaths.length > 0 && keyHex.trim() === "") {
+    throw new UsageError(
+      "--rotation-endorsement requires --key: an endorsement is authority only under a trusted root key",
+    );
   }
   return Promise.all(
     endorsementPaths.map((endorsementPath) => loadRotationEndorsementFile(endorsementPath)),
@@ -281,7 +287,7 @@ async function runChainSetCommand(
   json: boolean,
   targets?: string[],
 ): Promise<number> {
-  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
   const trustedKeys = keyHex
     .split(",")
     .map((key) => key.trim())
@@ -467,7 +473,7 @@ async function runChainCommand(args: string[]): Promise<number> {
     const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
     return emitChainResult(withRecorderChain(report, outer), json);
   }
-  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned);
+  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
   const report = await typedChainReport(
     label,
     typed,

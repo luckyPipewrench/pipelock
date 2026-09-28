@@ -263,10 +263,19 @@ fn both_chains_report(
     }
 }
 
-fn load_endorsements(paths: &[String], allow_unpinned: bool) -> Result<Vec<RotationEndorsement>> {
+fn load_endorsements(
+    paths: &[String],
+    allow_unpinned: bool,
+    key_hex: &str,
+) -> Result<Vec<RotationEndorsement>> {
     if !paths.is_empty() && allow_unpinned {
         return Err(VerifierError::Usage(
             "--rotation-endorsement cannot be combined with --allow-unpinned".to_string(),
+        ));
+    }
+    if !paths.is_empty() && key_hex.trim().is_empty() {
+        return Err(VerifierError::Usage(
+            "--rotation-endorsement requires --key: an endorsement is authority only under a trusted root key".to_string(),
         ));
     }
     paths
@@ -289,7 +298,11 @@ fn run_chain_set_command(
     parsed: &ParsedArgs,
     targets: Option<Vec<String>>,
 ) -> Result<i32> {
-    let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
+    let endorsements = load_endorsements(
+        &parsed.rotation_endorsements,
+        parsed.allow_unpinned,
+        key_hex,
+    )?;
     let trusted_keys: Vec<String> = key_hex
         .split(',')
         .map(str::trim)
@@ -507,7 +520,11 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         return emit_chain_result(&with_recorder_chain(report, outer), parsed.json);
     }
 
-    let endorsements = load_endorsements(&parsed.rotation_endorsements, parsed.allow_unpinned)?;
+    let endorsements = load_endorsements(
+        &parsed.rotation_endorsements,
+        parsed.allow_unpinned,
+        &key_hex,
+    )?;
     let report = typed_chain_report(
         label,
         typed,

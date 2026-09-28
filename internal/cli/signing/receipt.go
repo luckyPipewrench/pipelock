@@ -148,6 +148,8 @@ Examples:
 					return configError(fmt.Errorf("--rotation-endorsement cannot be combined with --clean-report"))
 				case chainDir == "" && !strings.HasSuffix(args[0], ".jsonl"):
 					return configError(fmt.Errorf("--rotation-endorsement requires --chain or a JSONL receipt file"))
+				case len(trustedKeys) == 0:
+					return configError(errors.New("--rotation-endorsement requires --key: an endorsement is authority only under a trusted root key"))
 				}
 			}
 			if wholeRecorder && cleanReport != "" {

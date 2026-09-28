@@ -86,6 +86,28 @@ func TestNFTUndoKeepsPreexistingTableWhenPriorDumpUnknown(t *testing.T) {
 	}
 }
 
+func TestNFTUndoReportsEveryUnknownPriorState(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.nftTableMutatedByInstall = true
+	env.nftTableLoadedBeforeInstall = true
+	env.nftPersistEnableAttempted = true
+	env.nftTimerEnableAttempted = true
+
+	err := stepInstallNFTRulesUndo(context.Background(), env)
+	if err == nil {
+		t.Fatal("rollback reported success with unknown prior state")
+	}
+	for _, want := range []string{
+		"previous enabled state",
+		"previous enabled and active state",
+		"previous contents could not be captured",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("rollback error %q omitted %q", err, want)
+		}
+	}
+}
+
 // With no table before install, a table this attempt loaded is still dropped.
 func TestNFTUndoDropsTableItCreatedWhenNoneExisted(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)

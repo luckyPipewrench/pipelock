@@ -14,6 +14,17 @@ import (
 )
 
 func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
+	prepareGuardParent := func(t *testing.T, env *installEnv) {
+		t.Helper()
+		dir := filepath.Dir(env.guardScriptPath)
+		if err := os.MkdirAll(dir, modeDirReadable); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, modeDirReadable); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	t.Run("operator lookup", func(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		env.lookupUser = func(name string) (*user.User, error) {
@@ -36,9 +47,10 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 
 	t.Run("parent chmod", func(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
+		prepareGuardParent(t, env)
 		env.chmod = func(string, os.FileMode) error { return os.ErrPermission }
 		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
-		if err == nil || !strings.Contains(err.Error(), "chmod") {
+		if err == nil || applied || !strings.Contains(err.Error(), "chmod") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
 		}
 	})
@@ -66,9 +78,10 @@ func TestCredentialGuardFilesystemFailuresAbortActivation(t *testing.T) {
 
 	t.Run("file write", func(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
+		prepareGuardParent(t, env)
 		env.writeFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
 		applied, err := stepWriteCredentialGuard().apply(context.Background(), env)
-		if err == nil || !strings.Contains(err.Error(), "write") {
+		if err == nil || applied || !strings.Contains(err.Error(), "write") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
 		}
 	})

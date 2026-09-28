@@ -264,6 +264,35 @@ func TestStepInstallNFTRulesUndoReportsExpiryUnitRestoreFailures(t *testing.T) {
 	}
 }
 
+func TestStepInstallNFTRulesUndoContinuesAfterRestoreFailures(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.nftRulesWrittenByInstall = true
+	env.nftExpiryTimerWrittenByInstall = true
+	env.nftExpiryServiceWrittenByInstall = true
+	env.prevNFTPersistStateKnown = true
+	env.prevNFTExpiryTimerStateKnown = true
+	env.prevNFTExpiryTimerEnabled = true
+	env.prevNFTExpiryTimerActive = true
+	removeFile := env.removeFile
+	env.removeFile = func(path string) error {
+		if path == env.nftRulesPath || path == env.nftExpiryTimerPath {
+			return errors.New("restore denied")
+		}
+		return removeFile(path)
+	}
+
+	err := stepInstallNFTRulesUndo(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), env.nftRulesPath) || !strings.Contains(err.Error(), env.nftExpiryTimerPath) {
+		t.Fatalf("undo error = %v, want both failed restores", err)
+	}
+	if !runnerCalled(runner, "disable "+filepath.Base(env.nftPersistUnitPath)) ||
+		!runnerCalled(runner, "daemon-reload") ||
+		!runnerCalled(runner, "enable "+filepath.Base(env.nftExpiryTimerPath)) ||
+		!runnerCalled(runner, "start "+filepath.Base(env.nftExpiryTimerPath)) {
+		t.Fatalf("rollback stopped before restoring remaining service state: %+v", runner.calls)
+	}
+}
+
 func TestStepInstallNFTRulesUndoReportsDisabledExpiryTimerRestoreFailure(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.prevNFTExpiryTimerStateKnown = true

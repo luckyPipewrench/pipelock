@@ -2387,7 +2387,7 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 	}
 	if env.prevNFTTableStateKnown && env.nftTableMutatedByInstall && strings.TrimSpace(env.prevNFTTableDump) != "" {
 		if err := restorePreviousNFTState(ctx, env); err != nil {
-			return err
+			incomplete = errors.Join(incomplete, err)
 		}
 	} else if env.nftTableMutatedByInstall && env.nftTableLoadedBeforeInstall {
 		// The table was live before this attempt reloaded it, but its
@@ -2395,7 +2395,7 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 		// agent with no containment at all, so keep the table this attempt
 		// loaded, finish the file restores, and report the rollback as
 		// incomplete.
-		incomplete = fmt.Errorf("undo: containment table inet %s was loaded before this install but its previous contents could not be captured; left the table this install loaded in place, rerun `pipelock contain install` as root", env.nftTableOrDefault())
+		incomplete = errors.Join(incomplete, fmt.Errorf("undo: containment table inet %s was loaded before this install but its previous contents could not be captured; left the table this install loaded in place, rerun `pipelock contain install` as root", env.nftTableOrDefault()))
 	} else if !env.nftTableMutatedByInstall {
 		// This attempt never changed the table: an atomic nft batch that failed
 		// leaves it as it was. Leave any table alone, including when its prior
@@ -2408,19 +2408,19 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 		// host with no prior table could report a clean rollback while the
 		// table this step created was still loaded in the kernel.
 		if _, code, err := env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault()); err != nil {
-			return fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err)
+			incomplete = errors.Join(incomplete, fmt.Errorf("undo: delete table inet %s: %w", env.nftTableOrDefault(), err))
 		} else if code != 0 {
-			return fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code)
+			incomplete = errors.Join(incomplete, fmt.Errorf("undo: delete table inet %s exited %d; the table this install created may still be loaded", env.nftTableOrDefault(), code))
 		}
 	}
 	if err := restoreNFTFilesWrittenByInstall(env); err != nil {
-		return errors.Join(incomplete, err)
+		incomplete = errors.Join(incomplete, err)
 	}
 	if env.prevNFTPersistStateKnown {
 		persistUnit := filepath.Base(env.nftPersistUnitPath)
 		if !env.prevNFTPersistEnabled {
 			if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
-				return errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", persistUnit, err))
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", persistUnit, err))
 			}
 		} else if env.nftPersistEnableAttempted {
 			args := []string{"enable"}
@@ -2428,18 +2428,18 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 				// The attempted plain enable may have added persistent links.
 				// Remove them before restoring the prior runtime-only state.
 				if err := runSystemctlCleanupUnit(ctx, env, "disable", persistUnit); err != nil {
-					return errors.Join(incomplete, fmt.Errorf("remove persistent %s enablement: %w", persistUnit, err))
+					incomplete = errors.Join(incomplete, fmt.Errorf("remove persistent %s enablement: %w", persistUnit, err))
 				}
 				args = append(args, "--runtime")
 			}
 			args = append(args, persistUnit)
 			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
-				return errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", persistUnit, err))
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", persistUnit, err))
 			}
 		}
 	}
 	if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
-		return errors.Join(incomplete, fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err))
+		incomplete = errors.Join(incomplete, fmt.Errorf("systemctl daemon-reload after restoring expiry units: %w", err))
 	}
 	if env.prevNFTExpiryTimerStateKnown {
 		timer := filepath.Base(env.nftExpiryTimerPath)
@@ -2450,12 +2450,12 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 			}
 			args = append(args, timer)
 			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
-				return errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", timer, err))
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", timer, err))
 			}
 		}
 		if env.prevNFTExpiryTimerActive {
 			if err := runOrErr(ctx, env, "systemctl", "start", timer); err != nil {
-				return errors.Join(incomplete, fmt.Errorf("restore %s active state: %w", timer, err))
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s active state: %w", timer, err))
 			}
 		}
 	}
@@ -2467,9 +2467,10 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 // and the next boot need; restoring it would delete it or swap in an older
 // release's backup.
 func restoreNFTFilesWrittenByInstall(env *installEnv) error {
+	var incomplete error
 	if env.nftRulesWrittenByInstall {
 		if err := restoreBackup(env, env.nftRulesPath); err != nil {
-			return err
+			incomplete = errors.Join(incomplete, err)
 		}
 	}
 	for _, unit := range []struct {
@@ -2485,10 +2486,10 @@ func restoreNFTFilesWrittenByInstall(env *installEnv) error {
 			continue
 		}
 		if err := restoreNFTUnitBackup(env, unit.path, unit.existed); err != nil {
-			return err
+			incomplete = errors.Join(incomplete, err)
 		}
 	}
-	return nil
+	return incomplete
 }
 
 func captureNFTPreState(ctx context.Context, env *installEnv) {

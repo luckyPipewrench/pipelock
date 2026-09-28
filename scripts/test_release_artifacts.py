@@ -485,6 +485,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         # The consumer-facing publishes wait for the approved promotion AND the
         # chart attestation, so a failed attestation leaves the release a draft.
         self.assertEqual(publish["needs"], ["release-promote", "release-attest-chart"])
+        self.assertNotIn("if", publish, "publish must require both successful dependencies")
         self.assertEqual(publish["permissions"], {"contents": "write"})
         self.assertNotIn("environment", publish)
         build_script = "\n".join(script for _, script in build_runs)
@@ -702,12 +703,13 @@ class TestReleaseArtifacts(unittest.TestCase):
         commit_bind = (
             'test "$manifest_commit" = "$(git rev-parse "${GITHUB_REF_NAME}^{}")" || {'
         )
-        gate_runs = {**dict(promote_runs), **dict(publish_runs)}
-        for gate in (
-            "Verify release manifest signature before promotion",
-            "Reverify the release manifest signature and publish",
+        for job_runs, gate in (
+            (promote_runs, "Verify release manifest signature before promotion"),
+            (publish_runs, "Reverify the release manifest signature and publish"),
         ):
-            lines = self._executable_lines(gate_runs[gate])
+            gate_steps = [script for name, script in job_runs if name == gate]
+            self.assertEqual(len(gate_steps), 1, f"expected one {gate} step")
+            lines = self._executable_lines(gate_steps[0])
             self.assertIn('manifest_tag="$(jq -r .tag "$verify_dir/release.json")"', lines)
             self.assertIn(
                 'manifest_commit="$(jq -r .commit "$verify_dir/release.json")"', lines

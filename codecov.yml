@@ -1,10 +1,11 @@
 codecov:
   require_ci_to_pass: true
   notify:
-    # CI uploads thirteen coverage reports on a successful run: six Go 1.26
-    # OSS shards and six enterprise shards (proxy, scanner, mcp, rest-0, rest-1,
-    # rest-2), plus the merged sandbox subprocess profile. Both build variants
-    # are needed because enterprise profiles exclude Apache-only stubs.
+    # CI uploads seventeen coverage reports on a successful run: eight Go 1.26
+    # OSS shards and eight enterprise shards (proxy-0, proxy-1, scanner-0,
+    # scanner-1, mcp, rest-0, rest-1, rest-2), plus the merged sandbox subprocess
+    # profile. Both build variants are needed because enterprise profiles
+    # exclude Apache-only stubs.
     # Codecov posts its verdict once this
     # many uploads arrive and does not wait for the rest, so this must equal
     # the real upload count.

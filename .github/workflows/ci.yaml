@@ -467,7 +467,7 @@ jobs:
     # single cheap job's real success unconditionally. It is also five minutes
     # of "make test-replay-harness" with no shard fan-out, so skipping it on
     # ordinary PRs was never where the runner-queue contention came from --
-    # that was the twelve race-test shard jobs below.
+    # that was the sixteen Go 1.27 race-test shard jobs in the matrices above.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

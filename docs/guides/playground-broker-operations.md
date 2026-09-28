@@ -188,7 +188,7 @@ graceful HTTP shutdown. For remote operation, run the authenticated admin API on
 a separate listener with `--admin-listen` plus `--admin-token-file` or
 `--admin-token-env`.
 
-Bind `--admin-listen` to loopback and use a long random token (e.g. `openssl rand -hex 32`). The token is
+Bind `--admin-listen` to loopback and use a long random token (e.g. `openssl rand -hex 32`). The broker refuses to start when `--admin-listen` names any other address, including an all-interfaces bind, unless you also pass `--unsafe-admin-listen-public`, which is only safe inside a container network namespace that already isolates the port. The token is
 compared in constant time, but the endpoint has no rate limiting or lockout by
 design. To operate it remotely, use an authenticated, encrypted tunnel to the
 loopback listener; do not send the bearer token over plaintext network HTTP.

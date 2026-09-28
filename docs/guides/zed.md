@@ -208,6 +208,7 @@ the pattern set.
 - Re-running install after Zed has written its own additions
   (`agent.default_model`, etc.) is safe: wrapped entries are skipped
   (idempotent), and Zed's other additions are preserved.
+- Re-running after upgrading Pipelock also recovers and re-wraps an older Pipelock-authored entry using the current binary's invocation shape; an entry it cannot safely normalize is refused with a message identifying the file and entry, and nothing is changed.
 
 ## Evidence and Audit Trail
 

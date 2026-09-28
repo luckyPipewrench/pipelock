@@ -1433,6 +1433,8 @@ pipelock signing reset revoke --file /run/pipelock/mcp-tool-drift.reset
 
 Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 30 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, protected-path and audit-log tampering, and encoded command execution.
 
+A protected-path rule matches the tools that write a path and also the move, rename, copy, delete, permission-change and link-creation tools that reach the same destination, with forward or backslash separators. An `apply_patch` call is matched against the targets named in the patch headers, and an unparseable patch is blocked instead of passing unmatched. Audit-log rules cover the system log and Pipelock state directories rather than any file ending in `.log`. Operations that name only a parent directory, such as a recursive delete, and archive extraction are not matched, because their arguments do not name the protected file.
+
 ```yaml
 mcp_tool_policy:
   enabled: true
@@ -1605,6 +1607,8 @@ session_profiling:
 | `max_sessions` | `1000` | Hard cap on concurrent sessions |
 | `session_ttl_minutes` | `30` | Idle session eviction |
 | `cleanup_interval_seconds` | `60` | Background cleanup interval |
+
+`max_sessions` fails closed. At the cap, Pipelock evicts the oldest session it can safely drop, and never one held in airlock. When no session can be dropped, the new request is refused with HTTP 503 and layer `session_capacity` instead of running without session state; proxy, MCP and Browser Shield admission all follow this rule.
 
 ## Behavioral Baseline
 

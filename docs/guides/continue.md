@@ -18,7 +18,7 @@ The Continue installer refuses remote entries with nonempty `headers` because it
 
 Use a manual `pipelock mcp proxy` wrapper for a remote server that needs authentication headers. Store one `Header-Name: value` per line in a private file with `0o600` permissions. In the Continue entry, set `type` to `stdio` and `command` to Pipelock's absolute executable path. Set `args` to `mcp`, `proxy`, `--header-file`, the header file's absolute path, `--upstream`, and the server URL. Include `--config` and its path when using a custom Pipelock configuration. The manual stdio entry replaces the remote `url` and `headers` fields; header values belong only in the private file.
 
-An older installer may have left a `headers` field beside an already-wrapped remote command. Installing again refuses that entry without nesting another proxy or removing its headers, even when the executable path hasn't changed. Preserve the original configuration or backup while converting it to a manual wrapper.
+Re-running after upgrading Pipelock recovers and re-wraps an older Pipelock-authored entry using the current binary's invocation shape. An older installer may have left a `headers` field beside an already-wrapped remote command. Installing again refuses that entry without nesting another proxy or removing its headers, even when the executable path hasn't changed. Preserve the original configuration or backup while converting it to a manual wrapper.
 
 ## Configuration files
 

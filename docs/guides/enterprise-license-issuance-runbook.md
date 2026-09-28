@@ -46,6 +46,10 @@ license-service revoke-trial --subscription-id <id> --reason "<revocation reason
 
 `inspect-trial` prints the trial's subscription ID, customer email, tier, status, license ID, expiry, delivery status, and whether it has been revoked. `resend-trial` re-sends the existing trial access without minting a new token or extending its expiry. `revoke-trial` is a durable revocation; a cached CRL response can still validate the license for up to one minute after the revocation is recorded.
 
+## Startup diagnostics
+
+At startup the service logs the entitlement database journal mode, and warns when a file database is not in write-ahead logging mode because another process held it at startup; restart the service once nothing else has the database open. It also warns, naming the subscription IDs, when one customer still holds more than one active trial from before the one-trial rule: only the longest-running trial holds the trial slot, and the others keep running until they expire.
+
 ## Feature Mapping
 
 The license service maps commercial tiers to runtime feature flags in

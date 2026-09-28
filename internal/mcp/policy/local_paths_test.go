@@ -1,0 +1,323 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package policy
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
+
+const (
+	testShellProfileRule = "Shell Profile Modification"
+	testKeyReadRule      = "Credential File Access"
+	testPatchTool        = "apply_patch"
+	testWriteTool        = "write_file"
+	testReadTool         = "read_file"
+)
+
+// localPathFixture is a disposable home directory and a workspace beside it.
+type localPathFixture struct {
+	home string
+	ws   string
+}
+
+func newLocalPathFixture(t *testing.T) localPathFixture {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixtures need POSIX link semantics")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := localPathFixture{home: filepath.Join(root, "home"), ws: filepath.Join(root, "home", "ws")}
+	if err := os.MkdirAll(f.ws, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func (f localPathFixture) write(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("baseline\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f localPathFixture) link(t *testing.T, target, name string) {
+	t.Helper()
+	if err := os.Symlink(target, name); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f localPathFixture) policy(enabled bool) *Config {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	if enabled {
+		pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	}
+	return pc
+}
+
+func checkPath(pc *Config, tool, key, value string) Verdict {
+	raw, _ := json.Marshal(map[string]string{key: value})
+	return pc.CheckToolCallWithArgs(tool, []string{value}, raw)
+}
+
+func TestLocalPathIdentity_ResolvesAliasesToProtectedFiles(t *testing.T) {
+	cases := []struct {
+		name     string
+		setup    func(t *testing.T, f localPathFixture) string // returns the submitted value
+		tool     string
+		key      string
+		wantRule string
+	}{
+		{
+			name: "symlink to protected file",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".profile"))
+				f.link(t, filepath.Join(f.home, ".profile"), filepath.Join(f.ws, "notes.txt"))
+				return filepath.Join(f.ws, "notes.txt")
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+		{
+			name: "relative symlink resolved against the working directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".bashrc"))
+				f.link(t, "../.bashrc", filepath.Join(f.ws, "notes.txt"))
+				return "notes.txt"
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+		{
+			name: "protected name is a symlink to the submitted file",
+			setup: func(t *testing.T, f localPathFixture) string {
+				backing := filepath.Join(f.ws, "dotfiles", "profile")
+				f.write(t, backing)
+				f.link(t, backing, filepath.Join(f.home, ".profile"))
+				return backing
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+		{
+			name: "hard link to protected file",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".zshrc"))
+				if err := os.Link(filepath.Join(f.home, ".zshrc"), filepath.Join(f.ws, "h")); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(f.ws, "h")
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+		{
+			name: "dangling symlink to a protected file not yet created",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.link(t, filepath.Join(f.home, ".zprofile"), filepath.Join(f.ws, "new.txt"))
+				return filepath.Join(f.ws, "new.txt")
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+		{
+			name: "new file under a symlinked protected directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				if err := os.MkdirAll(filepath.Join(f.home, ".ssh"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				f.link(t, filepath.Join(f.home, ".ssh"), filepath.Join(f.ws, "keys"))
+				return "keys/id_ed25519"
+			},
+			tool: testReadTool, key: "path", wantRule: testKeyReadRule,
+		},
+		{
+			name: "protected directory is a symlink to the submitted directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.ws, "keys", "id_rsa"))
+				f.link(t, filepath.Join(f.ws, "keys"), filepath.Join(f.home, ".ssh"))
+				return filepath.Join(f.ws, "keys", "id_rsa")
+			},
+			tool: testReadTool, key: "path", wantRule: testKeyReadRule,
+		},
+		{
+			name: "tilde path through a link",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".bash_profile"))
+				f.link(t, filepath.Join(f.home, ".bash_profile"), filepath.Join(f.home, "plain"))
+				return "~/plain"
+			},
+			tool: testWriteTool, key: "path", wantRule: testShellProfileRule,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLocalPathFixture(t)
+			value := tc.setup(t, f)
+
+			// Positive control: the submitted text alone does not name the file.
+			if v := checkPath(f.policy(false), tc.tool, tc.key, value); slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("fixture is not an alias: %q already matches %s by text", value, tc.wantRule)
+			}
+			v := checkPath(f.policy(true), tc.tool, tc.key, value)
+			if !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("local path identity did not match %s for %q: %+v", tc.wantRule, value, v)
+			}
+		})
+	}
+}
+
+func TestLocalPathIdentity_ZDOTDIRStartupFileIsLink(t *testing.T) {
+	f := newLocalPathFixture(t)
+	zdot := filepath.Join(f.home, ".config", "zsh")
+	if err := os.MkdirAll(zdot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	backing := filepath.Join(f.ws, "zshrc")
+	f.write(t, backing)
+	f.link(t, backing, filepath.Join(zdot, ".zshrc"))
+
+	if v := checkPath(f.policy(true), testWriteTool, "path", backing); slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("fixture matched without ZDOTDIR: %+v", v)
+	}
+	t.Setenv("ZDOTDIR", zdot)
+	t.Setenv("HOME", f.home)
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	pc.EnableLocalPathIdentity()
+	if v := checkPath(pc, testWriteTool, "path", backing); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("ZDOTDIR startup file behind a link was not matched: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_PatchTargetAlias(t *testing.T) {
+	f := newLocalPathFixture(t)
+	f.write(t, filepath.Join(f.home, ".bashrc"))
+	f.link(t, filepath.Join(f.home, ".bashrc"), filepath.Join(f.ws, "notes.txt"))
+	patch := "--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-baseline\n+changed\n"
+
+	if v := f.policy(false).CheckToolCall(testPatchTool, []string{patch}); slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("patch fixture matched by text alone: %+v", v)
+	}
+	if v := f.policy(true).CheckToolCall(testPatchTool, []string{patch}); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("patch through an alias was not matched: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_KeyScopedRule(t *testing.T) {
+	f := newLocalPathFixture(t)
+	f.write(t, filepath.Join(f.ws, "guarded-target"))
+	f.link(t, filepath.Join(f.ws, "guarded-target"), filepath.Join(f.ws, "innocent"))
+	const ruleName = "Guarded Destination"
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{
+		Name: ruleName, ToolPattern: `^copy_file$`, ArgKey: `^destination$`, ArgPattern: `guarded-target`,
+	}}})
+	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+
+	raw := json.RawMessage(`{"source":"a","destination":"innocent"}`)
+	v := pc.CheckToolCallWithArgs("copy_file", []string{"a", "innocent"}, raw)
+	if !slices.Contains(v.Rules, ruleName) {
+		t.Fatalf("key-scoped value was not resolved: %+v", v)
+	}
+	raw = json.RawMessage(`{"source":"innocent","destination":"b"}`)
+	if v := pc.CheckToolCallWithArgs("copy_file", []string{"innocent", "b"}, raw); v.Matched {
+		t.Fatalf("resolution leaked outside the scoped key: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_OrdinaryValuesUnchanged(t *testing.T) {
+	f := newLocalPathFixture(t)
+	f.write(t, filepath.Join(f.home, ".profile"))
+	f.write(t, filepath.Join(f.ws, "plain.txt"))
+	loopA, loopB := filepath.Join(f.ws, "loop-a"), filepath.Join(f.ws, "loop-b")
+	f.link(t, loopB, loopA)
+	f.link(t, loopA, loopB)
+	l := newLocalPathIdentity(f.home, f.ws)
+
+	for _, values := range [][]string{
+		{filepath.Join(f.ws, "plain.txt")},
+		{"plain.txt", "hello", "rm -rf /tmp/x", "https://api.vendor.example/.profile"},
+		{"line one\nline two", ""},
+		{loopA},
+		{filepath.Join(f.ws, "missing-dir", "x")},
+	} {
+		if got := l.expand(values); !slices.Equal(got, values) {
+			t.Errorf("expand(%q) = %q, want unchanged", values, got)
+		}
+	}
+	if v := checkPath(f.policy(true), testWriteTool, "path", filepath.Join(f.ws, "plain.txt")); v.Matched {
+		t.Fatalf("ordinary workspace write matched: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_ResolvedPathDoesNotReplaceSubmitted(t *testing.T) {
+	f := newLocalPathFixture(t)
+	// The submitted protected name must still match even when it resolves to an
+	// ordinary-looking backing file.
+	backing := filepath.Join(f.ws, "backing")
+	f.write(t, backing)
+	f.link(t, backing, filepath.Join(f.home, ".profile"))
+	if v := checkPath(f.policy(true), testWriteTool, "path", filepath.Join(f.home, ".profile")); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("submitted protected name lost after resolution: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_NilAndDisabled(t *testing.T) {
+	var pc *Config
+	pc.EnableLocalPathIdentity()
+	var l *localPathIdentity
+	in := []string{"/etc/profile"}
+	if got := l.expand(in); !slices.Equal(got, in) {
+		t.Fatalf("nil identity changed values: %q", got)
+	}
+	enabled := New(config.MCPToolPolicy{Enabled: true, Rules: DefaultToolPolicyRules()})
+	enabled.EnableLocalPathIdentity()
+	if enabled.localPaths == nil {
+		t.Fatal("EnableLocalPathIdentity did not install a resolver")
+	}
+	if got := newLocalPathIdentity("", "").expand([]string{"~/x", "rel"}); !slices.Equal(got, []string{"~/x", "rel"}) {
+		t.Fatalf("identity without home or cwd resolved relative values: %q", got)
+	}
+}
+
+func TestShellLinkCommandsToProtectedPaths(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	cases := []struct {
+		cmd      string
+		wantRule string // empty = must not match either rule
+	}{
+		{cmd: "ln -s /home/u/.bashrc /work/notes.txt", wantRule: "Shell Profile Write via Command"},
+		{cmd: "ln -s ~/.profile notes && echo x > notes", wantRule: "Shell Profile Write via Command"},
+		{cmd: "ln -sf /etc/profile /work/p", wantRule: "Shell Profile Write via Command"},
+		{cmd: "ln -sf /dev/null /var/lib/pipelock/receipts.jsonl", wantRule: "Audit Log Tampering"},
+		{cmd: "ln -s /var/log/app/current.log ./app.log", wantRule: "Audit Log Tampering"},
+		{cmd: "ln -s build/out dist"},
+		{cmd: "cat ~/.bashrc; ln -s a b"},
+		{cmd: "tail /var/log/syslog; ln -s a b"},
+		{cmd: "ln -sf ~/dotfiles/zshrc ~/.zshrc && exec zsh", wantRule: "Shell Profile Write via Command"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cmd, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", []string{tc.cmd})
+			if tc.wantRule == "" {
+				for _, rule := range []string{"Shell Profile Write via Command", "Audit Log Tampering"} {
+					if slices.Contains(v.Rules, rule) {
+						t.Fatalf("%q matched %s", tc.cmd, rule)
+					}
+				}
+				return
+			}
+			if !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("%q did not match %s: %+v", tc.cmd, tc.wantRule, v)
+			}
+		})
+	}
+}

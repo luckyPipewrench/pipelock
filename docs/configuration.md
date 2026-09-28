@@ -1474,6 +1474,8 @@ Tool policy is a default-allow denylist: a rule describes the dangerous conditio
 
 Built-in rules and current presets include matching aliases for namespaced tool names. Custom `tool_pattern` expressions keep their regex semantics; upgrading the binary does not rewrite patterns already saved in YAML. To refresh an existing configuration, compare its tool-policy rules with the current preset and preserve any intentional local actions and argument constraints. Matching aliases do not change the tool name sent upstream or recorded as its identity.
 
+Path arguments are matched as the text the caller sends, and a link can make that text name a different file than the one the tool changes. When the tool acts on the same host as Pipelock, as a subprocess MCP server (`pipelock mcp proxy -- COMMAND`) or a Claude Code or Cursor hook does, rules also match the path each argument resolves to and the well-known protected location that is the same file: shell startup files in the home directory and `ZDOTDIR`, the SSH directory, cloud and netrc credentials, the cron, systemd and launchd directories, `/etc/profile`, `/etc/shadow`, and the audit log directories. That covers a symlink to a protected file, a protected name that is itself a symlink or hard link to a file the caller can name, and a new file under a linked directory. It doesn't cover an HTTP or WebSocket upstream, which resolves paths on its own host, a protected-name link outside those locations, or a link created or swapped between the policy decision and the write. To keep a server's writes away from files it shouldn't change, run it with the sandbox (`pipelock mcp proxy --sandbox --workspace DIR -- COMMAND`), which on Linux enforces the workspace boundary in the kernel.
+
 Receipt action classification also recognizes these aliases. Authority grants retain raw-name action matching: receipt alias inference does not broaden the tool identities an existing grant authorizes. Name-based classification is a heuristic, not proof of a tool's actual effects.
 
 Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
@@ -2370,7 +2372,7 @@ What it enables beyond `strict`:
 - **Aggressive entropy threshold (3.0):** catches more encoded secrets at the cost of higher false-positive rates
 - **Lower rate limit (15/min):** constrains exfiltration bandwidth
 - **Shorter URL limit (300 chars):** reduces data budget per request
-- **All MCP tool policy rules enabled:** blocks shell obfuscation, file writes outside allowed paths, and network access patterns
+- **All MCP tool policy rules enabled:** blocks shell obfuscation, writes to protected paths such as shell startup files, credentials and persistence directories, and network access patterns
 - **TLS interception pre-configured** (disabled by default; enable and generate a CA to activate)
 
 The core principle: the model won't protect you, so the network layer must.

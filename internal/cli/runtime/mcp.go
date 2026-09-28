@@ -1082,6 +1082,12 @@ Key-free evidence capture:
 			var policyCfg *policy.Config
 			if cfg.MCPToolPolicy.Enabled {
 				policyCfg = policy.New(cfg.MCPToolPolicy)
+				// A subprocess server shares this host's filesystem, so a submitted
+				// path is also matched by the file it resolves to here. A remote
+				// upstream resolves paths on its own host, which Pipelock cannot see.
+				if hasSubprocess && !hasUpstream {
+					policyCfg.EnableLocalPathIdentity()
+				}
 			}
 
 			// Initialize chain matcher if tool chain detection is configured.

@@ -141,6 +141,10 @@ type Config struct {
 	Rules                 []*CompiledRule
 	RedirectProfiles      map[string]config.RedirectProfile      // keyed by profile name
 	DeferResolverProfiles map[string]config.DeferResolverProfile // keyed by profile name
+
+	// localPaths, when set, also matches what submitted paths resolve to on
+	// this host. See EnableLocalPathIdentity.
+	localPaths *localPathIdentity
 }
 
 // CompiledRule holds a pre-compiled policy rule ready for matching.
@@ -269,9 +273,14 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	//  - Alt (policy): policyPreNormalize + invisible→space (catches ZW separators)
 	//  - Baseline: no pre-normalizer + drop invisible (catches mv, shred, vi, sh via в→v, н→h)
 	// A match on ANY view triggers the rule.
-	tokens, joined := normalizeArgTokens(argStrings, normalize.ForMatching, policyPreNormalize)
-	altTokens, altJoined := normalizeArgTokens(argStrings, normalize.ForPolicy, policyPreNormalize)
-	baseTokens, baseJoined := normalizeArgTokens(argStrings, normalize.ForMatching, nil)
+	//
+	// With local path identity enabled, the resolved location of each submitted
+	// path joins the match set, so a link to a protected file matches the rule
+	// that protects it.
+	matchArgs := pc.localPaths.expand(argStrings)
+	tokens, joined := normalizeArgTokens(matchArgs, normalize.ForMatching, policyPreNormalize)
+	altTokens, altJoined := normalizeArgTokens(matchArgs, normalize.ForPolicy, policyPreNormalize)
+	baseTokens, baseJoined := normalizeArgTokens(matchArgs, normalize.ForMatching, nil)
 
 	var matchedRules []string
 	strictest := ""
@@ -304,7 +313,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings := scoped.Strings
+			scopedStrings := pc.localPaths.expand(scoped.Strings)
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
@@ -313,7 +322,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				matchStrings := patchTargetMatchStrings(argStrings, patchTargets)
+				matchStrings := patchTargetMatchStrings(argStrings, pc.localPaths.expand(withPatchPrefixStripped(patchTargets)))
 				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
 				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
 				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
@@ -1626,9 +1635,14 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// The cp/mv branch keeps (\S+\s+)+ to require at least one arg
 			// before the dotfile, defeating pairwise token false positives.
 			// (?:\S*/)? matches an optional path prefix before the dotfile.
+			// The ln branches match a profile in any argument position: linking
+			// FROM a profile creates an alias a later file write can go through.
+			// Each needs an argument on the other side of the profile, so the
+			// two-token pairwise view cannot join "ln" from one command with a
+			// profile named by another.
 			Name:        "Shell Profile Write via Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$)`,
+			ArgPattern:  `(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\bln\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bln\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bln\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\bln\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1685,7 +1699,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Audit Log Tampering",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileWriteToolPattern + `)$`,
-			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
+			ArgPattern:  `(?i)(\b(rm|truncate|shred)\b[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|>{1,2}\s*[^;|&]*(` + auditLogShellPathPattern + `|\.(log|audit|jsonl)\b)|\bln\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/(?:var/log|var/lib/pipelock)/|\bln\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/(?:var/log|var/lib/pipelock)/[^\s;|&]*(?:\s+[^\s;|&]+)+|\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bexport\s+HISTFILE=/dev/null\b)`,
 		},
 	}
 	return withBuiltinToolNameAliases(rules)

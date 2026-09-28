@@ -204,6 +204,9 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	}
 	defer sc.Close()
 	pc := policy.New(cfg.MCPToolPolicy)
+	// The agent's file tools act on this host, so a submitted path is also
+	// matched by the file it resolves to here.
+	pc.EnableLocalPathIdentity()
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)

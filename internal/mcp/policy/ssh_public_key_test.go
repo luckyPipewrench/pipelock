@@ -40,7 +40,9 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "upper case public key", path: "/HOME/USER/.SSH/ID_RSA.PUB"},
 		{name: "tilde public key", path: "~/.ssh/id_ecdsa.pub"},
 		{name: "windows public key", path: `C:\Users\v\.ssh\id_ed25519.pub`},
-		{name: "public key in quotes", path: `"/home/user/.ssh/id_rsa.pub"`},
+		// The literal view cannot tell a shell quote from a quote in the file
+		// name, so a quoted public key path stays matched.
+		{name: "quoted public key", path: `"/home/user/.ssh/id_rsa.pub"`, wantMatch: true},
 
 		{name: "rsa private key", path: "/home/user/.ssh/id_rsa", wantMatch: true},
 		{name: "ed25519 private key", path: "/home/user/.ssh/id_ed25519", wantMatch: true},
@@ -61,6 +63,8 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "pub name with comma suffix", path: "/home/user/.ssh/id_rsa.pub,backup", wantMatch: true},
 		{name: "pub name with semicolon suffix", path: "/home/user/.ssh/id_rsa.pub;old", wantMatch: true},
 		{name: "pub name with paren suffix", path: "/home/user/.ssh/id_rsa.pub)", wantMatch: true},
+		{name: "apostrophe inside the extension", path: "/home/user/.ssh/id_rsa.p'ub", wantMatch: true},
+		{name: "double quote inside the extension", path: `/home/user/.ssh/id_rsa.pu"b`, wantMatch: true},
 		{name: "trailing dot", path: "/home/user/.ssh/id_rsa.", wantMatch: true},
 		{name: "truncated extension", path: "/home/user/.ssh/id_rsa.pu", wantMatch: true},
 		{name: "glob over every key", path: "/home/user/.ssh/id_*", wantMatch: true},
@@ -119,7 +123,6 @@ func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
 		{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"},
 		{"command": "gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop"},
 		{"command": "wc -c < ~/.ssh/id_ed25519.pub"},
-		{"command": `cat "$HOME/.ssh/id_ed25519.pub"`},
 	}
 	for _, args := range allowed {
 		if credentialRuleMatches(t, pc, "bash", args) {

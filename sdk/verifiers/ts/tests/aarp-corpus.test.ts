@@ -104,6 +104,17 @@ test("corpus categories match wired categories", () => {
   assert.deepEqual(present, [...envelopeCategories, "svid"].sort());
 });
 
+// One test is registered per fixture found, so removed fixtures would shrink the run
+// without failing it. Same floors as the Rust (58 envelope) and Python (79 total) suites.
+test("corpus fixture counts meet the floor", () => {
+  const count = (category: string) =>
+    readdirSync(`${corpus}/${category}`).filter((f) => f.endsWith(".expect.json")).length;
+  const envelopes = envelopeCategories.reduce((n, category) => n + count(category), 0);
+  assert.ok(envelopes >= 58, `expected at least 58 envelope fixtures, got ${envelopes}`);
+  const svid = count("svid");
+  assert.ok(svid >= 21, `expected at least 21 svid fixtures, got ${svid}`);
+});
+
 for (const category of envelopeCategories) {
   const dir = `${corpus}/${category}`;
   const expectFiles = readdirSync(dir).filter((f) => f.endsWith(".expect.json"));

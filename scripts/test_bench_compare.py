@@ -52,6 +52,23 @@ class BenchCompareTest(unittest.TestCase):
         cur = _line("BenchmarkAlpha", 120) + _line("BenchmarkAlpha", 95)
         self.assertEqual(self.run_compare(base, cur), (0, "", []))
 
+    def test_rise_from_zero_baseline_is_reported(self) -> None:
+        base = _line("BenchmarkAlpha", 0) + _line("BenchmarkBeta", 100)
+        cur = _line("BenchmarkAlpha", 5) + _line("BenchmarkBeta", 100)
+        self.assertEqual(
+            self.run_compare(base, cur),
+            (0, "BenchmarkAlpha rose from a 0 ns/op baseline to 5 ns/op\n", []),
+        )
+
+    def test_zero_baseline_that_stays_zero_is_not_reported(self) -> None:
+        base = _line("BenchmarkAlpha", 0) + _line("BenchmarkBeta", 100)
+        cur = _line("BenchmarkAlpha", 0) + _line("BenchmarkBeta", 100)
+        self.assertEqual(self.run_compare(base, cur), (0, "", []))
+
+    def test_zero_baseline_overlap_alone_is_still_overlap(self) -> None:
+        base = _line("BenchmarkAlpha", 0)
+        self.assertEqual(self.run_compare(base, _line("BenchmarkAlpha", 0)), (0, "", []))
+
     def test_no_overlap_exits_3(self) -> None:
         rc, _, missing = self.run_compare(_line("BenchmarkAlpha", 100), _line("BenchmarkGamma", 100))
         self.assertEqual(rc, 3)

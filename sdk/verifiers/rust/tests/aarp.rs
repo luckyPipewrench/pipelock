@@ -163,8 +163,8 @@ fn corpus_conformance() {
         }
     }
     assert!(
-        checked >= 54,
-        "expected at least 54 fixtures, got {checked}"
+        checked >= 58,
+        "expected at least 58 fixtures, got {checked}"
     );
 }
 

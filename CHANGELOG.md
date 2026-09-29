@@ -162,6 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Gauntlet benchmark gate owns Pipelock's acceptance policy and tracks the current bench revision and record schema, and now pins Agent Egress Bench v1.1.0 (corpus v2.14.0) with a matching baseline and acceptance record. (#1433, #1434, #1436, #1440, #1443)
 - CI runs the Go floor on pull requests, proves both supported Go versions on main, proves compatibility gates fail closed, keeps full timeout diagnostics, and warms the MCP end-to-end package before timing. (#1448, #1480, #1592, #1614)
 - The proxy and scanner race-test shards are each split in two by test name, bringing both back well under the 20-minute shard timeout. The last half of each skips exactly what the first runs, so a new test still runs once, and CI fails if a shard command stops passing its selector. (#1721)
+- The Python, Rust and TypeScript verifier corpus tests run every AARP corpus category and fail when one isn't wired in, and the benchmark gate fails a full run when a baseline benchmark disappears or rises from a zero baseline. (#1722)
 - The pull-request AI review shows unfinished reviews on the current head, stays informational, retries rate-limited chunks, and uses current model tiers and budgets. (#1472, #1525, #1533, #1542, #1543, #1559, #1648)
 - An internal review record was removed from the source tree. (#1719)
 

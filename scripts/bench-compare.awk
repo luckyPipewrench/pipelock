@@ -43,10 +43,16 @@ END {
 		if (!(name in cur)) print name > missing
 	}
 	for (name in cur) {
-		if (name in base && base[name] > 0) {
-			seen = 1
+		if (!(name in base)) continue
+		# A shared name is overlap even at a 0 ns/op baseline. No percentage
+		# exists from zero, so any rise from it is reported as a regression
+		# rather than skipped.
+		seen = 1
+		if (base[name] > 0) {
 			pct = (cur[name] / base[name] - 1) * 100
 			if (pct > threshold + 0) printf "%s +%.2f%%\n", name, pct
+		} else if (cur[name] > 0) {
+			printf "%s rose from a 0 ns/op baseline to %s ns/op\n", name, cur[name]
 		}
 	}
 	if (!seen) exit 3

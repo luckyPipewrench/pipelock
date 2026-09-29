@@ -788,18 +788,24 @@ func stepWriteToolsList() step {
 				return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.toolsListPath), err)
 			}
 			defaults := resolvableDefaultToolEntries(env)
-			if len(defaults) == 0 {
-				return false, errors.New("no default agent tools found in pipelock-agent PATH (/home/pipelock-agent/.local/bin:/usr/local/bin:/usr/bin:/bin); install a tool such as claude into /usr/local/bin or use add-tool after install")
-			}
 			entries, err := readToolsList(env)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					return false, fmt.Errorf("read tools.list: %w", err)
 				}
+				if len(defaults) == 0 {
+					return false, noAgentToolsError(env)
+				}
 				if err := writeToolsList(env, defaults); err != nil {
 					return false, err
 				}
 				return true, nil
+			}
+			// An existing allow-list with add-tool entries keeps the install
+			// usable even when no default tool is present; only an empty
+			// result leaves plk-launch with nothing to run.
+			if len(defaults) == 0 && len(entries) == 0 {
+				return false, noAgentToolsError(env)
 			}
 			merged, changed := mergeDefaultToolEntries(entries, defaults)
 			if !changed {
@@ -814,6 +820,32 @@ func stepWriteToolsList() step {
 			return restoreBackup(env, env.toolsListPath)
 		},
 	}
+}
+
+// agentToolsPrereq reports whether stepWriteToolsList can leave a non-empty
+// allow-list: a default tool pipelock-agent can execute, or an existing
+// tools.list with entries to keep. Preflight calls it so a host without an
+// agent tool is refused before any step mutates it.
+func agentToolsPrereq(env *installEnv) error {
+	if len(resolvableDefaultToolEntries(env)) > 0 {
+		return nil
+	}
+	entries, err := readToolsList(env)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return noAgentToolsError(env)
+		}
+		return fmt.Errorf("read tools.list: %w", err)
+	}
+	if len(entries) == 0 {
+		return noAgentToolsError(env)
+	}
+	return nil
+}
+
+func noAgentToolsError(env *installEnv) error {
+	return fmt.Errorf("no agent tools found: none of %s is executable in pipelock-agent PATH (%s) and %s lists no tools; install one into /usr/local/bin and rerun pipelock contain install",
+		strings.Join(defaultToolNames(), ", "), agentExecPath(env.agentUserName), env.toolsListPath)
 }
 
 // renderDefaultToolsList emits the v0.2 default allow-list. Format is
@@ -1002,7 +1034,7 @@ func toolsListEntriesEqual(a, b []toolsListEntry) bool {
 func stepPreflight(opts installOpts) step {
 	return step{
 		name: "preflight",
-		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl)",
+		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl / certutil) and an agent tool to allow-list",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			for _, b := range []string{"useradd", "userdel", "systemctl", "visudo", "sudo", "setfacl", "find", "chmod"} {
 				if err := expectExec(b); err != nil {
@@ -1021,6 +1053,14 @@ func stepPreflight(opts installOpts) step {
 				}
 			}
 			if err := expectPrivilegedExecutablePath(env.stat, "nft", env.nftPath); err != nil {
+				return false, err
+			}
+			// Later steps need these unconditionally. Checking here refuses the
+			// host before any mutation instead of rolling back a partial install.
+			if err := resolveCertutil(env.lookPath); err != nil {
+				return false, missingCertutilError(env.platformFamily)
+			}
+			if err := agentToolsPrereq(env); err != nil {
 				return false, err
 			}
 			configPath := managedPipelockConfigPath(env)
@@ -1378,7 +1418,9 @@ func stepPreflightPipelockConfig(opts installOpts) step {
 			if err := preflightPipelockConfig(ctx, env, opts, false); err != nil {
 				return false, err
 			}
-			return false, nil
+			// The check ran and passed; report it like stepPreflight so the
+			// install log does not print a completed check as [SKIP].
+			return true, nil
 		},
 		undo: nil,
 	}

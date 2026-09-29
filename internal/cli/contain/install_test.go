@@ -857,6 +857,12 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			return origStat(path)
 		}
 		t.Setenv("PATH", binDir)
+		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
+			t.Fatalf("mkdir tools.list parent: %v", err)
+		}
+		if err := os.WriteFile(env.toolsListPath, []byte("custom\t/opt/agent/bin/custom\n"), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
 		applied, err := s.apply(context.Background(), env)
 		if err != nil {
 			t.Fatalf("preflight: %v", err)
@@ -876,6 +882,94 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			t.Fatal("missing executable must not report applied")
 		}
 		if !strings.Contains(err.Error(), "required executable") {
+			t.Fatalf("err: %v", err)
+		}
+	})
+}
+
+// preflightReadyEnv returns an env whose required binaries, nft path and
+// agent allow-list all satisfy stepPreflight.
+func preflightReadyEnv(t *testing.T) *installEnv {
+	t.Helper()
+	env, _, _ := newFakeEnv(t)
+	binDir := installContainCommandFixtures(t)
+	env.nftPath = filepath.Join(binDir, "nft")
+	realStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		if path == env.nftPath {
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+		}
+		return realStat(path)
+	}
+	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
+		t.Fatalf("mkdir tools.list parent: %v", err)
+	}
+	if err := os.WriteFile(env.toolsListPath, []byte("custom\t/opt/agent/bin/custom\n"), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	return env
+}
+
+func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
+	t.Run("ready host passes", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err != nil || !applied {
+			t.Fatalf("applied=%v err=%v", applied, err)
+		}
+	})
+
+	t.Run("missing certutil", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		env.platformFamily = platformFamilyDebian
+		env.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err == nil || applied {
+			t.Fatalf("preflight must refuse a host without certutil: applied=%v err=%v", applied, err)
+		}
+		if !strings.Contains(err.Error(), "certutil not found") || !strings.Contains(err.Error(), "libnss3-tools") {
+			t.Fatalf("err: %v", err)
+		}
+	})
+
+	t.Run("no agent tool and no allow-list", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.Remove(env.toolsListPath); err != nil {
+			t.Fatalf("remove tools.list: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == env.nftPath || path == env.toolsListPath {
+				return realStat(path)
+			}
+			for _, name := range defaultToolNames() {
+				if filepath.Base(path) == name {
+					return nil, os.ErrNotExist
+				}
+			}
+			return realStat(path)
+		}
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err == nil || applied || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("applied=%v err=%v", applied, err)
+		}
+	})
+
+	t.Run("empty allow-list and no agent tool", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.WriteFile(env.toolsListPath, []byte("# only a comment\n"), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			for _, name := range defaultToolNames() {
+				if filepath.Base(path) == name {
+					return nil, os.ErrNotExist
+				}
+			}
+			return realStat(path)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
 			t.Fatalf("err: %v", err)
 		}
 	})

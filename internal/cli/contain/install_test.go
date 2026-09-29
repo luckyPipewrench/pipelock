@@ -1131,6 +1131,49 @@ func TestAgentCanExecuteJudgesAsPipelockAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("nested symlink through a directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		openDir := t.TempDir()
+		tool := runnableFixtureTarget(t)
+		hiddenDir := t.TempDir()
+		inner := filepath.Join(hiddenDir, "inner")
+		if err := os.Symlink(tool, inner); err != nil {
+			t.Fatalf("inner symlink: %v", err)
+		}
+		outer := filepath.Join(openDir, "outer")
+		if err := os.Symlink(inner, outer); err != nil {
+			t.Fatalf("outer symlink: %v", err)
+		}
+		if !agentCanExecute(env, outer) {
+			t.Fatal("positive control: the chain is runnable while every directory is searchable")
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == hiddenDir {
+				return fakeFileInfo{mode: os.ModeDir | 0o700, sys: fakeFileSysWithUID(0)}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, outer) {
+			t.Fatal("a link chain through a root-only directory must not count as runnable, even when it ends somewhere searchable")
+		}
+	})
+
+	t.Run("symlink loop", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		dir := t.TempDir()
+		a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+		if err := os.Symlink(b, a); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if err := os.Symlink(a, b); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if agentCanExecute(env, a) {
+			t.Fatal("a symlink loop must not count as runnable")
+		}
+	})
+
 	t.Run("agent not created yet uses other bits", func(t *testing.T) {
 		env := preflightReadyEnv(t)
 		env.lookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }

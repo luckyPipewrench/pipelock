@@ -935,33 +935,68 @@ func agentCanExecute(env *installEnv, path string) bool {
 		return false
 	}
 	id := lookupAgentIdentity(env)
-	if !agentCanSearchAncestors(env, id, clean) {
+	final, ok := agentWalkPath(env, id, clean)
+	if !ok {
 		return false
 	}
-	// stat follows symlinks, so the lexical chain alone would pass a link into
-	// a tree the agent cannot search. The kernel needs search on both the path
-	// as written and the path the links resolve to, so check both chains.
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != clean {
-		if !agentCanSearchAncestors(env, id, resolved) {
-			return false
-		}
-	}
-	info, err := env.stat(clean)
+	info, err := env.stat(final)
 	return err == nil && info.Mode().IsRegular() && id.permits(info, 0o1)
 }
 
-// agentCanSearchAncestors reports whether id may search every ancestor
-// directory of the absolute path p.
-func agentCanSearchAncestors(env *installEnv, id agentIdentity, p string) bool {
-	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
-		info, err := env.stat(dir)
-		if err != nil || !info.IsDir() || !id.permits(info, 0o1) {
-			return false
+// maxSymlinkHops matches Linux's MAXSYMLINKS for one path resolution.
+const maxSymlinkHops = 40
+
+// agentWalkPath resolves an absolute path the way the kernel does, one
+// component at a time, expanding every symlink where it is met (nested links
+// included) and requiring search permission for id on each directory it looks
+// a component up in. It returns the final resolved path.
+func agentWalkPath(env *installEnv, id agentIdentity, p string) (string, bool) {
+	cur := string(filepath.Separator)
+	pending := strings.Split(strings.TrimPrefix(p, cur), cur)
+	hops := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
 		}
-		if dir == filepath.Dir(dir) {
-			return true
+		dirInfo, err := env.stat(cur)
+		if err != nil || !dirInfo.IsDir() || !id.permits(dirInfo, 0o1) {
+			return "", false
 		}
+		next := filepath.Join(cur, name)
+		linkInfo, err := env.lstat(next)
+		if err != nil {
+			// No lstat answer: accept only a path stat also finds, as a plain
+			// entry. On a real filesystem both fail together.
+			if _, statErr := env.stat(next); statErr != nil {
+				return "", false
+			}
+			cur = next
+			continue
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return "", false
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", false
+		}
+		if filepath.IsAbs(target) {
+			cur = string(filepath.Separator)
+		}
+		pending = append(strings.Split(strings.TrimPrefix(target, string(filepath.Separator)), string(filepath.Separator)), pending...)
 	}
+	return cur, true
 }
 
 func noAgentToolsError(env *installEnv) error {

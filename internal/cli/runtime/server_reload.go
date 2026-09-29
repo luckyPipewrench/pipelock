@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
@@ -639,7 +640,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	})
 	// An enabling emergency policy must be active before the proxy publishes
 	// the new generation. Keep a disabling policy active until publication.
-	preactivatedKillSwitch := newCfg.KillSwitch.Enabled && (oldCfg == nil || !oldCfg.KillSwitch.Enabled)
+	// Both config-derived sources count: `enabled`, and a sentinel_file that
+	// already exists (stat errors other than not-exist fail closed, matching
+	// the controller).
+	preactivatedKillSwitch := configActivatesKillSwitch(newCfg)
 	if preactivatedKillSwitch {
 		s.killswitch.Reload(newCfg)
 	}
@@ -1307,4 +1311,22 @@ func (s *Server) cleanup() {
 		s.sentry.Close()
 		s.sentry = nil
 	}
+}
+
+// configActivatesKillSwitch reports whether cfg's own kill-switch sources
+// activate the switch: `enabled`, or a configured sentinel_file that exists.
+// A stat error other than not-exist counts as present, matching the
+// controller's fail-closed sentinel check.
+func configActivatesKillSwitch(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.KillSwitch.Enabled {
+		return true
+	}
+	if cfg.KillSwitch.SentinelFile == "" {
+		return false
+	}
+	_, err := os.Stat(cfg.KillSwitch.SentinelFile)
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }

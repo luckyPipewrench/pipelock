@@ -6,6 +6,7 @@ package mcp
 import (
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -160,7 +161,8 @@ func deferredReleasePrecheck(opts MCPProxyOpts, generation uint64) (func(), bool
 // boundary of a deferred MCP call. Callers must already hold the lock that
 // serializes writes to the sink (stdio forwardMu, HTTP upstreamMu), so no
 // unbounded wait sits between this claim and the write or send; the only work
-// in between is emitting the receipt that records the committed release.
+// in between is the manager's journal write and the receipt that record the
+// committed release, both bounded local I/O.
 //
 // Ordering: every activation source (config reload, API, signal, Conductor
 // sources) sets its flag and bumps the deferred generation while holding the
@@ -183,6 +185,30 @@ func claimDeferredRelease(opts MCPProxyOpts, generation uint64) (func(), bool) {
 		return func() {}, true
 	}
 	return opts.KillSwitch.ClaimDeferredSendAt(generation)
+}
+
+// lockAndClaimDeferredRelease takes the sink lock, then the kill-switch claim.
+// On success it returns res unchanged with a finish func that releases the
+// claim and the lock; the manager runs it with defer. On a failed claim it
+// unlocks at once and returns the kill-switch cancellation.
+func lockAndClaimDeferredRelease(mu sync.Locker, opts MCPProxyOpts, generation uint64, res deferred.Resolution) (deferred.Resolution, func()) {
+	mu.Lock()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			mu.Unlock()
+		}
+	}()
+	release, ok := claimDeferredRelease(opts, generation)
+	if !ok {
+		markDeferredKillSwitch(&res)
+		return res, nil
+	}
+	handedOff = true
+	return res, func() {
+		release()
+		mu.Unlock()
+	}
 }
 
 // markDeferredKillSwitch rewrites a resolution into the kill-switch

@@ -1421,39 +1421,34 @@ func ForwardScannedInput(
 				BeforeAllow: func() (func(), bool) {
 					return deferredReleasePrecheck(opts, deferredGeneration)
 				},
-				Resolve: func(res deferred.Resolution) {
-					authorityDenied := false
+				// Prepare settles the final decision before the manager
+				// journals it, so the journal and the receipt agree. On an
+				// allow it returns holding forwardMu and the kill-switch
+				// claim; the manager releases both with defer after Resolve
+				// returns or panics.
+				Prepare: func(res deferred.Resolution) (deferred.Resolution, func()) {
 					if res.FinalDecision == config.ActionAllow {
 						if authErr := authorizeMCP(stdioInputCtx, heldAuthorityRef, heldAuthorityCarrierErr, heldAuthorityFrame, opts); authErr != nil {
 							res.FinalDecision = config.ActionBlock
 							res.ResolutionSource = deferred.SourceAuthority
 							res.Reason = "authority verification failed"
-							authorityDenied = true
 						}
 					}
 					if res.ResolutionSource == deferred.SourceKillSwitch {
 						markDeferredKillSwitch(&res)
 					}
+					if res.FinalDecision != config.ActionAllow {
+						return res, nil
+					}
 					// Irreversible release boundary. Take the writer lock
 					// first so no wait for another write sits between the
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
-					releaseSink := func() {}
-					if res.FinalDecision == config.ActionAllow {
-						forwardMu.Lock()
-						release, ok := claimDeferredRelease(opts, deferredGeneration)
-						if ok {
-							releaseSink = func() {
-								release()
-								forwardMu.Unlock()
-							}
-						} else {
-							forwardMu.Unlock()
-							markDeferredKillSwitch(&res)
-						}
-					}
+					return lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+				},
+				Resolve: func(res deferred.Resolution) {
+					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
 					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
-						releaseSink()
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
 								ID:           heldID,
@@ -1468,10 +1463,8 @@ func ForwardScannedInput(
 						if isTrackableRequest(heldLine, heldID) {
 							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
 						}
-						// forwardMu is already held by the release claim.
-						err := writer.WriteMessage(heldLine)
-						releaseSink()
-						if err != nil {
+						// forwardMu is held by Prepare's release claim.
+						if err := writer.WriteMessage(heldLine); err != nil {
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}

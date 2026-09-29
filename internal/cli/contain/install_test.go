@@ -1105,6 +1105,32 @@ func TestAgentCanExecuteJudgesAsPipelockAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("symlink into a directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		hiddenDir := t.TempDir()
+		target := filepath.Join(hiddenDir, "tool")
+		if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		link := filepath.Join(t.TempDir(), "tool-link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			switch path {
+			case hiddenDir:
+				return fakeFileInfo{mode: os.ModeDir | 0o700, sys: fakeFileSysWithUID(0)}, nil
+			case link, target:
+				return fakeFileInfo{mode: 0o755}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, link) {
+			t.Fatal("a link into a root-only directory must not count as runnable by pipelock-agent")
+		}
+	})
+
 	t.Run("agent not created yet uses other bits", func(t *testing.T) {
 		env := preflightReadyEnv(t)
 		env.lookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }

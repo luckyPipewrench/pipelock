@@ -935,17 +935,33 @@ func agentCanExecute(env *installEnv, path string) bool {
 		return false
 	}
 	id := lookupAgentIdentity(env)
-	for dir := filepath.Dir(clean); ; dir = filepath.Dir(dir) {
+	if !agentCanSearchAncestors(env, id, clean) {
+		return false
+	}
+	// stat follows symlinks, so the lexical chain alone would pass a link into
+	// a tree the agent cannot search. The kernel needs search on both the path
+	// as written and the path the links resolve to, so check both chains.
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != clean {
+		if !agentCanSearchAncestors(env, id, resolved) {
+			return false
+		}
+	}
+	info, err := env.stat(clean)
+	return err == nil && info.Mode().IsRegular() && id.permits(info, 0o1)
+}
+
+// agentCanSearchAncestors reports whether id may search every ancestor
+// directory of the absolute path p.
+func agentCanSearchAncestors(env *installEnv, id agentIdentity, p string) bool {
+	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
 		info, err := env.stat(dir)
 		if err != nil || !info.IsDir() || !id.permits(info, 0o1) {
 			return false
 		}
 		if dir == filepath.Dir(dir) {
-			break
+			return true
 		}
 	}
-	info, err := env.stat(clean)
-	return err == nil && info.Mode().IsRegular() && id.permits(info, 0o1)
 }
 
 func noAgentToolsError(env *installEnv) error {

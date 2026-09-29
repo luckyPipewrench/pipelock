@@ -260,13 +260,17 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		const custom = "custom\t/opt/agent/bin/custom\n"
+		target := filepath.Join(t.TempDir(), "custom")
+		if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture: tools.list targets must be runnable
+			t.Fatalf("write target: %v", err)
+		}
+		custom := "custom\t" + target + "\n"
 		if err := os.WriteFile(env.toolsListPath, []byte(custom), 0o600); err != nil {
 			t.Fatalf("write tools.list: %v", err)
 		}
 		realStat := env.stat
 		env.stat = func(p string) (os.FileInfo, error) {
-			if p == env.toolsListPath || p == filepath.Dir(env.toolsListPath) {
+			if p == env.toolsListPath || p == filepath.Dir(env.toolsListPath) || p == target {
 				return realStat(p)
 			}
 			return nil, os.ErrNotExist
@@ -279,7 +283,7 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read tools.list: %v", err)
 		}
-		if !strings.Contains(string(got), "custom\t/opt/agent/bin/custom") {
+		if !strings.Contains(string(got), strings.TrimSuffix(custom, "\n")) {
 			t.Fatalf("tools.list lost its add-tool entry: %q", got)
 		}
 	})

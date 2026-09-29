@@ -857,12 +857,7 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			return origStat(path)
 		}
 		t.Setenv("PATH", binDir)
-		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
-			t.Fatalf("mkdir tools.list parent: %v", err)
-		}
-		if err := os.WriteFile(env.toolsListPath, []byte("custom\t/opt/agent/bin/custom\n"), 0o600); err != nil {
-			t.Fatalf("write tools.list: %v", err)
-		}
+		writeRunnableToolsList(t, env)
 		applied, err := s.apply(context.Background(), env)
 		if err != nil {
 			t.Fatalf("preflight: %v", err)
@@ -901,13 +896,40 @@ func preflightReadyEnv(t *testing.T) *installEnv {
 		}
 		return realStat(path)
 	}
+	writeRunnableToolsList(t, env)
+	hideDefaultTools(env)
+	return env
+}
+
+// writeRunnableToolsList writes a tools.list whose only entry pins a real
+// executable outside the agent PATH, and returns that target.
+func writeRunnableToolsList(t *testing.T, env *installEnv) string {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture: tools.list targets must be runnable
+		t.Fatalf("write tool target: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 		t.Fatalf("mkdir tools.list parent: %v", err)
 	}
-	if err := os.WriteFile(env.toolsListPath, []byte("custom\t/opt/agent/bin/custom\n"), 0o600); err != nil {
+	if err := os.WriteFile(env.toolsListPath, []byte("custom\t"+target+"\n"), 0o600); err != nil {
 		t.Fatalf("write tools.list: %v", err)
 	}
-	return env
+	return target
+}
+
+// hideDefaultTools makes every default tool name unresolvable through env.stat,
+// so a test does not depend on which agent tools the test host has installed.
+func hideDefaultTools(env *installEnv) {
+	realStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		for _, name := range defaultToolNames() {
+			if filepath.Base(path) == name {
+				return nil, os.ErrNotExist
+			}
+		}
+		return realStat(path)
+	}
 }
 
 func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
@@ -955,6 +977,34 @@ func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
 		}
 	})
 
+	t.Run("only target not executable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		if err := os.Chmod(target, 0o600); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("a tools.list whose only target cannot run must be refused: err=%v", err)
+		}
+	})
+
+	t.Run("malformed allow-list refused even with a default tool", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.WriteFile(env.toolsListPath, []byte("not-a-valid-line\n"), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
+		hidden := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if filepath.Base(path) == "claude" && filepath.Dir(path) == "/usr/local/bin" {
+				return fakeFileInfo{mode: 0o755}, nil
+			}
+			return hidden(path)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "tools.list") {
+			t.Fatalf("malformed tools.list must fail preflight, not a later step: err=%v", err)
+		}
+	})
+
 	t.Run("empty allow-list and no agent tool", func(t *testing.T) {
 		env := preflightReadyEnv(t)
 		if err := os.WriteFile(env.toolsListPath, []byte("# only a comment\n"), 0o600); err != nil {
@@ -973,6 +1023,18 @@ func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
 			t.Fatalf("err: %v", err)
 		}
 	})
+}
+
+func TestMergeDefaultToolEntriesKeepsUnresolvedPinnedDefault(t *testing.T) {
+	existing := []toolsListEntry{{name: "claude", target: "/opt/agent/bin/claude"}, {name: "custom", target: "/opt/agent/bin/custom"}}
+	merged, changed := mergeDefaultToolEntries(existing, nil)
+	if changed || len(merged) != 2 || merged[0].name != "claude" {
+		t.Fatalf("an unresolved default must not delete its pinned entry: merged=%v changed=%v", merged, changed)
+	}
+	merged, changed = mergeDefaultToolEntries(existing, []toolsListEntry{{name: "claude", target: "/usr/local/bin/claude"}})
+	if !changed || len(merged) != 2 || merged[0].target != "/usr/local/bin/claude" {
+		t.Fatalf("a resolved default replaces the same name: merged=%v changed=%v", merged, changed)
+	}
 }
 
 func TestStepPreflightRejectsUntrustedNFTPath(t *testing.T) {

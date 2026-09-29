@@ -787,31 +787,14 @@ func stepWriteToolsList() step {
 			if err := env.chmod(filepath.Dir(env.toolsListPath), modeDirTraversable); err != nil {
 				return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.toolsListPath), err)
 			}
-			defaults := resolvableDefaultToolEntries(env)
-			entries, err := readToolsList(env)
+			plan, err := plannedToolsList(env)
 			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					return false, fmt.Errorf("read tools.list: %w", err)
-				}
-				if len(defaults) == 0 {
-					return false, noAgentToolsError(env)
-				}
-				if err := writeToolsList(env, defaults); err != nil {
-					return false, err
-				}
-				return true, nil
+				return false, err
 			}
-			// An existing allow-list with add-tool entries keeps the install
-			// usable even when no default tool is present; only an empty
-			// result leaves plk-launch with nothing to run.
-			if len(defaults) == 0 && len(entries) == 0 {
-				return false, noAgentToolsError(env)
-			}
-			merged, changed := mergeDefaultToolEntries(entries, defaults)
-			if !changed {
+			if !plan.changed {
 				return false, nil
 			}
-			if err := writeToolsList(env, merged); err != nil {
+			if err := writeToolsList(env, plan.entries); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -822,29 +805,58 @@ func stepWriteToolsList() step {
 	}
 }
 
-// agentToolsPrereq reports whether stepWriteToolsList can leave a non-empty
-// allow-list: a default tool pipelock-agent can execute, or an existing
-// tools.list with entries to keep. Preflight calls it so a host without an
-// agent tool is refused before any step mutates it.
-func agentToolsPrereq(env *installEnv) error {
-	if len(resolvableDefaultToolEntries(env)) > 0 {
-		return nil
-	}
-	entries, err := readToolsList(env)
+type toolsListPlan struct {
+	entries []toolsListEntry
+	changed bool
+}
+
+// plannedToolsList computes the allow-list stepWriteToolsList writes: the
+// existing tools.list (parsed, so a malformed file fails here) merged with the
+// default tools pipelock-agent can execute. It fails unless at least one entry
+// is runnable. Preflight and the write step share it, so a host the write step
+// would refuse is refused before any step mutates it.
+func plannedToolsList(env *installEnv) (toolsListPlan, error) {
+	defaults := resolvableDefaultToolEntries(env)
+	existing, err := readToolsList(env)
+	existed := true
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return noAgentToolsError(env)
+		if !errors.Is(err, os.ErrNotExist) {
+			return toolsListPlan{}, fmt.Errorf("read tools.list: %w", err)
 		}
-		return fmt.Errorf("read tools.list: %w", err)
+		existed = false
 	}
-	if len(entries) == 0 {
-		return noAgentToolsError(env)
+	plan := toolsListPlan{entries: defaults, changed: true}
+	if existed {
+		plan.entries, plan.changed = mergeDefaultToolEntries(existing, defaults)
 	}
-	return nil
+	for _, e := range plan.entries {
+		if toolsListEntryRunnable(env, e) {
+			return plan, nil
+		}
+	}
+	return toolsListPlan{}, noAgentToolsError(env)
+}
+
+// agentToolsPrereq is the preflight form of plannedToolsList.
+func agentToolsPrereq(env *installEnv) error {
+	_, err := plannedToolsList(env)
+	return err
+}
+
+// toolsListEntryRunnable reports whether plk-launch could start the entry: a
+// pinned target must be an executable regular file, and an unpinned name must
+// resolve in pipelock-agent PATH.
+func toolsListEntryRunnable(env *installEnv, e toolsListEntry) bool {
+	if e.target == "" {
+		_, ok := resolveToolInAgentPath(env, e.name)
+		return ok
+	}
+	info, err := env.stat(e.target)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 func noAgentToolsError(env *installEnv) error {
-	return fmt.Errorf("no agent tools found: none of %s is executable in pipelock-agent PATH (%s) and %s lists no tools; install one into /usr/local/bin and rerun pipelock contain install",
+	return fmt.Errorf("no agent tools found: none of %s is executable in pipelock-agent PATH (%s) and %s lists no runnable tool; install one into /usr/local/bin and rerun pipelock contain install",
 		strings.Join(defaultToolNames(), ", "), agentExecPath(env.agentUserName), env.toolsListPath)
 }
 
@@ -903,14 +915,17 @@ func resolveToolInAgentPath(env *installEnv, name string) (string, bool) {
 }
 
 func mergeDefaultToolEntries(existing, defaults []toolsListEntry) ([]toolsListEntry, bool) {
-	defaultNames := make(map[string]bool, len(defaultToolWrappers))
-	for _, name := range defaultToolNames() {
-		defaultNames[name] = true
+	// A resolved default replaces an existing entry of the same name. An
+	// existing default-named entry with no resolved replacement (for example a
+	// pinned target outside the agent PATH) is kept rather than dropped.
+	replaced := make(map[string]bool, len(defaults))
+	for _, d := range defaults {
+		replaced[d.name] = true
 	}
 	merged := make([]toolsListEntry, 0, len(existing)+len(defaults))
 	merged = append(merged, defaults...)
 	for _, e := range existing {
-		if defaultNames[e.name] {
+		if replaced[e.name] {
 			continue
 		}
 		merged = append(merged, e)

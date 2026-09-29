@@ -1159,6 +1159,56 @@ func TestAgentCanExecuteJudgesAsPipelockAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("dot, trailing slash and dot-dot after a file are not runnable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		if !agentCanExecute(env, tool) {
+			t.Fatal("positive control: the plain target is runnable")
+		}
+		// The kernel refuses each of these with ENOTDIR; a lexical clean would
+		// have turned every one back into the runnable file.
+		for _, p := range []string{tool + "/.", tool + "/", tool + "/./", tool + "/../" + filepath.Base(tool)} {
+			if agentCanExecute(env, p) {
+				t.Errorf("%q must not count as runnable", p)
+			}
+		}
+	})
+
+	t.Run("symlink whose target ends in a dot component is not runnable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		link := filepath.Join(t.TempDir(), "tool-link")
+		if err := os.Symlink(tool+"/.", link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if agentCanExecute(env, link) {
+			t.Fatal("a link to file/. must not count as runnable")
+		}
+	})
+
+	t.Run("dot-dot resolves after the symlink, not lexically", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		realDir := filepath.Dir(tool)
+		sub := filepath.Join(realDir, "sub")
+		if err := os.Mkdir(sub, 0o750); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		linkDir := t.TempDir()
+		link := filepath.Join(linkDir, "link")
+		if err := os.Symlink(sub, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		// link/.. is the physical parent of sub (where the tool lives); read as
+		// text it would be linkDir, which holds no tool.
+		if !agentCanExecute(env, link+"/../"+filepath.Base(tool)) {
+			t.Fatal("link/../tool must resolve through the link's target")
+		}
+		if agentCanExecute(env, filepath.Join(linkDir, filepath.Base(tool))) {
+			t.Fatal("control: the tool is not in the link's own directory")
+		}
+	})
+
 	t.Run("symlink loop", func(t *testing.T) {
 		env := preflightReadyEnv(t)
 		dir := t.TempDir()

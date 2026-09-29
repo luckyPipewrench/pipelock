@@ -930,12 +930,14 @@ func (id agentIdentity) permits(info os.FileInfo, bit os.FileMode) bool {
 // ancestor directory grants it search, and path is a regular file granting it
 // execute. A stat failure anywhere reports false.
 func agentCanExecute(env *installEnv, path string) bool {
-	clean := filepath.Clean(path)
-	if !filepath.IsAbs(clean) {
+	// The raw path is walked, not a filepath.Clean copy: Clean drops a
+	// trailing "/." or "/" and folds "link/.." lexically, while the kernel
+	// requires a directory there and resolves ".." after the link.
+	if !filepath.IsAbs(path) {
 		return false
 	}
 	id := lookupAgentIdentity(env)
-	final, ok := agentWalkPath(env, id, clean)
+	final, ok := agentWalkPath(env, id, path)
 	if !ok {
 		return false
 	}
@@ -957,16 +959,20 @@ func agentWalkPath(env *installEnv, id agentIdentity, p string) (string, bool) {
 	for len(pending) > 0 {
 		name := pending[0]
 		pending = pending[1:]
+		// Every component, including "", "." and "..", is looked up in cur, so
+		// cur must be a directory id can search. An empty component comes from
+		// a trailing or doubled slash; the kernel refuses "file/", "file/." and
+		// "file/.." with ENOTDIR, and so must this walk.
+		dirInfo, err := env.stat(cur)
+		if err != nil || !dirInfo.IsDir() || !id.permits(dirInfo, 0o1) {
+			return "", false
+		}
 		switch name {
 		case "", ".":
 			continue
 		case "..":
 			cur = filepath.Dir(cur)
 			continue
-		}
-		dirInfo, err := env.stat(cur)
-		if err != nil || !dirInfo.IsDir() || !id.permits(dirInfo, 0o1) {
-			return "", false
 		}
 		next := filepath.Join(cur, name)
 		linkInfo, err := env.lstat(next)

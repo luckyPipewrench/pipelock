@@ -58,6 +58,9 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "pub name with plus suffix", path: "/home/user/.ssh/id_rsa.pub+old", wantMatch: true},
 		{name: "pub name with at suffix", path: "/home/user/.ssh/id_rsa.pub@host", wantMatch: true},
 		{name: "pub name with colon suffix", path: "/home/user/.ssh/id_rsa.pub:1", wantMatch: true},
+		{name: "pub name with comma suffix", path: "/home/user/.ssh/id_rsa.pub,backup", wantMatch: true},
+		{name: "pub name with semicolon suffix", path: "/home/user/.ssh/id_rsa.pub;old", wantMatch: true},
+		{name: "pub name with paren suffix", path: "/home/user/.ssh/id_rsa.pub)", wantMatch: true},
 		{name: "trailing dot", path: "/home/user/.ssh/id_rsa.", wantMatch: true},
 		{name: "truncated extension", path: "/home/user/.ssh/id_rsa.pu", wantMatch: true},
 		{name: "glob over every key", path: "/home/user/.ssh/id_*", wantMatch: true},
@@ -115,9 +118,8 @@ func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
 		{"command": "cat ~/.ssh/id_ed25519.pub"},
 		{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"},
 		{"command": "gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop"},
-		{"command": "cat ~/.ssh/id_ed25519.pub; echo done"},
 		{"command": "wc -c < ~/.ssh/id_ed25519.pub"},
-		{"command": "echo \"$(cat ~/.ssh/id_ed25519.pub)\""},
+		{"command": `cat "$HOME/.ssh/id_ed25519.pub"`},
 	}
 	for _, args := range allowed {
 		if credentialRuleMatches(t, pc, "bash", args) {
@@ -129,6 +131,7 @@ func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
 		args map[string]any
 	}{
 		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub | tee /tmp/key"}},
+		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub; echo done"}},
 		{tool: "copy_file", args: map[string]any{"source": "/home/user/.ssh/id_ed25519.pub", "destination": "/tmp/key"}},
 		{tool: testReadTool, args: map[string]any{"path": "/home/user/.ssh/id_ed25519.pub", "note": "a/b"}},
 	}

@@ -53,6 +53,11 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "public spelled out", path: "/home/user/.ssh/id_rsa.public", wantMatch: true},
 		{name: "backup of a pub name", path: "/home/user/.ssh/id_rsa.pub.bak", wantMatch: true},
 		{name: "pub name with suffix", path: "/home/user/.ssh/id_rsa.pub-old", wantMatch: true},
+		{name: "editor backup of a pub name", path: "/home/user/.ssh/id_rsa.pub~", wantMatch: true},
+		{name: "pub name with hash suffix", path: "/home/user/.ssh/id_rsa.pub#1", wantMatch: true},
+		{name: "pub name with plus suffix", path: "/home/user/.ssh/id_rsa.pub+old", wantMatch: true},
+		{name: "pub name with at suffix", path: "/home/user/.ssh/id_rsa.pub@host", wantMatch: true},
+		{name: "pub name with colon suffix", path: "/home/user/.ssh/id_rsa.pub:1", wantMatch: true},
 		{name: "trailing dot", path: "/home/user/.ssh/id_rsa.", wantMatch: true},
 		{name: "truncated extension", path: "/home/user/.ssh/id_rsa.pu", wantMatch: true},
 		{name: "glob over every key", path: "/home/user/.ssh/id_*", wantMatch: true},
@@ -110,6 +115,9 @@ func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
 		{"command": "cat ~/.ssh/id_ed25519.pub"},
 		{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"},
 		{"command": "gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop"},
+		{"command": "cat ~/.ssh/id_ed25519.pub; echo done"},
+		{"command": "wc -c < ~/.ssh/id_ed25519.pub"},
+		{"command": "echo \"$(cat ~/.ssh/id_ed25519.pub)\""},
 	}
 	for _, args := range allowed {
 		if credentialRuleMatches(t, pc, "bash", args) {

@@ -1483,10 +1483,12 @@ const (
 	//
 	// An `id_` name whose extension is exactly `.pub` is the public half of a
 	// key pair, which setup and publishing workflows read routinely, so it does
-	// not match. Every other `id_` spelling does: no extension, any other
-	// extension including one that only starts with `.pub` (`.pubx`, `.public`,
-	// `.pub.bak`), and a glob or brace that could expand to the private file,
-	// since a private key saved under such a name is still a private key. A `.pub` name also
+	// not match. The name must END at `.pub`: only the end of the text,
+	// whitespace, a quote, or shell punctuation may follow. Every other `id_`
+	// spelling matches: no extension, any other extension, anything appended to
+	// `.pub` (`.pubx`, `.public`, `.pub.bak`, `.pub~`), and a glob or brace that
+	// could expand to the private file, since a private key saved under such a
+	// name is still a private key. A `.pub` name also
 	// matches when a separator or an escape appears anywhere after it in the
 	// same call, because a writer that cleans path text reads
 	// `id_rsa.pub.bak/../id_rsa` as the private key, and a remote MCP upstream
@@ -1494,7 +1496,7 @@ const (
 	// a public key and any other path blocked, as it was before the exception.
 	// RE2 has no lookahead, so the `.pub` exception is spelled out one
 	// character at a time.
-	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b(?:[a-z0-9_.-]|[\s\S]*[\\/%])))))|authorized)`
+	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b(?:[^\s\x22\x27),;|&<>\]}\x60]|[\s\S]*[\\/%])))))|authorized)`
 	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 )
 

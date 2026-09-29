@@ -260,6 +260,7 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
+		agentIsCurrentUser(t, env)
 		target := runnableFixtureTarget(t)
 		custom := "custom\t" + target + "\n"
 		if err := os.WriteFile(env.toolsListPath, []byte(custom), 0o600); err != nil {
@@ -267,7 +268,7 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		}
 		realStat := env.stat
 		env.stat = func(p string) (os.FileInfo, error) {
-			if p == env.toolsListPath || p == filepath.Dir(env.toolsListPath) || p == target {
+			if p == env.toolsListPath || p == filepath.Dir(env.toolsListPath) || p == target || strings.HasPrefix(target, p+string(filepath.Separator)) || p == "/" {
 				return realStat(p)
 			}
 			return nil, os.ErrNotExist

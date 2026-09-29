@@ -586,7 +586,9 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 				if path != filepath.Join(dir, tool) {
 					continue
 				}
-				if enabledTools[tool] {
+				// A real tool lives in a directory that exists; only the
+				// system dir here, since agentCanExecute stats every ancestor.
+				if enabledTools[tool] && dir == "/usr/local/bin" {
 					return origStat(env.pipelockBinary)
 				}
 				return nil, os.ErrNotExist
@@ -858,6 +860,7 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 		}
 		t.Setenv("PATH", binDir)
 		writeRunnableToolsList(t, env)
+		agentIsCurrentUser(t, env)
 		applied, err := s.apply(context.Background(), env)
 		if err != nil {
 			t.Fatalf("preflight: %v", err)
@@ -898,7 +901,26 @@ func preflightReadyEnv(t *testing.T) *installEnv {
 	}
 	writeRunnableToolsList(t, env)
 	hideDefaultTools(env)
+	agentIsCurrentUser(t, env)
 	return env
+}
+
+// agentIsCurrentUser maps pipelock-agent to the test process's uid and gid, so
+// fixtures under t.TempDir (0700, owned by the test user) are reachable by the
+// agent identity that agentCanExecute judges.
+func agentIsCurrentUser(t *testing.T, env *installEnv) {
+	t.Helper()
+	me, err := user.Current()
+	if err != nil {
+		t.Fatalf("current user: %v", err)
+	}
+	orig := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.agentUserName {
+			return &user.User{Uid: me.Uid, Gid: me.Gid, Username: name, HomeDir: "/home/pipelock-agent"}, nil
+		}
+		return orig(name)
+	}
 }
 
 // runnableFixtureTarget returns a real executable regular file outside the
@@ -1045,6 +1067,49 @@ func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
 		}
 		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
 			t.Fatalf("err: %v", err)
+		}
+	})
+}
+
+func TestAgentCanExecuteJudgesAsPipelockAgent(t *testing.T) {
+	t.Run("owner-only target owned by another uid", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == target {
+				return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, target) {
+			t.Fatal("a 0700 target owned by root must not count as runnable by pipelock-agent")
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("preflight: %v", err)
+		}
+	})
+
+	t.Run("directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		orig := env.lookupUser
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == env.agentUserName {
+				return &user.User{Uid: "4000000001", Gid: "4000000001", Username: name}, nil
+			}
+			return orig(name)
+		}
+		if agentCanExecute(env, target) {
+			t.Fatalf("a target under a 0700 directory owned by another user must not be runnable: %s", target)
+		}
+	})
+
+	t.Run("agent not created yet uses other bits", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		env.lookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
+		if !agentCanExecute(env, "/bin/sh") {
+			t.Fatal("/bin/sh is world-executable and must be runnable before the agent exists")
 		}
 	})
 }

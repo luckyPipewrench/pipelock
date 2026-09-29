@@ -860,18 +860,92 @@ func agentToolsPrereq(env *installEnv) error {
 	return err
 }
 
-// toolsListEntryRunnable reports whether plk-launch could start the entry: a
-// pinned target must be an executable regular file, and an unpinned name must
-// resolve in pipelock-agent PATH. Like resolveToolInAgentPath it checks the
-// execute bit, not pipelock-agent's own permission or parent-directory
-// traversal; a target only another user can run passes here and fails at launch.
+// toolsListEntryRunnable reports whether plk-launch could start the entry as
+// pipelock-agent: a pinned target, or the path an unpinned name resolves to in
+// pipelock-agent PATH, must be a regular file pipelock-agent can execute and
+// reach through directories it can search.
 func toolsListEntryRunnable(env *installEnv, e toolsListEntry) bool {
-	if e.target == "" {
-		_, ok := resolveToolInAgentPath(env, e.name)
-		return ok
+	target := e.target
+	if target == "" {
+		resolved, ok := resolveToolInAgentPath(env, e.name)
+		if !ok {
+			return false
+		}
+		target = resolved
 	}
-	info, err := env.stat(e.target)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	return agentCanExecute(env, target)
+}
+
+// agentIdentity is the uid and group set execute permission is judged against.
+// known is false before install creates pipelock-agent; a new system user owns
+// no existing file and belongs to no existing group, so only "other" bits apply.
+type agentIdentity struct {
+	known  bool
+	uid    uint32
+	groups map[uint32]bool
+}
+
+func lookupAgentIdentity(env *installEnv) agentIdentity {
+	if env.lookupUser == nil {
+		return agentIdentity{}
+	}
+	u, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return agentIdentity{}
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return agentIdentity{}
+	}
+	id := agentIdentity{known: true, uid: uint32(uid), groups: map[uint32]bool{}}
+	if gid, err := strconv.ParseUint(u.Gid, 10, 32); err == nil {
+		id.groups[uint32(gid)] = true
+	}
+	if gids, err := u.GroupIds(); err == nil {
+		for _, g := range gids {
+			if gid, err := strconv.ParseUint(g, 10, 32); err == nil {
+				id.groups[uint32(gid)] = true
+			}
+		}
+	}
+	return id
+}
+
+// permits reports whether id holds the permission bit (0o1 execute/search)
+// that mode grants to owner, group or other, as the kernel picks one class.
+func (id agentIdentity) permits(info os.FileInfo, bit os.FileMode) bool {
+	perm := info.Mode().Perm()
+	if id.known {
+		if uid, ok := fileOwnerUID(info); ok && uid == id.uid {
+			return perm&(bit<<6) != 0
+		}
+		if gid, ok := fileOwnerGID(info); ok && id.groups[gid] {
+			return perm&(bit<<3) != 0
+		}
+	}
+	return perm&bit != 0
+}
+
+// agentCanExecute reports whether pipelock-agent can execute path: every
+// ancestor directory grants it search, and path is a regular file granting it
+// execute. A stat failure anywhere reports false.
+func agentCanExecute(env *installEnv, path string) bool {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return false
+	}
+	id := lookupAgentIdentity(env)
+	for dir := filepath.Dir(clean); ; dir = filepath.Dir(dir) {
+		info, err := env.stat(dir)
+		if err != nil || !info.IsDir() || !id.permits(info, 0o1) {
+			return false
+		}
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	info, err := env.stat(clean)
+	return err == nil && info.Mode().IsRegular() && id.permits(info, 0o1)
 }
 
 func noAgentToolsError(env *installEnv) error {

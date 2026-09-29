@@ -26,7 +26,7 @@ mcp_tool_policy:
       action: block
     - name: "Credential File Access"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
-      arg_pattern: '(?i)(\.ssh/(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b(?:\S|[\s\S]*[\\/%])))))|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
+      arg_pattern: '(?i)(\.ssh[\\/]?(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b(?:\S|[\s\S]*[\\/%])))))|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow)'
       action: block
     - name: "Reverse Shell"
       tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'

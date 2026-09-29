@@ -195,8 +195,8 @@ func TestPresetCredentialRulesCarryDefault(t *testing.T) {
 			t.Errorf("%s: no %q rule", filepath.Base(preset), testKeyReadRule)
 		}
 	}
-	// The examples keep their slash-only spelling of the other locations but
-	// must carry the same key-name exception.
+	// The examples load independently of the presets and must carry the same
+	// built-in pattern, including both path separators.
 	for _, example := range []string{
 		filepath.Join("..", "..", "..", "examples", "cursor-integration", "pipelock.yaml"),
 		filepath.Join("..", "..", "..", "examples", "quickstart", "pipelock.yaml"),
@@ -209,8 +209,8 @@ func TestPresetCredentialRulesCarryDefault(t *testing.T) {
 		for _, rule := range cfg.MCPToolPolicy.Rules {
 			if rule.Name == testKeyReadRule {
 				found = true
-				if !strings.Contains(rule.ArgPattern, sshKeyNamePattern) {
-					t.Errorf("%s: %q arg_pattern does not carry the built-in key-name pattern", example, rule.Name)
+				if !strings.Contains(rule.ArgPattern, sensitiveFilePathPattern) {
+					t.Errorf("%s: %q arg_pattern does not carry the built-in credential pattern", example, rule.Name)
 				}
 			}
 		}

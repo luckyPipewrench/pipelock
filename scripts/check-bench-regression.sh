@@ -11,8 +11,10 @@ BENCH_BASELINE="${BENCH_BASELINE:-bench/scanner-baseline.txt}"
 BENCH_REGRESSION_THRESHOLD_PCT="${BENCH_REGRESSION_THRESHOLD_PCT:-50}"
 BENCH_COUNT="${BENCH_COUNT:-6}"
 BENCH_TIME="${BENCH_TIME:-100ms}"
-BENCH_PATTERN="${BENCH_PATTERN:-.}"
-BENCH_PACKAGES="${BENCH_PACKAGES:-./internal/scanner/ ./internal/mcp/}"
+DEFAULT_BENCH_PATTERN="."
+BENCH_PATTERN="${BENCH_PATTERN:-$DEFAULT_BENCH_PATTERN}"
+DEFAULT_BENCH_PACKAGES="./internal/scanner/ ./internal/mcp/"
+BENCH_PACKAGES="${BENCH_PACKAGES:-$DEFAULT_BENCH_PACKAGES}"
 BENCHSTAT_ALPHA="${BENCHSTAT_ALPHA:-1.0}"
 
 export TMPDIR="${TMPDIR:-$HOME/.cache/pipelock-tmp}"
@@ -102,8 +104,9 @@ summary="$(mktemp "$TMPDIR/pipelock-benchstat.XXXXXX")"
 failures="$(mktemp "$TMPDIR/pipelock-bench-failures.XXXXXX")"
 benchstat_warnings="$(mktemp "$TMPDIR/pipelock-benchstat-warnings.XXXXXX")"
 baseline_normalized="$(mktemp "$TMPDIR/pipelock-bench-baseline-normalized.XXXXXX")"
+missing="$(mktemp "$TMPDIR/pipelock-bench-missing.XXXXXX")"
 current_normalized="$(mktemp "$TMPDIR/pipelock-bench-current-normalized.XXXXXX")"
-trap 'rm -f "$current" "$summary" "$failures" "$benchstat_warnings" "$baseline_normalized" "$current_normalized"' EXIT
+trap 'rm -f "$current" "$summary" "$failures" "$benchstat_warnings" "$baseline_normalized" "$current_normalized" "$missing"' EXIT
 
 printf 'bench-regression: baseline=%s threshold=+%s%% count=%s benchtime=%s\n' "$BENCH_BASELINE" "$threshold" "$BENCH_COUNT" "$BENCH_TIME"
 printf 'bench-regression: running:'
@@ -140,45 +143,8 @@ fi
 # is treated as a hard failure, never as a clean run. `|| awk_status=$?` captures
 # the code without disabling errexit globally.
 awk_status=0
-awk -v threshold="$threshold" '
-	function benchmark_name(raw) {
-		# Go appends the effective GOMAXPROCS (for example -4 or -16) to
-		# benchmark names. It is run metadata, not benchmark identity.
-		sub(/-[0-9]+$/, "", raw)
-		return raw
-	}
-	function nsop(   i, v) {
-		for (i = 1; i <= NF; i++) {
-			if ($i == "ns/op") {
-				return $(i - 1) + 0
-			}
-		}
-		return -1
-	}
-	FNR == NR {
-		if ($1 ~ /^Benchmark/) {
-			name = benchmark_name($1)
-			v = nsop()
-			if (v >= 0 && (!(name in base) || v < base[name])) base[name] = v
-		}
-		next
-	}
-	$1 ~ /^Benchmark/ {
-		name = benchmark_name($1)
-		v = nsop()
-		if (v >= 0 && (!(name in cur) || v < cur[name])) cur[name] = v
-	}
-	END {
-		for (name in cur) {
-			if (name in base && base[name] > 0) {
-				seen = 1
-				pct = (cur[name] / base[name] - 1) * 100
-				if (pct > threshold + 0) printf "%s +%.2f%%\n", name, pct
-			}
-		}
-		if (!seen) exit 3
-	}
-' "$BENCH_BASELINE" "$current" >"$failures" || awk_status=$?
+awk -v threshold="$threshold" -v missing="$missing" -f "$ROOT_DIR/scripts/bench-compare.awk" \
+	"$BENCH_BASELINE" "$current" >"$failures" || awk_status=$?
 
 case "$awk_status" in
 	0) ;;
@@ -192,6 +158,19 @@ case "$awk_status" in
 		exit 2
 		;;
 esac
+
+# A narrowed BENCH_PATTERN or BENCH_PACKAGES deliberately runs a subset, so
+# missing baseline names are expected there. On the default full run they mean a
+# benchmark was deleted or renamed and its coverage silently dropped.
+if [[ -s "$missing" ]]; then
+	if [[ "$BENCH_PATTERN" == "$DEFAULT_BENCH_PATTERN" && "$BENCH_PACKAGES" == "$DEFAULT_BENCH_PACKAGES" ]]; then
+		echo "bench-regression: baseline benchmarks missing from the current run:" >&2
+		sort "$missing" >&2
+		echo "bench-regression: if the removal or rename is intended, regenerate with: make bench-baseline" >&2
+		exit 1
+	fi
+	echo "bench-regression: $(wc -l <"$missing" | tr -d ' ') baseline benchmark(s) not in this narrowed run; not compared." >&2
+fi
 
 if [[ -s "$failures" ]]; then
 	echo "bench-regression: detected ns/op regressions above +${threshold}%:" >&2

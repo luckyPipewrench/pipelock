@@ -98,6 +98,9 @@ fn expect_field(expect: &str, key: &str) -> Option<String> {
     value.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
+/// Corpus categories driven by `corpus_conformance` (all but the `svid` arm).
+const ENVELOPE_CATEGORIES: [&str; 5] = ["golden", "malicious", "edge", "chain", "killsuite"];
+
 /// The flagship test: drive the built binary over the entire corpus and assert,
 /// for every fixture, that the verifier matches the committed expectation.
 #[test]
@@ -105,7 +108,7 @@ fn corpus_conformance() {
     let root = corpus_dir();
     assert!(root.exists(), "corpus dir missing at {}", root.display());
     let mut checked = 0;
-    for category in ["golden", "malicious", "edge", "chain"] {
+    for category in ENVELOPE_CATEGORIES {
         let dir = root.join(category);
         for entry in fs::read_dir(&dir).expect("read category dir") {
             let path = entry.expect("dir entry").path();
@@ -128,7 +131,14 @@ fn corpus_conformance() {
             };
             assert!(fixture.exists(), "missing fixture {}", fixture.display());
 
-            let result = run_aarp(&fixture, is_chain);
+            // killsuite fixtures may carry an SVID sidecar; the cross-language
+            // gate passes --svid whenever one exists.
+            let svid = dir.join(format!("{base}.svid.json"));
+            let result = if !is_chain && svid.exists() {
+                run_aarp_svid(&fixture, &svid)
+            } else {
+                run_aarp(&fixture, is_chain)
+            };
             checked += 1;
 
             if verdict == "fatal" {
@@ -153,8 +163,32 @@ fn corpus_conformance() {
         }
     }
     assert!(
-        checked >= 31,
-        "expected at least 31 fixtures, got {checked}"
+        checked >= 54,
+        "expected at least 54 fixtures, got {checked}"
+    );
+}
+
+/// Every corpus category directory must be driven by a test here: the envelope
+/// categories by `corpus_conformance`, `svid` by `corpus_conformance_svid`. A new
+/// category added to the corpus without being wired in fails this test.
+#[test]
+fn categories_match_corpus() {
+    let mut present: Vec<String> = fs::read_dir(corpus_dir())
+        .expect("read corpus dir")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.is_dir())
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    present.sort();
+    let mut wired: Vec<String> = ENVELOPE_CATEGORIES
+        .iter()
+        .chain(["svid"].iter())
+        .map(|s| s.to_string())
+        .collect();
+    wired.sort();
+    assert_eq!(
+        present, wired,
+        "corpus categories differ from wired categories"
     );
 }
 

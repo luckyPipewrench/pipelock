@@ -6,7 +6,7 @@
 // committed <name>.appraisal.json (trimmed) and exit 0; fatal fixtures exit
 // non-zero. This is the per-language arm of the four-language gate.
 
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { comparableAppraisal } from "../src/aarp/appraise.js";
@@ -50,6 +50,27 @@ function appraiseOne(text: string): { fatal: boolean; bytes?: string } {
   }
 }
 
+// appraiseOneWithSVID mirrors the CLI single-envelope + --svid path.
+function appraiseOneWithSVID(
+  text: string,
+  sidecarPath: string,
+): { fatal: boolean; bytes?: string } {
+  let env: Envelope;
+  try {
+    env = unmarshal(text);
+  } catch {
+    return { fatal: true };
+  }
+  try {
+    const opts = loadTrustFile(trustPath);
+    const svid = loadSVIDFile(sidecarPath);
+    const ap = appraiseWithSVID(env, svid.evidence, opts, svid.opts);
+    return { fatal: false, bytes: comparableAppraisal(ap) };
+  } catch {
+    return { fatal: true };
+  }
+}
+
 // appraiseChain mirrors the CLI --chain path. A fatal parse of any line, or a
 // stream that does not link, is the fatal/non-zero outcome.
 function appraiseChain(text: string): { fatal: boolean; bytes?: string } {
@@ -71,7 +92,19 @@ function appraiseChain(text: string): { fatal: boolean; bytes?: string } {
   return { fatal: false, bytes };
 }
 
-for (const category of ["golden", "malicious", "edge", "chain"]) {
+// Corpus categories driven by the main loop; svid has its own arm below.
+const envelopeCategories = ["golden", "malicious", "edge", "chain", "killsuite"];
+
+// A corpus category not wired into this file would be silently skipped.
+test("corpus categories match wired categories", () => {
+  const present = readdirSync(corpus, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  assert.deepEqual(present, [...envelopeCategories, "svid"].sort());
+});
+
+for (const category of envelopeCategories) {
   const dir = `${corpus}/${category}`;
   const expectFiles = readdirSync(dir).filter((f) => f.endsWith(".expect.json"));
   for (const expectFile of expectFiles) {
@@ -80,9 +113,18 @@ for (const category of ["golden", "malicious", "edge", "chain"]) {
     const isChain = expect.input_format === "chain";
     const fixturePath = `${dir}/${base}${isChain ? ".aarp.jsonl" : ".aarp.json"}`;
 
+    // killsuite fixtures may carry an SVID sidecar; the cross-language gate
+    // passes --svid whenever one exists.
+    const sidecarPath = `${dir}/${base}.svid.json`;
+    const hasSidecar = !isChain && existsSync(sidecarPath);
+
     test(`corpus ${category}/${base} (${expect.verdict})`, () => {
       const text = readFileSync(fixturePath, "utf8");
-      const result = isChain ? appraiseChain(text) : appraiseOne(text);
+      const result = isChain
+        ? appraiseChain(text)
+        : hasSidecar
+          ? appraiseOneWithSVID(text, sidecarPath)
+          : appraiseOne(text);
       if (expect.verdict === "fatal") {
         assert.equal(result.fatal, true, `${base} should be fatal`);
         return;

@@ -25,9 +25,14 @@ import pytest
 from pipelock_aarp_verify.cli import main
 
 
+# Every corpus category directory. test_categories_match_corpus fails when a new
+# category is added to the corpus without being wired in here.
+_CATEGORIES = ("golden", "malicious", "edge", "chain", "killsuite", "svid")
+
+
 def _iter_expect_files(corpus_dir: Path) -> list[Path]:
     out: list[Path] = []
-    for category in ("golden", "malicious", "edge", "chain", "svid"):
+    for category in _CATEGORIES:
         out.extend(sorted((corpus_dir / category).glob("*.expect.json")))
     return out
 
@@ -70,7 +75,9 @@ def test_corpus_fixture(base: str, expfile: Path, meta: dict, trust_path: Path) 
     if informat == "chain":
         fixture = corpus_dir / f"{base}.aarp.jsonl"
         args = ["aarp", str(fixture), "--trust", str(trust_path), "--chain", "--json"]
-    elif category == "svid":
+    elif category == "svid" or (corpus_dir / f"{base}.svid.json").is_file():
+        # svid fixtures always carry a sidecar; other categories (killsuite) may.
+        # The cross-language gate passes --svid whenever the sidecar exists.
         fixture = corpus_dir / f"{base}.aarp.json"
         sidecar = corpus_dir / f"{base}.svid.json"
         assert sidecar.is_file(), f"missing svid sidecar {sidecar}"
@@ -99,13 +106,21 @@ def test_corpus_fixture(base: str, expfile: Path, meta: dict, trust_path: Path) 
             f"{base}: comparable output does not match committed appraisal\n"
             f"  got:  {out.strip()!r}\n  want: {want.strip()!r}"
         )
-    assert category in {"golden", "malicious", "edge", "chain", "svid"}
+    assert category in _CATEGORIES
 
 
 def test_corpus_is_nonempty() -> None:
     # Guard against a silently-empty corpus path producing a vacuous pass. The
-    # corpus is 35 envelope fixtures (golden/malicious/edge/chain) plus 21 svid
-    # (s01-s21), so 56 total.
-    assert len(_PARAMS) >= 56, (
+    # corpus is 35 envelope fixtures (golden/malicious/edge/chain), 23 killsuite
+    # and 21 svid (s01-s21), so 79 total.
+    assert len(_PARAMS) >= 79, (
         f"expected the full corpus, found {len(_PARAMS)} fixtures"
+    )
+
+
+def test_categories_match_corpus() -> None:
+    # A corpus category this runner does not list would be silently skipped.
+    present = {p.name for p in _CORPUS.iterdir() if p.is_dir()}
+    assert present == set(_CATEGORIES), (
+        f"corpus categories {sorted(present)} != runner categories {sorted(_CATEGORIES)}"
     )

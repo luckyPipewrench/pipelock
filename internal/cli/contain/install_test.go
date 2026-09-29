@@ -1049,6 +1049,54 @@ func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
 	})
 }
 
+func TestStepPreflightChecksFirstEntryPerName(t *testing.T) {
+	env := preflightReadyEnv(t)
+	good := runnableFixtureTarget(t)
+	broken := filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(broken, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write broken target: %v", err)
+	}
+	list := "custom\t" + broken + "\ncustom\t" + good + "\n"
+	if err := os.WriteFile(env.toolsListPath, []byte(list), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+		t.Fatalf("plk-launch uses the first matching line, so a broken first entry must be refused: err=%v", err)
+	}
+}
+
+func TestStepWriteToolsListRepairsModeWhenContentUnchanged(t *testing.T) {
+	env := preflightReadyEnv(t)
+	plan, err := plannedToolsList(env)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if err := os.WriteFile(env.toolsListPath, []byte(renderToolsList(plan.entries)), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	if err := os.Chmod(env.toolsListPath, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if again, err := plannedToolsList(env); err != nil || again.changed {
+		t.Fatalf("fixture must have unchanged content: changed=%v err=%v", again.changed, err)
+	}
+	applied, err := stepWriteToolsList().apply(context.Background(), env)
+	if err != nil || !applied {
+		t.Fatalf("a root-only tools.list must be rewritten: applied=%v err=%v", applied, err)
+	}
+	info, err := os.Stat(env.toolsListPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != modeAllowListReadable {
+		t.Fatalf("tools.list mode = %v, want %v", info.Mode().Perm(), modeAllowListReadable)
+	}
+	applied, err = stepWriteToolsList().apply(context.Background(), env)
+	if err != nil || applied {
+		t.Fatalf("a correct tools.list must be left alone: applied=%v err=%v", applied, err)
+	}
+}
+
 func TestMergeDefaultToolEntriesKeepsUnresolvedPinnedDefault(t *testing.T) {
 	existing := []toolsListEntry{{name: "claude", target: "/opt/agent/bin/claude"}, {name: "custom", target: "/opt/agent/bin/custom"}}
 	merged, changed := mergeDefaultToolEntries(existing, nil)

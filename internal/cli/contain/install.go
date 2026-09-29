@@ -791,9 +791,11 @@ func stepWriteToolsList() step {
 			if err != nil {
 				return false, err
 			}
-			if !plan.changed {
+			if !plan.changed && toolsListModeCurrent(env) {
 				return false, nil
 			}
+			// Content or mode differs: rewrite through the backed-up writer so
+			// pipelock-agent can read the list and rollback restores the old file.
 			if err := writeToolsList(env, plan.entries); err != nil {
 				return false, err
 			}
@@ -829,12 +831,27 @@ func plannedToolsList(env *installEnv) (toolsListPlan, error) {
 	if existed {
 		plan.entries, plan.changed = mergeDefaultToolEntries(existing, defaults)
 	}
+	// plk-launch uses the first line whose name matches, so only the first
+	// entry for each name decides whether that tool can launch.
+	seen := make(map[string]bool, len(plan.entries))
 	for _, e := range plan.entries {
+		if seen[e.name] {
+			continue
+		}
+		seen[e.name] = true
 		if toolsListEntryRunnable(env, e) {
 			return plan, nil
 		}
 	}
 	return toolsListPlan{}, noAgentToolsError(env)
+}
+
+// toolsListModeCurrent reports whether an existing tools.list already has the
+// managed pipelock-agent-readable mode. Any stat failure reports false, so the
+// write step rewrites the file rather than trusting it.
+func toolsListModeCurrent(env *installEnv) bool {
+	info, err := env.stat(env.toolsListPath)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm() == modeAllowListReadable
 }
 
 // agentToolsPrereq is the preflight form of plannedToolsList.

@@ -260,10 +260,7 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		target := filepath.Join(t.TempDir(), "custom")
-		if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture: tools.list targets must be runnable
-			t.Fatalf("write target: %v", err)
-		}
+		target := runnableFixtureTarget(t)
 		custom := "custom\t" + target + "\n"
 		if err := os.WriteFile(env.toolsListPath, []byte(custom), 0o600); err != nil {
 			t.Fatalf("write tools.list: %v", err)

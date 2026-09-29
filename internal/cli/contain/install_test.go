@@ -901,14 +901,38 @@ func preflightReadyEnv(t *testing.T) *installEnv {
 	return env
 }
 
+// runnableFixtureTarget returns a real executable regular file outside the
+// agent PATH: a copy of the running test binary in a fresh temp dir, so a test
+// can chmod it without touching the binary itself.
+func runnableFixtureTarget(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("test binary: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(self))
+	if err != nil {
+		t.Fatalf("read test binary: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatalf("write tool target: %v", err)
+	}
+	info, err := os.Stat(filepath.Clean(self))
+	if err != nil {
+		t.Fatalf("stat test binary: %v", err)
+	}
+	if err := os.Chmod(target, info.Mode().Perm()); err != nil {
+		t.Fatalf("chmod tool target: %v", err)
+	}
+	return target
+}
+
 // writeRunnableToolsList writes a tools.list whose only entry pins a real
 // executable outside the agent PATH, and returns that target.
 func writeRunnableToolsList(t *testing.T, env *installEnv) string {
 	t.Helper()
-	target := filepath.Join(t.TempDir(), "custom")
-	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture: tools.list targets must be runnable
-		t.Fatalf("write tool target: %v", err)
-	}
+	target := runnableFixtureTarget(t)
 	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 		t.Fatalf("mkdir tools.list parent: %v", err)
 	}

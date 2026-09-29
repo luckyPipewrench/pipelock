@@ -1419,13 +1419,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: receiptSessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
-					if opts.beforeDeferredSendClaim != nil {
-						opts.beforeDeferredSendClaim()
-					}
-					if opts.KillSwitch == nil {
-						return func() {}, true
-					}
-					return opts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
+					return deferredReleasePrecheck(opts, deferredGeneration)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := false
@@ -1437,7 +1431,29 @@ func ForwardScannedInput(
 							authorityDenied = true
 						}
 					}
+					if res.ResolutionSource == deferred.SourceKillSwitch {
+						markDeferredKillSwitch(&res)
+					}
+					// Irreversible release boundary. Take the writer lock
+					// first so no wait for another write sits between the
+					// kill-switch claim and this write; see
+					// claimDeferredRelease for the ordering argument.
+					releaseSink := func() {}
+					if res.FinalDecision == config.ActionAllow {
+						forwardMu.Lock()
+						release, ok := claimDeferredRelease(opts, deferredGeneration)
+						if ok {
+							releaseSink = func() {
+								release()
+								forwardMu.Unlock()
+							}
+						} else {
+							forwardMu.Unlock()
+							markDeferredKillSwitch(&res)
+						}
+					}
 					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
+						releaseSink()
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
 								ID:           heldID,
@@ -1452,15 +1468,30 @@ func ForwardScannedInput(
 						if isTrackableRequest(heldLine, heldID) {
 							tracker.TrackRequest(heldID, heldAuthorityFrame.Method)
 						}
-						if err := forwardMessage(heldLine); err != nil {
+						// forwardMu is already held by the release claim.
+						err := writer.WriteMessage(heldLine)
+						releaseSink()
+						if err != nil {
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}
 						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldBaselineIdentity)
 					default:
+						if res.ResolutionSource == deferred.SourceKillSwitch {
+							_, _ = fmt.Fprintf(logW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
+						}
 						if !heldNotification {
 							if authorityDenied {
 								blockedCh <- *authorityBlockedRequest(heldAuthorityFrame)
+								return
+							}
+							if res.ResolutionSource == deferred.SourceKillSwitch {
+								blockedCh <- BlockedRequest{
+									ID:           heldID,
+									LogMessage:   fmt.Sprintf("pipelock: deferred call %s kill switch denied", res.DeferID),
+									ErrorCode:    -32004,
+									ErrorMessage: deferredKillSwitchMessage(opts),
+								}
 								return
 							}
 							blockedCh <- BlockedRequest{

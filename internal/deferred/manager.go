@@ -50,6 +50,10 @@ const (
 	DefaultMaxCascadeDepth        = DefaultMaxPendingSession
 )
 
+// SourceUpstreamContract records a deferred release that the live upstream
+// contract gate denied at the irreversible send boundary.
+const SourceUpstreamContract = "upstream_contract"
+
 // Config controls held-action bounds and timers.
 type Config struct {
 	Enabled              bool

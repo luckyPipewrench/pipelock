@@ -845,7 +845,9 @@ func agentToolsPrereq(env *installEnv) error {
 
 // toolsListEntryRunnable reports whether plk-launch could start the entry: a
 // pinned target must be an executable regular file, and an unpinned name must
-// resolve in pipelock-agent PATH.
+// resolve in pipelock-agent PATH. Like resolveToolInAgentPath it checks the
+// execute bit, not pipelock-agent's own permission or parent-directory
+// traversal; a target only another user can run passes here and fails at launch.
 func toolsListEntryRunnable(env *installEnv, e toolsListEntry) bool {
 	if e.target == "" {
 		_, ok := resolveToolInAgentPath(env, e.name)

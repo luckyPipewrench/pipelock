@@ -1500,23 +1500,16 @@ const (
 	//
 	// An `id_` name whose extension is exactly `.pub` is the public half of a
 	// key pair, which setup and publishing workflows read routinely, so it does
-	// not match. The name must END at `.pub`: only the end of the text or
-	// whitespace may follow (shell quotes are stripped before matching). Every
-	// other `id_` spelling matches: no extension, any other extension, anything
-	// appended to `.pub` (`.pubx`, `.pub.bak`, `.pub~`, `.pub,old`), and a glob
-	// or brace that could expand to the private file, since a private key saved
-	// under such a name is still a private key. Arguments are split on
-	// whitespace before matching, so a file whose name continues with a space
-	// after `.pub` is not distinguishable from two arguments; kernel file access
-	// controls remain the boundary for that. A `.pub` name also
-	// matches when a separator or an escape appears anywhere after it in the
-	// same call, because a writer that cleans path text reads
-	// `id_rsa.pub.bak/../id_rsa` as the private key, and a remote MCP upstream
-	// gets no local path resolution to catch it. That keeps a call that names
-	// a public key and any other path blocked, as it was before the exception.
-	// RE2 has no lookahead, so the `.pub` exception is spelled out one
-	// character at a time.
-	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b(?:\S|[\s\S]*[\\/%])))))|authorized)`
+	// not match when NOTHING follows `.pub`: not a character, not whitespace,
+	// not another argument. That is the shape a file read tool sends, one
+	// argument holding the whole path. Any filename byte can follow `.pub` and
+	// arguments are split on whitespace and paired before matching, so the end
+	// of the match text is the only boundary that cannot be a longer name, a
+	// traversal (`id_rsa.pub/../id_rsa`) or a second path. Command text always
+	// has more after the name once split, so shell reads of any key stay
+	// matched, as they were before the exception. RE2 has no lookahead, so the
+	// `.pub` exception is spelled out one character at a time.
+	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)`
 	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 )
 

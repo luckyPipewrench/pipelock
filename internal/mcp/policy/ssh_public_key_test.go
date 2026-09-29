@@ -63,6 +63,8 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "pub name with comma suffix", path: "/home/user/.ssh/id_rsa.pub,backup", wantMatch: true},
 		{name: "pub name with semicolon suffix", path: "/home/user/.ssh/id_rsa.pub;old", wantMatch: true},
 		{name: "pub name with paren suffix", path: "/home/user/.ssh/id_rsa.pub)", wantMatch: true},
+		{name: "pub name with space suffix", path: "/home/user/.ssh/id_rsa.pub copy", wantMatch: true},
+		{name: "pub name with tab suffix", path: "/home/user/.ssh/id_rsa.pub\tcopy", wantMatch: true},
 		{name: "apostrophe inside the extension", path: "/home/user/.ssh/id_rsa.p'ub", wantMatch: true},
 		{name: "double quote inside the extension", path: `/home/user/.ssh/id_rsa.pu"b`, wantMatch: true},
 		{name: "trailing dot", path: "/home/user/.ssh/id_rsa.", wantMatch: true},
@@ -88,10 +90,12 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 				t.Fatalf("read_file(%q) credential match = %v, want %v", tc.path, got, tc.wantMatch)
 			}
 		})
+		// Command text always has something after the key name once split
+		// into arguments, so a shell read of any key stays matched.
 		t.Run("bash/"+tc.name, func(t *testing.T) {
 			command := "cat " + tc.path
-			if got := credentialRuleMatches(t, pc, "bash", map[string]any{"command": command}); got != tc.wantMatch {
-				t.Fatalf("bash(%q) credential match = %v, want %v", command, got, tc.wantMatch)
+			if !credentialRuleMatches(t, pc, "bash", map[string]any{"command": command}) {
+				t.Fatalf("bash(%q) was not matched as credential access", command)
 			}
 		})
 	}
@@ -113,26 +117,28 @@ func TestDefaultToolPolicyRules_SSHPublicKeyDoesNotMaskPrivateKey(t *testing.T) 
 	}
 }
 
-// The exception covers a call that names only public keys. Any separator after
-// a `.pub` name in the same call, even in another argument, keeps the call
-// matched, because the rule cannot tell a second path from a traversal.
+// The exception covers a call whose whole argument is the public key path, as
+// a file read tool sends it. Anything after the `.pub` name in the call, even
+// whitespace or another argument, keeps it matched, because the rule cannot
+// tell a second argument from a longer file name. Shell commands therefore
+// stay matched, as they were before the exception.
 func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
 	pc := defaultConfig(t)
-	allowed := []map[string]any{
-		{"command": "cat ~/.ssh/id_ed25519.pub"},
-		{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"},
-		{"command": "gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop"},
-		{"command": "wc -c < ~/.ssh/id_ed25519.pub"},
-	}
-	for _, args := range allowed {
-		if credentialRuleMatches(t, pc, "bash", args) {
-			t.Errorf("bash(%v) matched credential access", args)
+	for _, path := range []string{
+		"/home/user/.ssh/id_ed25519.pub",
+		"~/.ssh/id_ed25519.pub",
+		`C:\Users\v\.ssh\id_ed25519.pub`,
+	} {
+		if credentialRuleMatches(t, pc, testReadTool, map[string]any{"path": path}) {
+			t.Errorf("read_file(%q) matched credential access", path)
 		}
 	}
 	matched := []struct {
 		tool string
 		args map[string]any
 	}{
+		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub"}},
+		{tool: "bash", args: map[string]any{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"}},
 		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub | tee /tmp/key"}},
 		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub; echo done"}},
 		{tool: "copy_file", args: map[string]any{"source": "/home/user/.ssh/id_ed25519.pub", "destination": "/tmp/key"}},

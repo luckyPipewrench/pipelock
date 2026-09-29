@@ -56,6 +56,11 @@ func TestDefaultToolPolicyRules_SSHPublicKeyReads(t *testing.T) {
 		{name: "dot dot after public key", path: "/home/user/.ssh/id_rsa.pub/../id_rsa", wantMatch: true},
 		{name: "windows dot dot after public key", path: `C:\Users\v\.ssh\id_rsa.pub\..\id_rsa`, wantMatch: true},
 		{name: "escaped separator after public key", path: "/home/user/.ssh/id_rsa.pub%2f..%2fid_rsa", wantMatch: true},
+		{name: "dot dot after public key backup", path: "/home/user/.ssh/id_rsa.pub.bak/../id_rsa", wantMatch: true},
+		{name: "dot dot after longer extension", path: "/home/user/.ssh/id_rsa.pubx/../id_rsa", wantMatch: true},
+		{name: "dot dot after public key and a space", path: "/home/user/.ssh/id_rsa.pub /../id_rsa", wantMatch: true},
+		{name: "windows dot dot after trailing dot", path: `C:\Users\v\.ssh\id_rsa.pub.\..\id_rsa`, wantMatch: true},
+		{name: "windows dot dot two levels", path: `C:\Users\v\.ssh\id_rsa.pub\a\..\..\id_rsa`, wantMatch: true},
 		{name: "authorized keys", path: "/home/user/.ssh/authorized_keys", wantMatch: true},
 	}
 	for _, tc := range tests {
@@ -80,9 +85,41 @@ func TestDefaultToolPolicyRules_SSHPublicKeyDoesNotMaskPrivateKey(t *testing.T) 
 		"cat ~/.ssh/id_rsa.pub ~/.ssh/id_rsa",
 		"cat ~/.ssh/id_rsa.pub; cat ~/.ssh/id_rsa",
 		"cp ~/.ssh/id_ed25519.pub ~/.ssh/id_ed25519 /tmp/",
+		`f=~/.ssh/id_rsa.pub; cat "${f%.pub}"`,
+		"cat $(echo ~/.ssh/id_rsa.pub | sed s/.pub//)",
 	} {
 		if !credentialRuleMatches(t, pc, "bash", map[string]any{"command": command}) {
 			t.Errorf("bash(%q) was not matched as credential access", command)
+		}
+	}
+}
+
+// The exception covers a call that names only public keys. Any separator after
+// a `.pub` name in the same call, even in another argument, keeps the call
+// matched, because the rule cannot tell a second path from a traversal.
+func TestDefaultToolPolicyRules_SSHPublicKeyExceptionIsNarrow(t *testing.T) {
+	pc := defaultConfig(t)
+	allowed := []map[string]any{
+		{"command": "cat ~/.ssh/id_ed25519.pub"},
+		{"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"},
+		{"command": "gh ssh-key add ~/.ssh/id_ed25519.pub --title laptop"},
+	}
+	for _, args := range allowed {
+		if credentialRuleMatches(t, pc, "bash", args) {
+			t.Errorf("bash(%v) matched credential access", args)
+		}
+	}
+	matched := []struct {
+		tool string
+		args map[string]any
+	}{
+		{tool: "bash", args: map[string]any{"command": "cat ~/.ssh/id_ed25519.pub | tee /tmp/key"}},
+		{tool: "copy_file", args: map[string]any{"source": "/home/user/.ssh/id_ed25519.pub", "destination": "/tmp/key"}},
+		{tool: testReadTool, args: map[string]any{"path": "/home/user/.ssh/id_ed25519.pub", "note": "a/b"}},
+	}
+	for _, tc := range matched {
+		if !credentialRuleMatches(t, pc, tc.tool, tc.args) {
+			t.Errorf("%s(%v) was not matched as credential access", tc.tool, tc.args)
 		}
 	}
 }
@@ -135,6 +172,29 @@ func TestPresetCredentialRulesCarryDefault(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s: no %q rule", filepath.Base(preset), testKeyReadRule)
+		}
+	}
+	// The examples keep their slash-only spelling of the other locations but
+	// must carry the same key-name exception.
+	for _, example := range []string{
+		filepath.Join("..", "..", "..", "examples", "cursor-integration", "pipelock.yaml"),
+		filepath.Join("..", "..", "..", "examples", "quickstart", "pipelock.yaml"),
+	} {
+		cfg, err := config.Load(example)
+		if err != nil {
+			t.Fatalf("load %s: %v", example, err)
+		}
+		found := false
+		for _, rule := range cfg.MCPToolPolicy.Rules {
+			if rule.Name == testKeyReadRule {
+				found = true
+				if !strings.Contains(rule.ArgPattern, sshKeyNamePattern) {
+					t.Errorf("%s: %q arg_pattern does not carry the built-in key-name pattern", example, rule.Name)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: no %q rule", example, testKeyReadRule)
 		}
 	}
 }

@@ -1483,12 +1483,17 @@ const (
 	//
 	// An `id_` name whose extension is `.pub` is the public half of a key pair,
 	// which setup and publishing workflows read routinely, so it does not match.
-	// Every other `id_` spelling does: no extension, any other extension, a glob
-	// or brace that could expand to the private file, and a `.pub` followed by a
-	// separator or an escape, because a writer that cleans the path text reads
-	// `id_rsa.pub/../id_rsa` as the private key. RE2 has no lookahead, so the
-	// `.pub` exception is spelled out one character at a time.
-	sensitiveFilePathPattern = `\.ssh[\\/]?(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\\/%]))))|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
+	// Every other `id_` spelling does: no extension, any other extension, and a
+	// glob or brace that could expand to the private file. A `.pub` name also
+	// matches when a separator or an escape appears anywhere after it in the
+	// same call, because a writer that cleans path text reads
+	// `id_rsa.pub.bak/../id_rsa` as the private key, and a remote MCP upstream
+	// gets no local path resolution to catch it. That keeps a call that names
+	// a public key and any other path blocked, as it was before the exception.
+	// RE2 has no lookahead, so the `.pub` exception is spelled out one
+	// character at a time.
+	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]*[\\/%]))))|authorized)`
+	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {

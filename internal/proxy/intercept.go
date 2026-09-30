@@ -783,7 +783,7 @@ func newInterceptHandler(
 			}
 		}
 		if ic.Proxy != nil {
-			if err := ic.Proxy.recordCredentialAudienceAllows(actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent); err != nil {
+			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 				writeBlockedError(w,
@@ -1136,7 +1136,7 @@ func newInterceptHandler(
 				},
 				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
-						return ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+						return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
 					}
 					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 					if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
@@ -1444,7 +1444,7 @@ func newInterceptHandler(
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 			}, func(allow scanner.CredentialAudienceAllow) error {
 				if ic.Proxy != nil {
-					return ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+					return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
 				}
 				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 				if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {

@@ -63,6 +63,10 @@ func recordCredentialAudienceAllow(logger *audit.Logger, metric *metrics.Metrics
 // unchanged: the extension records that the DLP match was allowed for the
 // declared audience without becoming a signed authorization claim.
 //
+// cfg is the request's config snapshot, never the live pointer, so a reload
+// mid-request cannot flip require_receipts for an in-flight request. A nil cfg
+// means receipts are not required.
+//
 // Under flight_recorder.require_receipts, the caller MUST treat a non-nil
 // return as a fail-closed signal and block the request before any upstream
 // bytes are sent: this is the durable evidence that a credential was allowed
@@ -70,15 +74,12 @@ func recordCredentialAudienceAllow(logger *audit.Logger, metric *metrics.Metrics
 // way it covers every other allow receipt. With require_receipts off the
 // returned error is always nil; emission stays best-effort (log + metric),
 // matching the historical behavior.
-func (p *Proxy) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
+func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
 	if p == nil {
 		return nil
 	}
 	recordCredentialAudienceAllow(p.logger, p.metrics, ctx, allow)
-	requireReceipts := false
-	if cfg := p.cfgPtr.Load(); cfg != nil {
-		requireReceipts = cfg.FlightRecorder.RequireReceipts
-	}
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})
@@ -139,27 +140,22 @@ func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) error {
 // confirmation failure. It still attempts every allow so the audit log and
 // metrics stay complete even though the request is blocked once any one
 // confirmation fails.
-func (p *Proxy) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
+func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
 	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := p.recordCredentialAudienceAllow(ctx, allow, transport, method, target, requestID, agent); err != nil && firstErr == nil {
+		if err := p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
 	if rp == nil {
 		return nil
 	}
 	recordCredentialAudienceAllow(rp.logger, rp.metrics, ctx, allow)
-	requireReceipts := false
-	if rp.cfgPtr != nil {
-		if cfg := rp.cfgPtr.Load(); cfg != nil {
-			requireReceipts = cfg.FlightRecorder.RequireReceipts
-		}
-	}
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})
@@ -257,10 +253,10 @@ func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts rec
 // recordCredentialAudienceAllows records every distinct allow for the reverse
 // proxy and, when flight_recorder.require_receipts is on, returns the first
 // receipt confirmation failure. See (*Proxy).recordCredentialAudienceAllows.
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
 	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := rp.recordCredentialAudienceAllow(ctx, allow, method, target, requestID, agent); err != nil && firstErr == nil {
+		if err := rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

@@ -160,10 +160,22 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 		r.audienceMu.Unlock()
 		return nil
 	}
-	r.audienceAllows[key] = struct{}{}
 	r.audienceMu.Unlock()
 	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-	return r.proxy.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent)
+	if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent); err != nil {
+		// Do not mark the key seen: a duplicate must retry and fail too
+		// rather than be treated as confirmed.
+		return err
+	}
+	// Mark seen only after the record call confirmed. Concurrent duplicate
+	// emits are acceptable; a false "confirmed" is not.
+	r.audienceMu.Lock()
+	if r.audienceAllows == nil {
+		r.audienceAllows = make(map[string]struct{})
+	}
+	r.audienceAllows[key] = struct{}{}
+	r.audienceMu.Unlock()
+	return nil
 }
 
 // blockOnCredentialAudienceReceiptFailure closes the WebSocket relay in both
@@ -345,7 +357,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.Scan(wsScanCtx, scanURL)
-	if err := p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -1302,7 +1314,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
-			if err := p.recordCredentialAudienceAllow(actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent()); err != nil && receiptErr == nil {
+			if err := p.recordCredentialAudienceAllow(cfg, actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent()); err != nil && receiptErr == nil {
 				receiptErr = err
 			}
 		}

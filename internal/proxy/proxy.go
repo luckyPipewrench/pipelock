@@ -1065,7 +1065,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
 			result := currentScanner.Scan(redirectScanCtx, redirectURL)
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
-			if err := p.recordCredentialAudienceAllows(redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
+			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
 				return blockedErr
@@ -5083,7 +5083,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
-	if err := p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)

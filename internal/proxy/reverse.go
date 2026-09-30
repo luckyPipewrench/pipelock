@@ -890,7 +890,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// sees from the client.
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 		urlResult := sc.Scan(r.Context(), targetURL)
-		if err := rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent); err != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -928,7 +928,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
 		pathDLP.Matches = filteredMatches
-		if err := rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent); err != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1027,7 +1027,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 		}, func(allow scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
 		})
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
@@ -1821,7 +1821,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)

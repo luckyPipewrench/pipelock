@@ -448,8 +448,10 @@ func TestRecordCredentialAudienceAllow_EmitsReceiptWithExtension(t *testing.T) {
 		Surface:     "header",
 		Destination: "api.openai.com",
 	}
-	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, allow, TransportFetch, http.MethodPost,
-		"https://api.openai.com/v1/responses", "credential-audience-allow", "agent-1")
+	if err := p.recordCredentialAudienceAllow(cfg, audit.LogContext{}, allow, TransportFetch, http.MethodPost,
+		"https://api.openai.com/v1/responses", "credential-audience-allow", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllow: %v", err)
+	}
 
 	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
 	if got.ActionRecord.Verdict != config.ActionAllow {
@@ -490,9 +492,11 @@ func TestRecordCredentialAudienceAllows_DeduplicatesBeforeEmitting(t *testing.T)
 		Surface:     "body",
 		Destination: "api.anthropic.com",
 	}
-	_ = p.recordCredentialAudienceAllows(audit.LogContext{},
+	if err := p.recordCredentialAudienceAllows(cfg, audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, other, allow},
-		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1")
+		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllows: %v", err)
+	}
 
 	var audience int
 	for _, r := range rph.findReceipts(t) {
@@ -516,21 +520,36 @@ func TestRecordCredentialAudienceAllow_NoReceiptEmitterIsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{
+	// require_receipts is off in Defaults(): best-effort, so no error.
+	if err := p.recordCredentialAudienceAllow(cfg, audit.LogContext{}, scanner.CredentialAudienceAllow{
 		PatternName: "OpenAI API Key",
 		Surface:     "header",
 		Destination: "api.openai.com",
-	}, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "no-emitter", "agent-1")
+	}, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "no-emitter", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllow with require_receipts off = %v, want nil", err)
+	}
+	// The direct emit path reports the missing emitter.
+	if err := p.emitCredentialAudienceReceipt(receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+		t.Fatalf("emitCredentialAudienceReceipt err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
+	}
 }
 
 // A nil receiver is reachable through the reverse-proxy handler path and must
 // not panic.
 func TestRecordCredentialAudienceAllow_NilReceiversAreInert(t *testing.T) {
 	var p *Proxy
-	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", "")
-	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{})
+	required := config.Defaults()
+	required.FlightRecorder.RequireReceipts = true
+	if err := p.recordCredentialAudienceAllow(required, audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", ""); err != nil {
+		t.Fatalf("nil Proxy recorder = %v, want nil", err)
+	}
+	if err := p.emitCredentialAudienceReceipt(receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+		t.Fatalf("nil Proxy emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
+	}
 	var rp *ReverseProxyHandler
-	_ = rp.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", "")
+	if err := rp.recordCredentialAudienceAllow(required, audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", ""); err != nil {
+		t.Fatalf("nil ReverseProxyHandler recorder = %v, want nil", err)
+	}
 }
 
 // The reverse proxy is a separate carrier of the same audience allow and has
@@ -552,8 +571,10 @@ func TestReverseProxy_RecordCredentialAudienceAllow_EmitsReceipt(t *testing.T) {
 		Surface:     "header",
 		Destination: "api.anthropic.com",
 	}
-	_ = rp.recordCredentialAudienceAllow(audit.LogContext{}, allow, http.MethodPost,
-		"https://api.anthropic.com/v1/messages", "reverse-audience-allow", "agent-1")
+	if err := rp.recordCredentialAudienceAllow(config.Defaults(), audit.LogContext{}, allow, http.MethodPost,
+		"https://api.anthropic.com/v1/messages", "reverse-audience-allow", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllow: %v", err)
+	}
 
 	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
 	if got.ActionRecord.Verdict != config.ActionAllow {
@@ -584,9 +605,11 @@ func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) 
 		Surface:     "header",
 		Destination: "api.anthropic.com",
 	}
-	_ = rp.recordCredentialAudienceAllows(audit.LogContext{},
+	if err := rp.recordCredentialAudienceAllows(config.Defaults(), audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, allow},
-		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1")
+		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllows: %v", err)
+	}
 
 	var audience int
 	for _, r := range rph.findReceipts(t) {
@@ -758,7 +781,9 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t *testing.T) {
 	t.Run("no emitter pointer", func(t *testing.T) {
 		rp := &ReverseProxyHandler{logger: audit.NewNop(), metrics: metrics.New()}
-		_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+		if err := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+			t.Fatalf("emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
+		}
 	})
 	t.Run("emitter pointer holding nil", func(t *testing.T) {
 		var v1Ptr atomic.Pointer[receipt.Emitter]
@@ -767,7 +792,9 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t 
 			metrics:           metrics.New(),
 			receiptEmitterPtr: &v1Ptr,
 		}
-		_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+		if err := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+			t.Fatalf("emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
+		}
 	})
 }
 
@@ -1122,6 +1149,118 @@ func TestReverseProxy_CredentialAudienceAllowAndControl(t *testing.T) {
 	t.Run("outside its audience the credential is blocked", func(t *testing.T) {
 		if got := run(t, "audience.vendor.example"); got == http.StatusOK {
 			t.Fatalf("credential outside its declared audience was allowed: status %d", got)
+		}
+	})
+}
+
+func newRequiredReceiptFailingProxy(t *testing.T) (*Proxy, *config.Config) {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FlightRecorder.RequireReceipts = true
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("close recorder: %v", err)
+	}
+	return p, cfg
+}
+
+// A failed first emit must not mark the key seen: a duplicate must retry and
+// fail too, never be reported as confirmed.
+func TestWSRelayRecordCredentialAudienceAllow_FailedEmitDoesNotDedupe(t *testing.T) {
+	p, cfg := newRequiredReceiptFailingProxy(t)
+	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe", agent: "agent-1"}
+	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
+
+	if err := relay.recordCredentialAudienceAllow(allow); err == nil {
+		t.Fatal("first record with a closed recorder under require_receipts returned nil, want error")
+	}
+	if err := relay.recordCredentialAudienceAllow(allow); err == nil {
+		t.Fatal("duplicate after a failed emit returned nil (false confirmation), want error")
+	}
+}
+
+// A confirmed emit is deduplicated: the duplicate returns nil without a
+// second receipt.
+func TestWSRelayRecordCredentialAudienceAllow_ConfirmedEmitDedupes(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FlightRecorder.RequireReceipts = true
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	rph := newReceiptProxyHelper(t)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	relay := &wsRelay{proxy: p, cfg: cfg, targetURL: "wss://api.openai.com/v1", requestID: "ws-dedupe-ok", agent: "agent-1"}
+	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "websocket_frame", Destination: "api.openai.com"}
+	for i := range 2 {
+		if err := relay.recordCredentialAudienceAllow(allow); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	var audience int
+	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.Layer == credentialAudienceReceiptExtensionKey {
+			audience++
+		}
+	}
+	if audience != 1 {
+		t.Fatalf("emitted %d audience receipts, want 1", audience)
+	}
+}
+
+// Hot-reload snapshot: the request's snapshot decides whether the receipt is
+// required, not the live pointer. The live config here has require_receipts
+// off while the in-flight request's snapshot has it on.
+func TestRecordCredentialAudienceAllow_UsesRequestSnapshotNotLiveConfig(t *testing.T) {
+	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "header", Destination: "api.openai.com"}
+
+	t.Run("proxy", func(t *testing.T) {
+		p, snapshot := newRequiredReceiptFailingProxy(t)
+		live := config.Defaults()
+		live.Internal = nil
+		live.FlightRecorder.RequireReceipts = false
+		p.cfgPtr.Store(live)
+
+		err := p.recordCredentialAudienceAllow(snapshot, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "reload", "agent-1")
+		if err == nil {
+			t.Fatal("snapshot with require_receipts=true did not block on emit failure after live config flipped off")
+		}
+		if err := p.recordCredentialAudienceAllow(live, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "reload", "agent-1"); err != nil {
+			t.Fatalf("snapshot with require_receipts=false returned %v, want nil", err)
+		}
+		if err := p.recordCredentialAudienceAllow(nil, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "reload", "agent-1"); err != nil {
+			t.Fatalf("nil snapshot returned %v, want nil", err)
+		}
+	})
+
+	t.Run("reverse", func(t *testing.T) {
+		rph := newReceiptProxyHelper(t)
+		var emitterPtr atomic.Pointer[receipt.Emitter]
+		emitterPtr.Store(rph.emitter)
+		live := config.Defaults()
+		live.FlightRecorder.RequireReceipts = false
+		var cfgPtr atomic.Pointer[config.Config]
+		cfgPtr.Store(live)
+		rp := &ReverseProxyHandler{logger: audit.NewNop(), metrics: metrics.New(), cfgPtr: &cfgPtr, receiptEmitterPtr: &emitterPtr}
+		if err := rph.rec.Close(); err != nil {
+			t.Fatalf("close recorder: %v", err)
+		}
+		snapshot := config.Defaults()
+		snapshot.FlightRecorder.RequireReceipts = true
+		if err := rp.recordCredentialAudienceAllow(snapshot, audit.LogContext{}, allow, http.MethodPost, "https://api.openai.com/v1/responses", "reload", "agent-1"); err == nil {
+			t.Fatal("reverse snapshot with require_receipts=true did not block on emit failure after live config flipped off")
+		}
+		if err := rp.recordCredentialAudienceAllow(live, audit.LogContext{}, allow, http.MethodPost, "https://api.openai.com/v1/responses", "reload", "agent-1"); err != nil {
+			t.Fatalf("reverse snapshot with require_receipts=false returned %v, want nil", err)
 		}
 	})
 }

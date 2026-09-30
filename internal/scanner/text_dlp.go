@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"html"
@@ -322,6 +323,8 @@ type TextDLPMatch struct {
 	// means a whole-value match. It lives in its own field so PatternName stays
 	// stable for suppression rules and core-pattern checks that match by name.
 	PartialLen                          int `json:"partial_len,omitempty"`
+	valueIdentity                       [32]byte
+	hasValueIdentity                    bool
 	span                                MatchSpan
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
@@ -337,6 +340,14 @@ func (m TextDLPMatch) credentialAudienceCarrierRestricted() bool {
 // view named by MatchSpan.ViewLabel. It never includes matched bytes.
 func (m TextDLPMatch) Span() MatchSpan {
 	return m.span
+}
+
+// ValueIdentity returns an in-memory fingerprint of the located normalized
+// value, when available. It lets consumers join repeated scan views without
+// retaining credentials or confusing equal offsets in different strings.
+// The fingerprint is not serialized and must not be emitted as evidence.
+func (m TextDLPMatch) ValueIdentity() ([32]byte, bool) {
+	return m.valueIdentity, m.hasValueIdentity
 }
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
@@ -580,6 +591,8 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				valueIdentity:                       sha256.Sum256([]byte(cleaned[start:end])),
+				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -749,6 +762,8 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
+				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
@@ -781,6 +796,8 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
+				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
 			})
 		}

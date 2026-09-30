@@ -790,6 +790,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	allowEmbeddedSigV4 := matchBodySigV4CredentialRoute(req, time.Now().UTC())
+	// One dropped finding can be seen by the pre-redaction pass, the
+	// post-redaction pass, and both the plain and provider-opaque text sets.
+	// Record it once per request so the dropped-match metric and dlp_warn
+	// evidence count findings, not scan passes.
+	onDropped := onceBodyDLPDrops(req.OnDroppedDLP)
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
 		extracted := extractBodyTextForDLP(buf, req)
@@ -801,8 +806,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)...)
+			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 		}
 	}
 
@@ -884,8 +889,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)
-	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)...)
+	matches := scanBodyTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
+	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
@@ -1407,13 +1412,39 @@ type droppedBodyDLPMatch struct {
 	reason string
 }
 
+func bodyDLPDropKey(m scanner.TextDLPMatch) string {
+	if identity, ok := m.ValueIdentity(); ok {
+		return m.PatternName + "\x00" + string(identity[:])
+	}
+	// Matches without a located value retain their existing representation key.
+	return bodyDLPMatchKey(m)
+}
+
+// onceBodyDLPDrops wraps a dropped-match callback so each distinct dropped
+// finding reaches it once, however many scan passes report it. The key matches
+// recordUniqueBodyDLPDrops, which collapses repeats within a single pass.
+func onceBodyDLPDrops(onDropped func(scanner.TextDLPMatch, string)) func(scanner.TextDLPMatch, string) {
+	if onDropped == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	return func(m scanner.TextDLPMatch, reason string) {
+		key := bodyDLPDropKey(m) + "\x00" + m.Bundle + "\x00" + m.BundleVersion + "\x00" + reason
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		onDropped(m, reason)
+	}
+}
+
 func recordUniqueBodyDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(scanner.TextDLPMatch, string)) {
 	if onDropped == nil {
 		return
 	}
 	seen := make(map[string]struct{}, len(dropped))
 	for _, drop := range dropped {
-		key := bodyDLPMatchKey(drop.match) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
+		key := bodyDLPDropKey(drop.match) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
 		if _, ok := seen[key]; ok {
 			continue
 		}

@@ -64,6 +64,14 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 		{"fragment carriage", githubReleaseAssetsBase + "?x=1#" + jwt, false},
 		{"host carriage", "https://" + jwt + ".evil.example/a?x=1", false},
 		{"host carriage under the audience host", "https://" + jwt + "." + githubReleaseAssetsHost + "/a?x=1", false},
+		{"cyrillic homoglyph host", "https://r\u0435lease-assets.githubusercontent.com/a?jwt=" + jwt, false},
+		{"punycode homoglyph host", "https://xn--rlease-assets-yxj.githubusercontent.com/a?jwt=" + jwt, false},
+		{"ipv4 literal", "https://192.0.2.10/a?jwt=" + jwt, false},
+		{"ipv6 literal", "https://[2001:db8::1]/a?jwt=" + jwt, false},
+		{"backslash authority trick", "https://evil.example\\@" + githubReleaseAssetsHost + "/a?jwt=" + jwt, false},
+		{"percent-encoded dot host", "https://release-assets%2Egithubusercontent.com/a?jwt=" + jwt, false},
+		{"lookalike with trailing dot", "https://" + githubReleaseAssetsHost + ".evil.example./a?jwt=" + jwt, false},
+		{"second credential beside the grant", githubReleaseAssetsBase + "?jwt=" + jwt + "&k=" + "AKIA" + "IOSFODNN7" + "EXAMPLE", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

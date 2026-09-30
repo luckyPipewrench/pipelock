@@ -123,15 +123,25 @@ func TestAWSAccessID_JoinedRealKeysStillBlock(t *testing.T) {
 	}
 }
 
-// TestAWSAccessID_JoinedKnownNarrowing pins the one accepted narrowing: a
-// lowercase or uppercase key that is split by whitespace AND glued to a
-// preceding letter of the same case is treated as a word, like "canvas".
-func TestAWSAccessID_JoinedKnownNarrowing(t *testing.T) {
+// Credential prefixes remain detectable even when a preceding letter is glued
+// to a whitespace-split key. Resource-ID prose boundaries must not hide keys.
+func TestAWSAccessID_JoinedCredentialWordBoundary(t *testing.T) {
 	t.Parallel()
 	s := MustNew(testConfig())
-	text := "x" + awsJoinedSpaced(strings.ToLower("AKIA"+awsJoinedTail), 4)
-	if r := s.ScanTextForDLP(context.Background(), text); !r.Clean {
-		t.Fatalf("documented narrowing changed; update the docs and report: %+v", r.Matches)
+	for _, prefix := range []string{"AKIA", "ASIA"} {
+		for _, lower := range []bool{false, true} {
+			key, leading := prefix+awsJoinedTail, "X"
+			if lower {
+				key, leading = strings.ToLower(key), "x"
+			}
+			text := leading + awsJoinedSpaced(key, 4)
+			if r := s.ScanTextForDLP(context.Background(), text); r.Clean {
+				t.Errorf("%s lower=%v: glued split credential must be detected", prefix, lower)
+			}
+			if matches := s.scanCoreDLP(text); len(matches) == 0 {
+				t.Errorf("%s lower=%v: core floor must detect glued split credential", prefix, lower)
+			}
+		}
 	}
 }
 
@@ -197,5 +207,23 @@ func TestJoinedViewNonAWSPatternUnchanged(t *testing.T) {
 	key := testAnthropicPrefix + strings.Repeat("A", 20)
 	if r := s.ScanTextForDLP(context.Background(), awsJoinedSpaced(key, 5)); r.Clean {
 		t.Fatal("spaced non-AWS key must still be detected in the joined view")
+	}
+}
+
+// Normalization and whitespace joining share the same credential boundary rule.
+func TestAWSAccessID_JoinedSeparatorBoundaries(t *testing.T) {
+	t.Parallel()
+	s := MustNew(testConfig())
+	key := "AKIA" + awsJoinedTail
+	for _, separator := range []string{" ", "\t", "\n", "\u00a0", "\u2060", "\ufeff", "\u0301", "\u200b"} {
+		for _, group := range []int{2, 3, 5} {
+			text := strings.ReplaceAll(awsJoinedSpaced(key, group), " ", separator)
+			if r := s.ScanTextForDLP(context.Background(), text); r.Clean {
+				t.Errorf("separator %q group %d: credential must be detected", separator, group)
+			}
+			if matches := s.scanCoreDLP(text); len(matches) == 0 {
+				t.Errorf("separator %q group %d: core floor must detect credential", separator, group)
+			}
+		}
 	}
 }

@@ -86,7 +86,8 @@ const awsIDTailMin = 16
 //     keeps its case, mixed-case words do not),
 //   - is uppercase, or is lowercase behind AKIA/ASIA (the existing rule that
 //     lowercase IAM resource prefixes are prose), and
-//   - does not start in the middle of a same-case word in source. A prefix
+//   - for IAM resource IDs, does not start in the middle of a same-case word
+//     in source. Credential prefixes AKIA/ASIA remain detectable mid-word. A prefix
 //     preceded by punctuation, whitespace, a digit, or a letter of the other
 //     case still counts, so "key=AKIA IOSF..." and "xAKIA IOSF..." stay caught.
 //
@@ -106,7 +107,8 @@ func validateAWSAccessIDJoined(joined string, start, end int, source string, off
 			if i+n > end || !strings.EqualFold(joined[i:i+len(prefix)], prefix) {
 				continue
 			}
-			if awsJoinedWindowAllowed(joined[i:i+n], prefix) && awsJoinedStartAllowed(source, offsets[i], joined[i]) {
+			if awsJoinedWindowAllowed(joined[i:i+n], prefix) &&
+				(prefix == "AKIA" || prefix == "ASIA" || awsJoinedStartAllowed(source, offsets[i], joined[i])) {
 				return true
 			}
 		}

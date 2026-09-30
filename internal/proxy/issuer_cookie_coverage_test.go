@@ -39,7 +39,7 @@ func TestRecordIssuerCookieAllow_NameTruncationAndInvalidTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("n", issuerCookieMaxLoggedName+10)
-	p.recordIssuerCookieAllow(ctx, "AWS Access ID", long, "https://app.vendor.example/x", "req-1", "agent-one", http.MethodGet)
+	_ = p.recordIssuerCookieAllow(nil, ctx, "AWS Access ID", long, "https://app.vendor.example/x", "req-1", "agent-one", http.MethodGet)
 	raw, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestRecordIssuerCookieAllow_NameTruncationAndInvalidTarget(t *testing.T) {
 		"http://app.vendor.example/x", // wrong scheme
 		"https:///x",                  // empty hostname
 	} {
-		p.recordIssuerCookieAllow(ctx, "AWS Access ID", "cookie", target, "req-1", "agent-one", http.MethodGet)
+		_ = p.recordIssuerCookieAllow(nil, ctx, "AWS Access ID", "cookie", target, "req-1", "agent-one", http.MethodGet)
 	}
 	logger.Close()
 	raw, err = os.ReadFile(filepath.Clean(auditPath))

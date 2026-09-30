@@ -601,7 +601,7 @@ func TestIssuerCookieAllowanceRedactsCredentialShapedName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.recordIssuerCookieAllow(ctx, allowances[0].Patterns[0], allowances[0].Name, issuer.String(), "req-1", "agent-one", http.MethodGet)
+	_ = p.recordIssuerCookieAllow(nil, ctx, allowances[0].Patterns[0], allowances[0].Name, issuer.String(), "req-1", "agent-one", http.MethodGet)
 	logger.Close()
 	raw, err := os.ReadFile(filepath.Clean(auditPath))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -489,13 +490,24 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	}
 }
 
-func (p *Proxy) recordIssuerQueryAllow(ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind) {
+// recordIssuerQueryAllow records an issuer-query allow. cfg is the request's
+// config snapshot; under require_receipts every path that cannot durably
+// record the allow returns an error the caller must treat as fail-closed.
+// With require_receipts off it always returns nil (best-effort).
+func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind) error {
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	fail := func(err error) error {
+		if requireReceipts {
+			return err
+		}
+		return nil
+	}
 	if p == nil {
-		return
+		return fail(errCredentialAudienceReceiptEmitterUnavailable)
 	}
 	parsed, err := url.Parse(target)
 	if err != nil {
-		return
+		return fail(fmt.Errorf("issuer query allow target: %w", err))
 	}
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
@@ -505,13 +517,14 @@ func (p *Proxy) recordIssuerQueryAllow(ctx audit.LogContext, target, requestID, 
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
 	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
-	// Issuer-query allows stay best-effort in this change. Whether they follow
-	// flight_recorder.require_receipts like credential-audience allows is a
-	// separate decision, not settled here.
-	_ = p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
+	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
 		Transport: "intercept", Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
 	})
+	if emitErr != nil {
+		return fail(emitErr)
+	}
+	return nil
 }

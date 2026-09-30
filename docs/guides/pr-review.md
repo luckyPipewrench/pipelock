@@ -95,7 +95,7 @@ when intentionally overriding the reviewed defaults:
 | Variable | Default | Used By |
 |----------|---------|---------|
 | `PR_REVIEW_MODEL_FAST` | `gpt-6-luna` | `/review` |
-| `PR_REVIEW_MODEL_DEEP` | `gpt-6-sol` | `/review deep` and candidate judging |
+| `PR_REVIEW_MODEL_DEEP` | `gpt-6.1-sol` | `/review deep` and candidate judging |
 
 The defaults live in `.github/actions/pr-review/pr_review.py`; the composite
 action passes optional repository variables through without maintaining another
@@ -111,7 +111,7 @@ Override the model via repository variables:
 
 ```text
 PR_REVIEW_MODEL_FAST=gpt-6-luna
-PR_REVIEW_MODEL_DEEP=gpt-6-sol
+PR_REVIEW_MODEL_DEEP=gpt-6.1-sol
 ```
 
 Values must name models available through the direct OpenAI API.

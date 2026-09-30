@@ -29,7 +29,7 @@ import requests
 
 
 DEFAULT_MODEL_FAST = "gpt-6-luna"
-DEFAULT_MODEL_DEEP = "gpt-6-sol"
+DEFAULT_MODEL_DEEP = "gpt-6.1-sol"
 # Discovery recall bounds the entire review: the judge can only keep or drop a
 # candidate, never add one, so anything this phase misses is invisible and the
 # run still publishes as clean. That is the fail-open direction, which is why

@@ -22,7 +22,7 @@ Detection applies these normalization passes in order:
 
 A match at any pass triggers a `blocked` event with severity `critical` and pattern name `Canary Token (<name>)`.
 
-Canary matching looks for the whole value after normalization. For a canary of 16+ bytes with entropy above 3.0, a contiguous piece of 16 bytes or more of it also matches, and the finding records `partial_len`. A 16-byte stem shared by two canaries is ignored as a common stem. URL-shaped canaries are matched in part only on their credential-bearing parts.
+Canary matching looks for the whole value after normalization. For a canary of 16+ bytes with entropy above 3.0, a contiguous piece of 16 bytes or more of it also matches. The text scanner's match object records `partial_len`; the Scan API's `dlp` findings omit this field, even with `include_evidence: true`, and expose only the encoding in `evidence`. The URL block reason names the canary without reporting the partial length. A 16-byte stem shared by two canaries is ignored as a common stem. URL-shaped canaries are matched in part only on their credential-bearing parts.
 
 ## Configuration
 

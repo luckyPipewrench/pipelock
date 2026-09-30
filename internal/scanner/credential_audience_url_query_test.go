@@ -85,7 +85,7 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 				}
 				return
 			}
-			assertCredentialAudienceAllow(t, result, jwtPatternName, "url", githubReleaseAssetsHost)
+			assertCredentialAudienceAllow(t, result, jwtPatternName, githubReleaseAssetsHost)
 			blob, err := marshalAllows(result.CredentialAudienceAllows)
 			if err != nil || strings.Contains(blob, jwt[:20]) {
 				t.Fatalf("allow record carries credential bytes: %s (err %v)", blob, err)
@@ -117,7 +117,7 @@ func TestScan_GitHubReleaseGrantJWT_RealRedirectShapeDefaultEntropy(t *testing.T
 	if !result.Allowed {
 		t.Fatalf("release redirect blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
 	}
-	assertCredentialAudienceAllow(t, result, jwtPatternName, "url", githubReleaseAssetsHost)
+	assertCredentialAudienceAllow(t, result, jwtPatternName, githubReleaseAssetsHost)
 
 	other := s.Scan(context.Background(), strings.Replace(target, githubReleaseAssetsHost, "api.vendor.example", 1))
 	if other.Allowed {

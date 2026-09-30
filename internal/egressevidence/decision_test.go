@@ -40,6 +40,13 @@ func decisionOutcomeFixture() Decision {
 	return d
 }
 
+func redactedDecisionFixture() Decision {
+	d := decisionFixture()
+	d.DestinationRef = ""
+	d.DestinationRedaction = &DestinationRedaction{Reason: DestinationClassifiedSensitive}
+	return d
+}
+
 func marshalDecisionFixture(t *testing.T, d Decision) []byte {
 	t.Helper()
 	raw, err := json.Marshal(d)
@@ -216,6 +223,146 @@ func TestDecisionDestinationCarrierMatrix(t *testing.T) {
 				t.Errorf("parse transport=%s kind=%s valid=%t: %v", transport, kind, wantValid, err)
 			}
 		}
+	}
+}
+
+func TestDecisionRedactedDestinations(t *testing.T) {
+	t.Parallel()
+	for _, transport := range []Transport{
+		TransportFetch, TransportForward, TransportConnect,
+		TransportIntercept, TransportReverse, TransportWebSocket, TransportMCPStdio,
+		TransportMCPHTTPUpstream, TransportMCPHTTPListener, TransportMCPWS,
+	} {
+		for _, kind := range []DestinationKind{DestinationNetwork, DestinationLocalProcess} {
+			d := redactedDecisionFixture()
+			d.Transport, d.DestinationKind = transport, kind
+			if transport == TransportConnect {
+				d.Boundary = BoundaryTunnel
+			}
+			wantValid := (transport == TransportMCPStdio) == (kind == DestinationLocalProcess)
+			if err := d.Validate(); (err == nil) != wantValid {
+				t.Errorf("redacted transport=%s kind=%s valid=%t: %v", transport, kind, wantValid, err)
+			}
+			raw := marshalDecisionFixture(t, d)
+			if strings.Contains(string(raw), `"destination_ref"`) {
+				t.Fatal("redacted destination serialized an empty or placeholder reference")
+			}
+			if _, err := ParseDecision(raw); (err == nil) != wantValid {
+				t.Errorf("parse redacted transport=%s kind=%s valid=%t: %v", transport, kind, wantValid, err)
+			}
+		}
+	}
+	retained := marshalDecisionFixture(t, decisionFixture())
+	if strings.Contains(string(retained), `"destination_redaction"`) || !strings.Contains(string(retained), `"destination_ref":"api.vendor.example"`) {
+		t.Fatal("retained reference wire form changed")
+	}
+}
+
+func TestDecisionRedactionPairingAndIdentity(t *testing.T) {
+	t.Parallel()
+	intent := redactedDecisionFixture()
+	outcome := intent
+	outcome.Phase = PhaseOutcome
+	outcome.Outcome = &Outcome{Release: ReleaseComplete, ByteForm: ByteFormOriginal}
+	parsed, err := ParseDecision(marshalDecisionFixture(t, outcome))
+	if err != nil {
+		t.Fatalf("parse redacted outcome: %v", err)
+	}
+	if parsed.DestinationRedaction == intent.DestinationRedaction {
+		t.Fatal("round trip unexpectedly retained redaction pointer identity")
+	}
+	if err := parsed.ValidateOutcomeOf(intent); err != nil {
+		t.Fatalf("redaction facts must pair by value: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Decision)
+	}{
+		{"action_id", func(d *Decision) { d.ActionID = decisionTestOtherID }},
+		{"decision_id", func(d *Decision) { d.DecisionID = decisionTestOtherID }},
+		{"retained_ref", func(d *Decision) { d.DestinationRef, d.DestinationRedaction = decisionTestHost, nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := parsed
+			tc.mutate(&changed)
+			if err := changed.Validate(); err != nil {
+				t.Fatalf("changed decision must be independently valid: %v", err)
+			}
+			if err := changed.ValidateOutcomeOf(intent); err == nil {
+				t.Fatal("omitted destination collapsed distinct identity or changed redaction facts")
+			}
+		})
+	}
+	if err := parsed.ValidateOutcomeOf(decisionFixture()); err == nil {
+		t.Fatal("paired redacted outcome with retained-reference intent")
+	}
+	for _, tc := range []struct {
+		left, right *DestinationRedaction
+		equal       bool
+	}{
+		{nil, nil, true},
+		{intent.DestinationRedaction, nil, false},
+		{nil, intent.DestinationRedaction, false},
+		{intent.DestinationRedaction, &DestinationRedaction{Reason: DestinationClassifiedSensitive}, true},
+		{intent.DestinationRedaction, &DestinationRedaction{Reason: "unknown"}, false},
+	} {
+		if got := sameDestinationRedaction(tc.left, tc.right); got != tc.equal {
+			t.Errorf("redaction value equality=%t, want %t", got, tc.equal)
+		}
+	}
+}
+
+func TestDecisionInvalidRedactionFacts(t *testing.T) {
+	t.Parallel()
+	for _, mutate := range []func(*Decision){
+		func(d *Decision) { d.DestinationRef = decisionTestHost },
+		func(d *Decision) { d.DestinationRedaction = nil },
+		func(d *Decision) { d.DestinationRedaction = &DestinationRedaction{} },
+		func(d *Decision) { d.DestinationRedaction = &DestinationRedaction{Reason: "unknown"} },
+		func(d *Decision) { d.DestinationKind = "unknown" },
+	} {
+		d := redactedDecisionFixture()
+		mutate(&d)
+		if err := d.Validate(); err == nil {
+			t.Fatal("validated invalid destination sum type")
+		}
+		if _, err := ParseDecision(marshalDecisionFixture(t, d)); err == nil {
+			t.Fatal("parsed invalid destination sum type")
+		}
+	}
+}
+
+func TestParseDecisionStrictDestinationRedaction(t *testing.T) {
+	t.Parallel()
+	redacted := string(marshalDecisionFixture(t, redactedDecisionFixture()))
+	retained := string(marshalDecisionFixture(t, decisionFixture()))
+	const redactionField = `"destination_redaction":{"reason":"classified_sensitive"}`
+	for name, raw := range map[string]string{
+		"both":                strings.Replace(redacted, redactionField, redactionField+`,"destination_ref":"api.vendor.example"`, 1),
+		"both_empty_ref":      strings.Replace(redacted, redactionField, redactionField+`,"destination_ref":""`, 1),
+		"neither":             strings.Replace(redacted, redactionField+`,`, ``, 1),
+		"empty_ref":           strings.Replace(retained, `"destination_ref":"api.vendor.example"`, `"destination_ref":""`, 1),
+		"null_ref":            strings.Replace(retained, `"destination_ref":"api.vendor.example"`, `"destination_ref":null`, 1),
+		"number_ref":          strings.Replace(retained, `"destination_ref":"api.vendor.example"`, `"destination_ref":1`, 1),
+		"null_redaction":      strings.Replace(redacted, redactionField, `"destination_redaction":null`, 1),
+		"array_redaction":     strings.Replace(redacted, redactionField, `"destination_redaction":[]`, 1),
+		"string_redaction":    strings.Replace(redacted, redactionField, `"destination_redaction":"classified_sensitive"`, 1),
+		"missing_reason":      strings.Replace(redacted, redactionField, `"destination_redaction":{}`, 1),
+		"null_reason":         strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":null`, 1),
+		"number_reason":       strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":1`, 1),
+		"unknown_reason":      strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":"unknown"`, 1),
+		"empty_reason":        strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":""`, 1),
+		"unknown_nested":      strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":"classified_sensitive","unknown":true`, 1),
+		"case_top":            strings.Replace(redacted, `"destination_redaction"`, `"Destination_redaction"`, 1),
+		"case_nested":         strings.Replace(redacted, `"reason":"classified_sensitive"`, `"Reason":"classified_sensitive"`, 1),
+		"duplicate_redaction": strings.Replace(redacted, redactionField, redactionField+`,`+redactionField, 1),
+		"duplicate_reason":    strings.Replace(redacted, `"reason":"classified_sensitive"`, `"reason":"classified_sensitive","reason":"classified_sensitive"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseDecision([]byte(raw)); err == nil {
+				t.Fatal("parsed invalid destination redaction shape")
+			}
+		})
 	}
 }
 
@@ -778,7 +925,7 @@ func TestDecisionGoldenFixtures(t *testing.T) {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
-	if manifest.ContractVersion != ContractVersion || manifest.Status != "candidate_model_only" || len(manifest.Fixtures) != 10 {
+	if manifest.ContractVersion != ContractVersion || manifest.Status != "candidate_model_only" || len(manifest.Fixtures) != 33 {
 		t.Fatal("fixture contract metadata changed")
 	}
 	decisions := make(map[string]Decision)
@@ -833,5 +980,15 @@ func TestDecisionGoldenFixtures(t *testing.T) {
 	if builtinAuthorization.PatternClass != PatternCoreFloor || builtinAuthorization.Authorization.Origin != PolicyOriginBuiltin ||
 		builtinAuthorization.Authorization.Ref == "" || builtinAuthorization.PlannedByteForm != ByteFormOriginal {
 		t.Fatal("fixture lost the named built-in core authorization")
+	}
+	networkRedaction := decisions["redacted-network-intent"]
+	localRedaction := decisions["redacted-local-intent"]
+	if networkRedaction.DestinationRef != "" || localRedaction.DestinationRef != "" ||
+		networkRedaction.DestinationRedaction == nil || localRedaction.DestinationRedaction == nil ||
+		networkRedaction.DestinationKind != DestinationNetwork || localRedaction.DestinationKind != DestinationLocalProcess {
+		t.Fatal("fixture lost destination kind or explicit reference redaction")
+	}
+	if networkRedaction.ActionID == localRedaction.ActionID || networkRedaction.DecisionID == localRedaction.DecisionID {
+		t.Fatal("omitted references collapsed independent decision identities")
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -262,11 +261,11 @@ func (v *StreamingVerifier) AddRaw(raw []byte) error {
 	if v.fail != nil {
 		return fmt.Errorf("%s", v.fail.Error)
 	}
-	var r EvidenceReceipt
 	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
 		return v.latch(brokenChain(v.count, "receipt %d duplicate keys: %v", v.count, err))
 	}
-	if err := contract.DecodeStrictJSON(raw, &r); err != nil {
+	r, err := ParseEvidenceReceipt(raw)
+	if err != nil {
 		return v.latch(brokenChain(v.count, "receipt %d decode: %v", v.count, err))
 	}
 	seq := v.count
@@ -419,7 +418,9 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 // ExtractEvidenceReceiptsFromEntries extracts signed receipts from recorder
 // entries that have already passed recorder parsing. It uses RawDetail when
 // present so receipt verification consumes the immutable wire bytes rather
-// than a re-marshaled approximation.
+// than a re-marshaled approximation. The secret-egress kind requires original
+// RawDetail; re-marshaling a parsed map cannot recover its source wire profile.
+// Other kinds retain their legacy typed/programmatic Detail fallback.
 func ExtractEvidenceReceiptsFromEntries(entries []recorder.Entry) ([]EvidenceReceipt, error) {
 	out := make([]EvidenceReceipt, 0)
 	for i, entry := range entries {
@@ -435,6 +436,9 @@ func ExtractEvidenceReceiptsFromEntries(entries []recorder.Entry) ([]EvidenceRec
 			detail, err = json.Marshal(entry.Detail)
 			if err != nil {
 				return nil, fmt.Errorf("parsed recorder entry %d: marshal evidence detail: %w", i+1, err)
+			}
+			if isSecretEgressWire(detail) {
+				return nil, fmt.Errorf("parsed recorder entry %d: secret egress receipt requires original RawDetail", i+1)
 			}
 		}
 		receipt, err := decodeEvidenceReceiptDetail(detail)
@@ -489,11 +493,11 @@ func decodeEvidenceReceiptDetail(detail []byte) (EvidenceReceipt, error) {
 	if len(detail) == 0 || string(bytes.TrimSpace(detail)) == "null" {
 		return EvidenceReceipt{}, errors.New("evidence entry has empty detail")
 	}
-	var receipt EvidenceReceipt
-	if err := contract.DecodeStrictJSON(detail, &receipt); err != nil {
+	r, err := ParseEvidenceReceipt(detail)
+	if err != nil {
 		return EvidenceReceipt{}, fmt.Errorf("decode evidence receipt: %w", err)
 	}
-	return receipt, nil
+	return r, nil
 }
 
 // parseEvidenceName splits an evidence shard filename into its session ID and

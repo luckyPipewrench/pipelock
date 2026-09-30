@@ -23,7 +23,25 @@ from .number import (
     enforce_cross_language_number_range,
     parse_json_strict,
 )
-from .rawjson import SourcedReceipt, ext_source_bytes, recorder_line_ext_bytes
+from .rawjson import (
+    SourcedReceipt,
+    ext_source_bytes,
+    object_member_span,
+    recorder_line_ext_bytes,
+)
+from .secret_egress import (
+    SECRET_EGRESS_PAYLOAD_KIND,
+    SecretEgressError,
+)
+from .secret_egress import (
+    validate_envelope as validate_secret_egress_envelope,
+)
+from .secret_egress import (
+    validate_payload as validate_secret_egress_payload,
+)
+from .secret_egress import (
+    validate_source as validate_secret_egress_source,
+)
 
 V2_RECORD_TYPE = "evidence_receipt_v2"
 SIGNATURE_PREFIX = "ed25519:"
@@ -50,10 +68,12 @@ UNPINNED_RECEIPT_BANNER = (
 )
 
 _PAYLOAD_KINDS = {
+    SECRET_EGRESS_PAYLOAD_KIND,
     "proxy_decision",
     "proxy_decision_with_spans",
 }
 _POLICY_HASH_PAYLOAD_KINDS = {
+    SECRET_EGRESS_PAYLOAD_KIND,
     "proxy_decision",
     "proxy_decision_with_spans",
 }
@@ -366,6 +386,10 @@ def load_receipt(path: str | Path) -> dict[str, Any]:
         raise ReceiptError(f"malformed JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise ReceiptError("receipt must be an object")
+    try:
+        validate_secret_egress_source(value, data)
+    except SecretEgressError as exc:
+        raise ReceiptError(str(exc)) from exc
     return value
 
 
@@ -398,7 +422,12 @@ def verify_receipt_file(
             payload = receipt.get("payload")
             if isinstance(payload, dict):
                 report["verdict"] = payload.get("verdict")
-                report["transport"] = payload.get("transport")
+                if receipt.get("payload_kind") == SECRET_EGRESS_PAYLOAD_KIND:
+                    decision = payload.get("decision")
+                    if isinstance(decision, dict):
+                        report["transport"] = decision.get("transport")
+                else:
+                    report["transport"] = payload.get("transport")
             report["signer_key"] = key_hex
             report["policy_hash"] = receipt.get("policy_hash")
             report["chain_seq"] = receipt.get("chain_seq")
@@ -482,6 +511,18 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
         detail = entry.get("detail")
         if not isinstance(detail, dict):
             raise ReceiptError(f"line {index}: evidence entry has empty detail")
+        detail_span = object_member_span(raw, 0, "detail")
+        assert detail_span is not None  # Parsed detail is already an object.
+        try:
+            validate_secret_egress_source(detail, raw, detail_span[0])
+        except SecretEgressError as exc:
+            raise ReceiptError(f"line {index}: {exc}") from exc
+        # The recorder wrapper and signed receipt must select the same schema.
+        # Validate before splitting so inner dispatch cannot reinterpret a row.
+        if (entry_type == EVIDENCE_ENTRY_TYPE) != (
+            detail.get("record_type") == V2_RECORD_TYPE
+        ):
+            raise ReceiptError(f"line {index}: recorder and receipt kind disagree")
         if entry_type == EVIDENCE_ENTRY_TYPE:
             evidence.append(detail)
             continue
@@ -743,7 +784,9 @@ def _start_rotated_segment(
         )
     signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
     if signer_key == state["cur_key"]:
-        return _broken_chain(seq, f"seq {seq}: key_transition does not change signer key")
+        return _broken_chain(
+            seq, f"seq {seq}: key_transition does not change signer key"
+        )
     if marker.get("prior_chain_seq") != state["prior_segment_seq"]:
         return _broken_chain(
             seq,
@@ -1366,6 +1409,11 @@ def _session_close(value: Any) -> dict[str, Any] | None:
 
 
 def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
+    if receipt.get("payload_kind") == SECRET_EGRESS_PAYLOAD_KIND:
+        try:
+            validate_secret_egress_envelope(receipt)
+        except SecretEgressError as exc:
+            raise ReceiptError(str(exc)) from exc
     _reject_unknown(receipt, _ENVELOPE_FIELDS, "receipt")
     if _require_string(receipt.get("record_type"), "record_type") != V2_RECORD_TYPE:
         raise ReceiptError("unsupported record_type for v2 verifier")
@@ -1390,6 +1438,11 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
         _validate_proxy_decision_payload(payload)
     elif payload_kind == "proxy_decision_with_spans":
         _validate_proxy_decision_with_spans_payload(payload)
+    elif payload_kind == SECRET_EGRESS_PAYLOAD_KIND:
+        try:
+            validate_secret_egress_payload(payload, receipt["event_id"])
+        except SecretEgressError as exc:
+            raise ReceiptError(str(exc)) from exc
 
 
 def _validate_canonicalization(value: Any) -> None:
@@ -1450,6 +1503,7 @@ def _validate_crit(value: Any, payload_kind: str) -> None:
     seen: set[str] = set()
     has_canonicalization = False
     has_source_spans = False
+    has_secret_egress = False
     for name in crit:
         if name == "":
             raise ReceiptError("crit has an empty name")
@@ -1460,6 +1514,8 @@ def _validate_crit(value: Any, payload_kind: str) -> None:
             has_canonicalization = True
         elif name == CRIT_SOURCE_SPANS:
             has_source_spans = True
+        elif name == SECRET_EGRESS_PAYLOAD_KIND:
+            has_secret_egress = True
         else:
             raise ReceiptError(f"crit has unknown field {name}")
     if not has_canonicalization:
@@ -1468,6 +1524,12 @@ def _validate_crit(value: Any, payload_kind: str) -> None:
         raise ReceiptError("crit must include source_spans")
     if payload_kind != "proxy_decision_with_spans" and has_source_spans:
         raise ReceiptError(f"crit source_spans is invalid for {payload_kind}")
+    if payload_kind == SECRET_EGRESS_PAYLOAD_KIND and not has_secret_egress:
+        raise ReceiptError(f"crit must include {SECRET_EGRESS_PAYLOAD_KIND}")
+    if payload_kind != SECRET_EGRESS_PAYLOAD_KIND and has_secret_egress:
+        raise ReceiptError(
+            f"crit {SECRET_EGRESS_PAYLOAD_KIND} is invalid for {payload_kind}"
+        )
 
 
 def _validate_signature(receipt: dict[str, Any], payload_kind: str) -> None:

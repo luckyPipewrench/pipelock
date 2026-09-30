@@ -196,6 +196,11 @@ pub fn parse_json_line(text: &str, label: &str) -> Result<Value> {
 
 pub fn parse_json_text(text: &str, label: &str) -> Result<Value> {
     use serde::Deserialize;
+    // For the new kind, enforce duplicate and nesting limits before building a
+    // parsed value. Source selector inspection preserves duplicate selectors.
+    if crate::secret_egress::selects_raw_payload(text) {
+        reject_duplicate_keys(text)?;
+    }
     let mut de = serde_json::Deserializer::from_str(text);
     // Keep normal parsing aligned with reject_duplicate_keys: serde_json's
     // built-in recursion limit rejects one level earlier than the shared
@@ -206,6 +211,7 @@ pub fn parse_json_text(text: &str, label: &str) -> Result<Value> {
         .map_err(|err| VerifierError::Runtime(format!("{label}: {err}")))?;
     de.end()
         .map_err(|err| VerifierError::Runtime(format!("{label}: {err}")))?;
+    crate::secret_egress::validate_raw_receipt(&value, text).map_err(VerifierError::Invalid)?;
     Ok(value)
 }
 

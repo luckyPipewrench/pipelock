@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "action_id": "01990000-0000-7000-8000-000000000013",
+  "decision_id": "01990000-0000-7000-8000-000000000014",
+  "site_id": "proxy.mcp_stdio.tool_arguments.normalized",
+  "plane": "proxy",
+  "transport": "mcp_stdio",
+  "location": "tool_arguments",
+  "view": "normalized",
+  "boundary": "tool_dispatch",
+  "phase": "outcome",
+  "destination_kind": "local_process",
+  "destination_redaction": {
+    "reason": "classified_sensitive"
+  },
+  "pattern_class": "configured",
+  "rule_id": "configured.sample_rule",
+  "finding_disposition": "observe",
+  "planned_byte_form": "original",
+  "authorization": {
+    "kind": "none"
+  },
+  "persistence_policy": "required_before_action",
+  "outcome": {
+    "release": "complete",
+    "byte_form": "original"
+  }
+}

@@ -20,6 +20,7 @@ var ErrUnknownPayloadKind = errors.New("unknown payload_kind")
 var payloadAuthority = map[string]string{
 	"proxy_decision":               "receipt-signing",
 	"proxy_decision_with_spans":    "receipt-signing",
+	"secret_egress_decision_v1":    "receipt-signing",
 	"contract_ratified":            "receipt-signing",
 	"contract_promote_intent":      "contract-activation-signing",
 	"contract_promote_committed":   "receipt-signing",

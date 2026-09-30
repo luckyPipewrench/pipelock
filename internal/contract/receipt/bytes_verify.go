@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -21,8 +20,8 @@ func VerifyV2BytesWithKey(raw []byte, pubKey ed25519.PublicKey, expectedSignerKe
 		return fmt.Errorf("verify v2 receipt bytes: %w", err)
 	}
 
-	var r EvidenceReceipt
-	if err := contract.DecodeStrictJSON(raw, &r); err != nil {
+	r, err := ParseEvidenceReceipt(raw)
+	if err != nil {
 		return fmt.Errorf("decode v2 receipt: %w", err)
 	}
 	if err := r.Validate(); err != nil {
@@ -53,6 +52,8 @@ func emittedPayloadBytes(kind PayloadKind, raw json.RawMessage) ([]byte, error) 
 		return marshalStrictPayload[PayloadProxyDecisionStruct](raw)
 	case PayloadProxyDecisionWithSpans:
 		return marshalStrictPayload[PayloadProxyDecisionWithSpansStruct](raw)
+	case PayloadSecretEgressDecisionV1:
+		return marshalStrictPayload[PayloadSecretEgressDecisionV1Struct](raw)
 	case PayloadContractRatified:
 		return marshalStrictPayload[PayloadContractRatifiedStruct](raw)
 	case PayloadContractPromoteIntent:

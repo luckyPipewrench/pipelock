@@ -46,9 +46,15 @@ python -m pipelock_aarp_verify receipt PATH --key PUBLIC_KEY_HEX [--json]
 - `--chain`: verify Rung-1 chain linkage instead of single-envelope appraisal.
 
 The `receipt` subcommand verifies an EvidenceReceipt v2 file against a pinned
-Ed25519 public key. It currently targets the shared `proxy_decision_with_spans`
-conformance fixture: JCS preimage, strict unknown-field rejection, and
-source-span HMAC commitment shape.
+Ed25519 public key. Its conformance coverage includes `proxy_decision_with_spans`
+and the fixture-only `secret_egress_decision_v1` kind. The latter validates typed
+finding, byte-release, fallback and registry-commitment facts; a valid signature
+does not prove registry membership, policy compliance, producer coverage or
+durable append. Existing JCS formatting semantics remain unchanged.
+
+The secret-egress CLI corpus gate uses this in-repo reference explicitly. It does
+not replace the separately pinned published Python verifier in the ordinary
+legacy corpus gate or claim that the published package supports this new kind.
 
 Exit codes: `0` appraised / linked, `1` fatal / not linked, `2` I/O or
 trust-file error, `64` usage error. A fatal envelope with `--json` prints

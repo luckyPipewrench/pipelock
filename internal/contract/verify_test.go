@@ -80,6 +80,8 @@ func TestVerify_KeyPurpose_AuthorityMatrix(t *testing.T) {
 		ok          bool
 	}{
 		{"proxy_decision", "receipt-signing", true},
+		{"secret_egress_decision_v1", "receipt-signing", true},
+		{"secret_egress_decision_v1", "contract-activation-signing", false},
 		{"proxy_decision", "contract-activation-signing", false},
 		{"contract_promote_intent", "contract-activation-signing", true},
 		{"contract_promote_intent", "receipt-signing", false},

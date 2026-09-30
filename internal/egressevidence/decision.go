@@ -17,7 +17,8 @@ import (
 )
 
 // ContractVersion versions these candidate typed facts independently of the
-// signed receipt envelope. This foundation does not register a new receipt kind.
+// signed receipt envelope. This model package does not register receipt kinds;
+// the fixture-only signed adapter lives under internal/contract.
 const ContractVersion = 1
 
 const maxDecisionBytes = 16 * 1024
@@ -148,32 +149,48 @@ const (
 	DestinationLocalProcess DestinationKind = "local_process"
 )
 
+type DestinationRedactionReason string
+
+const DestinationClassifiedSensitive DestinationRedactionReason = "classified_sensitive"
+
+// DestinationRedaction records intentional omission of a sensitive destination
+// reference. It neither identifies a shared destination nor implies missing
+// collection coverage. Separate actions and decisions retain distinct IDs even
+// when their destination references are omitted. The producer's privacy choice
+// is detection-scoped, not a configured-destination allowlist; this model does
+// not implement that classification or any runtime privacy setting.
+type DestinationRedaction struct {
+	Reason DestinationRedactionReason `json:"reason"`
+}
+
 // Decision holds candidate signable facts, not a durability acknowledgment.
 // All IDs are producer/configuration references. No field accepts a sample,
 // credential, header value, command line, URL, or hash of a secret value.
-// Network references must be canonical hosts cleared by the producer's existing
-// secret-sanitization policy. A validator cannot establish that provenance.
+// Network references must be canonical hosts cleared by the producer's declared
+// finding-aware evidence privacy policy. A validator cannot establish that
+// provenance; withheld destination facts use the explicit redaction form.
 type Decision struct {
-	Version            int                `json:"version"`
-	ActionID           string             `json:"action_id"`
-	DecisionID         string             `json:"decision_id"`
-	SiteID             SiteID             `json:"site_id"`
-	Plane              Plane              `json:"plane"`
-	Transport          Transport          `json:"transport"`
-	Location           Location           `json:"location"`
-	View               View               `json:"view"`
-	Boundary           Boundary           `json:"boundary"`
-	Phase              Phase              `json:"phase"`
-	DestinationKind    DestinationKind    `json:"destination_kind"`
-	DestinationRef     string             `json:"destination_ref"`
-	PatternClass       PatternClass       `json:"pattern_class"`
-	RuleID             string             `json:"rule_id"`
-	FindingDisposition FindingDisposition `json:"finding_disposition"`
-	PlannedByteForm    ByteForm           `json:"planned_byte_form"`
-	Authorization      Authorization      `json:"authorization"`
-	RewriteFallback    *RewriteFallback   `json:"rewrite_fallback,omitempty"`
-	PersistencePolicy  PersistencePolicy  `json:"persistence_policy"`
-	Outcome            *Outcome           `json:"outcome,omitempty"`
+	Version              int                   `json:"version"`
+	ActionID             string                `json:"action_id"`
+	DecisionID           string                `json:"decision_id"`
+	SiteID               SiteID                `json:"site_id"`
+	Plane                Plane                 `json:"plane"`
+	Transport            Transport             `json:"transport"`
+	Location             Location              `json:"location"`
+	View                 View                  `json:"view"`
+	Boundary             Boundary              `json:"boundary"`
+	Phase                Phase                 `json:"phase"`
+	DestinationKind      DestinationKind       `json:"destination_kind"`
+	DestinationRef       string                `json:"destination_ref,omitempty"`
+	DestinationRedaction *DestinationRedaction `json:"destination_redaction,omitempty"`
+	PatternClass         PatternClass          `json:"pattern_class"`
+	RuleID               string                `json:"rule_id"`
+	FindingDisposition   FindingDisposition    `json:"finding_disposition"`
+	PlannedByteForm      ByteForm              `json:"planned_byte_form"`
+	Authorization        Authorization         `json:"authorization"`
+	RewriteFallback      *RewriteFallback      `json:"rewrite_fallback,omitempty"`
+	PersistencePolicy    PersistencePolicy     `json:"persistence_policy"`
+	Outcome              *Outcome              `json:"outcome,omitempty"`
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -249,13 +266,19 @@ func (d Decision) Validate() error {
 	if d.PatternClass != PatternCoreFloor && d.PatternClass != PatternConfigured {
 		return fmt.Errorf("invalid evidence pattern class")
 	}
+	if (d.DestinationRef != "") == (d.DestinationRedaction != nil) {
+		return fmt.Errorf("evidence destination requires exactly one reference or redaction")
+	}
+	if d.DestinationRedaction != nil && d.DestinationRedaction.Reason != DestinationClassifiedSensitive {
+		return fmt.Errorf("invalid evidence destination redaction reason")
+	}
 	switch d.DestinationKind {
 	case DestinationNetwork:
-		if d.Transport == TransportMCPStdio || !canonicalHost(d.DestinationRef) {
+		if d.Transport == TransportMCPStdio || (d.DestinationRedaction == nil && !canonicalHost(d.DestinationRef)) {
 			return fmt.Errorf("invalid canonical network destination")
 		}
 	case DestinationLocalProcess:
-		if d.Transport != TransportMCPStdio || !validIdentifier(d.DestinationRef) {
+		if d.Transport != TransportMCPStdio || (d.DestinationRedaction == nil && !validIdentifier(d.DestinationRef)) {
 			return fmt.Errorf("invalid local process reference")
 		}
 	default:
@@ -369,12 +392,22 @@ func (d Decision) ValidateOutcomeOf(intent Decision) error {
 	selected.Phase = PhaseIntent
 	selected.Outcome = nil
 	selected.RewriteFallback = nil
+	selected.DestinationRedaction = nil
 	original := intent
 	original.RewriteFallback = nil
-	if selected != original || !sameRewriteFallback(d.RewriteFallback, intent.RewriteFallback) {
+	original.DestinationRedaction = nil
+	if selected != original || !sameRewriteFallback(d.RewriteFallback, intent.RewriteFallback) ||
+		!sameDestinationRedaction(d.DestinationRedaction, intent.DestinationRedaction) {
 		return fmt.Errorf("evidence outcome changed the selected decision")
 	}
 	return nil
+}
+
+func sameDestinationRedaction(left, right *DestinationRedaction) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func sameRewriteFallback(left, right *RewriteFallback) bool {
@@ -427,12 +460,25 @@ func canonicalHost(host string) bool {
 func validateDecisionJSONShape(raw []byte) error {
 	fields, err := decisionObject(raw, []string{
 		"version", "action_id", "decision_id", "site_id", "plane", "transport",
-		"location", "view", "boundary", "phase", "destination_kind", "destination_ref",
+		"location", "view", "boundary", "phase", "destination_kind",
 		"pattern_class", "rule_id", "finding_disposition", "planned_byte_form",
 		"authorization", "persistence_policy",
-	}, []string{"outcome", "rewrite_fallback"})
+	}, []string{"destination_ref", "destination_redaction", "outcome", "rewrite_fallback"})
 	if err != nil {
 		return err
+	}
+	ref, hasRef := fields["destination_ref"]
+	redaction, hasRedaction := fields["destination_redaction"]
+	if hasRef == hasRedaction {
+		return fmt.Errorf("evidence destination requires exactly one reference or redaction")
+	}
+	if hasRef {
+		var value string
+		if err := json.Unmarshal(ref, &value); err != nil || value == "" {
+			return fmt.Errorf("invalid evidence destination reference")
+		}
+	} else if _, err := decisionObject(redaction, []string{"reason"}, nil); err != nil {
+		return fmt.Errorf("invalid destination redaction object: %w", err)
 	}
 	authorization, err := decisionObject(fields["authorization"], []string{"kind"}, []string{"ref", "origin"})
 	if err != nil {

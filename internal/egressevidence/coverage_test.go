@@ -210,7 +210,6 @@ func TestCoverageAssessRejectsInvalidQueries(t *testing.T) {
 		{name: "missing expected sites", query: coverageTestQuery()},
 		{name: "unknown site", query: coverageTestQuery("fixture.unknown")},
 		{name: "duplicate site", query: coverageTestQuery(coverageSiteA, coverageSiteA)},
-		{name: "site limit", query: coverageTestQuery(make([]SiteID, MaxCoverageSites+1)...)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,7 +250,6 @@ func TestCoverageAssessRejectsInvalidDeclarations(t *testing.T) {
 		{name: "conflicting exact interval", segments: []CoverageSegment{valid, coverageTestSegment(coverageSiteA, 0, 10, CoverageUnavailable, CoverageReasonReaderUnavailable)}},
 		{name: "overlap outside query", segments: []CoverageSegment{coverageTestSegment(coverageSiteA, 20, 30, CoverageComplete, ""), coverageTestSegment(coverageSiteA, 25, 35, CoverageComplete, "")}},
 		{name: "overlap at unselected known site", segments: []CoverageSegment{coverageTestSegment(coverageSiteB, 0, 10, CoverageComplete, ""), coverageTestSegment(coverageSiteB, 5, 15, CoverageComplete, "")}},
-		{name: "segment limit", segments: make([]CoverageSegment, MaxCoverageSegments+1)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,6 +259,43 @@ func TestCoverageAssessRejectsInvalidDeclarations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every declaration is valid independently of the input cap, so removing a
+// cap must make its rejection case fail rather than hit another input error.
+func TestCoverageAssessRejectsOversizedValidInputs(t *testing.T) {
+	t.Parallel()
+	t.Run("sites", func(t *testing.T) {
+		ids := make([]SiteID, MaxCoverageSites+1)
+		segments := make([]CoverageSegment, len(ids))
+		for i := range ids {
+			ids[i] = SiteID(fmt.Sprintf("fixture.limit.%d", i))
+			segments[i] = coverageTestSegment(ids[i], 0, 10, CoverageComplete, "")
+		}
+		r := coverageTestRegistry(t, ids...)
+		if got, err := r.Assess(coverageTestQuery(ids[:MaxCoverageSites]...), segments); err != nil || got.State != CoverageComplete {
+			t.Fatalf("Assess at site limit = %#v, %v; want complete", got, err)
+		}
+		if got, err := r.Assess(coverageTestQuery(ids...), segments); err == nil || got.State == CoverageComplete {
+			t.Fatalf("Assess over site limit = %#v, %v; want error", got, err)
+		}
+	})
+	t.Run("segments", func(t *testing.T) {
+		r := coverageTestRegistry(t, coverageSiteA)
+		segments := make([]CoverageSegment, MaxCoverageSegments+1)
+		for i := range segments {
+			segments[i] = coverageTestSegment(coverageSiteA, i, i+1, CoverageComplete, "")
+		}
+		query := coverageTestQuery(coverageSiteA)
+		query.End = coverageTestTime(MaxCoverageSegments)
+		if got, err := r.Assess(query, segments[:MaxCoverageSegments]); err != nil || got.State != CoverageComplete {
+			t.Fatalf("Assess at segment limit = %#v, %v; want complete", got, err)
+		}
+		query.End = coverageTestTime(MaxCoverageSegments + 1)
+		if got, err := r.Assess(query, segments); err == nil || got.State == CoverageComplete {
+			t.Fatalf("Assess over segment limit = %#v, %v; want error", got, err)
+		}
+	})
 }
 
 func TestCoverageAssessAcceptsExactLimits(t *testing.T) {

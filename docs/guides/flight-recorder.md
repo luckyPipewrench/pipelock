@@ -4,7 +4,7 @@ The flight recorder writes configured enforcement evidence to a hash-chained log
 
 Set `flight_recorder.require_receipts: true` to require a successful allow-path receipt before traffic is forwarded. For allow decisions, the `X-Pipelock-Receipt` response header is returned only when `require_receipts` is enabled.
 
-Each recorded entry is cryptographically linked to the one before it. Deleting or modifying an entry breaks verification of that writer's chain.
+Each recorded entry is cryptographically linked to the one before it. Deleting or modifying an entry inside the chain breaks verification of that writer's chain. Cutting entries off the end leaves a shorter chain that still verifies; only a signed checkpoint, or a copy held elsewhere, shows that later entries existed. Entries written after the last checkpoint have no such anchor.
 
 Signed checkpoints prove the chain state one writer recorded at specific points. They can't prove that Pipelock recorded traffic that bypassed it or that several processes sharing one recorder directory formed one deployment-wide sequence. Use `pipelock evidence doctor DIR` to find structural fork damage. The recorder supports post-incident investigation, compliance evidence, and forensic replay.
 

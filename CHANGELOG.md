@@ -110,7 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`pipelock hermes rollback` and containment rollback remove Pipelock's browser launch flag after you edit the agent-browser `args`,** keeping your edits, including arguments you removed. If you already removed the flag by hand, rollback clears its ownership record, so a later install no longer refuses with a stale-record error.
+- **`pipelock hermes rollback` and containment rollback remove Pipelock's browser launch flag after you edit the agent-browser `args`,** keeping your edits, including arguments you removed. Hermes rollback names the flag it removed and the backup it saved. If you already removed the flag by hand, rollback clears its ownership record, so a later install no longer refuses with a stale-record error.
 - **Release downloads through the proxy work again,** and a block for an oversized response names only settings that can lift it. Outcome receipts record `exempt_over_cap_unscanned` or `incomplete` instead of `complete` when an exempt stream passes the scan ceiling or breaks mid-transfer. (#1730)
 - **Text DLP no longer reads joined English words as an AWS access key ID.** Real `AKIA` and `ASIA` keys split by spaces or invisible characters still block. (#1730)
 - **Each distinct dropped request-body DLP value is recorded once per request.** A disabled or suppressed pattern used to add two or more to `pipelock_dlp_dropped_matches_total` and write repeated `dlp_warn` lines when redaction or the subdomain view re-reported it. Two different values, including two different seed phrases, are still counted separately; the same value repeated in one request is one record.

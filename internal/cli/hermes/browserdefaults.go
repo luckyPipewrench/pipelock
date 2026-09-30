@@ -153,7 +153,7 @@ func installBrowserDefaults(home string) error {
 		return err
 	}
 	if existed {
-		if err := backupBrowserConfig(path); err != nil {
+		if _, err := backupBrowserConfig(path); err != nil {
 			_ = os.Remove(state)
 			return err
 		}
@@ -169,16 +169,16 @@ func installBrowserDefaults(home string) error {
 // leaves the original in place. The replacement is written atomically
 // afterward, so a failed write never leaves the active config missing, which
 // a rename-based rotation would.
-func backupBrowserConfig(path string) error {
+func backupBrowserConfig(path string) (string, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return fmt.Errorf("browser defaults: back up %s: %w", path, err)
+		return "", fmt.Errorf("browser defaults: back up %s: %w", path, err)
 	}
 	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UTC().UnixNano())
 	if err := writeFileAtomic(backup, data); err != nil {
-		return fmt.Errorf("browser defaults: back up %s: %w", path, err)
+		return "", fmt.Errorf("browser defaults: back up %s: %w", path, err)
 	}
-	return nil
+	return backup, nil
 }
 
 func rollbackBrowserDefaults(home string) error {
@@ -216,12 +216,16 @@ func rollbackBrowserDefaultsWithOutput(home string, output io.Writer) error {
 			return os.Remove(state)
 		}
 		if changed {
-			if err := backupBrowserConfig(path); err != nil {
+			backup, err := backupBrowserConfig(path)
+			if err != nil {
 				return err
 			}
 			if err := writeBrowserConfig(path, out); err != nil {
 				return err
 			}
+			// The flag is removed wherever it now sits, so name it: an
+			// operator who re-added it on purpose can restore it from backup.
+			_, _ = fmt.Fprintf(output, "pipelock: removed %s from %s; previous file saved as %s\n", browserdefaults.Flag, path, backup)
 		} else {
 			if err := os.Remove(state); err != nil {
 				return err

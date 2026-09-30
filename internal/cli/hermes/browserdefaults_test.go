@@ -305,8 +305,12 @@ func TestBrowserDefaultsRollbackEditedArgs(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeBrowserTestFile(t, path, string(edited), 0o600)
-			if err := rollbackBrowserDefaults(home); err != nil {
+			var output bytes.Buffer
+			if err := rollbackBrowserDefaultsWithOutput(home, &output); err != nil {
 				t.Fatalf("edited args rollback: %v", err)
+			}
+			if msg := output.String(); !strings.Contains(msg, "removed "+browserdefaults.Flag) || !strings.Contains(msg, path+".bak.") {
+				t.Fatalf("rollback did not name the removed flag and backup: %q", msg)
 			}
 			obj, _, err = readBrowserConfig(path)
 			if err != nil {
@@ -796,7 +800,7 @@ func TestRunInstall_BrowserWriteFailureAfterIntegration(t *testing.T) {
 func TestBackupBrowserConfigRefusesUnreadableSource(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "config.json")
-	if err := backupBrowserConfig(missing); err == nil {
+	if _, err := backupBrowserConfig(missing); err == nil {
 		t.Fatal("backup of a missing config succeeded")
 	}
 	entries, err := os.ReadDir(dir)

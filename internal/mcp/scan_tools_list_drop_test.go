@@ -19,7 +19,7 @@ import (
 func TestScanToolsListNonToolFields_RecordsDroppedFindings(t *testing.T) {
 	sc := testScanner(t)
 	lowConfidenceAWS := strings.Join([]string{
-		"Southeast", "Asia", "region", "planning", "notes", "by", "random",
+		"southeast", "asia", "region", "planning", "notes", "by", "random",
 		"OCR", "context", "for", "assistant", "safety", "review",
 	}, " ")
 

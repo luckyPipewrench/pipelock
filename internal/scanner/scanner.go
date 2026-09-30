@@ -393,7 +393,11 @@ type compiledPattern struct {
 	validate            func(string) bool // post-match checksum (nil = regex-only)
 	// validateAt judges a candidate in the view it was found in, with the view
 	// around it. It is set only in scanners built for tool-command text.
-	validateAt                          func(view string, start, end int) bool
+	validateAt func(view string, start, end int) bool
+	// validateJoined judges a candidate found in the whitespace-joined view,
+	// where source is the view before joining and offsets maps each joined byte
+	// to its source offset. It only ever narrows: it runs after validate.
+	validateJoined                      func(joined string, start, end int, source string, offsets []int) bool
 	exemptDomains                       []string // domains where this pattern is skipped (wildcard supported)
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
@@ -577,6 +581,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)
 		}
+		cp.validateJoined = builtinDLPJoinedValidatorForRegex(p.Regex)
 		if opts.ToolCommandEnvLookups && p.Regex == config.URLKeywordAssignmentRegex {
 			cp.validateAt = toolCommandCredentialInURLCandidate
 		}

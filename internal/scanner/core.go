@@ -223,6 +223,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 			credentialAudienceGitHosts:          config.AppendDeclaredCredentialAudienceHosts(p.name, p.credentialAudienceGitHosts, github, gitlab),
 			validate:                            builtinDLPValidatorForRegex(p.regex),
+			validateJoined:                      builtinDLPJoinedValidatorForRegex(p.regex),
 		})
 	}
 	cs.dlpPreFilter = newDLPPreFilter(cs.dlpPatterns)
@@ -549,7 +550,8 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 	// Whitespace-collapse catches key material split with ordinary spaces,
 	// tabs, or newlines before it reaches the configurable pattern layer.
 	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
-		matches = append(matches, s.matchCoreDLPPatterns(compacted, "whitespace")...)
+		_, offsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+		matches = append(matches, s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets)...)
 	}
 
 	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
@@ -579,6 +581,29 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
+			})
+		}
+	}
+	return matches
+}
+
+// matchCoreDLPWhitespaceView is matchCoreDLPPatterns for the whitespace-joined
+// view. compacted is already normalized and is not normalized again, because
+// offsets index these exact bytes.
+func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets []int) []TextDLPMatch {
+	var matches []TextDLPMatch
+	for _, idx := range s.core.dlpPreFilter.patternsToCheck(compacted) {
+		p := s.core.dlpPatterns[idx]
+		if start, end, ok := p.matchSpanInJoinedView(compacted, source, offsets); ok {
+			matches = append(matches, TextDLPMatch{
+				PatternName:                         p.name,
+				Severity:                            p.severity,
+				Encoded:                             "whitespace",
+				credentialAudienceHosts:             p.credentialAudienceHosts,
+				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
+				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
+				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, "", ""),
 			})
 		}
 	}

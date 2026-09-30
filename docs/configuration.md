@@ -789,7 +789,7 @@ websocket_proxy:
 
 ## DLP (Data Loss Prevention)
 
-Scans URLs for secrets and sensitive data using regex patterns. Built-in patterns cover API keys, tokens, credentials, and prompt injection indicators. Runs before DNS resolution to prevent exfiltration via DNS queries. Matching is always case-insensitive, except `AWS Access ID`: a candidate containing lowercase letters counts only if it also contains an uppercase ID or an `AKIA`/`ASIA` run in any case.
+Scans URLs for secrets and sensitive data using regex patterns. Built-in patterns cover API keys, tokens, credentials, and prompt injection indicators. Runs before DNS resolution to prevent exfiltration via DNS queries. Matching is always case-insensitive, except `AWS Access ID`: a candidate containing lowercase letters counts only if it also contains an uppercase ID or an `AKIA`/`ASIA` run in any case. In the whitespace-joined view, which fuses words that were separated in the original text, a match must also contain a prefix followed by at least 16 letters or digits of a single case that does not start in the middle of a same-case word, so ordinary English that fuses into a key-shaped run does not block.
 
 ```yaml
 dlp:

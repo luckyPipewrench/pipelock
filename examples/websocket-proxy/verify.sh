@@ -129,8 +129,8 @@ PROBE_BIN="$BIN_DIR/ws_probe"
 mkdir -p "$BIN_DIR"
 if ! (
   cd "$REPO_ROOT"
-  pipelock_host_tool go build -o "$ECHO_BIN" "$EXAMPLE_DIR/ws_echo.go"
-  pipelock_host_tool go build -o "$PROBE_BIN" "$EXAMPLE_DIR/ws_probe.go"
+  pipelock_host_tool go build -o "$ECHO_BIN" "$EXAMPLE_DIR/ws_echo.go" &&
+    pipelock_host_tool go build -o "$PROBE_BIN" "$EXAMPLE_DIR/ws_probe.go"
 ) >"$WORK/build.log" 2>&1; then
   fail "could not build the echo and probe helpers"
   tail -20 "$WORK/build.log" >&2 || true

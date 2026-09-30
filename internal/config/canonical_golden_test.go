@@ -448,7 +448,11 @@ const (
 	// the default sensitive headers.
 	// Re-bumped when the built-in JWT Token pattern gained a compiled URL-query
 	// audience for GitHub's release download storage host.
-	goldenHashDefaults = "f3535554a98b540e7be6de94d50bbb4028e2d6df1fe1a66585eec6049df204ee"
+	// Re-bumped when the built-in Azure SAS Token pattern gained a compiled
+	// ReleaseGrantSAS audience for the same release-asset host, so the shipped
+	// GitHub release redirect's Azure SAS can be admitted alongside its JWT
+	// grant instead of blocking on its own.
+	goldenHashDefaults = "59ec0cc1e1e870c8115e367c5a395482d00d0bcf34cca3cacbcf3fa7b256b529"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -685,7 +689,10 @@ const (
 	// Re-bumped for the GitLab native token headers in the default sensitive
 	// headers; see goldenHashDefaults above.
 	// Re-bumped for the JWT Token URL-query audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "1196dd1969f6b6494b4cc5592e664f33bc51c75766e3c7a5d6fc3f13ede599ac"
+	// Re-bumped for the Azure SAS Token ReleaseGrantSAS audience; see
+	// goldenHashDefaults above. The rich fixture inherits the default DLP
+	// pattern set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "a1bcc8678f52ea06ccf6e260fffe96e724a3a462e063377d02272be9fb0a660a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1259,8 +1266,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// the GitLab native token headers in the default sensitive headers.
 		// the compiled Authorization-only Google credential audience policy and the
 		// JWT Token URL-query audience.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "f749287d71de0665507b0ee8fb6295e8a9f7bd57ae9feeed97018f6090e6f496"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "4d3b90fcb5129a20613117584a0200214587197514250682373c891abe054b10"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "4daff47d4861987c45a41031babdf7f4664850cae52752d06b39b7ce87844f36"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "d55aa63c070121149020bd98c728c099d35c735798db9199c8d872c7ea3e4007"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

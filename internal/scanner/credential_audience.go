@@ -147,7 +147,8 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 	for i, candidate := range candidates {
 		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
 			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts)
-		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) {
+		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
+			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) {
 			continue
 		}
 		keep[i] = false
@@ -264,6 +265,73 @@ func isGitTransportPath(u *url.URL) bool {
 	}
 	services := query["service"]
 	return len(services) == 1 && (services[0] == "git-upload-pack" || services[0] == "git-receive-pack")
+}
+
+// releaseGrantSASSignedParams are the Azure user-delegation SAS query
+// parameters that participate in Azure's signed string-to-sign for a blob
+// resource: the resource shape (sp permissions, sv API version, sr resource
+// type, spr protocol), the validity window (se expiry), the delegation-key
+// identity (skoid, sktid, skt, ske, sks, skv), and the signature itself
+// (sig). GitHub's redirect also carries rscd/rsct and their
+// response-content-disposition/response-content-type mirrors, but those are
+// unsigned response-header overrides that Azure does not verify, so requiring
+// them here would fail a legitimate download closed if GitHub's storage layer
+// ever omits one. An ordinary account-key SAS never sets the sk* delegation
+// fields, so it cannot satisfy this shape.
+// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas
+var releaseGrantSASSignedParams = []string{"sp", "sv", "sr", "spr", "se", "skoid", "sktid", "skt", "ske", "sks", "skv", "sig"}
+
+var releaseGrantSASSignedParamSet = func() map[string]bool {
+	set := make(map[string]bool, len(releaseGrantSASSignedParams))
+	for _, name := range releaseGrantSASSignedParams {
+		set[name] = true
+	}
+	return set
+}()
+
+// releaseGrantSASShapeValid reports whether parsed's query carries every
+// parameter of Azure's user-delegation SAS signature. A forged, truncated, or
+// account-key SAS is missing at least one of these, so it fails closed here
+// even when it sits beside a valid grant.
+func releaseGrantSASShapeValid(parsed *url.URL) bool {
+	query := parsed.Query()
+	for _, name := range releaseGrantSASSignedParams {
+		if query.Get(name) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// releaseGrantSASAllowed is the single predicate that grants an Azure SAS
+// found in a GitHub release-asset redirect. filterCredentialAudience's DLP
+// decision, the url_query surface decision (urlDLPAudienceSurface), and the
+// query-entropy exemption (releaseGrantSASQueryValueAllowed) all answer
+// through it, so none of them can independently decide a different release
+// grant than the others. The SAS signature is never verified here -- it is an
+// HMAC under an Azure key this proxy does not hold -- so trust rests
+// entirely on the co-located JWT downloadGrantClaimsMatch already proved
+// GitHub issued for this exact host, plus the query carrying GitHub's whole
+// delegation-key SAS shape.
+func releaseGrantSASAllowed(hosts []string, host, target string) bool {
+	if len(hosts) == 0 || !destination.MatchesDomainList(host, hosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	return len(validatedQueryGrants(parsed)) > 0 && releaseGrantSASShapeValid(parsed)
+}
+
+// releaseGrantSASCandidateAllowed is releaseGrantSASAllowed gated to the
+// url_query surface and the compiled ReleaseGrantSAS carrier, mirroring
+// gitTransportAllowed's shape for its own separate grant.
+func releaseGrantSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+		return false
+	}
+	return releaseGrantSASAllowed(candidate.hosts, host, target)
 }
 
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
@@ -463,6 +531,35 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 	return false
 }
 
+// releaseGrantSASQueryValueAllowed exempts a release-grant SAS's own signed
+// query parameters (see releaseGrantSASSignedParams) from query-entropy
+// scoring once releaseGrantSASAllowed has already proved the whole query is
+// GitHub's release grant. Without this, the high-entropy sig= value (or a
+// delegation-key GUID) would still be blocked by entropy even after DLP has
+// allowed it, which would make the fix inert for the operator.
+func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
+	if parsed == nil || !releaseGrantSASSignedParamSet[strings.ToLower(key)] {
+		return false
+	}
+	host, ok := canonicalCredentialAudienceDestination(parsed.String())
+	if !ok {
+		return false
+	}
+	patterns := s.dlpPatterns
+	if s.core != nil {
+		patterns = append(append([]*compiledPattern{}, patterns...), s.core.dlpPatterns...)
+	}
+	for _, p := range patterns {
+		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+			continue
+		}
+		if releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+			return true
+		}
+	}
+	return false
+}
+
 // urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
 // a string. An unparseable target keeps the bare "url" surface.
 func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string, memo *queryLessDLPMemo) string {
@@ -505,7 +602,8 @@ type queryLessDLPMemo struct {
 // query-carrier audience accepts. Any parse or scan uncertainty stays "url".
 func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, memo *queryLessDLPMemo) string {
 	const bareURLSurface = "url"
-	if p == nil || p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierURLQuery == 0 ||
+	const queryCarrierMask = config.CredentialAudienceCarrierURLQuery | config.CredentialAudienceCarrierReleaseGrantSAS
+	if p == nil || p.credentialAudienceCarrierMask&queryCarrierMask == 0 ||
 		parsed == nil || parsed.RawQuery == "" {
 		return bareURLSurface
 	}
@@ -542,6 +640,58 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// this host. One unrelated or undecodable token keeps the whole URL on the
 	// bare surface, so a real grant cannot carry a second token past DLP.
 	grants := validatedQueryGrants(parsed)
+	// The Azure SAS is never itself a grant, so it cannot use the per-match
+	// isGrant/startsWithGrant check below, which only makes sense for a
+	// pattern whose match text IS the credential being validated (the JWT).
+	// It is allowed instead by co-occurrence: a valid grant already proved
+	// this exact URL is GitHub's redirect, and the query carries GitHub's
+	// whole SAS shape. The match must still be found within the query itself
+	// (not merely alongside a query that happens to look right) so a SAS
+	// planted in the path or elsewhere cannot ride a genuine grant's query.
+	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
+		if len(grants) == 0 || !releaseGrantSASShapeValid(parsed) {
+			return bareURLSurface
+		}
+		matchInView := func(view string) bool {
+			if view == "" {
+				return false
+			}
+			cleaned := normalize.ForDLP(view)
+			_, _, ok := p.matchSpanInView(cleaned, view)
+			return ok
+		}
+		// A real Azure user-delegation SAS signature is standard base64 and
+		// routinely contains '+' and '/', which GitHub percent-encodes as %2B
+		// and %2F. IterativeDecode's repeated url.QueryUnescape passes decode a
+		// percent-encoded '+' to a literal '+' on one round and then, because
+		// QueryUnescape treats a literal '+' in ITS OWN input as a space, blank
+		// that same '+' out on the next round -- so joined/views below can miss
+		// a real signature even though checkDLP's own undecoded "url" view (and
+		// this pattern's percent-encoded regex alternative) already found it.
+		// The raw, single-pass-decoded, and iteratively-decoded forms are all
+		// checked so this cannot disagree with what actually triggered the DLP
+		// match.
+		sasViews := []string{parsed.RawQuery}
+		if once, err := url.QueryUnescape(parsed.RawQuery); err == nil {
+			sasViews = append(sasViews, once)
+		}
+		for _, view := range sasViews {
+			if matchInView(view) {
+				return credentialAudienceURLQuerySurface
+			}
+		}
+		for _, view := range joined {
+			if matchInView(view) {
+				return credentialAudienceURLQuerySurface
+			}
+		}
+		for _, view := range views {
+			if matchInView(view) {
+				return credentialAudienceURLQuerySurface
+			}
+		}
+		return bareURLSurface
+	}
 	found := false
 	check := func(view string, prefixOK bool) bool {
 		if view == "" {

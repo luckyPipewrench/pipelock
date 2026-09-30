@@ -5,6 +5,7 @@ package policy
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -20,6 +21,12 @@ import (
 // retains the ordinary matcher, even if it uses the same rule name.
 func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []string, raw json.RawMessage) (matched, handled bool) {
 	if rule.Name != "Credential File Access" || rule.ArgPattern == nil || rule.ArgKey != nil || rule.ArgSource != "" {
+		return false, false
+	}
+	// A custom rule that reuses the shipped name and argument pattern with its
+	// own tool scope keeps the ordinary matcher: provenance is the shipped tool
+	// pattern as well, in its built-in or preset spelling.
+	if rule.ToolPattern == nil || !shippedCredentialToolPatterns[rule.ToolPattern.String()] {
 		return false, false
 	}
 	pattern := rule.ArgPattern.String()
@@ -95,3 +102,20 @@ func jsonObjectKeys(raw json.RawMessage) (keys []string, ok bool) {
 	walk(v)
 	return keys, true
 }
+
+// shippedCredentialToolPatterns holds the two spellings Pipelock ships for the
+// Credential File Access tool pattern: the built-in rule after alias wrapping,
+// and the preset YAML form that writes the alias prefix once. Both are derived
+// from the built-in rule, so a change there changes this set with it.
+var shippedCredentialToolPatterns = func() map[string]bool {
+	out := make(map[string]bool, 2)
+	for _, r := range DefaultToolPolicyRules() {
+		if r.Name != "Credential File Access" {
+			continue
+		}
+		out[r.ToolPattern] = true
+		body := strings.TrimSuffix(strings.TrimPrefix(r.ToolPattern, `(?i)^(?:`+builtinToolNameAliasPrefix+`)?`), `$`)
+		out[`(?i)^`+builtinToolNameAliasPrefix+`?`+body+`$`] = true
+	}
+	return out
+}()

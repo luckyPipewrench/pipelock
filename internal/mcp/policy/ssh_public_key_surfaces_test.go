@@ -148,3 +148,71 @@ func TestCredentialArgument_KeyNamingPrivatePathStaysBlocked(t *testing.T) {
 		t.Errorf("%s matched credential access", raw)
 	}
 }
+
+// Provenance is the shipped tool pattern too. A custom rule that reuses the
+// shipped name and argument pattern with its own tool scope keeps the ordinary
+// pairwise matcher, so a key plus a public-key value still matches it.
+func TestCredentialArgument_CustomRuleWithShippedNameKeepsPairwiseMatcher(t *testing.T) {
+	var shipped config.ToolPolicyRule
+	for _, r := range DefaultToolPolicyRules() {
+		if r.Name == testKeyReadRule {
+			shipped = r
+		}
+	}
+	custom := shipped
+	custom.ToolPattern = `(?i)^read_file$`
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: []config.ToolPolicyRule{custom}})
+	raw := json.RawMessage(`{"path":"/home/user/.ssh/id_ed25519.pub"}`)
+	keysAndValues := []string{"path", "/home/user/.ssh/id_ed25519.pub"}
+	if v := pc.CheckToolCallWithArgs(testReadTool, keysAndValues, raw); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatal("custom rule with the shipped name inherited the single-value exception")
+	}
+
+	// Positive control: the shipped rule, under the same arguments, takes the
+	// exception, so the case above differs only by tool-pattern provenance.
+	shippedPC := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: []config.ToolPolicyRule{shipped}})
+	if v := shippedPC.CheckToolCallWithArgs(testReadTool, keysAndValues, raw); slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatal("shipped rule did not take the single-value exception")
+	}
+}
+
+// Every shipped preset spells the tool pattern the way the provenance set
+// expects, so a preset config keeps the exception.
+func TestCredentialArgument_ShippedToolPatternSpellings(t *testing.T) {
+	if len(shippedCredentialToolPatterns) != 2 {
+		t.Fatalf("expected built-in and preset spellings, got %v", shippedCredentialToolPatterns)
+	}
+	matches, err := filepath.Glob(filepath.Join("..", "..", "..", "configs", "*.yaml"))
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no presets found: %v", err)
+	}
+	for _, path := range matches {
+		cfg, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("load %s: %v", path, err)
+		}
+		for _, r := range cfg.MCPToolPolicy.Rules {
+			if r.Name == testKeyReadRule && !shippedCredentialToolPatterns[r.ToolPattern] {
+				t.Errorf("%s: Credential File Access tool pattern not recognised as shipped: %s", path, r.ToolPattern)
+			}
+		}
+	}
+}
+
+// Calls outside the single-value shape fall back to the ordinary matcher.
+func TestCredentialArgument_FallbackPathsKeepOrdinaryMatcher(t *testing.T) {
+	pc := defaultConfig(t)
+	// Two string values: the public key followed by another argument stays
+	// matched, because the rule cannot tell a second argument from a longer name.
+	raw := json.RawMessage(`{"path":"/home/user/.ssh/id_ed25519.pub","mode":"x"}`)
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	if v := pc.CheckToolCallWithArgs(testReadTool, extracted.Strings, raw); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Error("two-value call took the single-value exception")
+	}
+	// Unparseable raw arguments: the helper declines and the strings supplied
+	// by the caller go through the ordinary matcher.
+	bad := json.RawMessage(`{"path":`)
+	if v := pc.CheckToolCallWithArgs(testReadTool, []string{"path", "/home/user/.ssh/id_rsa"}, bad); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Error("unparseable arguments with a private key path were not matched")
+	}
+}

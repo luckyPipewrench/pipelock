@@ -545,17 +545,14 @@ curl http://pipelock:9090/api/v1/killswitch/status \
     "api": true,
     "conductor_remote": false,
     "conductor_stale": false,
+    "conductor_apply_failure": false,
     "signal": false,
     "sentinel": false
   }
 }
 ```
 
-The kill switch uses OR logic across six independent sources (config, API,
-Conductor remote kill, Conductor stale-bundle detection, SIGUSR1 signal, and
-sentinel file). If *any* source is active, all traffic is denied. Deactivating
-one doesn't affect the others. The Conductor sources remain false when the
-enterprise follower is not in use.
+The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, its three sources stay false.
 
 **Rate limiting:** `POST /api/v1/killswitch` is limited to 10 authenticated
 requests per 60-second window. Exceeding it returns `429` with a

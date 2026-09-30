@@ -133,8 +133,10 @@ The `/health` endpoint returns the pre-v2.4 shape: status always `"healthy"`, no
 
 ## Relationship to `kill_switch_active`
 
-`kill_switch_active` (top-level field) reports whether the kill switch is currently denying traffic. It is a *policy* signal — operators can flip it on/off through any of four sources (config, API, signal, sentinel file).
+`kill_switch_active` (top-level field) reports whether the kill switch is currently denying traffic. It is a policy signal that can be activated by config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1, or a sentinel file.
 
 `subsystems.killswitch` (under the watchdog map) reports whether the kill-switch *state machine* is reachable from the proxy. A pipelock that cannot read its kill switch is wedged; one that reads it and reports "active" is fine.
 
 External watchdogs interested in "should this instance receive traffic?" check both: `status == "healthy"` AND `kill_switch_active == false`. The first answers "is pipelock alive?", the second answers "is pipelock currently allowing traffic?".
+
+Audit event delivery is monitored separately from the `/health` watchdog state. Scrape the Prometheus `pipelock_audit_sink_*` metrics to monitor delivery failures, dropped events, queue depth, and unresolved sink errors. They use a bounded `sink` label with the values `webhook`, `syslog`, and `otlp`; see [Audit Sink Metrics](../metrics.md#audit-sink-metrics) for the full list.

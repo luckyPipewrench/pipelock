@@ -46,34 +46,77 @@ func TestServerReloadActivatesSentinelKillSwitchBeforeProxyPublication(t *testin
 	}
 }
 
-func TestConfigActivatesKillSwitch(t *testing.T) {
-	present := filepath.Join(t.TempDir(), "present")
-	if err := os.WriteFile(present, nil, 0o600); err != nil {
+// TestServerReloadSentinelCreatedDuringPublicationWindowDenies creates the new
+// sentinel after the controller learns the candidate's sources and before the
+// proxy publishes the candidate. The new policy must never be live unguarded.
+func TestServerReloadSentinelCreatedDuringPublicationWindowDenies(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	sentinel := filepath.Join(t.TempDir(), "kill")
+	next := *s.proxy.CurrentConfig()
+	next.KillSwitch.Enabled = false
+	next.KillSwitch.SentinelFile = sentinel
+	t.Cleanup(setReloadBeforeProxySwapHookForTest(func(server *Server) {
+		if server != s {
+			return
+		}
+		if err := os.WriteFile(sentinel, nil, 0o600); err != nil {
+			t.Errorf("write sentinel: %v", err)
+		}
+	}))
+	seen := false
+	t.Cleanup(setReloadAfterProxySwapHookForTest(func(server *Server) {
+		if server != s {
+			return
+		}
+		seen = true
+		if server.proxy.CurrentConfig().KillSwitch.SentinelFile != sentinel {
+			t.Error("new proxy policy was not published")
+		}
+		if !server.killswitch.IsActive() {
+			t.Error("new policy live while its sentinel was ignored")
+		}
+	}))
+	if err := s.Reload(&next); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !seen || !s.killswitch.IsActive() {
+		t.Fatalf("seen=%v active=%v, want both", seen, s.killswitch.IsActive())
+	}
+}
+
+// TestServerReloadHonorsActiveOldSentinelThroughSwap keeps an active old
+// sentinel in force until the candidate that drops it is live.
+func TestServerReloadHonorsActiveOldSentinelThroughSwap(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldSentinel := filepath.Join(t.TempDir(), "old")
+	if err := os.WriteFile(oldSentinel, nil, 0o600); err != nil {
 		t.Fatalf("write sentinel: %v", err)
 	}
-	s, _ := newTestServer(t, nil)
-	for _, tc := range []struct {
-		name     string
-		enabled  bool
-		sentinel string
-		want     bool
-	}{
-		{"off", false, "", false},
-		{"enabled", true, "", true},
-		{"sentinel_present", false, present, true},
-		{"sentinel_absent", false, filepath.Join(t.TempDir(), "absent"), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := *s.proxy.CurrentConfig()
-			cfg.KillSwitch.Enabled = tc.enabled
-			cfg.KillSwitch.SentinelFile = tc.sentinel
-			if got := configActivatesKillSwitch(&cfg); got != tc.want {
-				t.Fatalf("configActivatesKillSwitch = %v, want %v", got, tc.want)
-			}
-		})
+	first := *s.proxy.CurrentConfig()
+	first.KillSwitch.Enabled = false
+	first.KillSwitch.SentinelFile = oldSentinel
+	if err := s.Reload(&first); err != nil {
+		t.Fatalf("first reload: %v", err)
 	}
-	if configActivatesKillSwitch(nil) {
-		t.Fatal("nil config activated kill switch")
+	if !s.killswitch.IsActive() {
+		t.Fatal("old sentinel not active")
+	}
+	next := first
+	next.KillSwitch.SentinelFile = filepath.Join(t.TempDir(), "absent")
+	check := func(stage string) func(*Server) {
+		return func(server *Server) {
+			if server == s && !server.killswitch.IsActive() {
+				t.Errorf("active old sentinel lapsed %s", stage)
+			}
+		}
+	}
+	t.Cleanup(setReloadBeforeProxySwapHookForTest(check("before publication")))
+	t.Cleanup(setReloadAfterProxySwapHookForTest(check("at publication")))
+	if err := s.Reload(&next); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if s.killswitch.IsActive() {
+		t.Fatal("old sentinel still honored after the candidate went live")
 	}
 }
 

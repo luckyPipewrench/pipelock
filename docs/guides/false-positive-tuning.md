@@ -107,7 +107,9 @@ dlp:
 Built-in GitHub, GitLab, Slack, and other provider-key patterns cannot use
 `exempt_domains`: they carry a compiled audience instead (see
 [Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md)) and are
-already allowed at their issuer on the documented header. A custom pattern
+already allowed at their issuer on the documented carrier. This also applies to
+the built-in `JWT Token` pattern: its audience accepts only HTTPS URL queries at
+`release-assets.githubusercontent.com`. A custom pattern
 whose regex also matches a core credential, such as `ghp_[A-Za-z0-9]{36}` for
 `GitHub Token`, is still blocked by the immutable core floor, which never
 reads exemptions.

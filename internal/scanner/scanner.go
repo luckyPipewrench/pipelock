@@ -2625,7 +2625,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
-				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), "url"); allowed {
+				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed)); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
 				}
@@ -2869,7 +2869,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
 				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
-					if allow, allowed := s.credentialAudienceAllows(p, target, "url"); allowed {
+					if allow, allowed := s.credentialAudienceAllows(p, target, s.urlDLPAudienceSurfaceForTarget(p, target)); allowed {
 						credentialAudienceAllows = append(credentialAudienceAllows, allow)
 						continue
 					}

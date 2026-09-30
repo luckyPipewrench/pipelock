@@ -411,3 +411,49 @@ func TestCredentialAudienceExemptDomainsSubset_Direction(t *testing.T) {
 		})
 	}
 }
+
+func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
+	var builtIn DLPPattern
+	for _, pattern := range DefaultDLPPatterns() {
+		if pattern.Name == "JWT Token" {
+			builtIn = pattern
+			break
+		}
+	}
+	wantHosts := []string{"release-assets.githubusercontent.com"}
+	if strings.Join(builtIn.CredentialAudienceHosts, ",") != strings.Join(wantHosts, ",") ||
+		builtIn.CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery ||
+		builtIn.CredentialAudienceAuthorizationOnly || len(builtIn.CredentialAudienceGitHosts) != 0 {
+		t.Fatalf("JWT compiled audience = %#v", builtIn)
+	}
+	if !IsCredentialAudiencePatternName("JWT Token") {
+		t.Fatal("JWT Token is not reported as a credential-audience pattern")
+	}
+
+	// The audience is compiled-only: a serialized copy loses it and normalize
+	// restores it from exact identity; any edit or severity change drops it.
+	for name, mutate := range map[string]func(*DLPPattern){
+		"regex edit":      func(p *DLPPattern) { p.Regex += "(?:custom)" },
+		"severity change": func(p *DLPPattern) { p.Severity = SeverityCritical },
+		"warn action":     func(p *DLPPattern) { p.Action = ActionWarn },
+		"broad exemption": func(p *DLPPattern) { p.ExemptDomains = []string{"*.vendor.example"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := builtIn
+			p.CredentialAudienceHosts, p.CredentialAudienceCarrierMask = nil, 0
+			mutate(&p)
+			patterns := []DLPPattern{p}
+			markBuiltInCredentialAudienceHosts(patterns)
+			if len(patterns[0].CredentialAudienceHosts) != 0 || patterns[0].CredentialAudienceCarrierMask != 0 {
+				t.Fatalf("customized JWT pattern kept the compiled audience: %#v", patterns[0])
+			}
+		})
+	}
+	exact := builtIn
+	exact.CredentialAudienceHosts, exact.CredentialAudienceCarrierMask = nil, 0
+	patterns := []DLPPattern{exact}
+	markBuiltInCredentialAudienceHosts(patterns)
+	if len(patterns[0].CredentialAudienceHosts) != 1 || patterns[0].CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery {
+		t.Fatalf("exact built-in lost its audience: %#v", patterns[0])
+	}
+}

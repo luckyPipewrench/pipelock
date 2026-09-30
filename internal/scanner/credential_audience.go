@@ -11,6 +11,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // CredentialAudienceAllow records a DLP match deliberately allowed because a
@@ -53,6 +54,11 @@ const (
 	credentialAudienceAuthorizationOtherSurface = "authorization_header_other"
 	credentialAudiencePrivateTokenSurface       = "header_private_token"
 	credentialAudienceJobTokenSurface           = "header_job_token"
+	// credentialAudienceURLQuerySurface is the decision surface for a match
+	// that lives only in the URL query. It reports as the existing "url"
+	// telemetry surface. The scanner earns it per match (see
+	// urlDLPAudienceSurface); a bare "url" match never carries it.
+	credentialAudienceURLQuerySurface = "url_query"
 )
 
 // CredentialAudienceHeaderSurface classifies the header that carried a match.
@@ -101,6 +107,8 @@ func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint8
 		return mask&config.CredentialAudienceCarrierPrivateToken != 0
 	case credentialAudienceJobTokenSurface:
 		return mask&config.CredentialAudienceCarrierJobToken != 0
+	case credentialAudienceURLQuerySurface:
+		return mask&config.CredentialAudienceCarrierURLQuery != 0
 	default:
 		return false
 	}
@@ -122,6 +130,14 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 	if !ok {
 		return keep, nil
 	}
+	// Signed download grants use HTTPS query carriage. The shared host
+	// canonicalizer also accepts WSS for other credential carriers.
+	if surface == credentialAudienceURLQuerySurface {
+		parsed, err := url.Parse(target)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+			return keep, nil
+		}
+	}
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
@@ -135,6 +151,8 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		switch surface {
 		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationTokenSurface, credentialAudienceAuthorizationBasicSurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface:
 			recordSurface = "header"
+		case credentialAudienceURLQuerySurface:
+			recordSurface = "url"
 		}
 		allows = append(allows, CredentialAudienceAllow{
 			PatternName: candidate.patternName,
@@ -434,9 +452,56 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 		if !ok || start != 0 || end != len(value) {
 			continue
 		}
-		if _, allowed := s.credentialAudienceAllows(p, target, "url"); allowed {
+		if _, allowed := s.credentialAudienceAllows(p, target, credentialAudienceURLQuerySurface); allowed {
 			return true
 		}
 	}
 	return false
+}
+
+// urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
+// a string. An unparseable target keeps the bare "url" surface.
+func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string) string {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "url"
+	}
+	return s.urlDLPAudienceSurface(p, parsed)
+}
+
+// urlDLPAudienceSurface picks the decision surface for a URL DLP match. It is
+// "url_query" only for a pattern with the URL-query carrier when the credential
+// sits in the query and nowhere else in the URL: the query-less URL must scan
+// clean, and the pattern must match a query-only view. Everything else,
+// including a credential in the path, the host, a userinfo section or a
+// fragment, and one split across the path and query, stays "url", which no
+// query-carrier audience accepts. Any parse or scan uncertainty stays "url".
+func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL) string {
+	const bareURLSurface = "url"
+	if p == nil || p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierURLQuery == 0 ||
+		parsed == nil || parsed.RawQuery == "" {
+		return bareURLSurface
+	}
+	withoutQuery := *parsed
+	withoutQuery.RawQuery = ""
+	withoutQuery.ForceQuery = false
+	if result, _ := s.checkDLP(&withoutQuery); !result.Allowed {
+		return bareURLSurface
+	}
+	views := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}
+	for _, values := range parsed.Query() {
+		for _, v := range values {
+			views = append(views, IterativeDecode(v))
+		}
+	}
+	for _, view := range views {
+		if view == "" {
+			continue
+		}
+		cleaned := normalize.ForDLP(view)
+		if _, _, ok := p.matchSpanInView(cleaned, view); ok {
+			return credentialAudienceURLQuerySurface
+		}
+	}
+	return bareURLSurface
 }

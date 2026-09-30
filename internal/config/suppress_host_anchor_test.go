@@ -90,6 +90,9 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com"},
 		"GitLab PAT":              {"gitlab.com"},
 		"GitLab CI Job Token":     {"gitlab.com"},
+		// GitHub release downloads redirect to this storage host with a signed
+		// grant in the URL query; the exact host is the whole audience.
+		"JWT Token": {"release-assets.githubusercontent.com"},
 	}
 	for name, hosts := range expected {
 		t.Run(name, func(t *testing.T) {

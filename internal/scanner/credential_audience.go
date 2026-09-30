@@ -515,10 +515,21 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	if !s.queryLessURLScansClean(parsed, memo) {
 		return bareURLSurface
 	}
+	// The views mirror every query view checkDLP scans, keys included, so a
+	// token checkDLP can find is one this check also sees and validates.
 	views := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}
-	for _, values := range parsed.Query() {
+	for key, values := range parsed.Query() {
+		decodedKey := IterativeDecode(key)
+		views = append(views, decodedKey, stripURLNoise(decodedKey))
+		for _, d := range decodeEncodingsRecursive(decodedKey) {
+			views = append(views, d.text)
+		}
 		for _, v := range values {
-			views = append(views, IterativeDecode(v))
+			decoded := IterativeDecode(v)
+			views = append(views, decoded, stripURLNoise(decoded))
+			for _, t := range queryValueDecodedTargets(decoded) {
+				views = append(views, t.text)
+			}
 		}
 	}
 	// Every credential match in the query must be a download grant issued for

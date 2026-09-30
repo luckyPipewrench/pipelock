@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -46,6 +47,7 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 	s := MustNew(credentialAudienceTestConfig())
 	defer s.Close()
 	grant := fakeAudienceJWT()
+	unrelated := claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example","sub":"svc"}`)
 	for _, tc := range []struct {
 		name      string
 		query     string
@@ -61,6 +63,9 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		{"payload truncated json", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com"`), false},
 		{"grant plus an unrelated token", "jwt=" + grant + "&t=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example"}`), false},
 		{"unrelated token before the grant", "t=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example"}`) + "&jwt=" + grant, false},
+		{"grant plus a base64-hidden unrelated token", "jwt=" + grant + "&t=" + base64.StdEncoding.EncodeToString([]byte(unrelated)), false},
+		{"grant plus a hex-hidden unrelated token", "jwt=" + grant + "&t=" + hex.EncodeToString([]byte(unrelated)), false},
+		{"grant plus an unrelated token as a key", "jwt=" + grant + "&" + unrelated + "=1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

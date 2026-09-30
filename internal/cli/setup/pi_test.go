@@ -97,7 +97,7 @@ func TestPiRemoveReportsWhatItDid(t *testing.T) {
 		applied string
 		notSaid string
 	}{
-		{"created file", "", "Would remove ", "Removed ", "Restored"},
+		{"created file", "", "which pipelock pi install created", "which pipelock pi install created", "Restored"},
 		{"prior proxy", `{"theme":"dark","httpProxy":"http://previous.example:8080"}`, "Would restore Pi's previous httpProxy", "Restored Pi's previous HTTP proxy setting", "Removed"},
 		{"no prior proxy", `{"theme":"dark"}`, "Would remove httpProxy from ", "Removed the Pipelock HTTP proxy setting", "Restored"},
 	}

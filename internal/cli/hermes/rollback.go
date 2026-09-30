@@ -111,7 +111,7 @@ func rollbackBrowserDefaultsBestEffort(cmd *cobra.Command, opts *rollbackOptions
 		_, _ = fmt.Fprintf(out, "pipelock: warning: browser defaults not rolled back: %v; pass --home and rerun rollback\n", err)
 		return
 	}
-	if err := rollbackBrowserDefaults(home); err != nil {
+	if err := rollbackBrowserDefaultsWithOutput(home, out); err != nil {
 		path, _ := browserPaths(home)
 		_, _ = fmt.Fprintf(out, "pipelock: warning: browser defaults not rolled back: %v; fix %s and rerun rollback\n", err, path)
 	}

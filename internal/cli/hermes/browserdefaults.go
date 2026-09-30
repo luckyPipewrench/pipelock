@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -181,6 +182,10 @@ func backupBrowserConfig(path string) error {
 }
 
 func rollbackBrowserDefaults(home string) error {
+	return rollbackBrowserDefaultsWithOutput(home, io.Discard)
+}
+
+func rollbackBrowserDefaultsWithOutput(home string, output io.Writer) error {
 	path, state := browserPaths(home)
 	recordData, present, err := readBrowserFile(state)
 	if err != nil || !present {
@@ -217,6 +222,12 @@ func rollbackBrowserDefaults(home string) error {
 			if err := writeBrowserConfig(path, out); err != nil {
 				return err
 			}
+		} else {
+			if err := os.Remove(state); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(output, "pipelock: browser defaults flag already absent; cleared ownership record")
+			return nil
 		}
 	}
 	return os.Remove(state)

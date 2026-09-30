@@ -955,12 +955,12 @@ func TestLaunchStandalone_CustomPolicy(t *testing.T) {
 
 	policy := &Policy{
 		Workspace:     workspace,
-		AllowReadDirs: []string{"/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/", "/etc/ssl/", "/etc/pki/", "/proc/self/"},
-		AllowReadFiles: []string{
+		AllowReadDirs: existingPaths([]string{"/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/", "/etc/ssl/", "/etc/pki/", "/proc/self/"}),
+		AllowReadFiles: existingPaths([]string{
 			"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
 			"/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/passwd", "/etc/group",
-		},
-		AllowRWDirs:  []string{workspace, "/dev/shm/"},
+		}),
+		AllowRWDirs:  existingPaths([]string{workspace, "/dev/shm/"}),
 		AllowRWFiles: []string{"/dev/null", "/dev/zero", "/dev/urandom"},
 	}
 	err := LaunchStandalone(StandaloneLaunchConfig{

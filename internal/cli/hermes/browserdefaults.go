@@ -223,9 +223,15 @@ func rollbackBrowserDefaultsWithOutput(home string, output io.Writer) error {
 			if err := writeBrowserConfig(path, out); err != nil {
 				return err
 			}
+			if err := os.Remove(state); err != nil {
+				return err
+			}
 			// The flag is removed wherever it now sits, so name it: an
 			// operator who re-added it on purpose can restore it from backup.
-			_, _ = fmt.Fprintf(output, "pipelock: removed %s from %s; previous file saved as %s\n", browserdefaults.Flag, path, backup)
+			if _, err := fmt.Fprintf(output, "pipelock: removed %s from %s; previous file saved as %s\n", browserdefaults.Flag, path, backup); err != nil {
+				return fmt.Errorf("browser defaults: removed %s; previous file saved as %s: %w", browserdefaults.Flag, backup, err)
+			}
+			return nil
 		} else {
 			if err := os.Remove(state); err != nil {
 				return err

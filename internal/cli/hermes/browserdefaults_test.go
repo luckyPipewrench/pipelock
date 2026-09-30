@@ -1058,3 +1058,34 @@ func TestRunRollback_LocksPluginRoot(t *testing.T) {
 		t.Fatalf("rollback should wait on the held plugin root, got %v", err)
 	}
 }
+
+type failingBrowserOutput struct{}
+
+func (failingBrowserOutput) Write([]byte) (int, error) { return 0, errors.New("output closed") }
+
+// When the removal notice cannot be written, rollback still names the backup
+// in its error, and the removal itself is complete.
+func TestBrowserDefaultsRollbackNoticeWriteFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, state := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"--lang=fr"}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserTestFile(t, path, `{"args":"--lang=de,`+browserFlag+`"}`, 0o600)
+	err := rollbackBrowserDefaultsWithOutput(home, failingBrowserOutput{})
+	if err == nil || !strings.Contains(err.Error(), path+".bak.") {
+		t.Fatalf("rollback error = %v, want the backup path", err)
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership record remains: %v", err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := browserArgs(obj); args != "--lang=de" {
+		t.Fatalf("args = %q", args)
+	}
+}

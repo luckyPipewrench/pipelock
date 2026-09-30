@@ -16,6 +16,36 @@ import (
 
 const credentialAudienceReceiptExtensionKey = "dlp_credential_audience_allow" // #nosec G101 -- receipt extension identifier, not credential material
 
+const (
+	// blockLayerCredentialAudienceReceipt is the distinct block layer used
+	// when flight_recorder.require_receipts is on and the credential
+	// audience allow receipt could not be durably confirmed before the
+	// request was forwarded. It is kept separate from the generic
+	// blockLayerReceiptEmission layer used by admission receipts so
+	// operators and receipts can tell the two failure sources apart.
+	blockLayerCredentialAudienceReceipt  = "credential_audience_receipt"                           // #nosec G101 -- block-reason layer identifier, not credential material
+	credentialAudienceReceiptBlockReason = "credential audience allow receipt confirmation failed" // #nosec G101 -- operator-facing block reason text, not credential material
+)
+
+// errCredentialAudienceReceiptEmitterUnavailable is returned when no receipt
+// emitter is configured and flight_recorder.require_receipts is on, so the
+// audience-allow record cannot be durably confirmed before forwarding.
+var errCredentialAudienceReceiptEmitterUnavailable = errors.New("credential audience receipt emitter unavailable")
+
+// newCredentialAudienceReceiptBlockedRequest builds the typed block error for
+// a require_receipts failure on the credential-audience-allow path. It
+// mirrors newReceiptEmissionBlockedRequest's shape but names receipt
+// confirmation explicitly rather than reusing the generic admission-receipt
+// reason, so a block here is never confused with an admission-receipt
+// failure in logs, metrics, or the block-reason layer header.
+func newCredentialAudienceReceiptBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerCredentialAudienceReceipt,
+		credentialAudienceReceiptBlockReason,
+		credentialAudienceReceiptBlockReason+": "+err.Error(),
+	)
+}
+
 // recordCredentialAudienceAllow records the bounded observability side effect
 // shared by forward, intercept, reverse, and WebSocket DLP. It has no verdict
 // effect: telemetry failures must never turn an audience match into a bypass.
@@ -32,18 +62,34 @@ func recordCredentialAudienceAllow(logger *audit.Logger, metric *metrics.Metrics
 // a v1 receipt channel. The stable signed receipt schema deliberately remains
 // unchanged: the extension records that the DLP match was allowed for the
 // declared audience without becoming a signed authorization claim.
-func (p *Proxy) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) {
+//
+// cfg is the request's config snapshot, never the live pointer, so a reload
+// mid-request cannot flip require_receipts for an in-flight request. A nil cfg
+// means receipts are not required.
+//
+// Under flight_recorder.require_receipts, the caller MUST treat a non-nil
+// return as a fail-closed signal and block the request before any upstream
+// bytes are sent: this is the durable evidence that a credential was allowed
+// through to its declared audience, so require_receipts covers it the same
+// way it covers every other allow receipt. With require_receipts off the
+// returned error is always nil; emission stays best-effort (log + metric),
+// matching the historical behavior.
+func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
 	if p == nil {
-		return
+		return nil
 	}
 	recordCredentialAudienceAllow(p.logger, p.metrics, ctx, allow)
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})
 	if err != nil {
-		return
+		if requireReceipts {
+			return err
+		}
+		return nil
 	}
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	emitErr := p.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -55,24 +101,30 @@ func (p *Proxy) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanne
 		Agent:     agent,
 		Extension: extension,
 	})
+	if requireReceipts && emitErr != nil {
+		return emitErr
+	}
+	return nil
 }
 
 // emitCredentialAudienceReceipt preserves the signed allow record when its
 // unsigned advisory extension is malformed. The extension never decides a
 // verdict, and losing the entire receipt is a worse failure direction than
-// omitting that optional metadata.
-func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) {
+// omitting that optional metadata. The returned error is non-nil only when
+// the signed receipt itself (not just the advisory extension) could not be
+// recorded; callers under require_receipts treat that as fail-closed.
+func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) error {
 	if p == nil {
-		return
+		return errCredentialAudienceReceiptEmitterUnavailable
 	}
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
-		return
+		return errCredentialAudienceReceiptEmitterUnavailable
 	}
-	emitCredentialAudienceReceiptWithFallback(
+	return emitCredentialAudienceReceiptWithFallback(
 		opts,
 		e.Emit,
 		p.emitV2Receipt,
@@ -83,24 +135,37 @@ func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) {
 	)
 }
 
-func (p *Proxy) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) {
+// recordCredentialAudienceAllows records every distinct allow and, when
+// flight_recorder.require_receipts is on, returns the first receipt
+// confirmation failure. It still attempts every allow so the audit log and
+// metrics stay complete even though the request is blocked once any one
+// confirmation fails.
+func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
+	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		p.recordCredentialAudienceAllow(ctx, allow, transport, method, target, requestID, agent)
+		if err := p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }
 
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string) {
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
 	if rp == nil {
-		return
+		return nil
 	}
 	recordCredentialAudienceAllow(rp.logger, rp.metrics, ctx, allow)
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	extension, err := json.Marshal(map[string]scanner.CredentialAudienceAllow{
 		credentialAudienceReceiptExtensionKey: allow,
 	})
 	if err != nil {
-		return
+		if requireReceipts {
+			return err
+		}
+		return nil
 	}
-	rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	emitErr := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -112,11 +177,15 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(ctx audit.LogContex
 		Agent:     agent,
 		Extension: extension,
 	})
+	if requireReceipts && emitErr != nil {
+		return emitErr
+	}
+	return nil
 }
 
-func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOpts) {
+func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOpts) error {
 	if rp == nil {
-		return
+		return errCredentialAudienceReceiptEmitterUnavailable
 	}
 	if rp.cfgPtr != nil {
 		if cfg := rp.cfgPtr.Load(); cfg != nil {
@@ -125,9 +194,9 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOp
 	}
 	e := rp.receiptEmitter()
 	if e == nil {
-		return
+		return errCredentialAudienceReceiptEmitterUnavailable
 	}
-	emitCredentialAudienceReceiptWithFallback(
+	return emitCredentialAudienceReceiptWithFallback(
 		opts,
 		e.Emit,
 		func(v2Opts receipt.EmitOpts) error {
@@ -143,29 +212,35 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOp
 	)
 }
 
+// emitCredentialAudienceReceiptWithFallback emits the signed receipt with the
+// advisory extension and returns the error only when the signed receipt
+// itself could not be recorded (extension-merge failures fall back to an
+// unextended receipt and return nil, matching the historical best-effort
+// behavior for that narrow case).
 func emitCredentialAudienceReceiptWithFallback(
 	opts receipt.EmitOpts,
 	emitV1 func(receipt.EmitOpts) error,
 	emitV2 func(receipt.EmitOpts) error,
 	logFailure func(receipt.EmitOpts, error),
 	logDropped func(receipt.EmitOpts),
-) {
+) error {
 	if err := emitV1(opts); err == nil {
 		_ = emitV2(opts)
-		return
+		return nil
 	} else if !errors.Is(err, receipt.ErrExtensionMerge) {
 		logFailure(opts, err)
-		return
+		return err
 	}
 
 	fallback := opts
 	fallback.Extension = nil
 	if err := emitV1(fallback); err != nil {
 		logFailure(fallback, err)
-		return
+		return err
 	}
 	logDropped(fallback)
 	_ = emitV2(fallback)
+	return nil
 }
 
 func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts receipt.EmitOpts) {
@@ -175,8 +250,15 @@ func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts rec
 	logger.LogError(audit.NewRequestLogContext(opts.RequestID), errors.New("credential audience receipt extension could not be merged; signed receipt emitted without the extension"))
 }
 
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) {
+// recordCredentialAudienceAllows records every distinct allow for the reverse
+// proxy and, when flight_recorder.require_receipts is on, returns the first
+// receipt confirmation failure. See (*Proxy).recordCredentialAudienceAllows.
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
+	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		rp.recordCredentialAudienceAllow(ctx, allow, method, target, requestID, agent)
+		if err := rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }

@@ -63,7 +63,11 @@ func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, cookieNam
 	if err != nil {
 		return
 	}
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	// Issuer-cookie allows are a separate, narrower bounded exception from the
+	// credential-audience-allow path and are not covered by the
+	// require_receipts credential-audience contract; emission stays
+	// best-effort here.
+	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerCookieReceiptExtensionKey, Pattern: pattern,
 		Transport: "intercept", Method: method, Target: target,

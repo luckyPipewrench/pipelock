@@ -505,7 +505,11 @@ func (p *Proxy) recordIssuerQueryAllow(ctx audit.LogContext, target, requestID, 
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
 	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	// Issuer-query allows are a separate, narrower bounded exception from the
+	// credential-audience-allow path and are not covered by the
+	// require_receipts credential-audience contract; emission stays
+	// best-effort here.
+	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
 		Transport: "intercept", Method: method, Target: safeTarget,

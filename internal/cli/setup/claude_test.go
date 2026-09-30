@@ -1883,3 +1883,24 @@ func TestClaudeGrepCredentialDirsMatchCredentialRule(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed pins that a Grep is
+// refused when the home directory cannot be resolved, since the credential
+// directories cannot be located to check the search against.
+func TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed(t *testing.T) {
+	t.Setenv("HOME", "")
+	project := t.TempDir()
+	for _, input := range []string{
+		`{"pattern":"func","path":"` + project + `"}`,
+		`{"pattern":"func"}`,
+	} {
+		payload := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":` + input + `,"tool_use_id":"t1","cwd":"` + project + `"}`
+		got, err := runClaudeHookDecision(t, payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != decisionDeny {
+			t.Errorf("Grep %s with HOME unset: got %s, want deny", input, got)
+		}
+	}
+}

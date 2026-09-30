@@ -900,7 +900,9 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "", false
+		// Without the home directory the credential directories cannot be
+		// located, so refuse rather than let the search run unchecked.
+		return "an unresolvable home directory", true
 	}
 	resolve := func(path string) string {
 		if resolved, err := filepath.EvalSymlinks(path); err == nil {

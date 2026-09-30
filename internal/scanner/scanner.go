@@ -2520,6 +2520,7 @@ func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMatch) {
+	var queryLessMemo queryLessDLPMemo
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
@@ -2630,7 +2631,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
-				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed)); allowed {
+				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo)); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
 				}
@@ -2670,7 +2671,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." -
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String())
+	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String(), &queryLessMemo)
 	warnMatches = append(warnMatches, subWarns...)
 	credentialAudienceAllows = append(credentialAudienceAllows, subResult.CredentialAudienceAllows...)
 	if !subResult.Allowed {
@@ -2792,7 +2793,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 // for the specific case this still cannot close).
 //
 //pipelock:provenance-transform query_subsequence
-func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string) (result Result, warnMatches []WarnMatch) {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *queryLessDLPMemo) (result Result, warnMatches []WarnMatch) {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}, nil
 	}
@@ -2807,7 +2808,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string) (result
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
 	for size := 2; size <= 4 && size <= n; size++ {
-		result, warns := s.checkDLPCombinations(values, n, size, hostname, target)
+		result, warns := s.checkDLPCombinations(values, n, size, hostname, target, memo)
 		warnMatches = append(warnMatches, warns...)
 		credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
 		if !result.Allowed {
@@ -2838,7 +2839,7 @@ func querySubsequenceValues(rawQuery string) []string {
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string) (result Result, warnMatches []WarnMatch) {
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string, memo *queryLessDLPMemo) (result Result, warnMatches []WarnMatch) {
 	var credentialAudienceAllows []CredentialAudienceAllow
 	defer func() {
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
@@ -2874,7 +2875,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
 				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
-					if allow, allowed := s.credentialAudienceAllows(p, target, s.urlDLPAudienceSurfaceForTarget(p, target)); allowed {
+					if allow, allowed := s.credentialAudienceAllows(p, target, s.urlDLPAudienceSurfaceForTarget(p, target, memo)); allowed {
 						credentialAudienceAllows = append(credentialAudienceAllows, allow)
 						continue
 					}

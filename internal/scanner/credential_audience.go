@@ -461,12 +461,35 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 
 // urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
 // a string. An unparseable target keeps the bare "url" surface.
-func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string) string {
+func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string, memo *queryLessDLPMemo) string {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return "url"
 	}
-	return s.urlDLPAudienceSurface(p, parsed)
+	return s.urlDLPAudienceSurface(p, parsed, memo)
+}
+
+// queryLessURLScansClean reports whether the URL without its query passes DLP,
+// computing it at most once per memo.
+func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo) bool {
+	if memo != nil && memo.done {
+		return memo.clean
+	}
+	withoutQuery := *parsed
+	withoutQuery.RawQuery = ""
+	withoutQuery.ForceQuery = false
+	result, _ := s.checkDLP(&withoutQuery)
+	if memo != nil {
+		memo.done, memo.clean = true, result.Allowed
+	}
+	return result.Allowed
+}
+
+// queryLessDLPMemo holds the query-less rescan result for one outer URL scan,
+// so several URL-query audience matches in that scan share one rescan.
+type queryLessDLPMemo struct {
+	done  bool
+	clean bool
 }
 
 // urlDLPAudienceSurface picks the decision surface for a URL DLP match. It is
@@ -476,16 +499,18 @@ func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target stri
 // including a credential in the path, the host, a userinfo section or a
 // fragment, and one split across the path and query, stays "url", which no
 // query-carrier audience accepts. Any parse or scan uncertainty stays "url".
-func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL) string {
+func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, memo *queryLessDLPMemo) string {
 	const bareURLSurface = "url"
 	if p == nil || p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierURLQuery == 0 ||
 		parsed == nil || parsed.RawQuery == "" {
 		return bareURLSurface
 	}
-	withoutQuery := *parsed
-	withoutQuery.RawQuery = ""
-	withoutQuery.ForceQuery = false
-	if result, _ := s.checkDLP(&withoutQuery); !result.Allowed {
+	// Only an audience host can ever earn url_query, so every other destination
+	// skips the query-less rescan below.
+	if _, allowed := s.credentialAudienceAllows(p, parsed.String(), credentialAudienceURLQuerySurface); !allowed {
+		return bareURLSurface
+	}
+	if !s.queryLessURLScansClean(parsed, memo) {
 		return bareURLSurface
 	}
 	views := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}

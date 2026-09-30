@@ -239,15 +239,33 @@ func TestUrlDLPAudienceSurface_Edges(t *testing.T) {
 		{"query carriage", jwtPattern, parse(githubReleaseAssetsBase + "?j=" + jwt), credentialAudienceURLQuerySurface},
 		{"path carriage", jwtPattern, parse(githubReleaseAssetsBase + "/" + jwt + "?j=" + jwt), "url"},
 	} {
-		if got := s.urlDLPAudienceSurface(tc.pattern, tc.target); got != tc.want {
+		if got := s.urlDLPAudienceSurface(tc.pattern, tc.target, nil); got != tc.want {
 			t.Errorf("%s: surface = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 
-	if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, "https://%zz/a?j="+jwt); got != "url" {
+	// Only the audience host pays for the query-less rescan, and one scan's
+	// memo computes it once however many matches ask.
+	otherHost := &queryLessDLPMemo{}
+	if got := s.urlDLPAudienceSurface(jwtPattern, parse("https://api.vendor.example/a?j="+jwt), otherHost); got != "url" || otherHost.done {
+		t.Fatalf("non-audience host: surface = %q, rescanned = %v; want url without a rescan", got, otherHost.done)
+	}
+	shared := &queryLessDLPMemo{}
+	release := parse(githubReleaseAssetsBase + "?j=" + jwt)
+	for i := 0; i < 2; i++ {
+		if got := s.urlDLPAudienceSurface(jwtPattern, release, shared); got != credentialAudienceURLQuerySurface || !shared.done || !shared.clean {
+			t.Fatalf("audience host pass %d: surface = %q, memo = %+v", i, got, *shared)
+		}
+	}
+	dirty := &queryLessDLPMemo{done: true, clean: false}
+	if got := s.urlDLPAudienceSurface(jwtPattern, release, dirty); got != "url" {
+		t.Fatalf("a memoized dirty query-less URL must keep the bare url surface, got %q", got)
+	}
+
+	if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, "https://%zz/a?j="+jwt, nil); got != "url" {
 		t.Errorf("malformed target surface = %q, want url", got)
 	}
-	if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, githubReleaseAssetsBase+"?j="+jwt); got != credentialAudienceURLQuerySurface {
+	if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, githubReleaseAssetsBase+"?j="+jwt, nil); got != credentialAudienceURLQuerySurface {
 		t.Errorf("valid target surface = %q, want url_query", got)
 	}
 

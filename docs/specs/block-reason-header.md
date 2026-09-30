@@ -62,7 +62,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
 | `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate limit exceeded (every subdomain of a site shares one URL-scanner budget). | `warn` | `transient` |
 | `data_budget` | Per-session data budget exceeded, the URL scanner's per-base-domain `fetch_proxy.monitoring.max_data_per_minute` budget exceeded, or (HTTP 503) the session store is at capacity (`session capacity exhausted; release active quarantine or increase max_sessions`); raise `session_profiling.max_sessions` for the latter. | `warn` | `policy` |
-| `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`. | `warn` | `policy` |
+| `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`; for a trusted artifact host above the bounded scan, `response_scanning.exempt_domains` (unscanned) or, on TLS intercept, `tls_interception.passthrough_domains`. | `warn` | `policy` |
 
 ### Content / payload layer
 

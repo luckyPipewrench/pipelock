@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -31,6 +32,26 @@ func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) i
 	return limit
 }
 
+// sizeRemedies names the above-cap escape hatches the blocking path really
+// consults. A remediation hint must only name knobs the path reads: an inert
+// hint teaches the operator that policy changed when nothing did.
+type sizeRemedies struct {
+	// SizeExempt: response_scanning.size_exempt_domains lifts the block into a
+	// bounded whole-buffer scan.
+	SizeExempt bool
+	// Exempt: response_scanning.exempt_domains streams the host unscanned with
+	// no size cap on this transport.
+	Exempt bool
+	// Passthrough: tls_interception.passthrough_domains skips interception.
+	// Only the TLS-intercept path can honor it.
+	Passthrough bool
+}
+
+const (
+	sizeRemedyExemptText      = "response_scanning.exempt_domains (that host's responses are then not scanned)"
+	sizeRemedyPassthroughText = "tls_interception.passthrough_domains (not intercepted at all)"
+)
+
 // responseSizeBlockReason renders the operator-facing reason for a response
 // blocked on size. sizeExemptHonored reports whether the blocking path actually
 // consults response_scanning.size_exempt_domains: the forward path gates this
@@ -44,6 +65,13 @@ func responseSizeBlockReason(host string, size, limit int64, knob string, sizeEx
 // responseSizeObservedBlockReason distinguishes a complete size from the lower
 // bound produced by a limited read of a streamed response.
 func responseSizeObservedBlockReason(host string, size, limit int64, knob string, sizeExemptHonored, exact bool) string {
+	return responseSizeRemedyBlockReason(host, size, limit, knob, exact, sizeRemedies{SizeExempt: sizeExemptHonored})
+}
+
+// responseSizeRemedyBlockReason renders the over-cap block reason, listing the
+// narrowest remedy first and the unscanned valves last with an explicit
+// warning.
+func responseSizeRemedyBlockReason(host string, size, limit int64, knob string, exact bool, rem sizeRemedies) string {
 	if host == "" {
 		host = "unknown-host"
 	}
@@ -57,7 +85,7 @@ func responseSizeObservedBlockReason(host string, size, limit int64, knob string
 	// looking for and never find.
 	if knob == "" {
 		const fixed = "this transport's scan ceiling is fixed and cannot be raised by configuration"
-		if sizeExemptHonored {
+		if rem.SizeExempt {
 			return fmt.Sprintf(
 				"response from %s is %s, exceeding scan ceiling %d bytes; add the trusted host to response_scanning.size_exempt_domains (%s)",
 				host, sizeText, limit, fixed,
@@ -69,22 +97,43 @@ func responseSizeObservedBlockReason(host string, size, limit int64, knob string
 		)
 	}
 	remedy := fmt.Sprintf("raise %s", knob)
-	if sizeExemptHonored {
+	if rem.SizeExempt {
 		remedy += " or add the trusted host to response_scanning.size_exempt_domains"
+		if rem.Exempt || rem.Passthrough {
+			remedy += " (bounded scan up to response_scanning.size_exempt_scan_max_bytes)"
+			remedy += unscannedRemedies(rem, ", or for a trusted artifact host whose downloads exceed that bound use ")
+		}
 	} else {
 		// Say the exemption is unavailable rather than staying silent about it.
 		// An operator who knows size_exempt_domains from the forward path would
 		// otherwise assume it applies here and quietly get no effect.
 		remedy += " (this path has no per-host size exemption)"
+		remedy += unscannedRemedies(rem, ", or for a trusted artifact host use ")
 	}
 	return fmt.Sprintf("response from %s is %s, exceeding scan ceiling %d bytes; %s", host, sizeText, limit, remedy)
 }
 
-func responseSizeExemptScanBlockReason(host string, size, limit int64) string {
-	return responseSizeExemptObservedScanBlockReason(host, size, limit, true)
+// unscannedRemedies joins the enabled full-trust remedies behind lead, or
+// returns "" when the path honors none of them.
+func unscannedRemedies(rem sizeRemedies, lead string) string {
+	var parts []string
+	if rem.Exempt {
+		parts = append(parts, sizeRemedyExemptText)
+	}
+	if rem.Passthrough {
+		parts = append(parts, sizeRemedyPassthroughText)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return lead + strings.Join(parts, " or ")
 }
 
-func responseSizeExemptObservedScanBlockReason(host string, size, limit int64, exact bool) string {
+func responseSizeExemptScanBlockReason(host string, size, limit int64) string {
+	return responseSizeExemptObservedScanBlockReason(host, size, limit, true, sizeRemedies{})
+}
+
+func responseSizeExemptObservedScanBlockReason(host string, size, limit int64, exact bool, rem sizeRemedies) string {
 	if host == "" {
 		host = "unknown-host"
 	}
@@ -92,7 +141,7 @@ func responseSizeExemptObservedScanBlockReason(host string, size, limit int64, e
 	if !exact {
 		sizeText = fmt.Sprintf("at least %d bytes", size)
 	}
-	return fmt.Sprintf("size-exempt response from %s is %s, exceeding bounded scan ceiling %d bytes; raise response_scanning.size_exempt_scan_max_bytes or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content", host, sizeText, limit)
+	return fmt.Sprintf("size-exempt response from %s is %s, exceeding bounded scan ceiling %d bytes; raise response_scanning.size_exempt_scan_max_bytes or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content%s", host, sizeText, limit, unscannedRemedies(rem, ", or for a trusted artifact host whose downloads exceed that bound use "))
 }
 
 // shieldOversizeBlockReason explains a browser-shield oversize block the way

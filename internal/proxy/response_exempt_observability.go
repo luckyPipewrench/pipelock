@@ -10,6 +10,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
+// receiptReasonExemptOverCapUnscanned is the outcome-receipt close reason for a
+// response_scanning.exempt_domains host that streamed a body larger than the
+// scan ceiling without any scan.
+const receiptReasonExemptOverCapUnscanned = "exempt_over_cap_unscanned"
+
 func recordResponseScanExemptOverCapUnscanned(m *metrics.Metrics, logger *audit.Logger, actx audit.LogContext, host, transport string, bytesWritten, scanCapBytes int64) {
 	if scanCapBytes <= 0 || bytesWritten <= scanCapBytes {
 		return

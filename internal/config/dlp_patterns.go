@@ -37,12 +37,25 @@ const (
 	// and only on a git smart-HTTP or Git LFS path. It never widens the REST
 	// host list, and the REST hosts never accept Basic through it.
 	CredentialAudienceCarrierGitBasic
+	// CredentialAudienceCarrierURLQuery accepts the credential only inside the
+	// URL query of a request to an audience host. It never covers the path,
+	// the host, a header, or a request body, so a grant that a vendor issues
+	// as a signed download link can reach that vendor's storage host and
+	// nothing else.
+	CredentialAudienceCarrierURLQuery
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
 // Bearer or token scheme at the REST hosts, plus the git rule, which accepts
 // Basic at github.com only on a git transport path.
 const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken | CredentialAudienceCarrierGitBasic
+
+// githubDownloadGrantAudienceHosts are the hosts GitHub's signed release
+// redirect points at. github.com/<owner>/<repo>/releases/download/... answers
+// 302 to release-assets.githubusercontent.com with a GitHub-issued JWT in the
+// query. Only that exact host is listed: the grant is for that storage host,
+// and the sender cannot read back what lands there.
+var githubDownloadGrantAudienceHosts = []string{"release-assets.githubusercontent.com"}
 
 // gitlabTokenAudienceMask is the documented GitLab access-token carriers:
 // PRIVATE-TOKEN and Authorization Bearer for the API on any path, and
@@ -304,7 +317,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
 	// JSON-object prefixes so the precision fix does not drop compact
 	// JWTs serialized with whitespace.
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh},
+	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery},
 
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or

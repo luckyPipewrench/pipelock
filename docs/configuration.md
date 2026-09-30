@@ -207,8 +207,6 @@ A high-entropy message can be reported as `high entropy query param "dns" DNS me
 
 For a benign GET example, `https://resolver.vendor.example/dns-query?dns=AAABAAABAAAAAAAAA3d3dwdleGFtcGxlBHRlc3QAAAEAAQ` encodes a query for `www.example.test`. Use a resolver you operate or trust when testing; the example hostname is reserved and does not resolve publicly.
 
-For a benign GET example, `https://resolver.vendor.example/dns-query?dns=AAABAAABAAAAAAAABXd3dwpleGFtcGxlBHRlc3QAAAEAAQ` encodes a query for `www.example.test`. Use a resolver you operate or trust when testing; the example hostname is reserved and does not resolve publicly.
-
 If a paging token returned in a response is blocked by query entropy, the issuer-bound allowance requires `tls_interception.enabled`, `request_body_scanning.enabled`, `request_body_scanning.scan_headers: true`, `request_body_scanning.issuer_bound_session_cookies: true`, and an operator-established agent identity (`default_agent_identity`, a bound listener, or `source_cidrs`). Without those prerequisites, use an exact `query_entropy_param_exclusions` entry only when that parameter is governed by a known endpoint contract.
 
 **Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Defaults cover package/object hosts that use hash-like routing paths (`files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com`). This is also useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).

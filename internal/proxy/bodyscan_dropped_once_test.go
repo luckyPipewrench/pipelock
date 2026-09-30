@@ -103,3 +103,57 @@ func TestBodyDLPDropsAcrossTextSets(t *testing.T) {
 		t.Fatalf("text sets recorded %d drops, want 2", drops)
 	}
 }
+
+// Seed-phrase matches carry a value identity like pattern matches do, so two
+// different phrases in one body are two drops, while one phrase is still one
+// drop across the redaction passes.
+func TestScanRequestBody_DistinctSeedPhrasesRecordedSeparately(t *testing.T) {
+	t.Parallel()
+
+	const (
+		name   = "BIP-39 Seed Phrase"
+		first  = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+		second = "legal winner thank year wave sausage worth useful legal winner thank yellow"
+	)
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatalf("scanner: %v", err)
+	}
+	t.Cleanup(sc.Close)
+
+	run := func(body string, matcher *redact.Matcher, disabled []string) (int, BodyScanResult) {
+		var drops int
+		_, result := scanRequestBody(context.Background(), BodyScanRequest{
+			Body:            strings.NewReader(body),
+			ContentType:     contentTypeJSON,
+			Target:          "https://api.vendor.example/upload",
+			MaxBytes:        len(body) * 2,
+			Scanner:         sc,
+			RedactMatcher:   matcher,
+			DisablePatterns: disabled,
+			OnDroppedDLP: func(m scanner.TextDLPMatch, _ string) {
+				if m.PatternName == name {
+					drops++
+				}
+			},
+		})
+		return drops, result
+	}
+
+	one := `{"phrase":"` + first + `"}`
+	two := `{"a":"` + first + `","b":"` + second + `"}`
+	// Positive control: both phrases are detected when the pattern is enabled.
+	if _, result := run(two, nil, nil); result.Clean || !hasDLPMatchName(result.DLPMatches, name) {
+		t.Fatalf("seed phrases not detected: %v", dlpMatchNames(result.DLPMatches))
+	}
+	for _, matcher := range []*redact.Matcher{nil, redact.NewDefaultMatcher()} {
+		if n, _ := run(one, matcher, []string{name}); n != 1 {
+			t.Fatalf("one phrase recorded %d drops, want 1", n)
+		}
+		if n, _ := run(two, matcher, []string{name}); n != 2 {
+			t.Fatalf("two distinct phrases recorded %d drops, want 2", n)
+		}
+	}
+}

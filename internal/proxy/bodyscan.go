@@ -1421,7 +1421,10 @@ func bodyDLPDropKey(m scanner.TextDLPMatch) string {
 }
 
 // onceBodyDLPDrops wraps a dropped-match callback so each distinct dropped
-// finding reaches it once, however many scan passes report it. The key matches
+// value reaches it once per request, however many scan passes or fields report
+// it. Fields are not part of the identity: the joined-body pass reports matches
+// that no single field owns, so counting per field would reintroduce the
+// overcount this collapses. The key matches
 // recordUniqueBodyDLPDrops, which collapses repeats within a single pass.
 func onceBodyDLPDrops(onDropped func(scanner.TextDLPMatch, string)) func(scanner.TextDLPMatch, string) {
 	if onDropped == nil {

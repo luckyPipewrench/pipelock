@@ -563,6 +563,10 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 						"",
 						"",
 					),
+					// Distinct phrases need distinct identities, or drop
+					// accounting collapses two phrases into one finding.
+					valueIdentity:    sha256.Sum256([]byte(c.text[span.Start:span.End])),
+					hasValueIdentity: true,
 				})
 				break // one seed match per scan is sufficient
 			}

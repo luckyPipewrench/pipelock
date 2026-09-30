@@ -229,3 +229,31 @@ func TestAWSAccessID_JoinedSeparatorBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// A key split across stream events reads, once the events' text is joined,
+// as an uppercase credential prefix running into other words. An uppercase
+// AKIA or ASIA prefix keeps that detectable; mixed-case prose does not.
+func TestAWSAccessID_JoinedUppercasePrefixRunsIntoWords(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	head := "AKIA" + "IOSFOD"
+	tail := "NN7" + "EXAMPLE"
+	for _, tc := range []struct {
+		name  string
+		text  string
+		clean bool
+	}{
+		{"akia split by event field names", "text " + head + "status message parts text " + tail, false},
+		{"asia split by event field names", "text " + "ASIA" + "IOSFOD" + "status message parts text " + tail, false},
+		{"mixed-case Asia prose stays clean", "Asia" + "pacific operations to prevent fingerprinting", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := s.ScanTextForDLP(context.Background(), tc.text)
+			if r.Clean != tc.clean {
+				t.Fatalf("Clean = %v, want %v (matches %d)", r.Clean, tc.clean, len(r.Matches))
+			}
+		})
+	}
+}

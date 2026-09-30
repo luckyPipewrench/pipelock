@@ -107,7 +107,12 @@ func validateAWSAccessIDJoined(joined string, start, end int, source string, off
 			if i+n > end || !strings.EqualFold(joined[i:i+len(prefix)], prefix) {
 				continue
 			}
-			if awsJoinedWindowAllowed(joined[i:i+n], prefix) &&
+			// An uppercase AKIA or ASIA prefix is itself a credential signal that
+			// prose does not produce, so its window may run into joined words:
+			// that is how a key split across stream events reads once the
+			// events' text is joined. The single-case rule exists for resource
+			// prefixes and for lowercase or mixed-case prose such as "Asia".
+			if awsJoinedWindowAllowed(joined[i:i+n], prefix, awsUppercaseCredentialPrefix(joined[i:i+len(prefix)])) &&
 				(prefix == "AKIA" || prefix == "ASIA" || awsJoinedStartAllowed(source, offsets[i], joined[i])) {
 				return true
 			}
@@ -116,7 +121,13 @@ func validateAWSAccessIDJoined(joined string, start, end int, source string, off
 	return false
 }
 
-func awsJoinedWindowAllowed(window, prefix string) bool {
+func awsUppercaseCredentialPrefix(prefix string) bool {
+	return prefix == "AKIA" || prefix == "ASIA"
+}
+
+// awsJoinedWindowAllowed requires an alphanumeric window. mixedCaseOK relaxes
+// only the single-case rule, never the character class.
+func awsJoinedWindowAllowed(window, prefix string, mixedCaseOK bool) bool {
 	var upper, lower bool
 	for j := 0; j < len(window); j++ {
 		switch b := window[j]; {
@@ -129,7 +140,7 @@ func awsJoinedWindowAllowed(window, prefix string) bool {
 			return false
 		}
 	}
-	if upper && lower {
+	if upper && lower && !mixedCaseOK {
 		return false
 	}
 	if lower && prefix != "AKIA" && prefix != "ASIA" {

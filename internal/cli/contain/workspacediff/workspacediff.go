@@ -5,9 +5,10 @@
 // workspace between the start and end of a session, and emits it as a signed
 // evidence statement bound to that session's posture capsule.
 //
-// This is evidence, not backup: no content is stored, only path/kind/size/
-// mtime/digest metadata sufficient to name what changed. There is no
-// snapshot store, no restore path, no dedup, no retention policy.
+// This is evidence, not backup: snapshots hold only path/kind/size/mtime/
+// digest metadata, in memory, sufficient to name what changed, and the signed
+// statement carries the resulting path lists rather than that metadata. There
+// is no snapshot store, no restore path, no dedup, no retention policy.
 package workspacediff
 
 import (

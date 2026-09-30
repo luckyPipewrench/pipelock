@@ -558,6 +558,27 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	return bareURLSurface
 }
 
+// candidateTokensAreGrants reports whether every match of p in text is a
+// download grant for target's host. A target that does not parse, or text
+// with no match, is false.
+func candidateTokensAreGrants(p *compiledPattern, text, target string) bool {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	host := canonicalAudienceHost(parsed.Hostname())
+	locs := p.re.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return false
+	}
+	for _, loc := range locs {
+		if !downloadGrantClaimsMatch(text[loc[0]:loc[1]], host) {
+			return false
+		}
+	}
+	return true
+}
+
 // canonicalAudienceHost lowercases a hostname and drops a trailing dot, the
 // same spelling the audience host list uses.
 func canonicalAudienceHost(host string) string {

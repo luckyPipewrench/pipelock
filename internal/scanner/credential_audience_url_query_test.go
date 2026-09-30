@@ -66,6 +66,7 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		{"grant plus a base64-hidden unrelated token", "jwt=" + grant + "&t=" + base64.StdEncoding.EncodeToString([]byte(unrelated)), false},
 		{"grant plus a hex-hidden unrelated token", "jwt=" + grant + "&t=" + hex.EncodeToString([]byte(unrelated)), false},
 		{"grant plus an unrelated token as a key", "jwt=" + grant + "&" + unrelated + "=1", false},
+		{"grant plus an unrelated token split around noise", "jwt=" + grant + "&a=" + unrelated[:40] + "&noise=A&b=" + unrelated[40:], false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

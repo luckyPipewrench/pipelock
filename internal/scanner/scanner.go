@@ -2875,7 +2875,13 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
 				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
-					if allow, allowed := s.credentialAudienceAllows(p, target, s.urlDLPAudienceSurfaceForTarget(p, target, memo)); allowed {
+					// The reassembled candidate is a token the URL-wide check never
+					// saw, so it must itself be a grant for this host.
+					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
+					if surface == credentialAudienceURLQuerySurface && !candidateTokensAreGrants(p, cleaned, target) {
+						surface = "url"
+					}
+					if allow, allowed := s.credentialAudienceAllows(p, target, surface); allowed {
 						credentialAudienceAllows = append(credentialAudienceAllows, allow)
 						continue
 					}

@@ -130,6 +130,14 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 	if !ok {
 		return keep, nil
 	}
+	// Signed download grants use HTTPS query carriage. The shared host
+	// canonicalizer also accepts WSS for other credential carriers.
+	if surface == credentialAudienceURLQuerySurface {
+		parsed, err := url.Parse(target)
+		if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+			return keep, nil
+		}
+	}
 
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {

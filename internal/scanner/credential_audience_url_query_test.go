@@ -254,3 +254,21 @@ func marshalAllows(allows []CredentialAudienceAllow) (string, error) {
 	out, err := json.Marshal(allows)
 	return string(out), err
 }
+
+func TestCredentialAudienceURLQueryRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+	candidates := []credentialAudienceCandidate{{
+		patternName: jwtPatternName,
+		hosts:       []string{githubReleaseAssetsHost},
+		carrierMask: config.CredentialAudienceCarrierURLQuery,
+	}}
+	for _, scheme := range []string{"https", "wss", "http", "ws"} {
+		t.Run(scheme, func(t *testing.T) {
+			keep, allows := filterCredentialAudience(candidates, scheme+"://"+githubReleaseAssetsHost+"/asset", credentialAudienceURLQuerySurface)
+			wantAllow := scheme == "https"
+			if keep[0] == wantAllow || (len(allows) != 0) != wantAllow {
+				t.Fatalf("scheme %s: keep=%v allows=%v, want allowance=%v", scheme, keep, allows, wantAllow)
+			}
+		})
+	}
+}

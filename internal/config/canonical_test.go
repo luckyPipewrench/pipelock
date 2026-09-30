@@ -49,6 +49,28 @@ func TestCanonicalPolicyHash_Deterministic(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_CredentialAudienceCarriers(t *testing.T) {
+	t.Parallel()
+	baseline := canonicalHashOf(t, nil)
+	for _, mask := range []uint8{0, CredentialAudienceCarrierAuthorizationBearer} {
+		changed := canonicalHashOf(t, func(cfg *Config) {
+			found := false
+			for i := range cfg.DLP.Patterns {
+				if cfg.DLP.Patterns[i].Name == "JWT Token" {
+					cfg.DLP.Patterns[i].CredentialAudienceCarrierMask = mask
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("control: JWT pattern missing")
+			}
+		})
+		if changed == baseline {
+			t.Errorf("carrier mask %d did not change policy identity", mask)
+		}
+	}
+}
+
 func TestCanonicalPolicyHash_Cached(t *testing.T) {
 	t.Parallel()
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 
@@ -367,7 +368,9 @@ func TestInterceptExemptOverCapReceiptFailureFailsClosed(t *testing.T) {
 	p.receiptEmitterPtr.Store(rph.emitter)
 
 	body := strings.Repeat("Z", 4*overCapMaxResp)
+	var upstreamCalls atomic.Int32
 	rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{headerContentType: []string{"application/octet-stream"}},
@@ -388,6 +391,9 @@ func TestInterceptExemptOverCapReceiptFailureFailsClosed(t *testing.T) {
 	}
 	if h := resp.Header.Get(blockreason.HeaderReason); h != string(blockreason.ReceiptEmissionFailed) {
 		t.Fatalf("block reason = %q, want %s", h, blockreason.ReceiptEmissionFailed)
+	}
+	if n := upstreamCalls.Load(); n != 0 {
+		t.Fatalf("upstream contacted %d times despite the intent receipt failing", n)
 	}
 }
 

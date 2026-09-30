@@ -555,8 +555,11 @@ func canonicalAudienceHost(host string) string {
 
 // downloadGrantClaimsMatch reports whether token is a JWT whose payload names
 // GitHub as issuer and host as audience. Any decode or shape failure is false.
-// The signature is not verified: the check binds the token to its stated
-// purpose, it does not authenticate it.
+// The signature is not verified: GitHub signs the grant with HS256 under a key
+// only GitHub holds, so no proxy can check it. The check binds the token to
+// its stated purpose rather than authenticating it. A forged token that
+// passes can only deliver its bytes to GitHub's own download storage, which
+// the sender cannot read back; the destination check is what stops a leak.
 func downloadGrantClaimsMatch(token, host string) bool {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {

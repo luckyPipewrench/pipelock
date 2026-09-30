@@ -216,3 +216,25 @@ func TestCredentialArgument_FallbackPathsKeepOrdinaryMatcher(t *testing.T) {
 		t.Error("unparseable arguments with a private key path were not matched")
 	}
 }
+
+// Extraction past the depth limit can hide a value. A shallow public-key path
+// beside a private-key path nested too deep to extract would otherwise look
+// like one public-key value, so truncated extraction declines the exception
+// and the ordinary matcher judges the strings the caller supplied.
+func TestCredentialArgument_TruncatedExtractionDeclinesException(t *testing.T) {
+	pc := defaultConfig(t)
+	const pub = "/home/user/.ssh/id_ed25519.pub"
+	const private = "/home/user/.ssh/id_rsa"
+	deep := `"` + private + `"`
+	for range 70 {
+		deep = `{"a":` + deep + `}`
+	}
+	raw := json.RawMessage(`{"path":"` + pub + `","extra":` + deep + `}`)
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	if !extracted.Truncated || len(extracted.Strings) != 1 {
+		t.Fatalf("fixture must truncate to exactly the public value, got truncated=%v strings=%q", extracted.Truncated, extracted.Strings)
+	}
+	if v := pc.CheckToolCallWithArgs(testReadTool, []string{pub, private}, raw); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Error("truncated arguments hid a private key path behind the single-value exception")
+	}
+}

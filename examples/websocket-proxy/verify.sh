@@ -138,7 +138,7 @@ if ! (
   exit 1
 fi
 
-"$ECHO_BIN" >"$ECHO_LOG" 2>&1 &
+WS_ECHO_PARENT_PID="$$" "$ECHO_BIN" >"$ECHO_LOG" 2>&1 &
 ECHO_PID=$!
 
 ECHO_ADDR=""

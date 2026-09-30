@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -64,7 +65,12 @@ func main() {
 
 	// verify.sh can be killed outright, which runs no cleanup. Exit once
 	// reparented so the helper never outlives the script that started it.
+	// verify.sh passes its own PID so a parent that died before this line
+	// ran is still caught.
 	parent := os.Getppid()
+	if pid, parseErr := strconv.Atoi(os.Getenv("WS_ECHO_PARENT_PID")); parseErr == nil {
+		parent = pid
+	}
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()

@@ -481,3 +481,23 @@ func TestCredentialAudienceURLQueryRequiresHTTPS(t *testing.T) {
 		})
 	}
 }
+
+// The query-entropy exemption matches signed field names exactly, as the SAS
+// shape check does, so a case alias of a signed field gets no exemption.
+func TestReleaseGrantSASQueryValueAllowed_ExactFieldNames(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	parsed, err := url.Parse("https://" + githubReleaseAssetsHost + "/asset/1?" + releaseGrantSASQuery(fakeAudienceJWT(), "exact-name-fixture"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !s.releaseGrantSASQueryValueAllowed(parsed, "skoid") {
+		t.Fatal("signed field skoid lost its exemption under a valid grant")
+	}
+	for _, alias := range []string{"SKOID", "Sig", "SKT"} {
+		if s.releaseGrantSASQueryValueAllowed(parsed, alias) {
+			t.Errorf("case alias %q got the signed-field exemption", alias)
+		}
+	}
+}

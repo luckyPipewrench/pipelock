@@ -565,7 +565,9 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 // delegation-key GUID) would still be blocked by entropy even after DLP has
 // allowed it, which would make the fix inert for the operator.
 func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
-	if parsed == nil || !releaseGrantSASSignedParamSet[strings.ToLower(key)] {
+	// The name is matched exactly, as the shape check matches it, so a case
+	// alias of a signed field cannot take an exemption meant for the field.
+	if parsed == nil || !releaseGrantSASSignedParamSet[key] {
 		return false
 	}
 	host, ok := canonicalCredentialAudienceDestination(parsed.String())

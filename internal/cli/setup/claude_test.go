@@ -1816,6 +1816,7 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, ".ssh"), link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
+	t.Chdir(home)
 	grep := func(input map[string]string, cwd string) string {
 		raw, err := json.Marshal(input)
 		if err != nil {
@@ -1847,6 +1848,9 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 		{"symlink to a credential directory", map[string]string{"pattern": ".", "path": link}, project, decisionDeny},
 		{"relative path from home", map[string]string{"pattern": ".", "path": ".ssh"}, home, decisionDeny},
 		{"pathless search from home", map[string]string{"pattern": "."}, home, decisionDeny},
+		{"relative path with no cwd resolves from the process directory", map[string]string{"pattern": ".", "path": ".ssh"}, "", decisionDeny},
+		{"system credential directory", map[string]string{"pattern": ".", "path": "/etc"}, project, decisionDeny},
+		{"narrower system directory", map[string]string{"pattern": ".", "path": "/etc/ssl"}, project, decisionAllow},
 		{"project directory", map[string]string{"pattern": "func", "path": project}, project, decisionAllow},
 		{"pathless search from a project", map[string]string{"pattern": "func"}, project, decisionAllow},
 	} {
@@ -1865,6 +1869,9 @@ func TestClaudeGrepCredentialDirsMatchCredentialRule(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, c := range claudeGrepCredentialDirs {
 		path := "~/" + c.dir + "/" + c.probe
+		if filepath.IsAbs(c.dir) {
+			path = filepath.Join(c.dir, c.probe)
+		}
 		input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"` + path + `"},"tool_use_id":"t1"}`
 		got, err := runClaudeHookDecision(t, input)
 		if err != nil {

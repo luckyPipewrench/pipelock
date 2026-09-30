@@ -865,12 +865,24 @@ func writeClaudeSettingsFile(cmd *cobra.Command, targetPath, targetDir string, e
 	return nil
 }
 
-// claudeGrepCredentialDirs are home-relative directories whose files the
-// shipped Credential File Access rule protects, each with one file the rule
-// denies, so a parity test fails if the rule and this list disagree.
+// claudeGrepCredentialDirs are locations the shipped Credential File Access
+// rule protects, each with one file the rule denies, so a parity test fails
+// if the rule and this list disagree. A relative dir is a home directory
+// whose every file is sensitive: a search of it, inside it, or above it is
+// refused. An absolute dir holds one sensitive file (probe): only a search
+// whose target contains that file is refused.
 var claudeGrepCredentialDirs = []struct{ dir, probe string }{
 	{".ssh", "id_ed25519"},
 	{".aws", "credentials"},
+	{"/etc", "shadow"},
+}
+
+// claudeGrepCredentialDirPath returns the absolute path of a listed dir.
+func claudeGrepCredentialDirPath(home, dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(home, dir)
 }
 
 // grepTargetCoversCredentialDir reports whether a recursive search of target
@@ -907,9 +919,19 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	}
 	target = resolve(target)
 	for _, c := range claudeGrepCredentialDirs {
-		for _, dir := range []string{filepath.Join(home, c.dir), resolve(filepath.Join(home, c.dir))} {
+		listed := claudeGrepCredentialDirPath(home, c.dir)
+		if filepath.IsAbs(c.dir) {
+			file := filepath.Join(listed, c.probe)
+			for _, protected := range []string{file, resolve(file)} {
+				if pathWithin(protected, target) {
+					return file, true
+				}
+			}
+			continue
+		}
+		for _, dir := range []string{listed, resolve(listed)} {
 			if pathWithin(target, dir) || pathWithin(dir, target) {
-				return filepath.Join(home, c.dir), true
+				return listed, true
 			}
 		}
 	}

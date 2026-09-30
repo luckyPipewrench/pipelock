@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -45,11 +46,27 @@ type sizeRemedies struct {
 	// Passthrough: tls_interception.passthrough_domains skips interception.
 	// Only the TLS-intercept path can honor it.
 	Passthrough bool
+	// ExemptUnavailable explains why the response cannot take the streaming valve.
+	ExemptUnavailable string
+}
+
+// responseStreamingSizeRemedies mirrors the eligibility of the full-trust
+// streaming branches in forward and intercept. Declared SVG remains buffered.
+func responseStreamingSizeRemedies(cfg *config.Config, header http.Header, passthrough bool) sizeRemedies {
+	rem := sizeRemedies{Exempt: true, Passthrough: passthrough}
+	if !cfg.ResponseScanning.Enabled {
+		rem.Exempt = false
+		rem.ExemptUnavailable = "response_scanning.exempt_domains does not remove this cap while response_scanning.enabled is false"
+	} else if responseHeadersDeclareSVG(header) {
+		rem.Exempt = false
+		rem.ExemptUnavailable = "response_scanning.exempt_domains does not remove this cap for declared SVG content"
+	}
+	return rem
 }
 
 const (
 	sizeRemedyExemptText      = "response_scanning.exempt_domains (that host's responses are then not scanned)"
-	sizeRemedyPassthroughText = "tls_interception.passthrough_domains (not intercepted at all)"
+	sizeRemedyPassthroughText = "tls_interception.passthrough_domains (not intercepted or body-scanned; requires an accepted configuration change and a new CONNECT)"
 )
 
 // responseSizeBlockReason renders the operator-facing reason for a response
@@ -99,7 +116,7 @@ func responseSizeRemedyBlockReason(host string, size, limit int64, knob string, 
 	remedy := fmt.Sprintf("raise %s", knob)
 	if rem.SizeExempt {
 		remedy += " or add the trusted host to response_scanning.size_exempt_domains"
-		if rem.Exempt || rem.Passthrough {
+		if rem.Exempt || rem.Passthrough || rem.ExemptUnavailable != "" {
 			remedy += " (bounded scan up to response_scanning.size_exempt_scan_max_bytes)"
 			remedy += unscannedRemedies(rem, ", or for a trusted artifact host whose downloads exceed that bound use ")
 		}
@@ -114,7 +131,7 @@ func responseSizeRemedyBlockReason(host string, size, limit int64, knob string, 
 }
 
 // unscannedRemedies joins the enabled full-trust remedies behind lead, or
-// returns "" when the path honors none of them.
+// appends an explanation when response streaming is unavailable.
 func unscannedRemedies(rem sizeRemedies, lead string) string {
 	var parts []string
 	if rem.Exempt {
@@ -123,10 +140,14 @@ func unscannedRemedies(rem sizeRemedies, lead string) string {
 	if rem.Passthrough {
 		parts = append(parts, sizeRemedyPassthroughText)
 	}
-	if len(parts) == 0 {
-		return ""
+	text := ""
+	if len(parts) != 0 {
+		text = lead + strings.Join(parts, " or ")
 	}
-	return lead + strings.Join(parts, " or ")
+	if rem.ExemptUnavailable != "" {
+		text += "; " + rem.ExemptUnavailable
+	}
+	return text
 }
 
 func responseSizeExemptScanBlockReason(host string, size, limit int64) string {

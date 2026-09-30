@@ -2717,7 +2717,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					var scanFailure *sizeExemptResponseReadError
 					var releaseSizeExemptScan sizeExemptScanRelease
-					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{Exempt: true})
+					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(cfg, resp.Header, false))
 					if scanFailure != nil {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)
@@ -2746,7 +2746,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					defer releaseSizeExemptScan()
 				} else {
-					reason := responseSizeRemedyBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", true, sizeRemedies{SizeExempt: true, Exempt: true})
+					rem := responseStreamingSizeRemedies(cfg, resp.Header, false)
+					rem.SizeExempt = true
+					reason := responseSizeRemedyBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", true, rem)
 					p.logger.LogBlocked(actx, responseScanLayer, reason)
 					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 						ActionID:  actionID,

@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -42,6 +44,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 		host          string
 		body          string
 		configure     func(*config.Config)
+		contentType   string
 		wantStatus    int
 		wantReason    string
 		wantMsg       []string
@@ -93,6 +96,76 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			wantIdentical: true,
 		},
 		{
+			name: "disabled response scanning cannot offer exempt streaming",
+			host: overCapHostExempt,
+			body: over,
+			configure: func(c *config.Config) {
+				c.ResponseScanning.Enabled = false
+				c.ResponseScanning.ExemptDomains = []string{overCapHostExempt}
+			},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    []string{"exempt_domains does not remove this cap while response_scanning.enabled is false"},
+			wantNotMsg: []string{"use response_scanning.exempt_domains"},
+		},
+		{
+			name:        "declared SVG cannot offer exempt streaming",
+			host:        overCapHostExempt,
+			body:        over,
+			contentType: "image/svg+xml",
+			configure:   func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:  http.StatusForbidden,
+			wantMsg:     []string{"exempt_domains does not remove this cap for declared SVG content"},
+			wantNotMsg:  []string{"use response_scanning.exempt_domains"},
+		},
+		{
+			name: "size exempt with disabled scanning cannot offer exempt streaming",
+			host: overCapHostExempt,
+			body: over,
+			configure: func(c *config.Config) {
+				c.ResponseScanning.Enabled = false
+				c.ResponseScanning.SizeExemptDomains = []string{overCapHostExempt}
+				c.ResponseScanning.SizeExemptScanMaxBytes = overCapScanBound
+				c.ResponseScanning.ExemptDomains = []string{overCapHostExempt}
+			},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    []string{"bounded scan ceiling", "exempt_domains does not remove this cap while response_scanning.enabled is false"},
+			wantNotMsg: []string{"use response_scanning.exempt_domains"},
+		},
+		{
+			name:        "size exempt with declared SVG cannot offer exempt streaming",
+			host:        overCapHostExempt,
+			body:        over,
+			contentType: "image/svg+xml",
+			configure: func(c *config.Config) {
+				c.ResponseScanning.SizeExemptDomains = []string{overCapHostExempt}
+				c.ResponseScanning.SizeExemptScanMaxBytes = overCapScanBound
+				c.ResponseScanning.ExemptDomains = []string{overCapHostExempt}
+			},
+			wantStatus: http.StatusForbidden,
+			wantMsg:    []string{"bounded scan ceiling", "exempt_domains does not remove this cap for declared SVG content"},
+			wantNotMsg: []string{"use response_scanning.exempt_domains"},
+		},
+		{
+			name:          "exempt host exact cap",
+			host:          overCapHostExempt,
+			body:          strings.Repeat("C", overCapMaxResp),
+			configure:     func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:    http.StatusOK,
+			wantReason:    "reason=complete",
+			wantOverCap:   false,
+			wantIdentical: true,
+		},
+		{
+			name:          "exempt host one byte over cap",
+			host:          overCapHostExempt,
+			body:          strings.Repeat("C", overCapMaxResp+1),
+			configure:     func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:    http.StatusOK,
+			wantReason:    "reason=exempt_over_cap_unscanned",
+			wantOverCap:   true,
+			wantIdentical: true,
+		},
+		{
 			name:       "lookalike host stays capped",
 			host:       overCapHostExempt + ".evil.example",
 			body:       over,
@@ -109,7 +182,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 				"raise tls_interception.max_response_bytes",
 				"response_scanning.size_exempt_domains (bounded scan up to response_scanning.size_exempt_scan_max_bytes)",
 				"response_scanning.exempt_domains (that host's responses are then not scanned)",
-				"tls_interception.passthrough_domains (not intercepted at all)",
+				"tls_interception.passthrough_domains (not intercepted or body-scanned; requires an accepted configuration change and a new CONNECT)",
 			},
 		},
 		{
@@ -125,7 +198,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 				"bounded scan ceiling",
 				"raise response_scanning.size_exempt_scan_max_bytes",
 				"response_scanning.exempt_domains (that host's responses are then not scanned)",
-				"tls_interception.passthrough_domains (not intercepted at all)",
+				"tls_interception.passthrough_domains (not intercepted or body-scanned; requires an accepted configuration change and a new CONNECT)",
 			},
 		},
 	}
@@ -150,10 +223,14 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 			p.receiptEmitterPtr.Store(rph.emitter)
 
+			contentType := tt.contentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
 			rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode:    http.StatusOK,
-					Header:        http.Header{headerContentType: []string{"application/octet-stream"}},
+					Header:        http.Header{headerContentType: []string{contentType}},
 					Body:          io.NopCloser(strings.NewReader(tt.body)),
 					ContentLength: int64(len(tt.body)),
 				}, nil
@@ -186,6 +263,9 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			assertResponseScanExemptOverCapMetric(t, m, TransportConnect, tt.wantOverCap)
 			if tt.wantStatus == http.StatusOK {
 				outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
+				if err := receipt.VerifyInternalConsistencyOnly(outcome); err != nil {
+					t.Fatalf("verify signed outcome: %v", err)
+				}
 				if !strings.Contains(outcome.ActionRecord.Pattern, tt.wantReason) {
 					t.Fatalf("outcome pattern = %q, want %q", outcome.ActionRecord.Pattern, tt.wantReason)
 				}
@@ -285,5 +365,68 @@ func TestResponseSizeRemedyBlockReason(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestForwardSizeRemediesMatchStreamingEligibility(t *testing.T) {
+	for _, bounded := range []bool{false, true} {
+		for _, svg := range []bool{false, true} {
+			name := "disabled"
+			if svg {
+				name = "svg"
+			}
+			if bounded {
+				name += " bounded"
+			}
+			t.Run(name, func(t *testing.T) {
+				body := strings.Repeat("X", 2*1024*1024)
+				backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					contentType := "application/octet-stream"
+					if svg {
+						contentType = "image/svg+xml"
+					}
+					w.Header().Set("Content-Type", contentType)
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+					_, _ = io.WriteString(w, body)
+				}))
+				defer backend.Close()
+				host := mustURLHostname(t, backend.URL)
+				proxyAddr, _, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+					cfg.FetchProxy.MaxResponseMB = 1
+					cfg.ResponseScanning.Enabled = svg
+					cfg.ResponseScanning.ExemptDomains = []string{host}
+					if bounded {
+						cfg.ResponseScanning.SizeExemptDomains = []string{host}
+						cfg.ResponseScanning.SizeExemptScanMaxBytes = 1024*1024 + 1024
+					}
+				})
+				defer cleanup()
+				req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, backend.URL+"/payload", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := proxyClient(proxyAddr).Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				got, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403", resp.StatusCode)
+				}
+				why := "while response_scanning.enabled is false"
+				if svg {
+					why = "for declared SVG content"
+				}
+				if !strings.Contains(string(got), "exempt_domains does not remove this cap "+why) ||
+					strings.Contains(string(got), "use response_scanning.exempt_domains") ||
+					strings.Contains(string(got), "passthrough_domains") {
+					t.Fatalf("inert remedy in forward response: %s", got)
+				}
+			})
+		}
 	}
 }

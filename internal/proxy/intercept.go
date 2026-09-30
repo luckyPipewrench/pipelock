@@ -2254,7 +2254,7 @@ func newInterceptHandler(
 				}
 				var scanFailure *sizeExemptResponseReadError
 				var releaseSizeExemptScan sizeExemptScanRelease
-				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{Exempt: true, Passthrough: true})
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)
@@ -2282,7 +2282,9 @@ func newInterceptHandler(
 				}
 				defer releaseSizeExemptScan()
 			} else {
-				reason := responseSizeRemedyBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes", true, sizeRemedies{SizeExempt: true, Exempt: true, Passthrough: true})
+				rem := responseStreamingSizeRemedies(ic.Config, resp.Header, true)
+				rem.SizeExempt = true
+				reason := responseSizeRemedyBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes", true, rem)
 				ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
 				ic.Metrics.RecordTLSResponseBlocked("oversized")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

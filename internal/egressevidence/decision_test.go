@@ -83,12 +83,15 @@ func TestDecisionValidDomains(t *testing.T) {
 	for _, transport := range []Transport{
 		TransportFetch, TransportForward, TransportConnect,
 		TransportIntercept, TransportReverse, TransportWebSocket, TransportMCPStdio,
-		TransportMCPHTTP, TransportMCPWS,
+		TransportMCPHTTPUpstream, TransportMCPHTTPListener, TransportMCPWS,
 	} {
 		d := decisionFixture()
 		d.Transport = transport
 		if transport == TransportConnect {
 			d.Boundary = BoundaryTunnel
+		}
+		if transport == TransportMCPStdio {
+			d.DestinationKind, d.DestinationRef = DestinationLocalProcess, "mcp.sample_upstream"
 		}
 		if err := d.Validate(); err != nil {
 			t.Errorf("transport %s: %v", transport, err)
@@ -118,6 +121,7 @@ func TestDecisionValidDomains(t *testing.T) {
 			d.Transport = TransportConnect
 		case BoundaryToolDispatch:
 			d.Transport = TransportMCPStdio
+			d.DestinationKind, d.DestinationRef = DestinationLocalProcess, "mcp.sample_upstream"
 		}
 		if err := d.Validate(); err != nil {
 			t.Errorf("boundary %s: %v", boundary, err)
@@ -140,14 +144,77 @@ func TestDecisionValidDomains(t *testing.T) {
 	}
 }
 
-func TestDecisionLocalProcessReferences(t *testing.T) {
+// The expected strings are grounded in producer assignments, independently of
+// the candidate enum. This checks vocabulary, not site inventory or coverage.
+func TestDecisionProducerTransportVocabulary(t *testing.T) {
 	t.Parallel()
-	for _, transport := range []Transport{TransportMCPStdio, TransportMCPHTTP, TransportMCPWS} {
+	for _, tc := range []struct {
+		name      string
+		transport Transport
+		boundary  Boundary
+		local     bool
+	}{
+		// internal/proxy/{proxy,forward,intercept,reverse,websocket}.go.
+		{"fetch", TransportFetch, BoundaryUpstreamRequest, false},
+		{"forward", TransportForward, BoundaryUpstreamRequest, false},
+		{"connect", TransportConnect, BoundaryTunnel, false},
+		{"intercept", TransportIntercept, BoundaryUpstreamRequest, false},
+		{"reverse", TransportReverse, BoundaryUpstreamRequest, false},
+		{"websocket", TransportWebSocket, BoundaryUpstreamFrame, false},
+		// internal/mcp/{proxy,mcp_http_forward,proxy_ws,mcp_http_reverse}.go.
+		{"mcp_stdio", TransportMCPStdio, BoundaryToolDispatch, true},
+		{"mcp_http_upstream", TransportMCPHTTPUpstream, BoundaryToolDispatch, false},
+		{"mcp_ws", TransportMCPWS, BoundaryToolDispatch, false},
+		{"mcp_http_listener", TransportMCPHTTPListener, BoundaryToolDispatch, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if string(tc.transport) != tc.name {
+				t.Fatalf("candidate transport %q differs from producer %q", tc.transport, tc.name)
+			}
+			d := decisionFixture()
+			d.Transport, d.Boundary = Transport(tc.name), tc.boundary
+			if tc.local {
+				d.DestinationKind, d.DestinationRef = DestinationLocalProcess, "mcp.sample_upstream"
+			}
+			if _, err := ParseDecision(marshalDecisionFixture(t, d)); err != nil {
+				t.Fatalf("producer transport rejected: %v", err)
+			}
+		})
+	}
+	// These are a legacy direct-scan fallback and an invented carrier label,
+	// respectively; neither names one of the actual proxy producer modes.
+	for _, name := range []Transport{"mcp_http", "mcp_websocket"} {
 		d := decisionFixture()
-		d.Transport, d.Boundary = transport, BoundaryToolDispatch
-		d.DestinationKind, d.DestinationRef = DestinationLocalProcess, "mcp.sample_upstream"
-		if err := d.Validate(); err != nil {
-			t.Errorf("local-process transport %s: %v", transport, err)
+		d.Transport = name
+		if _, err := ParseDecision(marshalDecisionFixture(t, d)); err == nil {
+			t.Fatalf("non-producer transport accepted: %q", name)
+		}
+	}
+}
+
+func TestDecisionDestinationCarrierMatrix(t *testing.T) {
+	t.Parallel()
+	for _, transport := range []Transport{
+		TransportFetch, TransportForward, TransportConnect,
+		TransportIntercept, TransportReverse, TransportWebSocket, TransportMCPStdio,
+		TransportMCPHTTPUpstream, TransportMCPHTTPListener, TransportMCPWS,
+	} {
+		for _, kind := range []DestinationKind{DestinationNetwork, DestinationLocalProcess} {
+			d := decisionFixture()
+			d.Transport, d.DestinationKind = transport, kind
+			if transport == TransportConnect {
+				d.Boundary = BoundaryTunnel
+			}
+			if kind == DestinationLocalProcess {
+				d.DestinationRef = "mcp.sample_upstream"
+			}
+			wantValid := (transport == TransportMCPStdio) == (kind == DestinationLocalProcess)
+			if err := d.Validate(); (err == nil) != wantValid {
+				t.Errorf("transport=%s kind=%s valid=%t: %v", transport, kind, wantValid, err)
+			}
+			if _, err := ParseDecision(marshalDecisionFixture(t, d)); (err == nil) != wantValid {
+				t.Errorf("parse transport=%s kind=%s valid=%t: %v", transport, kind, wantValid, err)
+			}
 		}
 	}
 }
@@ -350,8 +417,9 @@ func TestDecisionPairingPinsPolicyFacts(t *testing.T) {
 	}
 }
 
-// All addresses are documentation ranges. This tests string identity only;
-// no address is resolved, dialed, or used to exercise an enforcement path.
+// Inputs are documentation-range addresses, inert DNS references and invalid
+// numeric strings. This tests string identity only; nothing is resolved,
+// dialed, or used to exercise an enforcement path.
 func TestDecisionCanonicalDestinationIdentity(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -359,6 +427,9 @@ func TestDecisionCanonicalDestinationIdentity(t *testing.T) {
 		valid bool
 	}{
 		{decisionTestHost, true},
+		{"123.api.vendor.example", true},
+		{"0x.api.vendor.example", true},
+		{"api.vendor.0xnothex", true},
 		{"192.0.2.1", true},
 		{"2001:db8::1", true},
 		{"0xc0000201", false},
@@ -372,6 +443,16 @@ func TestDecisionCanonicalDestinationIdentity(t *testing.T) {
 		{"[2001:db8::1]", false},
 		{"192.0.2.1.", false},
 		{" 192.0.2.1", false},
+		{"192.0.2.999", false},
+		{"999.0.2.1", false},
+		{"192.0.2.1.1", false},
+		{"192.0.2.09", false},
+		{"4294967296", false},
+		{"0x100000000", false},
+		{"0x", false},
+		{"api.vendor.123", false},
+		{"api.vendor.0x", false},
+		{"api.vendor.0xff", false},
 	} {
 		d := decisionFixture()
 		d.DestinationRef = tc.host

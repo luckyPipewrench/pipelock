@@ -178,6 +178,11 @@ type Decision struct {
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
+// A numeric final label sends a host down IPv4 parsing in URL consumers. This
+// classifies that syntax only; the shared destination parser remains the sole
+// IP parser. Bare "0x" is included because its empty hex suffix is number-like.
+var numericHostLastLabelPattern = regexp.MustCompile(`^(?:[0-9]+|0x[0-9a-f]*)$`)
+
 // ParseDecision is strict about duplicate/unknown fields, nulls and trailing
 // data. Acceptance is structural only; it is not signature verification,
 // registry membership, producer coverage, or durability confirmation.
@@ -246,12 +251,11 @@ func (d Decision) Validate() error {
 	}
 	switch d.DestinationKind {
 	case DestinationNetwork:
-		if !canonicalHost(d.DestinationRef) {
+		if d.Transport == TransportMCPStdio || !canonicalHost(d.DestinationRef) {
 			return fmt.Errorf("invalid canonical network destination")
 		}
 	case DestinationLocalProcess:
-		if !validIdentifier(d.DestinationRef) ||
-			!slices.Contains([]Transport{TransportMCPStdio, TransportMCPHTTP, TransportMCPWS}, d.Transport) {
+		if d.Transport != TransportMCPStdio || !validIdentifier(d.DestinationRef) {
 			return fmt.Errorf("invalid local process reference")
 		}
 	default:
@@ -396,6 +400,13 @@ func canonicalHost(host string) bool {
 	// spelling also rejects zones and any alternate literal spelling.
 	if ip := destination.ParseIPLiteral(host); ip != nil {
 		return destination.NormalizeIP(ip).String() == host
+	}
+	// Invalid numeric hosts must not fall through as ordinary DNS identities:
+	// this includes invalid component widths/counts and integer overflow. A
+	// numeric earlier label is harmless when the last label is a DNS label.
+	lastLabel := host[strings.LastIndexByte(host, '.')+1:]
+	if numericHostLastLabelPattern.MatchString(lastLabel) {
+		return false
 	}
 	for _, label := range strings.Split(host, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {

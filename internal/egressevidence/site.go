@@ -25,16 +25,17 @@ const (
 type Transport string
 
 const (
-	TransportFetch     Transport = "fetch"
-	TransportForward   Transport = "forward"
-	TransportConnect   Transport = "connect"
-	TransportIntercept Transport = "intercept"
-	TransportReverse   Transport = "reverse"
-	TransportWebSocket Transport = "websocket"
-	TransportMCPStdio  Transport = "mcp_stdio"
-	TransportMCPHTTP   Transport = "mcp_http"
-	TransportMCPWS     Transport = "mcp_websocket" // #nosec G101 -- transport label, not a credential.
-	TransportHook      Transport = "agent_hook"
+	TransportFetch           Transport = "fetch"
+	TransportForward         Transport = "forward"
+	TransportConnect         Transport = "connect"
+	TransportIntercept       Transport = "intercept"
+	TransportReverse         Transport = "reverse"
+	TransportWebSocket       Transport = "websocket"
+	TransportMCPStdio        Transport = "mcp_stdio"
+	TransportMCPHTTPListener Transport = "mcp_http_listener"
+	TransportMCPHTTPUpstream Transport = "mcp_http_upstream"
+	TransportMCPWS           Transport = "mcp_ws"
+	TransportHook            Transport = "agent_hook"
 )
 
 type Location string
@@ -91,7 +92,7 @@ func (s Site) Validate() error {
 	if !slices.Contains([]Transport{
 		TransportFetch, TransportForward, TransportConnect,
 		TransportIntercept, TransportReverse, TransportWebSocket, TransportMCPStdio,
-		TransportMCPHTTP, TransportMCPWS, TransportHook,
+		TransportMCPHTTPListener, TransportMCPHTTPUpstream, TransportMCPWS, TransportHook,
 	}, s.Transport) {
 		return fmt.Errorf("invalid classification transport")
 	}
@@ -136,7 +137,7 @@ func (s Site) transportAllowsBoundary() bool {
 		return s.Boundary == BoundaryTunnel
 	case TransportWebSocket:
 		return s.Boundary == BoundaryUpstreamRequest || s.Boundary == BoundaryUpstreamFrame
-	case TransportMCPStdio, TransportMCPHTTP, TransportMCPWS:
+	case TransportMCPStdio, TransportMCPHTTPListener, TransportMCPHTTPUpstream, TransportMCPWS:
 		return s.Boundary == BoundaryUpstreamRequest || s.Boundary == BoundaryToolDispatch
 	case TransportHook:
 		return s.Boundary == BoundaryHookDecision

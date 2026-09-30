@@ -41,6 +41,12 @@ symbolic identifiers and canonical host checks are structural checks. Producers
 still must apply existing secret-sanitization policy: a syntactically valid host
 or rule reference is not proof that its content is non-secret.
 
+Strict structure does not require a unique JSON byte encoding. JSON escapes for
+the same decoded field name or value and ordinary formatting changes can describe
+the same typed facts. Signature verification belongs to the separately specified
+signed-envelope canonicalization boundary; successful model parsing does not
+prove canonical emitted bytes or authenticate a record.
+
 Structural validity is not policy compliance. A core finding can legitimately
 appear in retained pre-transform observation evidence or safe redaction followed
 by a clean rescan, or a compiled-in audience authorization. Readers need the
@@ -75,6 +81,12 @@ site declarations for explicit coverage exclusion, but cannot become a proxy
 request-byte record. Encrypted passthrough contents, responses, offline scans and
 unmediated traffic likewise cannot silently become covered outbound requests.
 
+MCP carrier labels follow the current runtime: `mcp_stdio` names a local
+subprocess and requires `local_process`; `mcp_http_upstream` names the stdio-to-
+HTTP bridge, `mcp_ws` the stdio-to-WebSocket bridge, and `mcp_http_listener` the HTTP
+listener. Those remote carriers require `network`. A stdio client interface does
+not turn the remote upstream into a local-process destination.
+
 ## Independent coverage
 
 `Registry.Assess` evaluates a half-open interval across explicit required sites
@@ -92,7 +104,11 @@ Callers must first authenticate and bind segments to the exact run, configuratio
 generation, session, agent and destination being queried. The pure reducer does
 not manufacture that evidence or infer producer liveness from registry presence.
 
-## Required runtime integration
+## Proposed runtime integration
+
+This integration remains pending the maintainer's compatibility-decision record
+and public contract correction. The candidate model does not enable or change
+required-receipt behavior.
 
 The single existing `flight_recorder.require_receipts` posture controls whether
 new authoritative classification evidence must be confirmed before the protected

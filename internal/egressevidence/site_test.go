@@ -115,16 +115,17 @@ func TestIdentifierBounds(t *testing.T) {
 
 func TestSiteTransportBoundaryMatrix(t *testing.T) {
 	want := map[Transport][]Boundary{
-		TransportFetch:     {BoundaryUpstreamRequest},
-		TransportForward:   {BoundaryUpstreamRequest},
-		TransportIntercept: {BoundaryUpstreamRequest},
-		TransportReverse:   {BoundaryUpstreamRequest},
-		TransportConnect:   {BoundaryTunnel},
-		TransportWebSocket: {BoundaryUpstreamRequest, BoundaryUpstreamFrame},
-		TransportMCPStdio:  {BoundaryUpstreamRequest, BoundaryToolDispatch},
-		TransportMCPHTTP:   {BoundaryUpstreamRequest, BoundaryToolDispatch},
-		TransportMCPWS:     {BoundaryUpstreamRequest, BoundaryToolDispatch},
-		TransportHook:      {BoundaryHookDecision},
+		TransportFetch:           {BoundaryUpstreamRequest},
+		TransportForward:         {BoundaryUpstreamRequest},
+		TransportIntercept:       {BoundaryUpstreamRequest},
+		TransportReverse:         {BoundaryUpstreamRequest},
+		TransportConnect:         {BoundaryTunnel},
+		TransportWebSocket:       {BoundaryUpstreamRequest, BoundaryUpstreamFrame},
+		TransportMCPStdio:        {BoundaryUpstreamRequest, BoundaryToolDispatch},
+		TransportMCPHTTPListener: {BoundaryUpstreamRequest, BoundaryToolDispatch},
+		TransportMCPHTTPUpstream: {BoundaryUpstreamRequest, BoundaryToolDispatch},
+		TransportMCPWS:           {BoundaryUpstreamRequest, BoundaryToolDispatch},
+		TransportHook:            {BoundaryHookDecision},
 	}
 	boundaries := []Boundary{
 		BoundaryUpstreamRequest, BoundaryUpstreamFrame,

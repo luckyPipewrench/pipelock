@@ -358,6 +358,227 @@ func TestClaudeHookCmd_ExitCodeMode_Allow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Read / Grep / NotebookEdit / Glob file-path policy tests
+//
+// Read's file_path and Grep's populated path return file contents to the
+// agent, so they must reach the same credential-path policy other file reads
+// use (the #1734 .pub exception included). NotebookEdit's notebook_path is a
+// write target. Glob returns matching NAMES only, never content, so it stays
+// on the generic catch-all and is asserted here to document that choice.
+// ---------------------------------------------------------------------------
+
+// runClaudeHookDecision drives the hook command with a raw JSON payload and
+// returns the permissionDecision plus whether Execute() itself errored.
+func runClaudeHookDecision(t *testing.T, input string) (string, error) {
+	t.Helper()
+	cmd := ClaudeCmd()
+	cmd.SetArgs([]string{"hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(&strings.Builder{})
+
+	if err := cmd.Execute(); err != nil {
+		return "", err
+	}
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	return resp.HookSpecificOutput.PermissionDecision, nil
+}
+
+func TestClaudeHookCmd_ReadTool_CredentialPathPolicy(t *testing.T) {
+	cases := []struct {
+		name     string
+		filePath string
+		want     string
+	}{
+		{"private key absolute", "/home/user/.ssh/id_ed25519", decisionDeny},
+		{"private key tilde", "~/.ssh/id_ed25519", decisionDeny},
+		{"private key relative", ".ssh/id_ed25519", decisionDeny},
+		{"aws credentials", "/home/user/.aws/credentials", decisionDeny},
+		{"etc shadow", "/etc/shadow", decisionDeny},
+		{"pub key traversal", "~/.ssh/id_ed25519.pub/../id_ed25519", decisionDeny},
+		{"pub key absolute allowed", "/home/user/.ssh/id_ed25519.pub", decisionAllow},
+		{"pub key tilde allowed", "~/.ssh/id_ed25519.pub", decisionAllow},
+		{"pub key relative allowed", ".ssh/id_ed25519.pub", decisionAllow},
+		{"ordinary project file", "internal/cli/setup/claude.go", decisionAllow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"` + tc.filePath + `"},"tool_use_id":"t1"}`
+			got, err := runClaudeHookDecision(t, input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Read %q: got %s, want %s", tc.filePath, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeHookCmd_ReadTool_MalformedInput(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":["not","an","object"],"tool_use_id":"t1"}`
+	got, err := runClaudeHookDecision(t, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != decisionDeny {
+		t.Errorf("malformed Read tool_input should deny, got %s", got)
+	}
+}
+
+// TestClaudeHookCmd_PathRoutedToolsKeepContentScan pins that routing Read,
+// Grep and NotebookEdit to file-path policy adds a check without removing the
+// generic content scan every tool_input string had before.
+func TestClaudeHookCmd_PathRoutedToolsKeepContentScan(t *testing.T) {
+	secret := "ghp_" + "ABCDEFghijklmnopqrstuvwxyz0123456789"
+	cases := []struct {
+		name  string
+		tool  string
+		input string
+	}{
+		{"grep secret pattern with a path", "Grep", `{"pattern":"` + secret + `","path":"internal/cli/setup"}`},
+		{"read secret in the path string", "Read", `{"file_path":"/tmp/` + secret + `.txt"}`},
+		{"notebook secret in the path string", "NotebookEdit", `{"notebook_path":"/tmp/` + secret + `.ipynb","new_source":"x = 1"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"` + tc.tool + `","tool_input":` + tc.input + `,"tool_use_id":"t1"}`
+			got, err := runClaudeHookDecision(t, input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != decisionDeny {
+				t.Errorf("%s: got %s, want deny", tc.tool, got)
+			}
+		})
+	}
+}
+
+func TestClaudeHookCmd_GrepTool_CredentialPathPolicy(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"path targets private key",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"BEGIN","path":"/home/user/.ssh/id_ed25519"},"tool_use_id":"t1"}`,
+			decisionDeny,
+		},
+		{
+			"path targets pub key allowed",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"ssh-ed25519","path":"/home/user/.ssh/id_ed25519.pub"},"tool_use_id":"t1"}`,
+			decisionAllow,
+		},
+		{
+			"path targets shadow file",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"root","path":"/etc/shadow"},"tool_use_id":"t1"}`,
+			decisionDeny,
+		},
+		{
+			"no path, clean pattern",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"TODO"},"tool_use_id":"t1"}`,
+			decisionAllow,
+		},
+		{
+			"no path, secret in pattern still scanned",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"` + "ghp_" + `ABCDEFghijklmnopqrstuvwxyz0123456789"},"tool_use_id":"t1"}`,
+			decisionDeny,
+		},
+		{
+			"ordinary path allowed",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"func","path":"internal/cli/setup"},"tool_use_id":"t1"}`,
+			decisionAllow,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runClaudeHookDecision(t, tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Grep: got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeHookCmd_GrepTool_MalformedInput(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":["not","an","object"],"tool_use_id":"t1"}`
+	got, err := runClaudeHookDecision(t, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != decisionDeny {
+		t.Errorf("malformed Grep tool_input should deny, got %s", got)
+	}
+}
+
+func TestClaudeHookCmd_NotebookEditTool(t *testing.T) {
+	secret := "ghp_" + "ABCDEFghijklmnopqrstuvwxyz0123456789"
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"clean notebook edit allowed",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"NotebookEdit","tool_input":{"notebook_path":"/tmp/analysis.ipynb","new_source":"print('hello')"},"tool_use_id":"t1"}`,
+			decisionAllow,
+		},
+		{
+			"secret in new_source denied",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"NotebookEdit","tool_input":{"notebook_path":"/tmp/analysis.ipynb","new_source":"TOKEN='` + secret + `'"},"tool_use_id":"t1"}`,
+			decisionDeny,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := runClaudeHookDecision(t, tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("NotebookEdit: got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeHookCmd_NotebookEditTool_MalformedInput(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"NotebookEdit","tool_input":["not","an","object"],"tool_use_id":"t1"}`
+	got, err := runClaudeHookDecision(t, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != decisionDeny {
+		t.Errorf("malformed NotebookEdit tool_input should deny, got %s", got)
+	}
+}
+
+// TestClaudeHookCmd_GlobTool_NamesOnlyStaysOnCatchAll documents that Glob is
+// deliberately left on the generic catch-all: it returns matching file NAMES,
+// never file content, so a credential-bearing pattern string is still scanned
+// for DLP/injection but the file-path credential policy (which guards content
+// disclosure) does not apply to the pattern string itself.
+func TestClaudeHookCmd_GlobTool_NamesOnlyStaysOnCatchAll(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Glob","tool_input":{"pattern":"**/.ssh/id_ed25519"},"tool_use_id":"t1"}`
+	got, err := runClaudeHookDecision(t, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != decisionAllow {
+		t.Errorf("Glob pattern naming a key path should still allow (names only, no content), got %s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Settings.json parsing tests
 // ---------------------------------------------------------------------------
 

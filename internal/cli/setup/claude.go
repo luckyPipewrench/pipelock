@@ -59,6 +59,25 @@ type editToolInput struct {
 	NewString string `json:"new_string"`
 }
 
+// readToolInput is Claude Code's built-in Read tool schema.
+type readToolInput struct {
+	FilePath string `json:"file_path"`
+}
+
+// grepToolInput is Claude Code's built-in Grep tool schema. Only the fields
+// pipelock acts on are declared; Grep prints matching file contents, so a
+// populated path is a file (or directory) read, not just a name lookup.
+type grepToolInput struct {
+	Path string `json:"path"`
+}
+
+// notebookEditToolInput is Claude Code's built-in NotebookEdit tool schema.
+// Only the fields pipelock acts on are declared.
+type notebookEditToolInput struct {
+	NotebookPath string `json:"notebook_path"`
+	NewSource    string `json:"new_source"`
+}
+
 // claudeCodeHookOutput is the hook-specific output for Claude Code.
 type claudeCodeHookOutput struct {
 	HookEventName            string `json:"hookEventName"`
@@ -210,6 +229,12 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
+	// Path-routed built-in tools add file-path policy on top of the content
+	// scan every tool_input string gets on the generic path; they must not
+	// lose it. Deny from either wins.
+	if decision.Outcome != decide.Deny && claudePathRoutedTools[payload.ToolName] {
+		decision = decide.Decide(cmd.Context(), cfg, sc, pc, claudeGenericAction(payload))
+	}
 
 	// Map outcome.
 	perm := decisionAllow
@@ -243,11 +268,35 @@ func claudeResult(cmd *cobra.Command, exitCodeMode bool, hookEventName, permissi
 	return nil
 }
 
+// claudePathRoutedTools are built-in tools claudePayloadToAction routes to a
+// file-path event. runClaudeHook also runs the generic content scan for them.
+var claudePathRoutedTools = map[string]bool{"Read": true, "Grep": true, "NotebookEdit": true}
+
+// claudeGenericAction is the catch-all: DLP and injection over every string in
+// tool_input, for tools without a tool-aware pipeline.
+func claudeGenericAction(p claudeCodePayload) decide.Action {
+	return decide.Action{
+		Source: "claude-code",
+		Kind:   decide.EventToolUse,
+		ToolUse: &decide.ToolUsePayload{
+			ToolName:  p.ToolName,
+			ToolInput: string(p.ToolInput),
+		},
+	}
+}
+
 // claudePayloadToAction routes a Claude Code tool_name to a decide.Action.
-// Known built-in tools (Bash, WebFetch, Write, Edit) and MCP tools route to
-// their tool-aware scanning pipelines. Everything else falls through to a
-// generic catch-all that runs DLP + injection on every string in tool_input,
-// so unknown or future tools cannot silently exfiltrate secrets.
+// Known built-in tools (Bash, WebFetch, Write, Edit, Read, Grep, NotebookEdit)
+// and MCP tools route to their tool-aware scanning pipelines. Read's file_path
+// and Grep's populated path field carry the same credential-path policy as
+// other file reads (decide.EventReadFile), because both return file contents
+// to the agent. NotebookEdit's notebook_path is a write target, so it routes
+// like Write/Edit. Glob is deliberately left on the generic catch-all below:
+// it returns matching file NAMES only, never file content, so there is no
+// content-disclosure surface for the file-path policy to guard. Everything
+// else (Glob included) falls through to a generic catch-all that runs DLP +
+// injection on every string in tool_input, so unknown or future tools cannot
+// silently exfiltrate secrets.
 // Returns error for known tools with unparseable tool_input (fail-closed).
 func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 	if strings.TrimSpace(string(p.ToolInput)) == "null" {
@@ -300,6 +349,52 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		}
 		return &action, nil
 
+	case p.ToolName == "Read":
+		var input readToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing Read tool_input: %w", err)
+		}
+		action.Kind = decide.EventReadFile
+		action.File = &decide.FilePayload{FilePath: input.FilePath}
+		return &action, nil
+
+	case p.ToolName == "Grep":
+		var input grepToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing Grep tool_input: %w", err)
+		}
+		if input.Path != "" {
+			// Grep prints matching file contents, so a populated path is a
+			// file-path read and gets the same credential-path policy as
+			// Read. An empty path searches the working directory tree with
+			// no single file identity to check, so it keeps the generic
+			// catch-all, which still scans the pattern/glob strings for DLP
+			// and injection.
+			action.Kind = decide.EventReadFile
+			action.File = &decide.FilePayload{FilePath: input.Path}
+			return &action, nil
+		}
+		generic := claudeGenericAction(p)
+		return &generic, nil
+
+	case p.ToolName == "NotebookEdit":
+		var input notebookEditToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing NotebookEdit tool_input: %w", err)
+		}
+		if input.NotebookPath != "" {
+			// NotebookEdit writes cell content into the notebook file, so it
+			// is a write, not a read: route it like Write/Edit.
+			action.Kind = decide.EventWriteFile
+			action.Write = &decide.WritePayload{
+				FilePath: input.NotebookPath,
+				Content:  input.NewSource,
+			}
+			return &action, nil
+		}
+		generic := claudeGenericAction(p)
+		return &generic, nil
+
 	case strings.HasPrefix(p.ToolName, "mcp__"):
 		// MCP tool name format: mcp__<server>__<tool>
 		parts := strings.SplitN(p.ToolName, "__", 3)
@@ -320,13 +415,9 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 	default:
 		// Generic catch-all: scan every string in tool_input for DLP +
 		// injection. Closes the fail-open path for tools we don't parse
-		// specifically (WebSearch, Task, NotebookEdit, future tools, etc.).
-		action.Kind = decide.EventToolUse
-		action.ToolUse = &decide.ToolUsePayload{
-			ToolName:  p.ToolName,
-			ToolInput: string(p.ToolInput),
-		}
-		return &action, nil
+		// specifically (WebSearch, Task, Glob, future tools, etc.).
+		generic := claudeGenericAction(p)
+		return &generic, nil
 	}
 }
 
@@ -370,8 +461,9 @@ type claudeHookEntry struct {
 const claudeHookTimeout = 10
 
 // claudeToolMatcher matches every tool call. Built-in tools (Bash, WebFetch,
-// Write, Edit) and MCP tools route to tool-aware scanning; all others fall
-// through to a generic DLP + injection catch-all in claudePayloadToAction.
+// Write, Edit, Read, Grep, NotebookEdit) and MCP tools route to tool-aware
+// scanning; all others fall through to a generic DLP + injection catch-all
+// in claudePayloadToAction.
 const claudeToolMatcher = ".*"
 
 // parseClaudeSettings parses the hooks section from settings.json data.

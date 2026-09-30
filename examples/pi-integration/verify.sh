@@ -106,8 +106,8 @@ fi
 # -- Test 4 -------------------------------------------------------------------
 step "Test 4: remove --dry-run does not restore yet"
 REMOVE_DRY="$(run_pi remove --dry-run 2>&1)"
-if printf '%s' "$REMOVE_DRY" | grep -q 'Would restore'; then
-  pass "remove dry-run mentions restore"
+if printf '%s' "$REMOVE_DRY" | grep -q 'Would remove httpProxy from'; then
+  pass "remove dry-run says it would remove the proxy it added"
 else
   fail "remove dry-run missing expected output"
   printf '%s\n' "$REMOVE_DRY" >&2
@@ -124,10 +124,10 @@ pass "remove dry-run left httpProxy in place"
 # -- Test 5 -------------------------------------------------------------------
 step "Test 5: remove restores other settings"
 REMOVE_OUT="$(run_pi remove 2>&1)"
-if printf '%s' "$REMOVE_OUT" | grep -q 'Restored Pi'; then
-  pass "remove reported restore"
+if printf '%s' "$REMOVE_OUT" | grep -q 'Removed the Pipelock HTTP proxy setting'; then
+  pass "remove reported removing the proxy it added"
 else
-  fail "remove did not report restore"
+  fail "remove did not report removing the proxy it added"
   printf '%s\n' "$REMOVE_OUT" >&2
 fi
 python3 - <<'PY' "$SETTINGS"
@@ -170,10 +170,10 @@ step "Test 7: remove deletes a newly created settings file"
 rm -f "$SETTINGS" "$SETTINGS.pipelock-pi-state.json"
 run_pi install --config "$YAML" --profile pi --proxy "$PROXY" >/dev/null
 REMOVE_NEW="$(run_pi remove 2>&1)"
-if printf '%s' "$REMOVE_NEW" | grep -q 'Restored Pi'; then
-  pass "remove reported restore of new settings"
+if printf '%s' "$REMOVE_NEW" | grep -q 'which pipelock pi install created'; then
+  pass "remove reported deleting the settings file it created"
 else
-  fail "remove did not report restore of new settings"
+  fail "remove did not report deleting the settings file it created"
   printf '%s\n' "$REMOVE_NEW" >&2
 fi
 if [ ! -e "$SETTINGS" ]; then

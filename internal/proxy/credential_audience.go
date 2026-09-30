@@ -147,7 +147,7 @@ func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.E
 	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		e.Emit,
+		credentialAudienceEmitV1(e, cfg),
 		p.emitV2Receipt,
 		p.logReceiptEmissionFailure,
 		func(fallback receipt.EmitOpts) {
@@ -220,7 +220,7 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		e.Emit,
+		credentialAudienceEmitV1(e, cfg),
 		func(v2Opts receipt.EmitOpts) error {
 			return emitV2(rp.v2EmitterPtr, v2Opts, func(err error) {
 				recordV2ReceiptEmitFailure(rp.metrics)
@@ -232,6 +232,18 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 			logCredentialAudienceReceiptExtensionDropped(rp.logger, fallback)
 		},
 	)
+}
+
+// credentialAudienceEmitV1 picks the v1 write for an allow receipt. A required
+// receipt must be fsync-confirmed, like every other required allow receipt: an
+// ordinary write can sit in a recorder generation that rotates without a sync,
+// so the request could forward while its record is not yet durable. Best-effort
+// mode keeps the ordinary write.
+func credentialAudienceEmitV1(e *receipt.Emitter, cfg *config.Config) func(receipt.EmitOpts) error {
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		return e.EmitDurable
+	}
+	return e.Emit
 }
 
 // emitCredentialAudienceReceiptWithFallback emits the signed receipt with the

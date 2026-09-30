@@ -231,6 +231,13 @@ func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
 		{"deny: SAS on a real Azure blob host", "https://vendorstorage.blob.core.windows.net/asset/1?" + fullQuery, false},
 		{"deny: SAS over plain http", "http://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery, false},
 		{"deny: missing a required delegation-key parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "skoid=00000000-0000-4000-8000-000000000001&", "", 1), false},
+		// The allowance covers the query's one sig parameter only. A second
+		// signature smuggled into another parameter, encoded or plain, or a
+		// duplicate sig (including an encoded key), keeps the URL blocked.
+		{"deny: second SAS encoded in another parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&x=" + url.QueryEscape("sig="+releaseGrantSASSig("smuggled-fixture")), false},
+		{"deny: second SAS in a parameter key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&" + url.QueryEscape("sig="+releaseGrantSASSig("smuggled-fixture")) + "=1", false},
+		{"deny: duplicate sig parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&sig=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
+		{"deny: duplicate sig under an encoded key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&si%67=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
 		{"deny: account-key SAS shape (no delegation-key fields)", "https://" + githubReleaseAssetsHost + "/asset/1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-30T00%3A37%3A09Z&sig=" + url.QueryEscape(releaseGrantSASSig("account-key-fixture")) + "&jwt=" + jwt, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -671,21 +671,25 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 		// The raw, single-pass-decoded, and iteratively-decoded forms are all
 		// checked so this cannot disagree with what actually triggered the DLP
 		// match.
-		sasViews := []string{parsed.RawQuery}
-		if once, err := url.QueryUnescape(parsed.RawQuery); err == nil {
-			sasViews = append(sasViews, once)
+		//
+		// The allowance is bound to the query's one sig parameter. A SAS match
+		// anywhere else in the query, in any view checkDLP scans, is a second
+		// credential riding the genuine grant, so the URL stays on the bare
+		// surface.
+		sigSegment, sigCount := rawQueryParamSegment(parsed.RawQuery, "sig")
+		if sigCount != 1 {
+			return bareURLSurface
 		}
-		for _, view := range sasViews {
+		for _, view := range releaseGrantSASQueryViews(rawQueryWithoutParam(parsed.RawQuery, "sig")) {
 			if matchInView(view) {
-				return credentialAudienceURLQuerySurface
+				return bareURLSurface
 			}
 		}
-		for _, view := range joined {
-			if matchInView(view) {
-				return credentialAudienceURLQuerySurface
-			}
+		sigViews := []string{sigSegment}
+		if once, err := url.QueryUnescape(sigSegment); err == nil {
+			sigViews = append(sigViews, once)
 		}
-		for _, view := range views {
+		for _, view := range sigViews {
 			if matchInView(view) {
 				return credentialAudienceURLQuerySurface
 			}
@@ -861,4 +865,62 @@ func decodeJWTSegment(segment string, v any) bool {
 func jsonField(claims map[string]json.RawMessage, name string, v any) bool {
 	raw, ok := claims[name]
 	return ok && json.Unmarshal(raw, v) == nil
+}
+
+// rawQueryParamSegment returns the raw "key=value" segment of the one query
+// parameter whose unescaped key is name, and how many such parameters the raw
+// query holds. Keys are compared after unescaping, so an encoded duplicate
+// such as "si%67" counts as a second "sig".
+func rawQueryParamSegment(rawQuery, name string) (string, int) {
+	segment, count := "", 0
+	for _, part := range strings.Split(rawQuery, "&") {
+		key, _, _ := strings.Cut(part, "=")
+		if unescaped, err := url.QueryUnescape(key); err == nil && unescaped == name {
+			segment = part
+			count++
+		}
+	}
+	return segment, count
+}
+
+// rawQueryWithoutParam drops every segment whose unescaped key is name and
+// keeps the rest of the raw query unchanged.
+func rawQueryWithoutParam(rawQuery, name string) string {
+	parts := strings.Split(rawQuery, "&")
+	kept := parts[:0:0]
+	for _, part := range parts {
+		key, _, _ := strings.Cut(part, "=")
+		if unescaped, err := url.QueryUnescape(key); err == nil && unescaped == name {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "&")
+}
+
+// releaseGrantSASQueryViews mirrors the query views urlDLPAudienceSurface and
+// checkDLP scan: the raw and decoded query, joined values, and every key and
+// value with their nested decodings. It is used to prove that no SAS match
+// exists outside the one sig parameter a release grant covers.
+func releaseGrantSASQueryViews(rawQuery string) []string {
+	views := []string{rawQuery, IterativeDecode(rawQuery), orderedQueryConcat(rawQuery)}
+	if once, err := url.QueryUnescape(rawQuery); err == nil {
+		views = append(views, once)
+	}
+	values, _ := url.ParseQuery(rawQuery)
+	for key, vals := range values {
+		decodedKey := IterativeDecode(key)
+		views = append(views, decodedKey, stripURLNoise(decodedKey))
+		for _, d := range decodeEncodingsRecursive(decodedKey) {
+			views = append(views, d.text)
+		}
+		for _, v := range vals {
+			decoded := IterativeDecode(v)
+			views = append(views, decoded, stripURLNoise(decoded))
+			for _, t := range queryValueDecodedTargets(decoded) {
+				views = append(views, t.text)
+			}
+		}
+	}
+	return views
 }

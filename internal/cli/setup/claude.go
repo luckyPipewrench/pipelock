@@ -35,6 +35,8 @@ type claudeCodePayload struct {
 	ToolName      string          `json:"tool_name"`
 	ToolInput     json.RawMessage `json:"tool_input"`
 	ToolUseID     string          `json:"tool_use_id"`
+	// Cwd is the session's working directory, where a pathless Grep searches.
+	Cwd string `json:"cwd"`
 }
 
 // Tool-specific input structs parsed from tool_input.
@@ -362,6 +364,17 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		var input grepToolInput
 		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
 			return nil, fmt.Errorf("parsing Grep tool_input: %w", err)
+		}
+		// A recursive search reads every file under its target, so a target
+		// that is, contains, or sits inside a credential directory is refused
+		// before any path is checked. A pathless search targets the session's
+		// working directory.
+		target := input.Path
+		if target == "" {
+			target = p.Cwd
+		}
+		if dir, ok := grepTargetCoversCredentialDir(target, p.Cwd); ok {
+			return nil, fmt.Errorf("refusing Grep over %s, which covers the credential directory %s; search a narrower path", target, dir)
 		}
 		if input.Path != "" {
 			// Grep prints matching file contents, so a populated path is a
@@ -850,4 +863,61 @@ func writeClaudeSettingsFile(cmd *cobra.Command, targetPath, targetDir string, e
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrote pipelock hooks to %s\n", targetPath)
 	return nil
+}
+
+// claudeGrepCredentialDirs are home-relative directories whose files the
+// shipped Credential File Access rule protects, each with one file the rule
+// denies, so a parity test fails if the rule and this list disagree.
+var claudeGrepCredentialDirs = []struct{ dir, probe string }{
+	{".ssh", "id_ed25519"},
+	{".aws", "credentials"},
+}
+
+// grepTargetCoversCredentialDir reports whether a recursive search of target
+// would read inside a credential directory: the target is one, sits inside
+// one, or is an ancestor of one. Paths are resolved against cwd, "~" expands
+// to the home directory, and symlinks are followed where they exist.
+func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
+	if target == "" {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	switch {
+	case target == "~":
+		target = home
+	case strings.HasPrefix(target, "~/"):
+		target = filepath.Join(home, target[2:])
+	case !filepath.IsAbs(target) && cwd != "":
+		target = filepath.Join(cwd, target)
+	case !filepath.IsAbs(target):
+		abs, err := filepath.Abs(target)
+		if err != nil {
+			return "", false
+		}
+		target = abs
+	}
+	target = resolve(target)
+	for _, c := range claudeGrepCredentialDirs {
+		for _, dir := range []string{filepath.Join(home, c.dir), resolve(filepath.Join(home, c.dir))} {
+			if pathWithin(target, dir) || pathWithin(dir, target) {
+				return filepath.Join(home, c.dir), true
+			}
+		}
+	}
+	return "", false
+}
+
+// pathWithin reports whether path is dir or lies below it.
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

@@ -5,6 +5,8 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"path"
 	"strings"
@@ -519,14 +521,70 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 			views = append(views, IterativeDecode(v))
 		}
 	}
+	// Every credential match in the query must be a download grant issued for
+	// this host. One unrelated or undecodable token keeps the whole URL on the
+	// bare surface, so a real grant cannot carry a second token past DLP.
+	host := canonicalAudienceHost(parsed.Hostname())
+	found := false
 	for _, view := range views {
 		if view == "" {
 			continue
 		}
 		cleaned := normalize.ForDLP(view)
-		if _, _, ok := p.matchSpanInView(cleaned, view); ok {
-			return credentialAudienceURLQuerySurface
+		if _, _, ok := p.matchSpanInView(cleaned, view); !ok {
+			continue
+		}
+		for _, loc := range p.re.FindAllStringIndex(cleaned, -1) {
+			if !downloadGrantClaimsMatch(cleaned[loc[0]:loc[1]], host) {
+				return bareURLSurface
+			}
+			found = true
 		}
 	}
+	if found {
+		return credentialAudienceURLQuerySurface
+	}
 	return bareURLSurface
+}
+
+// canonicalAudienceHost lowercases a hostname and drops a trailing dot, the
+// same spelling the audience host list uses.
+func canonicalAudienceHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// downloadGrantClaimsMatch reports whether token is a JWT whose payload names
+// GitHub as issuer and host as audience. Any decode or shape failure is false.
+// The signature is not verified: the check binds the token to its stated
+// purpose, it does not authenticate it.
+func downloadGrantClaimsMatch(token, host string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Iss string          `json:"iss"`
+		Aud json.RawMessage `json:"aud"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Iss != config.GitHubDownloadGrantIssuer {
+		return false
+	}
+	var aud string
+	if err := json.Unmarshal(claims.Aud, &aud); err == nil {
+		return canonicalAudienceHost(aud) == host
+	}
+	var auds []string
+	if err := json.Unmarshal(claims.Aud, &auds); err != nil {
+		return false
+	}
+	for _, a := range auds {
+		if canonicalAudienceHost(a) == host {
+			return true
+		}
+	}
+	return false
 }

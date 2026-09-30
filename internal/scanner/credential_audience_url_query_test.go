@@ -26,9 +26,50 @@ const (
 func fakeAudienceJWT() string {
 	enc := base64.RawURLEncoding
 	header := enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.example","sub":"grant"}`))
+	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","exp":1}`))
 	sum := sha256.Sum256([]byte("audience-fixture"))
 	return header + "." + payload + "." + enc.EncodeToString(sum[:])
+}
+
+// claimJWT builds a JWT-shaped token with the given payload JSON.
+func claimJWT(payload string) string {
+	enc := base64.RawURLEncoding
+	sum := sha256.Sum256([]byte(payload))
+	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + enc.EncodeToString([]byte(payload)) + "." + enc.EncodeToString(sum[:])
+}
+
+// An allowance keyed on destination alone would let any JWT reach the release
+// host. Only a grant GitHub issued for that host may; every other token in the
+// query keeps the URL blocked.
+func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	grant := fakeAudienceJWT()
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantAllow bool
+	}{
+		{"real grant", "jwt=" + grant, true},
+		{"audience list naming the host", "jwt=" + claimJWT(`{"aud":["other.example","release-assets.githubusercontent.com"],"iss":"github.com"}`), true},
+		{"unrelated service token", "jwt=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example","sub":"svc"}`), false},
+		{"right audience, wrong issuer", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"auth.vendor.example"}`), false},
+		{"right audience, no issuer", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com"}`), false},
+		{"github issuer, other audience", "jwt=" + claimJWT(`{"aud":"api.vendor.example","iss":"github.com"}`), false},
+		{"no audience", "jwt=" + claimJWT(`{"iss":"github.com"}`), false},
+		{"payload truncated json", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com"`), false},
+		{"grant plus an unrelated token", "jwt=" + grant + "&t=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example"}`), false},
+		{"unrelated token before the grant", "t=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example"}`) + "&jwt=" + grant, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := s.Scan(context.Background(), githubReleaseAssetsBase+"?"+tc.query)
+			if result.Allowed != tc.wantAllow {
+				t.Fatalf("Allowed = %v (reason %q), want %v", result.Allowed, result.Reason, tc.wantAllow)
+			}
+		})
+	}
 }
 
 func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {

@@ -32,7 +32,7 @@ func releaseGrantJWT() string {
 	enc := base64.RawURLEncoding
 	sum := sha256.Sum256([]byte("release-grant-fixture"))
 	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." +
-		enc.EncodeToString([]byte(`{"aud":"release-assets.example","sub":"grant"}`)) + "." +
+		enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","exp":1}`)) + "." +
 		enc.EncodeToString(sum[:])
 }
 
@@ -214,8 +214,11 @@ func TestGitHubReleaseGrantJWT_RefusedBeforeDial(t *testing.T) {
 			"userinfo lookalike": "https://" + releaseGrantHost + "@download.vendor.example/asset?jwt=" + url.QueryEscape(jwt),
 		} {
 			w := serveFetch(t, p, target)
-			if w.Code != http.StatusForbidden {
-				t.Errorf("%s: status = %d, want 403; body=%s", name, w.Code, w.Body.String())
+			// The targets do not resolve, so a request that reached the dial
+			// would fail as a gateway error; a 403 naming DLP is the pre-dial
+			// scanner refusal.
+			if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "DLP") {
+				t.Errorf("%s: status = %d, want a 403 DLP refusal; body=%s", name, w.Code, w.Body.String())
 			}
 		}
 	})

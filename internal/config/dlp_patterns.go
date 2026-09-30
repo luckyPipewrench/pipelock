@@ -57,6 +57,12 @@ const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | C
 // and the sender cannot read back what lands there.
 var githubDownloadGrantAudienceHosts = []string{"release-assets.githubusercontent.com"}
 
+// GitHubDownloadGrantIssuer is the iss claim of GitHub's release download
+// grant. A JWT in a URL query earns the download audience only when it names
+// this issuer and the destination host as its aud, so an unrelated token sent
+// to the same host still blocks.
+const GitHubDownloadGrantIssuer = "github.com"
+
 // gitlabTokenAudienceMask is the documented GitLab access-token carriers:
 // PRIVATE-TOKEN and Authorization Bearer for the API on any path, and
 // Authorization Basic (oauth2:<token>) through the git rule, which limits it

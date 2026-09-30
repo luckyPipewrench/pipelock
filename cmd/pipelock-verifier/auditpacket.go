@@ -73,10 +73,12 @@ Without --offline, the verifier reads artifacts.evidence (as recorded in
 the packet) and re-verifies the chain. With --offline, only the packet
 itself is validated; trust remains unverified and the command exits nonzero.
 
-Without --key the verifier confirms internal chain self-consistency
-(prev-hash linkage, signer agreement) but cannot prove provenance. A
-packet that claims verdict=valid AND trusted=true MUST carry signer_key,
-and --key (or the packet's own signer_key) must match.`,
+Trusted Audit Packet verification requires --key or --expect-sha256.
+The packet's embedded signer_key isn't an independent trust anchor.
+--key pins the signer; --expect-sha256 pins the packet bytes and permits
+using its declared signer_key. Without either anchor, default verification
+fails. --no-trust-required and --allow-self-consistent-only permit weaker
+checks under their documented conditions.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,

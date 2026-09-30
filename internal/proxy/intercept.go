@@ -777,7 +777,16 @@ func newInterceptHandler(
 				if allowed {
 					urlResult = rescanned
 					if rescanned.Allowed {
-						ic.Proxy.recordIssuerQueryAllow(actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind)
+						// Under require_receipts the allow must be durably recorded
+						// before forwarding; nothing has been written to w yet.
+						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind); err != nil {
+							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
+							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+							writeBlockedError(w,
+								blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+								"blocked: "+blockedErr.reason, http.StatusForbidden)
+							return
+						}
 					}
 				}
 			}
@@ -1431,10 +1440,23 @@ func newInterceptHandler(
 				var allowances []issuerCookieAllowance
 				scanHeaders, allowances = issuerCookieScanHeaders(r.Context(), r.Header, ic.Scanner, issuerStore,
 					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now())
+				// Under require_receipts every allow must be durably recorded
+				// before forwarding; nothing has been written to w yet.
+				var issuerAllowErr error
 				for _, allowance := range allowances {
 					for _, pattern := range allowance.Patterns {
-						ic.Proxy.recordIssuerCookieAllow(actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method)
+						if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method); err != nil && issuerAllowErr == nil {
+							issuerAllowErr = err
+						}
 					}
+				}
+				if issuerAllowErr != nil {
+					blockedErr := newIssuerAllowReceiptBlockedRequest(issuerAllowErr)
+					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+						"blocked: "+blockedErr.reason, http.StatusForbidden)
+					return
 				}
 			}
 			headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), scanHeaders, ic.Config, ic.Scanner, targetURL, func(match scanner.TextDLPMatch, reason string) {

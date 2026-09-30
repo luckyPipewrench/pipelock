@@ -25,6 +25,12 @@ const (
 	// operators and receipts can tell the two failure sources apart.
 	blockLayerCredentialAudienceReceipt  = "credential_audience_receipt"                           // #nosec G101 -- block-reason layer identifier, not credential material
 	credentialAudienceReceiptBlockReason = "credential audience allow receipt confirmation failed" // #nosec G101 -- operator-facing block reason text, not credential material
+
+	// blockLayerIssuerAllowReceipt is the distinct block layer used when
+	// require_receipts is on and an issuer-cookie or issuer-query allow
+	// receipt could not be durably confirmed before forwarding.
+	blockLayerIssuerAllowReceipt  = "issuer_allow_receipt"
+	issuerAllowReceiptBlockReason = "issuer allow receipt confirmation failed"
 )
 
 // errCredentialAudienceReceiptEmitterUnavailable is returned when no receipt
@@ -43,6 +49,16 @@ func newCredentialAudienceReceiptBlockedRequest(err error) *blockedRequestError 
 		blockLayerCredentialAudienceReceipt,
 		credentialAudienceReceiptBlockReason,
 		credentialAudienceReceiptBlockReason+": "+err.Error(),
+	)
+}
+
+// newIssuerAllowReceiptBlockedRequest builds the typed block error for a
+// require_receipts failure on the issuer-cookie or issuer-query allow path.
+func newIssuerAllowReceiptBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerIssuerAllowReceipt,
+		issuerAllowReceiptBlockReason,
+		issuerAllowReceiptBlockReason+": "+err.Error(),
 	)
 }
 

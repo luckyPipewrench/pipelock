@@ -32,7 +32,7 @@ func releaseGrantJWT() string {
 	enc := base64.RawURLEncoding
 	sum := sha256.Sum256([]byte("release-grant-fixture"))
 	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." +
-		enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","exp":1}`)) + "." +
+		enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","nbf":1000,"exp":1300}`)) + "." +
 		enc.EncodeToString(sum[:])
 }
 

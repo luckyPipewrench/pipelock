@@ -4,7 +4,9 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
@@ -517,7 +519,11 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	}
 	// The views mirror every query view checkDLP scans, keys included, so a
 	// token checkDLP can find is one this check also sees and validates.
-	views := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}
+	// Joined views concatenate several values, so a match there may run into
+	// the next value's text. Every other view comes from one key or value, where
+	// a match must be exactly a grant.
+	joined := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}
+	var views []string
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		views = append(views, decodedKey, stripURLNoise(decodedKey))
@@ -535,21 +541,33 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// Every credential match in the query must be a download grant issued for
 	// this host. One unrelated or undecodable token keeps the whole URL on the
 	// bare surface, so a real grant cannot carry a second token past DLP.
-	host := canonicalAudienceHost(parsed.Hostname())
+	grants := validatedQueryGrants(parsed)
 	found := false
-	for _, view := range views {
+	check := func(view string, prefixOK bool) bool {
 		if view == "" {
-			continue
+			return true
 		}
 		cleaned := normalize.ForDLP(view)
 		if _, _, ok := p.matchSpanInView(cleaned, view); !ok {
-			continue
+			return true
 		}
 		for _, loc := range p.re.FindAllStringIndex(cleaned, -1) {
-			if !downloadGrantClaimsMatch(cleaned[loc[0]:loc[1]], host) {
-				return bareURLSurface
+			m := cleaned[loc[0]:loc[1]]
+			if !isGrant(m, grants) && (!prefixOK || !startsWithGrant(m, grants)) {
+				return false
 			}
 			found = true
+		}
+		return true
+	}
+	for _, view := range joined {
+		if !check(view, true) {
+			return bareURLSurface
+		}
+	}
+	for _, view := range views {
+		if !check(view, false) {
+			return bareURLSurface
 		}
 	}
 	if found {
@@ -566,17 +584,55 @@ func candidateTokensAreGrants(p *compiledPattern, text, target string) bool {
 	if err != nil {
 		return false
 	}
-	host := canonicalAudienceHost(parsed.Hostname())
+	grants := validatedQueryGrants(parsed)
 	locs := p.re.FindAllStringIndex(text, -1)
 	if len(locs) == 0 {
 		return false
 	}
 	for _, loc := range locs {
-		if !downloadGrantClaimsMatch(text[loc[0]:loc[1]], host) {
+		if !startsWithGrant(text[loc[0]:loc[1]], grants) {
 			return false
 		}
 	}
 	return true
+}
+
+// validatedQueryGrants returns the query values that are, whole and on their
+// own, a download grant for the URL's host. GitHub sends the grant as one
+// query value; a grant reassembled from several values is not one.
+func validatedQueryGrants(parsed *url.URL) []string {
+	host := canonicalAudienceHost(parsed.Hostname())
+	var grants []string
+	for _, values := range parsed.Query() {
+		for _, v := range values {
+			if downloadGrantClaimsMatch(v, host) {
+				grants = append(grants, v)
+			}
+		}
+	}
+	return grants
+}
+
+func isGrant(match string, grants []string) bool {
+	for _, g := range grants {
+		if match == g {
+			return true
+		}
+	}
+	return false
+}
+
+// startsWithGrant reports whether a pattern match is a validated grant. A
+// view that joins query values lets the match run into the next value's
+// text; that tail is scanned on its own, so the match qualifies when it
+// begins with the whole grant.
+func startsWithGrant(match string, grants []string) bool {
+	for _, g := range grants {
+		if strings.HasPrefix(match, g) {
+			return true
+		}
+	}
+	return false
 }
 
 // canonicalAudienceHost lowercases a hostname and drops a trailing dot, the
@@ -597,29 +653,62 @@ func downloadGrantClaimsMatch(token, host string) bool {
 	if len(parts) != 3 {
 		return false
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	// Header: exactly the two fields GitHub sends.
+	var header map[string]string
+	if !decodeJWTSegment(parts[0], &header) || len(header) != 2 || header["typ"] != "JWT" || header["alg"] != "HS256" {
+		return false
+	}
+	// Signature: an HS256 MAC is exactly 32 bytes, so it has no room to carry
+	// anything else.
+	if sig, err := base64.RawURLEncoding.DecodeString(parts[2]); err != nil || len(sig) != sha256.Size {
+		return false
+	}
+	var claims map[string]json.RawMessage
+	if !decodeJWTSegment(parts[1], &claims) {
+		return false
+	}
+	for name := range claims {
+		if !downloadGrantClaimNames[name] {
+			return false
+		}
+	}
+	var iss, aud, key, grantPath string
+	var exp, nbf int64
+	if !jsonField(claims, "iss", &iss) || iss != config.GitHubDownloadGrantIssuer ||
+		!jsonField(claims, "aud", &aud) || canonicalAudienceHost(aud) != host ||
+		!jsonField(claims, "exp", &exp) || !jsonField(claims, "nbf", &nbf) ||
+		exp <= nbf || exp-nbf > downloadGrantMaxLifetimeSeconds {
+		return false
+	}
+	// key and path are optional in shape but must be plain strings when set.
+	if _, ok := claims["key"]; ok && !jsonField(claims, "key", &key) {
+		return false
+	}
+	if _, ok := claims["path"]; ok && !jsonField(claims, "path", &grantPath) {
+		return false
+	}
+	return true
+}
+
+// downloadGrantClaimNames is the complete claim set of GitHub's release
+// download grant. A token carrying any other claim is not that grant.
+var downloadGrantClaimNames = map[string]bool{"aud": true, "exp": true, "iss": true, "key": true, "nbf": true, "path": true}
+
+// downloadGrantMaxLifetimeSeconds bounds exp minus nbf. GitHub's grant lives
+// five minutes.
+const downloadGrantMaxLifetimeSeconds = 300
+
+func decodeJWTSegment(segment string, v any) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(segment)
 	if err != nil {
 		return false
 	}
-	var claims struct {
-		Iss string          `json:"iss"`
-		Aud json.RawMessage `json:"aud"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.Iss != config.GitHubDownloadGrantIssuer {
-		return false
-	}
-	var aud string
-	if err := json.Unmarshal(claims.Aud, &aud); err == nil {
-		return canonicalAudienceHost(aud) == host
-	}
-	var auds []string
-	if err := json.Unmarshal(claims.Aud, &auds); err != nil {
-		return false
-	}
-	for _, a := range auds {
-		if canonicalAudienceHost(a) == host {
-			return true
-		}
-	}
-	return false
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	return dec.Decode(v) == nil && !dec.More()
+}
+
+func jsonField(claims map[string]json.RawMessage, name string, v any) bool {
+	raw, ok := claims[name]
+	return ok && json.Unmarshal(raw, v) == nil
 }

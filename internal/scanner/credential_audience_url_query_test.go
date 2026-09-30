@@ -27,7 +27,7 @@ const (
 func fakeAudienceJWT() string {
 	enc := base64.RawURLEncoding
 	header := enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","exp":1}`))
+	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","nbf":1000,"exp":1300}`))
 	sum := sha256.Sum256([]byte("audience-fixture"))
 	return header + "." + payload + "." + enc.EncodeToString(sum[:])
 }
@@ -37,6 +37,14 @@ func claimJWT(payload string) string {
 	enc := base64.RawURLEncoding
 	sum := sha256.Sum256([]byte(payload))
 	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + enc.EncodeToString([]byte(payload)) + "." + enc.EncodeToString(sum[:])
+}
+
+// oddHeaderJWT is a grant-shaped token whose header carries an extra field.
+func oddHeaderJWT() string {
+	enc := base64.RawURLEncoding
+	sum := sha256.Sum256([]byte("odd"))
+	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT","kid":"x"}`)) + "." +
+		enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":1300}`)) + "." + enc.EncodeToString(sum[:])
 }
 
 // An allowance keyed on destination alone would let any JWT reach the release
@@ -54,7 +62,12 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		wantAllow bool
 	}{
 		{"real grant", "jwt=" + grant, true},
-		{"audience list naming the host", "jwt=" + claimJWT(`{"aud":["other.example","release-assets.githubusercontent.com"],"iss":"github.com"}`), true},
+		{"audience list naming the host", "jwt=" + claimJWT(`{"aud":["other.example","release-assets.githubusercontent.com"],"iss":"github.com","nbf":1000,"exp":1300}`), false},
+		{"extra claim beside a valid grant shape", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":1300,"x":"data"}`), false},
+		{"lifetime longer than a grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":4600}`), false},
+		{"expiry before not-before", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1300,"exp":1000}`), false},
+		{"header with an extra field", "jwt=" + oddHeaderJWT(), false},
+		{"signature longer than an HS256 MAC", "jwt=" + fakeAudienceJWT() + "AAAAAAAAAAAAAAAAAAAAAA", false},
 		{"unrelated service token", "jwt=" + claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example","sub":"svc"}`), false},
 		{"right audience, wrong issuer", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"auth.vendor.example"}`), false},
 		{"right audience, no issuer", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com"}`), false},
@@ -66,6 +79,8 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		{"grant plus a base64-hidden unrelated token", "jwt=" + grant + "&t=" + base64.StdEncoding.EncodeToString([]byte(unrelated)), false},
 		{"grant plus a hex-hidden unrelated token", "jwt=" + grant + "&t=" + hex.EncodeToString([]byte(unrelated)), false},
 		{"grant plus an unrelated token as a key", "jwt=" + grant + "&" + unrelated + "=1", false},
+		{"grant with bytes appended in the same value", "jwt=" + grant + "&t=" + grant + "AAAAAAAA", false},
+		{"grant with bytes appended, base64 in a value", "jwt=" + grant + "&t=" + base64.StdEncoding.EncodeToString([]byte(grant+"AAAAAAAA")), false},
 		{"grant plus an unrelated token split around noise", "jwt=" + grant + "&a=" + unrelated[:40] + "&noise=A&b=" + unrelated[40:], false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,7 +110,7 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 		{"trailing dot host", "https://" + githubReleaseAssetsHost + "./a/b?jwt=" + jwt, true},
 		{"explicit default port", "https://" + githubReleaseAssetsHost + ":443/a/b?jwt=" + jwt, true},
 		{"percent-encoded value", githubReleaseAssetsBase + "?jwt=" + url.QueryEscape(jwt), true},
-		{"split across query values", githubReleaseAssetsBase + "?a=" + jwt[:40] + "&b=" + jwt[40:] + "&c=1", true},
+		{"split across query values", githubReleaseAssetsBase + "?a=" + jwt[:40] + "&b=" + jwt[40:] + "&c=1", false},
 
 		{"other host", "https://api.vendor.example/a?jwt=" + jwt, false},
 		{"suffix lookalike", "https://" + githubReleaseAssetsHost + ".evil.example/a?jwt=" + jwt, false},

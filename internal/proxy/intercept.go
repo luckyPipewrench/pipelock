@@ -2103,7 +2103,11 @@ func newInterceptHandler(
 			written, copyErr := io.Copy(w, resp.Body)
 			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
-			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, "complete")
+			// The outcome receipt is the durable record that an exempt host
+			// streamed a body past the scan ceiling unscanned, or that the
+			// stream broke before the body was delivered.
+			exemptCloseReason := streamCloseReason(copyErr, written, maxResp, "complete")
+			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
 			// Account streamed bytes against the per-domain data budget so a
 			// trusted download still decrements it (no scan-size cap: the host
 			// is trusted to carry large files).
@@ -2221,7 +2225,7 @@ func newInterceptHandler(
 					w.WriteHeader(resp.StatusCode)
 					written, copyErr := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
-					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, "unscannable_passthrough")
+					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
@@ -2248,7 +2252,7 @@ func newInterceptHandler(
 				}
 				var scanFailure *sizeExemptResponseReadError
 				var releaseSizeExemptScan sizeExemptScanRelease
-				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)
@@ -2276,7 +2280,9 @@ func newInterceptHandler(
 				}
 				defer releaseSizeExemptScan()
 			} else {
-				reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes", true)
+				rem := responseStreamingSizeRemedies(ic.Config, resp.Header, true)
+				rem.SizeExempt = true
+				reason := responseSizeRemedyBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes", false, rem)
 				ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
 				ic.Metrics.RecordTLSResponseBlocked("oversized")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
@@ -2649,7 +2655,11 @@ func newInterceptHandler(
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQuery(ic, resp, respBody, delivered)
-		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), "complete")
+		closeReason := "complete"
+		if !delivered {
+			closeReason = receiptReasonIncomplete
+		}
+		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), closeReason)
 	})
 }
 

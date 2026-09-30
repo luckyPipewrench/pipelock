@@ -189,7 +189,7 @@ type sizeExemptScanRelease func()
 
 func noopSizeExemptScanRelease() {}
 
-func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
+func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int, rem sizeRemedies) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
 	ceiling := int64(scanMaxBytes)
 	if ceiling <= 0 {
 		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
@@ -221,7 +221,7 @@ func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix
 		release()
 		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureOversize,
-			Reason: responseSizeExemptObservedScanBlockReason(host, int64(len(fullBody)), ceiling, false),
+			Reason: responseSizeExemptObservedScanBlockReason(host, int64(len(fullBody)), ceiling, false, rem),
 		}
 	}
 	return fullBody, release, nil

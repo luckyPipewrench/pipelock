@@ -45,6 +45,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 		body          string
 		configure     func(*config.Config)
 		contentType   string
+		unknownLength bool
 		wantStatus    int
 		wantReason    string
 		wantMsg       []string
@@ -83,6 +84,17 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			configure:     func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{"*.mirror.example"} },
 			wantStatus:    http.StatusOK,
 			wantReason:    "reason=" + receiptReasonExemptOverCapUnscanned,
+			wantOverCap:   true,
+			wantIdentical: true,
+		},
+		{
+			name:          "exempt unknown length streams over cap",
+			host:          overCapHostExempt,
+			body:          over,
+			unknownLength: true,
+			configure:     func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:    http.StatusOK,
+			wantReason:    "reason=exempt_over_cap_unscanned",
 			wantOverCap:   true,
 			wantIdentical: true,
 		},
@@ -179,6 +191,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			body:       over,
 			wantStatus: http.StatusForbidden,
 			wantMsg: []string{
+				"is at least 1025 bytes",
 				"raise tls_interception.max_response_bytes",
 				"response_scanning.size_exempt_domains (bounded scan up to response_scanning.size_exempt_scan_max_bytes)",
 				"response_scanning.exempt_domains (that host's responses are then not scanned)",
@@ -227,12 +240,16 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			if contentType == "" {
 				contentType = "application/octet-stream"
 			}
+			contentLength := int64(len(tt.body))
+			if tt.unknownLength {
+				contentLength = -1
+			}
 			rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode:    http.StatusOK,
 					Header:        http.Header{headerContentType: []string{contentType}},
 					Body:          io.NopCloser(strings.NewReader(tt.body)),
-					ContentLength: int64(len(tt.body)),
+					ContentLength: contentLength,
 				}, nil
 			})
 			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -421,10 +438,10 @@ func TestForwardSizeRemediesMatchStreamingEligibility(t *testing.T) {
 				if svg {
 					why = "for declared SVG content"
 				}
-				if !strings.Contains(string(got), "exempt_domains does not remove this cap "+why) ||
+				if !strings.Contains(string(got), "is at least ") || !strings.Contains(string(got), "exempt_domains does not remove this cap "+why) ||
 					strings.Contains(string(got), "use response_scanning.exempt_domains") ||
 					strings.Contains(string(got), "passthrough_domains") {
-					t.Fatalf("inert remedy in forward response: %s", got)
+					t.Fatalf("incorrect forward size-block message: %s", got)
 				}
 			})
 		}

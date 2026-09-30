@@ -2748,7 +2748,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				} else {
 					rem := responseStreamingSizeRemedies(cfg, resp.Header, false)
 					rem.SizeExempt = true
-					reason := responseSizeRemedyBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", true, rem)
+					reason := responseSizeRemedyBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", false, rem)
 					p.logger.LogBlocked(actx, responseScanLayer, reason)
 					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 						ActionID:  actionID,

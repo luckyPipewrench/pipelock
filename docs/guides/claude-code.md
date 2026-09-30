@@ -228,6 +228,8 @@ This registers pipelock as a `PreToolUse` hook for security-relevant tools:
 | Matcher | Tools | What's scanned |
 |---------|-------|----------------|
 | `Bash\|WebFetch\|Write\|Edit` | Built-in tools | Commands, URLs, file content for DLP and policy |
+| `Read`, `Grep` | Built-in file reads | File path against the same credential-path policy as other file reads (SSH private keys, AWS credentials, `/etc/shadow` and similar; SSH public keys stay allowed), plus DLP and injection on every argument. The path check matches named credential files, so a `Grep` over a whole directory is not path-checked, the same as `grep -r` through `Bash` |
+| `NotebookEdit` | Built-in notebook edits | Notebook path and new cell content for DLP and policy, the same as `Write`/`Edit` |
 | `mcp__.*` | All MCP tools | Tool arguments for DLP and injection |
 
 ### Fail-closed defaults

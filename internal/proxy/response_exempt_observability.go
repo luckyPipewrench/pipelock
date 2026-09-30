@@ -15,6 +15,24 @@ import (
 // scan ceiling without any scan.
 const receiptReasonExemptOverCapUnscanned = "exempt_over_cap_unscanned"
 
+// receiptReasonIncomplete is the outcome-receipt close reason for a response
+// whose body copy to the client failed part way. A receipt must never claim a
+// transfer completed when the stream broke.
+const receiptReasonIncomplete = "incomplete"
+
+// streamCloseReason names how a streamed response body ended: incomplete when
+// the copy failed, the over-cap marker when an exempt body passed the scan
+// ceiling unscanned, and otherwise the caller's success reason.
+func streamCloseReason(copyErr error, bytesWritten, scanCapBytes int64, success string) string {
+	if copyErr != nil {
+		return receiptReasonIncomplete
+	}
+	if scanCapBytes > 0 && bytesWritten > scanCapBytes {
+		return receiptReasonExemptOverCapUnscanned
+	}
+	return success
+}
+
 func recordResponseScanExemptOverCapUnscanned(m *metrics.Metrics, logger *audit.Logger, actx audit.LogContext, host, transport string, bytesWritten, scanCapBytes int64) {
 	if scanCapBytes <= 0 || bytesWritten <= scanCapBytes {
 		return

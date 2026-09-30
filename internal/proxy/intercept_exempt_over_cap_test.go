@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -46,6 +47,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 		configure     func(*config.Config)
 		contentType   string
 		unknownLength bool
+		upstreamFail  bool
 		wantStatus    int
 		wantReason    string
 		wantMsg       []string
@@ -178,6 +180,25 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			wantIdentical: true,
 		},
 		{
+			name:         "exempt stream broken over cap is receipted incomplete",
+			host:         overCapHostExempt,
+			body:         over,
+			upstreamFail: true,
+			configure:    func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:   http.StatusOK,
+			wantReason:   "reason=" + receiptReasonIncomplete,
+			wantOverCap:  true,
+		},
+		{
+			name:         "exempt stream broken under cap is receipted incomplete",
+			host:         overCapHostExempt,
+			body:         under,
+			upstreamFail: true,
+			configure:    func(c *config.Config) { c.ResponseScanning.ExemptDomains = []string{overCapHostExempt} },
+			wantStatus:   http.StatusOK,
+			wantReason:   "reason=" + receiptReasonIncomplete,
+		},
+		{
 			name:       "lookalike host stays capped",
 			host:       overCapHostExempt + ".evil.example",
 			body:       over,
@@ -248,7 +269,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 				return &http.Response{
 					StatusCode:    http.StatusOK,
 					Header:        http.Header{headerContentType: []string{contentType}},
-					Body:          io.NopCloser(strings.NewReader(tt.body)),
+					Body:          io.NopCloser(upstreamBody(tt.body, tt.upstreamFail)),
 					ContentLength: contentLength,
 				}, nil
 			})
@@ -258,7 +279,7 @@ func TestInterceptExemptOverCap(t *testing.T) {
 				&InterceptContext{Proxy: p, TargetHost: tt.host, TargetPort: "443"}, req)
 			defer func() { _ = resp.Body.Close() }()
 			got, err := io.ReadAll(resp.Body)
-			if err != nil {
+			if err != nil && !tt.upstreamFail {
 				t.Fatalf("read body: %v", err)
 			}
 			if resp.StatusCode != tt.wantStatus {
@@ -286,6 +307,41 @@ func TestInterceptExemptOverCap(t *testing.T) {
 				if !strings.Contains(outcome.ActionRecord.Pattern, tt.wantReason) {
 					t.Fatalf("outcome pattern = %q, want %q", outcome.ActionRecord.Pattern, tt.wantReason)
 				}
+			}
+		})
+	}
+}
+
+// upstreamBody serves body and, when fail is set, then breaks the stream the
+// way a dropped upstream connection does.
+func upstreamBody(body string, fail bool) io.Reader {
+	if !fail {
+		return strings.NewReader(body)
+	}
+	return io.MultiReader(strings.NewReader(body), iotest.ErrReader(io.ErrUnexpectedEOF))
+}
+
+func TestStreamCloseReason(t *testing.T) {
+	broken := io.ErrUnexpectedEOF
+	tests := []struct {
+		name    string
+		err     error
+		written int64
+		limit   int64
+		success string
+		want    string
+	}{
+		{"broken stream wins over cap marker", broken, 10, 5, "complete", receiptReasonIncomplete},
+		{"broken stream under cap", broken, 1, 5, "complete", receiptReasonIncomplete},
+		{"over cap", nil, 10, 5, "complete", receiptReasonExemptOverCapUnscanned},
+		{"exact cap", nil, 5, 5, "complete", "complete"},
+		{"no cap keeps success label", nil, 10, 0, "unscannable_passthrough", "unscannable_passthrough"},
+		{"broken passthrough", broken, 10, 0, "unscannable_passthrough", receiptReasonIncomplete},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := streamCloseReason(tt.err, tt.written, tt.limit, tt.success); got != tt.want {
+				t.Fatalf("streamCloseReason = %q, want %q", got, tt.want)
 			}
 		})
 	}

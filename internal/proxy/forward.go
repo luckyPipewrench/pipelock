@@ -2539,7 +2539,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		written, _ := io.Copy(w, resp.Body)
+		written, copyErr := io.Copy(w, resp.Body)
 		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
 		// Account streamed bytes against both budgets so a trusted download
 		// still decrements the per-domain data budget and the per-agent byte
@@ -2573,7 +2573,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
-		outcomeReason = "complete"
+		outcomeReason = streamCloseReason(copyErr, written, configMaxBytes, "complete")
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}

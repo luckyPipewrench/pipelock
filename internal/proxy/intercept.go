@@ -2103,12 +2103,10 @@ func newInterceptHandler(
 			written, copyErr := io.Copy(w, resp.Body)
 			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
-			exemptCloseReason := "complete"
-			if written > maxResp {
-				// The outcome receipt is the durable record that an exempt
-				// host streamed a body past the scan ceiling unscanned.
-				exemptCloseReason = receiptReasonExemptOverCapUnscanned
-			}
+			// The outcome receipt is the durable record that an exempt host
+			// streamed a body past the scan ceiling unscanned, or that the
+			// stream broke before the body was delivered.
+			exemptCloseReason := streamCloseReason(copyErr, written, maxResp, "complete")
 			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
 			// Account streamed bytes against the per-domain data budget so a
 			// trusted download still decrements it (no scan-size cap: the host
@@ -2227,7 +2225,7 @@ func newInterceptHandler(
 					w.WriteHeader(resp.StatusCode)
 					written, copyErr := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
-					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, "unscannable_passthrough")
+					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
@@ -2657,7 +2655,11 @@ func newInterceptHandler(
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
 		recordDeliveredIssuerQuery(ic, resp, respBody, delivered)
-		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), "complete")
+		closeReason := "complete"
+		if !delivered {
+			closeReason = receiptReasonIncomplete
+		}
+		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), closeReason)
 	})
 }
 

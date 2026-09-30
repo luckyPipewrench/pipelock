@@ -386,7 +386,7 @@ func TestCredentialAudienceReceiptExtensionFallbackKeepsSignedReceipt(t *testing
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	_ = p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -529,7 +529,7 @@ func TestRecordCredentialAudienceAllow_NoReceiptEmitterIsSafe(t *testing.T) {
 		t.Fatalf("recordCredentialAudienceAllow with require_receipts off = %v, want nil", err)
 	}
 	// The direct emit path reports the missing emitter.
-	if err := p.emitCredentialAudienceReceipt(receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+	if err := p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
 		t.Fatalf("emitCredentialAudienceReceipt err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
 	}
 }
@@ -543,7 +543,7 @@ func TestRecordCredentialAudienceAllow_NilReceiversAreInert(t *testing.T) {
 	if err := p.recordCredentialAudienceAllow(required, audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", ""); err != nil {
 		t.Fatalf("nil Proxy recorder = %v, want nil", err)
 	}
-	if err := p.emitCredentialAudienceReceipt(receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+	if err := p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
 		t.Fatalf("nil Proxy emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
 	}
 	var rp *ReverseProxyHandler
@@ -755,7 +755,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 		v2EmitterPtr:      &v2Ptr,
 	}
 
-	_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	_ = rp.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -781,7 +781,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t *testing.T) {
 	t.Run("no emitter pointer", func(t *testing.T) {
 		rp := &ReverseProxyHandler{logger: audit.NewNop(), metrics: metrics.New()}
-		if err := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+		if err := rp.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
 			t.Fatalf("emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
 		}
 	})
@@ -792,7 +792,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t 
 			metrics:           metrics.New(),
 			receiptEmitterPtr: &v1Ptr,
 		}
-		if err := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
+		if err := rp.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey}); !errors.Is(err, errCredentialAudienceReceiptEmitterUnavailable) {
 			t.Fatalf("emit err = %v, want errCredentialAudienceReceiptEmitterUnavailable", err)
 		}
 	})
@@ -1263,4 +1263,45 @@ func TestRecordCredentialAudienceAllow_UsesRequestSnapshotNotLiveConfig(t *testi
 			t.Fatalf("reverse snapshot with require_receipts=false returned %v, want nil", err)
 		}
 	})
+}
+
+// The audience-allow receipt must name the policy that decided the request,
+// not a config that a reload installed while the request was in flight.
+func TestRecordCredentialAudienceAllow_PolicyHashFromRequestSnapshot(t *testing.T) {
+	live := config.Defaults()
+	live.Internal = nil
+	sc := scanner.MustNew(live)
+	t.Cleanup(sc.Close)
+	p, err := New(live, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	snapshot := config.Defaults()
+	snapshot.Internal = nil
+	snapshot.FetchProxy.Monitoring.Blocklist = append(snapshot.FetchProxy.Monitoring.Blocklist, "blocked.vendor.example")
+	if snapshot.CanonicalPolicyHash() == live.CanonicalPolicyHash() {
+		t.Fatal("test setup: snapshot and live policy hashes must differ")
+	}
+
+	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "header", Destination: "api.openai.com"}
+	if err := p.recordCredentialAudienceAllow(snapshot, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "hash", "agent-1"); err != nil {
+		t.Fatalf("recordCredentialAudienceAllow: %v", err)
+	}
+	found := false
+	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.Layer != credentialAudienceReceiptExtensionKey {
+			continue
+		}
+		found = true
+		if got, want := r.ActionRecord.PolicyHash, snapshot.CanonicalPolicyHash(); got != want {
+			t.Fatalf("receipt policy_hash = %q, want request snapshot %q (live %q)", got, want, live.CanonicalPolicyHash())
+		}
+	}
+	if !found {
+		t.Fatal("no credential audience allow receipt emitted")
+	}
 }

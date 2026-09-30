@@ -89,7 +89,7 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 		}
 		return nil
 	}
-	emitErr := p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -113,11 +113,16 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 // omitting that optional metadata. The returned error is non-nil only when
 // the signed receipt itself (not just the advisory extension) could not be
 // recorded; callers under require_receipts treat that as fail-closed.
-func (p *Proxy) emitCredentialAudienceReceipt(opts receipt.EmitOpts) error {
+func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
 	if p == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
-	if cfg := p.cfgPtr.Load(); cfg != nil {
+	// The request snapshot names the policy that decided this allow; the live
+	// pointer is only a fallback for callers without one.
+	if cfg == nil {
+		cfg = p.cfgPtr.Load()
+	}
+	if cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
 	e := p.receiptEmitterPtr.Load()
@@ -165,7 +170,7 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 		}
 		return nil
 	}
-	emitErr := rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	emitErr := rp.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -183,14 +188,15 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 	return nil
 }
 
-func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(opts receipt.EmitOpts) error {
+func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
 	if rp == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
-	if rp.cfgPtr != nil {
-		if cfg := rp.cfgPtr.Load(); cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-		}
+	if cfg == nil && rp.cfgPtr != nil {
+		cfg = rp.cfgPtr.Load()
+	}
+	if cfg != nil {
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
 	e := rp.receiptEmitter()
 	if e == nil {

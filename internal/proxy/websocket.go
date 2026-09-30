@@ -182,7 +182,10 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 // directions when flight_recorder.require_receipts is on and a credential
 // audience allow receipt could not be durably confirmed before the frame
 // carrying it would have been forwarded. It mirrors the redaction/DLP close
-// path used elsewhere in this file.
+// path used elsewhere in this file. Every client-frame scan reaches it before
+// forwarding: scanClientText and scanClientCrossMessageText call it directly,
+// and scanClientMessageBody surfaces CredentialAudienceReceiptErr, which
+// handleClientMessageBodyResult checks first.
 func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err error) bool {
 	blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 	log.LogBlocked(newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), blockedErr.layer, blockedErr.detail)

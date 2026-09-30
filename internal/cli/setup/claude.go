@@ -910,21 +910,37 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 		}
 		return filepath.Clean(path)
 	}
+	// Build the absolute target by concatenation, not filepath.Join or Abs:
+	// both clean lexically, which turns "link/.." into the link's parent
+	// before the link is followed. EvalSymlinks then applies ".." to the
+	// resolved path, as the kernel does.
 	switch {
 	case target == "~":
 		target = home
 	case strings.HasPrefix(target, "~/"):
-		target = filepath.Join(home, target[2:])
-	case !filepath.IsAbs(target) && cwd != "":
-		target = filepath.Join(cwd, target)
+		target = home + string(filepath.Separator) + target[2:]
 	case !filepath.IsAbs(target):
-		abs, err := filepath.Abs(target)
-		if err != nil {
-			return "", false
+		base := cwd
+		if base == "" {
+			wd, err := os.Getwd()
+			if err != nil {
+				return "an unresolvable working directory", true
+			}
+			base = wd
 		}
-		target = abs
+		target = base + string(filepath.Separator) + target
 	}
-	target = resolve(target)
+	resolved, err := filepath.EvalSymlinks(target)
+	switch {
+	case err == nil:
+		target = resolved
+	case hasDotDotSegment(target):
+		// A ".." that cannot be resolved against the real filesystem could
+		// land anywhere, so refuse rather than fall back to a lexical guess.
+		return "an unresolvable path containing ..", true
+	default:
+		target = filepath.Clean(target)
+	}
 	for _, c := range claudeGrepCredentialDirs {
 		listed := claudeGrepCredentialDirPath(home, c.dir)
 		if filepath.IsAbs(c.dir) {
@@ -949,4 +965,14 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 func pathWithin(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// hasDotDotSegment reports whether path contains a ".." element.
+func hasDotDotSegment(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }

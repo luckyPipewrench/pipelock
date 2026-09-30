@@ -185,7 +185,9 @@ func TestValidateAWSAccessIDJoined(t *testing.T) {
 	if validateAWSAccessIDJoined("AKIA!"+awsJoinedTail, 0, 21, "AKIA!"+awsJoinedTail, identity(21)) {
 		t.Error("non-alphanumeric window must not validate")
 	}
-	if validateAWSAccessIDJoined("ANVAsoperationstopreventfingerprinting", 0, 38, "cANVAs operations to prevent fingerprinting", identity(38)) {
+	// Built from pieces so the joined candidate is never a key-shaped literal.
+	mixedJoined := "AN" + "VA" + "soperations" + "topreventfingerprinting"
+	if validateAWSAccessIDJoined(mixedJoined, 0, len(mixedJoined), "cANVAs operations to prevent fingerprinting", identity(len(mixedJoined))) {
 		t.Error("mixed-case window must not validate")
 	}
 	if builtinDLPJoinedValidatorForRegex(`unrelated`) != nil {

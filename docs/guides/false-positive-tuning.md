@@ -62,17 +62,11 @@ cross-request fragment detection.
 
 ### Warn hook
 
-The scanner provides a package-level hook (`scanner.DLPWarnHook`) that the
-runtime can set to route warn events to the audit logger. When the hook is
-wired, each warn-mode match emits a `dlp_warn` event with `pattern`,
-`severity`, and `transport` fields. The `LogDLPWarn` method on the audit
-logger provides the canonical event format.
+Each scanner can be given a callback with `Scanner.SetDLPWarnHook`. The runtime sets this callback at startup and after a configuration reload. For each custom DLP pattern configured with `action: warn`, the callback receives the request context, pattern name, and severity. The runtime uses it to write a `dlp_warn` audit event and a receipt when receipt output is enabled. The hook does not enforce its match, though another finding can still block the request.
 
-When the hook is not configured, warn matches still allow traffic through
-and are reported in the scan result's `InformationalMatches` / `WarnMatches`
-fields, but no audit event is emitted from the hook.
+Without a callback, warn-mode findings still allow traffic and appear in the scan result's `InformationalMatches` or `WarnMatches` fields. They do not emit an audit event through the hook.
 
-`dlp_warn` is also emitted independently of this hook, with `mode: informational`, when a DLP finding is deliberately not enforced (`reason` is `suppressed`, `disabled`, or `low_confidence`). Every `dlp_warn` event carries `mode`, `pattern`, `severity`, `transport` (the scanning surface), and `reason`.
+Some `dlp_warn` events do not come from the hook. Pipelock also emits an informational event when a finding is not enforced because it was suppressed, disabled, or low confidence. These events use `mode: informational`; the callback reports configured warn-mode matches. Both event forms include the pattern, severity, transport, and reason fields.
 
 ### Restrictions
 

@@ -121,11 +121,14 @@ Authentication and Origin failures are rejected before MCP parsing and do not
 produce action receipts. Requests that reach the scanner retain the normal
 policy receipts and audit trail.
 
+The HTTP listener runs for the lifetime of the process that started `pipelock mcp proxy`. If that parent process exits, the listener shuts down. Run it in a persistent terminal or under a service manager when it must stay available beyond the launching shell. Closing stdin alone does not stop the listener.
+
 ## Related guides
 
 - [`docs/guides/deployment-recipes.md`](./deployment-recipes.md) — production deployment patterns
 - [`docs/guides/detection-integration.md`](./detection-integration.md) — receipt + SIEM integration
 - [`docs/guides/false-positive-tuning.md`](./false-positive-tuning.md) — turning warn into block once the inspector is stable
+- [Tool-call policy](./tool-policy.md) — match policy rules against patch file targets
 
 ## References
 

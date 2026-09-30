@@ -10,6 +10,8 @@ token resolve the same way as `pipelock session`: explicit flags, environment
 variables, then the configured `kill_switch.api_listen` and
 `kill_switch.api_token`.
 
+The adaptive admin endpoints also require `session_profiling.enabled: true`. With session profiling disabled, an authenticated request to `/api/v1/adaptive/whoami` returns HTTP 503 with `session profiling disabled`.
+
 ## Quick reference
 
 | Command | Purpose |
@@ -51,4 +53,4 @@ to confirm which identity a proxy-side operator command will affect.
 as proxied traffic (`bound` for a per-agent listener or `source_cidrs` match;
 a forged `X-Pipelock-Agent` header cannot present as `bound`). The text
 output does not print it. For a self-declared caller the session key is the
-bare client IP.
+bare client IP. `unknown` means the record has no valid provenance grade: it was not recorded, or an empty or unrecognized value was normalized to `unknown`. A caller without an agent header is still graded `self-declared`, not `unknown`.

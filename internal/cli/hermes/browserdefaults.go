@@ -224,7 +224,7 @@ func rollbackBrowserDefaultsWithOutput(home string, output io.Writer) error {
 				return err
 			}
 			if err := os.Remove(state); err != nil {
-				return err
+				return fmt.Errorf("browser defaults: removed %s; previous file saved as %s; clear ownership record: %w", browserdefaults.Flag, backup, err)
 			}
 			// The flag is removed wherever it now sits, so name it: an
 			// operator who re-added it on purpose can restore it from backup.

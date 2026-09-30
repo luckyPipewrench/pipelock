@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -1087,5 +1088,30 @@ func TestBrowserDefaultsRollbackNoticeWriteFailure(t *testing.T) {
 	}
 	if args, _ := browserArgs(obj); args != "--lang=de" {
 		t.Fatalf("args = %q", args)
+	}
+}
+
+// A record that cannot be cleared after the config is rewritten still names
+// the backup, so the completed edit stays traceable.
+func TestBrowserDefaultsRollbackRecordRemovalFailureNamesBackup(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory write permission is not enforced here")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, state := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"--lang=fr"}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserTestFile(t, path, `{"args":"--lang=de,`+browserFlag+`"}`, 0o600)
+	stateDir := filepath.Dir(state)
+	if err := os.Chmod(stateDir, 0o500); err != nil { // #nosec G302 -- a directory needs its exec bit; this removes only write access to block the record removal.
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
+	err := rollbackBrowserDefaultsWithOutput(home, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), path+".bak.") {
+		t.Fatalf("rollback error = %v, want the backup path", err)
 	}
 }

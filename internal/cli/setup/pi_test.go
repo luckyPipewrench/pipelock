@@ -85,6 +85,50 @@ func TestPiInstallAndRemoveWhenNoPriorProxy(t *testing.T) {
 	}
 }
 
+// TestPiRemoveReportsWhatItDid pins the remove message to the outcome: a file
+// install created is removed, a prior proxy is restored, and a proxy added where
+// none existed is removed. Claiming a restore in the other two cases misstates
+// what happened to the operator's settings.
+func TestPiRemoveReportsWhatItDid(t *testing.T) {
+	cases := []struct {
+		name    string
+		seed    string // "" means no settings file before install
+		dryRun  string
+		applied string
+		notSaid string
+	}{
+		{"created file", "", "Would remove ", "Removed ", "Restored"},
+		{"prior proxy", `{"theme":"dark","httpProxy":"http://previous.example:8080"}`, "Would restore Pi's previous httpProxy", "Restored Pi's previous HTTP proxy setting", "Removed"},
+		{"no prior proxy", `{"theme":"dark"}`, "Would remove httpProxy from ", "Removed the Pipelock HTTP proxy setting", "Restored"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(piConfigDirEnv, t.TempDir())
+			settingsPath, err := piSettingsPath()
+			if err != nil {
+				t.Fatalf("piSettingsPath: %v", err)
+			}
+			if tc.seed != "" {
+				if err := os.WriteFile(settingsPath, []byte(tc.seed), 0o600); err != nil {
+					t.Fatalf("seed settings: %v", err)
+				}
+			}
+			configPath := writePiPipelockConfig(t, piTestProxyURL)
+			if _, _, err := runPiCommand(t, "install", "--config", configPath, "--proxy", piTestProxyURL); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			stdout, _, err := runPiCommand(t, "remove", "--dry-run")
+			if err != nil || !strings.Contains(stdout, tc.dryRun) || strings.Contains(stdout, tc.notSaid) {
+				t.Fatalf("dry-run remove = %q, %v; want %q and not %q", stdout, err, tc.dryRun, tc.notSaid)
+			}
+			stdout, _, err = runPiCommand(t, "remove")
+			if err != nil || !strings.Contains(stdout, tc.applied) || strings.Contains(stdout, tc.notSaid) {
+				t.Fatalf("remove = %q, %v; want %q and not %q", stdout, err, tc.applied, tc.notSaid)
+			}
+		})
+	}
+}
+
 func TestPiDryRunDoesNotWriteSettingsOrState(t *testing.T) {
 	t.Setenv(piConfigDirEnv, t.TempDir())
 	settingsPath, err := piSettingsPath()
@@ -119,7 +163,7 @@ func TestPiRemoveDryRunAndMissingState(t *testing.T) {
 			t.Fatalf("install: %v", err)
 		}
 		stdout, _, err := runPiCommand(t, "remove", "--dry-run")
-		if err != nil || !strings.Contains(stdout, "Would restore") {
+		if err != nil || !strings.Contains(stdout, "Would remove "+settingsPath) {
 			t.Fatalf("dry-run remove = %q, %v", stdout, err)
 		}
 		if got := stringValue(t, readPiSettingsForTest(t, settingsPath)[piHTTPProxyKey]); got != piTestProxyURL {

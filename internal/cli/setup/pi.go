@@ -237,15 +237,23 @@ func runPiRemove(cmd *cobra.Command, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	removeFile := !state.SettingsExisted && len(settings) == 0
 	if dryRun {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would restore %s in %s:\n%s", piHTTPProxyKey, settingsPath, output)
+		switch {
+		case removeFile:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would remove %s, which pipelock pi install created.\n", settingsPath)
+		case state.HadHTTPProxy:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would restore Pi's previous %s in %s:\n%s", piHTTPProxyKey, settingsPath, output)
+		default:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would remove %s from %s (Pi had no proxy setting before install):\n%s", piHTTPProxyKey, settingsPath, output)
+		}
 		return nil
 	}
 	state.Phase = piStatePhaseRemoving
 	if err := writePiState(statePath, state); err != nil {
 		return fmt.Errorf("recording Pi removal state: %w", err)
 	}
-	if !state.SettingsExisted && len(settings) == 0 {
+	if removeFile {
 		if err := os.Remove(settingsPath); err != nil {
 			return fmt.Errorf("removing newly created Pi settings after recording recovery state: %w", err)
 		}
@@ -255,7 +263,14 @@ func runPiRemove(cmd *cobra.Command, dryRun bool) error {
 	if err := os.Remove(statePath); err != nil {
 		return fmt.Errorf("removing Pi integration state after restoring settings: %w", err)
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restored Pi's previous HTTP proxy setting in %s. Restart Pi to apply it.\n", settingsPath)
+	switch {
+	case removeFile:
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed %s, which pipelock pi install created. Restart Pi to apply it.\n", settingsPath)
+	case state.HadHTTPProxy:
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Restored Pi's previous HTTP proxy setting in %s. Restart Pi to apply it.\n", settingsPath)
+	default:
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed the Pipelock HTTP proxy setting from %s; Pi had none before install. Restart Pi to apply it.\n", settingsPath)
+	}
 	return nil
 }
 

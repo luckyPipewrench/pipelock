@@ -64,8 +64,10 @@ func TestCheckRedirect_RechecksCredentialAudienceOnNewHost(t *testing.T) {
 			if first := scanRequestHeadersForTarget(t.Context(), originalReq.Header, cfg, sc, originalReq.URL.String()); first != nil && !first.Clean {
 				t.Fatalf("precondition: original audience blocked: %+v", first)
 			}
-			if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err == nil {
-				t.Fatal("cross-host redirect retained audience-approved credential")
+			err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})
+			blockedErr, ok := blockedRequestErrorFrom(err)
+			if !ok || blockedErr.layer != "header_dlp" {
+				t.Fatalf("redirect block for %s = %v, want header_dlp", tc.header, err)
 			}
 		})
 	}

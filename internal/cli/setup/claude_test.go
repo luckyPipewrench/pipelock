@@ -1812,6 +1812,11 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
+	for _, name := range []string{"id_ed25519", "id_ed25519.pub"} {
+		if err := os.WriteFile(filepath.Join(home, ".ssh", name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
 	link := filepath.Join(project, "keys")
 	if err := os.Symlink(filepath.Join(home, ".ssh"), link); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -1849,6 +1854,9 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 		{"parent of a symlink into a credential directory", map[string]string{"pattern": ".", "path": link + "/.."}, project, decisionDeny},
 		{"relative parent of a symlink into a credential directory", map[string]string{"pattern": ".", "path": "keys/.."}, project, decisionDeny},
 		{"unresolvable path with a parent segment", map[string]string{"pattern": ".", "path": "missing/.."}, project, decisionDeny},
+		{"relative cwd resolves from the process directory", map[string]string{"pattern": "."}, ".", decisionDeny},
+		{"single public key file is left to the file policy", map[string]string{"pattern": "ssh-ed25519", "path": filepath.Join(home, ".ssh", "id_ed25519.pub")}, project, decisionAllow},
+		{"single private key file is still denied by the file policy", map[string]string{"pattern": "BEGIN", "path": filepath.Join(home, ".ssh", "id_ed25519")}, project, decisionDeny},
 		{"project subdirectory parent stays allowed", map[string]string{"pattern": "func", "path": project + "/../app"}, project, decisionAllow},
 		{"relative path from home", map[string]string{"pattern": ".", "path": ".ssh"}, home, decisionDeny},
 		{"pathless search from home", map[string]string{"pattern": "."}, home, decisionDeny},

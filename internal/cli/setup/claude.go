@@ -920,15 +920,19 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	case strings.HasPrefix(target, "~/"):
 		target = home + string(filepath.Separator) + target[2:]
 	case !filepath.IsAbs(target):
-		base := cwd
-		if base == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				return "an unresolvable working directory", true
-			}
-			base = wd
+		target = cwd + string(filepath.Separator) + target
+		if cwd == "" {
+			target = target[1:]
 		}
-		target = base + string(filepath.Separator) + target
+	}
+	// A relative cwd, or none, is relative to this process's directory.
+	// Anchor it so every comparison below is between absolute paths.
+	if !filepath.IsAbs(target) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "an unresolvable working directory", true
+		}
+		target = wd + string(filepath.Separator) + target
 	}
 	resolved, err := filepath.EvalSymlinks(target)
 	switch {
@@ -940,6 +944,11 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 		return "an unresolvable path containing ..", true
 	default:
 		target = filepath.Clean(target)
+	}
+	// A single regular file is not a recursive search: the file-path policy
+	// that follows decides it, including the SSH public-key exception.
+	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
+		return "", false
 	}
 	for _, c := range claudeGrepCredentialDirs {
 		listed := claudeGrepCredentialDirPath(home, c.dir)

@@ -4071,6 +4071,36 @@ func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string
 	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
 }
 
+// entropyQueryValues parses a raw query for the entropy heuristic. url.ParseQuery
+// silently drops any pair whose key or value carries a malformed percent
+// escape, which would let a secret skip inspection by appending "%ZZ". Pairs
+// that fail to decode are therefore kept with their raw, undecoded key and
+// value so they reach the same entropy checks and exclusions as decoded pairs.
+// Pairs containing ';' are left to scanAmbiguousRawQueryWithContext, matching
+// url.ParseQuery.
+func entropyQueryValues(rawQuery string) url.Values {
+	if values, err := url.ParseQuery(rawQuery); err == nil {
+		return values
+	}
+	values := make(url.Values)
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" || strings.Contains(pair, ";") {
+			continue
+		}
+		rawKey, rawValue, _ := strings.Cut(pair, "=")
+		key, err := url.QueryUnescape(rawKey)
+		if err != nil {
+			key = rawKey
+		}
+		value, err := url.QueryUnescape(rawValue)
+		if err != nil {
+			value = rawValue
+		}
+		values[key] = append(values[key], value)
+	}
+	return values
+}
+
 func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
@@ -4113,7 +4143,7 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 			return result
 		}
 	}
-	query := parsed.Query()
+	query := entropyQueryValues(parsed.RawQuery)
 	s256 := pkceExemptionApplies(query[pkceMethodParam], query[pkceChallengeParam])
 	dohMsg, dohQuery := parseDNSQuery(parsed.RawQuery)
 	for key, values := range query {

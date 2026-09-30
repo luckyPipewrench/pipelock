@@ -1437,7 +1437,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return false
 	}
 	if !cfg.RequestBodyScanning.Enabled && isA2A && cfg.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
+		buf, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 		if err != nil {
 			reason := "a2a: " + err.Error()
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1485,7 +1485,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Scheme:           r.URL.Scheme,
 			Method:           r.Method,
 			ContentType:      r.Header.Get("Content-Type"),
-			ContentEncoding:  r.Header.Get("Content-Encoding"),
+			ContentEncoding:  strings.Join(r.Header.Values("Content-Encoding"), ","),
 			MaxBytes:         cfg.RequestBodyScanning.MaxBodyBytes,
 			Scanner:          sc,
 			AgentID:          agent,

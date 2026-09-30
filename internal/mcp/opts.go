@@ -146,6 +146,10 @@ type MCPProxyOpts struct {
 	ChainMatcherFn func() *chains.Matcher
 
 	beforeDeferredSendClaim func()
+	// beforeDeferredSinkClaim is a test seam that runs after Manager.Resolve
+	// has claimed a hold and immediately before the release-boundary
+	// kill-switch claim.
+	beforeDeferredSinkClaim func()
 
 	// stdioInputScanDisabled is set only by stdio proxy entry points after
 	// they resolve the live input configuration. Low-level callers retain the

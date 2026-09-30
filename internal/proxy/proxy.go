@@ -1082,6 +1082,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
 			scannerMatched := !result.Allowed
+			// net/http copies custom headers to redirected requests. Recheck
+			// destination-bound credentials against this hop before dispatch.
+			if currentCfg.RequestBodyScanning.Enabled && currentCfg.RequestBodyScanning.ScanHeaders {
+				if headerResult := scanRequestHeadersForTarget(req.Context(), req.Header, currentCfg, currentScanner, redirectURL); headerResult != nil {
+					action, hardBlock := headerDLPDecision(headerResult, currentCfg)
+					if hardBlock || (action == config.ActionBlock && currentCfg.EnforceEnabled()) {
+						logger.LogBlocked(redirectAuditCtx, "header_dlp", "redirect headers are not allowed at destination")
+						return newRedirectBlockedRequest("header_dlp", "redirect headers are not allowed at destination")
+					}
+				}
+			}
 
 			// A 307/308 redirect preserves the original method and body. A
 			// git-receive-pack POST therefore remains a push on the redirected

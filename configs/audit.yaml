@@ -55,6 +55,8 @@ request_body_scanning:
     - X-Token
     - Proxy-Authorization
     - X-Goog-Api-Key
+    - Private-Token
+    - Job-Token
 
 websocket_proxy:
   enabled: false

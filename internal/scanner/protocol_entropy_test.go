@@ -60,6 +60,42 @@ func TestProtocolValueEntropyFixtures(t *testing.T) {
 	}
 }
 
+func TestMalformedQueryEscapeCannotSkipEntropy(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	for _, raw := range []string{
+		"https://api.vendor.example/receive?token=" + entropyTestMixed + "%ZZ",
+		"https://api.vendor.example/receive?" + entropyTestMixed + "%ZZ=1",
+	} {
+		result := s.Scan(t.Context(), raw)
+		if result.Allowed {
+			t.Fatalf("malformed query escaped entropy check: %s", raw)
+		}
+	}
+}
+
+func TestMalformedQueryEscapeInspectedRawNotRefused(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"excluded.vendor.example"}
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, tc := range []struct {
+		raw   string
+		allow bool
+	}{
+		{"https://shop.vendor.example/cart?discount=50%off", true},
+		{"https://search.vendor.example/find?q=100%", true},
+		{"https://search.vendor.example/find?q=100%25&rate=5%x", true},
+		{"https://excluded.vendor.example/receive?ref=" + entropyTestMixed + "%ZZ", true},
+		{"https://api.vendor.example/receive?ref=" + entropyTestMixed + "%ZZ", false},
+		{"https://api.vendor.example/receive?ok=1&" + entropyTestMixed + "%ZZ=1", false},
+	} {
+		if got := s.Scan(t.Context(), tc.raw).Allowed; got != tc.allow {
+			t.Errorf("Scan(%s).Allowed = %v, want %v", tc.raw, got, tc.allow)
+		}
+	}
+}
+
 func TestProtocolValueEntropy(t *testing.T) {
 	s := newProtocolEntropyScanner(t)
 	esc := url.QueryEscape

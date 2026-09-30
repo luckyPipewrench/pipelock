@@ -1772,7 +1772,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		Scheme:          rp.upstream.Scheme,
 		Method:          r.Method,
 		ContentType:     r.Header.Get("Content-Type"),
-		ContentEncoding: r.Header.Get("Content-Encoding"),
+		ContentEncoding: strings.Join(r.Header.Values("Content-Encoding"), ","),
 		MaxBytes:        maxBytes,
 		Scanner:         sc,
 		Host:            rp.upstream.Hostname(),

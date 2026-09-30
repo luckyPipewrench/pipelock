@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/guard"
 )
 
 // ErrUnavailable indicates that a sandbox layer is not supported on the
@@ -171,7 +173,11 @@ func DefaultPolicy(workspace string) Policy {
 			"/etc/pki/",
 			"/proc/self/",
 		}),
-		AllowReadFiles: existingPaths([]string{
+		// CA bundles are granted as exact files too. On distros where they
+		// are symlinks into a directory outside /etc/ssl/ and /etc/pki/ (Arch
+		// links into /etc/ca-certificates/), the directory grants above do not
+		// reach the target, and ResolvePolicyPaths grants only the resolved file.
+		AllowReadFiles: append(existingPaths([]string{
 			"/etc/resolv.conf",
 			"/etc/hosts",
 			"/etc/nsswitch.conf",
@@ -180,7 +186,7 @@ func DefaultPolicy(workspace string) Policy {
 			"/etc/passwd",
 			"/etc/group",
 			"/usr/bin/env",
-		}),
+		}), guard.ExecutionCAFiles()...),
 		AllowRWDirs: existingPaths([]string{
 			workspace,
 			// NOTE: /tmp/ is NOT included. The child dynamically adds its

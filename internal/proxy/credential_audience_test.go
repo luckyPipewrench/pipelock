@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1303,5 +1304,45 @@ func TestRecordCredentialAudienceAllow_PolicyHashFromRequestSnapshot(t *testing.
 	}
 	if !found {
 		t.Fatal("no credential audience allow receipt emitted")
+	}
+}
+
+// A required allow receipt must be fsync-confirmed before the request forwards.
+// A write that succeeds but cannot be synced is not durable evidence, so it must
+// block under require_receipts and stay best-effort otherwise. This covers the
+// credential-audience receipt and the issuer allows that share its emit path.
+func TestAllowReceipts_RequireReceiptsNeedsDurableSync(t *testing.T) {
+	allow := scanner.CredentialAudienceAllow{PatternName: "OpenAI API Key", Surface: "header", Destination: "api.openai.com"}
+	for _, tc := range []struct {
+		name    string
+		require bool
+		wantErr bool
+	}{
+		{"required blocks on sync failure", true, true},
+		{"best-effort ignores sync failure", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.FlightRecorder.RequireReceipts = tc.require
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			rph.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected durable sync failure") })
+			p.receiptEmitterPtr.Store(rph.emitter)
+
+			audienceErr := p.recordCredentialAudienceAllow(cfg, audit.LogContext{}, allow, TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "durable", "agent-1")
+			queryErr := p.recordIssuerQueryAllow(cfg, audit.LogContext{}, "https://issuer.vendor.example/callback", "durable-q", "agent-1", http.MethodGet, issuerQueryOAuthRedirect)
+			for name, err := range map[string]error{"credential audience": audienceErr, "issuer query": queryErr} {
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("%s: err = %v, wantErr %v", name, err, tc.wantErr)
+				}
+			}
+		})
 	}
 }

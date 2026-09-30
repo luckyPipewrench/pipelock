@@ -25,6 +25,12 @@ const (
 	// operators and receipts can tell the two failure sources apart.
 	blockLayerCredentialAudienceReceipt  = "credential_audience_receipt"                           // #nosec G101 -- block-reason layer identifier, not credential material
 	credentialAudienceReceiptBlockReason = "credential audience allow receipt confirmation failed" // #nosec G101 -- operator-facing block reason text, not credential material
+
+	// blockLayerIssuerAllowReceipt is the distinct block layer used when
+	// require_receipts is on and an issuer-cookie or issuer-query allow
+	// receipt could not be durably confirmed before forwarding.
+	blockLayerIssuerAllowReceipt  = "issuer_allow_receipt"
+	issuerAllowReceiptBlockReason = "issuer allow receipt confirmation failed"
 )
 
 // errCredentialAudienceReceiptEmitterUnavailable is returned when no receipt
@@ -43,6 +49,16 @@ func newCredentialAudienceReceiptBlockedRequest(err error) *blockedRequestError 
 		blockLayerCredentialAudienceReceipt,
 		credentialAudienceReceiptBlockReason,
 		credentialAudienceReceiptBlockReason+": "+err.Error(),
+	)
+}
+
+// newIssuerAllowReceiptBlockedRequest builds the typed block error for a
+// require_receipts failure on the issuer-cookie or issuer-query allow path.
+func newIssuerAllowReceiptBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerIssuerAllowReceipt,
+		issuerAllowReceiptBlockReason,
+		issuerAllowReceiptBlockReason+": "+err.Error(),
 	)
 }
 
@@ -131,7 +147,7 @@ func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.E
 	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		e.Emit,
+		credentialAudienceEmitV1(e, cfg),
 		p.emitV2Receipt,
 		p.logReceiptEmissionFailure,
 		func(fallback receipt.EmitOpts) {
@@ -204,7 +220,7 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		e.Emit,
+		credentialAudienceEmitV1(e, cfg),
 		func(v2Opts receipt.EmitOpts) error {
 			return emitV2(rp.v2EmitterPtr, v2Opts, func(err error) {
 				recordV2ReceiptEmitFailure(rp.metrics)
@@ -216,6 +232,18 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 			logCredentialAudienceReceiptExtensionDropped(rp.logger, fallback)
 		},
 	)
+}
+
+// credentialAudienceEmitV1 picks the v1 write for an allow receipt. A required
+// receipt must be fsync-confirmed, like every other required allow receipt: an
+// ordinary write can sit in a recorder generation that rotates without a sync,
+// so the request could forward while its record is not yet durable. Best-effort
+// mode keeps the ordinary write.
+func credentialAudienceEmitV1(e *receipt.Emitter, cfg *config.Config) func(receipt.EmitOpts) error {
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		return e.EmitDurable
+	}
+	return e.Emit
 }
 
 // emitCredentialAudienceReceiptWithFallback emits the signed receipt with the

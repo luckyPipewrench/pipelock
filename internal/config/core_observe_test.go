@@ -192,3 +192,26 @@ func TestValidateExpiryAuthorizations_BoundsTheObserveHorizon(t *testing.T) {
 		t.Fatalf("entry inside the horizon rejected: %v", err)
 	}
 }
+
+func TestValidate_BoundsTheObserveHorizonAtStartup(t *testing.T) {
+	// Startup goes through Validate, not ValidateExpiryAuthorizations. The
+	// 30-day horizon must hold there too, or a fresh start accepts an entry
+	// that a hot reload of the same file refuses.
+	cfg := Defaults()
+	entry := validObserveEntry(t)
+	entry.Expires = expiryDate(t, MaxCoreObserveExceptionHorizon+7*24*time.Hour)
+	cfg.ResponseScanning.CoreObserveExceptions = []CoreObserveException{entry}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "maximum temporary horizon") {
+		t.Fatalf("Validate accepted an entry past the observe horizon: %v", err)
+	}
+
+	// Positive control: inside the horizon Validate passes, so the refusal
+	// above is about the horizon and not an unrelated validation failure.
+	cfg = Defaults()
+	entry.Expires = expiryDate(t, MaxCoreObserveExceptionHorizon-3*24*time.Hour)
+	cfg.ResponseScanning.CoreObserveExceptions = []CoreObserveException{entry}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("entry inside the horizon rejected at startup: %v", err)
+	}
+}

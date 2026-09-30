@@ -1065,7 +1065,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
 			result := currentScanner.Scan(redirectScanCtx, redirectURL)
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
-			p.recordCredentialAudienceAllows(redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName)
+			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
+				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+				logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
+				return blockedErr
+			}
 			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), effectiveURLPort(req.URL), result))
 			if !result.Allowed {
 				actx := redirectAuditCtx
@@ -5079,7 +5083,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
-	p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent)
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent); err != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedJSON(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: blockedErr.reason,
+			})
+		return
+	}
 
 	// Capture observer: record URL verdict for policy replay.
 	urlFindings := urlResultToFindings(result)
@@ -5374,10 +5391,24 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
 	// hadFinding is true even in audit/warn mode so RecordClean is not applied
 	// when a header DLP match was detected.
-	headerBlocked, headerHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	headerBlocked, headerHadFinding, headerReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: log, actx: actx,
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
+	if headerReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(headerReceiptErr)
+		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedJSON(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: blockedErr.reason,
+			})
+		return
+	}
 
 	// Capture observer: record header DLP verdict for policy replay.
 	{

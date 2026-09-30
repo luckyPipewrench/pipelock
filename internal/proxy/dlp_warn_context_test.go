@@ -127,7 +127,7 @@ func TestDLPScanWSHeaders_PropagatesWarnContext(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+fakeAPIKey()+" "+testWarnHookToken)
 	cfg := testScannerConfig()
-	blocked, _, _, reason := (&Proxy{}).dlpScanWSHeaders(ctx, headers, sc, cfg, testWSURL, audit.LogContext{})
+	blocked, _, _, reason, _ := (&Proxy{}).dlpScanWSHeaders(ctx, headers, sc, cfg, testWSURL, audit.LogContext{})
 	if !blocked {
 		t.Fatal("expected DLP match in websocket headers")
 	}

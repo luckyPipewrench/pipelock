@@ -890,7 +890,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// sees from the client.
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 		urlResult := sc.Scan(r.Context(), targetURL)
-		rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent)
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockedErr.reason)
+			return
+		}
 		if !urlResult.Allowed {
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
@@ -920,7 +928,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
 		pathDLP.Matches = filteredMatches
-		rp.recordCredentialAudienceAllows(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent)
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockedErr.reason)
+			return
+		}
 		if len(pathDLP.Matches) == 0 {
 			pathDLP.Clean = true
 		}
@@ -1010,9 +1026,18 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), match.PatternName, match.Severity, "header", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
-		}, func(allow scanner.CredentialAudienceAllow) {
-			rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
+		}, func(allow scanner.CredentialAudienceAllow) error {
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
 		})
+		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
+			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockedErr.reason)
+			return
+		}
 		if headerResult != nil {
 			hasFinding = true
 			action, headerHardBlock := headerDLPDecision(headerResult, cfg)
@@ -1795,14 +1820,23 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},
-		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
-			rp.recordCredentialAudienceAllow(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
+		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
 	applySigV4CredentialRouteConfig(&bodyReq, cfg)
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+	if result.CredentialAudienceReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
+		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), blockedErr.layer, blockedErr.detail)
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockedErr.reason)
+		return true, config.ActionBlock, nil, true
+	}
 
 	// Capture observer: record reverse proxy request DLP verdict for policy replay.
 	{

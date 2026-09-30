@@ -148,6 +148,15 @@ TLS-intercepted CONNECT inner HTTP requests, WebSocket, reverse proxy, MCP
 stdio, and MCP HTTP. Block-path receipts stay best-effort because the action is
 already denied.
 
+The same rule covers DLP's credential-audience allow: when DLP lets a
+credential through because the destination matches its compiled issuer
+audience, that allow is itself an allow-path record. Under `require_receipts`
+its receipt must be durably confirmed before the request is forwarded. A
+confirmation failure blocks with reason `receipt_emission_failed` and layer
+`credential_audience_receipt`, so it can be told apart from an admission-receipt
+failure, which uses layer `receipt_emission`. With `require_receipts` off, the audience-allow
+record stays best-effort like every other receipt on this page.
+
 MCP startup requests (`initialize` and `tools/list`) receive correlated intent and outcome receipts. The `notifications/initialized` notification receives a durable forwarding receipt and does not claim a server response. Required recording still blocks forwarding when the recorder fails.
 
 Strict MCP recording currently supports startup, tool calls, and supported A2A methods. Other MCP methods, including resource and prompt operations, can be refused because their receipt identity is not defined. The error message distinguishes that limitation from a recorder failure; replacing the signing key does not add method support. Check the methods your client and server need before enabling strict recording.

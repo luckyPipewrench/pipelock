@@ -783,7 +783,28 @@ func newInterceptHandler(
 			}
 		}
 		if ic.Proxy != nil {
-			ic.Proxy.recordCredentialAudienceAllows(actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent); err != nil {
+				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					"blocked: "+blockedErr.reason, http.StatusForbidden)
+				return
+			}
+		} else if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts && len(urlResult.CredentialAudienceAllows) > 0 {
+			// No Proxy is attached, so there is no receipt emitter to confirm
+			// through. require_receipts still requires durable confirmation
+			// before forwarding; without an emitter that can never happen, so
+			// fail closed rather than silently downgrading to best-effort.
+			for _, allow := range uniqueCredentialAudienceAllows(urlResult.CredentialAudienceAllows) {
+				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
+			}
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(errCredentialAudienceReceiptEmitterUnavailable)
+			ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
 		} else {
 			for _, allow := range uniqueCredentialAudienceAllows(urlResult.CredentialAudienceAllows) {
 				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
@@ -1113,12 +1134,15 @@ func newInterceptHandler(
 					}
 					ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 				},
-				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
+				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
-						ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
-						return
+						return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
 					}
 					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
+					if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+						return errCredentialAudienceReceiptEmitterUnavailable
+					}
+					return nil
 				},
 			}
 			applyContentEntropyConfig(&bodyReq, ic.Config)
@@ -1128,6 +1152,14 @@ func newInterceptHandler(
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
+			if result.CredentialAudienceReceiptErr != nil {
+				blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
+				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					"blocked: "+blockedErr.reason, http.StatusForbidden)
+				return
+			}
 
 			// Cross-agent contamination: a contaminated session emitting an A2A
 			// request to a peer agent propagates taint across the boundary.
@@ -1410,13 +1442,24 @@ func newInterceptHandler(
 					ic.Logger.LogDLPDropped(actx, match.PatternName, match.Severity, "header", reason)
 				}
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
-			}, func(allow scanner.CredentialAudienceAllow) {
+			}, func(allow scanner.CredentialAudienceAllow) error {
 				if ic.Proxy != nil {
-					ic.Proxy.recordCredentialAudienceAllow(actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
-					return
+					return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
 				}
 				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
+				if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+					return errCredentialAudienceReceiptEmitterUnavailable
+				}
+				return nil
 			})
+			if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
+				blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
+				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					"blocked: "+blockedErr.reason, http.StatusForbidden)
+				return
+			}
 
 			// Capture observer: record intercept header DLP verdict for policy replay.
 			if ic.Proxy != nil {

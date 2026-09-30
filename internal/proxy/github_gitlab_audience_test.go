@@ -111,7 +111,7 @@ func TestGitHubGitLabAudience_HeaderCarriers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{tc.header: []string{tc.value}}, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) })
+				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
@@ -187,7 +187,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), tc.headers, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) })
+				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
@@ -207,7 +207,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 	_, body := scanRequestBody(context.Background(), BodyScanRequest{
 		Body: strings.NewReader(`{"a":"` + slack + `","b":"` + aws + `"}`), ContentType: "application/json",
 		MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
-		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) { bodyAllows = append(bodyAllows, a) },
+		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, a); return nil },
 	})
 	if body.Clean || len(bodyAllows) != 0 {
 		t.Fatalf("body with allowed and unrelated secret: clean=%t allows=%+v", body.Clean, bodyAllows)
@@ -221,7 +221,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 		_, res := scanRequestBody(context.Background(), BodyScanRequest{
 			Body: strings.NewReader(`{"token":"` + slack + `","note":"` + text + `"}`), ContentType: "application/json",
 			MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
-			OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) },
+			OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil },
 		})
 		return res, allows
 	}
@@ -239,7 +239,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 		Body: strings.NewReader(`{"token":"` + slack + `"}`), ContentType: "application/json",
 		MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: "https://slack.com/api/auth.test", AudienceSurface: "body",
 		RedactMatcher:             redact.NewDefaultMatcher(),
-		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) { redactedAllows = append(redactedAllows, a) },
+		OnCredentialAudienceAllow: func(a scanner.CredentialAudienceAllow) error { redactedAllows = append(redactedAllows, a); return nil },
 	})
 	if strings.Contains(string(redactedBuf), slack) || redacted.RedactionReport == nil || !redacted.RedactionReport.Applied {
 		t.Fatalf("control: redaction did not rewrite the credential: body=%q report=%+v", redactedBuf, redacted.RedactionReport)
@@ -250,7 +250,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 
 	// WebSocket upgrade headers: a blocked handshake records no allow metric.
 	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-	blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
+	blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
 	if !blocked {
 		t.Fatal("WebSocket upgrade with GitHub token in X-Api-Key allowed")
 	}
@@ -288,7 +288,7 @@ func TestGitHubAudience_JoinedHeadersKeepSplitSecrets(t *testing.T) {
 	t.Cleanup(coreSC.Close)
 	var coreAllows []scanner.CredentialAudienceAllow
 	coreResult := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{"Authorization": []string{"Bearer " + gh}}, coreOnly, coreSC, target, nil,
-		func(a scanner.CredentialAudienceAllow) { coreAllows = append(coreAllows, a) })
+		func(a scanner.CredentialAudienceAllow) error { coreAllows = append(coreAllows, a); return nil })
 	if coreResult != nil && !coreResult.Clean {
 		t.Fatalf("core-only GitHub token reblocked by joined scan: %+v", coreResult.DLPMatches)
 	}
@@ -338,7 +338,7 @@ func TestGitHubGitLabAudience_BodyAndWebSocketStayBlocked(t *testing.T) {
 	} {
 		t.Run("WebSocket upgrade "+tc.name, func(t *testing.T) {
 			p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-			blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
+			blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
 			if blocked != tc.block {
 				t.Fatalf("blocked=%t want %t", blocked, tc.block)
 			}
@@ -413,7 +413,7 @@ func TestGitHubGitLabAudience_GitTransportRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var allows []scanner.CredentialAudienceAllow
 			result := scanRequestHeadersForTargetWithAudience(t.Context(), http.Header{"Authorization": []string{tc.value}}, cfg, sc, tc.target, nil,
-				func(a scanner.CredentialAudienceAllow) { allows = append(allows, a) })
+				func(a scanner.CredentialAudienceAllow) error { allows = append(allows, a); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean {
 				t.Fatalf("clean=%t want %t result=%+v allows=%+v", clean, tc.clean, result, allows)
@@ -439,7 +439,7 @@ func TestGitHubGitLabAudience_GitTransportRule(t *testing.T) {
 
 	// The git rule never applies to a WebSocket upgrade, even at a git path.
 	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-	blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, sc, cfg, "wss://github.com/o/r.git/git-upload-pack", audit.LogContext{})
+	blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, sc, cfg, "wss://github.com/o/r.git/git-upload-pack", audit.LogContext{})
 	if !blocked {
 		t.Fatal("WebSocket upgrade with GitHub Basic at a git path allowed")
 	}

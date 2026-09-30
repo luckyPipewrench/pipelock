@@ -148,14 +148,17 @@ TLS-intercepted CONNECT inner HTTP requests, WebSocket, reverse proxy, MCP
 stdio, and MCP HTTP. Block-path receipts stay best-effort because the action is
 already denied.
 
-The same rule covers DLP's credential-audience allow: when DLP lets a
-credential through because the destination matches its compiled issuer
-audience, that allow is itself an allow-path record. Under `require_receipts`
-its receipt must be durably confirmed before the request is forwarded. A
-confirmation failure blocks with reason `receipt_emission_failed` and layer
-`credential_audience_receipt`, so it can be told apart from an admission-receipt
-failure, which uses layer `receipt_emission`. With `require_receipts` off, the audience-allow
-record stays best-effort like every other receipt on this page.
+The same rule covers DLP's credential-audience allow and the issuer-cookie and
+issuer-query allows on TLS-intercepted requests: when DLP or entropy scanning
+lets a value through because it matches its compiled issuer audience or a value
+the destination issued, that allow is itself an allow-path record. Under
+`require_receipts` its receipt must be durably confirmed before the request is
+forwarded. A confirmation failure blocks with reason `receipt_emission_failed`.
+The layer is `credential_audience_receipt` for the credential-audience allow and
+`issuer_allow_receipt` for the issuer-cookie and issuer-query allows, so either
+can be told apart from an admission-receipt failure, which uses layer
+`receipt_emission`. With `require_receipts` off, these allow records stay
+best-effort like every other receipt on this page.
 
 MCP startup requests (`initialize` and `tools/list`) receive correlated intent and outcome receipts. The `notifications/initialized` notification receives a durable forwarding receipt and does not claim a server response. Required recording still blocks forwarding when the recorder fails.
 

@@ -33,6 +33,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// errIssuerAllowTargetInvalid is returned under require_receipts when an
+// issuer allow cannot be recorded because its target is not a usable URL.
+var errIssuerAllowTargetInvalid = errors.New("issuer allow target is not a usable https URL")
+
 const issuerCookieReceiptExtensionKey = "dlp_issuer_cookie_allow" // #nosec G101 -- receipt extension identifier
 
 type issuerCookieAllowMetadata struct {
@@ -46,13 +50,31 @@ type issuerCookieAllowMetadata struct {
 // The destination chose the name; the value is never recorded.
 const issuerCookieMaxLoggedName = 256
 
-func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string) {
+// recordIssuerCookieAllow records an issuer-cookie allow. cfg is the request's
+// config snapshot; under require_receipts every path after the exemption was
+// applied that cannot durably record the allow returns an error the caller
+// must treat as fail-closed. With require_receipts off it always returns nil
+// and emission stays best-effort.
+func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string) error {
+	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
+	fail := func(err error) error {
+		if requireReceipts {
+			return err
+		}
+		return nil
+	}
+	if p == nil {
+		return fail(errCredentialAudienceReceiptEmitterUnavailable)
+	}
 	if len(cookieName) > issuerCookieMaxLoggedName {
 		cookieName = cookieName[:issuerCookieMaxLoggedName]
 	}
 	parsed, err := url.Parse(target)
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
-		return
+	if err != nil {
+		return fail(fmt.Errorf("issuer cookie allow target: %w", err))
+	}
+	if parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return fail(errIssuerAllowTargetInvalid)
 	}
 	destination := strings.ToLower(parsed.Hostname())
 	if p.logger != nil {
@@ -61,17 +83,18 @@ func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, cookieNam
 	metadata := issuerCookieAllowMetadata{Pattern: pattern, Cookie: cookieName, Surface: "header", Destination: destination}
 	extension, err := json.Marshal(map[string]issuerCookieAllowMetadata{issuerCookieReceiptExtensionKey: metadata})
 	if err != nil {
-		return
+		return fail(err)
 	}
-	// Issuer-cookie allows stay best-effort in this change. Whether they follow
-	// flight_recorder.require_receipts like credential-audience allows is a
-	// separate decision, not settled here.
-	_ = p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
+	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerCookieReceiptExtensionKey, Pattern: pattern,
 		Transport: "intercept", Method: method, Target: target,
 		RequestID: requestID, Agent: agent, Extension: extension,
 	})
+	if emitErr != nil {
+		return fail(emitErr)
+	}
+	return nil
 }
 
 // Limits come from the cookie specifications, not from observed traffic.

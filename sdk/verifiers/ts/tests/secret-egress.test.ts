@@ -9,7 +9,7 @@ import test from "node:test";
 import * as ed25519 from "@noble/ed25519";
 import { canonicalizeBytes } from "../src/aarp/canonical.js";
 import { runReceipt } from "../src/receipt.js";
-import { readEntries } from "../src/recorder.js";
+import { extractTypedReceipts, readEntries } from "../src/recorder.js";
 import { normalizeEvidenceReceipt, verifyReceipt } from "../src/signing.js";
 import {
   secretEgressDecisionKind,
@@ -735,6 +735,46 @@ test("secret-egress: typed version value is separate from raw number spelling", 
     }
     const unsupported = JSON.parse(raw.replace('"version":1,', '"version":1.5,')) as Receipt;
     assert.throws(() => normalizeEvidenceReceipt(unsupported));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secret-egress: raw profile is scoped to evidence recorder entries", async () => {
+  const signed = await sign(receipt());
+  const dir = mkdtempSync(join(tmpdir(), "secret-egress-entry-scope-"));
+  const path = join(dir, "entries.jsonl");
+  const receiptLine = JSON.stringify({ v: 1, type: "evidence_receipt", detail: signed });
+  const marker = { payload_kind: secretEgressDecisionKind };
+  try {
+    writeFileSync(path, receiptLine + "\n");
+    const baseline = extractTypedReceipts(path);
+    assert.equal(baseline.evidence.length, 1);
+    await verifyReceipt(baseline.evidence[0]!, publicKey);
+
+    for (const type of ["checkpoint", "transcript_root", "decision", "capture", "capture_drop"]) {
+      for (const detail of [marker, { crit: [secretEgressDecisionKind] }]) {
+        writeFileSync(path, JSON.stringify({ v: 1, type, detail }) + "\n" + receiptLine + "\n");
+        assert.equal(readEntries(path).length, 2, type);
+        const extracted = extractTypedReceipts(path);
+        assert.equal(extracted.action.length, 0, type);
+        assert.deepEqual(extracted.evidence, baseline.evidence, type);
+      }
+    }
+
+    writeFileSync(path, JSON.stringify({ v: 1, type: "evidence_receipt", detail: marker }) + "\n");
+    assert.throws(() => readEntries(path), /missing secret-egress field record_type/u);
+
+    writeFileSync(path, JSON.stringify({ v: 1, type: "action_receipt", detail: signed }) + "\n");
+    assert.throws(() => extractTypedReceipts(path), /unknown field .* signed v1/u);
+
+    writeFileSync(path, JSON.stringify({ v: 1, type: "unrecognized", detail: marker }) + "\n");
+    assert.throws(() => extractTypedReceipts(path), /unexpected recorder entry type/u);
+
+    writeFileSync(path, JSON.stringify({ v: 4, type: "capture", detail: marker }) + "\n");
+    assert.throws(() => readEntries(path), /unsupported entry version/u);
+    writeFileSync(path, '{"v":1,"v":1,"type":"capture","detail":{}}\n');
+    assert.throws(() => readEntries(path), /duplicate/u);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

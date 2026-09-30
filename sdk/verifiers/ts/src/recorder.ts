@@ -64,8 +64,11 @@ export function readEntryLines(file: string, directoryChild = false): ParsedReco
     }
     validateProjectedStrings(entry, i + 1, entry.v);
     bindRecorderLineExtSource(entry.detail, line);
-    const detailSpan = objectMemberSpan(line, 0, "detail");
-    if (detailSpan !== undefined) validateSecretEgressSource(entry.detail, line, detailSpan.start);
+    if (entry.type === evidenceReceiptType) {
+      const detailSpan = objectMemberSpan(line, 0, "detail");
+      if (detailSpan !== undefined)
+        validateSecretEgressSource(entry.detail, line, detailSpan.start);
+    }
     if (
       entry.v !== 3 &&
       (legacyNamespaceFieldIsSet(entry.chain_kind) ||

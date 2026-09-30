@@ -43,7 +43,7 @@ func TestCredentialAudienceHosts_BodyAndHeaderCarriers(t *testing.T) {
 				Scanner:                   sc,
 				Target:                    tc.target,
 				AudienceSurface:           "body",
-				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) { bodyAllows = append(bodyAllows, allow) },
+				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, allow); return nil },
 			})
 			if !bodyResult.Clean || len(bodyAllows) != 1 || bodyAllows[0].PatternName != tc.pattern {
 				t.Fatalf("body audience result=%+v allows=%+v", bodyResult, bodyAllows)
@@ -51,7 +51,10 @@ func TestCredentialAudienceHosts_BodyAndHeaderCarriers(t *testing.T) {
 
 			headers := http.Header{"Authorization": []string{"Bearer " + tc.credential}}
 			var headerAllows []scanner.CredentialAudienceAllow
-			headerResult := scanRequestHeadersForTargetWithAudience(context.Background(), headers, cfg, sc, tc.target, nil, func(allow scanner.CredentialAudienceAllow) { headerAllows = append(headerAllows, allow) })
+			headerResult := scanRequestHeadersForTargetWithAudience(context.Background(), headers, cfg, sc, tc.target, nil, func(allow scanner.CredentialAudienceAllow) error {
+				headerAllows = append(headerAllows, allow)
+				return nil
+			})
 			if headerResult != nil && !headerResult.Clean {
 				t.Fatalf("header audience result=%+v", headerResult)
 			}
@@ -158,7 +161,7 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 			}
 			headers := http.Header{tc.header: []string{value}}
 			var allows []scanner.CredentialAudienceAllow
-			result := scanRequestHeadersForTargetWithAudience(t.Context(), headers, cfg, sc, target, nil, func(allow scanner.CredentialAudienceAllow) { allows = append(allows, allow) })
+			result := scanRequestHeadersForTargetWithAudience(t.Context(), headers, cfg, sc, target, nil, func(allow scanner.CredentialAudienceAllow) error { allows = append(allows, allow); return nil })
 			clean := result == nil || result.Clean
 			if clean != tc.clean || (len(allows) == 1) != tc.clean {
 				t.Fatalf("header %q clean=%t allows=%#v result=%#v", tc.header, clean, allows, result)
@@ -254,7 +257,7 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 	} {
 		t.Run("WebSocket "+tc.name, func(t *testing.T) {
 			p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-			blocked, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, wsTarget, audit.LogContext{})
+			blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, wsTarget, audit.LogContext{})
 			if blocked != tc.block {
 				t.Fatalf("WebSocket header %q blocked=%t want %t", tc.header, blocked, tc.block)
 			}
@@ -383,7 +386,7 @@ func TestCredentialAudienceReceiptExtensionFallbackKeepsSignedReceipt(t *testing
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -445,7 +448,7 @@ func TestRecordCredentialAudienceAllow_EmitsReceiptWithExtension(t *testing.T) {
 		Surface:     "header",
 		Destination: "api.openai.com",
 	}
-	p.recordCredentialAudienceAllow(audit.LogContext{}, allow, TransportFetch, http.MethodPost,
+	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, allow, TransportFetch, http.MethodPost,
 		"https://api.openai.com/v1/responses", "credential-audience-allow", "agent-1")
 
 	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
@@ -487,7 +490,7 @@ func TestRecordCredentialAudienceAllows_DeduplicatesBeforeEmitting(t *testing.T)
 		Surface:     "body",
 		Destination: "api.anthropic.com",
 	}
-	p.recordCredentialAudienceAllows(audit.LogContext{},
+	_ = p.recordCredentialAudienceAllows(audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, other, allow},
 		TransportFetch, http.MethodPost, "https://api.openai.com/v1/responses", "dedup", "agent-1")
 
@@ -513,7 +516,7 @@ func TestRecordCredentialAudienceAllow_NoReceiptEmitterIsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{
+	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{
 		PatternName: "OpenAI API Key",
 		Surface:     "header",
 		Destination: "api.openai.com",
@@ -524,10 +527,10 @@ func TestRecordCredentialAudienceAllow_NoReceiptEmitterIsSafe(t *testing.T) {
 // not panic.
 func TestRecordCredentialAudienceAllow_NilReceiversAreInert(t *testing.T) {
 	var p *Proxy
-	p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", "")
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{})
+	_ = p.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, TransportFetch, http.MethodGet, "", "", "")
+	_ = p.emitCredentialAudienceReceipt(receipt.EmitOpts{})
 	var rp *ReverseProxyHandler
-	rp.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", "")
+	_ = rp.recordCredentialAudienceAllow(audit.LogContext{}, scanner.CredentialAudienceAllow{}, http.MethodGet, "", "", "")
 }
 
 // The reverse proxy is a separate carrier of the same audience allow and has
@@ -549,7 +552,7 @@ func TestReverseProxy_RecordCredentialAudienceAllow_EmitsReceipt(t *testing.T) {
 		Surface:     "header",
 		Destination: "api.anthropic.com",
 	}
-	rp.recordCredentialAudienceAllow(audit.LogContext{}, allow, http.MethodPost,
+	_ = rp.recordCredentialAudienceAllow(audit.LogContext{}, allow, http.MethodPost,
 		"https://api.anthropic.com/v1/messages", "reverse-audience-allow", "agent-1")
 
 	got := rph.requireReceipt(t, credentialAudienceReceiptExtensionKey)
@@ -581,7 +584,7 @@ func TestReverseProxy_RecordCredentialAudienceAllows_Deduplicates(t *testing.T) 
 		Surface:     "header",
 		Destination: "api.anthropic.com",
 	}
-	rp.recordCredentialAudienceAllows(audit.LogContext{},
+	_ = rp.recordCredentialAudienceAllows(audit.LogContext{},
 		[]scanner.CredentialAudienceAllow{allow, allow, allow},
 		http.MethodPost, "https://api.anthropic.com/v1/messages", "reverse-dedup", "agent-1")
 
@@ -611,7 +614,7 @@ func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
 	t.Run("v1 succeeds, v2 mirrors it, extension kept", func(t *testing.T) {
 		var v1, v2 []receipt.EmitOpts
 		var failures, dropped int
-		emitCredentialAudienceReceiptWithFallback(base,
+		_ = emitCredentialAudienceReceiptWithFallback(base,
 			func(o receipt.EmitOpts) error { v1 = append(v1, o); return nil },
 			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
 			func(receipt.EmitOpts, error) { failures++ },
@@ -631,7 +634,7 @@ func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
 	t.Run("a non-merge error is reported and not retried", func(t *testing.T) {
 		var v1, v2 []receipt.EmitOpts
 		var failures, dropped int
-		emitCredentialAudienceReceiptWithFallback(base,
+		_ = emitCredentialAudienceReceiptWithFallback(base,
 			func(o receipt.EmitOpts) error { v1 = append(v1, o); return errors.New("disk full") },
 			func(o receipt.EmitOpts) error { v2 = append(v2, o); return nil },
 			func(receipt.EmitOpts, error) { failures++ },
@@ -648,7 +651,7 @@ func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
 	t.Run("a merge error retries without the extension and keeps the receipt", func(t *testing.T) {
 		var v1, v2 []receipt.EmitOpts
 		var failures, dropped int
-		emitCredentialAudienceReceiptWithFallback(base,
+		_ = emitCredentialAudienceReceiptWithFallback(base,
 			func(o receipt.EmitOpts) error {
 				v1 = append(v1, o)
 				if len(o.Extension) > 0 {
@@ -677,7 +680,7 @@ func TestEmitCredentialAudienceReceiptWithFallback_Branches(t *testing.T) {
 	t.Run("a failed fallback is reported and emits nothing", func(t *testing.T) {
 		var v2 []receipt.EmitOpts
 		var failures, dropped int
-		emitCredentialAudienceReceiptWithFallback(base,
+		_ = emitCredentialAudienceReceiptWithFallback(base,
 			func(o receipt.EmitOpts) error {
 				if len(o.Extension) > 0 {
 					return receipt.ErrExtensionMerge
@@ -729,7 +732,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 		v2EmitterPtr:      &v2Ptr,
 	}
 
-	rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -755,7 +758,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_HashAndV2Fallback(t *testing
 func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t *testing.T) {
 	t.Run("no emitter pointer", func(t *testing.T) {
 		rp := &ReverseProxyHandler{logger: audit.NewNop(), metrics: metrics.New()}
-		rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+		_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
 	})
 	t.Run("emitter pointer holding nil", func(t *testing.T) {
 		var v1Ptr atomic.Pointer[receipt.Emitter]
@@ -764,7 +767,7 @@ func TestReverseProxy_EmitCredentialAudienceReceipt_InertWithoutCollaborators(t 
 			metrics:           metrics.New(),
 			receiptEmitterPtr: &v1Ptr,
 		}
-		rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
+		_ = rp.emitCredentialAudienceReceipt(receipt.EmitOpts{Layer: credentialAudienceReceiptExtensionKey})
 	})
 }
 

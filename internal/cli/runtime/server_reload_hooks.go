@@ -41,3 +41,24 @@ func fireReloadAfterProxySwapHook(s *Server) {
 		(*p)(s)
 	}
 }
+
+var reloadBeforeProxySwapHook atomic.Pointer[func(*Server)]
+
+// setReloadBeforeProxySwapHookForTest installs a seam that runs after the
+// kill-switch controller starts watching the candidate's sources and before
+// the proxy publishes the candidate.
+func setReloadBeforeProxySwapHookForTest(fn func(*Server)) (restore func()) {
+	prev := reloadBeforeProxySwapHook.Load()
+	if fn == nil {
+		reloadBeforeProxySwapHook.Store(nil)
+	} else {
+		reloadBeforeProxySwapHook.Store(&fn)
+	}
+	return func() { reloadBeforeProxySwapHook.Store(prev) }
+}
+
+func fireReloadBeforeProxySwapHook(s *Server) {
+	if p := reloadBeforeProxySwapHook.Load(); p != nil {
+		(*p)(s)
+	}
+}

@@ -182,7 +182,7 @@ func testDeferredStdioKillSwitchRelease(t *testing.T, concurrent bool) {
 		}
 		select {
 		case record := <-blocked:
-			if record.ErrorCode != -32002 {
+			if record.ErrorCode != -32004 {
 				t.Fatalf("blocked record code = %d", record.ErrorCode)
 			}
 		default:
@@ -326,7 +326,7 @@ func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
 			t.Fatalf("HTTP sends after activation = %d", got)
 		}
 		close(upstreamRelease)
-		if got := stdout.String(); !strings.Contains(got, "deferred action denied") {
+		if got := stdout.String(); !strings.Contains(got, `"code":-32004`) {
 			t.Fatalf("missing blocked response: %s", got)
 		}
 	}

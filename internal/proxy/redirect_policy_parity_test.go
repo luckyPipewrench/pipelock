@@ -50,6 +50,29 @@ func redirectPolicyRequests(t *testing.T, cfg *config.Config, sc *scanner.Scanne
 	return redirectReq, originalReq
 }
 
+func TestCheckRedirect_RechecksCredentialAudienceOnNewHost(t *testing.T) {
+	p, cfg, sc := redirectPolicyTestProxy(t)
+	for _, tc := range []struct{ header, token string }{
+		{"Private-Token", fakeGitLabPAT()},
+		{"Job-Token", fakeGitLabJobToken()},
+	} {
+		t.Run(tc.header, func(t *testing.T) {
+			redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
+			originalReq.URL.Host = "gitlab.com"
+			redirectReq.Header.Set(tc.header, tc.token)
+			originalReq.Header.Set(tc.header, tc.token)
+			if first := scanRequestHeadersForTarget(t.Context(), originalReq.Header, cfg, sc, originalReq.URL.String()); first != nil && !first.Clean {
+				t.Fatalf("precondition: original audience blocked: %+v", first)
+			}
+			err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})
+			blockedErr, ok := blockedRequestErrorFrom(err)
+			if !ok || blockedErr.layer != "header_dlp" {
+				t.Fatalf("redirect block for %s = %v, want header_dlp", tc.header, err)
+			}
+		})
+	}
+}
+
 func TestCheckRedirect_TaintedProtectedActionBlocks(t *testing.T) {
 	p, cfg, sc := redirectPolicyTestProxy(t)
 	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{

@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -287,6 +288,9 @@ func RunHTTPProxy(
 				continue
 			}
 			deferredReq := decision.Deferred
+			// gateBlock carries a release-time upstream gate denial from
+			// Prepare to Resolve for this hold.
+			var gateBlock *BlockedRequest
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    deferredReq.DeferID,
 				ActionID:   deferredReq.DeferID,
@@ -303,24 +307,59 @@ func RunHTTPProxy(
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
 				},
 				BeforeAllow: func() (func(), bool) {
-					if fwdOpts.beforeDeferredSendClaim != nil {
-						fwdOpts.beforeDeferredSendClaim()
-					}
-					if fwdOpts.KillSwitch == nil {
-						return func() {}, true
-					}
-					return fwdOpts.KillSwitch.ClaimDeferredSendAt(deferredGeneration)
+					return deferredReleasePrecheck(fwdOpts, deferredGeneration)
 				},
-				Resolve: func(res deferred.Resolution) {
-					authorityDenied := false
+				// Prepare settles the final decision before the manager
+				// journals it, so the journal and the receipt agree. On an
+				// allow it returns holding upstreamMu and the kill-switch
+				// claim; the manager releases both with defer after Resolve
+				// returns or panics. It runs on the resolving goroutine
+				// immediately before Resolve, which reads gateBlock.
+				Prepare: func(res deferred.Resolution) (deferred.Resolution, func()) {
 					if res.FinalDecision == config.ActionAllow {
 						if authErr := authorizeMCP(ctx, deferredReq.authorityRef, deferredReq.authorityCarrierErr, deferredReq.authorityFrame, fwdOpts); authErr != nil {
 							res.FinalDecision = config.ActionBlock
 							res.ResolutionSource = deferred.SourceAuthority
 							res.Reason = "authority verification failed"
-							authorityDenied = true
 						}
 					}
+					if res.ResolutionSource == deferred.SourceKillSwitch {
+						markDeferredKillSwitch(&res)
+					}
+					// Rerun the live upstream gate the ordinary forward path
+					// applies before SendMessage; the upstream may have been
+					// locked while the call was held.
+					if res.FinalDecision == config.ActionAllow {
+						gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, fwdOpts)
+						switch {
+						case gateErr != nil:
+							_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+							br := mcpContractBlockRequest(deferredReq.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")
+							gateBlock = &br
+						case gate.Verdict == config.ActionBlock && mcpContractBlockReason(gate) == blockreason.KillSwitchActive:
+							markDeferredKillSwitch(&res)
+						case gate.Verdict == config.ActionBlock:
+							_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+							br := mcpContractBlockRequest(deferredReq.ID, gate, "pipelock: upstream URL blocked by live-lock contract")
+							gateBlock = &br
+						}
+						if gateBlock != nil {
+							res.FinalDecision = config.ActionBlock
+							res.ResolutionSource = deferred.SourceUpstreamContract
+							res.Reason = deferredUpstreamContractReason
+						}
+					}
+					if res.FinalDecision != config.ActionAllow {
+						return res, nil
+					}
+					// Irreversible release boundary. Take the upstream lock
+					// first so no wait for another send sits between the
+					// kill-switch claim and SendMessage; see
+					// claimDeferredRelease for the ordering argument.
+					return lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+				},
+				Resolve: func(res deferred.Resolution) {
+					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
 					if emitErr := emitDeferredResolutionReceipt(fwdOpts, safeLogW, res); emitErr != nil {
 						if !deferredReq.IsNotification {
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
@@ -333,8 +372,7 @@ func RunHTTPProxy(
 					}
 					switch res.FinalDecision {
 					case config.ActionAllow:
-						upstreamMu.Lock()
-						defer upstreamMu.Unlock()
+						// upstreamMu is held by Prepare's release claim.
 						if isRequest(deferredReq.ForwardMessage) {
 							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
 						}
@@ -367,9 +405,20 @@ func RunHTTPProxy(
 							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), baselineIdentity)
 						}
 					default:
+						if res.ResolutionSource == deferred.SourceKillSwitch {
+							_, _ = fmt.Fprintf(safeLogW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
+						}
 						if !deferredReq.IsNotification {
 							if authorityDenied {
 								_ = safeClientOut.WriteMessage(blockRequestResponse(*authorityBlockedRequest(deferredReq.authorityFrame)))
+								return
+							}
+							if gateBlock != nil {
+								_ = safeClientOut.WriteMessage(blockRequestResponse(*gateBlock))
+								return
+							}
+							if res.ResolutionSource == deferred.SourceKillSwitch {
+								_ = safeClientOut.WriteMessage(killswitch.ErrorResponse(deferredReq.ID, deferredKillSwitchMessage(fwdOpts)))
 								return
 							}
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{

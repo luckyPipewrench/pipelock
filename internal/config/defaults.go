@@ -527,6 +527,8 @@ func Defaults() *Config {
 				"X-Token",
 				"Proxy-Authorization",
 				"X-Goog-Api-Key",
+				"Private-Token",
+				"Job-Token",
 			},
 		},
 		SeedPhraseDetection: SeedPhraseDetection{

@@ -702,6 +702,8 @@ func (c *Config) ApplyDefaults() {
 				"X-Token",
 				"Proxy-Authorization",
 				"X-Goog-Api-Key",
+				"Private-Token",
+				"Job-Token",
 			}
 		}
 		if len(c.RequestBodyScanning.IgnoreHeaders) == 0 {

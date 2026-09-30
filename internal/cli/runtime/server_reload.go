@@ -637,7 +637,18 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})
+	// The controller must honor the candidate's kill-switch sources (its
+	// `enabled` flag and sentinel_file) before the proxy publishes the
+	// candidate, and keep honoring the current sources until it is live.
+	// PrepareReload watches both sets at once, so neither an enabling
+	// candidate nor a sentinel created at the new path during this window
+	// can reach traffic unguarded, and an active old source cannot lapse.
+	// Reload(newCfg) below narrows the watch to the candidate after
+	// publication; AbortReload drops the candidate if publication fails.
+	s.killswitch.PrepareReload(newCfg)
+	fireReloadBeforeProxySwapHook(s)
 	if !s.proxy.Reload(newCfg, newSc) {
+		s.killswitch.AbortReload()
 		return errors.New("reload failed: proxy kept previous config")
 	}
 	if s.containmentManaged {

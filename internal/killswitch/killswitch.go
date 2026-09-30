@@ -42,10 +42,15 @@ type Controller struct {
 	deferredGeneration atomic.Uint64
 	sentinelObserved   atomic.Bool // tracks observed active intervals
 	cfg                atomic.Pointer[runtime]
-	api                atomic.Bool
-	sigusr1            atomic.Bool
-	conductor          atomic.Bool
-	conductorMsg       atomic.Value
+	// pending holds a reload candidate's config-derived sources between
+	// PrepareReload and Reload/AbortReload. While set, its `enabled` flag and
+	// sentinel file activate the switch in addition to the current ones.
+	pending                 atomic.Pointer[runtime]
+	pendingSentinelObserved atomic.Bool
+	api                     atomic.Bool
+	sigusr1                 atomic.Bool
+	conductor               atomic.Bool
+	conductorMsg            atomic.Value
 	// conductorStale is the autonomous fail-closed source: the follower's active
 	// policy bundle aged past its grace window with no fresh bundle from the
 	// leader. It is independent of conductorRemote (operator-driven remote kill)
@@ -344,9 +349,35 @@ func (c *Controller) Reload(cfg *config.Config) {
 	defer c.deferredMu.Unlock()
 	c.observeSentinel(c.cfg.Load().sentinelFile)
 	c.cfg.Store(buildRuntime(cfg))
+	c.pending.Store(nil)
+	c.pendingSentinelObserved.Store(false)
 	if c.computeDecision(c.cfg.Load()).Active {
 		c.deferredGeneration.Add(1)
 	}
+}
+
+// PrepareReload starts honoring a reload candidate's config-derived sources
+// (`enabled` and sentinel_file) while the current ones stay in force. Call it
+// before the candidate policy is published, then Reload once it is live or
+// AbortReload if publication fails. Between the two, activation from either
+// config is honored, so a reload never opens a window where neither the old
+// nor the new source is watched.
+func (c *Controller) PrepareReload(cfg *config.Config) {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
+	c.pendingSentinelObserved.Store(false)
+	c.pending.Store(buildRuntime(cfg))
+	if c.computeDecision(c.cfg.Load()).Active {
+		c.deferredGeneration.Add(1)
+	}
+}
+
+// AbortReload drops a candidate installed by PrepareReload.
+func (c *Controller) AbortReload() {
+	c.deferredMu.Lock()
+	defer c.deferredMu.Unlock()
+	c.pending.Store(nil)
+	c.pendingSentinelObserved.Store(false)
 }
 
 // SetAPI sets the API activation source.
@@ -470,23 +501,35 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 	if c.observeSentinel(rt.sentinelFile) {
 		return Decision{Active: true, Message: rt.message, Source: "sentinel"}
 	}
+	if p := c.pending.Load(); p != nil {
+		if p.cfgEnabled {
+			return Decision{Active: true, Message: p.message, Source: "config"}
+		}
+		if c.observeSentinelWith(p.sentinelFile, &c.pendingSentinelObserved) {
+			return Decision{Active: true, Message: p.message, Source: "sentinel"}
+		}
+	}
 	return Decision{}
 }
 
 // observeSentinel records active intervals even during concurrent decision checks.
 func (c *Controller) observeSentinel(path string) bool {
+	return c.observeSentinelWith(path, &c.sentinelObserved)
+}
+
+func (c *Controller) observeSentinelWith(path string, observed *atomic.Bool) bool {
 	if path == "" {
-		c.sentinelObserved.Store(false)
+		observed.Store(false)
 		return false
 	}
 	_, err := os.Stat(path)
 	// Fail closed for stat errors other than file-not-found.
 	active := err == nil || !errors.Is(err, os.ErrNotExist)
-	if active && c.sentinelObserved.CompareAndSwap(false, true) {
+	if active && observed.CompareAndSwap(false, true) {
 		c.deferredGeneration.Add(1)
 	}
 	if !active {
-		c.sentinelObserved.Store(false)
+		observed.Store(false)
 	}
 	return active
 }

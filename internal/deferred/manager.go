@@ -50,6 +50,10 @@ const (
 	DefaultMaxCascadeDepth        = DefaultMaxPendingSession
 )
 
+// SourceUpstreamContract records a deferred release that the live upstream
+// contract gate denied at the irreversible send boundary.
+const SourceUpstreamContract = "upstream_contract"
+
 // Config controls held-action bounds and timers.
 type Config struct {
 	Enabled              bool
@@ -144,9 +148,15 @@ type HeldAction struct {
 	ArgDigest     string
 	Resolve       func(Resolution)
 	BeforeAllow   func() (release func(), ok bool)
-	timer         *time.Timer
-	state         string
-	createdAt     time.Time
+	// Prepare, when set, runs after BeforeAllow and before the terminal
+	// journal entry. It may downgrade the resolution (for example when a
+	// release-boundary check cancels an allow) so the journal records the
+	// outcome that actually happens. The returned finish func runs, via
+	// defer, after Resolve returns or panics.
+	Prepare   func(Resolution) (Resolution, func())
+	timer     *time.Timer
+	state     string
+	createdAt time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -399,17 +409,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		}
 	}
 
-	state := resolvedState(finalDecision)
-	if err := m.appendJournal(journalEntryFromHeld(*held, state, source)); err != nil {
-		finalDecision = "block"
-		source = SourceCancel
-		state = resolvedState(finalDecision)
-		_ = m.appendJournal(journalEntryFromHeld(*held, state, source))
-	}
-	if finalDecision != config.ActionAllow && source != SourceCascade {
-		m.cascadeBlockDescendants([]string{held.DeferID})
-	}
-	held.Resolve(Resolution{
+	res := Resolution{
 		DeferID:          held.DeferID,
 		ParentActionID:   held.ActionID,
 		FinalDecision:    finalDecision,
@@ -422,7 +422,30 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		Target:           held.Target,
 		Method:           held.Method,
 		Reason:           held.Reason,
-	})
+	}
+	if held.Prepare != nil {
+		prepared, finish := held.Prepare(res)
+		if finish != nil {
+			defer finish()
+		}
+		// Prepare may only keep or close the decision; it can never open one.
+		if prepared.FinalDecision == config.ActionAllow && res.FinalDecision != config.ActionAllow {
+			prepared.FinalDecision = config.ActionBlock
+		}
+		res = prepared
+	}
+
+	state := resolvedState(res.FinalDecision)
+	if err := m.appendJournal(journalEntryFromHeld(*held, state, res.ResolutionSource)); err != nil {
+		res.FinalDecision = config.ActionBlock
+		res.ResolutionSource = SourceCancel
+		state = resolvedState(res.FinalDecision)
+		_ = m.appendJournal(journalEntryFromHeld(*held, state, res.ResolutionSource))
+	}
+	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
+		m.cascadeBlockDescendants([]string{held.DeferID})
+	}
+	held.Resolve(res)
 	return nil
 }
 

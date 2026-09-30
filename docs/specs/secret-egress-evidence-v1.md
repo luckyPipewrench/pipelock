@@ -121,9 +121,9 @@ not manufacture that evidence or infer producer liveness from registry presence.
 
 ## Proposed runtime integration
 
-This integration remains pending the maintainer's compatibility-decision record
-and public contract correction. The candidate model does not enable or change
-required-receipt behavior.
+This integration remains pending production wiring and the public contract
+correction. The candidate model does not enable or change required-receipt
+behavior.
 
 The single existing `flight_recorder.require_receipts` posture controls whether
 new authoritative classification evidence must be confirmed before the protected

@@ -1849,6 +1849,7 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 		{"relative path from home", map[string]string{"pattern": ".", "path": ".ssh"}, home, decisionDeny},
 		{"pathless search from home", map[string]string{"pattern": "."}, home, decisionDeny},
 		{"relative path with no cwd resolves from the process directory", map[string]string{"pattern": ".", "path": ".ssh"}, "", decisionDeny},
+		{"pathless search with no cwd from the home directory", map[string]string{"pattern": "."}, "", decisionDeny},
 		{"system credential directory", map[string]string{"pattern": ".", "path": "/etc"}, project, decisionDeny},
 		{"narrower system directory", map[string]string{"pattern": ".", "path": "/etc/ssl"}, project, decisionAllow},
 		{"project directory", map[string]string{"pattern": "func", "path": project}, project, decisionAllow},

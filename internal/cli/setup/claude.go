@@ -373,6 +373,11 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		if target == "" {
 			target = p.Cwd
 		}
+		if target == "" {
+			// No path and no cwd: the search runs in the hook's own
+			// working directory, so check that instead of skipping.
+			target = "."
+		}
 		if dir, ok := grepTargetCoversCredentialDir(target, p.Cwd); ok {
 			return nil, fmt.Errorf("refusing Grep over %s, which covers the credential directory %s; search a narrower path", target, dir)
 		}

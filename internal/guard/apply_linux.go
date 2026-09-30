@@ -288,8 +288,9 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	// There is no syscall or /proc file that reports the ancestor domain, so
 	// asking "am I nested" is not available. Measuring the thing that actually
 	// matters is: after restricting, try to reach each granted path. Every
-	// right set Guard issues includes read on the object, so a denial here means
-	// something outside this ruleset is narrowing us.
+	// right set Guard issues includes read on the object. A failed reopen proves
+	// the path is unavailable, but cannot distinguish an outer domain from
+	// permissions, a changed pathname, or another restriction.
 	//
 	// This fails CLOSED. A narrowed policy is reported and refused rather than
 	// presented as the declared one.
@@ -306,7 +307,7 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 		// permanently constrained.
 		record.State = EnforcementAppliedNarrowed
 		record.Reason = fmt.Sprintf(
-			"the restriction applied, but %d declared path(s) are not in force under it (%s); an ancestor landlock domain or another restriction is narrowing this policy, so the manifest is not in force as declared",
+			"the restriction applied, but %d declared path(s) are not reachable under it (%s); post-restriction access probes failed, so the manifest is not in force as declared",
 			len(narrowed), strings.Join(narrowed, ", "))
 		return record, fmt.Errorf("%w: %s", ErrPolicyNarrowed, strings.Join(narrowed, ", "))
 	}

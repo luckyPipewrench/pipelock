@@ -43,6 +43,17 @@ const (
 	// as a signed download link can reach that vendor's storage host and
 	// nothing else.
 	CredentialAudienceCarrierURLQuery
+	// CredentialAudienceCarrierReleaseGrantSAS is the separate GitHub
+	// release-asset SAS rule: an Azure user-delegation SAS is trusted only
+	// inside the URL query of a request to a release-grant audience host,
+	// only when that same query also carries a GitHub release download grant
+	// (a JWT accepted through CredentialAudienceCarrierURLQuery for that
+	// host), and only when the query carries GitHub's whole user-delegation
+	// SAS parameter set. It never widens the JWT's host list, and the JWT
+	// rule never accepts a SAS on its own: the SAS signature is unverifiable
+	// by this proxy, so it is trusted purely because the co-located grant
+	// already proved GitHub issued this exact redirect.
+	CredentialAudienceCarrierReleaseGrantSAS
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
@@ -188,8 +199,14 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Azure SAS signature: the sig= parameter is a base64 HMAC-SHA256
 	// (32 bytes -> 44 base64 chars). Match both the URI form with encoded
 	// padding and the decoded form read after a carrier is unescaped.
+	// GitHub's release-asset redirect (github.com/.../releases/download/...)
+	// answers with a 302 to release-assets.githubusercontent.com carrying an
+	// Azure user-delegation SAS beside the release download grant JWT (see
+	// the "JWT Token" pattern below). The SAS audience reuses that exact host
+	// list and is granted only alongside a validated grant for that host; see
+	// releaseGrantSASAllowed in internal/scanner/credential_audience.go.
 	// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-account-sas
-	{Name: "Azure SAS Token", Regex: `\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`, Severity: SeverityHigh},
+	{Name: "Azure SAS Token", Regex: `\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierReleaseGrantSAS},
 
 	// Messaging platform tokens
 	// The Slack Web API serves every method at https://slack.com/api/..., while

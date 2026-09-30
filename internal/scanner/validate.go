@@ -58,6 +58,101 @@ func builtinDLPValidatorForRegex(regex string) func(string) bool {
 	return nil
 }
 
+// builtinDLPJoinedValidatorForRegex returns the extra check a built-in
+// detector applies only to matches found in the whitespace-joined view.
+func builtinDLPJoinedValidatorForRegex(regex string) func(string, int, int, string, []int) bool {
+	if regex == config.AWSAccessIDRegex {
+		return validateAWSAccessIDJoined
+	}
+	return nil
+}
+
+// awsIDPrefixes are the prefixes of config.AWSAccessIDRegex. AWS's IAM
+// identifier reference lists AKIA as access key, ASIA as temporary STS access
+// key, and AGPA/AIDA/AIPA/ANPA/ANVA/AROA as group, user, instance profile,
+// managed policy, policy version and role IDs. A3T is a legacy shape.
+var awsIDPrefixes = [...]string{"AKIA", "A3T", "AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "ASIA"}
+
+// awsIDTailMin is the minimum tail length the detector regex requires.
+const awsIDTailMin = 16
+
+// validateAWSAccessIDJoined narrows AWS Access ID matches found ONLY in the
+// whitespace-joined view, where adjacent words fuse and the case-insensitive
+// regex reads English as a key ("cANVAs operations to prevent..."). Raw
+// (unjoined) matching is untouched. The candidate [start,end) is accepted when
+// some prefix inside it has a window of prefix plus the regex's minimum tail
+// that
+//   - is all alphanumeric with consistent letter case (a key split by spaces
+//     keeps its case, mixed-case words do not),
+//   - is uppercase, or is lowercase behind AKIA/ASIA (the existing rule that
+//     lowercase IAM resource prefixes are prose), and
+//   - for IAM resource IDs, does not start in the middle of a same-case word
+//     in source. Credential prefixes AKIA/ASIA remain detectable mid-word. A prefix
+//     preceded by punctuation, whitespace, a digit, or a letter of the other
+//     case still counts, so "key=AKIA IOSF..." and "xAKIA IOSF..." stay caught.
+//
+// Scanning every prefix position in the candidate means a decoy run cannot hide
+// a genuine key later in the same joined run.
+func validateAWSAccessIDJoined(joined string, start, end int, source string, offsets []int) bool {
+	if start < 0 || end > len(joined) || start >= end || end > len(offsets) {
+		return true // Invalid context stays fail-closed for detection.
+	}
+	for i := start; i < end; i++ {
+		c := joined[i] | 0x20
+		if c != 'a' {
+			continue
+		}
+		for _, prefix := range awsIDPrefixes {
+			n := len(prefix) + awsIDTailMin
+			if i+n > end || !strings.EqualFold(joined[i:i+len(prefix)], prefix) {
+				continue
+			}
+			if awsJoinedWindowAllowed(joined[i:i+n], prefix) &&
+				(prefix == "AKIA" || prefix == "ASIA" || awsJoinedStartAllowed(source, offsets[i], joined[i])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func awsJoinedWindowAllowed(window, prefix string) bool {
+	var upper, lower bool
+	for j := 0; j < len(window); j++ {
+		switch b := window[j]; {
+		case b >= 'A' && b <= 'Z':
+			upper = true
+		case b >= 'a' && b <= 'z':
+			lower = true
+		case b >= '0' && b <= '9':
+		default:
+			return false
+		}
+	}
+	if upper && lower {
+		return false
+	}
+	if lower && prefix != "AKIA" && prefix != "ASIA" {
+		return false
+	}
+	return true
+}
+
+func awsJoinedStartAllowed(source string, at int, first byte) bool {
+	if at <= 0 || at > len(source) {
+		return true
+	}
+	prev := source[at-1]
+	isUpper := first >= 'A' && first <= 'Z'
+	switch {
+	case prev >= 'A' && prev <= 'Z':
+		return !isUpper
+	case prev >= 'a' && prev <= 'z':
+		return isUpper
+	}
+	return true
+}
+
 func validateAWSAccessIDCandidate(candidate string) bool {
 	if strictAWSAccessIDRe.MatchString(candidate) || !containsASCIILower(candidate) {
 		return true

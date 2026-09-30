@@ -766,7 +766,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 	var matches []TextDLPMatch
 	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
 		p := s.dlpPatterns[idx]
-		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
+		if start, end, ok := p.matchSpanInJoinedView(text, proseSource, offsets); ok {
 			if p.credentialURLWhitespaceGrammar && !credentialURLWhitespaceMatchAllowed(text, proseSource, offsets, start, end) {
 				continue
 			}

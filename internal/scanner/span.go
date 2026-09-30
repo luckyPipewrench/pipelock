@@ -140,6 +140,22 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 	return 0, 0, false
 }
 
+// matchSpanInJoinedView is matchSpanInView for the whitespace-joined view,
+// where offsets maps each joined byte to its offset in source. A pattern with a
+// joined-view validator must also pass it; a rejected candidate never hides a
+// later genuine one. Patterns without one behave exactly as in matchSpanInView.
+func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []int) (start, end int, ok bool) {
+	if p.validateJoined == nil || p.withoutLeftBoundary != nil {
+		return p.matchSpanInView(text, source)
+	}
+	for _, loc := range p.re.FindAllStringIndex(text, -1) {
+		if p.accepts(text, loc[0], loc[1]) && p.validateJoined(text, loc[0], loc[1], source, offsets) {
+			return loc[0], loc[1], true
+		}
+	}
+	return 0, 0, false
+}
+
 func sameProviderCandidate(candidate, sourceCandidate string) bool {
 	// Concatenating another field can extend the provider pattern's greedy
 	// suffix. Treat that as the same prose candidate when one string is the

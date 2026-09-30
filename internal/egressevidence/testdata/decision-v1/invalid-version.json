@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "action_id": "01990000-0000-7000-8000-000000000001",
+  "decision_id": "01990000-0000-7000-8000-000000000002",
+  "site_id": "proxy.forward.body.original",
+  "plane": "proxy",
+  "transport": "forward",
+  "location": "body",
+  "view": "original",
+  "boundary": "upstream_request",
+  "phase": "intent",
+  "destination_kind": "network",
+  "destination_ref": "api.vendor.example",
+  "pattern_class": "core_floor",
+  "rule_id": "core_floor.sample_rule",
+  "finding_disposition": "block",
+  "planned_byte_form": "none",
+  "authorization": {"kind": "none"},
+  "persistence_policy": "required_before_action"
+}

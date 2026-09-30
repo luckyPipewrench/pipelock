@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "action_id": "01990000-0000-7000-8000-000000000005",
+  "decision_id": "01990000-0000-7000-8000-000000000006",
+  "site_id": "proxy.forward.body.original",
+  "plane": "proxy",
+  "transport": "forward",
+  "location": "body",
+  "view": "original",
+  "boundary": "upstream_request",
+  "phase": "outcome",
+  "destination_kind": "network",
+  "destination_ref": "api.vendor.example",
+  "pattern_class": "configured",
+  "rule_id": "configured.sample_rule",
+  "finding_disposition": "observe",
+  "planned_byte_form": "original",
+  "authorization": {
+    "kind": "none"
+  },
+  "rewrite_fallback": {
+    "reason": "no_safe_raw_span",
+    "policy_ref": "configured.rewrite_fallback.sample",
+    "policy_origin": "operator"
+  },
+  "persistence_policy": "required_before_action",
+  "outcome": {
+    "release": "complete",
+    "byte_form": "original"
+  }
+}

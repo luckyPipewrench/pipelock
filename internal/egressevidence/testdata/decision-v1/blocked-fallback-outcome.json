@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "action_id": "01990000-0000-7000-8000-000000000007",
+  "decision_id": "01990000-0000-7000-8000-000000000008",
+  "site_id": "proxy.forward.body.original",
+  "plane": "proxy",
+  "transport": "forward",
+  "location": "body",
+  "view": "original",
+  "boundary": "upstream_request",
+  "phase": "outcome",
+  "destination_kind": "network",
+  "destination_ref": "api.vendor.example",
+  "pattern_class": "core_floor",
+  "rule_id": "core_floor.sample_rule",
+  "finding_disposition": "block",
+  "planned_byte_form": "none",
+  "authorization": {
+    "kind": "none"
+  },
+  "rewrite_fallback": {
+    "reason": "unparseable_body",
+    "policy_ref": "builtin.block_residual",
+    "policy_origin": "builtin"
+  },
+  "persistence_policy": "required_before_action",
+  "outcome": {
+    "release": "none",
+    "byte_form": "none"
+  }
+}

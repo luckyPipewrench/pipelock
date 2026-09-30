@@ -706,3 +706,36 @@ test("secret-egress: signed redacted destinations need no identity placeholder",
     assert.equal(Object.hasOwn(d, "destination_ref"), false);
   }
 });
+
+test("secret-egress: typed version value is separate from raw number spelling", async () => {
+  const signed = await sign(receipt());
+  const raw = JSON.stringify(signed);
+  const dir = mkdtempSync(join(tmpdir(), "secret-egress-version-boundary-"));
+  try {
+    for (const token of ["1", "1.0", "1e0"]) {
+      const source = raw.replace('"version":1,', `"version":${token},`);
+      assert.equal(source === raw, token === "1");
+      const typed = JSON.parse(source) as Receipt;
+      assert.deepEqual(typed, signed);
+      assert.equal(JSON.stringify(typed), raw);
+      const d = (typed.payload as { decision: { version: number } }).decision;
+      assert.equal(d.version, 1);
+      assert.equal(Number.isInteger(d.version), true);
+      assert.doesNotThrow(() => normalizeEvidenceReceipt(typed));
+      await verifyReceipt(typed, publicKey);
+
+      const path = join(dir, `${token}.json`);
+      writeFileSync(path, source);
+      const report = await runReceipt(path, publicKey);
+      assert.equal(report.valid, token === "1", report.error);
+      const recorderPath = join(dir, `${token}.jsonl`);
+      writeFileSync(recorderPath, '{"v":1,"type":"evidence_receipt","detail":' + source + "}\n");
+      if (token === "1") assert.doesNotThrow(() => readEntries(recorderPath));
+      else assert.throws(() => readEntries(recorderPath));
+    }
+    const unsupported = JSON.parse(raw.replace('"version":1,', '"version":1.5,')) as Receipt;
+    assert.throws(() => normalizeEvidenceReceipt(unsupported));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

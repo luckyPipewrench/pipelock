@@ -25,6 +25,8 @@ import (
 // Generic json.Unmarshal/contract.DecodeStrictJSON are parsing operations, not
 // substitutes for this profile boundary. Typed verification cannot reconstruct
 // original field spelling, presence or numeric tokens discarded by a caller.
+// Ordinary JCS-equivalent formatting is permitted by this profile. Call
+// VerifyV2BytesWithKey when exact Go-emitted serialization is also required.
 func ParseEvidenceReceipt(raw []byte) (EvidenceReceipt, error) {
 	if isSecretEgressWire(raw) {
 		if err := validateSecretEgressWire(raw); err != nil {

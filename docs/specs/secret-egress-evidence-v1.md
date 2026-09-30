@@ -119,11 +119,12 @@ Callers must first authenticate and bind segments to the exact run, configuratio
 generation, session, agent and destination being queried. The pure reducer does
 not manufacture that evidence or infer producer liveness from registry presence.
 
-## Proposed runtime integration
+## Runtime integration
 
-This integration remains pending production wiring and the public contract
-correction. The candidate model does not enable or change required-receipt
-behavior.
+The posture below is the adopted rule. The existing credential-audience allow
+receipt already follows it: under `require_receipts`, a failed confirmation
+blocks with layer `credential_audience_receipt`. This candidate model has no
+production writer yet and does not itself change required-receipt behavior.
 
 The single existing `flight_recorder.require_receipts` posture controls whether
 new authoritative classification evidence must be confirmed before the protected

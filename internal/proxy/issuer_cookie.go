@@ -63,7 +63,10 @@ func (p *Proxy) recordIssuerCookieAllow(ctx audit.LogContext, pattern, cookieNam
 	if err != nil {
 		return
 	}
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	// Issuer-cookie allows stay best-effort in this change. Whether they follow
+	// flight_recorder.require_receipts like credential-audience allows is a
+	// separate decision, not settled here.
+	_ = p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerCookieReceiptExtensionKey, Pattern: pattern,
 		Transport: "intercept", Method: method, Target: target,

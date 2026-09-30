@@ -156,34 +156,121 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 	}
 }
 
+// releaseGrantSASSig returns a 44-character base64 signature (32 raw bytes,
+// one trailing '=') from seed: the exact shape of a real Azure user-delegation
+// SAS HMAC-SHA256 signature, matching the "Azure SAS Token" pattern's
+// unpadded-base64 alternative once percent-encoded in a query. sha256.Sum256
+// is 32 bytes by construction, so this never needs a literal length constant.
+func releaseGrantSASSig(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// releaseGrantSASQuery builds GitHub's real release-asset redirect query
+// shape: the twelve Azure user-delegation SAS parameters releaseGrantSASShapeValid
+// requires, the two response-content overrides GitHub also sends (never
+// required), and the release download grant JWT beside them.
+func releaseGrantSASQuery(jwt, sigSeed string) string {
+	return "sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-30T00%3A37%3A09Z" +
+		"&rscd=attachment%3B+filename%3Dtool_1.0_checksums.txt&rsct=application%2Foctet-stream" +
+		"&skoid=00000000-0000-4000-8000-000000000001&sktid=00000000-0000-4000-8000-000000000002" +
+		"&skt=2026-09-29T23%3A36%3A42Z&ske=2026-09-30T00%3A37%3A09Z&sks=b&skv=2018-11-09" +
+		"&sig=" + url.QueryEscape(releaseGrantSASSig(sigSeed)) + "&jwt=" + jwt +
+		"&response-content-disposition=attachment%3B%20filename%3Dtool_1.0_checksums.txt" +
+		"&response-content-type=application%2Foctet-stream"
+}
+
 // The real redirect shape: a long signed query with a base64 signature beside
 // the grant. Default entropy thresholds stay on, so this fails if the query
-// entropy check blocks the grant or the signature.
+// entropy check, or the Azure SAS DLP pattern itself, blocks the grant, the
+// signature, or any of the SAS's other signed parameters.
 func TestScan_GitHubReleaseGrantJWT_RealRedirectShapeDefaultEntropy(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
 	defer s.Close()
-	sig := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("s", 8) + "K7q2Zp9XwL4mB1vN6tR3yH5jD0cF8gA"))
-	query := "sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-30T00%3A37%3A09Z" +
-		"&rscd=attachment%3B+filename%3Dtool_1.0_checksums.txt&rsct=application%2Foctet-stream" +
-		"&skoid=00000000-0000-4000-8000-000000000001&sktid=00000000-0000-4000-8000-000000000002" +
-		"&skt=2026-09-29T23%3A36%3A42Z&ske=2026-09-30T00%3A37%3A09Z&sks=b&skv=2018-11-09" +
-		"&sig=" + url.QueryEscape(sig) + "&jwt=" + fakeAudienceJWT() +
-		"&response-content-disposition=attachment%3B%20filename%3Dtool_1.0_checksums.txt" +
-		"&response-content-type=application%2Foctet-stream"
+	query := releaseGrantSASQuery(fakeAudienceJWT(), "release-redirect-sig-fixture")
 	target := "https://" + githubReleaseAssetsHost + "/github-production-release-asset/212613049/00000000-0000-4000-8000-000000000003?" + query
 
 	result := s.Scan(context.Background(), target)
 	if !result.Allowed {
 		t.Fatalf("release redirect blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
 	}
-	assertCredentialAudienceAllow(t, result, jwtPatternName, githubReleaseAssetsHost)
+	assertAudienceAllowContains(t, result, jwtPatternName)
+	assertAudienceAllowContains(t, result, "Azure SAS Token")
 
 	other := s.Scan(context.Background(), strings.Replace(target, githubReleaseAssetsHost, "api.vendor.example", 1))
 	if other.Allowed {
 		t.Fatal("same redirect shape allowed at a non-audience host")
+	}
+}
+
+// The Azure SAS is trusted only as part of the whole grant: it must be
+// HTTPS, at the exact release-asset host, carrying a JWT this scanner
+// verifies as GitHub's release grant for that host, with every signed SAS
+// parameter present. Any one of those failing keeps the DLP match and
+// blocks, even though the query otherwise looks like a genuine redirect.
+func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	jwt := fakeAudienceJWT()
+	wrongHostJWT := claimJWT(`{"aud":"api.vendor.example","iss":"github.com","nbf":1000,"exp":1300}`)
+	fullQuery := releaseGrantSASQuery(jwt, "sas-shape-fixture")
+
+	for _, tc := range []struct {
+		name      string
+		target    string
+		wantAllow bool
+	}{
+		{"allow: real redirect shape", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery, true},
+		{"deny: SAS without any jwt", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "&jwt="+jwt, "", 1), false},
+		{"deny: jwt issued for a different host", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, jwt, wrongHostJWT, 1), false},
+		{"deny: SAS on a lookalike host", "https://" + githubReleaseAssetsHost + ".evil.example/asset/1?" + fullQuery, false},
+		{"deny: SAS on a real Azure blob host", "https://vendorstorage.blob.core.windows.net/asset/1?" + fullQuery, false},
+		{"deny: SAS over plain http", "http://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery, false},
+		{"deny: missing a required delegation-key parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "skoid=00000000-0000-4000-8000-000000000001&", "", 1), false},
+		// The allowance covers the query's one sig parameter only. A second
+		// signature smuggled into another parameter, encoded or plain, or a
+		// duplicate sig (including an encoded key), keeps the URL blocked.
+		{"deny: second SAS encoded in another parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&x=" + url.QueryEscape("sig="+releaseGrantSASSig("smuggled-fixture")), false},
+		{"deny: second SAS in a parameter key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&" + url.QueryEscape("sig="+releaseGrantSASSig("smuggled-fixture")) + "=1", false},
+		{"deny: duplicate sig parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&sig=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
+		{"deny: duplicate sig under an encoded key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&si%67=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
+		{"deny: account-key SAS shape (no delegation-key fields)", "https://" + githubReleaseAssetsHost + "/asset/1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-30T00%3A37%3A09Z&sig=" + url.QueryEscape(releaseGrantSASSig("account-key-fixture")) + "&jwt=" + jwt, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := s.Scan(context.Background(), tc.target)
+			if result.Allowed != tc.wantAllow {
+				t.Fatalf("Allowed = %v (scanner=%s reason=%q), want %v", result.Allowed, result.Scanner, result.Reason, tc.wantAllow)
+			}
+			if tc.wantAllow {
+				assertAudienceAllowContains(t, result, "Azure SAS Token")
+				assertAudienceAllowContains(t, result, jwtPatternName)
+			}
+		})
+	}
+}
+
+// A SAS with GitHub's exact shape, sitting beside a valid grant's query,
+// still blocks when the matched SAS text itself is planted in the path
+// rather than the query: co-occurrence with a valid grant is not a license
+// to move the credential surface.
+func TestScan_GitHubReleaseGrantSAS_PathCarriageStaysBlocked(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	jwt := fakeAudienceJWT()
+	sig := releaseGrantSASSig("path-carriage-fixture")
+	query := releaseGrantSASQuery(jwt, "path-carriage-fixture")
+	// The malicious "sig=" also appears in the path; the query still has a
+	// valid grant and SAS shape, so only the path placement is under test.
+	target := "https://" + githubReleaseAssetsHost + "/asset/sig=" + url.QueryEscape(sig) + "?" + query
+	result := s.Scan(context.Background(), target)
+	if result.Allowed {
+		t.Fatal("path-carried SAS text allowed beside a valid query grant")
 	}
 }
 
@@ -243,21 +330,31 @@ func TestFilterTextDLPMatchesForDestination_GitHubReleaseGrantJWTOnlyInQuery(t *
 	}
 }
 
-// No other built-in audience gained query carriage, and the JWT built-in is
-// query-only.
+// No other built-in audience gained query carriage. The JWT built-in is the
+// only pattern on CredentialAudienceCarrierURLQuery; the Azure SAS Token
+// built-in is the only pattern on the separate ReleaseGrantSAS carrier, and
+// shares the JWT's exact host list because it is granted only alongside that
+// same JWT grant, never on its own.
 func TestBuiltInAudiencesQueryCarriageIsJWTOnly(t *testing.T) {
 	t.Parallel()
 	for _, p := range config.DefaultDLPPatterns() {
 		hasQuery := p.CredentialAudienceCarrierMask&config.CredentialAudienceCarrierURLQuery != 0
-		if p.Name == jwtPatternName {
-			if !hasQuery || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery ||
+		hasReleaseSAS := p.CredentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0
+		switch p.Name {
+		case jwtPatternName:
+			if !hasQuery || hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery ||
 				len(p.CredentialAudienceHosts) != 1 || p.CredentialAudienceHosts[0] != githubReleaseAssetsHost {
 				t.Errorf("JWT audience = hosts %v mask %d", p.CredentialAudienceHosts, p.CredentialAudienceCarrierMask)
 			}
-			continue
-		}
-		if hasQuery {
-			t.Errorf("%s gained URL-query carriage", p.Name)
+		case "Azure SAS Token":
+			if hasQuery || !hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierReleaseGrantSAS ||
+				len(p.CredentialAudienceHosts) != 1 || p.CredentialAudienceHosts[0] != githubReleaseAssetsHost {
+				t.Errorf("Azure SAS Token audience = hosts %v mask %d", p.CredentialAudienceHosts, p.CredentialAudienceCarrierMask)
+			}
+		default:
+			if hasQuery || hasReleaseSAS {
+				t.Errorf("%s gained URL-query or release-SAS carriage", p.Name)
+			}
 		}
 	}
 }
@@ -336,6 +433,24 @@ func TestUrlDLPAudienceSurface_Edges(t *testing.T) {
 	if allows || kept.PatternName != "" {
 		t.Errorf("bare url surface earned the query grant: %#v", kept)
 	}
+}
+
+// assertAudienceAllowContains checks one allow record by pattern name without
+// requiring it be the only record, for a scan where more than one compiled
+// audience earns an allow at once (a JWT grant plus its co-located SAS). Both
+// this file's built-in query-carrier audiences share the release-asset host.
+func assertAudienceAllowContains(t *testing.T, result Result, pattern string) {
+	t.Helper()
+	for _, got := range result.CredentialAudienceAllows {
+		if got.PatternName != pattern {
+			continue
+		}
+		if got.Surface != "url" || got.Destination != githubReleaseAssetsHost {
+			t.Fatalf("audience allow for %q = %#v, want surface=url destination=%q", pattern, got, githubReleaseAssetsHost)
+		}
+		return
+	}
+	t.Fatalf("no audience allow for %q in %#v", pattern, result.CredentialAudienceAllows)
 }
 
 func marshalAllows(allows []CredentialAudienceAllow) (string, error) {

@@ -347,6 +347,9 @@ function validateProxyDecisionWithSpansPayload(payload: JSONObject): void {
   spans.forEach(validateSourceSpan);
 }
 
+// Validates already-decoded facts, not original JSON spelling. JavaScript has
+// the same numeric value for parsed 1, 1.0 and 1e0. Untrusted source must pass
+// the raw profile via runReceipt or recorder extraction before verification.
 export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
   if (receipt.payload_kind === secretEgressDecisionKind) validateSecretEgressEnvelope(receipt);
   rejectUnknownFields(receipt as Record<string, unknown>, envelopeFields, "receipt");
@@ -468,6 +471,8 @@ export async function verifyReceipt(
   if (!ok) throw new Error("signature verification failed");
 }
 
+// Verifies typed facts and their JCS signature. This object-taking API cannot
+// recover duplicate keys or source tokens discarded before it was called.
 export async function verifyEvidenceReceipt(receipt: Receipt, expectedKeyHex = ""): Promise<void> {
   normalizeEvidenceReceipt(receipt);
   const signature = receipt.signature as JSONObject;

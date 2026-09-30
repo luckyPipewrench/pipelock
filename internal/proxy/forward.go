@@ -257,7 +257,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
-	p.recordCredentialAudienceAllows(targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent)
+	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent); err != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, targetPort, result))
 
 	// Capture observer: record CONNECT URL verdict for policy replay.
@@ -300,10 +308,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
 	// interception; this covers the handshake itself.
-	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	connectHeaderBlocked, connectHeaderHadFinding, connectHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: headerCtx,
 		hostname: host, target: syntheticURL, metricAgent: agentLabel, start: start,
 	})
+	if connectHeaderReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(connectHeaderReceiptErr)
+		p.logger.LogBlocked(headerCtx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 	if connectHeaderHadFinding && !connectHeaderBlocked && cfg.AdaptiveEnforcement.Enabled {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
@@ -1065,7 +1082,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
-	p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent)
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent); err != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 
 	// A2A protocol detection: check path and Content-Type before deeper scanning.
 	isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))
@@ -1504,8 +1529,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
-			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
-				p.recordCredentialAudienceAllow(actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
+			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
+				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -1515,6 +1540,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
+		if bodyResult.CredentialAudienceReceiptErr != nil {
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
 		forwardEntropyWarnRoute = bodyResult.EntropyWarnRoute
 
 		// Capture observer: record forward body DLP verdict for policy replay.
@@ -1766,10 +1800,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
-	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	forwardHeaderBlocked, forwardHeaderHadFinding, forwardHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
+	if forwardHeaderReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(forwardHeaderReceiptErr)
+		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 
 	// Capture observer: record forward header DLP verdict for policy replay.
 	{

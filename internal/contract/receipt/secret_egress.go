@@ -39,6 +39,8 @@ func parseSecretEgressDecisionPayload(raw json.RawMessage) (PayloadSecretEgressD
 	if err := json.Unmarshal(fields["registry_hash"], &registryHash); err != nil {
 		return PayloadSecretEgressDecisionV1Struct{}, fmt.Errorf("secret egress registry_hash: %w", err)
 	}
+	// Check digest syntax only. This does not resolve a trusted registry or
+	// establish that the decision's classification site belongs to it.
 	if err := requirePolicyHash("registry_hash", registryHash); err != nil {
 		return PayloadSecretEgressDecisionV1Struct{}, err
 	}

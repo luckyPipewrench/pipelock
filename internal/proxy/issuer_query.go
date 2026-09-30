@@ -505,7 +505,10 @@ func (p *Proxy) recordIssuerQueryAllow(ctx audit.LogContext, target, requestID, 
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
 	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
-	p.emitCredentialAudienceReceipt(receipt.EmitOpts{
+	// Issuer-query allows stay best-effort in this change. Whether they follow
+	// flight_recorder.require_receipts like credential-audience allows is a
+	// separate decision, not settled here.
+	_ = p.emitCredentialAudienceReceipt(nil, receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
 		Transport: "intercept", Method: method, Target: safeTarget,

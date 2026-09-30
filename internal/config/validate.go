@@ -227,12 +227,10 @@ func validateCoreObserveExceptions(entries []CoreObserveException) error {
 		if entry.Expires == "" {
 			return fmt.Errorf("%s.expires is required", field)
 		}
-		parsed, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if parsed.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		// Startup reaches this through Validate, which does not run
+		// ValidateExpiryAuthorizations, so the horizon is enforced here as well.
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxCoreObserveExceptionHorizon); err != nil {
+			return err
 		}
 
 		key := identity{host: entry.Host, pattern: strings.ToLower(entry.Pattern)}

@@ -75,7 +75,7 @@ Flags:
 | `--port` | `8888` | Loopback proxy port to verify before launch. |
 | `--posture-output` | `/var/lib/pipelock/contain/posture` | Directory where the signed posture capsule is written. |
 | `--dry-run` | off | Run preflight and print the session contract, then exit without emitting a posture capsule or launching. |
-| `--workspace-diff-cap-bytes` | `10485760` (10 MiB) | Per-file content-digest cap for the comparison behind the workspace change statement below. Files at or under the cap are compared by sha256 digest; larger files are compared by size and modification time, and the statement is marked incomplete. The digests are used for the comparison and are not written into the statement. |
+| `--workspace-diff-cap-bytes` | `10485760` (10 MiB) | Per-file content-digest cap for the comparison behind the workspace change statement below. Regular files at or under the cap are compared by SHA-256 digest; larger regular files are compared by size and modification time, and the statement is marked incomplete. Symlinks are compared by target. The digests are used for the comparison and are not written into the statement. |
 
 ### Workspace change statement
 

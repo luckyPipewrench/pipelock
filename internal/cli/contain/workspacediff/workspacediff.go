@@ -6,9 +6,10 @@
 // evidence statement bound to that session's posture capsule.
 //
 // This is evidence, not backup: snapshots hold only path/kind/size/mtime/
-// digest metadata, in memory, sufficient to name what changed, and the signed
-// statement carries the resulting path lists rather than that metadata. There
-// is no snapshot store, no restore path, no dedup, no retention policy.
+// digest and symlink-target metadata, in memory, sufficient to name what
+// changed, and the signed statement carries the resulting path lists rather
+// than that metadata. There is no snapshot store, no restore path, no dedup,
+// no retention policy.
 package workspacediff
 
 import (

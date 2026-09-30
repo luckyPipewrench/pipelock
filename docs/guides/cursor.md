@@ -20,7 +20,19 @@ Without `--config`, the hook command uses a security-focused default profile (to
 |---|---|
 | `beforeShellExecution` | The shell command and working directory against tool policy |
 | `beforeMCPExecution` | The MCP server name, tool name, and tool input against tool policy and MCP input scanning |
-| `beforeReadFile` | The file path and content |
+| `beforeReadFile` | The file path and content from the JSON event on stdin |
+
+For `beforeReadFile`, Pipelock reads `hook_event_name`, `file_path`, and `content` from Cursor's JSON event on stdin. The event can also include `conversation_id` and `generation_id`, which Pipelock reads but does not use for the file decision. For example:
+
+```json
+{
+  "hook_event_name": "beforeReadFile",
+  "conversation_id": "conversation-id",
+  "generation_id": "generation-id",
+  "file_path": "/workspace/notes.txt",
+  "content": "Text Cursor is about to read."
+}
+```
 
 The hook always exits `0`; the `permission` field in its JSON response on stdout is the authoritative allow/deny decision, and diagnostics go to stderr only.
 

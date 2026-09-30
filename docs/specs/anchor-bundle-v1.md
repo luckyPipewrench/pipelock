@@ -7,6 +7,8 @@ JSON bundle with `--out`. The published schema is
 populated structural fixture at
 [`sdk/anchor-bundle/example.json`](../../sdk/anchor-bundle/example.json).
 
+The `--out` path must resolve to a file under the receipt directory. Relative paths are resolved from that directory, and absolute paths outside it are rejected.
+
 ## Stability status
 
 **Experimental compatibility notice:** This document and `v1.json` describe the

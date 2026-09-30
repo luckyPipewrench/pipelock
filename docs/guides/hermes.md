@@ -26,7 +26,7 @@
 
 ```bash
 # 1. Install pipelock (requires Go 1.26+)
-git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock
 
@@ -45,6 +45,8 @@ Both modes are idempotent — re-running wraps only new entries and never duplic
 ### Terminal coverage is cooperative
 
 `--mode full` adds Pipelock's proxy environment **names** (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, …) to the terminal backend's `env_passthrough`. For terminal traffic to actually route through Pipelock you must also set those env **values** in Hermes' own environment and the backend must honor them. This is cooperative proxying, not binary-enforced network isolation; pair it with `pipelock contain`, a sandbox, or a network policy where you need a hard boundary.
+
+The plugin looks for the `pipelock` executable on its `PATH`. If Hermes does not inherit a `PATH` that includes it, set `PIPELOCK_BIN` in Hermes' process environment to the absolute path of the Pipelock executable.
 
 ## MCP-Only Mode: Auth-Header Preservation
 

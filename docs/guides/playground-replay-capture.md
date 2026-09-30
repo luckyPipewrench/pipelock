@@ -13,6 +13,8 @@ and let a visitor verify the receipt chain themselves with the shipped
 The rig is a separate binary from `pipelock`. It is an evidence-publishing tool,
 not part of the production firewall.
 
+The capture rig is built from source and isn't included in Pipelock release binaries. The release verifier accepts Audit Packets with `pipelock-verifier audit-packet`; packet creation uses the source command below. The rig creates synthetic, public-safe gallery examples and doesn't produce packets from production runs.
+
 ## What it proves (and does not)
 
 Each recording maps to one Audit Packet whose `evidence.jsonl` is a signed

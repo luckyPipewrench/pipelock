@@ -69,6 +69,12 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 
 **Wire detail:** argument extraction pulls all JSON string values, object keys, and stringified numbers and booleans. An agent can exfiltrate secrets as JSON keys or numeric values, so all leaf types are scanned.
 
+### DNS-over-HTTPS URLs
+
+The `url` kind inspects DNS messages carried in a `dns` query parameter. For the RFC 8484 GET form, use exactly one raw `dns` key with a canonical, unpadded base64url DNS message and no other query parameters. Entropy is then measured on the parsed DNS names, record payloads, options and fixed fields, rather than on the base64url envelope. A block can name the `DNS message` view, such as `high entropy query param "dns" DNS message (4.89 > 4.50 threshold)`. DLP also inspects decodable `dns` values alongside other query parameters; those extra parameters don't qualify the URL for the strict GET entropy handling.
+
+The Scan API has no DNS-message body input. Its `dlp` kind scans text, so submitting a DNS wire message as text doesn't exercise the proxy's POST parser. To scan the RFC 8484 POST form, send an `application/dns-message` request through the forward proxy with request-body scanning enabled; HTTPS bodies also require TLS interception. See the [configuration reference](configuration.md#fetch-proxy) for a proxy configuration example.
+
 ### Input fields
 
 | Field | Type | Used by |
@@ -125,6 +131,8 @@ A matched tool-policy `action: warn` returns `decision: "warn"` when the DLP and
 | `errors` | array | Present when `status` is `error`. |
 
 ### Finding object
+
+Partial canary, environment-secret and file-secret disclosures can produce DLP findings, but the API doesn't include the text scanner's `partial_len` field. Setting `include_evidence: true` adds the encoding only; it doesn't distinguish a partial disclosure from a whole-value match.
 
 ```json
 {

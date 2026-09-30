@@ -343,6 +343,13 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleRawTokens, ruleRawJoined)
+		// The shipped credential exception describes one submitted value. JSON
+		// keys and local aliases are not additional arguments to that value.
+		// Keep the shared pairwise matcher unchanged for every other rule and
+		// for calls with more than one string value.
+		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
+			argPatternMatched = matched
+		}
 		if !argPatternMatched {
 			continue
 		}

@@ -1,0 +1,16 @@
+{
+  "contract_version": 1,
+  "status": "candidate_model_only",
+  "fixtures": [
+    {"id": "intent-block", "file": "intent-block.json", "valid": true},
+    {"id": "outcome-mismatch", "file": "outcome-mismatch.json", "valid": true, "intent_id": "intent-block"},
+    {"id": "local-mcp", "file": "local-mcp.json", "valid": true},
+    {"id": "invalid-fsync", "file": "invalid-fsync.json", "valid": false, "error_contains": "unknown evidence field"},
+    {"id": "invalid-version", "file": "invalid-version.json", "valid": false, "error_contains": "unsupported evidence decision version"},
+    {"id": "raw-unrewritable-intent", "file": "raw-unrewritable-intent.json", "valid": true},
+    {"id": "raw-unrewritable-outcome", "file": "raw-unrewritable-outcome.json", "valid": true, "intent_id": "raw-unrewritable-intent"},
+    {"id": "blocked-fallback-intent", "file": "blocked-fallback-intent.json", "valid": true},
+    {"id": "blocked-fallback-outcome", "file": "blocked-fallback-outcome.json", "valid": true, "intent_id": "blocked-fallback-intent"},
+    {"id": "builtin-core-authorization", "file": "builtin-core-authorization.json", "valid": true}
+  ]
+}

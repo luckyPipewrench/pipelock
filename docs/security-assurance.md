@@ -180,10 +180,7 @@ Pipelock ships several evidence surfaces with different proof boundaries:
   linkage.
 - **EvidenceReceipt v2:** RFC 8785/JCS-canonicalized typed evidence for contract
   lifecycle, shadow, drift, and contract-aware proxy decisions.
-- **Flight recorder:** configured evidence storage with chain continuity and
-  signed checkpoints. It records blocks; allow receipts require the configured
-  receipt mode, and clean stream frames may be summarized rather than emitted
-  one by one.
+- **Flight recorder:** configured evidence storage with chain continuity and signed checkpoints. When signing is configured, allow receipts are emitted in best-effort mode too; `require_receipts` makes successful allow-path emission mandatory. Clean stream frames may be summarized rather than emitted one by one.
 - **Audit Packet v0:** posture-bundled receipts plus verifier output. Its relying
   party must pin the expected trust inputs described in the
   [Audit Packet threat model](security/audit-packet-threat-model.md).

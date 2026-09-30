@@ -34,7 +34,7 @@ Install Grok **before** exporting proxy env vars. With `pipelock run` already up
 
 ```bash
 # 1. Install pipelock (requires Go 1.26+)
-git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 # or (macOS): brew install luckyPipewrench/tap/pipelock
 
@@ -44,16 +44,16 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 
 # 3. Generate a config and start the forward proxy
 pipelock generate config --preset balanced -o pipelock.yaml
-# balanced presets ship forward_proxy.idle_timeout_seconds: 120; Grok SSE
-# idle defaults to 600s and xAI recommends proxy idle timeouts ≥ 10 minutes.
-# Raise it before starting the proxy (edit pipelock.yaml):
+# The balanced preset disables the forward proxy. Before starting Pipelock,
+# edit pipelock.yaml to enable it and allow long Grok SSE responses:
 #   forward_proxy:
+#     enabled: true
 #     idle_timeout_seconds: 600
-pipelock run --config pipelock.yaml &
+pipelock run --config pipelock.yaml --listen 127.0.0.1:18080 &
 
 # 4. Point Grok Build at Pipelock (CLI honors these env vars)
-export HTTPS_PROXY=http://127.0.0.1:8888
-export HTTP_PROXY=http://127.0.0.1:8888
+export HTTPS_PROXY=http://127.0.0.1:18080
+export HTTP_PROXY=http://127.0.0.1:18080
 export NO_PROXY=127.0.0.1,localhost
 
 # 5. Run Grok

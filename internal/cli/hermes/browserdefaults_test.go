@@ -5,7 +5,9 @@ package hermes
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/browserdefaults"
 	"github.com/spf13/cobra"
 )
 
@@ -241,14 +244,18 @@ func TestBrowserDefaultsRollbackAfterOperatorReformat(t *testing.T) {
 	if err := os.WriteFile(path, []byte(reformatted), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "resolve manually") {
-		t.Fatalf("reformatted flag should require manual resolution: %v", err)
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatalf("reformatted flag: %v", err)
 	}
-	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != reformatted {
-		t.Fatalf("reformatted config changed: %q, %v", got, err)
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(state); err != nil {
-		t.Fatalf("ownership record removed: %v", err)
+	if args, _ := browserArgs(obj); args != "--lang=en-US" {
+		t.Fatalf("reformatted args = %q", args)
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership record remains: %v", err)
 	}
 }
 
@@ -267,6 +274,108 @@ func assertBrowserRollbackControl(t *testing.T) {
 	}
 	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unmodified record was not removed: %v", err)
+	}
+}
+
+func TestBrowserDefaultsRollbackEditedArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name, edited, want string
+	}{
+		{"removed argument", "--lang=fr," + browserFlag, "--lang=fr"},
+		{"changed argument", "--lang=de,--mute-audio," + browserFlag, "--lang=de,--mute-audio"},
+		{"flag first", browserFlag + ",--lang=fr,--new", "--lang=fr,--new"},
+		{"flag middle", "--new," + browserFlag + ",--lang=de", "--new,--lang=de"},
+		{"newline and whitespace", "--lang=de\n " + browserFlag + " \n--new", "--lang=de,--new"},
+		{"similar argument", "--lang=fr," + browserFlag + "," + browserFlag + "Extra", "--lang=fr," + browserFlag + "Extra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			path, state := browserPaths(home)
+			writeBrowserTestFile(t, path, `{"args":"--lang=fr,--mute-audio","headed":true}`, 0o600)
+			if err := installBrowserDefaults(home); err != nil {
+				t.Fatal(err)
+			}
+			obj, err := browserdefaults.Parse([]byte(`{"headed":false,"user":"kept"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj["args"], _ = json.Marshal(tc.edited)
+			edited, err := browserdefaults.Encode(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeBrowserTestFile(t, path, string(edited), 0o600)
+			var output bytes.Buffer
+			if err := rollbackBrowserDefaultsWithOutput(home, &output); err != nil {
+				t.Fatalf("edited args rollback: %v", err)
+			}
+			if msg := output.String(); !strings.Contains(msg, "removed "+browserdefaults.Flag) || !strings.Contains(msg, path+".bak.") {
+				t.Fatalf("rollback did not name the removed flag and backup: %q", msg)
+			}
+			obj, _, err = readBrowserConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if args, _ := browserArgs(obj); args != tc.want {
+				t.Fatalf("args = %q, want %q", args, tc.want)
+			}
+			if string(obj["headed"]) != "false" || string(obj["user"]) != `"kept"` {
+				t.Fatalf("user keys changed: %v", obj)
+			}
+			if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ownership record remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunRollback_BrowserDefaultsFlagAlreadyAbsent(t *testing.T) {
+	for _, edited := range []string{`{"args":"--lang=de","headed":true}`, `{"args":"","headed":true}`, `{"headed":true}`} {
+		t.Run(edited, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			path, state := browserPaths(home)
+			writeBrowserTestFile(t, path, `{"args":"--lang=fr,--mute-audio"}`, 0o600)
+			if err := installBrowserDefaults(home); err != nil {
+				t.Fatal(err)
+			}
+			writeBrowserTestFile(t, path, edited, 0o600)
+			var output bytes.Buffer
+			cmd := rollbackCmd()
+			cmd.SetOut(&output)
+			opts := &rollbackOptions{HomeDir: home, HermesConfig: filepath.Join(home, ".hermes", "config.yaml"), PluginRoot: filepath.Join(home, "plugin")}
+			if err := runRollback(cmd, opts); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), "warning") || !strings.Contains(output.String(), "flag already absent; cleared ownership record") {
+				t.Fatalf("rollback output: %s", output.String())
+			}
+			if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ownership record remains: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Clean(path)); err != nil || string(data) != edited {
+				t.Fatalf("manual edit changed: %q, %v", data, err)
+			}
+			backups, err := filepath.Glob(path + ".bak.*")
+			if err != nil || len(backups) != 1 {
+				t.Fatalf("no-change rollback added a backup: %v, %v", backups, err)
+			}
+			output.Reset()
+			if err := runRollback(cmd, opts); err != nil || strings.Contains(output.String(), "warning") || strings.Contains(output.String(), "cleared ownership record") {
+				t.Fatalf("repeated rollback: %v, %s", err, output.String())
+			}
+			if err := installBrowserDefaults(home); err != nil {
+				t.Fatalf("reinstall after manual removal: %v", err)
+			}
+			obj, _, err := readBrowserConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if args, _ := browserArgs(obj); !hasBrowserFlag(args) {
+				t.Fatalf("reinstall did not add flag: %q", args)
+			}
+		})
 	}
 }
 
@@ -376,14 +485,18 @@ func TestBrowserDefaultsRollbackKeepsOperatorRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeBrowserTestFile(t, path, `{"args":"`+browserFlag+`"}`, 0o600)
-	if err := rollbackBrowserDefaults(home); err == nil || !strings.Contains(err.Error(), "resolve manually") {
-		t.Fatalf("moved flag should require manual resolution: %v", err)
+	if err := rollbackBrowserDefaults(home); err != nil {
+		t.Fatalf("moved flag: %v", err)
 	}
-	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || string(got) != `{"args":"`+browserFlag+`"}` {
-		t.Fatalf("operator edit changed: %q, %v", got, err)
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(state); err != nil {
-		t.Fatalf("ownership record removed: %v", err)
+	if _, present := obj["args"]; present {
+		t.Fatalf("operator removal not preserved: %s", obj["args"])
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership record remains: %v", err)
 	}
 }
 
@@ -688,7 +801,7 @@ func TestRunInstall_BrowserWriteFailureAfterIntegration(t *testing.T) {
 func TestBackupBrowserConfigRefusesUnreadableSource(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "config.json")
-	if err := backupBrowserConfig(missing); err == nil {
+	if _, err := backupBrowserConfig(missing); err == nil {
 		t.Fatal("backup of a missing config succeeded")
 	}
 	entries, err := os.ReadDir(dir)
@@ -944,5 +1057,61 @@ func TestRunRollback_LocksPluginRoot(t *testing.T) {
 	release()
 	if err == nil || !strings.Contains(err.Error(), "another pipelock hermes install or rollback") {
 		t.Fatalf("rollback should wait on the held plugin root, got %v", err)
+	}
+}
+
+type failingBrowserOutput struct{}
+
+func (failingBrowserOutput) Write([]byte) (int, error) { return 0, errors.New("output closed") }
+
+// When the removal notice cannot be written, rollback still names the backup
+// in its error, and the removal itself is complete.
+func TestBrowserDefaultsRollbackNoticeWriteFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, state := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"--lang=fr"}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserTestFile(t, path, `{"args":"--lang=de,`+browserFlag+`"}`, 0o600)
+	err := rollbackBrowserDefaultsWithOutput(home, failingBrowserOutput{})
+	if err == nil || !strings.Contains(err.Error(), path+".bak.") {
+		t.Fatalf("rollback error = %v, want the backup path", err)
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership record remains: %v", err)
+	}
+	obj, _, err := readBrowserConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args, _ := browserArgs(obj); args != "--lang=de" {
+		t.Fatalf("args = %q", args)
+	}
+}
+
+// A record that cannot be cleared after the config is rewritten still names
+// the backup, so the completed edit stays traceable.
+func TestBrowserDefaultsRollbackRecordRemovalFailureNamesBackup(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory write permission is not enforced here")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, state := browserPaths(home)
+	writeBrowserTestFile(t, path, `{"args":"--lang=fr"}`, 0o600)
+	if err := installBrowserDefaults(home); err != nil {
+		t.Fatal(err)
+	}
+	writeBrowserTestFile(t, path, `{"args":"--lang=de,`+browserFlag+`"}`, 0o600)
+	stateDir := filepath.Dir(state)
+	if err := os.Chmod(stateDir, 0o500); err != nil { // #nosec G302 -- a directory needs its exec bit; this removes only write access to block the record removal.
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
+	err := rollbackBrowserDefaultsWithOutput(home, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), path+".bak.") {
+		t.Fatalf("rollback error = %v, want the backup path", err)
 	}
 }

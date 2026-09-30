@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/guard"
 )
 
 // standaloneProxyConnectionConfig controls how one accepted bridge connection
@@ -121,7 +123,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) (returnErr error) {
 		// Guard domain admits. Otherwise the final helper correctly detects an
 		// ancestor policy narrowing and refuses developer tools outside /usr or
 		// the workspace. Grant the file only, never its bin directory.
-		policy.AllowReadFiles = append(policy.AllowReadFiles, guardExecutable)
+		policy = guardRuntimeFilePolicy(policy, guardExecutable, guard.ExecutionCAFiles())
 	}
 	policy, coverageEnv := prepareSubprocessCoverage(policy, nil)
 	policy, err = ResolvePolicyPaths(policy)
@@ -380,6 +382,15 @@ func standaloneChildCleanup(pid int, strict bool, stopProxy, reapOrphans func())
 			CleanupChildSandboxDir(pid)
 		}
 	}
+}
+
+// guardRuntimeFilePolicy admits exact runtime files in the outer domain too.
+// ResolvePolicyPaths below follows CA symlinks without granting their parent
+// directories; the final Guard preparation checks the physical target floor.
+func guardRuntimeFilePolicy(policy Policy, executable string, caFiles []string) Policy {
+	policy.AllowReadFiles = append(policy.AllowReadFiles, executable)
+	policy.AllowReadFiles = append(policy.AllowReadFiles, caFiles...)
+	return policy
 }
 
 func guardLookupEnvironment(useDeveloperEnvironment bool, developerEnvironment []string) []string {

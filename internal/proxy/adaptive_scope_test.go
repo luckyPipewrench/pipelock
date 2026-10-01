@@ -777,3 +777,80 @@ func TestAdaptiveBlockSignal_SeverityWeightingIsOptInAndFailClosed(t *testing.T)
 		})
 	}
 }
+
+// TestAdaptiveScope_AggregateCriticalAcrossDestinationsDeniesNoDestination pins
+// the documented destination-scoped model: block_all and airlock quarantine
+// are decided per destination scope. Findings spread thinly over many
+// destinations lift the session's aggregate score to critical without any one
+// destination reaching it, so no destination (including a fresh one) is denied
+// or quarantined. The same score concentrated on one destination does latch
+// block_all and the hard airlock tier for that destination, and only that one.
+func TestAdaptiveScope_AggregateCriticalAcrossDestinationsDeniesNoDestination(t *testing.T) {
+	cfg := adaptiveConfig()
+	cfg.Airlock.Enabled = true
+	cfg.Airlock.Triggers.OnHigh = config.AirlockTierSoft
+	cfg.Airlock.Triggers.OnCritical = config.AirlockTierHard
+	p, logger := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+
+	ep := decide.EscalationParams{
+		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:    logger,
+		Session:   adaptiveSessionKeyLoopback,
+		ClientIP:  adaptiveSessionKeyLoopback,
+	}
+	record := func(host string) {
+		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(host), session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep)
+	}
+	const criticalLevel = 3
+	denied := func(host string) (bool, string) {
+		scope := adaptiveScopeForHost(host)
+		sess.mu.Lock()
+		st := sess.scopes[scope]
+		blockAll := st != nil && st.atBlockAll
+		sess.mu.Unlock()
+		return blockAll, sess.AirlockForScope(scope).Tier()
+	}
+
+	// One block (3 points) per destination stays below the 5-point threshold
+	// of every scope, but eight of them put the aggregate past 4x threshold.
+	hosts := make([]string, 0, 8)
+	for i := 0; i < 8; i++ {
+		host := fmt.Sprintf("spread-%d.example", i)
+		hosts = append(hosts, host)
+		record(host)
+	}
+	if got := sess.EscalationLevel(); got != criticalLevel {
+		t.Fatalf("aggregate escalation level = %d, want critical (%d)", got, criticalLevel)
+	}
+	if sess.BlockAll() {
+		t.Fatal("aggregate block_all must stay unlatched when no destination is critical")
+	}
+	for _, host := range append(hosts, "fresh.example") {
+		scope := adaptiveScopeForHost(host)
+		if got := sess.EffectiveEscalationLevel(scope); got != 0 {
+			t.Fatalf("%s effective level = %d, want 0", host, got)
+		}
+		blockAll, tier := denied(host)
+		if blockAll || tier != config.AirlockTierNone {
+			t.Fatalf("%s block_all=%t airlock=%q, want neither", host, blockAll, tier)
+		}
+	}
+
+	// Positive control: one destination carrying the same pressure itself.
+	const hot = "hot.example"
+	hotScope := adaptiveScopeForHost(hot)
+	for i := 0; i < 8 && sess.EffectiveEscalationLevel(hotScope) < criticalLevel; i++ {
+		record(hot)
+	}
+	if got := sess.EffectiveEscalationLevel(hotScope); got != criticalLevel {
+		t.Fatalf("hot destination level = %d, want critical (%d)", got, criticalLevel)
+	}
+	blockAll, tier := denied(hot)
+	if !blockAll || tier != config.AirlockTierHard {
+		t.Fatalf("hot destination block_all=%t airlock=%q, want block_all and hard", blockAll, tier)
+	}
+	if blockAll, tier := denied("fresh.example"); blockAll || tier != config.AirlockTierNone {
+		t.Fatalf("fresh destination block_all=%t airlock=%q after the hot one latched, want neither", blockAll, tier)
+	}
+}

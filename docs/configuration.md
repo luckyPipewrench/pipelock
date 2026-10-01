@@ -1176,7 +1176,7 @@ This compatibility fallback will become a startup/reload error in a future relea
 
 **Exempt domains:** Trusted response APIs can return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs, and only the response injection scan is skipped; this list never loosens a request-side control. To let a destination's request bodies follow the configured action instead of the request-side hard blocks, use `request_body_scanning.trusted_hosts`. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. On forward proxy and CONNECT (TLS intercept), when `response_scanning.enabled` is true and the response is not declared SVG, an exempt host's response streams byte-intact with no scan and no size cap, so it is also the way to carry a trusted artifact larger than `size_exempt_scan_max_bytes`; every body that streams past the scan ceiling this way is logged as a `response_scan_exempt` warning, counted in `pipelock_response_scan_exempt_overcap_unscanned_total`, and, on TLS intercept, recorded in the outcome receipt with `reason=exempt_over_cap_unscanned`. Reverse proxy still buffers exempt responses and enforces its fixed ceiling. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers`, and a reasoning-model MCP server can warn only when the enclosing response action is also `warn`.
 
-**Observing one core pattern on one host:** the core response patterns are the immutable floor, so `action: warn` does not reach them and `patterns[].exempt_domains` does not either. Before this valve the only configuration that let a blocked page through was `exempt_domains`, which stops injection scanning for the whole host. `core_observe_exceptions` is the narrow alternative: it names one host, one core pattern, why, who authorized it, and when it ends.
+**Observing one core pattern on one host:** the core response patterns are the immutable floor: they cannot be disabled, removed, or suppressed, and `patterns[].exempt_domains` does not reach them. While `response_scanning.enabled` is `true` a core match follows `response_scanning.action`, so under `warn` the finding is logged and the response is forwarded; with `enabled: false` the floor still runs and a core match blocks whatever `action` says. Before this valve the only configuration that let a blocked page through was `exempt_domains`, which stops injection scanning for the whole host. `core_observe_exceptions` is the narrow alternative: it names one host, one core pattern, why, who authorized it, and when it ends.
 
 Use a separate `suppress` entry for a configured pattern on its exact path, while the core exception observes only the named built-in pattern on the named host:
 
@@ -1828,7 +1828,7 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 |-------|------|---------|-------------|
 | `upgrade_warn` | `*string` | `nil` → `"block"` at all levels | Upgrade `warn` actions to `block` at this level |
 | `upgrade_ask` | `*string` | `nil` → `""` at elevated; `"block"` at high and critical | Upgrade `ask` (HITL) actions to `block` at this level |
-| `block_all` | `*bool` | `nil` → `false` at elevated and high; `true` at critical | Deny all traffic for this session regardless of action |
+| `block_all` | `*bool` | `nil` → `false` at elevated and high; `true` at critical | Deny all traffic for the destination (or, for non-HTTP signals, the session) that reached this level, regardless of action |
 
 **Default behavior when `levels` is omitted:**
 
@@ -1837,6 +1837,12 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 | elevated | block | — | false |
 | high | block | block | false |
 | critical | block | block | true |
+
+### Destination scope
+
+Findings on the HTTP paths (fetch, forward proxy, CONNECT, TLS interception, reverse proxy, redirect hops) are scored per destination host as well as on the session. The `levels` table, `block_all`, and airlock triggers are evaluated against the level of the destination a request is headed to, so one noisy destination is quarantined without cutting off the agent's other destinations. Signals that have no destination, such as MCP traffic, still act on the whole session.
+
+The session's own score and level are an aggregate that sums every destination, and they are what `pipelock session risk` and `session list` show. Aggregate `critical` does not by itself deny anything: when findings are spread over many destinations and none of them reaches critical, the session reads `critical` with `block_all: false` and airlock tier `none`, and clean requests keep flowing. `pipelock session explain` lists the destination scopes that are actually elevated or quarantined. A destination that reaches critical on its own latches `block_all` and takes the configured `on_critical` airlock tier for that destination, and a request to it is refused until the scope recovers or `session reset` clears it. Loopback clients and loopback upstreams get no exemption from this: only `adaptive_enforcement.exempt_domains` exempts a destination. If more than 1,024 destinations are tracked for one session, new destinations fall back to the session-wide lane, which is stricter.
 
 ### De-escalation
 

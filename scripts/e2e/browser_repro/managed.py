@@ -25,7 +25,7 @@ import urllib.request
 
 from fixture import CANARY, Fixture
 from run import (HERE, ROOT, SUPERVISOR, Cancellation, Process, config_for, file_sha256,
-                 isolated_environment, node_identity, NODE_IDENTITY, probe, write_json)
+                 isolated_environment, node_identity, NODE_IDENTITY, probe, write_final_report, write_json)
 
 SCHEMA = 1
 PURPOSE = "pipelock-disposable-synthetic-browser-v1"
@@ -579,7 +579,7 @@ def run_managed(args):
             if cancellation.signum is not None:
                 report["status"] = "fail"
                 report["interrupted_signal"] = cancellation.signum
-            write_json(output / "summary.json", report)
+            write_final_report(output / "summary.json", report)
         finally:
             cancellation.restore()
     print(json.dumps({"status": report["status"], "mode": report["mode"],

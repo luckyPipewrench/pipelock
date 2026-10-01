@@ -38,6 +38,13 @@ def write_json(path, data):
     path.chmod(0o600)
 
 
+def write_final_report(path, report):
+    """Failed or interrupted diagnostics cannot retain a success claim."""
+    if report.get("status") != "complete" and report.get("containment") != "not_tested_proxy_only":
+        report["containment"] = "not_established"
+    write_json(path, report)
+
+
 def node_identity(output):
     """Resolve the runtime reported by Node, never copy a PATH launcher/shim."""
     if len(output) > 4096:
@@ -470,7 +477,7 @@ def main():
                 report["status"] = "fail"
                 report["interrupted_signal"] = cancellation.signum
                 report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
-            write_json(args.output / "summary.json", report)
+            write_final_report(args.output / "summary.json", report)
         finally:
             cancellation.restore()
     print(json.dumps({"status": report["status"], "mode": args.mode, "containment": report["containment"], "output": str(args.output)}))

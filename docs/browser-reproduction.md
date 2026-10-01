@@ -117,6 +117,16 @@ fails; an existing daemon's healthy endpoint cannot substitute for it.
 
 ## Managed-contained browser adapter
 
+The privileged adapter must be launched from a separately verified, root-owned
+harness copy whose files and parent directories cannot be changed by nonroot
+users. Use a trusted Python interpreter and import environment, outside all
+agent-writable scratch. Establish this prerequisite before invoking Python;
+do not run the root adapter directly from an agent/operator-writable checkout.
+The manifest's source hashes detect source drift after Python starts. They do
+not authenticate the entry point, imported helpers or interpreter already
+executing with root privileges. The runner does not install a trusted copy or
+change source ownership for you.
+
 `scripts/e2e/browser_repro/managed.py` reuses the same generated application and
 CDP scenarios through the existing `contain run` launch. It does not wrap
 Chromium in the incompatible standalone strict sandbox, and leaves Chromium's
@@ -271,6 +281,12 @@ records checkout SHA, tracked diff hash and dirty status; the managed adapter
 records installation/runtime/service identity and its lifecycle report instead.
 The checkout SHA does not cryptographically prove the supplied binary was built
 from it; retain the separate build log and commit identity.
+
+A failed or interrupted run reports containment as `not_established`, even if
+earlier namespace or lifecycle observations succeeded. Those observations stay
+in the report for diagnosis; a later fixture, cleanup or cancellation failure
+cannot leave an aggregate success claim. Proxy-only runs retain their explicit
+`not_tested_proxy_only` label and never establish containment.
 
 `browser.json` separates request TTFB/body completion, navigation-to-ready,
 application readiness, input round-trip and render frame samples. Request

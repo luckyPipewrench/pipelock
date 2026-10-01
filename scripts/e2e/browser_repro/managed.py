@@ -40,6 +40,8 @@ NODE_TOOL = "browser-repro-node"
 MANAGED_SERVICE = "pipelock.service"
 HEX256 = re.compile(r"[0-9a-f]{64}\Z")
 ID128 = re.compile(r"[0-9a-f]{32}\Z")
+PROXY_SERVICE_FIELDS = "Id,LoadState,MainPID,ExecMainPID,ActiveState,SubState,InvocationID"
+JOURNAL_FIELDS = "__CURSOR,_BOOT_ID,_SYSTEMD_UNIT,_SYSTEMD_INVOCATION_ID,_PID,_TRANSPORT,_LINE_BREAK,MESSAGE"
 
 
 def same_json(left, right):
@@ -187,6 +189,8 @@ def validate_running_proxy(snapshot, manifest, config_hash):
     if (snapshot.get("active_state") != "active" or snapshot.get("sub_state") != "running"
             or type(snapshot.get("pid")) is not int or snapshot["pid"] <= 1
             or type(snapshot.get("start_ticks")) is not int or snapshot["start_ticks"] <= 0
+            or snapshot.get("unit") != MANAGED_SERVICE
+            or type(snapshot.get("exec_main_pid")) is not int or snapshot["exec_main_pid"] != snapshot["pid"]
             or snapshot.get("exe_path") != str(INSTALLED_BINARY)
             or snapshot.get("installed_sha256") != digest or snapshot.get("running_sha256") != digest
             or snapshot.get("config_sha256") != config_hash):
@@ -195,9 +199,70 @@ def validate_running_proxy(snapshot, manifest, config_hash):
     prefix = [str(INSTALLED_BINARY), "run", "--config", str(INSTALLED_CONFIG)]
     if argv != prefix + ["--capture-output", "/var/lib/pipelock/captures"]:
         raise ValueError("running managed proxy command differs from expected config")
-    if (type(snapshot.get("start_unix_ns")) is not int or type(snapshot.get("config_mtime_ns")) is not int
-            or snapshot["config_mtime_ns"] > snapshot["start_unix_ns"]):
-        raise ValueError("managed config must be installed before this proxy process starts")
+    for name in ("invocation_id", "boot_id"):
+        value = snapshot.get(name)
+        if not isinstance(value, str) or not ID128.fullmatch(value) or value == "0" * 32:
+            raise ValueError("managed proxy invocation identity is missing")
+    identity = snapshot.get("config_identity")
+    names = {"dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns"}
+    if (not isinstance(identity, dict) or set(identity) != names
+            or any(type(value) is not int or value < 0 for value in identity.values())
+            or not stat.S_ISREG(identity["mode"]) or identity["mode"] & 0o022
+            or identity["uid"] != 0 or identity["nlink"] != 1 or identity["ino"] == 0
+            or identity["size"] > 32768):
+        raise ValueError("managed config file identity is missing or untrusted")
+    validate_proxy_startup(snapshot.get("startup"), snapshot, manifest, config_hash)
+
+
+def validate_proxy_startup(record, snapshot, manifest, config_hash):
+    # These underscore fields come from journald, not the JSON written by the
+    # application. PID plus unit invocation and boot excludes another launch.
+    trusted = {"_PID": str(snapshot["pid"]), "_SYSTEMD_UNIT": MANAGED_SERVICE,
+               "_SYSTEMD_INVOCATION_ID": snapshot["invocation_id"], "_BOOT_ID": snapshot["boot_id"],
+               "_TRANSPORT": "stdout"}
+    if (not isinstance(record, dict) or any(record.get(key) != value for key, value in trusted.items())
+            or "_LINE_BREAK" in record or not isinstance(record.get("__CURSOR"), str)
+            or not re.fullmatch(r"\S{1,256}", record["__CURSOR"])
+            or not isinstance(record.get("MESSAGE"), str) or len(record["MESSAGE"].encode("utf-8")) > 2048):
+        raise ValueError("managed proxy startup journal identity is missing or ambiguous")
+    message = decode_json(record["MESSAGE"])
+    if (not isinstance(message, dict) or message.get("event") != "startup"
+            or message.get("config_hash") != config_hash or message.get("mode") != "strict"
+            or message.get("listen") != f"127.0.0.1:{manifest['proxy_port']}"):
+        raise ValueError("managed proxy startup does not witness the loaded synthetic config")
+
+
+def proxy_startup(command_probe, snapshot, manifest, config_hash):
+    # Config.Hash in the startup event hashes the bytes actually loaded by the
+    # proxy. Never infer that digest from a later read of its configuration file.
+    # Also refuse observed reload records. Their absence is NOT proof that no
+    # reload occurred: this diagnostic requires a quiescent, trusted-operator VM.
+    raw = command_probe(["/usr/bin/journalctl", "--system", "--no-pager", "--all", "--output=json",
+                         "--output-fields=" + JOURNAL_FIELDS, "--lines=3",
+                         "_SYSTEMD_UNIT=" + MANAGED_SERVICE, "_PID=" + str(snapshot["pid"]),
+                         "_SYSTEMD_INVOCATION_ID=" + snapshot["invocation_id"],
+                         "_BOOT_ID=" + snapshot["boot_id"],
+                         '--grep="event"[[:space:]]*:[[:space:]]*"(startup|config_reload)"'], "proxy-startup")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 4096:
+        raise ValueError("managed proxy startup journal exceeds its bound")
+    lines = raw.splitlines()
+    if len(lines) != 1:
+        raise ValueError("managed proxy startup journal is missing, ambiguous or contains a reload")
+    record = decode_json(lines[0])
+    validate_proxy_startup(record, snapshot, manifest, config_hash)
+    return record
+
+
+def proxy_config_identity(config_raw):
+    def identity(info):
+        return {name: getattr(info, "st_" + name) for name in
+                ("dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtime_ns", "ctime_ns")}
+    before = identity(INSTALLED_CONFIG.lstat())
+    fresh = read_regular(INSTALLED_CONFIG, 32768, root_controlled=True)
+    after = identity(INSTALLED_CONFIG.lstat())
+    if before != after or fresh != config_raw or len(fresh) != after["size"]:
+        raise ValueError("managed config changed during identity check")
+    return after
 
 
 def process_start(pid):
@@ -207,36 +272,51 @@ def process_start(pid):
     return int(fields[19])
 
 
-def proxy_snapshot(command_probe, manifest, config_raw):
-    require_root_runtime(INSTALLED_BINARY)
+def proxy_service(command_probe):
     raw = command_probe(["/usr/bin/systemctl", "show", MANAGED_SERVICE,
-                         "--property=MainPID,ActiveState,SubState"], "proxy-service")
+                         "--property=" + PROXY_SERVICE_FIELDS], "proxy-service")
     fields = {}
     for line in raw.splitlines():
         key, separator, value = line.partition("=")
         if not separator or key in fields:
             raise ValueError("ambiguous managed service observation")
         fields[key] = value
-    pid = int(fields.get("MainPID", "0"))
-    if pid <= 1:
-        raise ValueError("managed proxy is not running")
+    if (set(fields) != set(PROXY_SERVICE_FIELDS.split(",")) or fields["Id"] != MANAGED_SERVICE
+            or fields["LoadState"] != "loaded" or fields["ActiveState"] != "active"
+            or fields["SubState"] != "running" or not re.fullmatch(r"[1-9][0-9]*", fields["MainPID"])
+            or int(fields["MainPID"]) <= 1 or fields["ExecMainPID"] != fields["MainPID"]
+            or not ID128.fullmatch(fields["InvocationID"]) or fields["InvocationID"] == "0" * 32):
+        raise ValueError("managed proxy service identity is missing or not running")
+    return fields
+
+
+def proxy_snapshot(command_probe, manifest, config_raw):
+    require_root_runtime(INSTALLED_BINARY)
+    fields = proxy_service(command_probe)
+    pid = int(fields["MainPID"])
     start = process_start(pid)
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    if str(uuid.UUID(boot)) != boot or uuid.UUID(boot).int == 0:
+        raise ValueError("managed proxy boot identity is missing")
     exe_path = os.readlink(f"/proc/{pid}/exe")
     running_hash = file_sha256(Path(f"/proc/{pid}/exe"))
     if exe_path != str(INSTALLED_BINARY) or running_hash != manifest["pipelock_sha256"]:
         raise ValueError("managed service is not the prepared candidate")
     argv_raw = read_regular(Path(f"/proc/{pid}/cmdline"), 4096)
     argv = argv_raw.rstrip(b"\0").decode("utf-8").split("\0")
-    boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
-    ticks_per_second = os.sysconf("SC_CLK_TCK")
+    config_hash = hashlib.sha256(config_raw).hexdigest()
     value = {"active_state": fields.get("ActiveState"), "sub_state": fields.get("SubState"), "pid": pid,
-             "start_ticks": start, "start_unix_ns": boot * 1_000_000_000 + start * 1_000_000_000 // ticks_per_second,
+             "unit": fields["Id"], "exec_main_pid": int(fields["ExecMainPID"]),
+             "invocation_id": fields["InvocationID"], "boot_id": uuid.UUID(boot).hex, "start_ticks": start,
              "exe_path": exe_path, "argv": argv, "installed_sha256": file_sha256(INSTALLED_BINARY),
-             "running_sha256": running_hash,
-             "config_sha256": hashlib.sha256(config_raw).hexdigest(), "config_mtime_ns": INSTALLED_CONFIG.stat().st_mtime_ns}
+             "running_sha256": running_hash, "config_sha256": config_hash,
+             "config_identity": proxy_config_identity(config_raw)}
+    value["startup"] = proxy_startup(command_probe, value, manifest, config_hash)
+    if proxy_service(command_probe) != fields or proxy_config_identity(config_raw) != value["config_identity"]:
+        raise ValueError("managed proxy service or config changed during identity check")
     if process_start(pid) != start:
         raise ValueError("managed proxy process changed during identity check")
-    validate_running_proxy(value, manifest, hashlib.sha256(config_raw).hexdigest())
+    validate_running_proxy(value, manifest, config_hash)
     return value
 
 

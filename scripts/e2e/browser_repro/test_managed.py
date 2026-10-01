@@ -216,12 +216,29 @@ class ManagedJSONTests(unittest.TestCase):
 def proxy_fixture(manifest, config_hash):
     return {
         "active_state": "active", "sub_state": "running", "pid": 321,
-        "start_ticks": 2468, "start_unix_ns": 1_000_000_000_000,
-        "config_mtime_ns": 999_000_000_000, "exe_path": "/usr/local/bin/pipelock",
+        "unit": "pipelock.service", "exec_main_pid": 321, "invocation_id": "23" * 16,
+        "boot_id": "45" * 16, "start_ticks": 2468, "exe_path": "/usr/local/bin/pipelock",
+        "config_identity": {"dev": 1, "ino": 1234, "mode": stat.S_IFREG | 0o644, "uid": 0,
+                            "gid": 0, "nlink": 1, "size": 20, "mtime_ns": 999_000_000_000,
+                            "ctime_ns": 999_000_000_000},
+        "startup": startup_fixture(config_hash),
         "argv": ["/usr/local/bin/pipelock", "run", "--config", "/etc/pipelock/pipelock.yaml",
                  "--capture-output", "/var/lib/pipelock/captures"],
         "installed_sha256": manifest["pipelock_sha256"], "running_sha256": manifest["pipelock_sha256"],
         "config_sha256": config_hash,
+    }
+
+
+def startup_fixture(config_hash):
+    # Independently modeled journalctl JSON: application JSON is the MESSAGE
+    # string; underscore-prefixed identity belongs to journald's outer record.
+    return {
+        "__CURSOR": "s=owned;i=1;b=" + "45" * 16,
+        "_BOOT_ID": "45" * 16, "_SYSTEMD_UNIT": "pipelock.service",
+        "_SYSTEMD_INVOCATION_ID": "23" * 16, "_PID": "321", "_TRANSPORT": "stdout",
+        "MESSAGE": '{"level":"info","event":"startup","listen":"127.0.0.1:8888",'
+                   '"mode":"strict","version":"dev","config_hash":"' + config_hash + '",'
+                   '"message":"pipelock started"}',
     }
 
 
@@ -259,6 +276,100 @@ def fixture_evidence():
         "auth_counts": {"session_submissions": 1, "session_acceptances": 1,
                         "session_rejections": 0, "account_authenticated": 2, "account_login_required": 2},
     }
+
+
+class ManagedProxyObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.manifest = manifest_fixture()
+        self.raw = b'{"owned":"synthetic"}\n'
+        self.digest = hashlib.sha256(self.raw).hexdigest()
+        self.snapshot = proxy_fixture(self.manifest, self.digest)
+        self.snapshot["config_identity"]["size"] = len(self.raw)
+        self.fields = {"Id": "pipelock.service", "LoadState": "loaded", "MainPID": "321",
+                       "ExecMainPID": "321", "ActiveState": "active", "SubState": "running",
+                       "InvocationID": "23" * 16}
+        self.service = "\n".join(f"{key}={value}" for key, value in self.fields.items())
+        self.info = SimpleNamespace(**{"st_" + key: value for key, value in self.snapshot["config_identity"].items()})
+
+    @contextlib.contextmanager
+    def observations(self, services=None, starts=None, configs=None, infos=None, journal=None):
+        # Mock only host I/O. Exercise the real service parser, journal parser,
+        # fresh-file checks, snapshot construction and final binding validator.
+        services = iter(services if services is not None else [self.service, self.service])
+        configs = iter(configs if configs is not None else [self.raw, self.raw])
+        calls = []
+        def command_probe(command, name):
+            calls.append((command, name))
+            if command[0] == "/usr/bin/systemctl":
+                return next(services)
+            if command[0] == "/usr/bin/journalctl":
+                return journal if journal is not None else json.dumps(startup_fixture(self.digest))
+            raise AssertionError("unexpected external command")
+        def regular(path, limit, **kwargs):
+            if path == managed.INSTALLED_CONFIG:
+                self.assertEqual(limit, 32768)
+                self.assertEqual(kwargs, {"root_controlled": True})
+                return next(configs)
+            self.assertEqual(path, Path("/proc/321/cmdline"))
+            return ("\0".join(self.snapshot["argv"]) + "\0").encode()
+        def text(path, *args, **kwargs):
+            self.assertEqual(path, Path("/proc/sys/kernel/random/boot_id"))
+            return "45454545-4545-4545-4545-454545454545\n"
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(managed, "require_root_runtime"))
+            stack.enter_context(patch.object(managed, "process_start", side_effect=starts or [2468, 2468]))
+            stack.enter_context(patch.object(managed.os, "readlink", return_value="/usr/local/bin/pipelock"))
+            stack.enter_context(patch.object(managed, "file_sha256", return_value=self.manifest["pipelock_sha256"]))
+            stack.enter_context(patch.object(managed, "read_regular", side_effect=regular))
+            stack.enter_context(patch.object(Path, "read_text", text))
+            stack.enter_context(patch.object(Path, "lstat", side_effect=infos or [self.info] * 4))
+            # A clock reconstruction would read forbidden-in-this-test host
+            # data or call sysconf, so the old precision bug cannot hide here.
+            stack.enter_context(patch.object(managed.os, "sysconf", side_effect=AssertionError("no clock reconstruction")))
+            yield command_probe, calls
+
+    def test_snapshot_binds_real_journal_parser_and_rechecks_service_process_and_file(self):
+        with self.observations() as (probe, calls):
+            value = managed.proxy_snapshot(probe, self.manifest, self.raw)
+        self.assertEqual(value, self.snapshot)
+        self.assertEqual([name for _, name in calls], ["proxy-service", "proxy-startup", "proxy-service"])
+
+    def test_service_parser_rejects_missing_duplicate_stale_and_malformed_identity(self):
+        self.assertEqual(managed.proxy_service(Mock(return_value=self.service)), self.fields)
+        invalid = ["", self.service + "\nMainPID=321", self.service + "\nmalformed"]
+        for key in self.fields:
+            invalid.append("\n".join(f"{name}={value}" for name, value in self.fields.items() if name != key))
+        for key, value in (("Id", "other.service"), ("LoadState", "not-found"), ("ActiveState", "inactive"),
+                           ("SubState", "exited"), ("MainPID", "1"), ("MainPID", "true"), ("MainPID", "0321"),
+                           ("ExecMainPID", "322"), ("InvocationID", "0" * 32), ("InvocationID", "bad")):
+            changed = {**self.fields, key: value}
+            invalid.append("\n".join(f"{name}={entry}" for name, entry in changed.items()))
+        for index, raw in enumerate(invalid):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                managed.proxy_service(Mock(return_value=raw))
+
+    def test_snapshot_rejects_restart_reused_pid_or_changed_file_during_observation(self):
+        changed_service = self.service.replace("InvocationID=" + "23" * 16, "InvocationID=" + "67" * 16)
+        changed_info = SimpleNamespace(**{**vars(self.info), "st_ctime_ns": self.info.st_ctime_ns + 1})
+        cases = (
+            {"services": [self.service, changed_service]},
+            {"starts": [2468, 2469]},
+            {"configs": [b"different bytes"]},
+            {"configs": [self.raw, b"different bytes"]},
+            {"infos": [self.info, changed_info]},
+            {"infos": [self.info, self.info, changed_info, changed_info]},
+            {"journal": json.dumps(startup_fixture("56" * 32))},
+        )
+        for index, options in enumerate(cases):
+            with self.subTest(index=index), self.observations(**options) as (probe, _), self.assertRaises(ValueError):
+                managed.proxy_snapshot(probe, self.manifest, self.raw)
+
+    def test_each_snapshot_requires_a_fresh_startup_observation(self):
+        with self.observations() as (probe, _):
+            first = managed.proxy_snapshot(probe, self.manifest, self.raw)
+        self.assertEqual(first["startup"]["_SYSTEMD_INVOCATION_ID"], "23" * 16)
+        with self.observations(journal="") as (probe, _), self.assertRaisesRegex(ValueError, "journal is missing"):
+            managed.proxy_snapshot(probe, self.manifest, self.raw)
 
 
 class ManagedBindingTests(unittest.TestCase):
@@ -303,8 +414,9 @@ class ManagedBindingTests(unittest.TestCase):
             ("argv", original["argv"][:4]), ("argv", original["argv"] + ["--listen", "0.0.0.0:8888"]),
             ("argv", ["/usr/bin/pipelock", *original["argv"][1:]]),
             ("argv", [*original["argv"][:-1], "/var/lib/pipelock/other"]),
-            ("start_unix_ns", True), ("config_mtime_ns", True),
-            ("config_mtime_ns", original["start_unix_ns"] + 1),
+            ("unit", "unrelated.service"), ("exec_main_pid", True), ("exec_main_pid", 322),
+            ("invocation_id", "0" * 32), ("invocation_id", "invalid"), ("boot_id", True),
+            ("config_identity", {}), ("startup", None),
         )
         for key, value in changes:
             changed = copy.deepcopy(original)
@@ -314,6 +426,87 @@ class ManagedBindingTests(unittest.TestCase):
         for key in original:
             changed = copy.deepcopy(original)
             del changed[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                managed.validate_running_proxy(changed, manifest, config_hash)
+
+    def test_startup_digest_accepts_valid_config_despite_coarse_boot_time_estimate(self):
+        # Inert times only: btime loses 800ms, 100Hz starttime loses another 5ms.
+        # The config was installed 100ms before the actual synthetic process.
+        boot_ns, elapsed_ns = 1_000_800_000_000, 20_025_000_000
+        start_ticks = elapsed_ns * 100 // 1_000_000_000
+        estimated_start = (boot_ns // 1_000_000_000) * 1_000_000_000 + start_ticks * 10_000_000
+        actual_start = boot_ns + elapsed_ns
+        mtime = actual_start - 100_000_000
+        self.assertEqual(actual_start - estimated_start, 805_000_000)
+        self.assertGreater(mtime, estimated_start)
+        manifest = manifest_fixture()
+        config_hash = "34" * 32
+        snapshot = proxy_fixture(manifest, config_hash)
+        snapshot["start_ticks"] = start_ticks
+        snapshot["config_identity"].update(mtime_ns=mtime, ctime_ns=mtime)
+        managed.validate_running_proxy(snapshot, manifest, config_hash)
+        # Current disk bytes matching the manifest never excuse another digest
+        # in the actual process's startup witness.
+        snapshot["startup"] = startup_fixture("56" * 32)
+        with self.assertRaisesRegex(ValueError, "loaded synthetic config"):
+            managed.validate_running_proxy(snapshot, manifest, config_hash)
+
+    def test_startup_parser_requires_complete_unique_trusted_journal_metadata(self):
+        manifest = manifest_fixture()
+        config_hash = "34" * 32
+        snapshot = proxy_fixture(manifest, config_hash)
+        record = startup_fixture(config_hash)
+        valid = json.dumps(record)
+        probe = Mock(return_value=valid)
+        self.assertEqual(managed.proxy_startup(probe, snapshot, manifest, config_hash), record)
+        command, name = probe.call_args.args
+        self.assertEqual(name, "proxy-startup")
+        self.assertEqual(command[0], "/usr/bin/journalctl")
+        for part in ("--system", "--no-pager", "--all", "--output=json", "--lines=3",
+                     "_PID=321", "_SYSTEMD_UNIT=pipelock.service",
+                     "_SYSTEMD_INVOCATION_ID=" + "23" * 16, "_BOOT_ID=" + "45" * 16):
+            self.assertIn(part, command)
+        invalid = ["", valid + "\n" + valid, valid[:-1], "[]", "null", "false",
+                   valid[:-1] + ',"_PID":"321"}', " " * 4097,
+                   json.dumps({**record, "MESSAGE": '{"event":"startup","event":"startup"}'}),
+                   json.dumps({**record, "MESSAGE": "[]"})]
+        for field in record:
+            missing = copy.deepcopy(record)
+            del missing[field]
+            invalid.append(json.dumps(missing))
+        for key, value in (("_PID", "322"), ("_PID", 321), ("_PID", ["321"]),
+                           ("_SYSTEMD_UNIT", "other.service"), ("_SYSTEMD_INVOCATION_ID", "67" * 16),
+                           ("_BOOT_ID", "67" * 16), ("_TRANSPORT", "syslog"),
+                           ("_LINE_BREAK", "line-max"), ("_LINE_BREAK", "eof"),
+                           ("__CURSOR", ""), ("__CURSOR", "bad cursor"), ("MESSAGE", [65, 66]),
+                           ("MESSAGE", " " * 2049)):
+            invalid.append(json.dumps({**record, key: value}))
+        for key, value in (("event", "config_reload"), ("config_hash", "56" * 32),
+                           ("mode", "balanced"), ("listen", "127.0.0.1:8889")):
+            message = json.loads(record["MESSAGE"])
+            message[key] = value
+            invalid.append(json.dumps({**record, "MESSAGE": json.dumps(message)}))
+        for index, raw in enumerate(invalid):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                managed.proxy_startup(Mock(return_value=raw), snapshot, manifest, config_hash)
+        with self.assertRaisesRegex(RuntimeError, "journal unavailable"):
+            managed.proxy_startup(Mock(side_effect=RuntimeError("journal unavailable")), snapshot, manifest, config_hash)
+
+    def test_config_file_identity_requires_root_owned_stable_regular_file_fields(self):
+        manifest = manifest_fixture()
+        config_hash = "34" * 32
+        original = proxy_fixture(manifest, config_hash)
+        changes = (("dev", True), ("ino", 0), ("mode", stat.S_IFLNK | 0o777),
+                   ("mode", stat.S_IFREG | 0o666), ("uid", 1000), ("gid", False),
+                   ("nlink", 2), ("size", 32769), ("mtime_ns", True), ("ctime_ns", -1))
+        for key, value in changes:
+            changed = copy.deepcopy(original)
+            changed["config_identity"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                managed.validate_running_proxy(changed, manifest, config_hash)
+        for key in original["config_identity"]:
+            changed = copy.deepcopy(original)
+            del changed["config_identity"][key]
             with self.subTest(missing=key), self.assertRaises(ValueError):
                 managed.validate_running_proxy(changed, manifest, config_hash)
 

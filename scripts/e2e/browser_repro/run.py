@@ -68,7 +68,11 @@ class _ReportInterrupted(Exception):
 
 
 def write_final_report(path, report, cancellation=None):
-    """Failed or interrupted diagnostics cannot retain a success claim."""
+    """Reconcile cancellation through the post-publication checkpoint.
+
+    Signals observed after that final checkpoint are after report completion;
+    there is no unbounded wait for further signals during process shutdown.
+    """
     def normalize():
         if cancellation is not None and cancellation.signum is not None:
             report["status"] = "fail"
@@ -82,13 +86,25 @@ def write_final_report(path, report, cancellation=None):
                 and report.get("interrupted_signal") != cancellation.signum):
             raise _ReportInterrupted()
 
+    published = False
     normalize()
     try:
         write_json(path, report, before_replace=check_interruption)
+        published = True
+        check_interruption()
     except _ReportInterrupted:
-        # Cancellation is sticky: one retry publishes only a failed record.
-        # The abandoned candidate never replaced the incomplete snapshot.
+        published_complete = published and report.get("status") == "complete"
         normalize()
+        if published_complete:
+            # A handler can run inside os.replace, after the precommit check.
+            # Invalidate that candidate before the one corrective write: a
+            # failed correction must not leave its stale positive claim saved.
+            # Already-failed records remain available if correction fails.
+            try:
+                path.unlink()
+            except OSError as error:
+                raise OSError(f"cancelled summary invalidation failed; {path.name} may retain stale completion: {error}") from error
+        # Cancellation is sticky: one retry publishes only a failed record.
         write_json(path, report)
 
 

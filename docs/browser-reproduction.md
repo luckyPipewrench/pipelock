@@ -164,13 +164,16 @@ an account/profile carrying real credentials. The fixed managed service/socket
 names do not support a parallel isolated test instance on a shared host.
 Prerequisites for the adapter are:
 
-- systemd 254+, `systemctl`, `busctl`, cgroup v2 and the complete existing contain
+- systemd 254+, `systemctl`, `busctl`, `journalctl`, cgroup v2 and the complete existing contain
   installation prerequisites, with the normal network/user/proxy checks passing
 - The exact candidate installed at `/usr/local/bin/pipelock`, pinned by the
   ordinary installer, and running as `pipelock.service`
 - The exact generated JSON policy installed at `/etc/pipelock/pipelock.yaml`;
   no extra destinations, overrides or detection exceptions. The proxy must have
-  started after that file was installed; a stale running process is refused
+  loaded those bytes, witnessed by its retained JSON startup record in the local
+  system journal. The record must identify the current boot, service, MainPID and
+  systemd InvocationID and contain the exact loaded config digest. Missing,
+  truncated, ambiguous or mismatched journal evidence is refused
 - The installed config, tool registry, workspace inventory and integrity pin,
   including all parent directories, must be root-owned and not group- or
   world-writable. Ordinary root-owned `0644` policy files are accepted
@@ -191,12 +194,22 @@ Prerequisites for the adapter are:
   directory, and a new root-private evidence output outside the agent workspace
 - No existing process running as `pipelock-agent`. The adapter is exclusive to
   this disposable diagnostic VM, not a concurrent agent session
+- A quiescent installation: after installing the generated policy and starting
+  the proxy, the trusted operator must keep the config and service policy
+  unchanged through diagnostic completion. Do not run concurrent edits, reloads,
+  service changes or other policy-management jobs
 
 The adapter does not automate these host changes. A manifest acknowledgment is
 an operator declaration of fresh-host provenance, not independent proof that a
 machine never held secrets. Exact config, registry, workspace and runtime checks
 reject mismatches before the browser launch. A refused setup must be corrected
 through the authorized installation procedure, never by skipping preflight.
+Startup evidence proves which config bytes that process loaded; fresh file,
+service and process checks bracket each observation and the diagnostic. This is
+not continuous runtime attestation. Observed reload records are refused, but
+their absence does not prove no reload occurred: journal delivery can lag or
+drop records. The trusted operator's quiescent-host prerequisite remains
+necessary. These source-level checks do not replace acceptance on the capable VM.
 The unchanged contain preflight includes an operator HTTPS reachability control
 to `example.com` and a denied TEST-NET-1 direct-egress control; browser traffic
 itself only targets the owned generated fixture.
@@ -314,14 +327,20 @@ from it; retain the separate build log and commit identity.
 A failed or interrupted run reports containment as `not_established`, even if
 earlier namespace or lifecycle observations succeeded. Those observations stay
 in the report for diagnosis; a later fixture, cleanup or cancellation failure
-cannot leave an aggregate success claim. Proxy-only runs retain their explicit
+invalidates the runner's aggregate success. Proxy-only runs retain their explicit
 `not_tested_proxy_only` label and never establish containment.
 
 JSON publication prepares a private temporary file in the same directory,
 completes its write, flush and close, then atomically replaces the destination.
-A preparation or replacement failure preserves the prior incomplete summary.
-Cancellation is checked after workspace cleanup and again before the terminal
-publication, so an interruption during cleanup or file preparation remains failed.
+An initial write or replacement failure leaves any previously saved summary
+unchanged.
+Cancellation is checked after workspace cleanup, before terminal publication and
+once after publication returns. This last check is the completion boundary. A
+cancellation observed during publication removes that invocation's newly saved
+positive summary before attempting one failed replacement; existing failure
+records remain available. If removal itself is denied, the runner exits with an
+error and warns that `summary.json` may retain stale completion. Acceptance
+requires a successful runner exit as well as its complete, matching summary.
 
 Both runners read child artifacts through bounded, descriptor-relative opens
 that refuse symlinks in any path component, nonregular files, multiple hard

@@ -243,7 +243,7 @@ A new contract is not enforced the moment you ratify it. Pipelock's recommended 
 1. **Observe ≥7 days of representative traffic** before compiling. Short windows produce thin-sample rules.
 2. **Run the candidate in shadow ≥3 days.** Watch the shadow-delta report for `would_have_blocked` events that match real legitimate traffic. Adjust `learn.inference.floors` or `accept_tail` annotations as needed.
 3. **Ratify per rule.** Sign each rule individually. The operator-facing review tells you which rules cleared the confidence floor and which are thin-sample.
-4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Once the swap commits, the runtime picks up the new active manifest via fsnotify (100ms debounce, 2s maximum-debounce cap, fail-closed on initial reload, missed-promote recovery via accepted-history chain walk) and starts enforcing it on every gated transport. See ["Live enforcement"](#live-enforcement) below.
+4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Promoting writes the manifest to the store but doesn't change a running process. A process enforces the promoted manifest once it loads the store: restart `pipelock run` or `pipelock mcp proxy` to apply it. A running `pipelock run` also rebuilds its contract loader, and so reads the current manifest, whenever its config reloads (SIGHUP or a config file change). A running `pipelock mcp proxy` loads the manifest once at startup and never rereads it. Loading is fail-closed (an unreadable manifest stops startup or rejects the reload rather than falling back to no contract). A loader that already holds a manifest recovers a skipped promotion on reload by walking the accepted-history chain; a fresh start reads and validates `active.json` directly. See ["Live enforcement"](#live-enforcement) below.
 5. **Watch the receipt stream.** A spike in `contract_drift` receipts means the contract is over-fit. A spike in `opportunity_missing` health alerts means parent opportunity dropped (the agent stopped doing the thing the rule covers); auto-demotion is BLOCKED in this case so a benign change doesn't silently weaken the contract.
 
 ### Ratify safety guard
@@ -286,8 +286,8 @@ tar c -C /etc/pipelock/contracts/store \
     'cat > /tmp/store.tar && tar xf /tmp/store.tar -C /active/'
 
 # 4. Delete the shuttle pod. Pipelock pods will pick up the new
-#    active.json on next start (or on fsnotify reload if they are
-#    already running with the PVC attached).
+#    active.json on next start. Pods that are already running keep the
+#    manifest they loaded until they restart or reload their config.
 kubectl delete pod -n <ns> shuttle
 ```
 
@@ -330,7 +330,7 @@ Every contract decision (allow OR block) emits an EvidenceReceipt v2 envelope wi
 
 **Active-manifest reload:**
 
-The runtime watches the active-manifest store via fsnotify with a 100ms debounce window and a 2s maximum-debounce cap. Reload is fail-closed on initial load (an unreadable manifest blocks rather than silently falling back to no-contract). A missed promote (crash between `promote-intent` and `promote-committed`) is recovered by walking the accepted-history chain on next reload, so the runtime cannot strand on a stale manifest.
+Pipelock reads the active manifest when it builds the contract loader, and it doesn't watch the store for changes. `pipelock mcp proxy` builds the loader once at startup, so a manifest promoted afterwards applies only after a restart. `pipelock run` builds a new loader at startup and again on every config reload (SIGHUP or a config file change), so either one picks up a manifest promoted in the meantime. A config reload that fails to build the loader is rejected and the previous loader stays in place. Loading is fail-closed on startup (an unreadable manifest stops the process rather than running with no contract). A missed promote (crash between `promote-intent` and `promote-committed`) is recovered on the next reload of a loader that already holds a manifest, by walking the accepted-history chain. A fresh start reads and validates `active.json` directly and doesn't run that walk.
 
 ## Anti-patterns
 

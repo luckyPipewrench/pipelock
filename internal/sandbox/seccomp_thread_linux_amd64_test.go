@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // These tests evaluate namespace-denial decisions without issuing privileged
@@ -170,7 +172,7 @@ func TestSeccomp_StrictNativePthread(t *testing.T) {
 		t.Skip("cc is required for the native pthread regression")
 	}
 	binary := filepath.Join(t.TempDir(), "native-thread")
-	ctx, cancel := context.WithTimeout(t.Context(), seccompChildTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(seccompChildTimeout))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, compiler, "-pthread", "-Wall", "-Wextra", "-Werror", "-o", binary, "testdata/native_thread.c")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -245,7 +247,7 @@ func (out *nativeThreadIdentityOutput) Write(p []byte) (int, error) {
 }
 
 func queryNativeThreadNode(ctx context.Context, candidate string, env []string, dir string) (nativeThreadNodeIdentity, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, testwait.Deadline(5*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, candidate, "-p", nativeThreadNodeQuery)
 	cmd.Env, cmd.Dir, cmd.WaitDelay = env, dir, time.Second
@@ -387,7 +389,7 @@ func checkStrictNativeThread(t *testing.T, binary string, args []string) {
 			name = "strict_seccomp"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), seccompChildTimeout)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(seccompChildTimeout))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, args...)
 			cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}

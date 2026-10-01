@@ -342,3 +342,56 @@ func TestSweepStaleSpillDirs(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundedRunStoreLookupReadsOnlyItsRun(t *testing.T) {
+	s := &boundedRunStore{}
+	t.Cleanup(func() { _ = s.close() })
+	const runs = runCacheLimit + 40
+	for i := range runs {
+		if err := s.write(storedRun{Run: fmt.Sprintf("run-%03d", i), Open: fmt.Sprintf("open-%03d", i)}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if s.dir == "" {
+		t.Fatal("store never spilled")
+	}
+	// Remove an unrelated run's file. A lookup for another run must not need
+	// the whole set, but the final audit must still catch the deletion.
+	if err := os.Remove(s.path("run-001")); err != nil {
+		t.Fatal(err)
+	}
+	s.cache = nil
+	open, _, found, err := s.read("run-090")
+	if err != nil || !found || open != "open-090" {
+		t.Fatalf("lookup touched more than its own run: open=%q found=%v err=%v", open, found, err)
+	}
+	if err := s.verify(); err == nil {
+		t.Fatal("full-set audit missed a deleted lifecycle identity")
+	}
+}
+
+func TestBoundedRunStoreLookupRejectsRolledBackFile(t *testing.T) {
+	s := &boundedRunStore{}
+	t.Cleanup(func() { _ = s.close() })
+	for i := range runCacheLimit + 2 {
+		if err := s.write(storedRun{Run: fmt.Sprintf("run-%03d", i), Open: "o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := s.path("run-065")
+	old, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(storedRun{Run: "run-065", Open: "o", Closed: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the older, authentically MAC'd record: a rollback from closed to open.
+	if err := os.WriteFile(path, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cache = nil
+	if _, _, _, err := s.read("run-065"); err == nil {
+		t.Fatal("lookup accepted a rolled-back lifecycle record")
+	}
+}

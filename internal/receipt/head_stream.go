@@ -130,6 +130,11 @@ type boundedRunStore struct {
 	key   [32]byte
 	root  [32]byte
 	files uint64
+	// digests holds the SHA-256 of each spilled run's current file: 32 bytes
+	// per process run (not per receipt). A lookup reads only that run's file
+	// and must match this digest, so a rolled-back or swapped file is caught
+	// without rescanning the whole spill directory on every miss and write.
+	digests map[string][32]byte
 }
 
 type diskRun struct {
@@ -166,14 +171,21 @@ func (s *boundedRunStore) read(run string) (string, bool, bool, error) {
 	if s.dir == "" {
 		return "", false, false, nil
 	}
-	r, _, found, err := s.scan(run)
+	want, ok := s.digests[run]
+	if !ok {
+		// Never written: an unexpected file for this run is an insertion,
+		// which the full-set audit in verify rejects.
+		return "", false, false, nil
+	}
+	r, raw, err := s.load(s.path(run))
 	if err != nil {
 		return "", false, false, err
 	}
-	if found {
-		s.remember(r)
+	if sha256.Sum256(raw) != want || r.Run != run {
+		return "", false, false, errors.New("session lifecycle state set changed")
 	}
-	return r.Open, r.Closed, found, nil
+	s.remember(r)
+	return r.Open, r.Closed, true, nil
 }
 
 func (s *boundedRunStore) write(r storedRun) error {
@@ -216,25 +228,37 @@ func (s *boundedRunStore) persist(r storedRun) error {
 	if err != nil {
 		return err
 	}
-	_, old, _, err := s.scan(r.Run)
-	if err != nil {
-		return err
+	if prev, ok := s.digests[r.Run]; ok {
+		// Overwrite only the exact file this store last wrote. A deleted or
+		// altered file must not be silently replaced, which would erase the
+		// evidence that it changed.
+		_, current, err := s.load(s.path(r.Run))
+		if err != nil {
+			return err
+		}
+		if sha256.Sum256(current) != prev {
+			return errors.New("session lifecycle state set changed")
+		}
 	}
 	if err := writeSpillFile(s.dir, s.path(r.Run), raw); err != nil {
 		return err
 	}
-	if old == nil {
-		s.files++
-	} else {
-		s.xorHash(old)
+	if s.digests == nil {
+		s.digests = make(map[string][32]byte)
 	}
-	s.xorHash(raw)
+	if old, ok := s.digests[r.Run]; ok {
+		s.xorDigest(old)
+	} else {
+		s.files++
+	}
+	digest := sha256.Sum256(raw)
+	s.xorDigest(digest)
+	s.digests[r.Run] = digest
 	s.remember(r)
 	return nil
 }
 
-func (s *boundedRunStore) xorHash(raw []byte) {
-	hash := sha256.Sum256(raw)
+func (s *boundedRunStore) xorDigest(hash [32]byte) {
 	for i := range s.root {
 		s.root[i] ^= hash[i]
 	}
@@ -266,19 +290,19 @@ func (s *boundedRunStore) load(path string) (storedRun, []byte, error) {
 	return r, raw, nil
 }
 
-// Authenticate every lookup, then audit the disk set before releasing a
-// summary. The in-memory count and multiset digest detect removed/replaced
-// identities too: an absent spill file must not hide a duplicate session_open.
-// Directory enumeration is batched so the audit retains no lifecycle history.
+// Authenticate every lookup against its recorded digest, then audit the whole
+// disk set once before releasing a summary. The in-memory count and multiset
+// digest detect removed, replaced or inserted identities too: an absent or
+// extra spill file must not hide a duplicate session_open.
 func (s *boundedRunStore) verify() error {
 	_, _, _, err := s.scan("")
 	return err
 }
 
-// A cache miss is answered only from a complete authenticated set snapshot.
+// scan audits the complete spill set against the in-memory count and digest.
 // MAC alone is insufficient: an older authentic record could otherwise roll a
-// closed run back to open between lookups. Hold only the matching record while
-// verifying the count/digest, then release its value to the lifecycle verifier.
+// closed run back to open. Lookups use the per-run digest; this full pass runs
+// once, from verify, before a checkpoint is released.
 func (s *boundedRunStore) scan(run string) (storedRun, []byte, bool, error) {
 	if s.dir == "" {
 		return storedRun{}, nil, false, nil

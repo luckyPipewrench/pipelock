@@ -26,7 +26,7 @@ exit status 1
 
 Check the setting with `sysctl kernel.apparmor_restrict_unprivileged_userns`. A value of `1` means the restriction is on. There are two ways to let the sandbox start, and each one changes host policy:
 
-- Give the `pipelock` binary an AppArmor profile that allows the `userns` permission. The exception covers that binary only, and the rest of the host keeps the restriction.
+- Give the `pipelock` binary an AppArmor profile that allows the `userns` permission. The rest of the host keeps the restriction, but AppArmor confinement carries across `exec`, so the agent the sandbox launches runs under the same profile and gets the same permission unless the profile moves it to a separate profile when it starts.
 - Set `kernel.apparmor_restrict_unprivileged_userns=0` with `sysctl`. This lifts the restriction for every unprivileged program on the host, which gives up a hardening Ubuntu applies against user-namespace kernel exploits, so use it only on a machine you accept that for (a disposable test VM, for example).
 
 ## Advisory network override

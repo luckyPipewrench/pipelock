@@ -9,8 +9,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 const (
@@ -191,4 +200,59 @@ func innerReverseTransport(rt http.RoundTripper) (*http.Transport, bool) {
 	}
 	base, ok := stall.base.(*http.Transport)
 	return base, ok
+}
+
+// TestReverseCleanResponseRelaysBenignTrailers pins that the reverse proxy's
+// private copy of the upstream response still carries the trailers the
+// transport records at EOF: an announced trailer and one sent without an
+// announcement both reach the client, while a forged Pipelock-namespace
+// trailer is still stripped.
+func TestReverseCleanResponseRelaysBenignTrailers(t *testing.T) {
+	cfg := shieldRewriteMarkerConfig()
+	cfg.BrowserShield.Enabled = false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Trailer", "X-Checksum, "+shieldRewriteHeader)
+		_, _ = w.Write([]byte("ordinary body"))
+		w.Header().Set("X-Checksum", "abc123")
+		w.Header().Set(http.TrailerPrefix+"X-Late", "late-value")
+		w.Header().Set(shieldRewriteHeader, "trap=7")
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxy.URL, nil)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	resp, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatalf("reverse request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ordinary body" {
+		t.Fatalf("body = %q", body)
+	}
+	if got := resp.Trailer.Get("X-Checksum"); got != "abc123" {
+		t.Fatalf("announced trailer X-Checksum = %q, want relayed", got)
+	}
+	if got := resp.Trailer.Get("X-Late"); got != "late-value" {
+		t.Fatalf("unannounced trailer X-Late = %q, want relayed", got)
+	}
+	if got := resp.Trailer.Get(shieldRewriteHeader); got != "" {
+		t.Fatalf("forged marker trailer = %q, want stripped", got)
+	}
 }

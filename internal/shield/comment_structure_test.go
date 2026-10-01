@@ -122,6 +122,13 @@ func TestCommentTrapProcessingInstructions(t *testing.T) {
 	if got != want || hits != 1 {
 		t.Fatalf("content=%q hits=%d; want %q hits=1", got, hits, want)
 	}
+	// A malformed processing instruction must not stop filtering later tokens.
+	in = `<?meta ><root><!-- instruction --></root>`
+	want = `<?meta ><root></root>`
+	got, hits = NewEngine(nil).stripCommentTraps(in, true)
+	if got != want || hits != 1 {
+		t.Fatalf("content=%q hits=%d; want %q hits=1", got, hits, want)
+	}
 }
 
 func TestCommentTrapSVGForeignContent(t *testing.T) {

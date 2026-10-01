@@ -679,16 +679,17 @@ func (e *Engine) stripCommentTraps(doc string, xml bool) (string, int) {
 			// The HTML tokenizer ends bogus comments at >, but XML processing
 			// instructions end at ?> and their contents are not comment markup.
 			end := strings.Index(doc[offset:], "?>")
-			if end < 0 {
-				out.WriteString(doc[offset:])
-				return out.String(), hits
+			if end >= 0 {
+				end += offset + 2
+				out.WriteString(doc[offset:end])
+				offset = end
+				z = html.NewTokenizer(strings.NewReader(doc[offset:]))
+				z.AllowCDATA(true)
+				continue
 			}
-			end += offset + 2
-			out.WriteString(doc[offset:end])
-			offset = end
-			z = html.NewTokenizer(strings.NewReader(doc[offset:]))
-			z.AllowCDATA(true)
-			continue
+			// Preserve this malformed PI span, but keep filtering subsequent
+			// tokens instead of granting the rest of the document a bypass.
+			typ = html.TextToken
 		}
 		offset += len(raw)
 		if xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken) {

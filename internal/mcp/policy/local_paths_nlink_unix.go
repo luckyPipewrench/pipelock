@@ -19,7 +19,7 @@ func mayHaveOtherLinks(info os.FileInfo) bool {
 		return true
 	}
 	// Nlink is uint64 on some platforms and uint32 on others.
-	return uint64(st.Nlink) > 1 //nolint:unconvert // width differs per platform
+	return widen(st.Nlink) > 1
 }
 
 // onDifferentDevice reports whether a and b are known to be on different
@@ -32,7 +32,7 @@ func onDifferentDevice(a, b os.FileInfo) bool {
 		return false
 	}
 	// Dev is uint64 on some platforms and int32 on others.
-	return uint64(sa.Dev) != uint64(sb.Dev) //nolint:unconvert // width differs per platform
+	return widen(sa.Dev) != widen(sb.Dev)
 }
 
 // fileID returns the device and inode of info.
@@ -45,5 +45,12 @@ func fileID(info os.FileInfo) (fileKey, bool) {
 		return fileKey{}, false
 	}
 	// Dev and Ino widths differ per platform.
-	return fileKey{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true //nolint:unconvert // width differs per platform
+	return fileKey{dev: widen(st.Dev), ino: widen(st.Ino)}, true
+}
+
+// widen converts a stat field to uint64. Stat_t field widths differ across
+// platforms (Nlink and Dev are 32-bit on some), so a plain conversion is a
+// no-op on some builds and needed on others.
+func widen[T ~uint16 | ~uint32 | ~uint64 | ~int32 | ~int64](v T) uint64 {
+	return uint64(v)
 }

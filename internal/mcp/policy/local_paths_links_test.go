@@ -25,10 +25,16 @@ func setDifferentDevice(t *testing.T, fn func(a, b os.FileInfo) bool) {
 
 func chmodForTest(t *testing.T, dir string, mode os.FileMode) {
 	t.Helper()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Restore the original mode so cleanup can remove the directory.
+	original := info.Mode().Perm()
 	if err := os.Chmod(dir, mode); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // a directory needs search permission back so cleanup can remove it
+	t.Cleanup(func() { _ = os.Chmod(dir, original) })
 }
 
 // TestLocalPathIdentity_UnreadableOwnDirectoryFailsClosed is the case an owner

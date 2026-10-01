@@ -633,10 +633,7 @@ func TestLocalPathIdentity_HardLinkScanFailsClosed(t *testing.T) {
 		hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
 		f.write(t, filepath.Join(f.ws, "solo.txt"))
 		ssh := filepath.Join(f.home, ".ssh")
-		if err := os.Chmod(ssh, 0o000); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(ssh, 0o700) }) //nolint:gosec // a directory needs search permission back so cleanup can remove it
+		chmodForTest(t, ssh, 0o000)
 
 		// The directory is on the same filesystem, so it could hold the file and
 		// cannot be listed to say otherwise. This user owns both; ownership does

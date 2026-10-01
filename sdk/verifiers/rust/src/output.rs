@@ -195,10 +195,11 @@ pub fn emit_chain_set(report: &ChainSetReport, json: bool) -> Result<()> {
         "RESTART CONTINUITY FAILED"
     };
     println!(
-        "{label}: base \"{}\": {} chain(s), {} linked, {} unlinked, {} link finding(s)",
+        "{label}: base \"{}\": {} chain(s), {} linked, {} attested discontinuity(s), {} unlinked, {} finding(s)",
         report.base,
         c.chain_count,
         c.linked.len(),
+        c.discontinuities.len(),
         c.unlinked.len(),
         c.findings.len()
     );
@@ -206,6 +207,15 @@ pub fn emit_chain_set(report: &ChainSetReport, json: bool) -> Result<()> {
         println!(
             "  linked:   {} continues {} at seq {} ({})",
             l.session, l.predecessor_session, l.predecessor_tail_seq, l.trust
+        );
+    }
+    for discontinuity in &c.discontinuities {
+        println!(
+            "  discontinuity: {} continues {} across {} at byte {} (attested)",
+            discontinuity.session,
+            discontinuity.predecessor_session,
+            discontinuity.shard,
+            discontinuity.damage_offset
         );
     }
     for s in &c.unlinked {

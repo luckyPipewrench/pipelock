@@ -8,11 +8,11 @@ The seal is an observation signed by the successor run's operator key. It can't 
 
 The seal uses a new `recovery_seal` record in the existing exclusive predecessor claim slot, `chain-link-<predecessor-session>.json`. This preserves create-if-absent publication and the one-successor rule. The existing `ChainLink` v1 schema keeps its meaning and describes continuous receipt history. A separate filename would create a second predecessor claim, while adding damage fields to `ChainLink` would blur continuous history with an observed discontinuity.
 
-New Go, TypeScript, and Rust directory verifiers recognize the seal and report `attested_discontinuity` separately from a continuous link. A valid seal doesn't make the evidence healthy because the retained shard remains damaged and verification exits unsuccessfully. Missing seals remain ordinary unlinked runs. Invalid, tampered, misplaced, or replayed seals don't attach. Older strict link readers reject the unfamiliar kind or fields and can't report the recovery as clean; operators should expect a link finding or an unlinked run. Mixed-version deployments need no coordinated rollout because recovery evidence is never silently accepted as a continuous link.
+New Go, TypeScript, and Rust directory verifiers recognize the seal and report `attested_discontinuity` separately from a continuous link. A valid seal doesn't make the evidence healthy because the retained shard remains damaged and verification exits unsuccessfully. Missing seals remain ordinary unlinked runs. Invalid, tampered, misplaced, or replayed seals don't attach. Older strict link readers reject the unfamiliar kind or fields and can't report the recovery as clean; operators should expect a link finding or an unlinked run. Mixed-version deployments can roll out writers and readers independently, but older directory readers will reject recovery artifacts until upgraded. Standalone receipt verification does not inspect directory continuity and cannot establish recovery across runs.
 
 ## Wire format
 
-The JSON object has these fields in this exact order. Every field is required and non-null, including `signature`.
+The signed projection serializes these fields in this exact order; input JSON field order is not significant. Every field is required and non-null, including `signature`.
 
 1. `kind` (string): `recovery_seal`.
 2. `version` (integer): `1`.
@@ -23,18 +23,18 @@ The JSON object has these fields in this exact order. Every field is required an
 7. `damage_offset` (integer): Byte offset at the end of the complete newline-terminated prefix.
 8. `last_good_seq` (integer): Recorder sequence number at the complete-prefix end; zero for an empty prefix.
 9. `last_good_hash` (string): Recorder hash at the complete-prefix end; `genesis` for an empty prefix.
-10. `predecessor_tail_seq` (integer): Last complete receipt-chain sequence; zero when no complete receipt exists.
-11. `predecessor_tail_hash` (string): Hash of the last complete receipt; `genesis` when none exists.
-12. `predecessor_signer_key` (string): Lowercase hex Ed25519 public key for the last complete receipt, or the observing key when none exists.
+10. `predecessor_tail_seq` (integer): Last complete ActionReceipt v1 chain sequence; zero when no complete receipt exists.
+11. `predecessor_tail_hash` (string): Hash of the last complete ActionReceipt v1; `genesis` when none exists.
+12. `predecessor_signer_key` (string): Lowercase hex Ed25519 public key for the last complete ActionReceipt v1, or the observing key when none exists.
 13. `successor_session` (string): Fresh process-run session that continued after recovery.
 14. `successor_signer_key` (string): Lowercase hex Ed25519 public key that signs this seal and the successor opening receipt.
 15. `successor_open_hash` (string): Receipt hash of the successor run's signed genesis `session_open`.
 16. `observed_at` (string): Canonical UTC RFC3339Nano observation time.
 17. `signature` (string): `ed25519:` followed by 128 lowercase hexadecimal characters.
 
-All integer fields are non-negative safe integers no larger than `2^53 - 1`, so JSON implementations with IEEE-754 numbers preserve them exactly. The shard name must identify the predecessor session and contain no path separator. Both sessions must be distinct runs of the same base. The shard must have nonzero size and `damage_offset` must be less than `shard_size`. Hashes are lowercase SHA-256 hex, except the two explicitly allowed `genesis` heads. Keys are lowercase Ed25519 public-key hex.
+All integer fields are non-negative safe integers no larger than `2^53 - 1`, so JSON implementations with IEEE-754 numbers preserve them exactly. The shard name must identify the predecessor session and contain no path separator. Both sessions must be distinct sessions of the same base; the successor must be a fresh process-run session. The predecessor may be a legacy base session. The shard must have nonzero size and `damage_offset` must be less than `shard_size`. Hashes are lowercase SHA-256 hex, except the two explicitly allowed `genesis` heads. Keys are lowercase Ed25519 public-key hex.
 
-The predecessor binding has two heads because recorder entries and receipts have separate sequences and hashes. `last_good_*` binds the end of the complete recorder prefix. `predecessor_tail_*` binds the last complete receipt in that prefix. The raw size and digest bind the full damaged shard, including bytes after `damage_offset`.
+The predecessor binding has two heads because recorder entries and receipts have separate sequences and hashes. `last_good_*` binds the end of the complete recorder prefix. `predecessor_tail_*` binds the last complete ActionReceipt v1 in that prefix. Every readable ActionReceipt v1 and EvidenceReceipt v2 chain is verified, including a valid final record whose newline is missing; that final record is excluded from the complete-prefix heads. The raw size and digest bind the full damaged shard, including bytes after `damage_offset`.
 
 ## Signature and validation
 
@@ -44,7 +44,7 @@ The signature value uses the existing `ed25519:<lowercase-hex>` form. Parsers re
 
 Verification also checks the artifact's placement and contents. The filename must claim `predecessor_session`; the verifier re-reads that session's damaged shard and compares its basename, size, raw digest, damage offset, complete-prefix heads, receipt tail, and predecessor signer key. It verifies the successor session and requires its first receipt to be the signed genesis `session_open` whose receipt hash is `successor_open_hash` and whose key is `successor_signer_key`. These checks prevent moving a valid seal to another shard or run.
 
-The embedded successor key proves only that the seal and opening receipt use the same key. Directory verification requires that key to be explicitly trusted when it differs from the predecessor signer key. `evidence doctor` checks signatures and placement but doesn't decide whether a key is trusted. After key rotation, pin the new signer key with the trusted-key option or use the existing rotation endorsement mechanism.
+The embedded successor key proves only that the seal and opening receipt use the same key. Directory verification requires that key to be explicitly trusted when it differs from the predecessor signer key. `evidence doctor` checks signatures and placement but doesn't decide whether a key is trusted. For a damaged predecessor containing key rotations, pin every signer key with the trusted-key option. Recovery verification does not use rotation endorsements to expand that trusted set. Fresh-start observation and evidence doctor verify signatures and rotation bindings without deciding operator key trust.
 
 ## Verifier behavior
 

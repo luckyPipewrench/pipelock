@@ -1414,26 +1414,11 @@ fn verify_recovery_binding(
     }
     let trusted = opts.trusted_keys.join(",");
     if !extracted.action.is_empty() {
-        let own: Vec<RotationEndorsement> = opts
-            .endorsements
-            .iter()
-            .filter(|endorsement| endorsement.session_id == seal.predecessor_session)
-            .cloned()
-            .collect();
-        let result = if own.is_empty() {
-            crate::chain::verify_chain_with_options(
-                &extracted.action,
-                &trusted,
-                opts.trusted_keys.is_empty(),
-            )
-        } else {
-            verify_chain_with_endorsements(
-                &extracted.action,
-                &seal.predecessor_session,
-                &own,
-                &trusted,
-            )
-        };
+        let result = crate::chain::verify_chain_with_options(
+            &extracted.action,
+            &trusted,
+            opts.trusted_keys.is_empty(),
+        );
         if !chain_acceptable(&result) {
             return Err(format!(
                 "recovery seal predecessor ActionReceipt chain is invalid: {}",
@@ -2122,6 +2107,46 @@ mod go_json_escape_tests {
             .join("../../conformance/testdata/go-json-escapes")
             .join(name);
         std::fs::read_to_string(path).expect("read fixture")
+    }
+
+    #[test]
+    fn rotated_recovery_fixture_requires_every_prefix_key_pinned() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/rotated");
+        let keys: Vec<String> = std::fs::read_to_string(fixture.join("signer.pub"))
+            .expect("read fixture keys")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read fixture seal"),
+        )
+        .expect("decode fixture seal");
+        for (pins, expected) in [
+            (keys.clone(), true),
+            (Vec::new(), false),
+            (keys[..1].to_vec(), false),
+            (keys[1..].to_vec(), false),
+        ] {
+            let report = verify_base(
+                &fixture.join("evidence"),
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: pins,
+                    endorsements: Vec::new(),
+                },
+            )
+            .expect("verify rotated fixture");
+            assert_eq!(
+                report
+                    .chains
+                    .iter()
+                    .any(|chain| chain.session == seal.successor_session
+                        && chain.recovery_seal.is_some()),
+                expected
+            );
+            assert!(!report.healthy());
+        }
     }
 
     #[test]

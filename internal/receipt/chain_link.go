@@ -168,7 +168,7 @@ func validateChainLinkFields(l ChainLink, requireSignature bool) error {
 }
 
 func chainLinkDigest(l ChainLink) ([]byte, error) {
-	canonical, err := json.Marshal(chainLinkCanonical{
+	return canonicalArtifactBytes(chainLinkDomain, chainLinkCanonical{
 		Version:              l.Version,
 		PredecessorSession:   l.PredecessorSession,
 		PredecessorTailSeq:   l.PredecessorTailSeq,
@@ -178,14 +178,6 @@ func chainLinkDigest(l ChainLink) ([]byte, error) {
 		SuccessorSignerKey:   l.SuccessorSignerKey,
 		LinkedAt:             l.LinkedAt,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal chain link: %w", err)
-	}
-	canonical = jsonscan.NormalizeReplacementEscapes(canonical)
-	// Ed25519 signs the domain-separated canonical bytes directly (it hashes
-	// internally); the domain prefix keeps a link signature from ever being
-	// valid as any other signed Pipelock structure.
-	return append([]byte(chainLinkDomain), canonical...), nil
 }
 
 // UnmarshalChainLink strictly decodes and verifies one link. Duplicate,
@@ -342,12 +334,14 @@ func syncDir(dir string) error {
 
 // linkRequest carries what publishPredecessorLink needs about the successor.
 type linkRequest struct {
-	dir     string
-	base    string
-	self    string
-	privKey ed25519.PrivateKey
-	now     time.Time
-	notice  io.Writer
+	dir        string
+	base       string
+	self       string
+	privKey    ed25519.PrivateKey
+	now        time.Time
+	notice     io.Writer
+	signerKeys []string
+	onRecovery func(*RecoverySeal)
 }
 
 // publishPredecessorLink finds the most recent chain of base whose writer is
@@ -412,6 +406,19 @@ func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink,
 		}
 		pred, ok := claimableTail(c.files, c.session, req.notice, report...)
 		if !ok {
+			// Only structural torn tails qualify. The seal path independently
+			// verifies every readable signature and both prefix chains.
+			if _, tailErr := sessionReceiptTail(c.files); errors.Is(tailErr, recorder.ErrTornTail) {
+				seal, sealErr := publishRecoverySeal(req, c.session)
+				if sealErr == nil {
+					if req.onRecovery != nil {
+						req.onRecovery(seal)
+					}
+					_, _ = fmt.Fprintf(req.notice, "pipelock: receipt chain %s linked across attested discontinuity from %s\n", self, c.session)
+					return nil, nil
+				}
+				_, _ = fmt.Fprintf(req.notice, "pipelock: recovery seal unavailable for %s: %v\n", c.session, sealErr)
+			}
 			continue
 		}
 		link, signErr := SignChainLink(ChainLink{

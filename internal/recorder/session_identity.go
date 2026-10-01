@@ -177,6 +177,7 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	if !torn {
 		return "", errors.New("recorder: recovery requires a torn current run")
 	}
+	predecessor := r.sessionID
 	if r.file != nil {
 		r.waitDurableForCurrentFileLocked()
 		if r.writer != nil && r.writer.Buffered() != 0 {
@@ -208,5 +209,30 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	r.runPresence = presence
 	r.fileEntryCount = 0
 	r.fileSeqStart = 0
+	r.recoveryPredecessor = predecessor
 	return next, nil
+}
+
+// RecoveryPredecessor is the damaged run abandoned by this recorder, if any.
+func (r *Recorder) RecoveryPredecessor() string {
+	if r.IsNop() {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recoveryPredecessor
+}
+
+// AcknowledgeRecovery clears a pending recovery only after its signed claim
+// was durably published. Matching both sessions prevents a stale emitter from
+// acknowledging a later recovery of the same recorder.
+func (r *Recorder) AcknowledgeRecovery(predecessor, successor string) {
+	if r.IsNop() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.recoveryPredecessor == predecessor && r.sessionID == successor {
+		r.recoveryPredecessor = ""
+	}
 }

@@ -68,12 +68,13 @@ type evidenceDoctorReport struct {
 
 // doctorContinuity is the link-file check for one base in one location.
 type doctorContinuity struct {
-	Dir      string
-	Base     string
-	Chains   int
-	Linked   int
-	Unlinked []string
-	Findings []receipt.BaseFinding
+	Dir             string
+	Base            string
+	Chains          int
+	Linked          int
+	Discontinuities []string
+	Unlinked        []string
+	Findings        []receipt.BaseFinding
 	// Err means the base could not be enumerated: continuity is unknown.
 	Err string
 }
@@ -126,6 +127,11 @@ func checkDoctorContinuity(dir string) []doctorContinuity {
 		} else {
 			c.Chains = len(report.Chains)
 			c.Linked = report.LinkCount()
+			for _, chain := range report.Chains {
+				if chain.RecoverySeal != nil {
+					c.Discontinuities = append(c.Discontinuities, chain.Session)
+				}
+			}
 			c.Unlinked = report.Unlinked()
 			c.Findings = report.Findings
 		}
@@ -760,6 +766,9 @@ func printDoctorContinuity(out io.Writer, results []doctorContinuity) {
 			c.Base, c.Dir, c.Chains, c.Linked, len(c.Unlinked), len(c.Findings))
 		for _, s := range c.Unlinked {
 			_, _ = fmt.Fprintf(out, "    unlinked: %s\n", s)
+		}
+		for _, s := range c.Discontinuities {
+			_, _ = fmt.Fprintf(out, "    linked across attested discontinuity: %s (damage remains)\n", s)
 		}
 		for _, f := range c.Findings {
 			_, _ = fmt.Fprintf(out, "    - %s: %s: %s\n", f.Kind, f.Session, f.Detail)

@@ -19,6 +19,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import * as ed25519 from "@noble/ed25519";
 import { receiptHash } from "../src/chain.js";
+import { canonicalizeActionRecord } from "../src/canonical.js";
+import type { Receipt } from "../src/types.js";
 import { RawNumber, parseJSONStrict } from "../src/aarp/strictjson.js";
 import {
   baseHealthy,
@@ -300,6 +302,73 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
     );
     assert.ok(noNewlineReport.chains.some((chain) => chain.recovery_seal !== undefined));
 
+    // A closed writer may tear the final checkpoint's LF. Known recorder
+    // entries qualify even when the final entry is not itself a receipt.
+    const checkpointPrefix = Buffer.from(`${openLine}\n${finalLine}\n`, "utf8");
+    const checkpointBytes = Buffer.concat([
+      checkpointPrefix,
+      Buffer.from(receiptLines[2] as string, "utf8"),
+    ]);
+    const lastComplete = parseJSONStrict(finalLine) as Record<string, unknown>;
+    const completeReceipts = extractTypedFromEntries(
+      parseEntryLinesText(checkpointPrefix.toString("utf8")).map((line) => line.entry),
+    ).action;
+    const lastCompleteReceipt = completeReceipts.at(-1);
+    assert.ok(lastCompleteReceipt);
+    const checkpointSeal = {
+      ...original,
+      shard_size: checkpointBytes.length,
+      shard_sha256: sha256Hex(checkpointBytes),
+      damage_offset: checkpointPrefix.length,
+      last_good_seq: Number((lastComplete["seq"] as RawNumber).literal),
+      last_good_hash: lastComplete["hash"] as string,
+      predecessor_tail_seq: lastCompleteReceipt.action_record?.chain_seq ?? 0,
+      predecessor_tail_hash: receiptHash(lastCompleteReceipt),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const checkpointSignature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(checkpointSeal), seed),
+    ).toString("hex");
+    writeFileSync(join(dir, damagedName), checkpointBytes);
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ ...checkpointSeal, signature: `ed25519:${checkpointSignature}` }),
+    );
+    const checkpointReport = await verifyBase(dir, "proxy", {
+      trustedKeys: [trustedKey],
+      endorsements: [],
+    });
+    assert.ok(checkpointReport.chains.some((chain) => chain.recovery_seal !== undefined));
+
+    const completeInvalidUTF8 = Buffer.concat([
+      prefixBytes,
+      Buffer.from('{"summary":"', "utf8"),
+      Buffer.from([0xff]),
+      Buffer.from('"}', "utf8"),
+    ]);
+    const invalidUTF8Seal = {
+      ...noNewlineSeal,
+      shard_size: completeInvalidUTF8.length,
+      shard_sha256: sha256Hex(completeInvalidUTF8),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const invalidUTF8Signature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(invalidUTF8Seal), seed),
+    ).toString("hex");
+    writeFileSync(join(dir, damagedName), completeInvalidUTF8);
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ ...invalidUTF8Seal, signature: `ed25519:${invalidUTF8Signature}` }),
+    );
+    const invalidUTF8Report = await verifyBase(dir, "proxy", {
+      trustedKeys: [trustedKey],
+      endorsements: [],
+    });
+    assert.equal(
+      invalidUTF8Report.chains.some((chain) => chain.recovery_seal !== undefined),
+      false,
+    );
+
     // Go classifies a nonempty unterminated byte fragment as torn even when
     // the final fragment is incomplete UTF-8; it has no complete JSON record
     // to validate. The seal still binds its exact bytes.
@@ -411,6 +480,89 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
       invalidFinal.chains.some((chain) => chain.recovery_seal !== undefined),
       false,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Go rotated recovery fixture needs every predecessor key pinned", async () => {
+  const fixture = resolve(packageRoot, "../../conformance/testdata/recovery-seals/rotated");
+  const keys = readFileSync(join(fixture, "signer.pub"), "utf8").trim().split(/\s+/u);
+  const seal = decodeRecoverySeal(readFileSync(join(fixture, "seal.json"), "utf8"));
+  for (const [name, pins, expected] of [
+    ["both", keys, true],
+    ["TOFU", [], false],
+    ["missing predecessor key", keys.slice(1), false],
+    ["missing rotated key", keys.slice(0, 1), false],
+  ] as [string, string[], boolean][]) {
+    const report = await verifyBase(join(fixture, "evidence"), "proxy", {
+      trustedKeys: pins,
+      endorsements: [],
+    });
+    const attached = report.chains.some(
+      (chain) => chain.session === seal.successor_session && chain.recovery_seal !== undefined,
+    );
+    assert.equal(attached, expected, name);
+    assert.equal(baseHealthy(report), false, name);
+  }
+});
+
+test("a recovery signed by a different successor key needs explicit trust", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-recovery-key-"));
+  try {
+    cpSync(fixtureEvidenceDir, dir, { recursive: true });
+    const seal = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+    const seed = createHash("sha256").update("pipelock-recovery-seal-key-change-test").digest();
+    const successorKey = Buffer.from(await ed25519.getPublicKeyAsync(seed)).toString("hex");
+    const successorFile = join(dir, `evidence-${seal.successor_session}-0.jsonl`);
+    const entries = readFileSync(successorFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry["type"] === "action_receipt");
+    let priorReceiptHash = "";
+    let priorOuterHash = "genesis";
+    for (const entry of entries) {
+      const receipt = entry["detail"] as Receipt;
+      assert.ok(receipt.action_record);
+      if (priorReceiptHash !== "") receipt.action_record.chain_prev_hash = priorReceiptHash;
+      receipt.signer_key = successorKey;
+      const digest = createHash("sha256")
+        .update(canonicalizeActionRecord(receipt.action_record))
+        .digest();
+      receipt.signature = `ed25519:${Buffer.from(await ed25519.signAsync(digest, seed)).toString("hex")}`;
+      priorReceiptHash = receiptHash(receipt);
+      entry["prev_hash"] = priorOuterHash;
+      entry["hash"] = recorderEntryHash(JSON.stringify(entry));
+      priorOuterHash = entry["hash"] as string;
+    }
+    const opening = entries[0]?.["detail"] as Receipt;
+    const changed = {
+      ...seal,
+      successor_signer_key: successorKey,
+      successor_open_hash: receiptHash(opening),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const signature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(changed), seed),
+    ).toString("hex");
+    writeFileSync(successorFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    writeFileSync(
+      join(dir, `chain-link-${seal.predecessor_session}.json`),
+      JSON.stringify({ ...changed, signature: `ed25519:${signature}` }),
+    );
+    for (const [pins, expected] of [
+      [[seal.predecessor_signer_key, successorKey], true],
+      [[], false],
+      [[seal.predecessor_signer_key], false],
+    ] as [string[], boolean][]) {
+      const report = await verifyBase(dir, "proxy", { trustedKeys: pins, endorsements: [] });
+      assert.equal(
+        report.chains.some((chain) => chain.recovery_seal !== undefined),
+        expected,
+      );
+      assert.equal(baseHealthy(report), false);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

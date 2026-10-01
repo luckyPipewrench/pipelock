@@ -1271,22 +1271,13 @@ export async function verifyBase(
         throw new Error(`successor "${seal.successor_session}" not found`);
       if (successor.chain.link !== undefined)
         throw new Error("recovery successor already has a continuous predecessor link");
-      const recoveryTyped = await verifyRecoveryBinding(dir, ix, seal, data);
-      if (opts.trustedKeys.length > 0) {
-        if (recoveryTyped.action.length > 0) {
-          const trusted = await verifyChain(recoveryTyped.action, opts.trustedKeys.join(","));
-          if (!chainAcceptable(trusted))
-            throw new Error(`recovery predecessor trust: ${trusted.error ?? "untrusted"}`);
-        }
-        if (recoveryTyped.evidence.length > 0) {
-          const trusted = await verifyChain(
-            recoveryTyped.evidence,
-            evidenceChainKey(opts.trustedKeys.join(","), recoveryTyped.evidence),
-          );
-          if (!trusted.valid)
-            throw new Error(`recovery predecessor evidence trust: ${trusted.error ?? "untrusted"}`);
-        }
+      if (
+        seal.successor_signer_key !== seal.predecessor_signer_key &&
+        !opts.trustedKeys.includes(seal.successor_signer_key)
+      ) {
+        throw new Error("recovery successor key differs and is not explicitly trusted");
       }
+      await verifyRecoveryBinding(dir, ix, seal, data, opts.trustedKeys);
       successor.chain.recovery_seal = seal;
       add(
         FindingAttestedDiscontinuity,
@@ -1317,7 +1308,10 @@ export async function verifyRecoveryBinding(
   ix: EvidenceIndex,
   seal: RecoverySeal,
   data: Map<string, BaseChainData>,
+  trustedKeys: readonly string[] = [],
 ): Promise<ExtractedReceipts> {
+  await verifyRecoverySealSignature(seal);
+  const keys = trustedKeys.join(",");
   const files = indexFiles(ix, seal.predecessor_session);
   const final = files.at(-1);
   if (final === undefined || path.basename(final) !== seal.shard) {
@@ -1350,10 +1344,9 @@ export async function verifyRecoveryBinding(
   } else {
     if (tailContent.includes(0) || tailContent.includes(0x0a))
       throw new Error("recovery seal suffix is not a supported torn tail");
-    // Replacement decoding mirrors encoding/json's tolerance for invalid
-    // UTF-8 inside JSON strings. Incomplete byte fragments still fail the
-    // JSON syntax check and count as torn; valid final JSON proceeds through
-    // strict recorder and receipt validation below.
+    // Replacement decoding is only a JSON syntax probe, matching Go's tail
+    // classification. Complete values still pass fatal UTF-8 decoding below;
+    // incomplete byte fragments can remain torn without becoming evidence.
     const suffixText = new TextDecoder("utf-8").decode(tailContent);
     let validJSON = true;
     try {
@@ -1364,16 +1357,12 @@ export async function verifyRecoveryBinding(
     if (!validJSON) {
       tailKind = "partial";
     } else {
-      // A syntactically complete JSON value is not a torn fragment. It must
-      // be a single valid receipt record and later pass outer-chain and
-      // receipt-signature validation before the seal can attach.
+      // A complete JSON value must be one known recorder entry, including
+      // checkpoints. Validate its schema, outer chain and any embedded receipt
+      // signature before the seal can attach.
       const candidate = parseEntryLinesText(suffixText);
-      if (
-        candidate.length !== 1 ||
-        (candidate[0]?.entry.type !== "action_receipt" &&
-          candidate[0]?.entry.type !== "evidence_receipt")
-      ) {
-        throw new Error("missing-newline tail is not one signed receipt record");
+      if (candidate.length !== 1) {
+        throw new Error("missing-newline tail is not one recorder entry");
       }
       tailKind = "missing_newline";
     }
@@ -1448,7 +1437,7 @@ export async function verifyRecoveryBinding(
     throw new Error("recovery seal predecessor receipt tail mismatch");
   }
   if (typed.action.length > 0) {
-    const verified = await verifyChain(typed.action, "", { allowUnpinned: true });
+    const verified = await verifyChain(typed.action, keys, { allowUnpinned: true });
     if (!chainAcceptable(verified))
       throw new Error(`recovery predecessor action chain: ${verified.error ?? "invalid"}`);
     for (const receipt of typed.action) {
@@ -1463,7 +1452,7 @@ export async function verifyRecoveryBinding(
     }
   }
   if (typed.evidence.length > 0) {
-    const verified = await verifyChain(typed.evidence, evidenceChainKey("", typed.evidence), {
+    const verified = await verifyChain(typed.evidence, evidenceChainKey(keys, typed.evidence), {
       allowUnpinned: true,
     });
     if (!verified.valid)
@@ -1473,7 +1462,7 @@ export async function verifyRecoveryBinding(
   if (tailKind === "missing_newline") {
     const fullTyped = extractTypedFromEntries(fullLines.map((line) => line.entry));
     if (fullTyped.action.length > 0) {
-      const verified = await verifyChain(fullTyped.action, "", { allowUnpinned: true });
+      const verified = await verifyChain(fullTyped.action, keys, { allowUnpinned: true });
       if (!chainAcceptable(verified))
         throw new Error(
           `missing-newline final action receipt signature is invalid: ${verified.error ?? "invalid"}`,
@@ -1482,7 +1471,7 @@ export async function verifyRecoveryBinding(
     if (fullTyped.evidence.length > 0) {
       const verified = await verifyChain(
         fullTyped.evidence,
-        evidenceChainKey("", fullTyped.evidence),
+        evidenceChainKey(keys, fullTyped.evidence),
         { allowUnpinned: true },
       );
       if (!verified.valid)
@@ -1511,7 +1500,7 @@ export async function verifyRecoveryBinding(
     throw new Error("recovery successor session_open recorder session mismatch");
   }
   // Identity trust is applied by verifyBase after this self-consistency and
-  // placement check. An empty trustedKeys list is links-only verification.
+  // placement check. Empty pins retain the existing per-chain TOFU policy.
   return extracted;
 }
 

@@ -1232,7 +1232,7 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)
 	}
-	unlock, err := acquireAppendLock(r.cfg.Dir, e.SessionID)
+	unlock, err := acquireAppendLock(r.cfg.Dir)
 	if err != nil {
 		return err
 	}

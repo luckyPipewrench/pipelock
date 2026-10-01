@@ -289,3 +289,36 @@ func TestEvidenceTornTailCannotMaskHashTamper(t *testing.T) {
 		})
 	}
 }
+
+func TestRecorderAppendLocksBoundedAcrossRunsAndRotations(t *testing.T) {
+	dir := t.TempDir()
+	const runs = 12
+	for range runs {
+		rec, err := New(Config{Enabled: true, Dir: dir, MaxEntriesPerFile: 2, CheckpointInterval: 100}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := AcquireRunSession(rec, "proxy")
+		if err != nil {
+			_ = rec.Close()
+			t.Fatal(err)
+		}
+		for range 3 {
+			if err := rec.Record(Entry{SessionID: session, Type: "request"}); err != nil {
+				_ = rec.Close()
+				t.Fatal(err)
+			}
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shards, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil || len(shards) <= runs {
+		t.Fatalf("rotation not exercised: shards=%d err=%v", len(shards), err)
+	}
+	locks, err := filepath.Glob(filepath.Join(dir, ".append*.lock"))
+	if err != nil || len(locks) != 1 {
+		t.Fatalf("append lock files grow with runs: count=%d err=%v", len(locks), err)
+	}
+}

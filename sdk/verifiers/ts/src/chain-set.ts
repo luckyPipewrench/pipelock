@@ -1340,7 +1340,7 @@ export async function verifyRecoveryBinding(
   const suffix = raw.subarray(seal.damage_offset);
   if (suffix.length === 0)
     throw new Error("recovery seal does not identify damaged trailing bytes");
-  let tailKind: "nul" | "partial" | "missing_newline";
+  let tailKind: "nul" | "partial" | "missing_newline" = "partial";
   let tailContent = suffix;
   while (tailContent.length > 0 && tailContent[tailContent.length - 1] === 0) {
     tailContent = tailContent.subarray(0, tailContent.length - 1);
@@ -1350,8 +1350,23 @@ export async function verifyRecoveryBinding(
   } else {
     if (tailContent.includes(0) || tailContent.includes(0x0a))
       throw new Error("recovery seal suffix is not a supported torn tail");
-    const suffixText = decodeUTF8(tailContent, "recovery seal damaged suffix");
+    // Replacement decoding mirrors encoding/json's tolerance for invalid
+    // UTF-8 inside JSON strings. Incomplete byte fragments still fail the
+    // JSON syntax check and count as torn; valid final JSON proceeds through
+    // strict recorder and receipt validation below.
+    const suffixText = new TextDecoder("utf-8").decode(tailContent);
+    let validJSON = true;
     try {
+      JSON.parse(suffixText);
+    } catch {
+      validJSON = false;
+    }
+    if (!validJSON) {
+      tailKind = "partial";
+    } else {
+      // A syntactically complete JSON value is not a torn fragment. It must
+      // be a single valid receipt record and later pass outer-chain and
+      // receipt-signature validation before the seal can attach.
       const candidate = parseEntryLinesText(suffixText);
       if (
         candidate.length !== 1 ||
@@ -1361,20 +1376,6 @@ export async function verifyRecoveryBinding(
         throw new Error("missing-newline tail is not one signed receipt record");
       }
       tailKind = "missing_newline";
-    } catch (err) {
-      // A syntactically complete JSON value is a malformed complete record,
-      // even without its newline. Only an incomplete JSON fragment can be
-      // classified as a partial final line. Go validates every json.Valid
-      // record before accepting the remaining torn suffix.
-      try {
-        JSON.parse(suffixText);
-        throw new Error(`complete final recorder record is invalid: ${(err as Error).message}`);
-      } catch (jsonErr) {
-        if ((jsonErr as Error).message.startsWith("complete final recorder record is invalid:")) {
-          throw jsonErr;
-        }
-      }
-      tailKind = "partial";
     }
   }
 
@@ -1468,6 +1469,7 @@ export async function verifyRecoveryBinding(
     if (!verified.valid)
       throw new Error(`recovery predecessor evidence chain: ${verified.error ?? "invalid"}`);
   }
+  let extracted = typed;
   if (tailKind === "missing_newline") {
     const fullTyped = extractTypedFromEntries(fullLines.map((line) => line.entry));
     if (fullTyped.action.length > 0) {
@@ -1488,7 +1490,7 @@ export async function verifyRecoveryBinding(
           `missing-newline final evidence receipt signature is invalid: ${verified.error ?? "invalid"}`,
         );
     }
-    return fullTyped;
+    extracted = fullTyped;
   }
   const successor = data.get(seal.successor_session);
   if (successor === undefined || !successor.chain.valid || successor.receipts.length === 0) {
@@ -1510,7 +1512,7 @@ export async function verifyRecoveryBinding(
   }
   // Identity trust is applied by verifyBase after this self-consistency and
   // placement check. An empty trustedKeys list is links-only verification.
-  return typed;
+  return extracted;
 }
 
 // Recovery seals bind a complete prefix, so every recorder entry in that

@@ -300,6 +300,83 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
     );
     assert.ok(noNewlineReport.chains.some((chain) => chain.recovery_seal !== undefined));
 
+    // Go classifies a nonempty unterminated byte fragment as torn even when
+    // the final fragment is incomplete UTF-8; it has no complete JSON record
+    // to validate. The seal still binds its exact bytes.
+    const malformedTailBytes = Buffer.concat([
+      prefixBytes,
+      Buffer.from([0x7b, 0x22, 0x76, 0x22, 0x3a, 0x22, 0xe2, 0x82]),
+    ]);
+    const malformedTailSeal = {
+      ...noNewlineSeal,
+      shard_size: malformedTailBytes.length,
+      shard_sha256: sha256Hex(malformedTailBytes),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const malformedTailSignature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(malformedTailSeal), seed),
+    ).toString("hex");
+    writeFileSync(join(dir, damagedName), malformedTailBytes);
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ ...malformedTailSeal, signature: `ed25519:${malformedTailSignature}` }),
+    );
+    const malformedTail = await verifyBase(
+      dir,
+      original.predecessor_session.split(".run.")[0] as string,
+      { trustedKeys: [trustedKey], endorsements: [] },
+    );
+    assert.ok(malformedTail.chains.some((chain) => chain.recovery_seal !== undefined));
+
+    const completeInvalidBytes = Buffer.concat([prefixBytes, Buffer.from("{}", "utf8")]);
+    const completeInvalidSeal = {
+      ...noNewlineSeal,
+      shard_size: completeInvalidBytes.length,
+      shard_sha256: sha256Hex(completeInvalidBytes),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const completeInvalidSignature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(completeInvalidSeal), seed),
+    ).toString("hex");
+    writeFileSync(join(dir, damagedName), completeInvalidBytes);
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ ...completeInvalidSeal, signature: `ed25519:${completeInvalidSignature}` }),
+    );
+    const completeInvalid = await verifyBase(
+      dir,
+      original.predecessor_session.split(".run.")[0] as string,
+      { trustedKeys: [trustedKey], endorsements: [] },
+    );
+    assert.ok(completeInvalid.findings.some((finding) => finding.kind === "invalid_recovery_seal"));
+    assert.equal(
+      completeInvalid.chains.some((chain) => chain.recovery_seal !== undefined),
+      false,
+    );
+
+    const wrongSuccessorSeal = {
+      ...noNewlineSeal,
+      successor_open_hash: "44".repeat(32),
+      signature: "" as const,
+    } satisfies RecoverySeal;
+    const wrongSuccessorSignature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(wrongSuccessorSeal), seed),
+    ).toString("hex");
+    writeFileSync(
+      join(dir, name),
+      JSON.stringify({ ...wrongSuccessorSeal, signature: `ed25519:${wrongSuccessorSignature}` }),
+    );
+    const wrongSuccessor = await verifyBase(
+      dir,
+      original.predecessor_session.split(".run.")[0] as string,
+      { trustedKeys: [trustedKey], endorsements: [] },
+    );
+    assert.ok(wrongSuccessor.findings.some((finding) => finding.kind === "invalid_recovery_seal"));
+    assert.equal(
+      wrongSuccessor.chains.some((chain) => chain.recovery_seal !== undefined),
+      false,
+    );
+
     const tamperedFinal = JSON.parse(finalLine) as Record<string, unknown>;
     const tamperedDetail = tamperedFinal["detail"] as Record<string, unknown>;
     const receiptSignature = String(tamperedDetail["signature"]);

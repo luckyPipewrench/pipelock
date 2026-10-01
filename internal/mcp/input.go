@@ -289,7 +289,13 @@ func ForwardScannedInput(
 		resolverRuntime = newDeferResolverRuntime(opts.warnContext())
 	}
 
+	// Held calls must not outlive a kill that arrives between messages (the
+	// sentinel file has no event, and an API or signal activation only wakes
+	// the next message). Stop the watcher before the final cancel below.
+	killWatchCtx, stopKillWatch := context.WithCancel(context.Background())
+	go watchDeferredKillSwitch(killWatchCtx, ks, opts.deferManager())
 	defer func() {
+		stopKillWatch()
 		resolverRuntime.Cancel()
 		if manager := opts.deferManager(); manager != nil {
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
@@ -363,6 +369,14 @@ func ForwardScannedInput(
 			if d := ks.IsActiveMCP(line); d.Active {
 				if manager := opts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+				}
+				batchResp := refuseKillSwitchRequest(opts, logW, frame, d)
+				if batchResp != nil {
+					blockedCh <- BlockedRequest{
+						LogMessage:        fmt.Sprintf("pipelock: input line %d: kill switch denied batch (source=%s)", lineNum, d.Source),
+						SyntheticResponse: batchResp,
+					}
+					continue
 				}
 				if d.IsNotification {
 					// Notifications have no ID - silently drop.
@@ -1115,6 +1129,7 @@ func ForwardScannedInput(
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
+		reasons = append(reasons, policyVerdict.Notes...)
 		if bindingReason != "" {
 			reasons = append(reasons, bindingReason)
 		}
@@ -1403,6 +1418,7 @@ func ForwardScannedInput(
 			heldAuthorityFrame := frame
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
+			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    actionID,
 				ActionID:   actionID,
@@ -1444,11 +1460,19 @@ func ForwardScannedInput(
 					// first so no wait for another write sits between the
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
-					return lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					prepared = receiptSettle.probeAllow(opts, prepared)
+					return prepared, finish
+				},
+				// The allow receipt is written once the journal has accepted
+				// the allow, so an unwritable journal never leaves an allow
+				// receipt for a call that is not sent.
+				AfterJournal: func(res deferred.Resolution) error {
+					return receiptSettle.commitAllow(opts, logW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(opts, logW, res); emitErr != nil {
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
 								ID:           heldID,

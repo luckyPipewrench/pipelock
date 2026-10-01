@@ -63,7 +63,7 @@ func TestSSHPublicKeyOtherRulePairwisePreserved(t *testing.T) {
 	f.write(t, public)
 	for _, pattern := range []string{`(?i)\.pub\s+path`, `(?i)\.pub\s+/`} {
 		pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "Custom pair", ToolPattern: `^read_file$`, ArgPattern: pattern}}})
-		pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+		pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 		raw, _ := json.Marshal(map[string]string{"path": "~/.ssh/id_ed25519.pub"})
 		if v := pc.CheckToolCallWithArgs(testReadTool, []string{"path", "~/.ssh/id_ed25519.pub"}, raw); !v.Matched {
 			t.Errorf("pattern %q lost pair matching: %+v", pattern, v)
@@ -85,7 +85,7 @@ func TestSSHPublicKeyPresetSingleValue(t *testing.T) {
 				t.Fatal(err)
 			}
 			pc := New(cfg.MCPToolPolicy)
-			pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+			pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 			raw := json.RawMessage(`{"path":"~/.ssh/id_ed25519.pub"}`)
 			v := pc.CheckToolCallWithArgs(testReadTool, []string{"path", "~/.ssh/id_ed25519.pub"}, raw)
 			if slices.Contains(v.Rules, testKeyReadRule) {
@@ -117,7 +117,7 @@ func TestSSHPublicKeyPatternBoundaries(t *testing.T) {
 		}
 	}
 	scoped := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: rules})
-	scoped.localPaths = newLocalPathIdentity(f.home, f.ws)
+	scoped.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 	if v := scoped.CheckToolCallWithArgs(testReadTool, []string{"~/.ssh/id_ed25519.pub"}, raw); !slices.Contains(v.Rules, testKeyReadRule) {
 		t.Fatalf("custom scoped rule: %+v", v)
 	}

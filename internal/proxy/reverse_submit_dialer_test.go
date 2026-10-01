@@ -419,7 +419,7 @@ func TestReverseProxyTransport_IgnoresAmbientProxyEnv(t *testing.T) {
 		if !ok {
 			t.Fatalf("transport type = %T, want *reverseSigningRoundTripper", rt)
 		}
-		base, ok := srt.base.(*http.Transport)
+		base, ok := innerReverseTransport(srt.base)
 		if !ok {
 			t.Fatalf("base type = %T, want *http.Transport", srt.base)
 		}

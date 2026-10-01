@@ -1484,3 +1484,69 @@ func TestWriteResponse_DenyPath(t *testing.T) {
 		t.Errorf("permission = %q, want %q", resp.Permission, decisionDeny)
 	}
 }
+
+// TestCursorHookCmd_ReadFile_LocalPathIdentity pins that the read-file hook
+// matches the file a path resolves to: a hard link to a private key, and a
+// relative path resolved against the payload's cwd, not the process's.
+func TestCursorHookCmd_ReadFile_LocalPathIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "proj")
+	elsewhere := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(home, ".ssh", "id_ed25519")
+	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(key, filepath.Join(project, "notes.txt")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(project, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "plain.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(elsewhere)
+
+	read := func(filePath, cwd string) string {
+		raw, err := json.Marshal(map[string]string{"hook_event_name": "beforeReadFile", "file_path": filePath, "cwd": cwd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := CursorCmd()
+		cmd.SetArgs([]string{"hook"})
+		cmd.SetIn(bytes.NewReader(raw))
+		buf := &strings.Builder{}
+		cmd.SetOut(buf)
+		cmd.SetErr(&strings.Builder{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var resp cursorResponse
+		if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+			t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+		}
+		return resp.Permission
+	}
+	for _, tc := range []struct {
+		name, path, cwd, want string
+	}{
+		{"hard link to a private key", filepath.Join(project, "notes.txt"), project, decisionDeny},
+		{"relative hard link to a private key", "notes.txt", project, decisionDeny},
+		{"relative path through a link, resolved from the payload cwd", "lnk/id_ed25519", project, decisionDeny},
+		{"same relative path from a directory without the link", "lnk/id_ed25519", elsewhere, decisionAllow},
+		{"ordinary file", filepath.Join(project, "plain.txt"), project, decisionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := read(tc.path, tc.cwd); got != tc.want {
+				t.Errorf("beforeReadFile %s from %s: got %s, want %s", tc.path, tc.cwd, got, tc.want)
+			}
+		})
+	}
+}

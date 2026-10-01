@@ -1955,7 +1955,7 @@ func newInterceptHandler(
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
-		stripUpstreamShieldRewriteMarker(resp)
+		stripUpstreamPipelockNamespace(resp)
 		// The authenticated-artifact exception is verified at the proxy before
 		// bytes reach the client; it is not a route-level response exemption.
 		interceptAuthenticatedArtifact := false

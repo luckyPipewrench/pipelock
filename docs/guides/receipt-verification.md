@@ -432,6 +432,42 @@ pipelock-verifier independent /var/lib/pipelock/evidence \
   --rekor-log-key /etc/pipelock/keys/rekor-log.pub
 ```
 
+An anchor bundle covers the receipts that existed when it was made. The live
+chain keeps growing, so `pipelock-verifier independent` recomputes the checkpoint
+over the first `receipt_count` receipts. A chain shorter than the bundle claims
+fails.
+
+Receipts after the anchored prefix are not ignored. The verifier checks them as
+a chain (hash linkage and signatures under the `--key` values you supplied) and
+exits non-zero if the tail is broken, for example a tampered or re-signed
+receipt. When the tail verifies, the verdict stays valid, the OK line names the
+split (`receipts 0..2 of 5 anchored, 3..4 chain-verified`), and stderr carries a
+note that the later receipts are chain-verified but not anchored.
+
+With `--json` the verdict adds three fields next to the existing ones:
+
+| Field | Meaning |
+|-------|---------|
+| `covered_receipts` | Leading receipts the anchor commits to. |
+| `chain_length` | Receipts supplied to the verifier. |
+| `tail_chain_verified` | `true` when receipts after the anchored prefix exist and verified as a chain. |
+
+The tail is only chain-verified: a holder of the signing key can forge it, and
+no anchor vouches for it. By default that still counts as valid. To treat it as
+a failure, the way the dashboard treats a stale anchor, add
+`--require-full-coverage`: verification then exits non-zero with `valid: false`
+whenever `covered_receipts` is less than `chain_length`. A fully anchored chain
+is unaffected.
+
+```bash
+pipelock-verifier independent /var/lib/pipelock/evidence \
+  --dir --session agent-a \
+  --bundle /var/lib/pipelock/evidence/agent-a.rekor-anchor.json \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
+  --rekor-log-key /etc/pipelock/keys/rekor-log.pub \
+  --require-full-coverage
+```
+
 Honest limit: anchoring narrows post-anchor omission and tampering windows, but
 it does not prove real-time truth by whoever held the receipt signing key and
 does not prove traffic outside the mediated boundary did not happen.

@@ -162,7 +162,7 @@ func TestLocalPathIdentity_PublicKeyNameLinkedToPrivateKey(t *testing.T) {
 	f.link(t, private, disguised)
 
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
-	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 	if v := checkPath(pc, testReadTool, "path", disguised); !slices.Contains(v.Rules, testKeyReadRule) {
 		t.Fatalf("link named like a public key reaching the private key was not matched: %+v", v)
 	}

@@ -76,6 +76,78 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	return EmitDeferredResolutionReceipt(opts, logW, res)
 }
 
+// deferredReceiptSettlement orders a released call's evidence. The allow
+// resolution receipt is the proof that a held call was released, so it is
+// written only once the journal has accepted the allow (Manager.AfterJournal):
+// a journal that cannot be written then leaves the signed chain with the block
+// alone, never an allow followed by a block for a call that was never sent.
+// Prepare runs before the journal and so only probes that a required receipt
+// could be written at all.
+//
+// When the receipt is required and its write fails after the journal accepted
+// the allow, the manager closes the decision to a block everywhere it is
+// recorded: a corrective journal entry, the value ResolveApprovalResult hands
+// the operator API, and the client error.
+//
+// Prepare, AfterJournal and Resolve run in sequence on the resolving
+// goroutine, so the struct needs no lock.
+type deferredReceiptSettlement struct {
+	done     bool
+	err      error
+	decision string
+	source   string
+}
+
+// probeAllow closes an allow whose required receipt cannot possibly be written:
+// no receipt emitter is configured, or one is already marked unhealthy. It
+// writes nothing. A write that fails later is caught by commitAllow.
+func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.Resolution) deferred.Resolution {
+	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts) {
+		res.FinalDecision = config.ActionBlock
+		res.ResolutionSource = deferred.SourceCancel
+		res.Reason = deferred.ReasonReceiptNotWritten
+	}
+	return res
+}
+
+// receiptWritable reports whether a required receipt has a usable emitter.
+// Receipts that are not required never close a release.
+func receiptWritable(opts MCPProxyOpts) bool {
+	if !opts.requireReceipts() {
+		return true
+	}
+	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
+	v1OK := v1 != nil && v1.InitError() == nil && v1.HealthError() == nil
+	v2OK := v2 != nil && v2.HealthError() == nil
+	if v2 != nil && !v2OK {
+		return false
+	}
+	return v1OK || v2OK
+}
+
+// commitAllow writes the allow resolution receipt after the journal accepted
+// the allow. It is the Manager.AfterJournal hook.
+func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	return s.emit(opts, logW, res)
+}
+
+// ensure returns the outcome of emitting the receipt for the final resolution.
+// A receipt already written for exactly this decision and source is reused; any
+// other final resolution (a block, or an allow the journal or the receipt write then closed) gets its
+// own receipt so the chain describes what actually happened.
+func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	if s.done && s.decision == res.FinalDecision && s.source == res.ResolutionSource {
+		return s.err
+	}
+	return s.emit(opts, logW, res)
+}
+
+func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
+	return s.err
+}
+
 // holdFailureResolution carries the surface-specific fields for a failed
 // Manager.Hold so both defer transports emit identical denial receipts.
 type holdFailureResolution struct {

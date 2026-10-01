@@ -199,7 +199,10 @@ func RunHTTPProxy(
 	fwdOpts.sessionExit = sessionExit
 	resolverRuntime := newDeferResolverRuntime(ctx)
 	fwdOpts.DeferResolverRuntime = resolverRuntime
+	killWatchCtx, stopKillWatch := context.WithCancel(ctx)
+	go watchDeferredKillSwitch(killWatchCtx, fwdOpts.KillSwitch, fwdOpts.deferManager())
 	defer func() {
+		stopKillWatch()
 		resolverRuntime.Cancel()
 		if manager := fwdOpts.deferManager(); manager != nil {
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
@@ -242,6 +245,13 @@ func RunHTTPProxy(
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				if manager := fwdOpts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+				}
+				batchResp := refuseKillSwitchRequest(fwdOpts, safeLogW, frame, d)
+				if batchResp != nil {
+					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
+					}
+					continue
 				}
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
@@ -291,6 +301,7 @@ func RunHTTPProxy(
 			// gateBlock carries a release-time upstream gate denial from
 			// Prepare to Resolve for this hold.
 			var gateBlock *BlockedRequest
+			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    deferredReq.DeferID,
 				ActionID:   deferredReq.DeferID,
@@ -356,11 +367,19 @@ func RunHTTPProxy(
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
-					return lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					prepared = receiptSettle.probeAllow(fwdOpts, prepared)
+					return prepared, finish
+				},
+				// The allow receipt is written once the journal has accepted
+				// the allow, so an unwritable journal never leaves an allow
+				// receipt for a call that is not sent.
+				AfterJournal: func(res deferred.Resolution) error {
+					return receiptSettle.commitAllow(fwdOpts, safeLogW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := emitDeferredResolutionReceipt(fwdOpts, safeLogW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(fwdOpts, safeLogW, res); emitErr != nil {
 						if !deferredReq.IsNotification {
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
 								ID:           deferredReq.ID,

@@ -8,9 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type LocalLog struct {
@@ -38,6 +43,10 @@ type localLogEntryHashInput struct {
 }
 
 func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
+	return l.submitWithSync(checkpoint, (*os.File).Sync)
+}
+
+func (l LocalLog) submitWithSync(checkpoint Checkpoint, syncFile func(*os.File) error) (Proof, error) {
 	if l.Path == "" {
 		return Proof{}, errors.New("local anchor log path required")
 	}
@@ -48,14 +57,9 @@ func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	defer unlock()
 
 	logID := l.logID()
-	entries, err := ReadLocalLog(l.Path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	entries, appendPath, err := l.readSegments()
+	if err != nil {
 		return Proof{}, err
-	}
-	for _, entry := range entries {
-		if entry.LogID != logID {
-			return Proof{}, fmt.Errorf("local anchor log_id mismatch at index %d: got %q, want %q", entry.Index, entry.LogID, logID)
-		}
 	}
 	prevHash := GenesisHash
 	if len(entries) > 0 {
@@ -71,7 +75,7 @@ func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	}
 	entry.Hash = localEntryHash(entry)
 
-	clean := filepath.Clean(l.Path)
+	clean := filepath.Clean(appendPath)
 	if err := os.MkdirAll(filepath.Dir(clean), dirPermissions); err != nil {
 		return Proof{}, fmt.Errorf("create local anchor log directory: %w", err)
 	}
@@ -86,6 +90,18 @@ func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return Proof{}, fmt.Errorf("write local anchor entry: %w", err)
+	}
+	if err := syncFile(f); err != nil {
+		return Proof{}, fmt.Errorf("sync local anchor entry: %w", err)
+	}
+	// Persist a newly created segment directory entry as well as its contents.
+	dir, err := os.Open(filepath.Dir(clean))
+	if err != nil {
+		return Proof{}, fmt.Errorf("open local anchor log directory: %w", err)
+	}
+	defer func() { _ = dir.Close() }()
+	if err := dir.Sync(); err != nil && runtime.GOOS != "windows" {
+		return Proof{}, fmt.Errorf("sync local anchor log directory: %w", err)
 	}
 	return Proof{
 		Backend:     LocalBackend,
@@ -110,7 +126,7 @@ func (l LocalLog) Verify(proof Proof, checkpoint Checkpoint) error {
 	if proof.LogID != logID {
 		return fmt.Errorf("anchor proof log_id %q does not match verifier log_id %q", proof.LogID, logID)
 	}
-	entries, err := ReadLocalLog(l.Path)
+	entries, _, err := l.readSegments()
 	if err != nil {
 		return err
 	}
@@ -133,34 +149,109 @@ func (l LocalLog) Verify(proof Proof, checkpoint Checkpoint) error {
 	return nil
 }
 
+// ReadLocalLog verifies a single file and reports crash-damaged tails without
+// claiming the damaged file is healthy. Returned entries cover its complete prefix.
 func ReadLocalLog(path string) ([]LocalLogEntry, error) {
+	return readLocalLogPrefix(path, nil, "")
+}
+
+// readSegments joins verified, newline-complete prefixes. A torn segment is never
+// appended to; the next numbered segment continues its last complete hash/index.
+// Segment names are storage details and do not change the signed proof format.
+func (l LocalLog) readSegments() ([]LocalLogEntry, string, error) {
+	base := filepath.Clean(l.Path)
+	directory, err := os.ReadDir(filepath.Dir(base))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, "", fmt.Errorf("find local anchor segments: %w", err)
+	}
+	paths := []string{base}
+	prefix := filepath.Base(base) + ".segment-"
+	for _, entry := range directory {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		segment := filepath.Join(filepath.Dir(base), entry.Name())
+		expected := fmt.Sprintf("%s.segment-%020d", base, len(paths))
+		if segment != expected {
+			return nil, "", fmt.Errorf("local anchor segment sequence mismatch: got %q, want %q", segment, expected)
+		}
+		paths = append(paths, segment)
+	}
+	var entries []LocalLogEntry
+	for i, path := range paths {
+		current, readErr := readLocalLogPrefix(path, entries, l.logID())
+		if errors.Is(readErr, os.ErrNotExist) && len(paths) == 1 {
+			return entries, base, nil
+		}
+		if readErr != nil && !errors.Is(readErr, recorder.ErrTornTail) {
+			return nil, "", readErr
+		}
+		entries = current
+		if i == len(paths)-1 {
+			if readErr == nil {
+				return entries, path, nil
+			}
+			return entries, fmt.Sprintf("%s.segment-%020d", base, len(paths)), nil
+		}
+	}
+	return nil, "", errors.New("local anchor log has no segments")
+}
+
+func readLocalLogPrefix(path string, prior []LocalLogEntry, expectedID string) ([]LocalLogEntry, error) {
+	validated := append([]LocalLogEntry(nil), prior...)
+	tailErr := recorder.InspectJSONLTailWithValidator(path, func(raw []byte) error {
+		if len(raw) == 0 {
+			return nil
+		}
+		var entry LocalLogEntry
+		if err := decodeStrict(raw, &entry); err != nil {
+			return fmt.Errorf("parse local anchor log line %d: %w", len(validated)+1, err)
+		}
+		if expectedID != "" && entry.LogID != expectedID {
+			return fmt.Errorf("local anchor log_id mismatch at index %d: got %q, want %q", entry.Index, entry.LogID, expectedID)
+		}
+		if err := verifyLocalEntry(entry, validated); err != nil {
+			return fmt.Errorf("local anchor log line %d: %w", len(validated)+1, err)
+		}
+		validated = append(validated, entry)
+		return nil
+	})
+	var torn *recorder.TornTailError
+	if tailErr != nil && !errors.As(tailErr, &torn) {
+		return nil, tailErr
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-
-	sc := bufio.NewScanner(f)
+	var reader io.Reader = f
+	if torn != nil {
+		reader = io.LimitReader(f, torn.LastGoodOffset)
+	}
+	sc := bufio.NewScanner(reader)
 	sc.Buffer(make([]byte, 0, 64<<10), 10<<20)
-	var entries []LocalLogEntry
+	entries := append([]LocalLogEntry(nil), prior...)
 	for sc.Scan() {
-		raw := sc.Bytes()
-		if len(raw) == 0 {
+		if len(sc.Bytes()) == 0 {
 			continue
 		}
 		var entry LocalLogEntry
-		if err := decodeStrict(raw, &entry); err != nil {
-			return nil, fmt.Errorf("parse local anchor log line %d: %w", len(entries)+1, err)
+		if err := decodeStrict(sc.Bytes(), &entry); err != nil {
+			return nil, fmt.Errorf("parse local anchor prefix: %w", err)
+		}
+		if expectedID != "" && entry.LogID != expectedID {
+			return nil, fmt.Errorf("local anchor log_id mismatch at index %d: got %q, want %q", entry.Index, entry.LogID, expectedID)
 		}
 		if err := verifyLocalEntry(entry, entries); err != nil {
-			return nil, fmt.Errorf("local anchor log line %d: %w", len(entries)+1, err)
+			return nil, fmt.Errorf("verify local anchor prefix: %w", err)
 		}
 		entries = append(entries, entry)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("scan local anchor log: %w", err)
+		return nil, fmt.Errorf("scan local anchor prefix: %w", err)
 	}
-	return entries, nil
+	return entries, tailErr
 }
 
 func verifyLocalEntry(entry LocalLogEntry, prior []LocalLogEntry) error {

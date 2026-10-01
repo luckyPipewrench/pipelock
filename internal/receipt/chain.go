@@ -396,14 +396,18 @@ type chainVerifier struct {
 	segBaseSeq uint64 // chain_seq of the current segment's first receipt
 	prevHash   string // expected chain_prev_hash for the next receipt
 
-	signerKeys []string
-	segments   []ChainSegment
-	curSeg     *ChainSegment
-	index      int
-	runNonces  map[string]string
-	closedRuns map[string]bool
-	activeRun  string
-	activeOpen string
+	signerKeys   []string
+	signerKeySet map[string]struct{}
+	segments     []ChainSegment
+	curSeg       *ChainSegment
+	index        int
+	runNonces    map[string]string
+	closedRuns   map[string]bool
+	activeRun    string
+	activeOpen   string
+	runStore     *boundedRunStore
+	compact      bool
+	segmentStart uint64
 
 	integrityOnly bool
 }
@@ -540,10 +544,12 @@ func (v *chainVerifier) add(r Receipt, index uint64) (ChainResult, bool) {
 	v.index = int(index)
 	marker := r.ActionRecord.KeyTransition
 	if index == 0 {
+		v.segmentStart = index
 		if res, ok := v.startFirstSegment(r); !ok {
 			return res, false
 		}
 	} else if marker != nil {
+		v.segmentStart = index
 		if res, ok := v.startRotatedSegment(r, marker); !ok {
 			return res, false
 		}
@@ -770,11 +776,14 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 		return ChainResult{}, true
 	}
 	if open == nil {
-		openNonce, ok := v.runNonces[r.ActionRecord.RunNonce]
+		openNonce, closed, ok, err := v.readRun(r.ActionRecord.RunNonce)
+		if err != nil {
+			return v.brokenAtKind(r, fmt.Sprintf("read session lifecycle state: %v", err), ChainFailureLifecycle), false
+		}
 		if !ok {
 			return v.brokenAtKind(r, "run_nonce first receipt is not a matching session_open", ChainFailureLifecycleOpen), false
 		}
-		if v.closedRuns[r.ActionRecord.RunNonce] {
+		if closed {
 			return v.brokenAtKind(r, "record observed after session_close", ChainFailureLifecycle), false
 		}
 		if heartbeat != nil {
@@ -831,7 +840,9 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 			}
 			v.activeRun = ""
 			v.activeOpen = ""
-			v.closedRuns[r.ActionRecord.RunNonce] = true
+			if err := v.writeRun(r.ActionRecord.RunNonce, openNonce, true); err != nil {
+				return v.brokenAtKind(r, fmt.Sprintf("write session lifecycle state: %v", err), ChainFailureLifecycle), false
+			}
 		}
 		return ChainResult{}, true
 	}
@@ -841,11 +852,16 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 	if open.OpenNonce == "" {
 		return v.brokenAtKind(r, "session_open open_nonce is empty", ChainFailureLifecycle), false
 	}
-	if _, exists := v.runNonces[r.ActionRecord.RunNonce]; exists {
+	_, _, exists, err := v.readRun(r.ActionRecord.RunNonce)
+	if err != nil {
+		return v.brokenAtKind(r, fmt.Sprintf("read session lifecycle state: %v", err), ChainFailureLifecycle), false
+	}
+	if exists {
 		return v.brokenAtKind(r, "duplicate session_open for run_nonce", ChainFailureLifecycle), false
 	}
-	v.runNonces[r.ActionRecord.RunNonce] = open.OpenNonce
-	v.closedRuns[r.ActionRecord.RunNonce] = false
+	if err := v.writeRun(r.ActionRecord.RunNonce, open.OpenNonce, false); err != nil {
+		return v.brokenAtKind(r, fmt.Sprintf("write session lifecycle state: %v", err), ChainFailureLifecycle), false
+	}
 	v.activeRun = open.RunNonce
 	v.activeOpen = open.OpenNonce
 	return ChainResult{}, true
@@ -904,6 +920,9 @@ func (v *chainVerifier) advanceReceiptHash(r Receipt) (ChainResult, bool) {
 // curSegStartIndex returns the slice index at which the current segment began,
 // derived from segments already closed plus the count of the open segment.
 func (v *chainVerifier) curSegStartIndex() uint64 {
+	if v.compact {
+		return v.segmentStart
+	}
 	var n uint64
 	for _, s := range v.segments {
 		n += s.Count
@@ -923,12 +942,24 @@ func (v *chainVerifier) beginSegment(r Receipt, boundary bool) {
 
 func (v *chainVerifier) closeSegment() {
 	if v.curSeg != nil {
-		v.segments = append(v.segments, *v.curSeg)
+		if !v.compact {
+			v.segments = append(v.segments, *v.curSeg)
+		}
 		v.curSeg = nil
 	}
 }
 
 func (v *chainVerifier) appendSignerKey(key string) {
+	if v.compact {
+		if v.signerKeySet == nil {
+			v.signerKeySet = make(map[string]struct{})
+		}
+		if _, seen := v.signerKeySet[key]; !seen {
+			v.signerKeySet[key] = struct{}{}
+			v.signerKeys = append(v.signerKeys, key)
+		}
+		return
+	}
 	for _, k := range v.signerKeys {
 		if k == key {
 			return

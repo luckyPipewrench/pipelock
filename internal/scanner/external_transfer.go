@@ -73,7 +73,7 @@ func isSensitiveTransferFilename(name string) bool {
 
 func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 	locs := p.re.FindAllStringIndex(content, -1)
-	if p.name != externalDataTransferDirectivePatternName || p.re.String() != config.ExternalDataTransferDirectiveRegex {
+	if !hasExternalTransferCompanions(p) {
 		return locs
 	}
 
@@ -91,6 +91,10 @@ func responsePatternMatchLocations(p *compiledPattern, content string) [][]int {
 		locs = append(locs, loc[0:2])
 	}
 	return locs
+}
+
+func hasExternalTransferCompanions(p *compiledPattern) bool {
+	return p.name == externalDataTransferDirectivePatternName && p.re.String() == config.ExternalDataTransferDirectiveRegex
 }
 
 // externalTransferNamesSensitiveFile reports whether any token between the

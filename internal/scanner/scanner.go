@@ -411,6 +411,9 @@ type compiledPattern struct {
 	requiredLiteralsAny                 []string
 	requiresEquals                      bool  // every effective regex branch requires a literal '='
 	minASCIIDigits                      uint8 // conservative digit floor shared by every effective regex branch
+	// responseMemoRegexp marks the original regexp.Compile response expression.
+	// Arbitrary/replaced regex objects (including CompilePOSIX) are not reusable.
+	responseMemoRegexp *regexp.Regexp
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -695,6 +698,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			s.responsePatterns = append(s.responsePatterns, &compiledPattern{
 				name:                p.Name,
 				re:                  re,
+				responseMemoRegexp:  re,
 				bundle:              p.Bundle,
 				bundleVersion:       p.BundleVersion,
 				requiredLiteralsAny: requiredLiteralsAny,
@@ -712,6 +716,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 					s.responseOptSpacePatterns = append(s.responseOptSpacePatterns, &compiledPattern{
 						name:                p.Name,
 						re:                  optRe,
+						responseMemoRegexp:  optRe,
 						bundle:              p.Bundle,
 						bundleVersion:       p.BundleVersion,
 						requiredLiteralsAny: requiredLiteralsAny,
@@ -751,6 +756,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 					s.responseVowelFoldPatterns = append(s.responseVowelFoldPatterns, &compiledPattern{
 						name:                p.Name,
 						re:                  vfRe,
+						responseMemoRegexp:  vfRe,
 						bundle:              p.Bundle,
 						bundleVersion:       p.BundleVersion,
 						requiredLiteralsAny: requiredLiteralsAny,
@@ -2889,6 +2895,14 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (r
 	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
 		return result, warnMatches
 	}
+	// Both helpers return early for an empty secret list. Configured canaries
+	// must still run in a hermetic process with no ambient/file secrets. Keep
+	// the existing helper calls above so their attribution priority is unchanged.
+	if len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
+		if result := s.checkCanaryInURL(parsed); !result.Allowed {
+			return result, warnMatches
+		}
+	}
 
 	return Result{Allowed: true}, deduplicateWarnMatches(warnMatches)
 }
@@ -3127,8 +3141,12 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			}
 		}
 	}
-	// Canary fallback: if no DLP pattern matched, check canary tokens.
-	// This runs last so DLP patterns get attribution priority.
+	return s.checkCanaryInURL(parsed)
+}
+
+// checkCanaryInURL uses the shared canary views and preserves their span labels.
+// Callers keep the existing DLP and known-secret attribution order.
+func (s *Scanner) checkCanaryInURL(parsed *url.URL) Result {
 	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
 		m := matches[0]
 		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)

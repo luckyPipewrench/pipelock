@@ -414,6 +414,10 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 }
 
 func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool) (out ResponseScanResult) {
+	return s.scanResponseWithSuppressMemo(ctx, content, suppressTarget, suppress, forceEncodedDecode, newResponseMatchMemo(len(content)))
+}
+
+func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
@@ -497,7 +501,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponse(content, filterSuppressed, forceEncodedDecode); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponseWithMemo(content, filterSuppressed, forceEncodedDecode, memo); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -538,7 +542,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 	// cascade) so an all-defensive early pass cannot mask an encoded
 	// solicitation that only a later pass catches. See scanCoreResponse.
 	var matches []ResponseMatch
-	matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, s.matchResponsePatternsPreFiltered(content)), ViewForMatching))
+	matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.match(s.responsePreFilter, s.responsePatterns, content)), ViewForMatching))
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -551,7 +555,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 	if len(matches) == 0 {
 		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(preStripContent))
 		if spaced != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.match(s.responsePreFilter, s.responsePatterns, spaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
 				content = spaced // use spaced version for strip action
 			}
@@ -563,7 +567,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 	if len(matches) == 0 {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, s.matchResponsePatternsPreFiltered(leeted)), ViewLeetspeak))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, memo.match(s.responsePreFilter, s.responsePatterns, leeted)), ViewLeetspeak))
 		}
 	}
 
@@ -572,7 +576,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
-		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
+		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, memo.match(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
 	}
 
 	// Quinary: vowel-folded matching. Catches confusable-vowel attacks where
@@ -582,7 +586,7 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.match(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
 		}
 	}
 

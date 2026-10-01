@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Run generated browser diagnostics through the shipped Pipelock CLI.
+
+Default mode requires the shipped strict sandbox. --mode proxy-only is an
+explicit diagnostic with no Pipelock kernel-containment claim. No installations,
+managed-host changes, credentials, external target URLs or third-party assets.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+import urllib.error
+
+from fixture import CANARY, FORBIDDEN_HOST, HOST, Fixture
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
+SUPERVISOR = ROOT / "scripts/ci_process_supervisor.py"
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def isolated_environment(root):
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+    for name, part in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
+                       ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"),
+                       ("XDG_CACHE_HOME", "cache"), ("TMPDIR", "tmp")]:
+        directory = root / part
+        directory.mkdir(mode=0o700)
+        env[name] = str(directory)
+    env["PIPELOCK_POSTURE_PROOF"] = str(root / "absent-proof.json")
+    return env
+
+
+class Cancellation:
+    """Defer signals to safe checkpoints so process creation/cleanup is atomic."""
+    def __init__(self):
+        self.signum = None
+        self.previous = {}
+
+    def interrupted(self, signum, _frame):
+        if self.signum is None:
+            self.signum = signum
+
+    def install(self):
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            self.previous[signum] = signal.signal(signum, self.interrupted)
+
+    def restore(self):
+        for signum, handler in self.previous.items():
+            signal.signal(signum, handler)
+
+    def check(self):
+        if self.signum is not None:
+            raise RuntimeError(f"runner interrupted by signal {self.signum}")
+
+
+class Process:
+    """Continuously drain both pipes; cap retained bytes, never stop reading."""
+    def __init__(self, command, output, env, cwd, cancellation=None):
+        self.cancellation = cancellation
+        if cancellation:
+            cancellation.check()
+        children_file = Path(f"/proc/self/task/{os.getpid()}/children")
+        if not children_file.is_file():
+            raise RuntimeError("verified process cleanup unavailable: procfs children file is absent")
+        self.command = command
+        self.output = output
+        self.buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        self.counts = {"stdout": 0, "stderr": 0}
+        self.eof = {"stdout": False, "stderr": False}
+        self.read_errors = {}
+        self.process = subprocess.Popen(
+            [sys.executable, str(SUPERVISOR), "--status-file", str(output.with_suffix(".cleanup.json")), "--", *command],
+            cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.threads = []
+        for name in self.buffers:
+            thread = threading.Thread(target=self.drain, args=(name,), daemon=True)
+            thread.start()
+            self.threads.append(thread)
+
+    def drain(self, name):
+        stream = getattr(self.process, name)
+        try:
+            while chunk := stream.read(8192):
+                self.counts[name] += len(chunk)
+                self.buffers[name].extend(chunk)
+                del self.buffers[name][:-65536]
+            self.eof[name] = True
+        except Exception as error:
+            self.read_errors[name] = str(error)[:512]
+        finally:
+            try:
+                stream.close()
+            except Exception as error:
+                self.read_errors[name] = str(error)[:512]
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.cancellation:
+                self.cancellation.check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            try:
+                return self.process.wait(timeout=min(0.1, remaining))
+            except subprocess.TimeoutExpired:
+                pass
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGTERM)
+            try:
+                self.process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                # Do not invent cleanup success if the shipped supervisor stalls.
+                raise RuntimeError("process supervisor did not complete descendant cleanup")
+        for thread in self.threads:
+            thread.join(timeout=2)
+        drained = all(self.eof.values()) and not self.read_errors and not any(thread.is_alive() for thread in self.threads)
+        result = {"exit_code": self.process.returncode, "streams_drained": drained, "read_errors": self.read_errors, "streams": {}}
+        for name, data in self.buffers.items():
+            self.output.with_suffix("."+name).write_bytes(bytes(data))
+            self.output.with_suffix("."+name).chmod(0o600)
+            result["streams"][name] = {"total_bytes": self.counts[name], "retained_bytes": len(data), "truncated": self.counts[name] > len(data)}
+        cleanup_path = self.output.with_suffix(".cleanup.json")
+        try:
+            cleanup = json.loads(cleanup_path.read_text())
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"missing or invalid cleanup witness: {self.output.name}") from error
+        result["cleanup"] = cleanup
+        write_json(self.output.with_suffix(".process.json"), result)
+        if not drained:
+            raise RuntimeError(f"output drain did not reach EOF: {self.output.name}")
+        if not cleanup.get("cleanup_complete") or cleanup.get("unexpected_live_descendants"):
+            raise RuntimeError(f"descendant cleanup was incomplete or unexpected: {self.output.name}")
+        return result
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def config_for():
+    # Exact synthetic hostname trust is necessary for host-loopback fixtures.
+    # No broad IP exemptions, response exemptions, disabled scanners or relaxed
+    # actions are used. Defaults supply built-in patterns; this adds a canary.
+    return {
+        "mode": "strict", "api_allowlist": [HOST], "trusted_domains": [HOST],
+        "dns": {"host_overrides": {HOST: ["127.0.0.1"], FORBIDDEN_HOST: ["127.0.0.1"]}},
+        "forward_proxy": {"enabled": True},
+        "response_scanning": {"enabled": True, "action": "block"},
+        "canary_tokens": {"enabled": True, "tokens": [{"name": "browser-repro", "value": CANARY}]},
+        "logging": {"format": "json", "output": "stdout", "include_allowed": True, "include_blocked": True},
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pipelock", required=True, type=Path, help="explicit candidate binary; never builds/installs automatically")
+    parser.add_argument("--output", required=True, type=Path, help="new evidence directory (must not exist)")
+    parser.add_argument("--mode", choices=["sandbox", "proxy-only"], default="sandbox")
+    parser.add_argument("--node", default=shutil.which("node"))
+    parser.add_argument("--chromium", default=shutil.which("chromium"))
+    parser.add_argument("--bundle-bytes", type=int, default=2_000_000)
+    args = parser.parse_args()
+    if not args.node or not args.chromium:
+        parser.error("Node 22+ and Chromium are required; pass explicit executable paths")
+    args.pipelock = args.pipelock.resolve(strict=True)
+    args.output = args.output.resolve()
+    args.output.mkdir(mode=0o700, parents=False)
+    os.umask(0o077)
+    report = {"schema": 1, "mode": args.mode, "status": "incomplete", "containment": "not_established",
+              "scope": "generated HTTP fixtures only; no production acceptance", "processes": {}, "versions": {}}
+    cancellation = Cancellation()
+    cancellation.install()
+    try:
+        report.update({
+            "binary_sha256": hashlib.sha256(args.pipelock.read_bytes()).hexdigest(),
+            "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, timeout=10).strip(),
+            "tracked_diff_sha256": hashlib.sha256(subprocess.check_output(["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--"], cwd=ROOT, timeout=10)).hexdigest(),
+            "source_status": subprocess.check_output(["git", "-c", "core.fsmonitor=false", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True, timeout=10).splitlines(),
+            "supervisor_sha256": hashlib.sha256(SUPERVISOR.read_bytes()).hexdigest(),
+            "harness_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in HERE.iterdir() if path.suffix in (".py", ".mjs")},
+        })
+        with tempfile.TemporaryDirectory(prefix="browser-repro-") as temporary, Fixture(args.bundle_bytes) as fixture:
+            work = Path(temporary)
+            env = isolated_environment(work)
+            for name, executable in (("node", args.node), ("chromium", args.chromium)):
+                version = Process([executable, "--version"], args.output / f"version-{name}", env, work, cancellation)
+                try:
+                    code = version.wait(timeout=5)
+                finally:
+                    report["processes"][f"version-{name}"] = version.stop()
+                report["versions"][name] = {"exit_code": code, "version": bytes(version.buffers["stdout"]).decode(errors="replace").strip()[:1024]}
+                if code != 0:
+                    raise RuntimeError(f"{name} version probe failed")
+            # The workspace is already the explicit writable/execute grant. Copy
+            # this selected executable rather than widening host directory access.
+            node_runtime = work / "node-runtime"
+            shutil.copyfile(Path(args.node).resolve(strict=True), node_runtime)
+            node_runtime.chmod(0o750)
+            env["PIPELOCK_CONFIG"] = str(work / "pipelock.json")
+            write_json(work / "pipelock.json", config_for())
+            write_json(args.output / "config.json", config_for())
+            report["config_sha256"] = hashlib.sha256((work / "pipelock.json").read_bytes()).hexdigest()
+            report["bundle_sha256"] = hashlib.sha256(fixture.bundle).hexdigest()
+            report["bundle_bytes"] = len(fixture.bundle)
+            report["parent_net_namespace"] = os.readlink("/proc/self/ns/net")
+            # Parent witness is independent of the contained client, and the
+            # dynamically selected fixture listener is known to be alive.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(f"http://127.0.0.1:{fixture.port}/health", timeout=2) as response:
+                report["parent_fixture_witness"] = response.status
+            shutil.copyfile(HERE / "driver.mjs", work / "driver.mjs")
+            settings = {"mode": args.mode, "port": fixture.port, "canary": CANARY,
+                        "chromium": str(Path(args.chromium).resolve()), "profile": str(work / "profile"),
+                        "output": str(work), "parent_net_namespace": report["parent_net_namespace"]}
+            proxy_process = None
+            driver_process = None
+            try:
+                if args.mode == "proxy-only":
+                    report["containment"] = "not_tested_proxy_only"
+                    port = free_port()
+                    settings["proxy"] = f"http://127.0.0.1:{port}"
+                    proxy_process = Process([str(args.pipelock), "run", "--config", env["PIPELOCK_CONFIG"], "--listen", f"127.0.0.1:{port}"],
+                                            args.output / "proxy", env, work, cancellation)
+                    deadline = time.monotonic()+15
+                    while True:
+                        cancellation.check()
+                        if proxy_process.process.poll() is not None:
+                            raise RuntimeError("proxy exited before readiness")
+                        try:
+                            with opener.open(settings["proxy"]+"/health", timeout=0.5) as response:
+                                if response.status == 200:
+                                    break
+                        except (OSError, urllib.error.URLError):
+                            pass
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("proxy readiness deadline expired")
+                        time.sleep(0.05)
+                write_json(work / "settings.json", settings)
+                command = [str(node_runtime), str(work / "driver.mjs"), str(work / "settings.json")]
+                if args.mode == "sandbox":
+                    preflight = Process([str(args.pipelock), "sandbox", "--strict", "--dry-run", "--json", "--config", env["PIPELOCK_CONFIG"], "--workspace", str(work), "--", "/usr/bin/true"], args.output / "preflight", env, work, cancellation)
+                    try:
+                        report["preflight_exit"] = preflight.wait(timeout=20)
+                    finally:
+                        report["processes"]["preflight"] = preflight.stop()
+                    command = [str(args.pipelock), "sandbox", "--strict", "--config", env["PIPELOCK_CONFIG"], "--workspace", str(work), "--", *command]
+                driver_process = Process(command, args.output / "driver", env, work, cancellation)
+                code = driver_process.wait(timeout=180)
+                report["driver_exit"] = code
+                if (work / "browser.json").exists():
+                    browser = json.loads((work / "browser.json").read_text())
+                    write_json(args.output / "browser.json", browser)
+                    report["status"] = browser["status"] if code == 0 else "fail"
+                    if args.mode == "sandbox" and report.get("preflight_exit") != 0:
+                        report["status"] = "fail"
+                        report["failure"] = "strict preflight was not ready; actual launch retained for diagnosis only"
+                    if args.mode == "sandbox" and report["status"] == "complete":
+                        report["containment"] = "strict_launch_and_own_endpoint_boundary_observed"
+                    for image in work.glob("*.png"):
+                        shutil.copyfile(image, args.output / image.name)
+                        (args.output / image.name).chmod(0o600)
+                else:
+                    report["status"] = "fail"
+                    report["failure"] = "browser result absent; inspect driver.stderr for the exact launch refusal"
+            finally:
+                cleanup_errors = []
+                for name, process in (("driver", driver_process), ("proxy", proxy_process)):
+                    if process:
+                        try:
+                            report["processes"][name] = process.stop()
+                        except Exception as error:
+                            cleanup_errors.append(f"{name}: {error}")
+                write_json(args.output / "fixture.json", fixture.evidence())
+                if cleanup_errors:
+                    raise RuntimeError("; ".join(cleanup_errors))
+                if args.mode == "sandbox" and driver_process and not (work / "browser.json").exists():
+                    stderr = (args.output / "driver.stderr").read_text(errors="replace")
+                    if "unix proxy listen:" in stderr and "operation not permitted" in stderr:
+                        report["status"] = "refused"
+                        report["failure"] = "strict sandbox Unix proxy listener refused: operation not permitted"
+                    elif "sandbox layer unavailable" in stderr or "FATAL: Landlock" in stderr:
+                        report["status"] = "refused"
+                        report["failure"] = "required sandbox layer unavailable; see driver.stderr"
+            # Two allowed /health arrivals are expected: parent witness and
+            # mediated positive control. Every blocked control must stay away.
+            report["health_arrivals"] = fixture.evidence()["counts"].get("/health", 0)
+            if report["status"] == "complete" and report["health_arrivals"] != 2:
+                report["status"] = "fail"
+                report["failure"] = "unexpected fixture health arrival; negative-control attribution failed"
+            if report["status"] == "complete":
+                evidence = fixture.evidence()
+                for scenario in ("error", "incomplete", "pending"):
+                    if evidence["scenario_counts"].get(scenario) != 1:
+                        report["status"] = "fail"
+                        report["failure"] = f"intended {scenario} fixture was not observed exactly once"
+                if evidence["counts"].get("/response-marker") != 1:
+                    report["status"] = "fail"
+                    report["failure"] = "response marker did not reach fixture exactly once before response scanning"
+        cancellation.check()
+    except Exception as error:
+        report["status"] = "fail"
+        report["failure"] = str(error)
+    finally:
+        try:
+            if cancellation.signum is not None:
+                report["status"] = "fail"
+                report["interrupted_signal"] = cancellation.signum
+                report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
+            write_json(args.output / "summary.json", report)
+        finally:
+            cancellation.restore()
+    print(json.dumps({"status": report["status"], "mode": args.mode, "containment": report["containment"], "output": str(args.output)}))
+    return 0 if report["status"] == "complete" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

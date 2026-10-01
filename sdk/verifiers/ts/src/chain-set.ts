@@ -1394,6 +1394,8 @@ export async function verifyRecoveryBinding(
       throw new Error("recovery prefix session mismatch");
   }
   lines.push(...prefixLines);
+  const sequenceErr = verifyRecoveryOuterSequence(lines);
+  if (sequenceErr !== undefined) throw new Error(`recovery prefix sequence: ${sequenceErr}`);
   const fullLines = [...lines];
   if (tailKind === "missing_newline") {
     const candidate = parseEntryLinesText(decodeUTF8(tailContent, "recovery seal final record"))[0];
@@ -1401,6 +1403,9 @@ export async function verifyRecoveryBinding(
       throw new Error("recovery final record session mismatch");
     }
     fullLines.push(candidate);
+    const fullSequenceErr = verifyRecoveryOuterSequence(fullLines);
+    if (fullSequenceErr !== undefined)
+      throw new Error(`missing-newline final record sequence: ${fullSequenceErr}`);
   }
   const outerErr = verifyRecorderChain(lines);
   if (outerErr !== undefined) throw new Error(`recovery prefix recorder chain: ${outerErr}`);
@@ -1506,6 +1511,42 @@ export async function verifyRecoveryBinding(
   // Identity trust is applied by verifyBase after this self-consistency and
   // placement check. An empty trustedKeys list is links-only verification.
   return typed;
+}
+
+// Recovery seals bind a complete prefix, so every recorder entry in that
+// prefix must occupy its original zero-based position. Hash links alone do
+// not detect a consistently resequenced or omitted entry.
+export function verifyRecoveryOuterSequence(
+  lines: readonly ParsedRecorderLine[],
+): string | undefined {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    let raw: unknown;
+    try {
+      raw = parseJSONStrict(line.line);
+    } catch (err) {
+      return `entry ${i}: ${(err as Error).message}`;
+    }
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return `entry ${i}: recorder entry is not an object`;
+    }
+    const seq = (raw as Record<string, unknown>)["seq"];
+    let value: bigint;
+    if (seq instanceof RawNumber && /^(?:0|[1-9][0-9]*)$/u.test(seq.literal)) {
+      value = BigInt(seq.literal);
+    } else if (typeof seq === "string" && /^(?:0|[1-9][0-9]*)$/u.test(seq)) {
+      value = BigInt(seq);
+    } else {
+      return `entry ${i}: recorder sequence is not an unsigned integer`;
+    }
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return `entry ${i}: recorder sequence exceeds the cross-language safe integer range`;
+    }
+    if (value !== BigInt(i))
+      return `entry ${i}: expected zero-based contiguous sequence ${i}, got ${value}`;
+  }
+  return undefined;
 }
 
 // checkRunNonces reports two chains of the base that carry the same run_nonce.

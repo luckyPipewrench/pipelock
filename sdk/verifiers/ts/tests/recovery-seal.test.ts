@@ -27,6 +27,7 @@ import {
   decodeRecoverySeal,
   recoverySealSigningBytes,
   verifyBase,
+  verifyRecoveryOuterSequence,
   type RecoverySeal,
 } from "../src/chain-set.js";
 import { extractTypedFromEntries, parseEntryLinesText } from "../src/recorder.js";
@@ -92,6 +93,26 @@ const fixtureSealFile = (): string => {
   const name = readdirSync(fixtureEvidenceDir).find((entry) => entry.startsWith("chain-link-"));
   return join(fixtureEvidenceDir, name ?? "chain-link-missing.json");
 };
+
+test("recovery prefix enforces zero-based contiguous outer sequence", () => {
+  const seal = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+  const shard = readFileSync(join(fixtureEvidenceDir, seal.shard));
+  const prefix = parseEntryLinesText(
+    decodeUTF8(shard.subarray(0, seal.damage_offset), "recovery-seal fixture prefix"),
+  );
+  assert.equal(verifyRecoveryOuterSequence(prefix), undefined);
+  assert.equal(prefix.length, 3);
+  assert.match(prefix[0]?.line ?? "", /"seq":0/u);
+  const resequenced = [...prefix];
+  const first = resequenced[0];
+  assert.ok(first);
+  first.line = first.line.replace(/"seq":0/u, '"seq":1');
+  assert.match(
+    verifyRecoveryOuterSequence(resequenced) ?? "",
+    /expected zero-based contiguous sequence 0, got 1/u,
+  );
+  assert.equal(verifyRecoveryOuterSequence([]), undefined);
+});
 
 test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity and fails closed on replay edits", async () => {
   const originalText = readFileSync(fixtureSealFile(), "utf8");

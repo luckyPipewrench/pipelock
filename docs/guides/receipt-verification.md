@@ -432,6 +432,12 @@ pipelock-verifier independent /var/lib/pipelock/evidence \
   --rekor-log-key /etc/pipelock/keys/rekor-log.pub
 ```
 
+An anchor bundle covers the receipts that existed when it was made. The live
+chain keeps growing, so `pipelock-verifier independent` recomputes the checkpoint
+over the first `receipt_count` receipts and prints a note on stderr when later
+receipts exist that the anchor does not cover. A chain shorter than the bundle
+claims fails.
+
 Honest limit: anchoring narrows post-anchor omission and tampering windows, but
 it does not prove real-time truth by whoever held the receipt signing key and
 does not prove traffic outside the mediated boundary did not happen.

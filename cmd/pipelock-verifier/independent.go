@@ -91,12 +91,44 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if err != nil {
 		return cliutil.ExitCodeError(exitCode, err)
 	}
-	report := anchor.VerifyBundle(bundle, receipts, keyHexes, backend)
+	// An anchor commits to the receipts it covered at submission time. The
+	// live chain keeps growing afterwards, so the checkpoint is recomputed over
+	// the covered prefix; comparing it with the whole chain made every
+	// bundle fail once one more receipt was written.
+	covered, err := coveredReceipts(bundle, receipts)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("independent verification failed: %w", err))
+	}
+	report := anchor.VerifyBundle(bundle, covered, keyHexes, backend)
 	emitIndependentReport(stdout, stderr, filepath.Clean(target), report, opts.jsonOutput)
+	if report.Valid && len(covered) < len(receipts) {
+		// The verdict covers the prefix only. Say so on stderr, which keeps the
+		// JSON verdict on stdout unchanged for existing consumers.
+		_, _ = fmt.Fprintf(stderr, "note: the anchor covers receipts 0..%d of %d in this chain; the %d later receipts are not covered by it\n",
+			report.FinalSeq, len(receipts), len(receipts)-len(covered))
+	}
 	if !report.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("independent verification failed: %s", report.Error))
 	}
 	return nil
+}
+
+// coveredReceipts returns the leading receipts a bundle's checkpoint covers. A
+// chain shorter than the checkpoint claims is refused: that is truncation, not
+// a stale anchor.
+func coveredReceipts(bundle anchor.Bundle, receipts []receipt.Receipt) ([]receipt.Receipt, error) {
+	if len(receipts) == 0 {
+		// Let verification report the empty chain itself.
+		return receipts, nil
+	}
+	count := bundle.Checkpoint.ReceiptCount
+	if count == 0 {
+		return nil, fmt.Errorf("anchor bundle covers no receipts")
+	}
+	if count > uint64(len(receipts)) {
+		return nil, fmt.Errorf("anchor bundle covers %d receipts but the supplied chain has only %d", count, len(receipts))
+	}
+	return receipts[:count], nil
 }
 
 func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, int, error) {

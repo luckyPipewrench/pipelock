@@ -240,6 +240,31 @@ class GateTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("invalid reject reject reject reject reject ok", output)
 
+    def test_go_parse_rejection_of_expected_valid_fixture_is_mismatch(self) -> None:
+        report = self.go_parse_report(path=str(self.corpus / "valid.json"))
+        fake = self.root / "reject valid.py"
+        self.env["GO_VERIFY"] = shlex.join([sys.executable, str(fake)])
+        for path, expected_status in (
+            (str(self.corpus / "valid.json"), 1),
+            (str(self.corpus / "another.json"), 2),
+        ):
+            with self.subTest(report_path=path):
+                report["path"] = path
+                fake.write_text(
+                    "import json\n"
+                    f"print(json.dumps({report!r}))\n"
+                    "raise SystemExit(2)\n",
+                    encoding="utf-8",
+                )
+                code, output = self.invoke()
+                self.assertEqual(code, expected_status, output)
+                if expected_status == 1:
+                    self.assertIn("DIFFERENTIAL+EXPECT-MISMATCH", output)
+                    self.assertIn("known-valid smoke failed", output)
+                    self.assertNotIn("command failed with exit", output)
+                else:
+                    self.assertIn("command failed with exit 2", output)
+
     def test_go_parse_rejection_without_detected_type_is_expected(self) -> None:
         report = self.go_parse_report()
         report.pop("record_type")
@@ -534,6 +559,7 @@ class GateTest(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
+            timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

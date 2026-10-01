@@ -212,6 +212,8 @@ def go_parse_rejection(output: bytes, case: Case) -> bool:
     The existing standalone CLI's decode-failure branch emits this report
     with --json; record_type is omitted when receipt detection cannot name it. Key resolution and file-read/config failures do not emit it.
     Keeping this exception here avoids changing existing CLI exit semantics.
+    A typed parse rejection is a verifier verdict even for an expected-valid
+    fixture; run_gate compares that verdict with the expectation separately.
     """
     if len(output) > 65536:
         return False

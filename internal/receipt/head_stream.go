@@ -128,8 +128,6 @@ type boundedRunStore struct {
 	cache map[string]storedRun
 	dir   string
 	key   [32]byte
-	root  [32]byte
-	files uint64
 	// digests holds the SHA-256 of each spilled run's current file: 32 bytes
 	// per process run (not per receipt). A lookup reads only that run's file
 	// and must match this digest, so a rolled-back or swapped file is caught
@@ -246,22 +244,9 @@ func (s *boundedRunStore) persist(r storedRun) error {
 	if s.digests == nil {
 		s.digests = make(map[string][32]byte)
 	}
-	if old, ok := s.digests[r.Run]; ok {
-		s.xorDigest(old)
-	} else {
-		s.files++
-	}
-	digest := sha256.Sum256(raw)
-	s.xorDigest(digest)
-	s.digests[r.Run] = digest
+	s.digests[r.Run] = sha256.Sum256(raw)
 	s.remember(r)
 	return nil
-}
-
-func (s *boundedRunStore) xorDigest(hash [32]byte) {
-	for i := range s.root {
-		s.root[i] ^= hash[i]
-	}
 }
 
 func (s *boundedRunStore) load(path string) (storedRun, []byte, error) {
@@ -290,59 +275,45 @@ func (s *boundedRunStore) load(path string) (storedRun, []byte, error) {
 	return r, raw, nil
 }
 
-// Authenticate every lookup against its recorded digest, then audit the whole
-// disk set once before releasing a summary. The in-memory count and multiset
-// digest detect removed, replaced or inserted identities too: an absent or
-// extra spill file must not hide a duplicate session_open.
+// verify audits the whole spill set once, before a checkpoint is released.
+// Every file must be the exact bytes this store last wrote for its run, and
+// every recorded run must be present. Each file is checked against its own
+// digest: a combined XOR digest is linear, so a chosen set of authentic older
+// records could cancel out and pass, which per-file comparison rules out.
 func (s *boundedRunStore) verify() error {
-	_, _, _, err := s.scan("")
-	return err
-}
-
-// scan audits the complete spill set against the in-memory count and digest.
-// MAC alone is insufficient: an older authentic record could otherwise roll a
-// closed run back to open. Lookups use the per-run digest; this full pass runs
-// once, from verify, before a checkpoint is released.
-func (s *boundedRunStore) scan(run string) (storedRun, []byte, bool, error) {
 	if s.dir == "" {
-		return storedRun{}, nil, false, nil
+		return nil
 	}
 	dir, err := os.Open(filepath.Clean(s.dir))
 	if err != nil {
-		return storedRun{}, nil, false, err
+		return err
 	}
 	defer func() { _ = dir.Close() }()
-	var root [32]byte
-	var count uint64
-	var match storedRun
-	var matchedBytes []byte
+	seen := 0
 	for {
-		entries, readErr := dir.ReadDir(1)
+		entries, readErr := dir.ReadDir(256)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return storedRun{}, nil, false, readErr
+			return readErr
 		}
 		for _, entry := range entries {
 			r, raw, err := s.load(filepath.Join(s.dir, entry.Name()))
 			if err != nil {
-				return storedRun{}, nil, false, err
+				return err
 			}
-			hash := sha256.Sum256(raw)
-			for i := range root {
-				root[i] ^= hash[i]
+			want, ok := s.digests[r.Run]
+			if !ok || sha256.Sum256(raw) != want {
+				return errors.New("session lifecycle state set changed")
 			}
-			count++
-			if r.Run == run {
-				match, matchedBytes = r, raw
-			}
+			seen++
 		}
-		if errors.Is(readErr, io.EOF) {
+		if errors.Is(readErr, io.EOF) || len(entries) == 0 {
 			break
 		}
 	}
-	if count != s.files || root != s.root {
-		return storedRun{}, nil, false, errors.New("session lifecycle state set changed")
+	if seen != len(s.digests) {
+		return errors.New("session lifecycle state set changed")
 	}
-	return match, matchedBytes, matchedBytes != nil, nil
+	return nil
 }
 
 func (s *boundedRunStore) remember(r storedRun) {

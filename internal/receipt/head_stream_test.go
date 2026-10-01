@@ -205,7 +205,7 @@ func TestHeadTrustedVerifierSpillFailureLatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream.v.runStore.dir = t.TempDir()
-	stream.v.runStore.files = 1
+	stream.v.runStore.digests = map[string][32]byte{"missing-run": {}}
 	if _, _, err := stream.Finish(); err == nil {
 		t.Fatal("missing spill set released checkpoint")
 	}
@@ -393,5 +393,32 @@ func TestBoundedRunStoreLookupRejectsRolledBackFile(t *testing.T) {
 	s.cache = nil
 	if _, _, _, err := s.read("run-065"); err == nil {
 		t.Fatal("lookup accepted a rolled-back lifecycle record")
+	}
+}
+
+func TestBoundedRunStoreAuditRejectsRolledBackFile(t *testing.T) {
+	s := &boundedRunStore{}
+	t.Cleanup(func() { _ = s.close() })
+	for i := range runCacheLimit + 2 {
+		if err := s.write(storedRun{Run: fmt.Sprintf("run-%03d", i), Open: "o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := s.path("run-065")
+	old, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(storedRun{Run: "run-065", Open: "o", Closed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.verify(); err != nil {
+		t.Fatalf("clean set rejected: %v", err)
+	}
+	if err := os.WriteFile(path, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.verify(); err == nil {
+		t.Fatal("final audit accepted a rolled-back lifecycle record")
 	}
 }

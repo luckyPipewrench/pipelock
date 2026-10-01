@@ -157,6 +157,7 @@ type Metrics struct {
 
 	// Evidence health (evidence.go).
 	evidenceTornTails           prometheus.Counter
+	evidenceTornTailPresent     prometheus.Gauge
 	evidenceTornTailSeen        map[evidenceTornTailKey]struct{}
 	evidenceTornTailStats       EvidenceTornTailStats
 	evidenceSequenceGaps        *prometheus.CounterVec

@@ -100,6 +100,7 @@ type EvidenceHealthStats struct {
 	Anchor                     *EvidenceAnchorStats       `json:"anchor"`
 	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
 	TornTails                  EvidenceTornTailStats      `json:"torn_tails"`
+	TornTailPresent            bool                       `json:"torn_tail_present"`
 	CPC                        any                        `json:"cpc"`
 	AnchoredFinalSeq           uint64                     `json:"-"`
 	AnchorLagReceipts          uint64                     `json:"-"`
@@ -231,6 +232,9 @@ func (m *Metrics) RecordEvidenceTornTail(path string, offset int64) {
 	if m.evidenceTornTails != nil {
 		m.evidenceTornTails.Inc()
 	}
+	if m.evidenceTornTailPresent != nil {
+		m.evidenceTornTailPresent.Set(1)
+	}
 }
 
 // EvidenceTornTailSnapshot returns an isolated copy of the observation state.
@@ -252,6 +256,10 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 	m.evidenceTornTails = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "pipelock", Subsystem: "evidence", Name: "torn_tails_total",
 		Help: "Total distinct incomplete evidence shard boundaries observed in this process.",
+	})
+	m.evidenceTornTailPresent = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock", Subsystem: "evidence", Name: "torn_tail_present",
+		Help: "One after observing a torn evidence tail; remains set until process restart.",
 	})
 	m.evidenceSequenceGaps = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
@@ -333,6 +341,7 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 
 	reg.MustRegister(
 		m.evidenceTornTails,
+		m.evidenceTornTailPresent,
 		m.evidenceSequenceGaps,
 		m.evidenceHeartbeatInterval,
 		m.evidenceLastAnchorTimestamp,
@@ -599,6 +608,9 @@ func (m *Metrics) EvidenceHealthStatsSnapshot() (EvidenceHealthStats, bool) {
 	stats.RunState = EvidenceRunStateOpen
 	stats.RunID = nil
 	stats.AELArtifactCapability = CurrentEvidenceArtifactCapability()
+	// Damage survives a healthy emitter replacement or a stale health callback.
+	stats.TornTails = m.EvidenceTornTailSnapshot()
+	stats.TornTailPresent = stats.TornTails.Total > 0
 	return stats, true
 }
 

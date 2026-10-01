@@ -6,6 +6,7 @@ package metrics
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -38,4 +39,38 @@ func TestEvidenceTornTailSnapshotAndCounter(t *testing.T) {
 	if absent.EvidenceTornTailSnapshot().Total != 0 {
 		t.Fatal("nil metrics recorded state")
 	}
+}
+
+func TestEvidenceTornTailPresenceLatches(t *testing.T) {
+	m := New()
+	healthy := func() (EvidenceHealthStats, bool) { return EvidenceHealthStats{LocalRecorderOperational: true}, true }
+	m.SetEvidenceHealthFunc(healthy)
+	check := func(present bool) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		m.StatsHandler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil))
+		for _, want := range []string{`"torn_tail_present":` + strconv.FormatBool(present), `"local_recorder_operational":true`, `"run_state":"OPEN"`} {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("stats missing %s", want)
+			}
+		}
+		value := "0"
+		if present {
+			value = "1"
+		}
+		w = httptest.NewRecorder()
+		m.PrometheusHandler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+		if !strings.Contains(w.Body.String(), "pipelock_evidence_torn_tail_present "+value+"\n") {
+			t.Errorf("presence gauge missing value %s", value)
+		}
+	}
+	check(false)
+	m.RecordEvidenceTornTail("evidence-run-0.jsonl", 42)
+	check(true)
+	m.SetEvidenceHealthFunc(healthy) // A fresh emitter/reload cannot clear historical damage.
+	m.RecordEvidenceTornTail("evidence-run-0.jsonl", 42)
+	check(true)
+	m = New() // Process restart creates new observation state.
+	m.SetEvidenceHealthFunc(healthy)
+	check(false)
 }

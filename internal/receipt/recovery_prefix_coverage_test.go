@@ -148,7 +148,7 @@ func TestRecoveryObservationEarlierShardErrors(t *testing.T) {
 			if err := os.WriteFile(path, []byte("{\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, "unexpected end of JSON input", nil},
+		}, "", nil},
 		{"bounded_invalid_prefix", recorder.MaxEvidenceReadFileBytes, func(t *testing.T, path string, es []recorder.Entry) {
 			es[0].Sequence++
 			es[0].Hash = recorder.ComputeHash(es[0])

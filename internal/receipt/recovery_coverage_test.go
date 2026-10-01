@@ -317,10 +317,10 @@ func TestPublishRecoverySealClaimOutcomes(t *testing.T) {
 			}
 		}, wantError: "not a regular file"},
 		{name: "malformed_claim", prepare: func(t *testing.T, dir string, s RecoverySeal) {
-			if err := os.WriteFile(filepath.Join(dir, ChainLinkFileName(s.PredecessorSession)), []byte("{"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, ChainLinkFileName(s.PredecessorSession)), []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, wantError: "unexpected end"},
+		}, wantError: "invalid character"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, seal, key := recoveryFixture(t)

@@ -40,7 +40,7 @@ func TestEvidenceDoctorTornTail(t *testing.T) {
 			name := "evidence-proxy-0.jsonl"
 			path := filepath.Join(dir, name)
 			writeDoctorEntries(t, dir, name, doctorEntryPlan{{session: "proxy", seq: 0}})
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,7 +67,7 @@ func TestEvidenceDoctorTornTail(t *testing.T) {
 			if tc.name != "healthy" && !report.Damaged() {
 				t.Fatal("damaged file reported healthy")
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -118,7 +118,7 @@ func TestReceiptTornTailReload(t *testing.T) {
 					if old.HealthError() == nil {
 						t.Fatal("old emitter still accepts receipts")
 					}
-					after, err := os.ReadFile(path)
+					after, err := os.ReadFile(filepath.Clean(path))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -195,7 +195,7 @@ func TestReceiptTornTailReloadTamper(t *testing.T) {
 			if old.HealthError() == nil {
 				t.Fatal("tamper left receipt admission healthy")
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -269,7 +269,7 @@ func TestReceiptTornTailReloadFreshFailure(t *testing.T) {
 			if !p.Reload(&next, scanner.MustNew(&next)) {
 				t.Fatal("retry after storage repair rejected")
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}

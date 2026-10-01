@@ -64,13 +64,16 @@ func TestFragmentBufferCachedGroupMembershipTracksLaterRequests(t *testing.T) {
 	group := owner.Stream("group")
 	first := owner.Stream("first")
 	second := owner.Stream("second")
-	if got := fb.AppendOwnedInGroup(owner, group, first, []byte("first body")); got != (FragmentAppendResult{}) {
+	if got := fb.AppendOwnedInGroup(owner, group, first, []byte("aaaa")); got != (FragmentAppendResult{}) {
 		t.Fatalf("first append: %+v", got)
 	}
-	if got := fb.AppendOwnedInGroup(owner, group, second, []byte("next body")); got != (FragmentAppendResult{}) {
+	if got := fb.AppendOwnedInGroup(owner, group, second, []byte("bbbb")); got != (FragmentAppendResult{}) {
 		t.Fatalf("second append: %+v", got)
 	}
-	if got := fb.AppendOwnedInGroup(owner, group, first, []byte("last body")); got != (FragmentAppendResult{}) {
+	if got := fb.TotalBufferBytes(); got != 8 {
+		t.Fatalf("setup retained %d bytes, want both streams intact at 8", got)
+	}
+	if got := fb.AppendOwnedInGroup(owner, group, first, []byte("cccccc")); got != (FragmentAppendResult{}) {
 		t.Fatalf("returning append: %+v", got)
 	}
 	if got := fb.TotalBufferBytes(); got > 12 {

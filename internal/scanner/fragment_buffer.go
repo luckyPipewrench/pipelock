@@ -411,8 +411,8 @@ func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
 		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
-	// The per-stream cap above bounds one stream; this bounds the identity that
-	// owns it, which is the unit the ledger admits.
+	// The per-stream cap also bounds a singleton budget group. Shared groups
+	// need the same group-budget enforcement as enforceOwnerBudgetLocked below.
 	// Keep the membership map, never its size: another request can add a
 	// sibling stream to the group while this stream remains live.
 	if sb.groupMembers != nil && len(sb.groupMembers) <= 1 {
@@ -516,13 +516,10 @@ func (fb *FragmentBuffer) streamBytesLocked(streamID string) int {
 	return 0
 }
 
-// enforceOwnerBudgetLocked keeps one identity's retained bytes within the
-// configured cap by evicting its OWN oldest fragment until it fits. Evicting
-// within an identity is the same trade the per-stream cap already makes, and
-// the newest bytes are kept because they are the ones most likely to complete
-// a split secret. It never touches another identity's evidence: a fragment
-// dropped from a stranger's stream could let a later request complete a secret
-// in an emptied stream and pass uninspected.
+// enforceOwnerBudgetLocked keeps the stream's budget group within the configured
+// cap by evicting its oldest fragments. Independent groups retain their own caps.
+// The newest bytes are kept because they are the ones most likely to complete a
+// split secret. It never touches another group's evidence.
 func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	state := fb.owners[owner]
 	if state == nil {
@@ -545,9 +542,9 @@ func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	}
 }
 
-// evictOldestOwnerFragmentLocked drops the single oldest fragment held by one
-// identity and reports whether anything was removed. A false return means the
-// identity holds nothing further that can be released, which stops the caller
+// evictOldestOwnerFragmentLocked drops the single oldest fragment in the budget
+// group and reports whether anything was removed. A false return means the
+// group holds nothing further that can be released, which stops the caller
 // from spinning.
 func (fb *FragmentBuffer) evictOldestOwnerFragmentLocked(members map[string]struct{}) bool {
 	var (

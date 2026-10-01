@@ -65,7 +65,7 @@ pipelock contain run: session contract for claude
 
 Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch: a grant that has already expired fails preflight at the `workspace_access` check (probe 15) before any contract is printed, and the command exits 1. A grant that expires after probe 15 passes is refused by a final expiry check after the contract prints, and that refusal exits 2.
 
-If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 Flags:
 
@@ -370,7 +370,7 @@ The pre-start signer writes the same signed posture capsule path used by `contai
 
 Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
-Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Replace the earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above, then run `sudo systemctl daemon-reload` and restart that service. An old drop-in still performs a preflight, but it doesn't emit a capsule.
+Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Don't replace an earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above in this release, because that recipe can't start the agent (see the note at the top of this section). Use `pipelock contain run` to launch contained agents. An old drop-in still performs a preflight, but it doesn't emit a capsule.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

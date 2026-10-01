@@ -2032,15 +2032,23 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 		bodyBlockReason = blockreason.BodyEntropy
 	}
+	var signalScanner string
 	if result.RedactionBlockReason == "" {
 		switch blockCause {
 		case bodyBlockCauseInjection:
 			layer, bodyBlockReason = scannerLabelBodyPromptInjection, blockreason.PromptInjection
 		case bodyBlockCauseDLP:
 			layer, bodyBlockReason = "dlp", blockreason.DLPMatch
+			// The receipt and metric layer stays "dlp"; the adaptive signal
+			// uses the shared body-DLP scanner identity so the classified-denial
+			// fingerprint matches the forward and intercept body paths.
+			signalScanner = scannerLabelBodyDLP
 		case bodyBlockCauseEntropy:
 			layer, bodyBlockReason = scannerLabelBodyEntropy, blockreason.BodyEntropy
 		}
+	}
+	if signalScanner == "" {
+		signalScanner = layer
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2056,7 +2064,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, layer, reason)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer),
 			reason)
@@ -2077,7 +2085,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, layer, reason)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer),
 			reason)

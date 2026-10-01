@@ -100,7 +100,7 @@ func (l LocalLog) submitWithSync(checkpoint Checkpoint, syncFile func(*os.File) 
 		return Proof{}, fmt.Errorf("open local anchor log directory: %w", err)
 	}
 	defer func() { _ = dir.Close() }()
-	if err := dir.Sync(); err != nil && runtime.GOOS != "windows" {
+	if err := syncFile(dir); err != nil && runtime.GOOS != "windows" {
 		return Proof{}, fmt.Errorf("sync local anchor log directory: %w", err)
 	}
 	return Proof{

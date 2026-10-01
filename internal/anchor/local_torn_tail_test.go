@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -170,6 +171,28 @@ func TestLocalLogSyncFailure(t *testing.T) {
 	}
 	if proof.EntryHash != "" {
 		t.Fatal("returned proof before durable write")
+	}
+}
+
+func TestLocalLogDirectorySyncFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync errors are ignored on Windows")
+	}
+	log := LocalLog{Path: filepath.Join(t.TempDir(), "anchor.jsonl")}
+	dirErr := errors.New("injected directory sync failure")
+	calls := 0
+	proof, err := log.submitWithSync(Checkpoint{SessionID: "test-session"}, func(f *os.File) error {
+		calls++
+		if info, statErr := f.Stat(); statErr == nil && info.IsDir() {
+			return dirErr
+		}
+		return nil
+	})
+	if !errors.Is(err, dirErr) {
+		t.Fatalf("want directory sync failure, got %v (sync calls %d)", err, calls)
+	}
+	if proof.EntryHash != "" {
+		t.Fatal("returned proof before the directory entry was durable")
 	}
 }
 

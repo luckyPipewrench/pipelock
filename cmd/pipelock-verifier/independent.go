@@ -99,18 +99,48 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("independent verification failed: %w", err))
 	}
-	report := anchor.VerifyBundle(bundle, covered, keyHexes, backend)
+	report := independentReport{
+		VerifyReport:    anchor.VerifyBundle(bundle, covered, keyHexes, backend),
+		CoveredReceipts: len(covered),
+		ChainLength:     len(receipts),
+	}
+	if report.Valid && len(covered) < len(receipts) {
+		// The anchor vouches for the prefix only. Receipts after it must still
+		// verify as a chain (hash linkage and signatures) or the verdict is
+		// not valid; an honest early bundle whose later receipts verify stays
+		// valid and the coverage split is reported.
+		if tail := receipt.VerifyChainTrusted(receipts, keyHexes); !tail.Valid {
+			report.Valid = false
+			report.Error = fmt.Sprintf("receipts after the anchored prefix (%d..%d) failed chain verification: %s", len(covered), len(receipts)-1, tail.Error)
+		} else {
+			report.TailChainVerified = true
+		}
+	}
 	emitIndependentReport(stdout, stderr, filepath.Clean(target), report, opts.jsonOutput)
 	if report.Valid && len(covered) < len(receipts) {
-		// The verdict covers the prefix only. Say so on stderr, which keeps the
-		// JSON verdict on stdout unchanged for existing consumers.
-		_, _ = fmt.Fprintf(stderr, "note: the anchor covers receipts 0..%d of %d in this chain; the %d later receipts are not covered by it\n",
-			report.FinalSeq, len(receipts), len(receipts)-len(covered))
+		// Keep a stderr note for operators; the JSON verdict carries the same
+		// split in structured fields.
+		_, _ = fmt.Fprintf(stderr, "note: the anchor covers receipts 0..%d of %d in this chain; the %d later receipts are chain-verified but not anchored\n",
+			len(covered)-1, len(receipts), len(receipts)-len(covered))
 	}
 	if !report.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("independent verification failed: %s", report.Error))
 	}
 	return nil
+}
+
+// independentReport is the anchor verdict plus how much of the supplied chain
+// the anchor covers. The embedded fields keep their existing meaning; the
+// three added ones are additive.
+type independentReport struct {
+	anchor.VerifyReport
+	// CoveredReceipts is how many leading receipts the anchor commits to.
+	CoveredReceipts int `json:"covered_receipts"`
+	// ChainLength is how many receipts were supplied.
+	ChainLength int `json:"chain_length"`
+	// TailChainVerified is true when receipts after the anchored prefix exist
+	// and verified as a chain.
+	TailChainVerified bool `json:"tail_chain_verified"`
 }
 
 // coveredReceipts returns the leading receipts a bundle's checkpoint covers. A
@@ -129,6 +159,16 @@ func coveredReceipts(bundle anchor.Bundle, receipts []receipt.Receipt) ([]receip
 		return nil, fmt.Errorf("anchor bundle covers %d receipts but the supplied chain has only %d", count, len(receipts))
 	}
 	return receipts[:count], nil
+}
+
+// independentCoverage names which receipts the anchor commits to and which were
+// only chain-verified.
+func independentCoverage(report independentReport) string {
+	if report.CoveredReceipts >= report.ChainLength {
+		return fmt.Sprintf("receipts 0..%d of %d anchored", report.CoveredReceipts-1, report.ChainLength)
+	}
+	return fmt.Sprintf("receipts 0..%d of %d anchored, %d..%d chain-verified",
+		report.CoveredReceipts-1, report.ChainLength, report.CoveredReceipts, report.ChainLength-1)
 }
 
 func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, int, error) {
@@ -186,16 +226,17 @@ func resolveSignerKeys(inputs []string) ([]string, error) {
 	return out, nil
 }
 
-func emitIndependentReport(stdout, stderr io.Writer, path string, report anchor.VerifyReport, jsonMode bool) {
+func emitIndependentReport(stdout, stderr io.Writer, path string, report independentReport, jsonMode bool) {
 	if jsonMode {
 		writeJSON(stdout, report)
 		return
 	}
 	if report.Valid {
-		_, _ = fmt.Fprintf(stdout, "INDEPENDENT VERIFY OK: %s\n", path)
+		_, _ = fmt.Fprintf(stdout, "INDEPENDENT VERIFY OK: %s (%s)\n", path, independentCoverage(report))
 		_, _ = fmt.Fprintf(stdout, "  Backend:       %s\n", report.Backend)
 		_, _ = fmt.Fprintf(stdout, "  Session:       %s\n", report.SessionID)
 		_, _ = fmt.Fprintf(stdout, "  Receipts:      %d\n", report.ReceiptCount)
+		_, _ = fmt.Fprintf(stdout, "  Coverage:      %s\n", independentCoverage(report))
 		_, _ = fmt.Fprintf(stdout, "  Final seq:     %d\n", report.FinalSeq)
 		_, _ = fmt.Fprintf(stdout, "  Root hash:     %s\n", report.RootHash)
 		_, _ = fmt.Fprintf(stdout, "  Log index:     %d\n", report.Proof.LogIndex)

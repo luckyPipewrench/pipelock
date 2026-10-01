@@ -878,8 +878,89 @@ func TestIndependent_EarlyAnchorStillVerifiesAfterChainGrows(t *testing.T) {
 	if !strings.Contains(stdout, "Receipts:      3") || !strings.Contains(stdout, "Final seq:     2") {
 		t.Fatalf("stdout should report the covered prefix:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "2 later receipts are not covered") {
-		t.Fatalf("stderr should say the later receipts are uncovered, got %q", stderr)
+	if !strings.Contains(stderr, "2 later receipts are chain-verified but not anchored") {
+		t.Fatalf("stderr should say the later receipts are not anchored, got %q", stderr)
+	}
+	if !strings.Contains(stdout, "receipts 0..2 of 5 anchored, 3..4 chain-verified") {
+		t.Fatalf("OK output should name the coverage:\n%s", stdout)
+	}
+}
+
+// tamperIndependentTail edits the last receipt line of the evidence file so its
+// signature no longer verifies.
+func tamperIndependentTail(t *testing.T, evidence string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(evidence))
+	if err != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	last := lines[len(lines)-1]
+	edited := strings.Replace(last, "example.com", "examplf.com", 1)
+	if edited == last {
+		t.Fatalf("tail line has no example.com to tamper with: %s", last)
+	}
+	lines[len(lines)-1] = edited
+	if err := os.WriteFile(evidence, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write evidence: %v", err)
+	}
+}
+
+func TestIndependent_TamperedTailIsNotValid(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 5)
+	evidence, bundle, logPath := writeIndependentPrefixFixture(t, fix, 3)
+	tamperIndependentTail(t, evidence)
+
+	for _, jsonMode := range []bool{false, true} {
+		args := []string{"independent", evidence, "--bundle", bundle, "--key", fix.keyHex, "--local-log", logPath, "--log-id", "verifier-test-log"}
+		if jsonMode {
+			args = append(args, "--json")
+		}
+		stdout, stderr, code := runRoot(t, args...)
+		if code == cliutil.ExitOK {
+			t.Fatalf("json=%v: tampered tail exited 0, stdout=%q stderr=%q", jsonMode, stdout, stderr)
+		}
+		if strings.Contains(stdout, "INDEPENDENT VERIFY OK") || strings.Contains(stdout, `"valid": true`) {
+			t.Fatalf("json=%v: tampered tail presented as valid:\n%s", jsonMode, stdout)
+		}
+		if jsonMode {
+			var verdict map[string]any
+			if err := json.Unmarshal([]byte(stdout), &verdict); err != nil {
+				t.Fatalf("decode verdict: %v\n%s", err, stdout)
+			}
+			if verdict["valid"] != false || verdict["covered_receipts"] != float64(3) || verdict["chain_length"] != float64(5) {
+				t.Fatalf("verdict = %v, want valid=false covered_receipts=3 chain_length=5", verdict)
+			}
+			if !strings.Contains(fmt.Sprint(verdict["error"]), "after the anchored prefix") {
+				t.Fatalf("error should name the tail: %v", verdict["error"])
+			}
+		}
+	}
+}
+
+func TestIndependent_JSONVerdictReportsCoverage(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 5)
+	for _, tc := range []struct {
+		covered  int
+		wantTail bool
+	}{{3, true}, {5, false}} {
+		evidence, bundle, logPath := writeIndependentPrefixFixture(t, fix, tc.covered)
+		stdout, stderr, code := runRoot(t, "independent", evidence, "--bundle", bundle, "--key", fix.keyHex,
+			"--local-log", logPath, "--log-id", "verifier-test-log", "--json")
+		if code != cliutil.ExitOK {
+			t.Fatalf("covered=%d code=%d stdout=%q stderr=%q", tc.covered, code, stdout, stderr)
+		}
+		var verdict map[string]any
+		if err := json.Unmarshal([]byte(stdout), &verdict); err != nil {
+			t.Fatalf("decode verdict: %v\n%s", err, stdout)
+		}
+		if verdict["valid"] != true || verdict["receipt_count"] != float64(tc.covered) ||
+			verdict["covered_receipts"] != float64(tc.covered) || verdict["chain_length"] != float64(5) ||
+			verdict["tail_chain_verified"] != tc.wantTail {
+			t.Fatalf("covered=%d verdict = %v", tc.covered, verdict)
+		}
 	}
 }
 

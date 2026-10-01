@@ -63,7 +63,7 @@ pipelock contain run: session contract for claude
     /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
 ```
 
-Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch: an expired grant fails preflight at the `workspace_access` check (probe 15) before any contract is printed, and the command exits 1.
+Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch: a grant that has already expired fails preflight at the `workspace_access` check (probe 15) before any contract is printed, and the command exits 1. A grant that expires after probe 15 passes is refused by a final expiry check after the contract prints, and that refusal exits 2.
 
 If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
@@ -98,7 +98,7 @@ Mount-boundary detection and the TOCTOU identity re-check rely on POSIX device/i
 Exit codes:
 
 - **0**, preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
-- **1**, containment was broken, posture emission failed, or the launched agent exited non-zero. A recorded workspace grant that has expired fails preflight at probe 15 (`workspace_access`) and also exits 1, with or without `--dry-run`; no contract is printed and nothing launches. The error names the expired grants and the `grant-workspace` or `revoke-workspace` command that clears them.
+- **1**, containment was broken, posture emission failed, or the launched agent exited non-zero. A recorded workspace grant that has expired fails preflight at probe 15 (`workspace_access`) and also exits 1, with or without `--dry-run`, and no contract is printed. A grant that expires after probe 15 passes is refused by the final expiry check with exit 2 after the contract prints. Nothing launches in either case. The error names the expired grants and the `grant-workspace` or `revoke-workspace` command that clears them.
 - **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
 
 Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.

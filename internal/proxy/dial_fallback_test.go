@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -134,7 +135,34 @@ func TestSSRFSafeDialContext_MetadataAddressRefusesBeforeAnyConnect(t *testing.T
 	}
 }
 
-// Cancelling the context during the first attempt stops further attempts.
+// A name with many unreachable validated records costs a bounded number of
+// attempts, tried in resolver order.
+func TestSSRFSafeDialContext_AttemptsAreBounded(t *testing.T) {
+	p := dialFallbackProxy(t, "127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5", "127.0.0.6", "127.0.0.1")
+	port, accepted := dialFallbackListener(t)
+	var tried []string
+	p.dialer = &net.Dialer{Control: func(_, address string, _ syscall.RawConn) error {
+		tried = append(tried, address)
+		return net.ErrClosed
+	}}
+	_, err := p.ssrfSafeDialContext(context.Background(), "tcp", net.JoinHostPort(dialFallbackHost, port))
+	if err == nil {
+		t.Fatal("expected an error when every attempted address is unreachable")
+	}
+	if len(tried) != dialfallback.MaxAttempts {
+		t.Fatalf("attempts = %d (%v), want %d", len(tried), tried, dialfallback.MaxAttempts)
+	}
+	if tried[0] != net.JoinHostPort("127.0.0.2", port) || tried[2] != net.JoinHostPort("127.0.0.4", port) {
+		t.Errorf("addresses not tried in resolver order: %v", tried)
+	}
+	if accepted.Load() != 0 {
+		t.Errorf("listener saw %d connections, want 0 (the reachable record is past the bound)", accepted.Load())
+	}
+}
+
+// Cancelling the context during the first attempt stops further attempts. The
+// explicit stop between attempts is pinned where a dial function that ignores
+// its context can be supplied: internal/dialfallback.
 func TestSSRFSafeDialContext_CancelStopsFurtherAttempts(t *testing.T) {
 	port, accepted := dialFallbackListener(t)
 	p := dialFallbackProxy(t, "127.0.0.2", "127.0.0.1")

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -1036,22 +1037,19 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 		return nil, err
 	}
 	// Every address passed assertResolvedIPsSafe in this call; try them in
-	// resolver order and never re-resolve.
-	var lastErr error
-	for _, ip := range canonical {
-		if err := ctx.Err(); err != nil {
-			if lastErr == nil {
-				lastErr = err
-			}
-			break
-		}
-		conn, dialErr := f.dial(ctx, network, net.JoinHostPort(ip.String(), port))
-		if dialErr == nil {
-			return conn, nil
-		}
-		lastErr = dialErr
+	// resolver order, for at most dialfallback.MaxAttempts attempts and not
+	// past the context's deadline, and never re-resolve.
+	addrs := make([]string, len(canonical))
+	for i, ip := range canonical {
+		addrs[i] = net.JoinHostPort(ip.String(), port)
 	}
-	return nil, fmt.Errorf("siem forwarder dial %s: %w", host, lastErr)
+	conn, err := dialfallback.Dial(ctx, addrs, func(ctx context.Context, addr string) (net.Conn, error) {
+		return f.dial(ctx, network, addr)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("siem forwarder dial %s: %w", host, err)
+	}
+	return conn, nil
 }
 
 func persistCursor(path string, c cursor) error {

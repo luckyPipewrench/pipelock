@@ -43,6 +43,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/health"
@@ -4667,23 +4668,20 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 	}
 
 	// Every address above passed validation in this call. Try them in resolver
-	// order until one connects; never re-resolve. Each attempt is bounded by
-	// the dialer's own Timeout, so no extra per-attempt timeout is added.
-	var lastErr error
-	for _, ipStr := range ips {
-		if err := ctx.Err(); err != nil {
-			if lastErr == nil {
-				lastErr = err
-			}
-			break
-		}
-		conn, dialErr := p.dialer.DialContext(ctx, network, net.JoinHostPort(ipStr, port))
-		if dialErr == nil {
-			return conn, nil
-		}
-		lastErr = dialErr
+	// order until one connects, for at most dialfallback.MaxAttempts attempts
+	// and not past the context's deadline; never re-resolve. Each attempt is
+	// also bounded by the dialer's own Timeout.
+	addrs := make([]string, len(ips))
+	for i, ipStr := range ips {
+		addrs[i] = net.JoinHostPort(ipStr, port)
 	}
-	return nil, fmt.Errorf("ssrfSafeDialContext: dial %s: %w", host, lastErr)
+	conn, err := dialfallback.Dial(ctx, addrs, func(ctx context.Context, dialAddr string) (net.Conn, error) {
+		return p.dialer.DialContext(ctx, network, dialAddr)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ssrfSafeDialContext: dial %s: %w", host, err)
+	}
+	return conn, nil
 }
 
 // buildHandler wraps a ServeMux to intercept CONNECT and absolute-URI forward

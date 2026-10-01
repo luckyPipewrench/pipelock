@@ -238,6 +238,12 @@ func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
 		{"deny: second SAS in a parameter key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&" + url.QueryEscape("sig="+releaseGrantSASSig("smuggled-fixture")) + "=1", false},
 		{"deny: duplicate sig parameter", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&sig=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
 		{"deny: duplicate sig under an encoded key", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&si%67=" + url.QueryEscape(releaseGrantSASSig("smuggled-fixture")), false},
+		// Each signed field must hold its documented format, exactly once, so
+		// none can carry other data under the grant's DLP and entropy allowance.
+		{"deny: key object ID carrying a non-GUID secret", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "skoid=00000000-0000-4000-8000-000000000001", "skoid="+releaseGrantSASSig("entropy-smuggle"), 1), false},
+		{"deny: expiry that is not a timestamp", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "se=2026-09-30T00%3A37%3A09Z", "se=tomorrow", 1), false},
+		{"deny: signature of the wrong length", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "&sig="+url.QueryEscape(releaseGrantSASSig("sas-shape-fixture")), "&sig="+url.QueryEscape(releaseGrantSASSig("sas-shape-fixture")+"AAAA"), 1), false},
+		{"deny: a signed field given twice", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery + "&sp=r", false},
 		{"deny: account-key SAS shape (no delegation-key fields)", "https://" + githubReleaseAssetsHost + "/asset/1?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-09-30T00%3A37%3A09Z&sig=" + url.QueryEscape(releaseGrantSASSig("account-key-fixture")) + "&jwt=" + jwt, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -473,5 +479,25 @@ func TestCredentialAudienceURLQueryRequiresHTTPS(t *testing.T) {
 				t.Fatalf("scheme %s: keep=%v allows=%v, want allowance=%v", scheme, keep, allows, wantAllow)
 			}
 		})
+	}
+}
+
+// The query-entropy exemption matches signed field names exactly, as the SAS
+// shape check does, so a case alias of a signed field gets no exemption.
+func TestReleaseGrantSASQueryValueAllowed_ExactFieldNames(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	parsed, err := url.Parse("https://" + githubReleaseAssetsHost + "/asset/1?" + releaseGrantSASQuery(fakeAudienceJWT(), "exact-name-fixture"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !s.releaseGrantSASQueryValueAllowed(parsed, "skoid") {
+		t.Fatal("signed field skoid lost its exemption under a valid grant")
+	}
+	for _, alias := range []string{"SKOID", "Sig", "SKT"} {
+		if s.releaseGrantSASQueryValueAllowed(parsed, alias) {
+			t.Errorf("case alias %q got the signed-field exemption", alias)
+		}
 	}
 }

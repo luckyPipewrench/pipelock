@@ -1799,3 +1799,120 @@ func TestClaudeHookCmd_EmptyHookEventName_TreatedAsPreToolUse(t *testing.T) {
 			resp.HookSpecificOutput.PermissionDecision, resp.HookSpecificOutput.PermissionDecisionReason)
 	}
 }
+
+// TestClaudeHookCmd_GrepTool_CredentialDirectories pins that a recursive Grep
+// cannot read a credential directory by searching it, a parent of it, or a
+// symlink to it, while ordinary project searches keep working.
+func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "src", "app")
+	for _, dir := range []string{filepath.Join(home, ".ssh"), filepath.Join(home, ".aws"), project} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, name := range []string{"id_ed25519", "id_ed25519.pub"} {
+		if err := os.WriteFile(filepath.Join(home, ".ssh", name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	link := filepath.Join(project, "keys")
+	if err := os.Symlink(filepath.Join(home, ".ssh"), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	t.Chdir(home)
+	grep := func(input map[string]string, cwd string) string {
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Grep",
+			"tool_input": json.RawMessage(raw), "tool_use_id": "t1", "cwd": cwd,
+		})
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		got, err := runClaudeHookDecision(t, string(payload))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return got
+	}
+	for _, tc := range []struct {
+		name  string
+		input map[string]string
+		cwd   string
+		want  string
+	}{
+		{"credential directory", map[string]string{"pattern": ".", "path": filepath.Join(home, ".ssh")}, project, decisionDeny},
+		{"credential directory by tilde", map[string]string{"pattern": ".", "path": "~/.aws"}, project, decisionDeny},
+		{"home directory", map[string]string{"pattern": ".", "path": home}, project, decisionDeny},
+		{"filesystem root", map[string]string{"pattern": ".", "path": "/"}, project, decisionDeny},
+		{"symlink to a credential directory", map[string]string{"pattern": ".", "path": link}, project, decisionDeny},
+		{"parent of a symlink into a credential directory", map[string]string{"pattern": ".", "path": link + "/.."}, project, decisionDeny},
+		{"relative parent of a symlink into a credential directory", map[string]string{"pattern": ".", "path": "keys/.."}, project, decisionDeny},
+		{"unresolvable path with a parent segment", map[string]string{"pattern": ".", "path": "missing/.."}, project, decisionDeny},
+		{"relative cwd resolves from the process directory", map[string]string{"pattern": "."}, ".", decisionDeny},
+		{"single public key file is left to the file policy", map[string]string{"pattern": "ssh-ed25519", "path": filepath.Join(home, ".ssh", "id_ed25519.pub")}, project, decisionAllow},
+		{"single private key file is still denied by the file policy", map[string]string{"pattern": "BEGIN", "path": filepath.Join(home, ".ssh", "id_ed25519")}, project, decisionDeny},
+		{"project subdirectory parent stays allowed", map[string]string{"pattern": "func", "path": project + "/../app"}, project, decisionAllow},
+		{"relative path from home", map[string]string{"pattern": ".", "path": ".ssh"}, home, decisionDeny},
+		{"pathless search from home", map[string]string{"pattern": "."}, home, decisionDeny},
+		{"relative path with no cwd resolves from the process directory", map[string]string{"pattern": ".", "path": ".ssh"}, "", decisionDeny},
+		{"pathless search with no cwd from the home directory", map[string]string{"pattern": "."}, "", decisionDeny},
+		{"system credential directory", map[string]string{"pattern": ".", "path": "/etc"}, project, decisionDeny},
+		{"narrower system directory", map[string]string{"pattern": ".", "path": "/etc/ssl"}, project, decisionAllow},
+		{"project directory", map[string]string{"pattern": "func", "path": project}, project, decisionAllow},
+		{"pathless search from a project", map[string]string{"pattern": "func"}, project, decisionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := grep(tc.input, tc.cwd); got != tc.want {
+				t.Errorf("Grep %v from %s: got %s, want %s", tc.input, tc.cwd, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClaudeGrepCredentialDirsMatchCredentialRule keeps the Grep directory
+// list in step with the shipped Credential File Access rule: every listed
+// directory must hold a file that rule denies to Read.
+func TestClaudeGrepCredentialDirsMatchCredentialRule(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, c := range claudeGrepCredentialDirs {
+		path := "~/" + c.dir + "/" + c.probe
+		if filepath.IsAbs(c.dir) {
+			path = filepath.Join(c.dir, c.probe)
+		}
+		input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"` + path + `"},"tool_use_id":"t1"}`
+		got, err := runClaudeHookDecision(t, input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != decisionDeny {
+			t.Errorf("Read %s: got %s; %s is not protected by the credential rule", path, got, c.dir)
+		}
+	}
+}
+
+// TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed pins that a Grep is
+// refused when the home directory cannot be resolved, since the credential
+// directories cannot be located to check the search against.
+func TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed(t *testing.T) {
+	t.Setenv("HOME", "")
+	project := t.TempDir()
+	for _, input := range []string{
+		`{"pattern":"func","path":"` + project + `"}`,
+		`{"pattern":"func"}`,
+	} {
+		payload := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":` + input + `,"tool_use_id":"t1","cwd":"` + project + `"}`
+		got, err := runClaudeHookDecision(t, payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != decisionDeny {
+			t.Errorf("Grep %s with HOME unset: got %s, want deny", input, got)
+		}
+	}
+}

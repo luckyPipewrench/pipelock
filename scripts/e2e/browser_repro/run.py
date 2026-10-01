@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -136,6 +135,7 @@ class Process:
         self.counts = {"stdout": 0, "stderr": 0}
         self.eof = {"stdout": False, "stderr": False}
         self.read_errors = {}
+        self.output_lock = threading.Lock()
         self.process = subprocess.Popen(
             [sys.executable, str(SUPERVISOR), "--status-file", str(output.with_suffix(".cleanup.json")),
              "--signal-grace-seconds", str(signal_grace_seconds), "--", *command],
@@ -149,10 +149,13 @@ class Process:
     def drain(self, name):
         stream = getattr(self.process, name)
         try:
-            while chunk := stream.read(8192):
-                self.counts[name] += len(chunk)
-                self.buffers[name].extend(chunk)
-                del self.buffers[name][:-65536]
+            # read() may wait for a full buffer while a long-lived child has
+            # already emitted its short startup witness. Drain available bytes.
+            while chunk := stream.read1(8192):
+                with self.output_lock:
+                    self.counts[name] += len(chunk)
+                    self.buffers[name].extend(chunk)
+                    del self.buffers[name][:-65536]
             self.eof[name] = True
         except Exception as error:
             self.read_errors[name] = str(error)[:512]
@@ -161,6 +164,10 @@ class Process:
                 stream.close()
             except Exception as error:
                 self.read_errors[name] = str(error)[:512]
+
+    def output_snapshot(self, name):
+        with self.output_lock:
+            return bytes(self.buffers[name]), self.counts[name]
 
     def wait(self, timeout):
         deadline = time.monotonic() + timeout
@@ -218,10 +225,63 @@ def probe(command, name, output, env, work, cancellation, report):
     return bytes(process.buffers["stdout"]).decode("utf-8").strip()
 
 
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def owned_proxy_address(output, total_bytes):
+    """Read one complete startup witness from this invocation's stdout pipe."""
+    if total_bytes > len(output) or len(output) > 65536:
+        raise RuntimeError("proxy startup evidence was truncated")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    addresses = []
+    for line in output.split(b"\n")[:-1]:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line, object_pairs_hook=unique_object)
+        except (ValueError, UnicodeError) as error:
+            raise RuntimeError("proxy startup evidence is not valid JSON") from error
+        if not isinstance(record, dict):
+            raise RuntimeError("proxy startup evidence is not an object")
+        if record.get("event") != "startup":
+            continue
+        address = record.get("listen")
+        match = re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{0,4})", address or "") if isinstance(address, str) else None
+        if not match or int(match[1]) > 65535:
+            raise RuntimeError("proxy startup address is not a bound loopback endpoint")
+        addresses.append("http://" + address)
+    if len(addresses) > 1:
+        raise RuntimeError("proxy startup evidence is ambiguous")
+    return addresses[0] if addresses else None
+
+
+def wait_owned_proxy(process, opener, cancellation, timeout=15):
+    """A healthy unrelated listener is never a substitute for owned startup."""
+    deadline = time.monotonic() + timeout
+    while True:
+        cancellation.check()
+        if process.process.poll() is not None:
+            raise RuntimeError("proxy exited before readiness")
+        output, count = process.output_snapshot("stdout")
+        address = owned_proxy_address(output, count)
+        if address:
+            try:
+                with opener.open(address + "/health", timeout=0.5) as response:
+                    if response.status == 200:
+                        cancellation.check()
+                        if process.process.poll() is not None:
+                            raise RuntimeError("proxy exited during readiness")
+                        return address
+            except (OSError, urllib.error.URLError):
+                pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError("owned proxy readiness deadline expired")
+        time.sleep(0.05)
 
 
 def config_for():
@@ -306,24 +366,10 @@ def main():
             try:
                 if args.mode == "proxy-only":
                     report["containment"] = "not_tested_proxy_only"
-                    port = free_port()
-                    settings["proxy"] = f"http://127.0.0.1:{port}"
-                    proxy_process = Process([str(args.pipelock), "run", "--config", env["PIPELOCK_CONFIG"], "--listen", f"127.0.0.1:{port}"],
+                    proxy_process = Process([str(args.pipelock), "run", "--config", env["PIPELOCK_CONFIG"], "--listen", "127.0.0.1:0"],
                                             args.output / "proxy", env, work, cancellation)
-                    deadline = time.monotonic()+15
-                    while True:
-                        cancellation.check()
-                        if proxy_process.process.poll() is not None:
-                            raise RuntimeError("proxy exited before readiness")
-                        try:
-                            with opener.open(settings["proxy"]+"/health", timeout=0.5) as response:
-                                if response.status == 200:
-                                    break
-                        except (OSError, urllib.error.URLError):
-                            pass
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("proxy readiness deadline expired")
-                        time.sleep(0.05)
+                    settings["proxy"] = wait_owned_proxy(proxy_process, opener, cancellation)
+                    report["proxy_startup_address"] = settings["proxy"]
                 write_json(work / "settings.json", settings)
                 command = [str(node_runtime), str(work / "driver.mjs"), str(work / "settings.json")]
                 if args.mode == "sandbox":
@@ -356,7 +402,11 @@ def main():
                 for name, process in (("driver", driver_process), ("proxy", proxy_process)):
                     if process:
                         try:
+                            if name == "proxy" and process.process.poll() is not None:
+                                cleanup_errors.append("proxy exited during diagnostics")
                             report["processes"][name] = process.stop()
+                            if name == "proxy" and report["processes"][name]["exit_code"] != 128 + signal.SIGTERM:
+                                cleanup_errors.append("proxy did not remain live until owned shutdown")
                         except Exception as error:
                             cleanup_errors.append(f"{name}: {error}")
                 write_json(args.output / "fixture.json", fixture.evidence())

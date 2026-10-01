@@ -1217,9 +1217,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			// A forward proxy must deliver this origin's redirect to its
 			// client so Location and Set-Cookie retain their browser origin
-			// and navigation semantics. Admission above still refuses unsafe
-			// redirect targets before releasing the response. The original
-			// 3xx body/headers then pass through the normal response scanner.
+			// and navigation semantics. Admission above refuses unsafe targets
+			// when net/http constructs a redirect request; non-replayable
+			// 307/308 responses skip this callback. The original 3xx body/headers
+			// still pass through the normal response scanner.
 			// Any client-followed request is admitted and signed separately;
 			// do not sign an unissued hop or share cookie state in p.client.
 			// Fetch mode alone follows internally and refreshes its envelope.

@@ -94,7 +94,7 @@ assertions must still complete on the acceptance host.
 
 When strict launch is unavailable, an operator may explicitly run the separate
 proxy diagnostic below. This is **not Pipelock kernel containment**, even when
-Chromium itself starts successfully. It does not satisfy strict acceptance.
+Chromium itself starts successfully. It does not satisfy managed containment acceptance.
 
 ```bash
 python3 scripts/e2e/browser_repro/run.py --mode proxy-only \
@@ -103,8 +103,10 @@ python3 scripts/e2e/browser_repro/run.py --mode proxy-only \
 
 The proxy-only mode leaves Chromium's own sandbox enabled and does not claim
 that raw direct egress is blocked. It binds a temporary proxy and fixture only
-to loopback. A dynamically selected proxy port has a short bind/rebind race;
-startup failure is a failed run, not permission to reuse an existing daemon.
+to loopback. The proxy binds its own ephemeral port, and the runner accepts
+only the bound address from that invocation's complete JSON startup record
+before checking health. Missing, ambiguous or truncated startup evidence fails
+the run; an existing daemon's healthy endpoint cannot substitute for it.
 
 ## Managed-contained browser adapter
 
@@ -149,6 +151,9 @@ Prerequisites for the adapter are:
 - The exact generated JSON policy installed at `/etc/pipelock/pipelock.yaml`;
   no extra destinations, overrides or detection exceptions. The proxy must have
   started after that file was installed; a stale running process is refused
+- The installed config, tool registry, workspace inventory and integrity pin,
+  including all parent directories, must be root-owned and not group- or
+  world-writable. Ordinary root-owned `0644` policy files are accepted
 - The operator-authorized synthetic signing key at the generated configuration's
   path. Existing contain setup owns key provisioning; this adapter never creates,
   reads or transmits private key material

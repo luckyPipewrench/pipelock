@@ -58,20 +58,30 @@ def decode_json(raw):
                       parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
 
 
-def read_regular(path, limit=65536, owner=None, private=False):
-    """No symlinks at any component, nonregular files, aliases or unbounded reads."""
+def read_regular(path, limit=65536, owner=None, private=False, root_controlled=False):
+    """Bounded, alias-free reads with optional evidence/policy ownership gates.
+
+    Root-controlled policy may be readable by others, but neither its bytes nor
+    any ancestor may be writable by a nonroot identity. Private evidence retains
+    the stronger owner-only file permission requirement.
+    """
     path = Path(path)
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("expected a clean absolute path")
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
+        def check_parent(info):
+            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
+                raise ValueError("installed policy has an untrusted parent")
+            if private and (info.st_uid != owner or info.st_mode & 0o022):
+                raise ValueError("evidence path has an untrusted parent")
+
+        check_parent(os.fstat(descriptor))
         for part in path.parts[1:-1]:
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
-            info = os.fstat(descriptor)
-            if private and (info.st_uid != owner or info.st_mode & 0o022):
-                raise ValueError("evidence path has an untrusted parent")
+            check_parent(os.fstat(descriptor))
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
         try:
             info = os.fstat(fd)
@@ -79,6 +89,8 @@ def read_regular(path, limit=65536, owner=None, private=False):
                 raise ValueError("expected one bounded regular file")
             if owner is not None and info.st_uid != owner:
                 raise ValueError("unexpected file owner")
+            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
+                raise ValueError("installed policy is not root-controlled")
             if private and info.st_mode & 0o077:
                 raise ValueError("evidence file is not owner-only")
             with os.fdopen(fd, "rb", closefd=False) as stream:
@@ -302,11 +314,11 @@ def require_quiet_agent(uid):
 
 
 def validate_installation(manifest):
-    config_raw = read_regular(INSTALLED_CONFIG, 32768)
+    config_raw = read_regular(INSTALLED_CONFIG, 32768, root_controlled=True)
     validate_config(decode_json(config_raw), manifest)
-    validate_registry(read_regular(TOOLS, 16384).decode("utf-8"), manifest)
-    validate_workspace_inventory(decode_json(read_regular(WORKSPACES, 16384)), manifest)
-    pin = read_regular(INTEGRITY_PIN, 512).decode("ascii").split()
+    validate_registry(read_regular(TOOLS, 16384, root_controlled=True).decode("utf-8"), manifest)
+    validate_workspace_inventory(decode_json(read_regular(WORKSPACES, 16384, root_controlled=True)), manifest)
+    pin = read_regular(INTEGRITY_PIN, 512, root_controlled=True).decode("ascii").split()
     require_root_runtime(INSTALLED_BINARY)
     if not pin or pin[0] != manifest["pipelock_sha256"] or file_sha256(INSTALLED_BINARY) != manifest["pipelock_sha256"]:
         raise ValueError("installed candidate integrity pin differs")

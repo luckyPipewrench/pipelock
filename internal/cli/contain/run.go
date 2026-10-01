@@ -62,6 +62,9 @@ type containRunEnv struct {
 	// Defaults to config.Load; overridable in tests that stub emitPosture
 	// and never intend to touch a real config file on disk.
 	loadConfig func(configFile string) (*config.Config, error)
+	// newLifecycle is an internal test seam, never populated from config or
+	// command arguments. A nil value retains the root-checked implementation.
+	newLifecycle func(string) (*containRunLifecycle, error)
 }
 
 type postureEmission struct {
@@ -76,6 +79,7 @@ func defaultContainRunEnv() containRunEnv {
 		emitPosture:            emitContainRunPosture,
 		assertServiceNamespace: assertManagedNetworkNamespace,
 		loadConfig:             func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
+		newLifecycle:           newContainRunLifecycle,
 	}
 }
 
@@ -164,7 +168,11 @@ func runContainRun(
 		if opts.dryRun || opts.servicePrestart {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--lifecycle-output requires an actual contain run launch"))
 		}
-		lifecycle, err := newContainRunLifecycle(opts.lifecycleOutput)
+		prepare := env.newLifecycle
+		if prepare == nil {
+			prepare = newContainRunLifecycle
+		}
+		lifecycle, err := prepare(opts.lifecycleOutput)
 		if err != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("prepare lifecycle output: %w", err))
 		}

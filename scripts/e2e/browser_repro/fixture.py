@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import socket
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -17,6 +18,9 @@ from urllib.parse import parse_qs, urlsplit
 HOST = "browser.fixture.example"
 FORBIDDEN_HOST = "forbidden.fixture.example"
 CANARY = "PIPELOCK_BROWSER_REPRO_SYNTHETIC_CANARY"
+REQUEST_TIMEOUT_SECONDS = 2
+MAX_HANDLERS = 32
+MAX_SESSION_BYTES = 1024
 
 APP = """<!doctype html><meta charset="utf-8"><title>Browser reproduction fixture</title>
 <style>body{font:20px sans-serif;margin:24px}#motion{height:20px;width:20px;background:green}</style>
@@ -86,6 +90,54 @@ def write_fixtures(output, size=2_000_000):
     return manifest
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """Limit live connections and retire every admitted handler on shutdown."""
+    daemon_threads = False
+
+    def __init__(self, address, handler):
+        self.slots = threading.BoundedSemaphore(MAX_HANDLERS)
+        self.connections = set()
+        self.connection_lock = threading.Lock()
+        super().__init__(address, handler)
+
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+        return connection, address
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        with self.connection_lock:
+            self.connections.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            with self.connection_lock:
+                self.connections.discard(request)
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.connection_lock:
+                self.connections.discard(request)
+            self.slots.release()
+
+    def server_close(self):
+        with self.connection_lock:
+            connections = tuple(self.connections)
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # A handler may already have closed its own connection.
+        super().server_close()
+
+
 class Fixture:
     def __init__(self, size=2_000_000, delay=0.2):
         self.bundle = generated_bundle(size)
@@ -100,6 +152,12 @@ class Fixture:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+
+            def handle(self):
+                try:
+                    super().handle()
+                except (TimeoutError, ConnectionError):
+                    pass  # Client disconnects must not produce raw request logs.
 
             def log_message(self, *_args):
                 pass  # Never log cookies, submitted values or raw URLs.
@@ -117,16 +175,46 @@ class Fixture:
                     self.wfile.write(body)
 
             def do_POST(self):
+                def reject(code):
+                    # Unread or ambiguous request bytes cannot be another request.
+                    self.close_connection = True
+                    self.reply(code, headers={"Connection": "close"})
+
                 if self.path != "/session":
-                    self.reply(404)
+                    reject(404)
                     return
                 with fixture.lock:
                     fixture.auth_counts["session_submissions"] += 1
-                size = int(self.headers.get("Content-Length", "0"))
-                if size > 1024:
-                    self.reply(413)
+                lengths = self.headers.get_all("Content-Length", [])
+                if "Transfer-Encoding" in self.headers or len(lengths) > 1:
+                    reject(400)
                     return
-                fields = parse_qs(self.rfile.read(size).decode())
+                if not lengths:
+                    reject(411)
+                    return
+                length = lengths[0].strip(" \t")
+                if not length.isascii() or not length.isdecimal():
+                    reject(400)
+                    return
+                # Bound before int() as headers can exceed Python's digit limit.
+                length = length.lstrip("0") or "0"
+                if len(length) > len(str(MAX_SESSION_BYTES)) or int(length) > MAX_SESSION_BYTES:
+                    reject(413)
+                    return
+                size = int(length)
+                try:
+                    body = self.rfile.read(size)
+                except TimeoutError:
+                    reject(408)
+                    return
+                if len(body) != size:
+                    reject(400)
+                    return
+                try:
+                    fields = parse_qs(body.decode("utf-8"), errors="strict")
+                except UnicodeError:
+                    reject(400)
+                    return
                 if fields != {"user": ["fixture"], "code": ["fixture-only"]}:
                     with fixture.lock:
                         fixture.auth_counts["session_rejections"] += 1
@@ -192,7 +280,7 @@ class Fixture:
                         self.reply(200, b"fixture-ready")
                     else:
                         self.reply(404, b"missing synthetic route")
-                except (BrokenPipeError, ConnectionResetError):
+                except (TimeoutError, ConnectionError):
                     pass
                 finally:
                     # Finite route vocabulary and ring lengths bound evidence memory.
@@ -200,8 +288,7 @@ class Fixture:
                     with fixture.lock:
                         fixture.events[key].append({"elapsed_ms": round((time.monotonic()-start)*1000, 3)})
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        self.server = BoundedHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property

@@ -420,6 +420,68 @@ class ManagedFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             managed.read_regular(self.path, owner=os.getuid() + 1)
 
+    def root_controlled_policy_facts(self, file_owner=0, file_mode=0o644,
+                                     ancestor=None, ancestor_owner=0, ancestor_mode=0o755):
+        real_fstat = os.fstat
+        component = 0
+        def observe(fd):
+            nonlocal component
+            fields = list(real_fstat(fd))
+            directory = stat.S_ISDIR(fields[0])
+            fields[4] = 0 if directory else file_owner
+            fields[0] = stat.S_IFMT(fields[0]) | (0o755 if directory else file_mode)
+            if directory:
+                if component == ancestor:
+                    fields[4] = ancestor_owner
+                    fields[0] = stat.S_IFDIR | ancestor_mode
+                component += 1
+            return os.stat_result(fields)
+        # Substitute only owner/mode facts. File reads, type, size, aliases and
+        # descriptor-relative traversal remain real and confined to temp files.
+        return patch("managed.os.fstat", side_effect=observe)
+
+    def test_installed_policy_accepts_root_owned_readable_modes_without_requiring_private(self):
+        for mode in (0o400, 0o444, 0o600, 0o640, 0o644):
+            with self.subTest(mode=oct(mode)), self.root_controlled_policy_facts(file_mode=mode):
+                self.assertEqual(managed.read_regular(self.path, root_controlled=True), self.path.read_bytes())
+        with self.root_controlled_policy_facts(file_mode=0o644), \
+                self.assertRaisesRegex(ValueError, "owner-only"):
+            managed.read_regular(self.path, owner=0, private=True, root_controlled=True)
+
+    def test_installed_policy_rejects_untrusted_file_even_when_contents_match(self):
+        expected = self.path.read_bytes()
+        for owner, mode in ((1234, 0o600), (1234, 0o644), (0, 0o620), (0, 0o602), (0, 0o666)):
+            with self.subTest(owner=owner, mode=oct(mode)), \
+                    self.root_controlled_policy_facts(file_owner=owner, file_mode=mode), \
+                    self.assertRaisesRegex(ValueError, "not root-controlled"):
+                managed.read_regular(self.path, root_controlled=True)
+            self.assertEqual(self.path.read_bytes(), expected)
+
+    def test_installed_policy_checks_every_ancestor_including_filesystem_root(self):
+        for ancestor in range(len(self.path.parts) - 1):
+            for owner, mode in ((1234, 0o755), (0, 0o775), (0, 0o757), (0, 0o1777)):
+                with self.subTest(ancestor=ancestor, owner=owner, mode=oct(mode)), \
+                        self.root_controlled_policy_facts(ancestor=ancestor,
+                            ancestor_owner=owner, ancestor_mode=mode), \
+                        self.assertRaisesRegex(ValueError, "untrusted parent"):
+                    managed.read_regular(self.path, root_controlled=True)
+
+    def test_installed_policy_still_refuses_leaf_and_parent_symlinks_and_hardlinks(self):
+        leaf = self.root / "policy-link"
+        leaf.symlink_to(self.path)
+        parent = self.root / "policy-directory-link"
+        parent.symlink_to(self.root, target_is_directory=True)
+        for path in (leaf, parent / self.path.name):
+            with self.subTest(path=path), self.root_controlled_policy_facts(), \
+                    self.assertRaises((OSError, ValueError)):
+                managed.read_regular(path, root_controlled=True)
+        alias = self.root / "policy-hardlink"
+        alias.hardlink_to(self.path)
+        for path in (self.path, alias):
+            with self.subTest(path=path), self.root_controlled_policy_facts(), \
+                    self.assertRaisesRegex(ValueError, "one bounded regular file"):
+                managed.read_regular(path, root_controlled=True)
+
     def test_read_limit_is_enforced_again_after_metadata_check(self):
         real_fstat = os.fstat
         def stale_size(fd):
@@ -695,6 +757,35 @@ class ManagedFileTests(unittest.TestCase):
 
 
 class ManagedFailureFlowTests(unittest.TestCase):
+    def test_every_installed_policy_read_requires_root_control_before_runtime_checks(self):
+        manifest = manifest_fixture()
+        responses = {
+            managed.INSTALLED_CONFIG: json.dumps(manifest["configuration"]).encode(),
+            managed.TOOLS: b"browser-repro-node /usr/local/bin/node\n",
+            managed.WORKSPACES: json.dumps(workspace_fixture(manifest)).encode(),
+            managed.INTEGRITY_PIN: (manifest["pipelock_sha256"] + "\n").encode(),
+        }
+        paths = list(responses)
+        for refused in paths:
+            visited = []
+            def read_policy(path, limit, **options):
+                self.assertEqual(options, {"root_controlled": True})
+                self.assertIn(path, responses)
+                visited.append(path)
+                if path == refused:
+                    raise ValueError("synthetic installed policy is not root-controlled")
+                return responses[path]
+            with self.subTest(refused=refused), patch("managed.read_regular", side_effect=read_policy), \
+                    patch("managed.require_root_runtime") as runtime, \
+                    patch("managed.executable_identity") as identity, \
+                    patch("managed.require_quiet_agent") as inventory, \
+                    self.assertRaisesRegex(ValueError, "not root-controlled"):
+                managed.validate_installation(manifest)
+            self.assertEqual(visited, paths[:paths.index(refused) + 1])
+            runtime.assert_not_called()
+            identity.assert_not_called()
+            inventory.assert_not_called()
+
     def test_untrusted_runtime_is_refused_before_privileged_node_probe(self):
         # Use actual installation validation, with generated read-only host
         # responses and ownership observations standing in for a managed VM.

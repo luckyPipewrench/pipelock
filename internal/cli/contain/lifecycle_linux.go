@@ -50,6 +50,13 @@ func newContainRunLifecycle(dir string) (*containRunLifecycle, error) {
 	if err != nil {
 		return nil, err
 	}
+	return initializeContainRunLifecycle(file)
+}
+
+// The caller has checked root and opened a new, owner-verified directory.
+// Retain that descriptor for every publication and transfer its ownership to
+// the lifecycle only after the initial record is durably written.
+func initializeContainRunLifecycle(file *os.File) (*containRunLifecycle, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		_ = file.Close()
@@ -165,6 +172,10 @@ func lifecycleSystemdShow(ctx context.Context, unit string) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
+	return parseLifecycleSystemdShow(unit, out, code)
+}
+
+func parseLifecycleSystemdShow(unit, out string, code int) (map[string]string, error) {
 	fields := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		key, value, ok := strings.Cut(line, "=")
@@ -474,7 +485,10 @@ func lifecycleTerminalFields(fields map[string]string) map[string]string {
 }
 
 func launchContainedAgentLifecycle(opts containedAgentCommandOptions, l *containRunLifecycle) error {
-	b := defaultLifecycleBackend()
+	return launchContainedAgentLifecycleWithBackend(opts, l, defaultLifecycleBackend(), containedAgentCommand)
+}
+
+func launchContainedAgentLifecycleWithBackend(opts containedAgentCommandOptions, l *containRunLifecycle, b lifecycleBackend, command func(containedAgentCommandOptions) (*exec.Cmd, string)) error {
 	fields, err := b.show(opts.ctx, l.record.Unit)
 	if err != nil {
 		return err
@@ -502,7 +516,7 @@ func launchContainedAgentLifecycle(opts containedAgentCommandOptions, l *contain
 	clientCtx, cancelClient := context.WithCancel(context.WithoutCancel(runCtx))
 	defer cancelClient()
 	opts.lifecycleUnit, opts.lifecycleRunID, opts.ctx = l.record.Unit, l.record.RunID, clientCtx
-	cmd, _ := containedAgentCommand(opts)
+	cmd, _ := command(opts)
 	cmd.Env = lifecycleManagerEnvironment()
 	cmd.WaitDelay = lifecycleClientTimeout
 	if err := cmd.Start(); err != nil {

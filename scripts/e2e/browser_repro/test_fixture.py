@@ -7,9 +7,12 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import tempfile
 import sys
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
@@ -105,6 +108,182 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(len(evidence["routes"]["other"]), 32)
             self.assertNotIn("private", json.dumps(evidence))
 
+    def test_session_rejects_invalid_framing_and_closes_connection(self):
+        cases = [([], 411), ([("Content-Length", "1025")], 413),
+                 ([("Content-Length", "9" * 5000)], 413),
+                 ([("Content-Length", "0"), ("Content-Length", "0")], 400),
+                 ([("Transfer-Encoding", "chunked")], 400),
+                 ([("Transfer-Encoding", "identity"), ("Content-Length", "0")], 400)]
+        cases.extend(([("Content-Length", value)], 400)
+                     for value in ("-1", "+1", "", "1.5", "1,1", "invalid", "\xb2", "\xa01"))
+        with Fixture(4096, delay=0) as fixture:
+            for headers, expected in cases:
+                with self.subTest(headers=headers):
+                    connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+                    try:
+                        connection.putrequest("POST", "/session")
+                        for name, value in headers:
+                            connection.putheader(name, value)
+                        connection.endheaders()
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        self.assertEqual(response.headers["Connection"], "close")
+                        self.assertEqual(response.read(), b"")
+                    finally:
+                        connection.close()
+            connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+            try:
+                connection.request("GET", "/health")
+                self.assertEqual(connection.getresponse().read(), b"fixture-ready")
+            finally:
+                connection.close()
+            self.assertEqual(fixture.evidence()["auth_counts"], {"session_submissions": len(cases)})
+
+    def test_session_body_bounds_and_encoding_use_real_http(self):
+        with Fixture(4096, delay=0) as fixture:
+            for body, length, expected in ((b"", "0", 401), (b"x" * 1024, "1024", 401),
+                                          (b"\xff", "1", 400), (b"user=%FF", "8", 400),
+                                          (b"user=fixture&code=fixture-only", "00030", 303)):
+                with self.subTest(length=length, expected=expected):
+                    connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+                    try:
+                        connection.request("POST", "/session", body, {"Content-Length": length})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        response.read()
+                    finally:
+                        connection.close()
+            with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as connection:
+                connection.sendall(b"POST /session HTTP/1.1\r\nHost: fixture\r\nContent-Length: 2\r\n\r\nx")
+                connection.shutdown(socket.SHUT_WR)
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response.headers["Connection"], "close")
+                response.read()
+                response.close()
+
+    def test_unknown_post_closes_connection_with_unread_body(self):
+        with Fixture(4096, delay=0) as fixture:
+            connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+            try:
+                connection.request("POST", "/missing", b"generated-body")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 404)
+                self.assertEqual(response.headers["Connection"], "close")
+                response.read()
+            finally:
+                connection.close()
+            self.assertEqual(fixture.evidence()["auth_counts"], {})
+
+    def test_handler_launch_failure_releases_its_slot_and_shutdown_tolerates_closed_socket(self):
+        with patch("fixture.MAX_HANDLERS", 1):
+            fixture = Fixture(4096, delay=0)
+        connection = socket.socket()
+        try:
+            with patch("fixture.ThreadingHTTPServer.process_request", side_effect=RuntimeError("synthetic launch failure")), \
+                    self.assertRaisesRegex(RuntimeError, "synthetic launch failure"):
+                fixture.server.process_request(connection, ("127.0.0.1", 0))
+            self.assertFalse(fixture.server.connections)
+            self.assertTrue(fixture.server.slots.acquire(blocking=False))
+            self.assertFalse(fixture.server.slots.acquire(blocking=False))
+            fixture.server.slots.release()
+            connection.close()
+            # Model the race where an admitted handler closes its own socket
+            # after server_close takes its connection snapshot.
+            fixture.server.connections.add(connection)
+        finally:
+            connection.close()
+            fixture.server.server_close()
+            fixture.server.connections.discard(connection)
+
+    def test_request_disconnect_is_quiet_and_retires_handler(self):
+        with Fixture(4096, delay=0) as fixture:
+            with patch("fixture.BaseHTTPRequestHandler.handle", side_effect=ConnectionResetError("synthetic disconnect")):
+                with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as connection:
+                    self.assertEqual(connection.recv(1), b"")
+        self.assertFalse(fixture.server.connections)
+
+    def test_idle_and_incomplete_requests_timeout_without_holding_handlers(self):
+        with patch("fixture.REQUEST_TIMEOUT_SECONDS", 0.1), Fixture(4096, delay=0) as fixture:
+            with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as connection:
+                connection.sendall(b"GET /health HTTP/1.1\r\n")
+                self.assertEqual(connection.recv(1), b"")
+            with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as connection:
+                connection.sendall(b"POST /session HTTP/1.1\r\nHost: fixture\r\nContent-Length: 1\r\n\r\n")
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                self.assertEqual(response.status, 408)
+                self.assertEqual(response.headers["Connection"], "close")
+                response.read()
+                response.close()
+            connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+            try:
+                connection.request("GET", "/health")
+                self.assertEqual(connection.getresponse().read(), b"fixture-ready")
+            finally:
+                connection.close()
+
+    def test_handler_admission_is_bounded_and_recovers_after_release(self):
+        connections = []
+        with patch("fixture.MAX_HANDLERS", 2), Fixture(4096, delay=0) as fixture:
+            try:
+                for _ in range(2):
+                    connection = socket.create_connection(("127.0.0.1", fixture.port), timeout=2)
+                    connections.append(connection)
+                    connection.sendall(b"GET /api/data?scenario=pending HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+                deadline = time.monotonic() + 2
+                while fixture.evidence()["scenario_counts"].get("pending") != 2:
+                    self.assertLess(time.monotonic(), deadline, "owned pending handlers did not start")
+                    threading.Event().wait(0.01)
+                with fixture.server.connection_lock:
+                    self.assertEqual(len(fixture.server.connections), 2)
+                with socket.create_connection(("127.0.0.1", fixture.port), timeout=2) as rejected:
+                    self.assertEqual(rejected.recv(1), b"")
+                fixture.stop.set()
+                for connection in connections:
+                    response = http.client.HTTPResponse(connection)
+                    response.begin()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.loads(response.read()), {"message": "generated data complete"})
+                    response.close()
+                deadline = time.monotonic() + 2
+                while True:
+                    with fixture.server.connection_lock:
+                        if not fixture.server.connections:
+                            break
+                    self.assertLess(time.monotonic(), deadline, "owned handlers did not retire")
+                    threading.Event().wait(0.01)
+                connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+                try:
+                    connection.request("GET", "/health")
+                    self.assertEqual(connection.getresponse().read(), b"fixture-ready")
+                finally:
+                    connection.close()
+            finally:
+                fixture.stop.set()
+                for connection in connections:
+                    connection.close()
+        self.assertFalse(fixture.thread.is_alive())
+        self.assertFalse(fixture.server.connections)
+
+    def test_shutdown_closes_an_idle_keepalive_connection(self):
+        with Fixture(4096, delay=0) as fixture:
+            connection = http.client.HTTPConnection("127.0.0.1", fixture.port, timeout=2)
+            try:
+                connection.request("GET", "/health")
+                self.assertEqual(connection.getresponse().read(), b"fixture-ready")
+                owned_socket = connection.sock
+            except BaseException:
+                connection.close()
+                raise
+        try:
+            self.assertEqual(owned_socket.recv(1), b"")
+            self.assertFalse(fixture.server.connections)
+            self.assertFalse(fixture.thread.is_alive())
+        finally:
+            connection.close()
+
     def test_configuration_preserves_defaults_and_limits_fixture_trust(self):
         config = config_for()
         self.assertEqual(config["mode"], "strict")
@@ -136,12 +315,13 @@ class FixtureTests(unittest.TestCase):
 
     def test_drain_distinguishes_read_error_from_eof(self):
         process = Process.__new__(Process)
+        process.output_lock = threading.Lock()
         process.buffers = {"stdout": bytearray()}
         process.counts = {"stdout": 0}
         process.eof = {"stdout": False}
         process.read_errors = {}
         stream = Mock()
-        stream.read.side_effect = [b"kept", OSError("synthetic read failure")]
+        stream.read1.side_effect = [b"kept", OSError("synthetic read failure")]
         process.process = Mock(stdout=stream)
         process.drain("stdout")
         self.assertFalse(process.eof["stdout"])

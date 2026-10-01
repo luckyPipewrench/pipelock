@@ -124,6 +124,31 @@ func TestResponseMatchMemoExactIdentityAndOrder(t *testing.T) {
 	}
 }
 
+func TestResponseMatchMemoDuplicateNegativePatternsShareOneEntry(t *testing.T) {
+	content := strings.Repeat("ordinary; ", 500)
+	first := memoTestPattern("first", "fixture-marker")
+	second := memoTestPattern("second", "fixture-marker")
+	second.bundle, second.bundleVersion = "fixture-bundle", "1"
+	patterns := []*compiledPattern{first, second}
+	memo := newResponseMatchMemo(len(content))
+	if got := memo.match(nil, patterns, content); len(got) != 0 {
+		t.Fatalf("negative fixture unexpectedly matched: %+v", got)
+	}
+	if memo.entries != 1 || len(memo.views[content]) != 1 {
+		t.Fatalf("duplicate expressions consumed multiple entries: entries=%d view=%v", memo.entries, memo.views[content])
+	}
+	if got := memo.match(nil, patterns, strings.Clone(content)); len(got) != 0 || memo.entries != 1 {
+		t.Fatalf("duplicate negative reuse changed result or accounting: matches=%+v entries=%d", got, memo.entries)
+	}
+	// Reusing a negative expression must not coalesce distinct positive
+	// findings when the response bytes change: preserve both attributions.
+	marked := content + "fixture-marker"
+	want := matchPatternsPreFiltered(nil, patterns, marked)
+	if got := memo.match(nil, patterns, marked); len(got) != 2 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("duplicate positive findings changed: got=%+v want=%+v", got, want)
+	}
+}
+
 func TestResponseMatchMemoRequiresKnownRegexSemantics(t *testing.T) {
 	content := strings.Repeat("ordinary\n", 500) + "fixture-marker\n"
 	perl := memoTestPattern("perl", "^fixture-marker$")

@@ -182,6 +182,7 @@ type probeEnv struct {
 	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
 	// run produced, even when --posture-output points off the default path.
 	postureProofPath string
+	lifecycle        *containRunLifecycle
 	// postureLauncher names the launch path bound into signed posture evidence.
 	// Empty preserves the ordinary plk-launch value used by contain run.
 	postureLauncher string

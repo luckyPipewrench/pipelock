@@ -411,6 +411,9 @@ type compiledPattern struct {
 	requiredLiteralsAny                 []string
 	requiresEquals                      bool  // every effective regex branch requires a literal '='
 	minASCIIDigits                      uint8 // conservative digit floor shared by every effective regex branch
+	// responseMemoRegexp marks the original regexp.Compile response expression.
+	// Arbitrary/replaced regex objects (including CompilePOSIX) are not reusable.
+	responseMemoRegexp *regexp.Regexp
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -695,6 +698,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			s.responsePatterns = append(s.responsePatterns, &compiledPattern{
 				name:                p.Name,
 				re:                  re,
+				responseMemoRegexp:  re,
 				bundle:              p.Bundle,
 				bundleVersion:       p.BundleVersion,
 				requiredLiteralsAny: requiredLiteralsAny,
@@ -712,6 +716,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 					s.responseOptSpacePatterns = append(s.responseOptSpacePatterns, &compiledPattern{
 						name:                p.Name,
 						re:                  optRe,
+						responseMemoRegexp:  optRe,
 						bundle:              p.Bundle,
 						bundleVersion:       p.BundleVersion,
 						requiredLiteralsAny: requiredLiteralsAny,
@@ -751,6 +756,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 					s.responseVowelFoldPatterns = append(s.responseVowelFoldPatterns, &compiledPattern{
 						name:                p.Name,
 						re:                  vfRe,
+						responseMemoRegexp:  vfRe,
 						bundle:              p.Bundle,
 						bundleVersion:       p.BundleVersion,
 						requiredLiteralsAny: requiredLiteralsAny,
@@ -1069,6 +1075,7 @@ func HintForBlock(r *Result) string {
 }
 
 // Scan checks a URL against all scanners and returns the result.
+// Allowed requests atomically consume one per-domain rate-limit slot.
 // Blocked results include a Hint field with actionable guidance.
 // Fail-closed: nil or already-cancelled contexts are rejected before scanning.
 //
@@ -1078,6 +1085,19 @@ func HintForBlock(r *Result) string {
 // reject is still progress and must register so a flood of cancelled-
 // context probes does not falsely trip the wedge detector.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
+	return s.scanWithRateRecording(ctx, rawURL, true)
+}
+
+// ScanPreflight runs the same URL checks as Scan, including the current rate
+// limit, without recording a request against that limit. It is for a redirect
+// target that the forward proxy returns to its client without dispatching.
+// The actual request must still call Scan to atomically check and consume its
+// rate-limit slot; this result neither reserves a slot nor authorizes dispatch.
+func (s *Scanner) ScanPreflight(ctx context.Context, rawURL string) Result {
+	return s.scanWithRateRecording(ctx, rawURL, false)
+}
+
+func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate bool) Result {
 	defer func() {
 		if h := s.heartbeat.Load(); h != nil {
 			h.fn()
@@ -1092,7 +1112,7 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 			Hint:    HintForScanner(ScannerContext),
 		}
 	}
-	r := s.scan(ctx, rawURL)
+	r := s.scan(ctx, rawURL, recordRate)
 	if !r.Allowed && r.Hint == "" {
 		if r.Scanner == ScannerLength {
 			// The length gate formats only byte counts into its reason. It
@@ -1108,7 +1128,7 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 // scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
+func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (result Result) {
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -1269,7 +1289,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	}
 
 	// Rate limit check (per-domain)
-	if result := s.checkRateLimit(hostname); !result.Allowed {
+	if result := s.checkRateLimit(hostname, recordRate); !result.Allowed {
 		return result
 	}
 
@@ -1851,15 +1871,23 @@ func checkPathTraversal(parsed *url.URL) Result {
 
 // checkRateLimit enforces per-domain rate limiting using a sliding window.
 // Uses atomic CheckAndRecord to prevent TOCTOU races where concurrent
-// requests could both pass the check before either records.
+// requests could both pass the check before either records. Redirect preflight
+// uses the same limit without recording; actual requests must check and record.
 // Uses baseDomain normalization to prevent subdomain rotation bypass
 // (e.g., a.evil.com, b.evil.com each getting separate rate limit windows).
-func (s *Scanner) checkRateLimit(hostname string) Result {
+func (s *Scanner) checkRateLimit(hostname string, recordRate bool) Result {
 	if s.rateLimiter == nil {
 		return Result{Allowed: true}
 	}
 
-	if !s.rateLimiter.CheckAndRecord(baseDomain(hostname)) {
+	domain := baseDomain(hostname)
+	var allowed bool
+	if recordRate {
+		allowed = s.rateLimiter.CheckAndRecord(domain)
+	} else {
+		allowed = s.rateLimiter.IsAllowed(domain)
+	}
+	if !allowed {
 		return Result{
 			Allowed: false,
 			Reason:  domainCeilingReason("rate limit", hostname),
@@ -2889,6 +2917,14 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (r
 	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
 		return result, warnMatches
 	}
+	// Both helpers return early for an empty secret list. Configured canaries
+	// must still run in a hermetic process with no ambient/file secrets. Keep
+	// the existing helper calls above so their attribution priority is unchanged.
+	if len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
+		if result := s.checkCanaryInURL(parsed); !result.Allowed {
+			return result, warnMatches
+		}
+	}
 
 	return Result{Allowed: true}, deduplicateWarnMatches(warnMatches)
 }
@@ -3127,8 +3163,12 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			}
 		}
 	}
-	// Canary fallback: if no DLP pattern matched, check canary tokens.
-	// This runs last so DLP patterns get attribution priority.
+	return s.checkCanaryInURL(parsed)
+}
+
+// checkCanaryInURL uses the shared canary views and preserves their span labels.
+// Callers keep the existing DLP and known-secret attribution order.
+func (s *Scanner) checkCanaryInURL(parsed *url.URL) Result {
 	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
 		m := matches[0]
 		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -23,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // When flight_recorder.require_receipts is on, a credential-audience
@@ -72,6 +74,11 @@ func fetchAudienceRequireReceiptsProxy(t *testing.T, require bool, emitFails boo
 		t.Fatalf("proxy.New: %v", err)
 	}
 	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	t.Cleanup(func() {
+		if err := rph.rec.Close(); err != nil {
+			t.Errorf("recorder.Close: %v", err)
+		}
+	})
 	if emitFails {
 		if err := rph.rec.Close(); err != nil {
 			t.Fatalf("recorder.Close: %v", err)
@@ -492,11 +499,28 @@ func TestConnectHeader_CredentialAudienceRequireReceipts(t *testing.T) {
 				cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 				cfg.APIAllowlist = nil
 			})
-			srv := httptest.NewServer(p.buildHandler(http.NewServeMux()))
+			handlerDone := make(chan struct{})
+			handler := p.buildHandler(http.NewServeMux())
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				handler.ServeHTTP(w, r)
+			}))
 			defer srv.Close()
 
 			conn := dialProxy(t, srv.Listener.Addr().String())
-			defer func() { _ = conn.Close() }()
+			defer func() {
+				_ = conn.Close()
+				// Server.Close does not wait for hijacked CONNECT handlers. Join
+				// the handler, including its deferred receipt, before recorder cleanup.
+				select {
+				case <-handlerDone:
+				case <-time.After(testwait.Deadline(5 * time.Second)):
+					t.Error("timed out waiting for CONNECT handler cleanup")
+				}
+			}()
+			if err := conn.SetDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+				t.Fatalf("set proxy connection deadline: %v", err)
+			}
 			addr := target.Addr().String()
 			if _, err := io.WriteString(conn, "CONNECT "+addr+" HTTP/1.1\r\nHost: "+addr+"\r\nAuthorization: Bearer "+audienceReceiptTestCredential+"\r\n\r\n"); err != nil {
 				t.Fatalf("write CONNECT: %v", err)

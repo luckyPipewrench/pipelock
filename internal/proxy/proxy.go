@@ -1077,7 +1077,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				redirectWarnCtx.Transport = TransportFetch
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
-			result := currentScanner.Scan(redirectScanCtx, redirectURL)
+			// Forward redirects are returned to the client, so this admission
+			// must not spend a slot for an unissued request. The client's next
+			// request calls Scan and atomically consumes its own slot. Fetch
+			// redirects dispatch here and keep consuming in this callback.
+			var result scanner.Result
+			if redirectTransport == TransportForward {
+				result = currentScanner.ScanPreflight(redirectScanCtx, redirectURL)
+			} else {
+				result = currentScanner.Scan(redirectScanCtx, redirectURL)
+			}
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
@@ -1214,6 +1223,24 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+reason)
 				return newRedirectBlockedRequest(blockLayerContract, reason)
+			}
+			// A forward proxy must deliver this origin's redirect to its
+			// client so Location and Set-Cookie retain their browser origin
+			// and navigation semantics. Admission above refuses unsafe targets
+			// when net/http constructs a redirect request; non-replayable
+			// 307/308 responses skip this callback. The original 3xx body/headers
+			// still pass through the normal response scanner.
+			// Any client-followed request is admitted and signed separately;
+			// do not sign an unissued hop or share cookie state in p.client.
+			// Fetch mode alone follows internally and refreshes its envelope.
+			if redirectTransport == TransportForward {
+				// net/http has already opened GetBody for a 307/308. Its
+				// ErrUseLastResponse path leaves that unissued body open.
+				// Close it here, not req.Response.Body, which is scanned next.
+				if req.Body != nil {
+					safeClose(req.Body, "unissued redirect body", p.logger)
+				}
+				return http.ErrUseLastResponse
 			}
 			// Mediation envelope refresh: on every allowed redirect,
 			// rebuild the envelope on req so ph, hop, and @target-uri

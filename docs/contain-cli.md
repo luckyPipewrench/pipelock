@@ -75,7 +75,31 @@ Flags:
 | `--port` | `8888` | Loopback proxy port to verify before launch. |
 | `--posture-output` | `/var/lib/pipelock/contain/posture` | Directory where the signed posture capsule is written. |
 | `--dry-run` | off | Run preflight and print the session contract, then exit without emitting a posture capsule or launching. |
+| `--lifecycle-output` | unset | Optional new root-private directory for invocation-bound transient-service lifecycle evidence. Linux only; incompatible with `--dry-run`. |
 | `--workspace-diff-cap-bytes` | `10485760` (10 MiB) | Per-file content-digest cap for the comparison behind the workspace change statement below. Regular files at or under the cap are compared by SHA-256 digest; larger regular files are compared by size and modification time, and the statement is marked incomplete. Symlinks are compared by target. The digests are used for the comparison and are not written into the statement. |
+
+### Optional transient-service lifecycle evidence
+
+`--lifecycle-output` adds a bounded, machine-readable `lifecycle.json` report for
+automation that needs to distinguish a stopped launch client from a stopped
+contained service. It creates a nonce-named transient unit and binds the observed
+systemd InvocationID, full launch-argument digest, candidate/config/policy hashes
+and emitted posture-capsule digest. No argument values, environment values or
+signing-key material are written to this report. The new directory must be
+root-owned and private, outside any agent-writable workspace.
+
+The optional path requires `busctl` typed-property support and cgroup v2 in
+addition to the normal containment prerequisites. It observes the exact launch
+arguments through systemd, never by parsing child stderr. On normal exit or
+cancellation, cleanup acts only on that admitted invocation and checks terminal
+service state plus an empty or absent recorded cgroup. Missing admission, changed
+identity, unavailable cleanup evidence or observed cancellation cannot report
+successful completion. An unobserved submitted service may still exist: preserve
+the incomplete report and its exact unit identity for operator diagnosis, rather
+than treating a stopped `systemd-run` client as cleanup proof. The ordinary launch
+path is unchanged when the option is omitted. See the
+[synthetic browser workflow](browser-reproduction.md) for its dedicated-VM scope
+and capable-host acceptance requirements.
 
 ### Workspace change statement
 

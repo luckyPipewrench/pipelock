@@ -1688,7 +1688,8 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 	}
 }
 
-// LogRedirect logs a redirect hop in the chain.
+// LogRedirect logs an observed redirect before target admission. The target
+// may be refused or returned to a forward client without being dispatched.
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agent string, hop int) {
 	e := newLogEntry(l.zl.Info(), EventRedirect).
 		str("original_url", originalURL).
@@ -1697,7 +1698,7 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 		str("request_id", requestID).
 		agentField(agent, string(envelope.ActorAuthUnknown)).
 		intField("hop", hop)
-	e.msg("redirect followed")
+	e.msg("redirect observed")
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventRedirect), e.fields)

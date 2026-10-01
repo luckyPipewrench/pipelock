@@ -329,21 +329,21 @@ func TestBuildSeccompFilter_NonEmpty(t *testing.T) {
 
 func TestBuildSeccompFilter_StrictBlocksClone3(t *testing.T) {
 	strict := buildSeccompFilter(true)
-	// In strict mode, clone3 should return EPERM.
-	// Scan filter for a JEQ matching SYS_CLONE3 followed by RET EPERM.
+	// In strict mode, clone3 should return ENOSYS.
+	// Scan filter for a JEQ matching SYS_CLONE3 followed by RET ENOSYS.
 	foundClone3Deny := false
 	for i := 0; i < len(strict)-1; i++ {
 		insn := strict[i]
 		next := strict[i+1]
 		isJEQ := insn.Code == (unix.BPF_JMP|0x10|unix.BPF_K) && insn.K == unix.SYS_CLONE3
-		isDeny := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == (unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM))
+		isDeny := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == (unix.SECCOMP_RET_ERRNO|uint32(unix.ENOSYS))
 		if isJEQ && isDeny {
 			foundClone3Deny = true
 			break
 		}
 	}
 	if !foundClone3Deny {
-		t.Error("strict filter should deny clone3 with EPERM")
+		t.Error("strict filter should deny clone3 with ENOSYS")
 	}
 
 	// Best-effort should allow clone3.

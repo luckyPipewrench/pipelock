@@ -182,7 +182,7 @@ func TestScanner_CheckRateLimit_Disabled(t *testing.T) {
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 	s := MustNew(cfg)
 
-	result := s.checkRateLimit("example.com")
+	result := s.checkRateLimit("example.com", true)
 	if !result.Allowed {
 		t.Error("rate limit should be disabled when MaxReqPerMinute=0")
 	}
@@ -197,7 +197,7 @@ func TestScanner_CheckRateLimit_Blocked(t *testing.T) {
 	s.rateLimiter.Record("example.com")
 	s.rateLimiter.Record("example.com")
 
-	result := s.checkRateLimit("example.com")
+	result := s.checkRateLimit("example.com", true)
 	if result.Allowed {
 		t.Error("should be blocked after limit reached")
 	}

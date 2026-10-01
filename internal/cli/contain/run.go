@@ -49,6 +49,7 @@ type containRunOptions struct {
 	dryRun                bool
 	servicePrestart       bool
 	workspaceDiffCapBytes int64
+	lifecycleOutput       string
 }
 
 type containRunEnv struct {
@@ -61,6 +62,9 @@ type containRunEnv struct {
 	// Defaults to config.Load; overridable in tests that stub emitPosture
 	// and never intend to touch a real config file on disk.
 	loadConfig func(configFile string) (*config.Config, error)
+	// newLifecycle is an internal test seam, never populated from config or
+	// command arguments. A nil value retains the root-checked implementation.
+	newLifecycle func(string) (*containRunLifecycle, error)
 }
 
 type postureEmission struct {
@@ -75,6 +79,7 @@ func defaultContainRunEnv() containRunEnv {
 		emitPosture:            emitContainRunPosture,
 		assertServiceNamespace: assertManagedNetworkNamespace,
 		loadConfig:             func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
+		newLifecycle:           newContainRunLifecycle,
 	}
 }
 
@@ -126,6 +131,7 @@ Pipelock does not read or store agent secrets.`,
 	cmd.Flags().StringVar(&opts.postureOutput, "posture-output", opts.postureOutput, "directory for the signed contain-run posture capsule")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "run preflight and print the session contract, then exit without emitting a posture capsule or launching")
 	cmd.Flags().Int64Var(&opts.workspaceDiffCapBytes, "workspace-diff-cap-bytes", opts.workspaceDiffCapBytes, "per-file content-digest cap for the post-session workspace change statement; larger files are recorded oversize with no digest")
+	cmd.Flags().StringVar(&opts.lifecycleOutput, "lifecycle-output", "", "new root-private directory for invocation-bound transient-service lifecycle evidence (Linux only)")
 
 	return cmd
 }
@@ -138,7 +144,7 @@ func runContainRun(
 	env containRunEnv,
 	opts containRunOptions,
 	args []string,
-) error {
+) (resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -157,6 +163,32 @@ func runContainRun(
 	tool := args[0]
 	if !addToolNamePattern.MatchString(tool) {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("invalid tool name %q (must match %s)", tool, containToolNameRegex))
+	}
+	if opts.lifecycleOutput != "" {
+		if opts.dryRun || opts.servicePrestart {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--lifecycle-output requires an actual contain run launch"))
+		}
+		prepare := env.newLifecycle
+		if prepare == nil {
+			prepare = newContainRunLifecycle
+		}
+		lifecycle, err := prepare(opts.lifecycleOutput)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("prepare lifecycle output: %w", err))
+		}
+		env.probe.lifecycle = lifecycle
+		var stop context.CancelFunc
+		ctx, stop = containRunLifecycleContext(ctx)
+		defer stop()
+		defer func() {
+			if !lifecycle.record.Final {
+				lifecycle.record.Phase = "incomplete"
+				lifecycle.record.Final = true
+				lifecycle.record.Failure = boundedLifecycleError(resultErr)
+				resultErr = errors.Join(resultErr, lifecycle.write())
+			}
+			resultErr = errors.Join(resultErr, lifecycle.close())
+		}()
 	}
 	if opts.servicePrestart {
 		if env.assertServiceNamespace == nil {
@@ -272,6 +304,10 @@ func runContainRun(
 	if runCfgErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
 	}
+	if env.probe.lifecycle != nil {
+		env.probe.lifecycle.record.ConfigSHA256 = runCfg.Hash()
+		env.probe.lifecycle.record.PolicySHA256 = runCfg.CanonicalPolicyHash()
+	}
 	xvfbPresent := false
 	if env.probe.stat != nil {
 		_, xvfbErr := env.probe.stat(env.probe.xvfbPath)
@@ -300,6 +336,9 @@ func runContainRun(
 	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s posture capsule: %w", commandLabel, err))
+	}
+	if env.probe.lifecycle != nil {
+		env.probe.lifecycle.record.PostureCapsuleSHA256 = posture.capsuleSHA256
 	}
 	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posture.path)
 	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)

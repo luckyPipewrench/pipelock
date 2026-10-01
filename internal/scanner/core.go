@@ -241,6 +241,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 		cs.responsePatterns = append(cs.responsePatterns, &compiledPattern{
 			name:                p.name,
 			re:                  re,
+			responseMemoRegexp:  re,
 			requiredLiteralsAny: requiredLiteralsAny,
 		})
 
@@ -252,6 +253,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 				cs.responseOptSpacePatterns = append(cs.responseOptSpacePatterns, &compiledPattern{
 					name:                p.name,
 					re:                  optRe,
+					responseMemoRegexp:  optRe,
 					requiredLiteralsAny: requiredLiteralsAny,
 				})
 			}
@@ -282,6 +284,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 				cs.responseVowelFoldPatterns = append(cs.responseVowelFoldPatterns, &compiledPattern{
 					name:                p.name,
 					re:                  vfRe,
+					responseMemoRegexp:  vfRe,
 					requiredLiteralsAny: requiredLiteralsAny,
 				})
 			}
@@ -347,6 +350,10 @@ func hasIdentityByteOffsetMap(source, transformed string) bool {
 }
 
 func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppressor, forceEncodedDecode bool) responseMatchSet {
+	return s.scanCoreResponseWithMemo(content, suppress, forceEncodedDecode, nil)
+}
+
+func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponseSuppressor, forceEncodedDecode bool, memo *responseMatchMemo) responseMatchSet {
 	if s.core == nil {
 		return responseMatchSet{}
 	}
@@ -362,14 +369,14 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 	// short-circuits the scan and hides a later normalized/base64 finding.
 
 	// Primary pass.
-	if matches := filterCoreResponsePass(content, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+	if matches := filterCoreResponsePass(content, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: content}
 	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 	if spaced != content {
-		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(spaced, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
@@ -377,14 +384,14 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 	// Tertiary: leetspeak normalization.
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
-		if matches := filterCoreResponsePass(leeted, content, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), ViewLeetspeak, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(leeted, content, memo.match(s.core.responsePreFilter, s.core.responsePatterns, leeted), ViewLeetspeak, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: leeted}
 		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := filterCoreResponsePass(content, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+		if matches := filterCoreResponsePass(content, "", memo.match(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: content}
 		}
 	}
@@ -393,7 +400,7 @@ func (s *Scanner) scanCoreResponse(content string, suppress coreResponseSuppress
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			if matches := filterCoreResponsePass(folded, content, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
+			if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}
 			}
 		}

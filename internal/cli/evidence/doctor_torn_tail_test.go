@@ -52,6 +52,9 @@ func TestEvidenceDoctorTornTail(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if report.FilesRead != 1 {
+				t.Fatalf("files read=%d want 1", report.FilesRead)
+			}
 			torn := false
 			for _, f := range report.Findings {
 				if f.Kind == "torn_tail" {
@@ -111,5 +114,54 @@ func TestEvidenceDoctorSignatureBeforeTornTail(t *testing.T) {
 		if finding.Kind == "torn_tail" {
 			t.Fatal("invalid signature hidden by torn suffix")
 		}
+	}
+}
+
+func TestEvidenceDoctorTornPrefixAccounting(t *testing.T) {
+	dir := t.TempDir()
+	writeActualDoctorReceipt(t, dir)
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-1.jsonl"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"duplicate_recorder_seq", "duplicate_receipt_chain_seq"} {
+		found := false
+		for _, f := range healthy.Findings {
+			if f.Kind == kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("positive control missing %s: %+v", kind, healthy.Findings)
+		}
+	}
+	if err := os.WriteFile(path, append(data, 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"torn_tail", "duplicate_recorder_seq", "duplicate_receipt_chain_seq"} {
+		found := false
+		for _, f := range report.Findings {
+			if f.Kind == kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("torn prefix lost %s: %+v", kind, report.Findings)
+		}
+	}
+	if report.FilesRead != 2 {
+		t.Errorf("files read=%d want 2", report.FilesRead)
 	}
 }

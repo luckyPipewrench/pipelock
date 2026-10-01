@@ -381,7 +381,9 @@ func (d *evidenceDoctor) scanJSONL(name string) {
 		d.addFinding("file_read_error", fmt.Sprintf("%s: %v", name, err))
 		return
 	}
+	d.filesRead++
 	path := filepath.Join(d.location.Dir, name)
+	var entries []recorder.Entry
 	var previous *recorder.Entry
 	tailErr := recorder.InspectEvidenceTailBytes(path, data, func(entry recorder.Entry) error {
 		if computed := recorder.ComputeHash(entry); computed != entry.Hash {
@@ -390,8 +392,12 @@ func (d *evidenceDoctor) scanJSONL(name string) {
 		if previous != nil && (entry.Sequence != previous.Sequence+1 || entry.PrevHash != previous.Hash) {
 			return errors.New("broken recorder hash link")
 		}
+		if err := receipt.ValidateEvidenceEntry(entry, nil); err != nil {
+			return err
+		}
 		previous = &entry
-		return receipt.ValidateEvidenceEntry(entry, nil)
+		entries = append(entries, entry)
+		return nil
 	})
 	if tailErr != nil {
 		var torn *recorder.TornTailError
@@ -404,16 +410,19 @@ func (d *evidenceDoctor) scanJSONL(name string) {
 			d.addFinding("torn_tail", fmt.Sprintf("%s: byte %d, file time %s, observed at %s; damaged shard preserved", torn.Path, torn.Offset, fileTime, observedAt))
 		} else {
 			d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, tailErr))
+			return
 		}
-		return
+	} else {
+		entries, err = recorder.ReadEntriesFromReader(bytes.NewReader(data))
+		if err != nil {
+			d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, err))
+			return
+		}
 	}
-	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
-	if err != nil {
-		d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, err))
-		return
-	}
-	d.filesRead++
 	if len(entries) == 0 {
+		if tailErr != nil {
+			return
+		}
 		// A named evidence shard with no records is not normal steady state.
 		// Report it rather than letting it contribute nothing: an emptied or
 		// truncated shard produces no refs, so every downstream linkage check

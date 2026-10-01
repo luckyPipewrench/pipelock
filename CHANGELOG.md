@@ -110,7 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The reverse proxy now hard-blocks a critical credential in the URL path or query in enforce mode, even when `request_body_scanning.action` is `warn`.** The shipped presets forward such a request upstream while `/fetch` and the forward proxy refuse the same key. A body block on the reverse proxy now also counts toward the session's adaptive score, as URL and header blocks already did.
+- **The reverse proxy now hard-blocks a critical credential in the URL path or query in enforce mode, even when `request_body_scanning.action` is `warn`.** Before this fix, the shipped presets forwarded such a request upstream while `/fetch` and the forward proxy refuse the same key. A body block on the reverse proxy now also counts toward the session's adaptive score, as URL and header blocks already did.
 - **Reverse-proxy response blocks now carry the `X-Pipelock-Block-Reason` header set,** as the block-reason documentation says. Injection, compressed-response, oversize, scan-failure and media-policy blocks used to return the reason only in the JSON body.
 - **The adaptive escalation table is corrected: the levels are reached at 1, 2 and 4 times `escalation_threshold`,** not 1, 2 and 3. The code always doubled the threshold after each escalation; the documentation was wrong.
 - **A kill switch activation now cancels held MCP calls within about a second,** for every source including `sentinel_file`. It used to wait for the next request or for the resolver to finish.

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -918,15 +917,10 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	return "", false
 }
 
-// accountHomeDir returns the home directory the operating system records for
-// the user this process runs as. It is a variable so tests can supply one.
-var accountHomeDir = func() (string, error) {
-	u, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return u.HomeDir, nil
-}
+// accountHomeDir overrides the account-database home lookup in tests. Nil
+// uses the policy package's lookup, so the Grep check and the tool-policy
+// resolver protect the same homes.
+var accountHomeDir func() (string, error)
 
 // grepCredentialHomes returns every distinct absolute home directory whose
 // credential directories a search must not cover. The tool-policy resolver

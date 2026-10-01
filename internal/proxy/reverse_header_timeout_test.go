@@ -4,7 +4,6 @@
 package proxy
 
 import (
-	"net/http"
 	"testing"
 )
 
@@ -16,7 +15,7 @@ func TestNewReverseProxyTransport_BoundsSilentUpstream(t *testing.T) {
 	if !ok {
 		t.Fatalf("transport type = %T, want *reverseSigningRoundTripper", rt)
 	}
-	base, ok := signing.base.(*http.Transport)
+	base, ok := innerReverseTransport(signing.base)
 	if !ok {
 		t.Fatalf("base type = %T, want *http.Transport", signing.base)
 	}

@@ -70,8 +70,14 @@ func TestLocalPathIdentity_InconclusiveWalkExplainsItself(t *testing.T) {
 		if !slices.Contains(v.Rules, testKeyReadRule) {
 			t.Fatalf("real hard link not matched: %+v", v)
 		}
-		if len(v.Notes) != 0 {
-			t.Fatalf("a known hard link must not claim an inconclusive walk: %+v", v.Notes)
+		// Other protected directories on the same device (system log or spool
+		// trees a runner cannot list) may honestly add their own notes; the
+		// directory that holds the real link was walked and must not.
+		sshDir := filepath.Join(f.home, ".ssh")
+		for _, note := range v.Notes {
+			if strings.Contains(note, "protected directory "+sshDir+" ") {
+				t.Fatalf("a known hard link must not claim an inconclusive walk of its directory: %q", note)
+			}
 		}
 	})
 }

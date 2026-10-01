@@ -241,14 +241,15 @@ func newReverseProxyTransport(rp *ReverseProxyHandler, dial func(ctx context.Con
 	// the SSRF-safe dialer below.
 	base.Proxy = nil
 	// The listener no longer has a server-wide write timeout, so bound a silent
-	// upstream here. This covers only the wait for response headers; the body
-	// and the buffered scan that follows are not counted.
+	// upstream here: the wait for response headers below, and a body that stops
+	// delivering bytes in upstreamBodyStallTransport. The buffered scan itself
+	// is not counted.
 	base.ResponseHeaderTimeout = reverseUpstreamHeaderTimeout
 	if dial != nil {
 		base.DialContext = dial
 	}
 	return &reverseSigningRoundTripper{
-		base: base,
+		base: &upstreamBodyStallTransport{base: base, stall: reverseUpstreamHeaderTimeout},
 		rp:   rp,
 	}
 }

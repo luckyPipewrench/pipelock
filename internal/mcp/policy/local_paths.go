@@ -205,6 +205,8 @@ func (l *localPathIdentity) expand(values []string) []string {
 	var extra []string
 	var candidates []localProtectedCandidate
 	candidatesLoaded := false
+	// One walk of each protected directory serves every value in this call.
+	links := newHardLinkIndexes()
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		seen[value] = struct{}{}
@@ -231,7 +233,7 @@ func (l *localPathIdentity) expand(values []string) []string {
 			protectedBases = make(map[string]bool, len(l.bases))
 			for _, b := range l.bases {
 				resolved, ok := resolveLocalPath(b)
-				protectedBases[b] = ok && len(protectedAliases(resolved, loadCandidates())) > 0
+				protectedBases[b] = ok && len(protectedAliases(resolved, loadCandidates(), links)) > 0
 			}
 		}
 		return protectedBases[base]
@@ -240,7 +242,7 @@ func (l *localPathIdentity) expand(values []string) []string {
 		for _, path := range l.paths(value, baseIsProtected) {
 			for _, resolved := range resolveLocalPathViews(path) {
 				add(resolved)
-				for _, alias := range protectedAliases(resolved, loadCandidates()) {
+				for _, alias := range protectedAliases(resolved, loadCandidates(), links) {
 					add(alias)
 				}
 			}
@@ -441,10 +443,14 @@ func (l *localPathIdentity) protectedCandidates() []localProtectedCandidate {
 
 // protectedAliases returns the protected spelling of resolved when it is, or
 // lies under, the location a protected name resolves to, or when it is a hard
-// link to a protected file.
-func protectedAliases(resolved string, candidates []localProtectedCandidate) []string {
+// link to a protected file. links caches the walk of each protected directory
+// for the caller's lifetime; nil walks afresh.
+func protectedAliases(resolved string, candidates []localProtectedCandidate, links *hardLinkIndexes) []string {
 	if len(candidates) == 0 {
 		return nil
+	}
+	if links == nil {
+		links = newHardLinkIndexes()
 	}
 	var aliases []string
 	var info os.FileInfo
@@ -471,11 +477,11 @@ func protectedAliases(resolved string, candidates []localProtectedCandidate) []s
 			continue
 		}
 		if candidate.info.IsDir() {
-			// A hard link to a file directly inside a protected directory is
-			// the same file under another name. Only a regular file with
+			// A hard link to a file anywhere inside a protected directory tree
+			// is the same file under another name. Only a regular file with
 			// another link can be one, so everything else skips the scan.
 			if info.Mode().IsRegular() && mayHaveOtherLinks(info) {
-				aliases = append(aliases, hardLinkAliasesInDir(candidate.path, resolved, info, candidate.info)...)
+				aliases = append(aliases, links.aliases(candidate.path, resolved, info, candidate.info)...)
 			}
 			continue
 		}
@@ -496,79 +502,154 @@ var localPathMaxDirEntries = 8192
 // filesystem, which they cannot create without root.
 var differentDevice = onDifferentDevice
 
-// hardLinkScan is one walk of a protected directory tree looking for entries
-// that are the same file as target.
-type hardLinkScan struct {
-	target    os.FileInfo
-	remaining int
-	aliases   []string
+// entryInfo reads an entry's metadata. It is a variable so tests can make it
+// fail.
+var entryInfo = func(entry fs.DirEntry) (fs.FileInfo, error) { return entry.Info() }
+
+// hardLinkDirRead is called once for each directory the walk opens. It is a
+// variable so tests can count reads.
+var hardLinkDirRead = func(string) {}
+
+// fileKey identifies a file by device and inode where the platform exposes
+// them.
+type fileKey struct{ dev, ino uint64 }
+
+type indexedFile struct {
+	info os.FileInfo
+	path string
 }
 
-// hardLinkAliasesInDir returns the protected spelling of file when it is the
-// same file (device and inode) as an entry anywhere under dir, or when that
-// cannot be established.
+// hardLinkIndex is the result of one walk of a protected directory tree: every
+// regular file in it, or the fact that the answer is unknown.
+type hardLinkIndex struct {
+	known     bool
+	remaining int
+	byKey     map[fileKey][]string
+	// unkeyed holds files whose identity the platform does not expose as a key;
+	// all holds every file, for a target that has no key either.
+	unkeyed []indexedFile
+	all     []indexedFile
+}
+
+// hardLinkIndexes caches one hardLinkIndex per protected directory and device
+// for the lifetime of a policy decision, so each directory is walked at most
+// once however many path values the call carries.
+type hardLinkIndexes struct {
+	byDir map[hardLinkIndexKey]*hardLinkIndex
+}
+
+type hardLinkIndexKey struct {
+	dir string
+	dev uint64
+}
+
+func newHardLinkIndexes() *hardLinkIndexes {
+	return &hardLinkIndexes{byDir: make(map[hardLinkIndexKey]*hardLinkIndex)}
+}
+
+// aliases returns the protected spelling of resolved when it is the same file
+// (device and inode) as an entry anywhere under dir, or when that cannot be
+// established.
 //
 // A hard link cannot cross filesystems, so a file on another device than dir
 // is not held by it and the directory is not read. Otherwise the tree under dir
-// is walked, without following symlinks and skipping subtrees on another
+// is walked once, without following symlinks and skipping subtrees on another
 // device, examining at most localPathMaxDirEntries entries in total. It fails
 // closed: a directory on the same device that cannot be read, or more entries
 // than the bound, yields a protected spelling for file, because the answer is
 // unknown. Who owns the file or the directory does not change that: a user can
 // own a directory they cannot list, and root can link a user's file into one.
 // A directory that does not exist holds no link.
-func hardLinkAliasesInDir(dir, resolved string, info, dirInfo os.FileInfo) []string {
+func (h *hardLinkIndexes) aliases(dir, resolved string, info, dirInfo os.FileInfo) []string {
 	if dirInfo != nil && differentDevice(info, dirInfo) {
 		return nil
 	}
-	scan := hardLinkScan{target: info, remaining: localPathMaxDirEntries}
-	if !scan.walk(filepath.Clean(dir)) {
+	dir = filepath.Clean(dir)
+	key := hardLinkIndexKey{dir: dir}
+	if id, ok := fileID(dirInfo); ok {
+		key.dev = id.dev
+	}
+	idx, ok := h.byDir[key]
+	if !ok {
+		idx = &hardLinkIndex{remaining: localPathMaxDirEntries, byKey: make(map[fileKey][]string)}
+		idx.known = idx.walk(dir, dirInfo)
+		h.byDir[key] = idx
+	}
+	if !idx.known {
 		return unknownHardLinkAliases(dir, resolved)
 	}
-	return scan.aliases
+	return idx.lookup(info)
 }
 
-// walk scans dir and the directories below it. It returns false when the
+func (x *hardLinkIndex) lookup(target os.FileInfo) []string {
+	if id, ok := fileID(target); ok {
+		out := slices.Clone(x.byKey[id])
+		for _, f := range x.unkeyed {
+			if os.SameFile(target, f.info) {
+				out = append(out, f.path)
+			}
+		}
+		return out
+	}
+	var out []string
+	for _, f := range x.all {
+		if os.SameFile(target, f.info) {
+			out = append(out, f.path)
+		}
+	}
+	return out
+}
+
+func (x *hardLinkIndex) record(path string, info os.FileInfo) {
+	f := indexedFile{info: info, path: path}
+	x.all = append(x.all, f)
+	if id, ok := fileID(info); ok {
+		x.byKey[id] = append(x.byKey[id], path)
+		return
+	}
+	x.unkeyed = append(x.unkeyed, f)
+}
+
+// walk indexes dir and the directories below it. It returns false when the
 // answer is unknown.
-func (s *hardLinkScan) walk(dir string) bool {
+func (x *hardLinkIndex) walk(dir string, dirInfo os.FileInfo) bool {
+	hardLinkDirRead(dir)
 	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
 		return os.IsNotExist(err)
 	}
-	entries, err := f.ReadDir(s.remaining + 1)
+	entries, err := f.ReadDir(x.remaining + 1)
 	_ = f.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false
 	}
-	if len(entries) > s.remaining {
+	if len(entries) > x.remaining {
 		return false
 	}
-	s.remaining -= len(entries)
+	x.remaining -= len(entries)
 	for _, entry := range entries {
 		switch {
 		case entry.Type().IsRegular():
-			entryInfo, err := entry.Info()
+			info, err := entryInfo(entry)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue // removed since the listing
 				}
 				return false
 			}
-			if os.SameFile(s.target, entryInfo) {
-				s.aliases = append(s.aliases, filepath.Join(dir, entry.Name()))
-			}
+			x.record(filepath.Join(dir, entry.Name()), info)
 		case entry.IsDir():
-			entryInfo, err := entry.Info()
+			info, err := entryInfo(entry)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
 				return false
 			}
-			if differentDevice(s.target, entryInfo) {
+			if dirInfo != nil && differentDevice(dirInfo, info) {
 				continue
 			}
-			if !s.walk(filepath.Join(dir, entry.Name())) {
+			if !x.walk(filepath.Join(dir, entry.Name()), dirInfo) {
 				return false
 			}
 		}

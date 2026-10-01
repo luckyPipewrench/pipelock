@@ -34,3 +34,16 @@ func onDifferentDevice(a, b os.FileInfo) bool {
 	// Dev is uint64 on some platforms and int32 on others.
 	return uint64(sa.Dev) != uint64(sb.Dev) //nolint:unconvert // width differs per platform
 }
+
+// fileID returns the device and inode of info.
+func fileID(info os.FileInfo) (fileKey, bool) {
+	if info == nil {
+		return fileKey{}, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileKey{}, false
+	}
+	// Dev and Ino widths differ per platform.
+	return fileKey{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true //nolint:unconvert // width differs per platform
+}

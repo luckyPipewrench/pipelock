@@ -20,3 +20,9 @@ func mayHaveOtherLinks(_ os.FileInfo) bool {
 func onDifferentDevice(_, _ os.FileInfo) bool {
 	return false
 }
+
+// fileID reports no key: this platform exposes no device or inode through
+// os.FileInfo, so files are compared with os.SameFile.
+func fileID(_ os.FileInfo) (fileKey, bool) {
+	return fileKey{}, false
+}

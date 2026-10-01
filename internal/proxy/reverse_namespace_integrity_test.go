@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
@@ -35,6 +36,11 @@ func driveReverseNamespace(t *testing.T, upstream http.HandlerFunc) reverseNames
 	cfg := captureMetadataConfig()
 	cfg.CrossRequestDetection.Enabled = false
 	cfg.Taint.Enabled = false
+	return driveReverseNamespaceWithConfig(t, cfg, upstream)
+}
+
+func driveReverseNamespaceWithConfig(t *testing.T, cfg *config.Config, upstream http.HandlerFunc) reverseNamespaceResult {
+	t.Helper()
 	rp := newCaptureMetadataReverseProxy(t, cfg, audit.NewNop(), newReverseDLPRecordObserver(), upstream)
 	front := httptest.NewServer(rp)
 	t.Cleanup(front.Close)
@@ -192,6 +198,121 @@ func TestReverseUpstreamCannotWritePipelockNamespace(t *testing.T) {
 				return
 			}
 			requireNoPipelockNamespace(t, "final response header", got.header)
+		})
+	}
+}
+
+// TestReverseMediaBlockDropsUpstreamTrailers pins that a media-policy block is
+// a synthetic response: the trailers the upstream declared for the image, the
+// namespace ones and the foreign ones alike, are neither announced nor relayed
+// with it. The media builder resets the trailer map separately from the
+// injection-block builder, so it needs its own coverage.
+func TestReverseMediaBlockDropsUpstreamTrailers(t *testing.T) {
+	cfg := captureMetadataConfig()
+	cfg.CrossRequestDetection.Enabled = false
+	cfg.Taint.Enabled = false
+	cfg.MediaPolicy.MaxImageBytes = 16
+	got := driveReverseNamespaceWithConfig(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Trailer", forgedTrailerName+", X-Other")
+		_, _ = w.Write(append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 256)...))
+		w.Header().Set(forgedTrailerName, forgedBlockReason)
+		w.Header().Set("X-Other", "v")
+	})
+	if got.status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 media block: %s", got.status, got.body)
+	}
+	if r := got.header.Get(blockreason.HeaderReason); r == "" || r == forgedBlockReason {
+		t.Fatalf("%s = %q, want the proxy's own reason", blockreason.HeaderReason, r)
+	}
+	if v := got.header.Values("Trailer"); len(v) != 0 {
+		t.Fatalf("media block announces trailers %v, want none", v)
+	}
+	if len(got.trailer) != 0 {
+		t.Fatalf("media block relayed trailers %v, want none", got.trailer)
+	}
+}
+
+// TestStripUpstreamPipelockNamespaceBeforeBody pins that the strip removes the
+// declared trailer keys the transport pre-fills on resp.Trailer at header time,
+// not only the ones that arrive with the body. httputil.ReverseProxy announces
+// resp.Trailer keys to the client before it reads any body byte.
+func TestStripUpstreamPipelockNamespaceBeforeBody(t *testing.T) {
+	resp := &http.Response{
+		Header:  http.Header{},
+		Trailer: http.Header{forgedTrailerName: nil, "X-Other": nil},
+		Body:    io.NopCloser(strings.NewReader("")),
+	}
+	stripUpstreamPipelockNamespace(resp)
+	if _, ok := resp.Trailer[forgedTrailerName]; ok {
+		t.Fatalf("pre-filled namespace trailer key survived the header-time strip: %v", resp.Trailer)
+	}
+	if _, ok := resp.Trailer["X-Other"]; !ok {
+		t.Fatalf("foreign trailer key was removed: %v", resp.Trailer)
+	}
+}
+
+// TestReverseEarlyHintsKeepRecordedReceiptHandle pins that an upstream 1xx does
+// not cost the caller its receipt handle. httputil.ReverseProxy clears the
+// writer's header map after relaying a 1xx, which used to drop the proxy's own
+// X-Pipelock-Receipt from the final response. The 1xx itself must still carry
+// no namespace name, the handle included.
+func TestReverseEarlyHintsKeepRecordedReceiptHandle(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	for _, tc := range []struct {
+		name     string
+		upstream http.HandlerFunc
+	}{
+		{"no hints", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("fine")) }},
+		{"one 103", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Link", "</a.css>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			_, _ = w.Write([]byte("fine"))
+		}},
+		{"two 103s with forged name", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(blockreason.HeaderRecordedReceipt, "forged-receipt")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Set("Link", "</b.css>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			_, _ = w.Write([]byte("fine"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proxySrv, _, closeRec := reverseReceiptParitySetup(t, cfg, tc.upstream)
+			t.Cleanup(closeRec)
+			var informative []http.Header
+			trace := &httptrace.ClientTrace{
+				Got1xxResponse: func(_ int, h textproto.MIMEHeader) error {
+					informative = append(informative, http.Header(h).Clone())
+					return nil
+				},
+			}
+			req, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(), trace), http.MethodGet, proxySrv.URL+"/x", http.NoBody)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if strings.HasPrefix(tc.name, "no hints") != (len(informative) == 0) {
+				t.Fatalf("1xx count = %d, scenario %q does not exercise what it claims", len(informative), tc.name)
+			}
+			handle := resp.Header.Get(blockreason.HeaderRecordedReceipt)
+			if handle == "" || handle == "forged-receipt" {
+				t.Fatalf("final %s = %q, want the proxy's own handle", blockreason.HeaderRecordedReceipt, handle)
+			}
+			if got := resp.Header.Values(blockreason.HeaderRecordedReceipt); len(got) != 1 {
+				t.Fatalf("final %s = %v, want exactly one value", blockreason.HeaderRecordedReceipt, got)
+			}
+			for i, h := range informative {
+				requireNoPipelockNamespace(t, "1xx response "+string(rune('0'+i)), h)
+			}
 		})
 	}
 }

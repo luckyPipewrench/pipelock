@@ -807,7 +807,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyAgentAuth, agentAuth)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
-	ctx = context.WithValue(ctx, ctxKeyReverseResponseReceipt, &reverseResponseReceiptState{header: w.Header()})
+	responseReceiptState := &reverseResponseReceiptState{header: w.Header()}
+	ctx = context.WithValue(ctx, ctxKeyReverseResponseReceipt, responseReceiptState)
 	r = r.WithContext(ctx)
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit && cfg.ReverseProxy.RequestTimeoutSeconds > 0 {
 		timeoutCtx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.ReverseProxy.RequestTimeoutSeconds)*time.Second)
@@ -1611,6 +1612,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		blockreason.SetRecordedReceipt(w.Header(), reverseAllowReceipt.ActionID)
+		responseReceiptState.admissionReceiptID = reverseAllowReceipt.ActionID
 	}
 	var outcomeTracker *reverseOutcomeTracker
 	if cfg.FlightRecorder.RequireReceipts {
@@ -2104,7 +2106,12 @@ func reverseRequestContext(resp *http.Response) context.Context {
 // on the writer when ModifyResponse turns an upstream response into a block.
 // The buffered block receipt must replace it, or no receipt header may remain.
 type reverseResponseReceiptState struct {
-	header                 http.Header
+	header http.Header
+	// admissionReceiptID is the handle ServeHTTP put on the writer for the
+	// required admission receipt. httputil.ReverseProxy clears the writer's
+	// header map after relaying an upstream 1xx, so modifyResponse puts the
+	// handle back for a forwarded response.
+	admissionReceiptID     string
 	recordedBlockReceiptID string
 	responseBlocked        bool
 }
@@ -2137,7 +2144,13 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 	responseReceiptState := reverseResponseReceiptStateFrom(resp)
 	defer func() {
-		if responseReceiptState == nil || !responseReceiptState.responseBlocked {
+		if responseReceiptState == nil {
+			return
+		}
+		if !responseReceiptState.responseBlocked {
+			if id := responseReceiptState.admissionReceiptID; id != "" && responseReceiptState.header.Get(blockreason.HeaderRecordedReceipt) == "" {
+				blockreason.SetRecordedReceipt(responseReceiptState.header, id)
+			}
 			return
 		}
 		if responseReceiptState.recordedBlockReceiptID == "" {

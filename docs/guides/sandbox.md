@@ -15,6 +15,20 @@ Landlock is mandatory for the normal Linux sandbox. A host that cannot apply it 
 
 `--strict` requires seccomp and descendant cleanup (the Linux child subreaper) as well as the network namespace; it refuses to start without either. A non-strict launch prints one startup warning when descendant cleanup is degraded: a detached descendant can then outlive the session and hold proxy shutdown open. On `linux/arm64`, the normal non-strict launch can be `partial` because the seccomp filter is not built for that architecture. Do not describe that launch as fully contained.
 
+## Ubuntu and AppArmor user-namespace restriction
+
+Ubuntu 24.04 and later restrict unprivileged user namespaces with AppArmor by default (`kernel.apparmor_restrict_unprivileged_userns = 1`). On such a host `pipelock sandbox --dry-run` can report `CAPABILITIES_OK` with the network layer `available`, because the dry run only probes capabilities, and the real launch then fails after the network layer reports `ACTIVE`:
+
+```text
+[sandbox] loopback: netlink error: operation not permitted
+exit status 1
+```
+
+Check the setting with `sysctl kernel.apparmor_restrict_unprivileged_userns`. A value of `1` means the restriction is on. There are two ways to let the sandbox start, and each one changes host policy:
+
+- Give the `pipelock` binary an AppArmor profile that allows the `userns` permission. The exception covers that binary only, and the rest of the host keeps the restriction.
+- Set `kernel.apparmor_restrict_unprivileged_userns=0` with `sysctl`. This lifts the restriction for every unprivileged program on the host, which gives up a hardening Ubuntu applies against user-namespace kernel exploits, so use it only on a machine you accept that for (a disposable test VM, for example).
+
 ## Advisory network override
 
 The default for a missing network namespace is refusal. `--best-effort` is a temporary, explicit advisory override for environments such as containers that disable unprivileged user namespaces. It requires both an operator reason and a bounded expiry:

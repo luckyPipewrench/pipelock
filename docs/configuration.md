@@ -1625,7 +1625,11 @@ The configured `exec` runs as a child process with a restricted environment and 
 
 When defer is enabled, `kill_switch.api_listen` and an API token expose the operator-only deferred-action routes on a separate listener. `GET /api/v1/deferred` lists pending actions. Send `POST /api/v1/deferred/{id}/approve` or `/deny` with `Authorization: Bearer <token>` to resolve one. The API result reports the terminal decision actually applied, which may be `block` even after an approve request: if the rule does not allow operator approval, if the kill switch activated first, or if the stdio-to-HTTP bridge's release check refuses the call. In `pipelock mcp proxy`, this listener exposes the deferred routes only, so `POST /api/v1/killswitch`, `GET /api/v1/killswitch/status` and the session routes return 404 there; use `sentinel_file` to trigger the kill switch for an MCP proxy, or run the kill switch API on a `pipelock run` listener.
 
-For example, to exercise `resolution_source: upstream_contract`, run a stdio-to-HTTP bridge with `pipelock mcp proxy --upstream https://api.vendor.example/mcp`, configure an applicable `action: defer` rule whose resolver returns `allow`, and start with an active [Learn and Lock contract](guides/learn-and-lock.md) that permits the configured upstream URL. The bridge checks the upstream URL as an HTTP `POST` with the effective action `mcp_upstream`, so a contract rule permits it with a selector whose `host` is the upstream host (and, optionally, `paths` and `methods`); adding `effective_action: mcp_upstream` to that selector limits the rule to the bridge's own upstream check instead of every request to that host. `mcp_upstream` is that label, not a separate contract section. Hold a matching call, then promote a new active manifest that denies that URL and wait for the runtime to reload it. Approve the held call after the new manifest is active. The bridge checks the live contract immediately before forwarding, so the call resolves to block with `resolution_source: upstream_contract`.
+To see `resolution_source: upstream_contract`, run a stdio-to-HTTP bridge with `pipelock mcp proxy --upstream https://api.vendor.example/mcp`, configure an applicable `action: defer` rule whose resolver returns `allow`, and start with an active [Learn and Lock contract](guides/learn-and-lock.md) that permits the configured upstream URL. The bridge checks the upstream URL as an HTTP `POST` with the effective action `mcp_upstream`, so a contract rule permits it with a selector whose `host` is the upstream host (and, optionally, `paths` and `methods`); adding `effective_action: mcp_upstream` to that selector limits the rule to the bridge's own upstream check instead of every request to that host. `mcp_upstream` is that label, not a separate contract section.
+
+The bridge runs the same upstream check again immediately before it forwards an approved call. A call that check refuses, or can't evaluate, resolves to block with `resolution_source: upstream_contract`.
+
+A standalone `pipelock mcp proxy` loads its contract once at startup. Promoting a new manifest while a call is held doesn't change what that process enforces, so the call is forwarded. A bridge restarted on a manifest that denies the upstream exits at startup and never holds a call. The release check therefore refuses a held call only when something else in the check changes during the hold, such as the scanner's verdict on the upstream URL (for example, DNS for the upstream host now resolving to an address the SSRF check blocks) or the check becoming unevaluable.
 
 Resolution sources include `approval`, `operator`, `authority`, `timeout`, `cancel`, `context`, `restart_recovery`, `kill_switch`, `capacity`, `cascade`, `cascade_limit`, `duplicate_defer_id`, `policy_reload`, `tool_inventory`, and `upstream_contract`.
 
@@ -3127,7 +3131,7 @@ pipelock sandbox --dry-run --json -- python agent.py
 | Containers, non-amd64 (authorized `--best-effort`) | advisory-override + partial | Landlock only. Direct egress may bypass Pipelock; seccomp is separately unavailable. |
 | macOS | sandbox-exec | Apple SBPL profiles for filesystem + network restriction |
 
-**Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`.
+**Requirements:** Linux 5.13+ (Landlock ABI v1). Unprivileged on bare metal. macOS 13+ for sandbox-exec. Containers may need `--best-effort` if default seccomp blocks `CLONE_NEWUSER`. On Ubuntu 24.04 and later, AppArmor's user-namespace restriction can make the launch fail even though `--dry-run` reports the capabilities as available; see [Ubuntu and AppArmor user-namespace restriction](guides/sandbox.md#ubuntu-and-apparmor-user-namespace-restriction).
 
 **Seccomp is built for `linux/amd64` only.** On other Linux architectures, including the published `linux/arm64` binaries, Pipelock does not contain a seccomp filter to install, so the layer reports unavailable and containment is 2/3 rather than 3/3. This is reported rather than silently absent: `pipelock diagnose` shows the seccomp check as `FAIL … unavailable`, and under `--strict`, preflight refuses the launch instead of starting with fewer layers than strict promises. Landlock and the network namespace, which carry the filesystem and egress guarantees, are unaffected.
 
@@ -3344,7 +3348,7 @@ For the end-to-end operator flow, see [Learn-and-Lock](guides/learn-and-lock.md)
 
 ### Live lock (runtime active-set)
 
-The `learn` block above governs the observation, compile, and shadow phases. The `learn_lock` block governs the runtime path: which active-manifest directory the proxy watches, which roster pins the signing keys, and which mode the gate runs in. The two blocks are independent and can be enabled separately. `learn_lock` is opt-in and default-off; with it disabled the proxy never resolves an active contract and behaves identically to v2.3 (scanner-only).
+The `learn` block above governs the observation, compile, and shadow phases. The `learn_lock` block governs the runtime path: which active-manifest directory the proxy loads, which roster pins the signing keys, and which mode the gate runs in. The two blocks are independent and can be enabled separately. `learn_lock` is opt-in and default-off; with it disabled the proxy never resolves an active contract and behaves identically to v2.3 (scanner-only).
 
 ```yaml
 learn_lock:
@@ -3365,7 +3369,7 @@ learn_lock:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable the live-lock runtime. When false, the proxy ignores any active manifest and runs as scanner-only. When true, every other field below is required; partial config is rejected at startup so a half-wired lock never silently downgrades. |
 | `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty values use `shadow`; unknown values are rejected so a misspelled lock mode cannot silently change enforcement. |
-| `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime watches this directory via fsnotify with a 100ms debounce and a 2s maximum-debounce cap; reload is fail-closed on initial load and missed-promote recovery walks the accepted-history chain. |
+| `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime reads this directory when it builds the contract loader: at startup, and for `pipelock run` again on each config reload. It doesn't watch the directory, so a manifest promoted while `pipelock mcp proxy` is running applies only after a restart. Loading is fail-closed. A loader that already holds a manifest recovers a skipped promotion on reload by walking the accepted-history chain; a fresh start reads and validates `active.json` directly. |
 | `roster_path` | `""` | Absolute path to the deployment-level roster JSON file naming which signing keys are authorised for which purposes. Required when `enabled` is true. The roster's root fingerprint must match `pinned_root_fingerprint`. |
 | `environment.id` | `""` | Deployment environment identifier (e.g., `production`, `staging`). Required key when `enabled` is true; non-empty value enforced by validation. |
 | `environment.tenant` | `""` | Tenant scope for contract activation. Required key when `enabled` is true; explicit empty string means intentionally unscoped tenant. |
@@ -3377,7 +3381,7 @@ The `environment` block is a required nested mapping with all three keys present
 
 Mode resolution: `EffectiveMode()` reads the field above, returning `live`, `shadow`, or `capture`; any other value resolves to `shadow`. This means a typo in `mode` does not silently enable enforcement.
 
-Restart vs reload: `enabled`, `store_dir`, `roster_path`, `environment.*`, and `pinned_root_fingerprint` require a process restart to change. `mode` and `minimum_signatures` are picked up by the next active-manifest reload.
+Restart vs reload: every `learn_lock` setting, including `mode` and `minimum_signatures`, requires a process restart to change. A `pipelock run` config reload that changes the block logs a warning and keeps the previous settings. It still rebuilds the contract loader from those settings, which is how a newly promoted manifest takes effect on reload.
 
 ## Health Watchdog
 

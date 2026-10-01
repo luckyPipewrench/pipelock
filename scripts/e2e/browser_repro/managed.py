@@ -458,12 +458,26 @@ def run_managed(args):
                        "--", *tool_args]
             try:
                 driver_process = Process(command, output / "driver", env, output, cancellation, signal_grace_seconds=20)
-                report["driver_exit"] = driver_process.wait(timeout=240)
+                try:
+                    report["driver_exit"] = driver_process.wait(timeout=240)
+                except Exception as error:
+                    report["driver_wait_error"] = str(error)[:1024]
+                    raise
             finally:
-                if driver_process:
-                    report["processes"]["driver"] = driver_process.stop()
-                evidence = fixture.evidence()
-                write_json(output / "fixture.json", evidence)
+                try:
+                    if driver_process:
+                        report["processes"]["driver"] = driver_process.stop()
+                finally:
+                    pending_error = sys.exc_info()[1]
+                    try:
+                        evidence = fixture.evidence()
+                        write_json(output / "fixture.json", evidence)
+                    except Exception as error:
+                        # Keep the cleanup/wait failure primary while exposing
+                        # any secondary loss of the in-memory origin witness.
+                        report["fixture_artifact_error"] = str(error)[:1024]
+                        if pending_error is None:
+                            raise
             # An exit-zero client or a surviving report from another launch is
             # never sufficient: require root-owned service and proof bindings.
             lifecycle_raw = read_regular(output / "lifecycle" / "lifecycle.json", 16384, owner=0, private=True)

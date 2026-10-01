@@ -274,7 +274,7 @@ func TestLifecycleSupervisionReportFailureStillCleans(t *testing.T) {
 }
 
 func TestLifecycleOutputDirectoryAndAtomicRecords(t *testing.T) {
-	parent := t.TempDir()
+	parent := lifecycleTestParent(t)
 	path := filepath.Join(parent, "receipt")
 	dir, err := openLifecycleDirectory(path, lifecycleTestOwner(t))
 	if err != nil {
@@ -310,9 +310,16 @@ func TestLifecycleOutputDirectoryAndAtomicRecords(t *testing.T) {
 }
 
 func TestLifecycleOutputRejectsSymlinksAndUnsafeAncestors(t *testing.T) {
-	parent := t.TempDir()
+	parent := lifecycleTestParent(t)
 	target := filepath.Join(parent, "target")
 	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	control, err := openLifecycleDirectory(filepath.Join(target, "control"), lifecycleTestOwner(t))
+	if err != nil {
+		t.Fatalf("valid ancestor control: %v", err)
+	}
+	if err := control.Close(); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(parent, "link")
@@ -335,7 +342,7 @@ func TestLifecycleOutputRejectsSymlinksAndUnsafeAncestors(t *testing.T) {
 }
 
 func TestLifecycleRecordCannotFollowTemporarySymlink(t *testing.T) {
-	parent := t.TempDir()
+	parent := lifecycleTestParent(t)
 	dir, err := openLifecycleDirectory(filepath.Join(parent, "receipt"), lifecycleTestOwner(t))
 	if err != nil {
 		t.Fatal(err)
@@ -402,7 +409,7 @@ func TestLifecycleOutputRejectsNonRootInProduction(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("non-root guard")
 	}
-	if _, err := newContainRunLifecycle(filepath.Join(t.TempDir(), "new")); err == nil {
+	if _, err := newContainRunLifecycle(filepath.Join(lifecycleTestParent(t), "new")); err == nil {
 		t.Fatal("non-root lifecycle output accepted")
 	}
 }
@@ -495,6 +502,17 @@ func TestLifecycleCancellationDominatesSuccessfulClientAndCleanup(t *testing.T) 
 			t.Fatalf("duringCleanup=%v err=%v record=%+v", duringCleanup, err, l.record)
 		}
 	}
+}
+
+func lifecycleTestParent(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// TempDir's numbered child uses 0777 before umask, which can leave it
+	// group-writable. Secure only this test-owned lifecycle output parent.
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302: owner-only directory requires the execute bit for traversal.
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func lifecycleTestOwner(t *testing.T) uint32 {

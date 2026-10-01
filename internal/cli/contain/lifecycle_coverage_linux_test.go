@@ -27,7 +27,7 @@ import (
 func TestLifecycleInitializationPublishesFreshReservedIdentity(t *testing.T) {
 	seen := make(map[string]bool)
 	for range 2 {
-		dir, err := openLifecycleDirectory(filepath.Join(t.TempDir(), "receipt"), lifecycleTestOwner(t))
+		dir, err := openLifecycleDirectory(filepath.Join(lifecycleTestParent(t), "receipt"), lifecycleTestOwner(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func TestLifecycleInitializationPublishesFreshReservedIdentity(t *testing.T) {
 }
 
 func TestLifecycleInitializationClosesDirectoryAfterPublicationFailure(t *testing.T) {
-	dir, err := openLifecycleDirectory(filepath.Join(t.TempDir(), "receipt"), lifecycleTestOwner(t))
+	dir, err := openLifecycleDirectory(filepath.Join(lifecycleTestParent(t), "receipt"), lifecycleTestOwner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestLifecycleSupervisionPreservesMultilineArgv(t *testing.T) {
 func TestLifecycleRecordFailurePreservesPublishedWitness(t *testing.T) {
 	for _, failure := range []string{"oversized", "temporary collision", "closed directory"} {
 		t.Run(failure, func(t *testing.T) {
-			dir, err := openLifecycleDirectory(filepath.Join(t.TempDir(), "receipt"), lifecycleTestOwner(t))
+			dir, err := openLifecycleDirectory(filepath.Join(lifecycleTestParent(t), "receipt"), lifecycleTestOwner(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -256,7 +256,7 @@ func TestLifecycleRecordFailurePreservesPublishedWitness(t *testing.T) {
 }
 
 func TestLifecycleRecordRenameFailureRemovesOnlyItsTemporaryFile(t *testing.T) {
-	dir, err := openLifecycleDirectory(filepath.Join(t.TempDir(), "receipt"), lifecycleTestOwner(t))
+	dir, err := openLifecycleDirectory(filepath.Join(lifecycleTestParent(t), "receipt"), lifecycleTestOwner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestLifecycleRecordRenameFailureRemovesOnlyItsTemporaryFile(t *testing.T) {
 }
 
 func TestLifecycleRecordUsesRetainedDirectoryHandle(t *testing.T) {
-	parent := t.TempDir()
+	parent := lifecycleTestParent(t)
 	path := filepath.Join(parent, "receipt")
 	dir, err := openLifecycleDirectory(path, lifecycleTestOwner(t))
 	if err != nil {

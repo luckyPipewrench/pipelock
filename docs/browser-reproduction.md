@@ -337,6 +337,10 @@ latency includes proxy and origin work; it is not scanner-only CPU time. Run
 scanner profiling/benchmarks separately under an uncontended CPU window.
 `fixture.json` contains bounded route timing tails and arrival counts. Request
 URLs, cookies and submitted values are not logged by the fixture.
+After a driver launch attempt, both runners try to save these counts even when
+local process cleanup fails. The summary keeps driver wait errors and reports
+secondary fixture-save errors separately; failed evidence saving retains scratch.
+Earlier setup failures may not produce `fixture.json`.
 Anonymous authentication counts separately witness one accepted login,
 authenticated account requests before and after restart, and unauthenticated
 account requests before login and after cookie clearing. Those witnesses are

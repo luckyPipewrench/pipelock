@@ -63,9 +63,9 @@ pipelock contain run: session contract for claude
     /home/alice/src/proj  read-write  owner=alice  created=2026-06-01T12:00:00Z  expires=never  [active]
 ```
 
-Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch, so an expired grant prints `[expired]` and exits non-zero.
+Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch: a grant that has already expired fails preflight at the `workspace_access` check (probe 15) before any contract is printed, and the command exits 1. A grant that expires after probe 15 passes is refused by a final expiry check after the contract prints, and that refusal exits 2.
 
-If preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 Flags:
 
@@ -122,8 +122,8 @@ Mount-boundary detection and the TOCTOU identity re-check rely on POSIX device/i
 Exit codes:
 
 - **0**, preflight passed and either `--dry-run` printed the session contract, or the posture capsule was written and the agent process exited successfully.
-- **1**, containment was broken, posture emission failed, or the launched agent exited non-zero.
-- **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port. A launch refused because a recorded workspace grant has expired also exits 2, with or without `--dry-run`; the error names the expired grants and the `grant-workspace` or `revoke-workspace` command that clears them.
+- **1**, containment was broken, posture emission failed, or the launched agent exited non-zero. A recorded workspace grant that has expired fails preflight at probe 15 (`workspace_access`) and also exits 1, with or without `--dry-run`, and no contract is printed. A grant that expires after probe 15 passes is refused by the final expiry check with exit 2 after the contract prints. Nothing launches in either case. The error names the expired grants and the `grant-workspace` or `revoke-workspace` command that clears them.
+- **2**, usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
 
 Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.
 
@@ -146,6 +146,8 @@ Flags:
 | `--proxy-port` | `8888` | Pipelock listen port baked into wrappers and the systemd unit. |
 | `--pipelock-binary` | current process | Pipelock binary to install. Hashed and pinned at install time. |
 | `--config` | (required if not already in place) | Source `pipelock.yaml` copied to `/etc/pipelock/pipelock.yaml`. |
+
+The installed config must set `forward_proxy.enabled: true`. Contained agents reach the internet through Pipelock's forward proxy (`CONNECT` tunnels and absolute-URI requests), and with it off the proxy answers them with `405`. `pipelock init` writes `forward_proxy.enabled: false` for every preset and `contain install` copies the config as it finds it, so set the field in the `--config` file before you install, or edit `/etc/pipelock/pipelock.yaml` and rerun `contain install`. `contain verify` can still pass with the forward proxy off; [`contain doctor`](#pipelock-contain-doctor) is the command that catches it.
 
 Install steps run in order; each one is idempotent. If a step fails, install undoes what that attempt changed in reverse order. Rollback restores only files and state changed by the attempt. For a previously loaded containment table, it restores the captured prior contents; if those contents could not be captured, it keeps the loaded table and reports `rollback incomplete`. The error also names any file or unit restore that could not finish and tells the operator to rerun `pipelock contain install` as root.
 
@@ -358,19 +360,21 @@ Published content is untrusted agent content in both directions. Pipelock doesn'
 
 ### Launching a contained systemd service
 
+> **Not supported in this release.** The recipe below doesn't start the agent: `service-posture` runs preflight probe 3 inside the agent network namespace, where the host's managed nftables table isn't visible, so the probe fails and systemd never starts the service. Use `pipelock contain run` to launch contained agents until a later release fixes the check.
+
 Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:
 
 ```ini
 [Unit]
 BindsTo=pipelock-agent-netns.service pipelock-agent-netns-forward.service
 After=pipelock-agent-netns.service pipelock-agent-netns-forward.service
+JoinsNamespaceOf=pipelock-agent-netns.service
 
 [Service]
 User=pipelock-agent
 Group=pipelock-agent
 WorkingDirectory=/home/pipelock-agent
 PrivateNetwork=true
-JoinsNamespaceOf=pipelock-agent-netns.service
 PrivateTmp=true
 ExecStartPre=!/usr/local/bin/pipelock contain service-posture -- agent-tool
 ExecStart=
@@ -378,7 +382,7 @@ ExecStart=/usr/local/bin/plk-launch agent-tool
 Restart=on-failure
 ```
 
-The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `PrivateNetwork=true` can create a separate empty namespace when no valid target is available, so it isn't enough on its own.
+The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `JoinsNamespaceOf=` belongs in `[Unit]`; systemd ignores it under `[Service]` and logs `Unknown key 'JoinsNamespaceOf' in section [Service], ignoring`, and the unit then gets its own empty namespace. `PrivateNetwork=true` creates that separate empty namespace whenever the join has no valid target, so it isn't enough on its own.
 
 The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. A mismatch or inconclusive check fails the pre-start command, so systemd never starts the agent. The signer exits before the agent starts and never receives agent input or output.
 
@@ -390,7 +394,7 @@ The pre-start signer writes the same signed posture capsule path used by `contai
 
 Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
-Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Replace the earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above, then run `sudo systemctl daemon-reload` and restart that service. An old drop-in still performs a preflight, but it doesn't emit a capsule.
+Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Don't replace an earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above in this release, because that recipe can't start the agent (see the note at the top of this section). Use `pipelock contain run` to launch contained agents. An old drop-in still performs a preflight, but it doesn't emit a capsule.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking
@@ -493,6 +497,8 @@ Checks:
 | 10 | `viewer_service` (conditional) | Present when `containment.display.backend: xvnc`. The viewer socket is available to its operator. |
 | 11 | `viewer_rfb_access` (conditional) | Present when `containment.display.backend: xvnc`. The viewer RFB socket group is exact. |
 | 12 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete agent-home viewer access is absent. |
+
+With `forward_proxy.enabled: false`, checks 2 and 3 fail with `CONNECT tunnel failed, response 405` and check 5 reports `unknown` with the same status. The remediation printed for those checks talks about the proxy and the CA bundle and doesn't name the setting. Set `forward_proxy.enabled: true` in `/etc/pipelock/pipelock.yaml`, rerun `contain install`, then rerun `doctor`.
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

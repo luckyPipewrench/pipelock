@@ -3,6 +3,7 @@
 
 """Artifact rejection with inert owned files, not a browser/containment run."""
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -201,7 +202,8 @@ class StandaloneArtifactFlowTests(unittest.TestCase):
         # The fixture, artifact links, reads, writes and summary are real; no
         # browser, sandbox, existing user files or host policies are involved.
         retained_scenarios = ("report-save-failed", "screenshot-save-failed", "summary-save-failed",
-                              "stop-failed", "wait-failed", "missing-cleanup-witness")
+                              "stop-failed", "wait-failed", "missing-cleanup-witness", "fixture-save-failed",
+                              "stop-fixture-save-failed", "wait-fixture-save-failed", "wait-stop-fixture-save-failed")
         for scenario in ("report-alias", "screenshot-alias", "failed-report", "failed-screenshot-alias",
                          "missing-report", "final-summary-save-failed", "cleanup-signal", *retained_scenarios):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
@@ -221,7 +223,23 @@ class StandaloneArtifactFlowTests(unittest.TestCase):
                 class SyntheticProcess:
                     def __init__(self, command, log, env, cwd, cancellation):
                         self.log = log
-                        if log.name != "driver" or scenario == "missing-report":
+                        if log.name != "driver":
+                            return
+                        settings = json.loads((work / "settings.json").read_text())
+                        with contextlib.closing(http.client.HTTPConnection("127.0.0.1", settings["port"], timeout=2)) as connection:
+                            connection.request("POST", "/session", "user=fixture&code=fixture-only")
+                            response = connection.getresponse()
+                            if response.status != 303:
+                                raise AssertionError("owned synthetic session failed")
+                            response.read()
+                            connection.request("GET", "/account", headers={"Cookie": "fixture_session=synthetic"})
+                            response = connection.getresponse()
+                            if response.status != 200:
+                                raise AssertionError("owned synthetic account failed")
+                            response.read()
+                        if "fixture-save-failed" in scenario:
+                            (output / "fixture.json").mkdir()
+                        if scenario == "missing-report":
                             return
                         if scenario == "report-alias":
                             (work / "browser.json").symlink_to(reference)
@@ -238,12 +256,12 @@ class StandaloneArtifactFlowTests(unittest.TestCase):
                             (output / "summary.json").mkdir()
 
                     def wait(self, timeout):
-                        if self.log.name == "driver" and scenario == "wait-failed":
+                        if self.log.name == "driver" and scenario.startswith("wait-"):
                             raise RuntimeError("generated interrupted wait")
                         return exit_code if self.log.name == "driver" else 0
 
                     def stop(self):
-                        if self.log.name == "driver" and scenario == "stop-failed":
+                        if self.log.name == "driver" and scenario in ("stop-failed", "stop-fixture-save-failed", "wait-stop-fixture-save-failed"):
                             raise RuntimeError("generated incomplete process cleanup")
                         self.log.with_suffix(".stderr").write_text("generated diagnostic\n")
                         cleanup = {"cleanup_complete": True, "unexpected_live_descendants": False}
@@ -322,16 +340,35 @@ class StandaloneArtifactFlowTests(unittest.TestCase):
                 report = json.loads((output / "summary.json").read_text())
                 self.assertEqual(report["status"], "fail")
                 self.assertEqual(report["containment"], "not_established")
-                if scenario == "wait-failed":
+                if scenario.startswith("wait-"):
                     self.assertNotIn("driver_exit", report)
+                    self.assertEqual(report["driver_wait_error"], "generated interrupted wait")
+                    if scenario != "wait-stop-fixture-save-failed":
+                        self.assertEqual(report["failure"], report["driver_wait_error"])
                 else:
                     self.assertEqual(report["driver_exit"], exit_code)
+                if scenario in ("stop-failed", "stop-fixture-save-failed", "wait-stop-fixture-save-failed"):
+                    self.assertEqual(report["failure"], "driver: generated incomplete process cleanup")
+                if "fixture-save-failed" in scenario:
+                    self.assertIn("fixture.json", report["fixture_artifact_error"])
+                    self.assertTrue((output / "fixture.json").is_dir())
+                    if scenario == "fixture-save-failed":
+                        self.assertEqual(report["failure"], report["fixture_artifact_error"])
+                elif scenario != "cleanup-signal":
+                    evidence_path = output / "fixture.json"
+                    evidence = json.loads(evidence_path.read_text())
+                    self.assertEqual(evidence["counts"], {"/health": 1, "/account": 1})
+                    self.assertEqual(evidence["auth_counts"], {"session_submissions": 1,
+                        "session_acceptances": 1, "account_authenticated": 1})
+                    self.assertEqual(evidence_path.stat().st_mode & 0o777, 0o600)
+                    self.assertNotIn("fixture_artifact_error", report)
                 self.assertFalse((output / "cold.png").is_file())
                 if scenario in ("failed-report", "screenshot-alias", "failed-screenshot-alias",
-                                "screenshot-save-failed", "stop-failed", "missing-cleanup-witness", "cleanup-signal"):
+                                "screenshot-save-failed", "stop-failed", "missing-cleanup-witness", "cleanup-signal",
+                                "fixture-save-failed", "stop-fixture-save-failed"):
                     self.assertEqual(json.loads((output / "browser.json").read_text()), record)
                     self.assertEqual(report["browser_artifact_status"], "preserved")
-                elif scenario == "wait-failed":
+                elif scenario.startswith("wait-"):
                     self.assertNotIn("browser_artifact_status", report)
                     self.assertFalse((output / "browser.json").exists())
                 else:
@@ -358,6 +395,23 @@ class StandaloneArtifactFlowTests(unittest.TestCase):
 
 
 class WorkspaceRetentionTests(unittest.TestCase):
+    def test_fixture_save_failure_retains_scratch_despite_other_complete_witnesses(self):
+        for failure in ("generated fixture save failure", ""):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                work = root / "workspace"
+                work.mkdir()
+                state = work / "generated-state"
+                state.write_text("generated inert state")
+                report = {"status": "complete", "browser_artifact_status": "preserved",
+                          "fixture_artifact_error": failure}
+                run.finalize_workspace(work, root / "summary.json", report, cleanup_verified=True)
+                self.assertEqual(report["status"], "fail")
+                self.assertFalse(report["workspace_removed"])
+                self.assertEqual(report["retained_synthetic_workspace"], str(work))
+                self.assertEqual(state.read_text(), "generated inert state")
+                self.assertFalse((root / "summary.json").exists())
+
     def test_successful_removal_requires_a_saved_incomplete_summary_first(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

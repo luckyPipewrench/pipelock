@@ -210,7 +210,7 @@ def finalize_workspace(work, summary_path, report, cleanup_verified):
     report["workspace_removed"] = False
     report["retained_synthetic_workspace"] = str(work)
     if (not cleanup_verified or report.get("browser_artifact_status") not in ("preserved", "missing", "rejected")
-            or report.get("screenshot_artifact_save_failed")):
+            or report.get("screenshot_artifact_save_failed") or "fixture_artifact_error" in report):
         report["status"] = "fail"
         report.setdefault("failure", "workspace retained because cleanup or evidence saving is incomplete")
         return
@@ -618,7 +618,11 @@ def main():
                         report["processes"]["preflight"] = preflight.stop()
                     command = [str(args.pipelock), "sandbox", "--strict", "--config", env["PIPELOCK_CONFIG"], "--workspace", str(work), "--", *command]
                 driver_process = Process(command, args.output / "driver", env, work, cancellation)
-                code = driver_process.wait(timeout=180)
+                try:
+                    code = driver_process.wait(timeout=180)
+                except Exception as error:
+                    report["driver_wait_error"] = str(error)[:1024]
+                    raise
                 report["driver_exit"] = code
                 browser = preserve_browser_report(work, args.output, args.mode, os.geteuid(), report)
                 if code != 0:
@@ -652,7 +656,13 @@ def main():
                                 cleanup_errors.append("proxy did not remain live until owned shutdown")
                         except Exception as error:
                             cleanup_errors.append(f"{name}: {error}")
-                write_json(args.output / "fixture.json", fixture.evidence())
+                pending_error = sys.exc_info()[1]
+                try:
+                    write_json(args.output / "fixture.json", fixture.evidence())
+                except Exception as error:
+                    report["fixture_artifact_error"] = str(error)[:1024]
+                    if not cleanup_errors and pending_error is None:
+                        raise
                 if cleanup_errors:
                     raise RuntimeError("; ".join(cleanup_errors))
                 workspace_cleanup_verified = driver_process is not None and all(

@@ -15,6 +15,7 @@ import errno
 import io
 import importlib.util
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -889,7 +890,11 @@ class ManagedFailureFlowTests(unittest.TestCase):
                               "nonzero-summary-save-failed", "nonzero-final-summary-save-failed",
                               "nonzero-cancelled-report", "zero-cancelled-report", "cleanup-signal",
                               "zero-failed-report", "zero-malformed-report", "zero-screenshot-invalid")
-        for scenario in ("missing", "partial", "local-cleanup-failed", "accessibility-failed", *verified_scenarios):
+        stop_failures = ("local-cleanup-failed", "local-cleanup-fixture-save-failed", "wait-stop-fixture-save-failed")
+        wait_failures = ("wait-failed", "wait-fixture-save-failed", "wait-stop-fixture-save-failed")
+        for scenario in ("missing", "partial", "accessibility-failed", "fixture-save-failed",
+                         "local-cleanup-missing-witness", "local-cleanup-invalid-witness",
+                         *stop_failures, *wait_failures[:-1], *verified_scenarios):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 workspace_root = root / "workspace-root"
@@ -955,6 +960,22 @@ class ManagedFailureFlowTests(unittest.TestCase):
                         launched.append(command)
                         if signal_grace_seconds != 20:
                             raise AssertionError("managed cleanup grace changed")
+                        # Real loopback observations survive independently of
+                        # the inert managed process and its cleanup outcome.
+                        settings = json.loads(Path(command[-1]).read_text())
+                        with contextlib.closing(http.client.HTTPConnection("127.0.0.1", settings["port"], timeout=2)) as connection:
+                            connection.request("POST", "/session", "user=fixture&code=fixture-only")
+                            response = connection.getresponse()
+                            if response.status != 303:
+                                raise AssertionError("owned synthetic session failed")
+                            response.read()
+                            connection.request("GET", "/account", headers={"Cookie": "fixture_session=synthetic"})
+                            response = connection.getresponse()
+                            if response.status != 200:
+                                raise AssertionError("owned synthetic account failed")
+                            response.read()
+                        if "fixture-save-failed" in scenario:
+                            (args.output / "fixture.json").mkdir()
                         if scenario == "missing":
                             return
                         outcome = "cancelled" if "cancelled-report" in scenario else "failed" if driver_exit else "complete"
@@ -990,10 +1011,26 @@ class ManagedFailureFlowTests(unittest.TestCase):
                             if scenario == "nonzero-summary-save-failed":
                                 (args.output / "summary.json").mkdir()
                     def wait(self, timeout):
+                        if scenario in wait_failures:
+                            raise RuntimeError("synthetic interrupted driver wait")
                         return driver_exit
                     def stop(self):
-                        if scenario == "local-cleanup-failed":
+                        if scenario in stop_failures:
                             raise RuntimeError("synthetic local descendant cleanup failed")
+                        if scenario in ("local-cleanup-missing-witness", "local-cleanup-invalid-witness"):
+                            # Exercise the actual cleanup reader with inert
+                            # completed-process observations and owned files.
+                            process = Process.__new__(Process)
+                            process.output = args.output / "driver"
+                            process.process = SimpleNamespace(poll=lambda: 0, returncode=0)
+                            process.threads, process.read_errors = [], {}
+                            process.eof = {"stdout": True, "stderr": True}
+                            process.buffers = {"stdout": bytearray(), "stderr": bytearray()}
+                            process.counts = {"stdout": 0, "stderr": 0}
+                            process.output_lock = threading.Lock()
+                            if scenario == "local-cleanup-invalid-witness":
+                                process.output.with_suffix(".cleanup.json").write_text('{"generated":"truncated"')
+                            return process.stop()
                         return {"streams_drained": True, "cleanup": {"cleanup_complete": True,
                                 "unexpected_live_descendants": False}, "exit_code": driver_exit}
 
@@ -1082,11 +1119,33 @@ class ManagedFailureFlowTests(unittest.TestCase):
                 report = json.loads((args.output / "summary.json").read_text())
                 self.assertEqual(report["status"], "fail")
                 self.assertEqual(report["containment"], "not_established")
-                if scenario == "accessibility-failed":
+                if scenario == "accessibility-failed" or scenario in wait_failures:
                     self.assertNotIn("driver_exit", report)
-                    self.assertIn("scratch access refused", report["failure"])
+                    if scenario == "accessibility-failed":
+                        self.assertIn("scratch access refused", report["failure"])
                 else:
                     self.assertEqual(report["driver_exit"], driver_exit)
+                if scenario in stop_failures:
+                    self.assertEqual(report["failure"], "synthetic local descendant cleanup failed")
+                if scenario in ("local-cleanup-missing-witness", "local-cleanup-invalid-witness"):
+                    self.assertEqual(report["failure"], "missing or invalid cleanup witness: driver")
+                if scenario in wait_failures:
+                    self.assertEqual(report["driver_wait_error"], "synthetic interrupted driver wait")
+                    if scenario not in stop_failures:
+                        self.assertEqual(report["failure"], report["driver_wait_error"])
+                if "fixture-save-failed" in scenario:
+                    self.assertIn("fixture.json", report["fixture_artifact_error"])
+                    self.assertTrue((args.output / "fixture.json").is_dir())
+                    if scenario == "fixture-save-failed":
+                        self.assertEqual(report["failure"], report["fixture_artifact_error"])
+                elif scenario not in ("accessibility-failed", "cleanup-signal"):
+                    evidence_path = args.output / "fixture.json"
+                    evidence = json.loads(evidence_path.read_text())
+                    self.assertEqual(evidence["counts"], {"/health": 1, "/account": 1})
+                    self.assertEqual(evidence["auth_counts"], {"session_submissions": 1,
+                        "session_acceptances": 1, "account_authenticated": 1})
+                    self.assertEqual(evidence_path.stat().st_mode & 0o777, 0o600)
+                    self.assertNotIn("fixture_artifact_error", report)
                 self.assertEqual((args.output / "summary.json").stat().st_mode & 0o777, 0o600)
                 if driver_exit:
                     self.assertEqual(report["failure"], "contained browser command failed (exit 7)")

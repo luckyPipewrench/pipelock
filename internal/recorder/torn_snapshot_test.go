@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +83,36 @@ func TestCaptureTornEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCaptureTornEvidenceRejectsMutationDuringValidation(t *testing.T) {
+	source := "../../sdk/conformance/testdata/recovery-seals/valid/evidence/evidence-proxy.run." + "11111111111111111111111111111111-0.jsonl"
+	raw, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(bytes.TrimRight(raw, "\x00"), []byte("\x00")...)
+	path := filepath.Join(t.TempDir(), "shard.jsonl")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mutated := false
+	snapshot, err := CaptureTornEvidence(path, 0, nil, func(Entry) error {
+		if mutated {
+			return nil
+		}
+		mutated = true
+		return os.WriteFile(path, []byte("replacement\n"), 0o600)
+	})
+	if !mutated {
+		t.Fatal("complete-record callback did not run")
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed during read") {
+		t.Fatalf("CaptureTornEvidence error = %v, want changed-during-read failure", err)
+	}
+	if snapshot != (TornSnapshot{}) {
+		t.Fatalf("changed evidence returned a healthy snapshot: %+v", snapshot)
 	}
 }

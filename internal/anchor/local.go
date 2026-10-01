@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -220,16 +219,18 @@ func readLocalLogPrefix(path string, prior []LocalLogEntry, expectedID string) (
 	if tailErr != nil && !errors.As(tailErr, &torn) {
 		return nil, tailErr
 	}
+	if torn != nil {
+		// The validator includes a complete final JSON record even without its
+		// newline. Keep its index and hash: an issued proof must never be replaced.
+		// The torn error still forces Submit to append in a fresh segment.
+		return validated, tailErr
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	var reader io.Reader = f
-	if torn != nil {
-		reader = io.LimitReader(f, torn.LastGoodOffset)
-	}
-	sc := bufio.NewScanner(reader)
+	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 10<<20)
 	entries := append([]LocalLogEntry(nil), prior...)
 	for sc.Scan() {

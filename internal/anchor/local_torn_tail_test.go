@@ -30,7 +30,8 @@ func TestLocalLogTornTailRecovery(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "anchor.jsonl")
 			log := LocalLog{Path: path}
 			cp := Checkpoint{SessionID: "test-session", RootHash: strings.Repeat("a", 64)}
-			if _, err := log.Submit(cp); err != nil {
+			originalProof, err := log.Submit(cp)
+			if err != nil {
 				t.Fatal(err)
 			}
 			original, err := os.ReadFile(filepath.Clean(path))
@@ -49,15 +50,18 @@ func TestLocalLogTornTailRecovery(t *testing.T) {
 			if !errors.Is(err, recorder.ErrTornTail) {
 				t.Fatalf("want torn tail, got %v", err)
 			}
-			if tc.removeNewline && len(entries) != 0 {
-				t.Fatal("unterminated entry accepted as complete")
+			if len(entries) != 1 {
+				t.Fatalf("validated entry lost: got %d", len(entries))
 			}
-			proofs := make([]Proof, 0, 2)
+			proofs := []Proof{originalProof}
 			for range 2 {
 				reconstructed := LocalLog{Path: path}
 				proof, err := reconstructed.Submit(cp)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if proof.LogIndex != proofs[len(proofs)-1].LogIndex+1 {
+					t.Fatalf("index reissued: previous=%d next=%d", proofs[len(proofs)-1].LogIndex, proof.LogIndex)
 				}
 				proofs = append(proofs, proof)
 			}

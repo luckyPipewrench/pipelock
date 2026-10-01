@@ -391,6 +391,8 @@ anchor bundle covers one chain.
 The local backend is deterministic test/development plumbing, not an
 operator-independent witness:
 
+Local anchor appends require file sync before returning a proof. If the log has a torn final write, the next submission preserves that file and continues the verified complete prefix in a numbered `.segment-` file beside it. Keep those files together for local proof verification. Reading the damaged file directly still reports a torn tail; an invalid complete entry or hash link stops submissions.
+
 ```bash
 pipelock anchor receipts /var/lib/pipelock/evidence \
   --dir \

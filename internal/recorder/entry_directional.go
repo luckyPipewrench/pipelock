@@ -12,6 +12,8 @@ import (
 	"os"
 )
 
+// On candidate crash damage, directional readers validate the complete prefix
+// before returning ErrTornTail, so a malformed older record cannot be hidden.
 // ReadHeadEntriesBounded reads a bounded prefix of an evidence shard. Unlike
 // ReadEntries, an oversized file is not rejected merely for having more bytes
 // after the prefix; Truncated reports that unseen suffix. This is for callers
@@ -24,6 +26,9 @@ func ReadHeadEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entr
 		return nil, false, err
 	}
 	defer func() { _ = file.Close() }()
+	if err := inspectJSONLTail(file, info, path, evidenceTailValidator(nil)); err != nil {
+		return nil, false, err
+	}
 
 	readLimit := limits.MaxBytes
 	if readLimit < math.MaxInt64 {
@@ -50,6 +55,9 @@ func ReadTailEntriesBounded(path string, maxEntries int, maxBytes int64) ([]Entr
 		return nil, false, err
 	}
 	defer func() { _ = file.Close() }()
+	if err := inspectJSONLTail(file, info, path, evidenceTailValidator(nil)); err != nil {
+		return nil, false, err
+	}
 	if info.Size() == 0 {
 		return nil, false, nil
 	}
@@ -130,6 +138,9 @@ func FindLastEntry(path string, match func(Entry) bool) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 	defer func() { _ = file.Close() }()
+	if err := inspectJSONLTail(file, info, path, evidenceTailValidator(nil)); err != nil {
+		return Entry{}, false, err
+	}
 	if info.Size() == 0 {
 		return Entry{}, false, nil
 	}

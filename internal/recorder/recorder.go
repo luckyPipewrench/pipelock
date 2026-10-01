@@ -1176,7 +1176,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	r.evidenceDir = dirInfo
 
 	if r.file != nil {
-		return nil
+		return InspectEvidenceTail(r.file.Name(), nil)
 	}
 
 	// filepath.Base as defense-in-depth: session ID is already validated
@@ -1184,6 +1184,9 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	name := fmt.Sprintf("evidence-%s-%d.jsonl", filepath.Base(sessionID), seqStart)
 	path := filepath.Join(filepath.Clean(r.cfg.Dir), name)
 
+	if err := InspectEvidenceTail(path, nil); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, r.cfg.FileMode)
 	if err != nil {
 		return err

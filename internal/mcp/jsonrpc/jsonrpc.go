@@ -181,7 +181,7 @@ type TextResult struct {
 // ("Igno" + "re" → "Igno re") don't match, but the injection is also broken
 // for the agent, so this is not exploitable.
 func ExtractText(raw json.RawMessage) string {
-	return ExtractTextResult(raw).Text
+	return ExtractTextOnlyResult(raw).Text
 }
 
 // ExtractTextResult extracts text content and reports uninspectable depth in

@@ -81,11 +81,16 @@ func compileCanaryTokens(cfg config.CanaryTokens, budget *knownValueWindowBudget
 // normalization, then checks URL-decoded, encoded, and separator-canonicalized
 // views. Span labels name the lowercased/canonicalized view that was indexed.
 func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
+	var decodes decodingMemo
+	return s.scanCanaryTextWithDecodes(text, &decodes)
+}
+
+func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil
 	}
 
-	cleaned := normalize.ForDLP(text)
+	cleaned := decodes.normalize(text)
 	if cleaned == "" {
 		return nil
 	}
@@ -121,7 +126,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	// exfiltration path. The fixpoint's candidate and byte bounds terminate it,
 	// and the candidates are already generated for DLP, so this adds substring
 	// checks rather than decode work.
-	for _, d := range decodeEncodingsRecursiveWithURL(cleaned) {
+	for _, d := range decodes.decode(cleaned, true) {
 		label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
 		// A decimal-code spelling can itself arrive wrapped in another
@@ -139,7 +144,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 			// Same recursion for the per-segment view: the whole-text and
 			// segment loops are separate call sites, so leaving this one
 			// single-pass would keep a query-value bypass open.
-			for _, d := range decodeEncodingsRecursiveWithURL(seg) {
+			for _, d := range decodes.decode(seg, true) {
 				label := spanViewLabel(d.encoding+"_decoded", view.viewLabel)
 				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
 				matches = append(matches, s.matchCanaryDecimalView(d.text, label)...)
@@ -162,13 +167,11 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 	}
 
 	haystack := strings.ToLower(text)
-	viewLabel := lowerViewLabel(inputViewLabel)
 	if canonical {
 		haystack = strings.ToLower(canonicalizeCanaryText(haystack))
 		if haystack == "" {
 			return nil
 		}
-		viewLabel = canonicalLowerViewLabel(inputViewLabel)
 	}
 
 	var matches []TextDLPMatch
@@ -187,7 +190,7 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 				PatternName: patternName,
 				Severity:    "critical",
 				Encoded:     encoding,
-				span:        newMatchSpan(start, end, viewLabel, patternName, "", ""),
+				span:        newMatchSpan(start, end, canaryMatchViewLabel(inputViewLabel, canonical), patternName, "", ""),
 			})
 			continue
 		}
@@ -195,19 +198,28 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, input
 		if canonical {
 			windows = token.canonicalPartialWindows
 		}
-		if start, end, length, _, ok := indexKnownValueSubstring(needle, windows, []spanTextView{{text: haystack, viewLabel: viewLabel}}); ok {
+		// Only coordinates are used here. Build the result's view label after
+		// a match, rather than allocating metadata for every clean view.
+		if start, end, length, _, ok := indexKnownValueSubstring(needle, windows, []spanTextView{{text: haystack}}); ok {
 			patternName := "Canary Token (" + token.name + ")"
 			matches = append(matches, TextDLPMatch{
 				PatternName: patternName,
 				Severity:    "critical",
 				Encoded:     encoding,
 				PartialLen:  length,
-				span:        newMatchSpan(start, end, viewLabel, patternName, "", ""),
+				span:        newMatchSpan(start, end, canaryMatchViewLabel(inputViewLabel, canonical), patternName, "", ""),
 			})
 		}
 	}
 
 	return matches
+}
+
+func canaryMatchViewLabel(inputViewLabel string, canonical bool) string {
+	if canonical {
+		return canonicalLowerViewLabel(inputViewLabel)
+	}
+	return lowerViewLabel(inputViewLabel)
 }
 
 // canonicalizeCanaryText collapses separators commonly used to split tokens

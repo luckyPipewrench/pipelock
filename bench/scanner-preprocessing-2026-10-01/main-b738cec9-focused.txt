@@ -1,0 +1,83 @@
+# Revision: b738cec957a3e6cbd2fb299b5baa65aaf3325c9b
+# Go: go1.26.8 linux/amd64
+# CPU: INTEL(R) XEON(R) PLATINUM 8573C
+# GOMAXPROCS=4; six independent 1s samples; alternating revision order.
+# Test processes used the same minimal environment; environment-secret scanning was not changed.
+# Sample 1
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   15884	     74998 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  512494	      2415 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  192372	      6807 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   38160	     30904 ns/op	   10024 B/op	     134 allocs/op
+# Sample 2
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   17642	     68159 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  481929	      2475 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  218139	      6845 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   18601	     59440 ns/op	   10024 B/op	     134 allocs/op
+# Sample 3
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   17455	     69079 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  641313	      2470 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  161786	      7191 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   47198	     27373 ns/op	   10024 B/op	     134 allocs/op
+# Sample 4
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   14515	     76338 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  626534	      2332 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  189889	      6196 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   38497	     28276 ns/op	   10024 B/op	     134 allocs/op
+# Sample 5
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   16737	     77394 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  585885	      3088 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  153076	      7146 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   50175	     25999 ns/op	   10024 B/op	     134 allocs/op
+# Sample 6
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   15676	     70839 ns/op	   15952 B/op	     560 allocs/op
+BenchmarkParallel_Blocklist-4        	  769532	      2332 ns/op	     760 B/op	      21 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  188311	      7343 ns/op	     760 B/op	      21 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   42511	     30590 ns/op	   10024 B/op	     134 allocs/op

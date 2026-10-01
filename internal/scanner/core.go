@@ -214,9 +214,12 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			github = cfg.DLP.GitHubEnterpriseHosts
 			gitlab = cfg.DLP.GitLabHosts
 		}
+		requirements := analyzePatternMatchRequirements(re, nil)
 		cs.dlpPatterns = append(cs.dlpPatterns, &compiledPattern{
 			name:                                p.name,
 			re:                                  re,
+			requiresEquals:                      requirements.requiresEquals,
+			minASCIIDigits:                      requirements.minASCIIDigits,
 			severity:                            p.severity,
 			credentialAudienceHosts:             config.AppendDeclaredCredentialAudienceHosts(p.name, hosts, github, gitlab),
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
@@ -509,11 +512,15 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 // scanCoreDLP runs core DLP patterns against text. Returns matches found by
 // core patterns only.
 func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
+	return s.scanCoreDLPWithDecodes(text, nil)
+}
+
+func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	if s.core == nil || len(s.core.dlpPatterns) == 0 {
 		return nil
 	}
 
-	cleaned := normalize.ForDLP(text)
+	cleaned := decodes.normalize(text)
 	var matches []TextDLPMatch
 
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
@@ -557,9 +564,9 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
-	matches = append(matches, s.decodeAndMatchCoreRecursive(cleaned, 0)...)
+	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
 	if len(matches) == 0 {
-		matches = append(matches, s.decodeCoreDLPTextSegments(cleaned)...)
+		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
 	}
 
 	return deduplicateMatches(matches)
@@ -567,7 +574,10 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 
 // matchCoreDLPPatterns runs core DLP regex patterns against text with encoding tag.
 func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
-	text = normalize.ForDLP(text)
+	return s.matchCoreDLPPatternsNormalized(normalize.ForDLP(text), encoding)
+}
+
+func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(text) {
 		p := s.core.dlpPatterns[idx]
@@ -610,23 +620,23 @@ func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets [
 	return matches
 }
 
-// decodeAndMatchCoreRecursive runs core DLP patterns over every bounded
-// fixpoint decode candidate. The second parameter is kept for older call sites.
-func (s *Scanner) decodeAndMatchCoreRecursive(text string, _ int) []TextDLPMatch {
+// decodeAndMatchCoreWithDecodes runs core DLP patterns over every bounded
+// fixpoint decode candidate, reusing views within the calling scan.
+func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, d := range decodeEncodingsRecursiveWithURL(text) {
-		matches = append(matches, s.matchCoreDLPPatterns(d.text, d.encoding)...)
+	for _, d := range decodes.decode(text, true) {
+		matches = append(matches, s.matchCoreDLPPatternsNormalized(decodes.normalize(d.text), d.encoding)...)
 	}
 	return matches
 }
 
-func (s *Scanner) decodeCoreDLPTextSegments(text string) []TextDLPMatch {
+func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	for _, seg := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
 		if len(seg) < 10 {
 			continue
 		}
-		for _, d := range decodeEncodingsRecursiveWithURL(seg) {
-			if m := s.matchCoreDLPPatterns(d.text, d.encoding); len(m) > 0 {
+		for _, d := range decodes.decode(seg, true) {
+			if m := s.matchCoreDLPPatternsNormalized(decodes.normalize(d.text), d.encoding); len(m) > 0 {
 				return m
 			}
 		}
@@ -745,9 +755,9 @@ func (s *Scanner) checkCoreSSRFLiteral(dest destination.Destination) Result {
 	return Result{Allowed: true}
 }
 
-// checkCoreDLP runs core DLP patterns against a parsed URL. Mirrors the main
+// checkCoreDLPWithDecodes runs core DLP patterns against a parsed URL. Mirrors the main
 // checkDLP flow but uses only core patterns. Core findings are FINAL.
-func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
+func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) Result {
 	if s.core == nil || len(s.core.dlpPatterns) == 0 {
 		return Result{Allowed: true}
 	}
@@ -762,7 +772,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
-		for _, d := range decodeEncodingsRecursive(decodedKey) {
+		for _, d := range decodes.decode(decodedKey, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
@@ -773,7 +783,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
 			// The floor sees the same decoded views configured DLP does, so an
 			// empty configured pattern list cannot reopen an encoding.
-			targets = append(targets, queryValueDecodedTargets(decoded)...)
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(decoded, decodes)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -803,7 +813,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	// Path segment decoding (hex/base64/base32).
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 {
-			for _, d := range decodeEncodingsRecursive(segment) {
+			for _, d := range decodes.decode(segment, false) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
@@ -817,7 +827,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	// the floor, which configured exemptions never narrow.
 	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
 		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-		for _, d := range decodeEncodingsRecursive(text) {
+		for _, d := range decodes.decode(text, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -830,7 +840,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		if target.text == "" {
 			continue
 		}
-		cleaned := normalize.ForDLP(target.text)
+		cleaned := decodes.normalize(target.text)
 		for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.core.dlpPatterns[idx]
 			if start, end, ok := p.matchSpan(cleaned); ok {

@@ -409,6 +409,8 @@ type compiledPattern struct {
 	warn                                bool // true when pattern action is "warn" - matches are informational only
 	credentialURLWhitespaceGrammar      bool // built-in-only runtime provenance; never configured by operators
 	requiredLiteralsAny                 []string
+	requiresEquals                      bool  // every effective regex branch requires a literal '='
+	minASCIIDigits                      uint8 // conservative digit floor shared by every effective regex branch
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -571,6 +573,9 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				return nil, fmt.Errorf("compile DLP pattern %q without left boundary: %w", p.Name, err)
 			}
 		}
+		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
+		cp.requiresEquals = requirements.requiresEquals
+		cp.minASCIIDigits = requirements.minASCIIDigits
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
 			if !ok {
@@ -1089,7 +1094,13 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 	}
 	r := s.scan(ctx, rawURL)
 	if !r.Allowed && r.Hint == "" {
-		r.Hint = HintForBlock(&r)
+		if r.Scanner == ScannerLength {
+			// The length gate formats only byte counts into its reason. It
+			// cannot produce nested-destination or other reason-specific hints.
+			r.Hint = HintForScanner(ScannerLength)
+		} else {
+			r.Hint = HintForBlock(&r)
+		}
 	}
 	return r
 }
@@ -1192,14 +1203,15 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 
 	// Core DLP - immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
-	if result := s.checkCoreDLP(scanURL); !result.Allowed {
+	var decodes decodingMemo
+	if result := s.checkCoreDLPWithDecodes(scanURL, &decodes); !result.Allowed {
 		return result
 	}
 
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
-	dlpResult, dlpWarns := s.checkDLP(scanURL)
+	dlpResult, dlpWarns := s.checkDLPWithDecodes(scanURL, &decodes)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	if !dlpResult.Allowed {
 		dlpResult.WarnMatches = dlpWarns
@@ -2194,6 +2206,15 @@ func normalizeHex(s string) string {
 	if len(s) < 4 {
 		return ""
 	}
+	// Prefix removal only consumes x/X. Every other non-hex ASCII letter
+	// survives it and makes the normalized value unusable, so reject those
+	// inputs before allocating the two normalization buffers.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'g' && c <= 'z' && c != 'x') || (c >= 'G' && c <= 'Z' && c != 'X') {
+			return ""
+		}
+	}
 
 	// Consume a radix or escape prefix only when two hex digits follow it.
 	// An unconditional replace ate the zero in a value such as "000x", which
@@ -2236,9 +2257,22 @@ func normalizeHex(s string) string {
 // bytes that follow it are hex digits. internal/normalize must keep the same
 // rule byte for byte: TestHexReplayMatchesScannerNormalizer proves it does.
 func stripHexPrefixes(s string) string {
+	first := -1
+	for i := 0; i+3 < len(s); i++ {
+		if (s[i] == '0' || s[i] == '\\') &&
+			(s[i+1] == 'x' || s[i+1] == 'X') &&
+			isHexDigitByte(s[i+2]) && isHexDigitByte(s[i+3]) {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
-	for i := 0; i < len(s); {
+	b.WriteString(s[:first])
+	for i := first; i < len(s); {
 		if i+3 < len(s) &&
 			(s[i] == '0' || s[i] == '\\') &&
 			(s[i+1] == 'x' || s[i+1] == 'X') &&
@@ -2319,19 +2353,21 @@ func normalizeEncodedToken(s string, kind encodedTokenKind) string {
 	if len(s) < 4 {
 		return ""
 	}
+	first := 0
+	for first < len(s) && isEncodedTokenByte(s[first], kind) {
+		first++
+	}
+	if first == len(s) {
+		return ""
+	}
 	var b strings.Builder
 	b.Grow(len(s))
-	changed := false
-	for i := 0; i < len(s); i++ {
+	b.WriteString(s[:first])
+	for i := first + 1; i < len(s); i++ {
 		c := s[i]
 		if isEncodedTokenByte(c, kind) {
 			b.WriteByte(c)
-			continue
 		}
-		changed = true
-	}
-	if !changed {
-		return ""
 	}
 	out := b.String()
 	if len(out) < 4 || len(out) > maxReassembledTokenLen {
@@ -2392,26 +2428,45 @@ func decodeEncodings(s string) []decodedResult {
 			out = append(out, decodedResult{string(decoded), encodingHex})
 		}
 	}
-	for _, enc := range []*base64.Encoding{
-		base64.StdEncoding, base64.URLEncoding,
-		base64.RawStdEncoding, base64.RawURLEncoding,
-	} {
-		if decoded, err := enc.DecodeString(s); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase64})
+	// Every base64 variant below is no longer than s. One raw-size scratch
+	// buffer therefore covers all attempts without retaining mutable output.
+	var smallBase64Buffer [256]byte
+	decodedSize := base64.RawStdEncoding.DecodedLen(len(s))
+	base64Buffer := smallBase64Buffer[:]
+	if decodedSize > len(base64Buffer) {
+		base64Buffer = make([]byte, decodedSize)
+	} else {
+		base64Buffer = base64Buffer[:decodedSize]
+	}
+	standard := decodeBase64PaddingVariants(s, base64.StdEncoding, base64.RawStdEncoding, base64Buffer)
+	urlSafe := standard
+	sharedBase64Alphabet := !strings.ContainsAny(s, "+/-_")
+	if !sharedBase64Alphabet {
+		urlSafe = decodeBase64PaddingVariants(s, base64.URLEncoding, base64.RawURLEncoding, base64Buffer)
+	}
+	// Preserve every view and its position, including duplicate decodings.
+	for i := range standard {
+		out = appendBase64View(out, standard[i])
+		out = appendBase64View(out, urlSafe[i])
+	}
+	normalizedStandard := normalizeEncodedToken(s, encodedTokenBase64Std)
+	normalizedURL := normalizedStandard
+	if !sharedBase64Alphabet {
+		normalizedURL = normalizeEncodedToken(s, encodedTokenBase64URL)
+	}
+	var normalizedViews [2]string
+	if normalizedStandard != "" {
+		normalizedViews = decodeBase64PaddingVariants(normalizedStandard, base64.StdEncoding, base64.RawStdEncoding, base64Buffer)
+		for _, decoded := range normalizedViews {
+			out = appendBase64View(out, decoded)
 		}
 	}
-	if normalized := normalizeEncodedToken(s, encodedTokenBase64Std); normalized != "" {
-		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
-			if decoded, err := enc.DecodeString(normalized); err == nil && len(decoded) > 0 {
-				out = append(out, decodedResult{string(decoded), encodingBase64})
-			}
+	if normalizedURL != "" {
+		if normalizedURL != normalizedStandard {
+			normalizedViews = decodeBase64PaddingVariants(normalizedURL, base64.URLEncoding, base64.RawURLEncoding, base64Buffer)
 		}
-	}
-	if normalized := normalizeEncodedToken(s, encodedTokenBase64URL); normalized != "" {
-		for _, enc := range []*base64.Encoding{base64.URLEncoding, base64.RawURLEncoding} {
-			if decoded, err := enc.DecodeString(normalized); err == nil && len(decoded) > 0 {
-				out = append(out, decodedResult{string(decoded), encodingBase64})
-			}
+		for _, decoded := range normalizedViews {
+			out = appendBase64View(out, decoded)
 		}
 	}
 	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
@@ -2425,6 +2480,35 @@ func decodeEncodings(s string) []decodedResult {
 	}
 	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
 		out = append(out, decodedResult{decoded, encodingJSONUnicode})
+	}
+	return out
+}
+
+// decodeBase64PaddingVariants retains padded and unpadded decoding separately.
+// A successful padded decode with no padding bytes is also a complete raw
+// decode. Reuse that immutable string; ambiguous inputs still use both decoders.
+// buffer must hold the raw decoded length of value; callers size it from the
+// original input, which is at least as long as every normalized variant.
+func decodeBase64PaddingVariants(value string, padded, raw *base64.Encoding, buffer []byte) [2]string {
+	var out [2]string
+	// Reuse only scratch storage: successful results are copied to strings
+	// before another decoding attempt can overwrite the buffer.
+	if n, err := padded.Decode(buffer, []byte(value)); err == nil && n > 0 {
+		out[0] = string(buffer[:n])
+		if !strings.Contains(value, "=") {
+			out[1] = out[0]
+			return out
+		}
+	}
+	if n, err := raw.Decode(buffer, []byte(value)); err == nil && n > 0 {
+		out[1] = string(buffer[:n])
+	}
+	return out
+}
+
+func appendBase64View(out []decodedResult, text string) []decodedResult {
+	if text != "" {
+		out = append(out, decodedResult{text, encodingBase64})
 	}
 	return out
 }
@@ -2447,31 +2531,68 @@ func decodeBase32Strings(s string) []string {
 
 // appendBase32Decodes appends every RFC 4648 base32 and base32hex decoding of
 // value. value is already ASCII-uppercased. Padding and no-padding are both
-// tried; a value matches at most one padding mode per alphabet.
+// retained, including equal results from the two padding modes.
 func appendBase32Decodes(out []decodedResult, value string) []decodedResult {
-	for _, enc := range []*base32.Encoding{
-		base32.StdEncoding,
-		base32.StdEncoding.WithPadding(base32.NoPadding),
-		base32.HexEncoding,
-		base32.HexEncoding.WithPadding(base32.NoPadding),
+	for _, alphabet := range []struct {
+		padded *base32.Encoding
+		raw    *base32.Encoding
+		hex    bool
+	}{
+		{base32.StdEncoding, rawBase32Standard, false},
+		{base32.HexEncoding, rawBase32Hex, true},
 	} {
-		decoded, err := enc.DecodeString(value)
-		if err != nil || len(decoded) == 0 {
+		if !base32PrefixPossible(value, alphabet.hex) {
 			continue
 		}
-		out = append(out, decodedResult{string(decoded), encodingBase32})
+		paddedText := ""
+		if decoded, err := alphabet.padded.DecodeString(value); err == nil && len(decoded) > 0 {
+			paddedText = string(decoded)
+			out = append(out, decodedResult{paddedText, encodingBase32})
+		}
+		if paddedText != "" && strings.IndexByte(value, '=') < 0 && strings.IndexByte(value, 0xff) < 0 {
+			// A complete padded decode with neither padding sentinel is
+			// also the same raw decode. Retain its duplicate view in order.
+			out = append(out, decodedResult{paddedText, encodingBase32})
+		} else if decoded, err := alphabet.raw.DecodeString(value); err == nil && len(decoded) > 0 {
+			out = append(out, decodedResult{string(decoded), encodingBase32})
+		}
 	}
 	return out
+}
+
+var (
+	rawBase32Standard = base32.StdEncoding.WithPadding(base32.NoPadding)
+	rawBase32Hex      = base32.HexEncoding.WithPadding(base32.NoPadding)
+)
+
+// base32PrefixPossible only rules out bytes the decoder must reject before
+// padding. After either the ordinary padding byte or the library's raw-mode
+// sentinel, the original decoder owns validation, including accepted suffixes.
+func base32PrefixPossible(value string, hexAlphabet bool) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '=' || c == 0xff {
+			return true
+		}
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		if hexAlphabet {
+			if c >= '0' && c <= '9' || c >= 'A' && c <= 'V' {
+				continue
+			}
+		} else if c >= 'A' && c <= 'Z' || c >= '2' && c <= '7' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // decodeEncodingsRecursive returns all bounded fixpoint decoding candidates for
 // a possibly stacked-encoded string.
 func decodeEncodingsRecursive(s string) []decodedResult {
 	return decodeEncodingsFixpoint(s, false)
-}
-
-func decodeEncodingsRecursiveWithURL(s string) []decodedResult {
-	return decodeEncodingsFixpoint(s, true)
 }
 
 func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
@@ -2520,6 +2641,11 @@ func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
 func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMatch) {
+	var decodes decodingMemo
+	return s.checkDLPWithDecodes(parsed, &decodes)
+}
+
+func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
 	var queryLessMemo queryLessDLPMemo
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
@@ -2547,7 +2673,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
-		for _, d := range decodeEncodingsRecursive(decodedKey) {
+		for _, d := range decodes.decode(decodedKey, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
@@ -2556,7 +2682,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
-			targets = append(targets, queryValueDecodedTargets(decoded)...)
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(decoded, decodes)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decoded})
 			}
@@ -2578,7 +2704,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 { // minimum viable encoded secret length
-			for _, d := range decodeEncodingsRecursive(segment) {
+			for _, d := range decodes.decode(segment, false) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
@@ -2606,7 +2732,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
 	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
 		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-		for _, d := range decodeEncodingsRecursive(text) {
+		for _, d := range decodes.decode(text, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -2623,7 +2749,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 		// NFKC, cross-script confusable mapping, and combining mark removal.
 		// Must match response scanning depth - otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-		cleaned := normalize.ForDLP(target.text)
+		cleaned := decodes.normalize(target.text)
 		proseSource := target.proseSource
 		if proseSource == "" {
 			proseSource = target.text
@@ -2691,7 +2817,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 			for _, v := range values {
 				decoded := IterativeDecode(v)
 				seedTargets = append(seedTargets, dlpTarget{decoded, spanViewLabel("url_decoded", "url_query_value"), ""})
-				for _, d := range decodeEncodingsRecursive(decoded) {
+				for _, d := range decodes.decode(decoded, false) {
 					seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_query_value"), ""})
 				}
 			}
@@ -2718,7 +2844,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 			if len(seg) < 20 {
 				continue
 			}
-			for _, d := range decodeEncodingsRecursive(IterativeDecode(seg)) {
+			for _, d := range decodes.decode(IterativeDecode(seg), false) {
 				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment"), ""})
 			}
 		}
@@ -5043,9 +5169,13 @@ func MatchDomain(hostname, pattern string) bool {
 // as well as one encoded and then entity-escaped. Configured DLP and the core
 // floor both use it so they cannot drift apart.
 func queryValueDecodedTargets(decoded string) []dlpTarget {
+	return queryValueDecodedTargetsWithDecodes(decoded, nil)
+}
+
+func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) []dlpTarget {
 	var targets []dlpTarget
 	addDecoded := func(text string) {
-		for _, d := range decodeEncodingsRecursive(text) {
+		for _, d := range decodes.decode(text, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			if h := decodeHTMLEntities(d.text); h != d.text {
 				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})

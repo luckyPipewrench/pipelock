@@ -146,6 +146,12 @@ func numericLeafBoundary(text string, index int) bool {
 // so ordinary numeric data decodes to nothing rather than to noise. Runs are
 // joined with newlines so a needle cannot straddle two of them.
 func decodeDecimalCharacterCodes(numeric string) string {
+	// Every accepted number has at least one ASCII digit, and a decoded run
+	// needs minDecimalCodeRun numbers. Fewer digits cannot produce any output.
+	// Once the necessary count is reached, preserve the complete parser below.
+	if !hasMinimumASCIIDigits(numeric, minDecimalCodeRun) {
+		return ""
+	}
 	var out strings.Builder
 	var run strings.Builder
 	runLen := 0

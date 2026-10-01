@@ -1,0 +1,83 @@
+# Revision: optimization snapshot on b738cec957a3e6cbd2fb299b5baa65aaf3325c9b; code tree 4639f779419a0eebffbc4efea2df1f28cc968eb6
+# Go: go1.26.8 linux/amd64
+# CPU: INTEL(R) XEON(R) PLATINUM 8573C
+# GOMAXPROCS=4; six independent 1s samples; alternating revision order.
+# Test processes used the same minimal environment; environment-secret scanning was not changed.
+# Sample 1
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   25594	     45500 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  609435	      2038 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  231858	      5720 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   77389	     17998 ns/op	    6432 B/op	      79 allocs/op
+# Sample 2
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   25701	     45700 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  523346	      2085 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  224797	      5881 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   62658	     18520 ns/op	    6432 B/op	      79 allocs/op
+# Sample 3
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   25354	     45600 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  781339	      2144 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  202676	      6120 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   58275	     19764 ns/op	    6432 B/op	      79 allocs/op
+# Sample 4
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   28676	     41172 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  640938	      2152 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  249859	      6163 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   58562	     18492 ns/op	    6432 B/op	      79 allocs/op
+# Sample 5
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   26250	     43498 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  674622	      2367 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  215881	      6410 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   76267	     16985 ns/op	    6432 B/op	      79 allocs/op
+# Sample 6
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/scanner
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkScanCanaryText_Clean-4      	   20240	     51980 ns/op	    9328 B/op	     220 allocs/op
+BenchmarkParallel_Blocklist-4        	  596494	      2065 ns/op	     744 B/op	      20 allocs/op
+BenchmarkScan_BlockedByBlocklist-4   	  220136	      5951 ns/op	     744 B/op	      20 allocs/op
+goos: linux
+goarch: amd64
+pkg: github.com/luckyPipewrench/pipelock/internal/mcp
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkExtractText-4   	   67809	     17416 ns/op	    6432 B/op	      79 allocs/op

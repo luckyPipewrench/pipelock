@@ -4,7 +4,9 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -63,10 +65,19 @@ func watchDeferredKillSwitch(ctx context.Context, ks *killswitch.Controller, man
 // allowed call followed by silence while the client had in fact been refused.
 //
 // Only frames with a receipt target (a tool call or an A2A method) are
-// receipted, the same rule every other MCP block uses. A failure to emit is
-// logged and, under require_receipts, reported; the denial itself stands
-// either way because it is already fail-closed.
+// receipted, the same rule every other MCP block uses. A JSON-RPC batch is
+// refused as a whole, so each of its members that is a tool call or A2A request
+// gets its own receipt: the batch wrapper has no target of its own, and a
+// refused batch must not leave less evidence than the same calls sent one at a
+// time. A failure to emit is logged and, under require_receipts, reported; the
+// denial itself stands either way because it is already fail-closed.
 func emitKillSwitchDenialReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFrame, d killswitch.Decision) {
+	if frame.IsBatch {
+		for _, member := range killSwitchBatchMembers(frame) {
+			emitKillSwitchDenialReceipt(opts, logW, member, d)
+		}
+		return
+	}
 	method := methodToolsCall
 	target := frame.ToolCallName
 	if target == "" && IsA2AMethod(frame.Method) {
@@ -99,4 +110,53 @@ func emitKillSwitchDenialReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFra
 	}); err != nil {
 		logReceiptEmitFailure(logW, err, opts.requireReceipts(), config.ActionBlock)
 	}
+}
+
+// killSwitchBatchMembers parses the members of a batch frame. A body that is
+// not a JSON array of objects yields nothing, and a nested array is skipped:
+// JSON-RPC defines no nested batch, so it has no target to receipt and no
+// request to answer.
+func killSwitchBatchMembers(frame MCPFrame) []MCPFrame {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(frame.Raw), &raws); err != nil {
+		return nil
+	}
+	members := make([]MCPFrame, 0, len(raws))
+	for _, raw := range raws {
+		member := ParseMCPFrame(raw)
+		if member.IsBatch {
+			continue
+		}
+		members = append(members, member)
+	}
+	return members
+}
+
+// killSwitchBatchResponse answers a refused batch the way the single-object
+// path answers a refused request: one -32004 error per member that carries an
+// id, as a JSON-RPC batch response. It returns nil when the frame is not a
+// batch or no member has an id (every member is a notification), so the caller
+// keeps its notification handling for that case.
+func killSwitchBatchResponse(frame MCPFrame, message string) []byte {
+	if !frame.IsBatch {
+		return nil
+	}
+	var out bytes.Buffer
+	out.WriteByte('[')
+	count := 0
+	for _, member := range killSwitchBatchMembers(frame) {
+		if member.ID == nil {
+			continue
+		}
+		if count > 0 {
+			out.WriteByte(',')
+		}
+		out.Write(killswitch.ErrorResponse(member.ID, message))
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	out.WriteByte(']')
+	return out.Bytes()
 }

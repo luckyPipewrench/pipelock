@@ -153,6 +153,16 @@ func newDeferKillManager(t *testing.T) *deferred.Manager {
 // actually happened, not the allow the resolver asked for.
 func assertTerminalJournal(t *testing.T, m *deferred.Manager, deferID, wantState, wantSource string) {
 	t.Helper()
+	assertTerminalJournalSequence(t, m, deferID, wantState+"/"+wantSource)
+}
+
+// assertTerminalJournalSequence checks the terminal journal entries for one
+// hold, in order, as state/source pairs. More than one entry is legitimate only
+// when an accepted allow was then closed because its required receipt could not
+// be written: the journal keeps both the allow it accepted and the block that
+// followed.
+func assertTerminalJournalSequence(t *testing.T, m *deferred.Manager, deferID string, want ...string) {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Clean(m.JournalPath()))
 	if err != nil {
 		t.Fatalf("read journal: %v", err)
@@ -171,8 +181,8 @@ func assertTerminalJournal(t *testing.T, m *deferred.Manager, deferID, wantState
 			terminal = append(terminal, entry.State+"/"+entry.Source)
 		}
 	}
-	if want := wantState + "/" + wantSource; len(terminal) != 1 || terminal[0] != want {
-		t.Fatalf("journal terminal entries = %v, want exactly [%s]", terminal, want)
+	if strings.Join(terminal, " ") != strings.Join(want, " ") {
+		t.Fatalf("journal terminal entries = %v, want exactly %v", terminal, want)
 	}
 }
 

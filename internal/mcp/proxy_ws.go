@@ -205,6 +205,12 @@ func RunWSProxy(
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				emitKillSwitchDenialReceipt(wsOpts, safeLogW, frame, d)
+				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
+					}
+					continue
+				}
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue

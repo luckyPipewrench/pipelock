@@ -247,6 +247,12 @@ func RunHTTPProxy(
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
 				emitKillSwitchDenialReceipt(fwdOpts, safeLogW, frame, d)
+				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
+					}
+					continue
+				}
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
@@ -362,10 +368,14 @@ func RunHTTPProxy(
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
 					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
-					if prepared.FinalDecision == config.ActionAllow {
-						prepared = receiptSettle.settleAllow(fwdOpts, safeLogW, prepared)
-					}
+					prepared = receiptSettle.probeAllow(fwdOpts, prepared)
 					return prepared, finish
+				},
+				// The allow receipt is written once the journal has accepted
+				// the allow, so an unwritable journal never leaves an allow
+				// receipt for a call that is not sent.
+				AfterJournal: func(res deferred.Resolution) error {
+					return receiptSettle.commitAllow(fwdOpts, safeLogW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority

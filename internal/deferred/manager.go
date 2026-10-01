@@ -54,6 +54,10 @@ const (
 // contract gate denied at the irreversible send boundary.
 const SourceUpstreamContract = "upstream_contract"
 
+// ReasonReceiptNotWritten is the resolution reason for an allow that was closed
+// because its required receipt could not be written.
+const ReasonReceiptNotWritten = "required receipt could not be written"
+
 // Config controls held-action bounds and timers.
 type Config struct {
 	Enabled              bool
@@ -153,10 +157,19 @@ type HeldAction struct {
 	// release-boundary check cancels an allow) so the journal records the
 	// outcome that actually happens. The returned finish func runs, via
 	// defer, after Resolve returns or panics.
-	Prepare   func(Resolution) (Resolution, func())
-	timer     *time.Timer
-	state     string
-	createdAt time.Time
+	Prepare func(Resolution) (Resolution, func())
+	// AfterJournal, when set, runs only for an allow the journal accepted, and
+	// before Resolve. It is where evidence that must not exist for a call that
+	// is never sent (the allow resolution receipt) belongs: Prepare runs ahead
+	// of the journal write and cannot know it will succeed. A non-nil error
+	// closes the allow: the manager records a corrective block entry after the
+	// allow entry, so the journal shows both what was accepted and that the
+	// release did not happen. Prepare's finish func is still pending, so the
+	// release claim and sink lock cover this call.
+	AfterJournal func(Resolution) error
+	timer        *time.Timer
+	state        string
+	createdAt    time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -451,6 +464,19 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 		res.ResolutionSource = SourceCancel
 		state = resolvedState(res.FinalDecision)
 		_ = m.appendJournal(journalEntryFromHeld(*held, state, res.ResolutionSource))
+	}
+	// A journal failure above already closed the allow, so the hook only ever
+	// sees an allow the journal accepted.
+	if res.FinalDecision == config.ActionAllow && held.AfterJournal != nil {
+		if err := held.AfterJournal(res); err != nil {
+			res.FinalDecision = config.ActionBlock
+			res.ResolutionSource = SourceCancel
+			res.Reason = ReasonReceiptNotWritten
+			if appendErr := m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource)); appendErr != nil {
+				m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+					res.ResolutionSource, held.DeferID, appendErr)
+			}
+		}
 	}
 	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
 		m.cascadeBlockDescendants([]string{held.DeferID})

@@ -27,12 +27,16 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 		name         string
 		breakRecords bool
 		wantDecision string
-		wantState    string
-		wantSource   string
+		wantJournal  []string
 		wantSent     bool
 	}{
-		{"recorder healthy", false, config.ActionAllow, deferred.StateResolvedAllow, deferred.SourceOperator, true},
-		{"required receipt cannot be written", true, config.ActionBlock, deferred.StateResolvedBlock, deferred.SourceCancel, false},
+		{"recorder healthy", false, config.ActionAllow, []string{deferred.StateResolvedAllow + "/" + deferred.SourceOperator}, true},
+		// The journal accepted the allow before the receipt write failed, so it
+		// keeps that entry and then records the block.
+		{"required receipt cannot be written", true, config.ActionBlock, []string{
+			deferred.StateResolvedAllow + "/" + deferred.SourceOperator,
+			deferred.StateResolvedBlock + "/" + deferred.SourceCancel,
+		}, false},
 	}
 
 	t.Run("stdio", func(t *testing.T) {
@@ -83,7 +87,7 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 						t.Fatal("client was not told the call failed")
 					}
 				}
-				assertTerminalJournal(t, manager, held.DeferID, tt.wantState, tt.wantSource)
+				assertTerminalJournalSequence(t, manager, held.DeferID, tt.wantJournal...)
 				if err := inputW.Close(); err != nil {
 					t.Fatalf("close input: %v", err)
 				}
@@ -121,7 +125,7 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 				if !tt.wantSent && !strings.Contains(run.stdout.String(), `"code":-32007`) {
 					t.Fatalf("client was not told the receipt failed: %s", run.stdout.String())
 				}
-				assertTerminalJournal(t, run.manager, held.DeferID, tt.wantState, tt.wantSource)
+				assertTerminalJournalSequence(t, run.manager, held.DeferID, tt.wantJournal...)
 				run.stop(t)
 			})
 		}

@@ -371,6 +371,13 @@ func ForwardScannedInput(
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
 				emitKillSwitchDenialReceipt(opts, logW, frame, d)
+				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+					blockedCh <- BlockedRequest{
+						LogMessage:        fmt.Sprintf("pipelock: input line %d: kill switch denied batch (source=%s)", lineNum, d.Source),
+						SyntheticResponse: batchResp,
+					}
+					continue
+				}
 				if d.IsNotification {
 					// Notifications have no ID - silently drop.
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
@@ -1453,10 +1460,14 @@ func ForwardScannedInput(
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
 					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
-					if prepared.FinalDecision == config.ActionAllow {
-						prepared = receiptSettle.settleAllow(opts, logW, prepared)
-					}
+					prepared = receiptSettle.probeAllow(opts, prepared)
 					return prepared, finish
+				},
+				// The allow receipt is written once the journal has accepted
+				// the allow, so an unwritable journal never leaves an allow
+				// receipt for a call that is not sent.
+				AfterJournal: func(res deferred.Resolution) error {
+					return receiptSettle.commitAllow(opts, logW, res)
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority

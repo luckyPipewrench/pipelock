@@ -76,16 +76,21 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	return EmitDeferredResolutionReceipt(opts, logW, res)
 }
 
-// deferredReceiptSettlement lets a held call's Prepare hook write the allow
-// receipt before the manager journals and reports the decision. The receipt is
-// the evidence for a release, so when it is required and cannot be written the
-// call is never sent and the decision has to be a block everywhere it is
-// recorded: the journal and the value ResolveApprovalResult hands the operator
-// API. Emitting it later, from the Resolve callback, left both saying allow for
-// a call that was refused.
+// deferredReceiptSettlement orders a released call's evidence. The allow
+// resolution receipt is the proof that a held call was released, so it is
+// written only once the journal has accepted the allow (Manager.AfterJournal):
+// a journal that cannot be written then leaves the signed chain with the block
+// alone, never an allow followed by a block for a call that was never sent.
+// Prepare runs before the journal and so only probes that a required receipt
+// could be written at all.
 //
-// Prepare and Resolve run in sequence on the resolving goroutine, so the
-// struct needs no lock.
+// When the receipt is required and its write fails after the journal accepted
+// the allow, the manager closes the decision to a block everywhere it is
+// recorded: a corrective journal entry, the value ResolveApprovalResult hands
+// the operator API, and the client error.
+//
+// Prepare, AfterJournal and Resolve run in sequence on the resolving
+// goroutine, so the struct needs no lock.
 type deferredReceiptSettlement struct {
 	done     bool
 	err      error
@@ -93,21 +98,42 @@ type deferredReceiptSettlement struct {
 	source   string
 }
 
-// settleAllow emits the receipt for a decision that is about to release the
-// call. A required-receipt failure closes the decision; no source is special:
-// whatever allowed it, a release without its receipt does not go out.
-func (s *deferredReceiptSettlement) settleAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) deferred.Resolution {
-	if err := s.emit(opts, logW, res); err != nil && res.FinalDecision == config.ActionAllow {
+// probeAllow closes an allow whose required receipt cannot possibly be written:
+// no receipt emitter is configured, or one is already marked unhealthy. It
+// writes nothing. A write that fails later is caught by commitAllow.
+func (s *deferredReceiptSettlement) probeAllow(opts MCPProxyOpts, res deferred.Resolution) deferred.Resolution {
+	if res.FinalDecision == config.ActionAllow && !receiptWritable(opts) {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = deferred.SourceCancel
-		res.Reason = "required receipt could not be written"
+		res.Reason = deferred.ReasonReceiptNotWritten
 	}
 	return res
 }
 
+// receiptWritable reports whether a required receipt has a usable emitter.
+// Receipts that are not required never close a release.
+func receiptWritable(opts MCPProxyOpts) bool {
+	if !opts.requireReceipts() {
+		return true
+	}
+	v1, v2 := opts.receiptEmitter(), opts.v2ReceiptEmitter()
+	v1OK := v1 != nil && v1.InitError() == nil && v1.HealthError() == nil
+	v2OK := v2 != nil && v2.HealthError() == nil
+	if v2 != nil && !v2OK {
+		return false
+	}
+	return v1OK || v2OK
+}
+
+// commitAllow writes the allow resolution receipt after the journal accepted
+// the allow. It is the Manager.AfterJournal hook.
+func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	return s.emit(opts, logW, res)
+}
+
 // ensure returns the outcome of emitting the receipt for the final resolution.
 // A receipt already written for exactly this decision and source is reused; any
-// other final resolution (a block, or an allow the journal then closed) gets its
+// other final resolution (a block, or an allow the journal or the receipt write then closed) gets its
 // own receipt so the chain describes what actually happened.
 func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	if s.done && s.decision == res.FinalDecision && s.source == res.ResolutionSource {

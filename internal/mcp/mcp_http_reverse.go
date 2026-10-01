@@ -1393,6 +1393,10 @@ func RunHTTPListenerProxy(
 			if d := opts.KillSwitch.IsActiveMCP(body); d.Active {
 				emitKillSwitchDenialReceipt(requestBaseOpts, safeLogW, frame, d)
 				w.Header().Set("Content-Type", "application/json")
+				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+					_, _ = w.Write(batchResp)
+					return
+				}
 				if d.IsNotification {
 					w.WriteHeader(http.StatusAccepted)
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)

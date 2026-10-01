@@ -103,3 +103,46 @@ func TestCommentClosurePreservesFollowingHTMLScript(t *testing.T) {
 		})
 	}
 }
+
+func TestCommentTrapProcessingInstructions(t *testing.T) {
+	for _, in := range []string{
+		`<?meta <!-- instruction -->?><root/>`,
+		`<?meta value=">" <!-- instruction -->?><root/>`,
+		`<?meta <!-- instruction -->`,
+		`<![CDATA[<?meta <!-- instruction -->?>]]><root/>`,
+	} {
+		got, hits := NewEngine(nil).stripCommentTraps(in, true)
+		if got != in || hits != 0 {
+			t.Fatalf("content=%q hits=%d; want %q hits=0", got, hits, in)
+		}
+	}
+	in := `<?meta <!-- instruction -->?><root><!-- instruction --></root>`
+	want := `<?meta <!-- instruction -->?><root></root>`
+	got, hits := NewEngine(nil).stripCommentTraps(in, true)
+	if got != want || hits != 1 {
+		t.Fatalf("content=%q hits=%d; want %q hits=1", got, hits, want)
+	}
+}
+
+func TestCommentTrapSVGForeignContent(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		hits     int
+	}{
+		{`<svg><title><!-- instruction --></title></svg>`, `<svg><title></title></svg>`, 1},
+		{`<svg><style><!-- instruction --></style></svg>`, `<svg><style></style></svg>`, 1},
+		{`<title><!-- instruction --></title>`, `<title><!-- instruction --></title>`, 0},
+		{`<svg><foreignObject><title><!-- instruction --></title></foreignObject></svg>`, `<svg><foreignObject><title><!-- instruction --></title></foreignObject></svg>`, 0},
+		{`<svg><foreignObject><svg><title><!-- instruction --></title></svg></foreignObject></svg><title><!-- instruction --></title>`, `<svg><foreignObject><svg><title></title></svg></foreignObject></svg><title><!-- instruction --></title>`, 1},
+	} {
+		for _, strictness := range []string{config.ShieldStrictnessStandard, config.ShieldStrictnessAggressive} {
+			cfg := defaultShieldCfg()
+			cfg.Strictness = strictness
+			cfg.InjectFingerprintShims = false
+			res := NewEngine(nil).Rewrite(tc.in, PipelineHTML, cfg)
+			if res.Content != tc.want || res.TrapHits != tc.hits {
+				t.Fatalf("content=%q hits=%d; want %q hits=%d", res.Content, res.TrapHits, tc.want, tc.hits)
+			}
+		}
+	}
+}

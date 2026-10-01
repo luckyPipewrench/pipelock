@@ -668,13 +668,53 @@ func (e *Engine) stripCommentTraps(doc string, xml bool) (string, int) {
 	var out strings.Builder
 	out.Grow(len(doc))
 	hits := 0
+	offset := 0
+	// SVG title/desc/foreignObject are HTML integration points for children.
+	// Keep only namespace boundaries, rather than a stack of every HTML tag.
+	var boundaries []string
 	for {
 		typ := z.Next()
 		raw := z.Raw()
+		if xml && bytes.HasPrefix(raw, []byte("<?")) {
+			// The HTML tokenizer ends bogus comments at >, but XML processing
+			// instructions end at ?> and their contents are not comment markup.
+			end := strings.Index(doc[offset:], "?>")
+			if end < 0 {
+				out.WriteString(doc[offset:])
+				return out.String(), hits
+			}
+			end += offset + 2
+			out.WriteString(doc[offset:end])
+			offset = end
+			z = html.NewTokenizer(strings.NewReader(doc[offset:]))
+			z.AllowCDATA(true)
+			continue
+		}
+		offset += len(raw)
 		if xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken) {
 			// XML has no HTML raw-text elements; literal comments remain markup
 			// inside style/title/textarea as well as after self-closing tags.
 			z.NextIsNotRawText()
+		}
+		if !xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken || typ == html.EndTagToken) {
+			name, _ := z.TagName()
+			tag := string(name)
+			foreign := len(boundaries) > 0 && boundaries[len(boundaries)-1] == "svg"
+			if typ == html.EndTagToken {
+				for i := len(boundaries) - 1; i >= 0; i-- {
+					if boundaries[i] == tag {
+						boundaries = boundaries[:i]
+						break
+					}
+				}
+			} else {
+				if foreign {
+					z.NextIsNotRawText()
+				}
+				if typ == html.StartTagToken && (tag == "svg" || (foreign && (tag == "title" || tag == "desc" || tag == "foreignobject"))) {
+					boundaries = append(boundaries, tag)
+				}
+			}
 		}
 		match := raw
 		if typ == html.CommentToken && bytes.HasSuffix(raw, []byte("--!>")) {

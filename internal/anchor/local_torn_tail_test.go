@@ -174,7 +174,7 @@ func TestLocalLogSyncFailure(t *testing.T) {
 }
 
 func TestLocalLogSegmentSequenceFailsClosed(t *testing.T) {
-	for _, name := range []string{"missing-base", "segment-gap", "bad-name"} {
+	for _, name := range []string{"missing-base", "segment-gap"} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "anchor.jsonl")
 			log := LocalLog{Path: path}
@@ -187,9 +187,6 @@ func TestLocalLogSegmentSequenceFailsClosed(t *testing.T) {
 			suffix := ".segment-00000000000000000002"
 			if name == "missing-base" {
 				suffix = ".segment-00000000000000000001"
-			}
-			if name == "bad-name" {
-				suffix = ".segment-invalid"
 			}
 			if err := os.WriteFile(path+suffix, nil, 0o600); err != nil {
 				t.Fatal(err)
@@ -236,5 +233,66 @@ func TestLocalLogRepeatedSegmentRecovery(t *testing.T) {
 	}
 	if proofs[2].LogIndex != 2 {
 		t.Fatalf("index %d", proofs[2].LogIndex)
+	}
+}
+
+func TestLocalLogIgnoresStraySegmentNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "anchor.jsonl")
+	log := LocalLog{Path: path}
+	cp := Checkpoint{SessionID: "test-session"}
+	original, err := log.Submit(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"evil", "1", "00000000000000000001.extra", "0000000000000000000x", "000000000000000000001"} {
+		if err := os.WriteFile(path+".segment-"+suffix, []byte("garbage"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Verify(original, cp); err != nil {
+		t.Fatalf("stray sibling wedged verification: %v", err)
+	}
+	next, err := log.Submit(cp)
+	if err != nil {
+		t.Fatalf("stray sibling wedged submission: %v", err)
+	}
+	if next.LogIndex != original.LogIndex+1 {
+		t.Fatalf("index=%d", next.LogIndex)
+	}
+	if err := log.Verify(next, cp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalLogNamedSegmentBadLinkFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "anchor.jsonl")
+	log := LocalLog{Path: path}
+	cp := Checkpoint{SessionID: "test-session"}
+	proof, err := log.Submit(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry LocalLogEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Index++
+	entry.Hash = localEntryHash(entry)
+	data, err = json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".segment-00000000000000000001", append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Submit(cp); err == nil || !strings.Contains(err.Error(), "prev_hash mismatch") {
+		t.Fatalf("bad link accepted: %v", err)
+	}
+	if err := log.Verify(proof, cp); err == nil || !strings.Contains(err.Error(), "prev_hash mismatch") {
+		t.Fatalf("bad link verified: %v", err)
 	}
 }

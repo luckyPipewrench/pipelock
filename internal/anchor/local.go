@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -167,6 +168,11 @@ func (l LocalLog) readSegments() ([]LocalLogEntry, string, error) {
 	prefix := filepath.Base(base) + ".segment-"
 	for _, entry := range directory {
 		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(entry.Name(), prefix)
+		if len(suffix) != 20 || strings.IndexFunc(suffix, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			slog.Debug("ignoring unrelated local anchor segment name", "name", entry.Name())
 			continue
 		}
 		segment := filepath.Join(filepath.Dir(base), entry.Name())

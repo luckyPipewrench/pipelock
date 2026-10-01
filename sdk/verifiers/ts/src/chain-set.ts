@@ -1119,7 +1119,6 @@ export async function verifyBase(
   const recoveryRecords: ChainLinkRecord[] = [];
   for (const lf of scoped) {
     if (lf.sealCandidate || lf.recoverySeal !== undefined) {
-      recoveryRecords.push(lf);
       if (lf.recoverySeal === undefined) {
         add(
           FindingInvalidRecoverySeal,
@@ -1152,6 +1151,9 @@ export async function verifyBase(
         ...(successors.get(seal.predecessor_session) ?? []),
         seal.successor_session,
       ]);
+      // Queue for binding verification only after the placement checks pass,
+      // so a seal rejected above can never attach in the second pass.
+      recoveryRecords.push(lf);
       continue;
     }
     if (lf.link === undefined) {

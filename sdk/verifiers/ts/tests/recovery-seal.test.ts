@@ -567,3 +567,32 @@ test("a recovery signed by a different successor key needs explicit trust", asyn
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a valid seal placed in another predecessor's slot is rejected and never attaches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "recovery-seal-slot-"));
+  try {
+    cpSync(fixtureEvidenceDir, dir, { recursive: true });
+    const sealName = readdirSync(dir).find((name) => name.startsWith("chain-link-"));
+    assert.ok(sealName, "fixture carries a seal claim");
+    const seal = decodeRecoverySeal(readFileSync(join(dir, sealName), "utf8"));
+    const base = seal.predecessor_session.split(".run.")[0] as string;
+    const wrongSlot = `chain-link-${base}.run.${"3".repeat(32)}.json`;
+    writeFileSync(join(dir, wrongSlot), readFileSync(join(dir, sealName)));
+    unlinkSync(join(dir, sealName));
+    const trustedKey = readFileSync(join(fixtureDir, "signer.pub"), "utf8").trim();
+    const report = await verifyBase(dir, base, { trustedKeys: [trustedKey], endorsements: [] });
+    assert.ok(report.findings.some((finding) => finding.kind === "invalid_recovery_seal"));
+    assert.equal(
+      report.findings.some((finding) => finding.kind === "attested_discontinuity"),
+      false,
+      "a seal rejected for its placement must not become an attested discontinuity",
+    );
+    assert.equal(
+      report.chains.some((chain) => chain.recovery_seal !== undefined),
+      false,
+    );
+    assert.equal(baseUnlinked(report).includes(seal.successor_session), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestLaunchContainedAgent_RejectsRootUIDOrGID(t *testing.T) {
@@ -479,10 +480,10 @@ func TestLaunchContainedAgentPreservesLifecycleExitCauses(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(5*time.Second))
 			defer cancel()
 			child := tt.command(ctx)
-			child.WaitDelay = time.Second
+			child.WaitDelay = testwait.Deadline(time.Second)
 			childErr := child.Run()
 			var childExit *exec.ExitError
 			if !errors.As(childErr, &childExit) || ctx.Err() != nil {

@@ -1634,3 +1634,62 @@ func TestManagerDuplicateRejectionDoesNotDropLiveHoldOnReplay(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveApprovalResultReportsAppliedDecision pins that the operator-facing
+// result is the terminal decision that was applied, not the one that was asked
+// for. The operator API used to echo the approval's own allow while the kill
+// switch (or a release gate) had already closed the call, so the operator was
+// told a cancelled call had been allowed.
+func TestResolveApprovalResultReportsAppliedDecision(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		beforeAllow  func() (func(), bool)
+		prepare      func(Resolution) (Resolution, func())
+		wantDecision string
+		wantSource   string
+	}{
+		{"approve, nothing objects", config.ActionAllow, func() (func(), bool) { return func() {}, true }, nil, config.ActionAllow, SourceOperator},
+		{"approve, kill switch closed it", config.ActionAllow, func() (func(), bool) { return nil, false }, nil, config.ActionBlock, SourceKillSwitch},
+		{
+			"approve, release gate closed it", config.ActionAllow, func() (func(), bool) { return func() {}, true },
+			func(res Resolution) (Resolution, func()) {
+				res.FinalDecision = config.ActionBlock
+				res.ResolutionSource = SourceUpstreamContract
+				return res, nil
+			}, config.ActionBlock, SourceUpstreamContract,
+		},
+		{"deny", config.ActionBlock, nil, nil, config.ActionBlock, SourceOperator},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Second})
+			var got Resolution
+			rp := config.DeferResolutionPolicy{}
+			rp.AllowOn.Approval = true
+			if err := m.Hold(HeldAction{
+				DeferID: "held", ActionID: "held", Target: "tool", SizeBytes: 1,
+				Authority:   AuthoritySnapshot{SessionID: "session"},
+				RulePolicy:  rp,
+				BeforeAllow: tt.beforeAllow,
+				Prepare:     tt.prepare,
+				Resolve:     func(res Resolution) { got = res },
+			}); err != nil {
+				t.Fatal(err)
+			}
+			decision, err := m.ResolveApprovalResult("held", tt.input, SourceOperator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision != tt.wantDecision {
+				t.Fatalf("reported decision = %q, want %q", decision, tt.wantDecision)
+			}
+			if got.FinalDecision != decision {
+				t.Fatalf("reported %q but the call resolved %q", decision, got.FinalDecision)
+			}
+			if got.ResolutionSource != tt.wantSource {
+				t.Fatalf("resolution source = %q, want %q", got.ResolutionSource, tt.wantSource)
+			}
+		})
+	}
+}

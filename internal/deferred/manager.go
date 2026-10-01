@@ -375,8 +375,18 @@ func (m *Manager) journalRejectedHold(action HeldAction, source string) {
 
 // Resolve atomically transitions a held action and invokes its callback once.
 func (m *Manager) Resolve(deferID, finalDecision, source string) error {
+	_, err := m.resolveApplied(deferID, finalDecision, source)
+	return err
+}
+
+// resolveApplied is Resolve that also reports the terminal decision actually
+// applied. The requested decision is only a request: the release-time
+// kill-switch precheck, a Prepare hook (upstream contract gate, send claim) and
+// a journal failure can each close an allow, and callers that surface the
+// outcome to an operator must report that one, not the request.
+func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
 	if m == nil {
-		return ErrDisabled
+		return "", ErrDisabled
 	}
 	if finalDecision == "" {
 		finalDecision = "block"
@@ -389,7 +399,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 	held := m.holds[deferID]
 	if held == nil || held.state != StateHeld {
 		m.mu.Unlock()
-		return ErrNotFound
+		return "", ErrNotFound
 	}
 	held.state = StateResolving
 	delete(m.holds, deferID)
@@ -446,7 +456,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		m.cascadeBlockDescendants([]string{held.DeferID})
 	}
 	held.Resolve(res)
-	return nil
+	return res.FinalDecision, nil
 }
 
 // ResolveAll resolves every currently held action with the same final decision.
@@ -497,6 +507,16 @@ func (m *Manager) Snapshot() []HeldAction {
 	return out
 }
 
+// HeldCount reports how many actions are currently held, without copying them.
+func (m *Manager) HeldCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.holds)
+}
+
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
 	held, err := m.snapshotOne(deferID)
 	if err != nil {
@@ -543,10 +563,9 @@ func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (
 		return "", err
 	}
 	decision := approvalDecision(held.RulePolicy, finalDecision)
-	if err := m.Resolve(deferID, decision, source); err != nil {
-		return "", err
-	}
-	return decision, nil
+	// Report what was applied, not what was asked: a kill switch that activated
+	// before release, or a release gate that refused, closes an approved hold.
+	return m.resolveApplied(deferID, decision, source)
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing

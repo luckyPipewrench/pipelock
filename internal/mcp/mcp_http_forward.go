@@ -199,7 +199,10 @@ func RunHTTPProxy(
 	fwdOpts.sessionExit = sessionExit
 	resolverRuntime := newDeferResolverRuntime(ctx)
 	fwdOpts.DeferResolverRuntime = resolverRuntime
+	killWatchCtx, stopKillWatch := context.WithCancel(ctx)
+	go watchDeferredKillSwitch(killWatchCtx, fwdOpts.KillSwitch, fwdOpts.deferManager())
 	defer func() {
+		stopKillWatch()
 		resolverRuntime.Cancel()
 		if manager := fwdOpts.deferManager(); manager != nil {
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
@@ -243,6 +246,7 @@ func RunHTTPProxy(
 				if manager := fwdOpts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
+				emitKillSwitchDenialReceipt(fwdOpts, safeLogW, frame, d)
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue

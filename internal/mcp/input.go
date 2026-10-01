@@ -289,7 +289,13 @@ func ForwardScannedInput(
 		resolverRuntime = newDeferResolverRuntime(opts.warnContext())
 	}
 
+	// Held calls must not outlive a kill that arrives between messages (the
+	// sentinel file has no event, and an API or signal activation only wakes
+	// the next message). Stop the watcher before the final cancel below.
+	killWatchCtx, stopKillWatch := context.WithCancel(context.Background())
+	go watchDeferredKillSwitch(killWatchCtx, ks, opts.deferManager())
 	defer func() {
+		stopKillWatch()
 		resolverRuntime.Cancel()
 		if manager := opts.deferManager(); manager != nil {
 			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
@@ -364,6 +370,7 @@ func ForwardScannedInput(
 				if manager := opts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
+				emitKillSwitchDenialReceipt(opts, logW, frame, d)
 				if d.IsNotification {
 					// Notifications have no ID - silently drop.
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",

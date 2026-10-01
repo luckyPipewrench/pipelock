@@ -4666,8 +4666,24 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		}
 	}
 
-	// Connect to the first validated IP.
-	return p.dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+	// Every address above passed validation in this call. Try them in resolver
+	// order until one connects; never re-resolve. Each attempt is bounded by
+	// the dialer's own Timeout, so no extra per-attempt timeout is added.
+	var lastErr error
+	for _, ipStr := range ips {
+		if err := ctx.Err(); err != nil {
+			if lastErr == nil {
+				lastErr = err
+			}
+			break
+		}
+		conn, dialErr := p.dialer.DialContext(ctx, network, net.JoinHostPort(ipStr, port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	return nil, fmt.Errorf("ssrfSafeDialContext: dial %s: %w", host, lastErr)
 }
 
 // buildHandler wraps a ServeMux to intercept CONNECT and absolute-URI forward

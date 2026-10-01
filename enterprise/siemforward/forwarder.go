@@ -1035,7 +1035,23 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 	if err != nil {
 		return nil, err
 	}
-	return f.dial(ctx, network, net.JoinHostPort(canonical[0].String(), port))
+	// Every address passed assertResolvedIPsSafe in this call; try them in
+	// resolver order and never re-resolve.
+	var lastErr error
+	for _, ip := range canonical {
+		if err := ctx.Err(); err != nil {
+			if lastErr == nil {
+				lastErr = err
+			}
+			break
+		}
+		conn, dialErr := f.dial(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	return nil, fmt.Errorf("siem forwarder dial %s: %w", host, lastErr)
 }
 
 func persistCursor(path string, c cursor) error {

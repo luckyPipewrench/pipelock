@@ -1373,3 +1373,61 @@ func waitFor(t *testing.T, ok func() bool) {
 	t.Helper()
 	testwait.For(t, 3*time.Second, ok, "forwarder condition")
 }
+
+type fallbackResolver []string
+
+func (r fallbackResolver) LookupHost(context.Context, string) ([]string, error) {
+	return r, nil
+}
+
+func TestSafeDialContextFallsBackToNextValidatedAddress(t *testing.T) {
+	t.Parallel()
+	target, err := validateTarget("https://siem.vendor.example/events", []string{"siem.vendor.example"}, "", false)
+	if err != nil {
+		t.Fatalf("validateTarget: %v", err)
+	}
+	newFwd := func(addrs []string, dial func(context.Context, string, string) (net.Conn, error)) *Forwarder {
+		return &Forwarder{
+			target:       target,
+			resolver:     fallbackResolver(addrs),
+			isInternalIP: func(net.IP) bool { return false },
+			dial:         dial,
+		}
+	}
+
+	var tried []string
+	f := newFwd([]string{"203.0.113.1", "203.0.113.2"}, func(_ context.Context, _, addr string) (net.Conn, error) {
+		tried = append(tried, addr)
+		if strings.HasPrefix(addr, "203.0.113.1:") {
+			return nil, errors.New("unreachable")
+		}
+		c, _ := net.Pipe()
+		return c, nil
+	})
+	conn, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443")
+	if err != nil {
+		t.Fatalf("expected fallback, got %v", err)
+	}
+	_ = conn.Close()
+	if len(tried) != 2 || tried[1] != "203.0.113.2:443" {
+		t.Fatalf("tried = %v", tried)
+	}
+
+	// Any blocked address refuses the host before any dial.
+	dialed := false
+	f = newFwd([]string{"203.0.113.1", "169.254.169.254"}, func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("should not dial")
+	})
+	if _, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443"); err == nil || dialed {
+		t.Fatalf("expected refusal without dial, err=%v dialed=%v", err, dialed)
+	}
+
+	// All unreachable: error names the host.
+	f = newFwd([]string{"203.0.113.1", "203.0.113.2"}, func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("unreachable")
+	})
+	if _, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443"); err == nil || !strings.Contains(err.Error(), "siem.vendor.example") {
+		t.Fatalf("err = %v", err)
+	}
+}

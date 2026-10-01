@@ -81,3 +81,24 @@ func TestLocalPathIdentity_InconclusiveWalkExplainsItself(t *testing.T) {
 		}
 	})
 }
+
+// TestUnknownHardLinkAliases_SSHCoversEveryProtectedKind pins that a file which
+// may be a hard link into an unlistable SSH directory is spelled as both a
+// private key and the authorized-keys file, so a rule naming either alone
+// still matches it.
+func TestUnknownHardLinkAliases_SSHCoversEveryProtectedKind(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".ssh")
+	got := unknownHardLinkAliases(dir, "/work/notes.txt")
+	for _, want := range []string{
+		filepath.Join(dir, "notes.txt"),
+		filepath.Join(dir, "id_rsa"),
+		filepath.Join(dir, "authorized_keys"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("aliases %v missing %q", got, want)
+		}
+	}
+	if other := unknownHardLinkAliases(filepath.Join(t.TempDir(), "secrets"), "/work/notes.txt"); len(other) != 1 {
+		t.Fatalf("non-SSH directory aliases = %v, want only the file's own name", other)
+	}
+}

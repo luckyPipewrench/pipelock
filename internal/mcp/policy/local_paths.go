@@ -699,12 +699,14 @@ func (x *hardLinkIndex) walk(dir string, dirInfo os.FileInfo) bool {
 
 // unknownHardLinkAliases is the fail-closed spelling for a file that may be a
 // hard link into dir: the file's own name under dir, plus, for an SSH
-// directory, a private key name, since only key and authorized-keys names are
-// protected there.
+// directory, a private key name and the authorized-keys name, since only
+// those names are protected there.
 func unknownHardLinkAliases(dir, resolved string) []string {
 	aliases := []string{filepath.Join(dir, filepath.Base(resolved))}
 	if filepath.Base(dir) == ".ssh" {
-		aliases = append(aliases, filepath.Join(dir, "id_rsa"))
+		// A rule may name either protected kind on its own, so the unknown
+		// file stands for both.
+		aliases = append(aliases, filepath.Join(dir, "id_rsa"), filepath.Join(dir, "authorized_keys"))
 	}
 	return aliases
 }

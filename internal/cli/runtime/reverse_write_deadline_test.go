@@ -186,9 +186,13 @@ type deadlineTestWriter struct {
 	setErr   error
 	maxWrite int // when > 0, accept at most this many bytes per Write, with a nil error
 	got      int
+	armed    int // SetWriteDeadline calls
 }
 
-func (d *deadlineTestWriter) SetWriteDeadline(time.Time) error { return d.setErr }
+func (d *deadlineTestWriter) SetWriteDeadline(time.Time) error {
+	d.armed++
+	return d.setErr
+}
 
 func (d *deadlineTestWriter) Write(b []byte) (int, error) {
 	if d.maxWrite > 0 && len(b) > d.maxWrite {
@@ -314,5 +318,21 @@ func TestReverseProxyServer_BlockedWriteDeadlineClampedToBudget(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("blocked write outlived the total budget: stall window extended past it")
+	}
+}
+
+// TestProgressDeadlineWriter_InformationalHeaderIsBounded pins that a 1xx
+// header, which net/http writes to the connection immediately, is written
+// under a deadline, while a final header waits for the body write to arm one.
+func TestProgressDeadlineWriter_InformationalHeaderIsBounded(t *testing.T) {
+	inner := &deadlineTestWriter{ResponseWriter: httptest.NewRecorder()}
+	pw := &progressDeadlineWriter{ResponseWriter: inner, rc: http.NewResponseController(inner), stall: time.Second, total: time.Minute}
+	pw.WriteHeader(http.StatusEarlyHints)
+	if inner.armed != 1 {
+		t.Fatalf("103 header armed the deadline %d times, want 1", inner.armed)
+	}
+	pw.WriteHeader(http.StatusOK)
+	if inner.armed != 1 {
+		t.Fatalf("final header armed the deadline (%d); it is buffered until the body write", inner.armed)
 	}
 }

@@ -143,6 +143,18 @@ func (w *progressDeadlineWriter) Write(b []byte) (int, error) {
 	return written, nil
 }
 
+// WriteHeader arms the deadline before an informational (1xx) header, which
+// net/http writes to the connection at once rather than with the body. A final
+// header is buffered until the first Write or Flush, both of which arm it.
+func (w *progressDeadlineWriter) WriteHeader(code int) {
+	if code >= http.StatusContinue && code < http.StatusOK {
+		// A failed arm still leaves a deadline set (past, when the budget is
+		// spent), so the header write below fails instead of blocking.
+		_ = w.arm()
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
 // Flush re-arms the deadline and flushes through the underlying writer. A
 // failed arm skips the flush: Flush has no error return, and the next Write
 // reports the same failure.

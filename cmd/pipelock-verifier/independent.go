@@ -27,6 +27,9 @@ type independentOptions struct {
 	locationID   string
 	asDir        bool
 	jsonOutput   bool
+	// requireFullCoverage fails verification when the anchor covers fewer
+	// receipts than the supplied chain holds.
+	requireFullCoverage bool
 }
 
 func newIndependentCmd() *cobra.Command {
@@ -58,6 +61,7 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory when --dir is set")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single evidence file")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
+	cmd.Flags().BoolVar(&opts.requireFullCoverage, "require-full-coverage", false, "fail when the anchor covers fewer receipts than the supplied chain holds (covered_receipts < chain_length)")
 	return cmd
 }
 
@@ -115,6 +119,13 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 		} else {
 			report.TailChainVerified = true
 		}
+	}
+	if opts.requireFullCoverage && report.Valid && len(covered) < len(receipts) {
+		// Opt-in strict stance: receipts after the anchor are chain-verified
+		// only under the supplied keys, which a holder of the signing key can
+		// forge, so no anchor vouches for them.
+		report.Valid = false
+		report.Error = fmt.Sprintf("anchor covers %d of %d receipts and --require-full-coverage needs every receipt anchored (%d unanchored)", len(covered), len(receipts), len(receipts)-len(covered))
 	}
 	emitIndependentReport(stdout, stderr, filepath.Clean(target), report, opts.jsonOutput)
 	if report.Valid && len(covered) < len(receipts) {

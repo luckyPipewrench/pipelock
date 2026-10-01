@@ -964,6 +964,54 @@ func TestIndependent_JSONVerdictReportsCoverage(t *testing.T) {
 	}
 }
 
+// TestIndependent_RequireFullCoverage pins the opt-in strict stance: with
+// --require-full-coverage a chain longer than the anchor fails (non-zero exit,
+// valid false) the way the dashboard treats a stale anchor, while the default
+// and a fully covered chain are unchanged.
+func TestIndependent_RequireFullCoverage(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 5)
+	for _, tc := range []struct {
+		name    string
+		covered int
+		strict  bool
+		wantOK  bool
+	}{
+		{"partial coverage, default", 3, false, true},
+		{"partial coverage, strict", 3, true, false},
+		{"full coverage, strict", 5, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence, bundle, logPath := writeIndependentPrefixFixture(t, fix, tc.covered)
+			args := []string{
+				"independent", evidence, "--bundle", bundle, "--key", fix.keyHex,
+				"--local-log", logPath, "--log-id", "verifier-test-log", "--json",
+			}
+			if tc.strict {
+				args = append(args, "--require-full-coverage")
+			}
+			stdout, stderr, code := runRoot(t, args...)
+			var verdict map[string]any
+			if err := json.Unmarshal([]byte(stdout), &verdict); err != nil {
+				t.Fatalf("decode verdict: %v\nstdout=%q stderr=%q", err, stdout, stderr)
+			}
+			if tc.wantOK {
+				if code != cliutil.ExitOK || verdict["valid"] != true {
+					t.Fatalf("code=%d verdict=%v, want exit 0 valid=true", code, verdict)
+				}
+				return
+			}
+			if code == cliutil.ExitOK || verdict["valid"] != false ||
+				verdict["covered_receipts"] != float64(tc.covered) || verdict["chain_length"] != float64(5) {
+				t.Fatalf("code=%d verdict=%v, want non-zero exit valid=false covered=%d chain_length=5", code, verdict, tc.covered)
+			}
+			if !strings.Contains(fmt.Sprint(verdict["error"]), "--require-full-coverage") {
+				t.Fatalf("error should name the flag: %v", verdict["error"])
+			}
+		})
+	}
+}
+
 func TestIndependent_AnchorRejectsChangesToCoveredPrefix(t *testing.T) {
 	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
 	fix := newFixture(t, 5)

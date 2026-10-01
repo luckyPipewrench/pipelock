@@ -296,3 +296,53 @@ func TestLocalLogNamedSegmentBadLinkFailsClosed(t *testing.T) {
 		t.Fatalf("bad link verified: %v", err)
 	}
 }
+
+func TestReadLocalLogSegmentParity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "anchor.jsonl")
+	log := LocalLog{Path: path, LogID: "custom-log"}
+	cp := Checkpoint{SessionID: "test-session"}
+	var proofs []Proof
+	for i := range 3 {
+		proof, err := log.Submit(cp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proofs = append(proofs, proof)
+		if i < 2 {
+			segment := path
+			if i == 1 {
+				segment += ".segment-00000000000000000001"
+			}
+			data, err := os.ReadFile(filepath.Clean(segment))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(segment, append(data, 0), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	entries, err := ReadLocalLog(path)
+	if !errors.Is(err, recorder.ErrTornTail) {
+		t.Fatalf("damage hidden: %v", err)
+	}
+	if len(entries) != len(proofs) || entries[len(entries)-1].Index != proofs[len(proofs)-1].LogIndex {
+		t.Fatalf("reader/verifier diverged: entries=%d proofs=%d", len(entries), len(proofs))
+	}
+	for _, proof := range proofs {
+		if err := log.Verify(proof, cp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path + ".segment-00000000000000000002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"index":2`), []byte(`"index":9`), 1)
+	if err := os.WriteFile(path+".segment-00000000000000000002", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadLocalLog(path); err == nil || errors.Is(err, recorder.ErrTornTail) {
+		t.Fatalf("tampered segment hidden: %v", err)
+	}
+}

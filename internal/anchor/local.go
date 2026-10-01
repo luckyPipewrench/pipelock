@@ -149,17 +149,26 @@ func (l LocalLog) Verify(proof Proof, checkpoint Checkpoint) error {
 	return nil
 }
 
-// ReadLocalLog verifies a single file and reports crash-damaged tails without
-// claiming the damaged file is healthy. Returned entries cover its complete prefix.
+// ReadLocalLog verifies the base file and its segments, returning all validated
+// records. Retained crash damage is reported even after submission resumes.
 func ReadLocalLog(path string) ([]LocalLogEntry, error) {
-	return readLocalLogPrefix(path, nil, "")
+	entries, _, err := readLocalLogSegments(path, "")
+	return entries, err
 }
 
-// readSegments joins verified, newline-complete prefixes. A torn segment is never
-// appended to; the next numbered segment continues its last complete hash/index.
+// readSegments joins verified records. A torn segment is never appended to;
+// the next numbered segment continues its last validated hash/index.
 // Segment names are storage details and do not change the signed proof format.
 func (l LocalLog) readSegments() ([]LocalLogEntry, string, error) {
-	base := filepath.Clean(l.Path)
+	entries, appendPath, err := readLocalLogSegments(l.Path, l.logID())
+	if errors.Is(err, recorder.ErrTornTail) || (appendPath != "" && errors.Is(err, os.ErrNotExist)) {
+		return entries, appendPath, nil
+	}
+	return entries, appendPath, err
+}
+
+func readLocalLogSegments(path, expectedID string) ([]LocalLogEntry, string, error) {
+	base := filepath.Clean(path)
 	directory, err := os.ReadDir(filepath.Dir(base))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, "", fmt.Errorf("find local anchor segments: %w", err)
@@ -183,20 +192,24 @@ func (l LocalLog) readSegments() ([]LocalLogEntry, string, error) {
 		paths = append(paths, segment)
 	}
 	var entries []LocalLogEntry
+	var damage error
 	for i, path := range paths {
-		current, readErr := readLocalLogPrefix(path, entries, l.logID())
+		current, readErr := readLocalLogPrefix(path, entries, expectedID)
 		if errors.Is(readErr, os.ErrNotExist) && len(paths) == 1 {
-			return entries, base, nil
+			return entries, base, readErr
 		}
 		if readErr != nil && !errors.Is(readErr, recorder.ErrTornTail) {
 			return nil, "", readErr
 		}
 		entries = current
+		if readErr != nil {
+			damage = errors.Join(damage, readErr)
+		}
 		if i == len(paths)-1 {
 			if readErr == nil {
-				return entries, path, nil
+				return entries, path, damage
 			}
-			return entries, fmt.Sprintf("%s.segment-%020d", base, len(paths)), nil
+			return entries, fmt.Sprintf("%s.segment-%020d", base, len(paths)), damage
 		}
 	}
 	return nil, "", errors.New("local anchor log has no segments")

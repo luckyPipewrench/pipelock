@@ -5,9 +5,11 @@ package shield
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"golang.org/x/net/html"
 )
 
 func TestCommentTrapPreservesDocumentStructure(t *testing.T) {
@@ -151,5 +153,102 @@ func TestCommentTrapSVGForeignContent(t *testing.T) {
 				t.Fatalf("content=%q hits=%d; want %q hits=%d", res.Content, res.TrapHits, tc.want, tc.hits)
 			}
 		}
+	}
+}
+
+func TestCommentTrapMathMLContent(t *testing.T) {
+	in := `<math><style><!-- instruction --></style></math>`
+	want := `<math><style></style></math>`
+	got, hits := NewEngine(nil).stripCommentTraps(in, false)
+	if got != want || hits != 1 {
+		t.Fatalf("content=%q hits=%d; want %q hits=1", got, hits, want)
+	}
+}
+
+func TestCommentTrapNamespaceConsumerParity(t *testing.T) {
+	const trap = `<!-- instruction -->`
+	cases := []string{
+		`<math><style>` + trap + `</style></math>`,
+		`<math><mtext><style>` + trap + `</style></mtext></math>`,
+		`<math><mtext><mglyph><style>` + trap + `</style></mglyph></mtext></math>`,
+		`<math><mtext><malignmark><style>` + trap + `</style></malignmark></mtext></math>`,
+		`<math><annotation-xml encoding="TEXT/HTML"><style>` + trap + `</style></annotation-xml></math>`,
+		`<math><annotation-xml encoding="application/xhtml+xml"><style>` + trap + `</style></annotation-xml></math>`,
+		`<math><annotation-xml encoding="application/xml"><style>` + trap + `</style></annotation-xml></math>`,
+		`<svg><math><mi><style>` + trap + `</style></mi></math></svg>`,
+		`<svg><g><font color="red"><style>` + trap + `</style></font></g></svg>`,
+		`<svg><g><font><style>` + trap + `</style></font></g></svg>`,
+		`<svg><g></p><style>` + trap + `</style></svg>`,
+		`<svg><g></br><style>` + trap + `</style></svg>`,
+		`<SVG><TITLE>` + trap + `</TITLE></SVG>`,
+		`<math/><style>` + trap + `</style>`,
+		`<svg><svg><title>` + trap + `</title></svg></svg>`,
+		`<math><mtext><svg><g><div><style>` + trap + `</style></div></g></svg></mtext></math>`,
+	}
+	for _, tag := range []string{"mi", "mo", "mn", "ms", "mtext"} {
+		cases = append(cases, `<math><`+tag+`><style>`+trap+`</style></`+tag+`></math>`)
+	}
+	for _, tag := range []string{"b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var"} {
+		cases = append(cases, `<svg><g><`+tag+`><style>`+trap+`</style></`+tag+`></g></svg>`)
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			// The complete consumer parser supplies the independent namespace
+			// witness; literal text inside an HTML style is not a CommentNode.
+			doc, err := html.Parse(strings.NewReader(in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantHits := 0
+			var visit func(*html.Node)
+			visit = func(n *html.Node) {
+				if n.Type == html.CommentNode && n.Data == " instruction " {
+					wantHits++
+				}
+				for child := n.FirstChild; child != nil; child = child.NextSibling {
+					visit(child)
+				}
+			}
+			visit(doc)
+			want := in
+			if wantHits == 1 {
+				want = strings.Replace(in, trap, "", 1)
+			}
+			got, hits := NewEngine(nil).stripCommentTraps(in, false)
+			if got != want || hits != wantHits {
+				t.Fatalf("content=%q hits=%d; consumer expects %q hits=%d", got, hits, want, wantHits)
+			}
+		})
+	}
+}
+
+func TestCommentTrapUnmatchedForeignCloses(t *testing.T) {
+	const trap = `<!-- instruction -->`
+	in := `<svg>` + strings.Repeat(`<g>`, 1000) + strings.Repeat(`</unknown>`, 1000) + trap + strings.Repeat(`</g>`, 1000) + `</svg>`
+	got, hits := NewEngine(nil).stripCommentTraps(in, false)
+	if got != strings.Replace(in, trap, "", 1) || hits != 1 {
+		t.Fatal("unmatched closing tags changed serialization or hid the trap")
+	}
+}
+
+func TestCommentTrapRepeatedMalformedInstructions(t *testing.T) {
+	prefix := `<?complete?><root>` + strings.Repeat(`<?meta >`, 2000)
+	got, hits := NewEngine(nil).stripCommentTraps(prefix+`<!-- instruction --></root>`, true)
+	if got != prefix+`</root>` || hits != 1 {
+		t.Fatal("malformed processing instructions hid a later comment or changed raw spans")
+	}
+}
+
+func BenchmarkCommentTrapMalformedInstructions(b *testing.B) {
+	for _, count := range []int{3000, 30000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			in := strings.Repeat(`<?meta >`, count) + `<!-- instruction -->`
+			e := NewEngine(nil)
+			b.SetBytes(int64(len(in)))
+			b.ResetTimer()
+			for b.Loop() {
+				_, _ = e.stripCommentTraps(in, true)
+			}
+		})
 	}
 }

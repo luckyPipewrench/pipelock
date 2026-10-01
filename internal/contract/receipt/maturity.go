@@ -37,6 +37,7 @@ var payloadMaturity = map[PayloadKind]payloadMaturityDeclaration{
 		packagePath: "github.com/luckyPipewrench/pipelock/internal/contract/proxydecision", function: "(*Emitter).Emit",
 	}},
 	PayloadProxyDecisionWithSpans: {maturity: PayloadMaturityFixtureOnly},
+	PayloadSecretEgressDecisionV1: {maturity: PayloadMaturityFixtureOnly},
 	PayloadContractRatified: {maturity: PayloadMaturityLive, producer: &payloadProducerReference{
 		packagePath: "github.com/luckyPipewrench/pipelock/internal/cli/learn", function: "runRatify",
 	}},

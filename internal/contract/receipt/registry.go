@@ -70,6 +70,7 @@ func decodeStrict(raw json.RawMessage, target any) error {
 var payloadValidators = map[PayloadKind]func(json.RawMessage) error{
 	PayloadProxyDecision:              validateProxyDecision,
 	PayloadProxyDecisionWithSpans:     validateProxyDecisionWithSpans,
+	PayloadSecretEgressDecisionV1:     validateSecretEgressDecision,
 	PayloadContractRatified:           validateContractRatified,
 	PayloadContractPromoteIntent:      validateContractPromoteIntent,
 	PayloadContractPromoteCommitted:   validateContractPromoteCommitted,

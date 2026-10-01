@@ -114,6 +114,46 @@ pub fn object_member_span(text: &str, object_start: usize, key: &str) -> Option<
     None
 }
 
+/// Return every member's decoded key and raw value span, including duplicate
+/// keys. This scanner may select a strict guard before full parsing, but it
+/// does not establish JSON validity; the caller must still parse the source.
+/// Incomplete member spans return None.
+pub(crate) fn object_members(
+    text: &str,
+    object_start: usize,
+) -> Option<Vec<(String, usize, usize)>> {
+    let bytes = text.as_bytes();
+    let mut i = skip_ws(bytes, object_start);
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    let mut members = Vec::new();
+    i = skip_ws(bytes, i + 1);
+    if bytes.get(i) == Some(&b'}') {
+        return Some(members);
+    }
+    loop {
+        if bytes.get(i) != Some(&b'"') {
+            return None;
+        }
+        let key_end = skip_string(bytes, i)?;
+        let name: String = serde_json::from_str(text.get(i..key_end)?).ok()?;
+        i = skip_ws(bytes, key_end);
+        if bytes.get(i) != Some(&b':') {
+            return None;
+        }
+        let start = skip_ws(bytes, i + 1);
+        let end = skip_value(bytes, start)?;
+        members.push((name, start, end));
+        i = skip_ws(bytes, end);
+        match bytes.get(i) {
+            Some(b',') => i = skip_ws(bytes, i + 1),
+            Some(b'}') => return Some(members),
+            _ => return None,
+        }
+    }
+}
+
 /// Reproduces `encoding/json`'s output for a `json.RawMessage`: insignificant
 /// whitespace removed, and `<`, `>`, `&`, U+2028, U+2029 written as six-byte
 /// lowercase-hex unicode escapes, exactly as Go does. Every other character, including

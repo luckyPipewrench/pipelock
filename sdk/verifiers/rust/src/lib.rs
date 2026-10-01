@@ -17,6 +17,7 @@ pub mod recorder;
 pub mod recorder_chain;
 pub mod rotation;
 pub mod schema;
+pub mod secret_egress;
 pub mod signing;
 pub mod strict;
 pub mod types;

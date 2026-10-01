@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Receipt } from "./types.js";
+import { secretEgressDecisionKind, validateSecretEgressSource } from "./secret-egress.js";
 import { unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { validateV1Receipt } from "./strict.js";
 import {
@@ -57,6 +58,12 @@ export async function runReceipt(
     return report;
   }
   const receipt = parseJSON<Receipt>(text, "receipt json");
+  try {
+    validateSecretEgressSource(receipt, text);
+  } catch (err) {
+    report.error = (err as Error).message;
+    return report;
+  }
   // EV2-FU-1: reject unknown fields on a signed v1 receipt (the v2 evidence
   // receipt has its own schema). The only tolerated unknown surface is the
   // top-level ext bag.
@@ -69,10 +76,22 @@ export async function runReceipt(
     }
   }
   if (receipt.record_type === "evidence_receipt_v2") {
-    const payload = receipt.payload as { verdict?: string; transport?: string } | undefined;
-    report.action_id = receipt.event_id;
+    const payload = receipt.payload as
+      | {
+          verdict?: string;
+          transport?: string;
+          decision?: { action_id?: string; transport?: string };
+        }
+      | undefined;
+    report.action_id =
+      receipt.payload_kind === secretEgressDecisionKind
+        ? payload?.decision?.action_id
+        : receipt.event_id;
     report.verdict = payload?.verdict;
-    report.transport = payload?.transport;
+    report.transport =
+      receipt.payload_kind === secretEgressDecisionKind
+        ? payload?.decision?.transport
+        : payload?.transport;
     report.signer_key = keyHex;
     report.policy_hash = receipt.policy_hash;
     report.chain_seq = receipt.chain_seq;

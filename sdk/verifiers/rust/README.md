@@ -80,3 +80,21 @@ signer or verdict. The report uses `verdict: schema_checked_trust_unverified`,
 `trusted: false`, and `valid: false`; the CLI exits nonzero. JSON and CI
 consumers must require full chain verification before accepting a trusted
 verdict.
+
+## Fixture-only secret-egress receipts
+
+The `receipt` command also understands the candidate EvidenceReceipt v2 kind
+`secret_egress_decision_v1`, exercised by the shared signed corpus under
+`sdk/conformance/testdata/secret-egress-v1/`. It requires the matching critical
+feature, policy hash, registry commitment and strict typed decision fields.
+Ordinary JCS formatting semantics are preserved. Structural/signature success
+does not establish registry membership, policy compliance, producer coverage or
+durable append; no production transport emits this kind yet.
+
+For this kind, raw readers enforce exact envelope fields, canonical unsigned
+integer tokens, unescaped ASCII canonical UTC RFC3339Nano timestamps, and the
+16 KiB raw decision
+bound. Insignificant whitespace and object key order remain permitted. Library
+callers handling untrusted JSON should use `run_receipt` or
+`util::parse_json_text` before verification; an independently constructed
+`serde_json::Value` cannot retain duplicate keys or original numeric spelling.

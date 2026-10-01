@@ -1,6 +1,6 @@
 # Receipt schema versioning policy
 
-This document states the versioning rules for Pipelock's two receipt formats and the
+This document states the versioning rules for Pipelock's receipt and assurance formats and the
 forward-compatibility guarantee verifiers must honor.
 
 ## Current schema versions
@@ -8,6 +8,7 @@ forward-compatibility guarantee verifiers must honor.
 | Format | Version field | Current value | Verifier entry point |
 |--------|---------------|---------------|----------------------|
 | ActionReceipt | `receipt.ReceiptVersion` (`internal/receipt/receipt.go:17`) | `1` | `receipt.VerifyWithKey` (`internal/receipt/receipt.go:66`) |
+| EvidenceReceipt | `receipt_version` (`internal/contract/receipt`) | `2` | `VerifyWithKey`; `VerifyV2BytesWithKey` for exact emitted bytes |
 | AARP assurance envelope | `aarp.Profile` (`internal/aarp/doc.go:50`) | `"aarp/v0.1"` | `aarp.Verify` (`internal/aarp/verify.go:67`) |
 
 ### ActionReceipt v1
@@ -87,6 +88,29 @@ fail-closed on an entry whose `type` is outside the recorder taxonomy
 An unknown record type is rejected in both modes rather than silently skipped, so a file
 that mixes a valid receipt chain with an unexpected record cannot be reported as valid.
 
+### EvidenceReceipt v2
+
+The typed v2 envelope uses `record_type: "evidence_receipt_v2"`,
+`receipt_version: 2`, a closed `payload_kind` registry and explicit critical
+features. Its existing JCS and Ed25519 PureEdDSA signing recipe is defined by
+`EvidenceReceipt.SignablePreimage` in `internal/contract/receipt/receipt.go`.
+Unknown payload kinds, unknown critical features and unknown signed fields are
+rejected. A new payload shape does not silently change an existing kind.
+
+`secret_egress_decision_v1` is a **fixture-only** typed payload. It requires
+`canonicalization` and `secret_egress_decision_v1` in `crit`, an envelope
+`policy_hash`, and the `receipt-signing` key purpose. Its payload contains exactly
+`registry_hash` and the versioned `decision` object. See the
+[secret-egress contract](../specs/secret-egress-evidence-v1.md) for the schema,
+registry commitment and the distinction between signed facts and confirmation.
+No production transport emits this kind yet; accepting its signed fixtures does
+not establish production coverage or durability.
+
+Go, TypeScript, Rust and Python reference validators must agree on new-kind
+acceptance and rejection before live emission. An older reader which does not
+understand the new kind must reject it explicitly. Existing v1 and v2 fixtures
+retain their original meaning and remain verifiable.
+
 ### AARP v0.1 assurance envelope
 
 Every AARP assurance envelope carries `"profile": "aarp/v0.1"` in both the top-level
@@ -128,6 +152,20 @@ the canonical signing projection. The wasm surface follows the Go schema when
 rebuilt. Purely advisory, non-authoritative metadata that must NOT be signed
 goes in the top-level `ext` bag instead and needs no verifier change. Removing
 or renaming existing required fields requires a version bump.
+
+### EvidenceReceipt
+
+A new versioned payload kind and required critical feature may extend the v2
+envelope when its common fields, canonicalization and signing interpretation are
+unchanged. The payload-kind registry, purpose authorization, policy-hash rules,
+strict/exact-byte validators, maturity declaration and cross-language fixtures
+must move together. Redefining an existing kind is not an additive extension.
+
+An incompatible change to the common envelope or signing interpretation requires
+a new envelope version and continued verification of the old versions. A kind
+declared `fixture_only` cannot be described as live solely because validators or
+builders exist; the production producer and its behavioral coverage are separate
+requirements.
 
 ### AARP assurance envelope
 

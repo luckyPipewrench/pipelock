@@ -49,8 +49,9 @@ const (
 	canonicalizationRedactionVersion   = "1"
 	canonicalizationRedactionHash      = "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e"
 
-	CritCanonicalization = "canonicalization"
-	CritSourceSpans      = "source_spans"
+	CritCanonicalization       = "canonicalization"
+	CritSourceSpans            = "source_spans"
+	CritSecretEgressDecisionV1 = "secret_egress_decision_v1" // #nosec G101 -- public feature label, not a credential.
 )
 
 // PayloadKind identifies the payload structure carried inside an EvidenceReceipt.
@@ -59,6 +60,7 @@ type PayloadKind string
 const (
 	PayloadProxyDecision          PayloadKind = "proxy_decision"
 	PayloadProxyDecisionWithSpans PayloadKind = "proxy_decision_with_spans"
+	PayloadSecretEgressDecisionV1 PayloadKind = "secret_egress_decision_v1" // #nosec G101 -- public payload label, not a credential.
 
 	PayloadContractRatified           PayloadKind = "contract_ratified"
 	PayloadContractPromoteIntent      PayloadKind = "contract_promote_intent"
@@ -120,6 +122,9 @@ func CritForPayloadKind(kind PayloadKind) []string {
 	crit := []string{CritCanonicalization}
 	if kind == PayloadProxyDecisionWithSpans {
 		crit = append(crit, CritSourceSpans)
+	}
+	if kind == PayloadSecretEgressDecisionV1 {
+		crit = append(crit, CritSecretEgressDecisionV1)
 	}
 	return crit
 }
@@ -193,6 +198,21 @@ func (r EvidenceReceipt) Validate() error {
 	if err := v(r.Payload); err != nil {
 		return err
 	}
+	if r.PayloadKind == PayloadSecretEgressDecisionV1 {
+		if err := r.ValidateSecretEgressContext(); err != nil {
+			return err
+		}
+		if err := requireNonEmpty("chain_prev_hash", r.ChainPrevHash); err != nil {
+			return err
+		}
+		p, err := parseSecretEgressDecisionPayload(r.Payload)
+		if err != nil {
+			return err
+		}
+		if r.EventID == p.Decision.ActionID || r.EventID == p.Decision.DecisionID {
+			return fmt.Errorf("%w: event_id aliases action or decision ID", ErrPayloadInvalidEnum)
+		}
+	}
 	if err := r.validatePolicyHash(); err != nil {
 		return err
 	}
@@ -201,7 +221,7 @@ func (r EvidenceReceipt) Validate() error {
 
 func (r EvidenceReceipt) validatePolicyHash() error {
 	switch r.PayloadKind {
-	case PayloadProxyDecision, PayloadProxyDecisionWithSpans:
+	case PayloadProxyDecision, PayloadProxyDecisionWithSpans, PayloadSecretEgressDecisionV1:
 		return requirePolicyHash("policy_hash", r.PolicyHash)
 	default:
 		return nil
@@ -241,6 +261,7 @@ func (r EvidenceReceipt) validateCrit() error {
 	seen := make(map[string]struct{}, len(r.Crit))
 	hasCanonicalization := false
 	hasSourceSpans := false
+	hasSecretEgress := false
 	for _, name := range r.Crit {
 		if name == "" {
 			return fmt.Errorf("%w: crit empty name", ErrPayloadInvalidEnum)
@@ -254,6 +275,8 @@ func (r EvidenceReceipt) validateCrit() error {
 			hasCanonicalization = true
 		case CritSourceSpans:
 			hasSourceSpans = true
+		case CritSecretEgressDecisionV1:
+			hasSecretEgress = true
 		default:
 			return fmt.Errorf("%w: crit %q", ErrPayloadInvalidEnum, name)
 		}
@@ -266,6 +289,12 @@ func (r EvidenceReceipt) validateCrit() error {
 	}
 	if r.PayloadKind != PayloadProxyDecisionWithSpans && hasSourceSpans {
 		return fmt.Errorf("%w: crit source_spans for payload_kind=%q", ErrPayloadInvalidEnum, r.PayloadKind)
+	}
+	if r.PayloadKind == PayloadSecretEgressDecisionV1 && !hasSecretEgress {
+		return fmt.Errorf("%w: crit secret_egress_decision_v1", ErrPayloadMissingField)
+	}
+	if r.PayloadKind != PayloadSecretEgressDecisionV1 && hasSecretEgress {
+		return fmt.Errorf("%w: crit secret_egress_decision_v1 for payload_kind=%q", ErrPayloadInvalidEnum, r.PayloadKind)
 	}
 	return nil
 }
@@ -282,6 +311,9 @@ func (r EvidenceReceipt) validateSignatureProof() error {
 	}
 	if r.Signature.Algorithm != signatureAlgorithmEd25519 {
 		return fmt.Errorf("%w: signature.algorithm=%q", ErrPayloadInvalidEnum, r.Signature.Algorithm)
+	}
+	if r.PayloadKind == PayloadSecretEgressDecisionV1 {
+		return validateSecretEgressSignature(r.Signature.Signature)
 	}
 	if !strings.HasPrefix(r.Signature.Signature, signaturePrefixEd25519) {
 		return fmt.Errorf("%w: signature.signature prefix", ErrPayloadInvalidEnum)
@@ -341,7 +373,10 @@ func SignerKeyID(pubKey ed25519.PublicKey) string {
 }
 
 // VerifyWithKey verifies the detached Ed25519 signature against pubKey and
-// confirms that the receipt declares the expected signer key id.
+// confirms that the receipt declares the expected signer key id. This typed
+// API cannot recover original JSON field presence, spelling or numeric tokens.
+// Decode serialized receipts with ParseEvidenceReceipt before calling it,
+// or use a supported receipt byte/file/stream reader for raw-profile checks.
 func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey, expectedSignerKeyID string) error {
 	if err := r.Validate(); err != nil {
 		return err

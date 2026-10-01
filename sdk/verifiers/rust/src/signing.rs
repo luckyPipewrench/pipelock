@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::canonical::{canonicalize_action_record, canonicalize_jcs_value};
+use crate::secret_egress;
 use crate::types::Receipt;
 use crate::util::{decode_hex, VerifierError};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -46,6 +47,9 @@ pub fn verify_receipt_with_options(
     expected_key_hex: &str,
     allow_unpinned: bool,
 ) -> std::result::Result<(), String> {
+    if secret_egress::selects_payload(receipt) {
+        secret_egress::validate_envelope_shape(receipt)?;
+    }
     if receipt.get("record_type").and_then(|value| value.as_str()) == Some(V2_RECORD_TYPE) {
         return verify_evidence_receipt(receipt, expected_key_hex);
     }
@@ -136,6 +140,9 @@ pub fn verify_evidence_receipt(
 }
 
 pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), String> {
+    if secret_egress::selects_payload(receipt) {
+        secret_egress::validate_envelope_shape(receipt)?;
+    }
     reject_unknown_fields(
         receipt,
         &[
@@ -194,6 +201,16 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
     match payload_kind {
         "proxy_decision" => validate_proxy_decision_payload(payload),
         "proxy_decision_with_spans" => validate_proxy_decision_with_spans_payload(payload),
+        secret_egress::PAYLOAD_KIND => {
+            secret_egress::validate_payload(payload)?;
+            let event_id = receipt.get("event_id");
+            if event_id == payload["decision"].get("action_id")
+                || event_id == payload["decision"].get("decision_id")
+            {
+                return Err("event_id must differ from action and decision IDs".to_string());
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -278,6 +295,7 @@ fn validate_crit(
     let mut seen = std::collections::BTreeSet::new();
     let mut has_canonicalization = false;
     let mut has_source_spans = false;
+    let mut has_secret_egress = false;
     for value in crit {
         let name = value
             .as_str()
@@ -291,6 +309,7 @@ fn validate_crit(
         match name {
             CRIT_CANONICALIZATION => has_canonicalization = true,
             CRIT_SOURCE_SPANS => has_source_spans = true,
+            secret_egress::PAYLOAD_KIND => has_secret_egress = true,
             _ => return Err(format!("crit has unknown field {name}")),
         }
     }
@@ -302,6 +321,11 @@ fn validate_crit(
     }
     if payload_kind != "proxy_decision_with_spans" && has_source_spans {
         return Err(format!("crit source_spans is invalid for {payload_kind}"));
+    }
+    if (payload_kind == secret_egress::PAYLOAD_KIND) != has_secret_egress {
+        return Err(format!(
+            "crit secret_egress_decision_v1 does not match payload_kind {payload_kind}"
+        ));
     }
     Ok(())
 }
@@ -458,7 +482,10 @@ fn require_string_array(
 }
 
 fn valid_payload_kind(kind: &str) -> bool {
-    matches!(kind, "proxy_decision" | "proxy_decision_with_spans")
+    matches!(
+        kind,
+        "proxy_decision" | "proxy_decision_with_spans" | secret_egress::PAYLOAD_KIND
+    )
 }
 
 fn reserved_payload_kind(kind: &str) -> bool {

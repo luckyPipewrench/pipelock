@@ -137,6 +137,11 @@ if [ "$checked" -eq 0 ]; then
 fi
 [ "$fails" -eq 0 ] || exit 1
 echo "PASS: all four verifiers agree across the corpus"
+
+# The signed secret-egress lane is mandatory in ordinary all-verifier runs.
+# PROVENANCE_ONLY keeps its existing scope. No missing-corpus skip is allowed.
+GO_VERIFY="$GO_VERIFY" TS_VERIFY="$TS_VERIFY" RUST_VERIFY="$RUST_VERIFY" PY_VERIFY="$PY_VERIFY" \
+  python3 "$ROOT/secret-egress-gate.py" || exit "$?"
 fi
 
 for v in GO_PROVENANCE TS_PROVENANCE RUST_PROVENANCE PY_PROVENANCE; do

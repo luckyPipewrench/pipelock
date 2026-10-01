@@ -1,6 +1,6 @@
 # Secret-egress evidence contract v1: additive foundation
 
-Status: candidate interface and fixtures only. No production transport emits this
+Status: candidate interface and signed receipt fixtures. No production transport emits this
 contract yet. This document does not claim a complete classification-site census,
 a durable writer, transport parity, a queryable map, or release readiness.
 
@@ -34,12 +34,17 @@ the request, and fallback metadata never grants permission to send original byte
 handling and intended bytes. Each eventual envelope has its own record identity;
 retrying identical content must preserve that identity. Conflicting duplicate
 identities must be rejected by the writer/reader, not resolved last-write-wins.
+Decision-only pairing does not bind the enclosing registry hash, effective policy
+hash, signer or run/session context. A signed reader must verify those separately
+before treating two receipts as observations of the same protected operation.
 
 The strict parser rejects unknown fields, duplicates, case aliases, nulls,
 unsupported versions, invalid relationships and trailing input. Its bounded
 symbolic identifiers and canonical host checks are structural checks. Producers
-still must apply existing secret-sanitization policy: a syntactically valid host
-or rule reference is not proof that its content is non-secret.
+must apply the declared evidence privacy policy before retaining a reference.
+Syntax alone cannot establish whether a host or rule reference contains
+classified material. A forwarding result of `Clean` is not a privacy permit:
+warn-only or otherwise retained findings may still need metadata redaction.
 
 Strict structure does not require a unique JSON byte encoding. JSON escapes for
 the same decoded field name or value and ordinary formatting changes can describe
@@ -58,6 +63,16 @@ release, remain representable and must be surfaced. Validation never relaxes
 the existing floor. Before signing, a production adapter must resolve named
 policy references and origins against the effective policy snapshot; this
 structural model does not authenticate that resolution.
+
+## Destination identity and privacy
+
+A decision carries exactly one of `destination_ref` or `destination_redaction: { "reason": "classified_sensitive" }`. A retained reference keeps the canonical-host or configured local-process reference rules. A redacted record omits the reference, without substituting a fictional hostname. `destination_kind` still describes the network or local-process carrier. Both forms together, neither form, null values and unknown redaction reasons are invalid.
+
+Redaction is a stored fact about withheld identity. It doesn't imply that redacted records name the same destination, that collection failed, or that the request was blocked. Action and decision IDs retain their independent meaning, and intent/outcome pairing preserves the destination facts by value. A destination-filtered report must account for unresolved attribution rather than turn a redacted record into a clean empty result.
+
+Live producers are still pending. They must preserve useful grouping for ordinary unexpected destinations and remove classified-sensitive destination material under the declared evidence privacy policy. Existing receipt sanitization can supply structural coarsening, but its forwarding-oriented `Clean` predicate alone isn't that policy. Original classification/view context, including informational and pre-policy findings, must survive until the privacy decision. This is a detection-scoped guarantee, not proof that arbitrary text can never contain an unknown secret.
+
+The new map's evidence privacy policy must withhold classified-sensitive destination material even when `flight_recorder.redact=false`. That legacy option retains its existing receipt behavior. This candidate represents the stored redaction fact and adds no runtime flag or key. Live finding-aware producer enforcement remains a separate integration gate.
 
 ## Classification sites
 
@@ -125,13 +140,56 @@ non-secret failure signals. A timeout never counts as confirmation. Post-action
 failure cannot establish that no bytes left. This foundation does not adapt a
 synchronous filesystem call into a supposedly bounded writer.
 
-## Signed format and release acceptance
+## Signed fixture format
 
-No new field is added to signed-v1 records or their unsigned `ext`. The eventual
-typed receipt payload requires an explicit new payload kind, strict validation in
-all supported verifier implementations, exact-byte fixtures and frozen-v1
-compatibility tests before production emission. This candidate interface is not
-registered as a new signed payload in this slice.
+No new field is added to signed-v1 records or their unsigned `ext`. The explicit
+EvidenceReceipt v2 payload kind `secret_egress_decision_v1` is registered as
+`fixture_only`. It requires the same-named critical feature in addition to
+`canonicalization`, a canonical envelope `policy_hash`, and the `receipt-signing`
+purpose. The existing v2 signature and canonicalization recipe is unchanged.
+
+This new kind has a closed wire profile before typed decoding. Required envelope keys must be present with their exact spelling; unknown keys, duplicates and null values reject. The nested canonicalization and signature objects also use exact keys and string types. The signature value is exactly `ed25519:` followed by 128 lowercase ASCII hexadecimal digits, without whitespace normalization. Optional strings must be nonempty when present. An optional delegation chain must contain at least one nonempty string.
+
+`receipt_version` is the integer token `2`. `chain_seq` uses an unsigned decimal integer from zero through `9007199254740991`; optional `contract_generation` uses the same range starting at one. Negative zero, decimal and exponent spellings reject. The timestamp is a valid, nonzero UTC RFC3339Nano value ending in `Z`, with no trailing fractional zeros. Its JSON value uses unescaped ASCII. This is the candidate encoding requirement, not a general RFC3339 restriction. The builder converts input timestamps to UTC. These restrictions apply only to the new payload kind; existing receipt formats retain their current interpretation.
+
+Go file, stream and recorder verification use `receipt.ParseEvidenceReceipt` before signature checks. Recorder extraction requires the original `RawDetail` bytes for this new kind; reconstructing JSON from an already-decoded object can't establish its original field presence or number spelling. Generic `json.Unmarshal` only parses an object. The object-taking `VerifyWithKey` API validates typed facts and signatures, without claiming to validate source bytes it never received.
+
+The payload is `{ "registry_hash": "sha256:<lowercase hex>", "decision": ... }`.
+`decision` is the strict version-1 model above. `registry_hash` commits to a
+versioned canonical manifest of every complete site declaration, sorted by site
+ID. The manifest contains `manifest_kind: "secret_egress_registry"`,
+`manifest_version: 1`, and `sites`. Each site has the lowercase keys `id`, `plane`,
+`transport`, `location`, `view` and `boundary`. The digest is SHA-256 over the
+repository's JCS-canonical JSON bytes, prefixed with `sha256:`.
+
+The builder validates the decision against the supplied immutable registry and
+computes the registry commitment. It does not accept a caller's arbitrary digest
+as proof of membership. Each record has its own envelope event ID, distinct from
+the action and decision IDs. The envelope supplies record time and effective
+policy context; the decision's intent/outcome linkage remains separate.
+
+Offline structural/signature validation checks the receipt and the registry-hash
+shape. It does not resolve the committed registry or establish producer liveness,
+complete coverage, authenticated policy-reference resolution or durable append.
+Those require the corresponding trusted manifest and runtime/coverage evidence.
+A signature over `required_before_action` is still a statement of the requirement,
+not confirmation that this record's persistence succeeded.
+
+Go, TypeScript, Rust and Python consume the shared signed corpus under
+`sdk/conformance/testdata/secret-egress-v1/`. Its deterministic key is test-only.
+Unknown fields, changed metadata, unsupported versions/features, missing policy
+or registry commitments and invalid purposes must be rejected consistently.
+Frozen-v1 compatibility and all existing payload behavior remain required.
+
+The new-kind Go lane uses `pipelock-verifier receipt`, whose existing standalone
+receipt command accepts typed v2 files. The ordinary main-CLI single-v1-receipt
+lane remains unchanged. The new-kind Python lane is the in-repository reference
+implementation. The ordinary legacy corpus continues to run against its separately pinned published
+Python verifier. New-kind conformance here does not claim that the published
+Python package has been updated; that consumer and its coordinated release/pin
+remain a prerequisite before live feature support is claimed.
+
+## Runtime and release acceptance
 
 Release acceptance includes every applicable fetch, forward, CONNECT admission,
 intercept, reverse, WebSocket and MCP boundary, with explicit opaque/summarized

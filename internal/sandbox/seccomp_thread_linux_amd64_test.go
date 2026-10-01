@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -153,6 +154,11 @@ func TestSeccompStrictThreadHelper(t *testing.T) {
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
 		t.Fatalf("disable helper core dumps: %v", err)
 	}
+	// no_new_privs belongs to the calling OS thread. Keep this goroutine on
+	// that thread through filter installation and exec; TSYNC cannot repair
+	// migration before the installing thread's no_new_privs check. This
+	// dedicated helper exits on failure, so never return the thread to Go.
+	runtime.LockOSThread()
 	if err := SetNoNewPrivs(); err != nil {
 		t.Fatalf("no_new_privs: %v", err)
 	}

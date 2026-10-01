@@ -218,6 +218,11 @@ func (rp *ReverseProxyHandler) SetSafeDialer(dial func(ctx context.Context, netw
 	rp.proxy.Transport = newReverseProxyTransport(rp, dial)
 }
 
+// reverseUpstreamHeaderTimeout bounds how long the reverse proxy waits for an
+// upstream to start responding. It replaces the cut-off the listener's
+// server-wide write timeout used to provide before the first byte.
+const reverseUpstreamHeaderTimeout = 120 * time.Second
+
 // newReverseProxyTransport builds the signing transport that sits between
 // httputil.ReverseProxy and the base HTTP transport. The base always disables
 // transparent decompression so modifyResponse can fail closed on compressed
@@ -235,6 +240,10 @@ func newReverseProxyTransport(rp *ReverseProxyHandler, dial func(ctx context.Con
 	// here so reverse-proxy egress is not env-steerable and always traverses
 	// the SSRF-safe dialer below.
 	base.Proxy = nil
+	// The listener no longer has a server-wide write timeout, so bound a silent
+	// upstream here. This covers only the wait for response headers; the body
+	// and the buffered scan that follows are not counted.
+	base.ResponseHeaderTimeout = reverseUpstreamHeaderTimeout
 	if dial != nil {
 		base.DialContext = dial
 	}

@@ -1148,6 +1148,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 
 		rpSrv := newReverseProxyServer(rpHandler)
+		rpLn = newLimitListener(rpLn, reverseProxyMaxConns)
 		lifecycleWG.Add(1)
 		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 			defer lifecycleWG.Done()

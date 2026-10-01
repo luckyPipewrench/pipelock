@@ -378,6 +378,20 @@ fn run_chain_set_command(
                     })
                 })
                 .collect(),
+            discontinuities: base_report
+                .chains
+                .iter()
+                .filter_map(|c| {
+                    c.recovery_seal
+                        .as_ref()
+                        .map(|seal| crate::types::ChainSetDiscontinuity {
+                            session: c.session.clone(),
+                            predecessor_session: seal.predecessor_session.clone(),
+                            shard: seal.shard.clone(),
+                            damage_offset: seal.damage_offset,
+                        })
+                })
+                .collect(),
             unlinked: base_report.unlinked(),
             findings: base_report.findings.clone(),
         },

@@ -18,7 +18,8 @@
 
 use crate::chain::{evidence_chain_key, receipt_hash, verify_chain_with_options};
 use crate::recorder::{
-    extract_typed_from_lines, read_entry_lines, ExtractedReceipts, RecorderLine,
+    extract_typed_from_lines, read_entry_lines, read_entry_lines_text, ExtractedReceipts,
+    RecorderLine,
 };
 use crate::recorder_chain::verify_recorder_chain;
 pub use crate::recorder_chain::FINDING_OUTER_CHAIN_BROKEN;
@@ -29,7 +30,7 @@ use crate::rotation::{
 use crate::types::{ChainResult, Receipt};
 use crate::util::{
     read_verifier_bytes, reject_duplicate_keys, same_open_file, set_pinned_evidence_directory,
-    string_at, u64_at, Result as VerifierResult, VerifierError,
+    sha256_hex, string_at, u64_at, Result as VerifierResult, VerifierError,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
@@ -53,6 +54,8 @@ pub const FINDING_APPENDED_AFTER_LINK: &str = "appended_after_link";
 pub const FINDING_DOUBLE_SUCCESSOR: &str = "double_successor";
 pub const FINDING_UNTRUSTED_SUCCESSOR_KEY: &str = "untrusted_successor_key";
 pub const FINDING_DUPLICATE_RUN_NONCE: &str = "duplicate_run_nonce";
+pub const FINDING_INVALID_RECOVERY_SEAL: &str = "invalid_recovery_seal";
+pub const FINDING_ATTESTED_DISCONTINUITY: &str = "attested_discontinuity";
 
 pub const LINK_TRUST_SAME_KEY: &str = "same_key";
 pub const LINK_TRUST_TRUSTED_KEY: &str = "trusted_key";
@@ -65,8 +68,10 @@ const CHAIN_LINK_FILE_PREFIX: &str = "chain-link-";
 const CHAIN_LINK_FILE_SUFFIX: &str = ".json";
 const CHAIN_LINK_VERSION: i64 = 1;
 const CHAIN_LINK_DOMAIN: &str = "pipelock-chain-link-v1\0";
+const RECOVERY_SEAL_DOMAIN: &str = "pipelock-recovery-seal-v1\0";
 const SIGNATURE_PREFIX: &str = "ed25519:";
 const MAX_CHAIN_LINK_FILE_BYTES: u64 = 64 << 10;
+const MAX_RECORDER_ENTRY_LINE_BYTES: usize = 1 << 20;
 const APPENDED_AFTER_LINK: &str = "entries were appended to the predecessor after the linked tail";
 
 const CHAIN_LINK_FIELDS: [&str; 9] = [
@@ -78,6 +83,25 @@ const CHAIN_LINK_FIELDS: [&str; 9] = [
     "successor_session",
     "successor_signer_key",
     "linked_at",
+    "signature",
+];
+const RECOVERY_SEAL_FIELDS: [&str; 17] = [
+    "kind",
+    "version",
+    "predecessor_session",
+    "shard",
+    "shard_size",
+    "shard_sha256",
+    "damage_offset",
+    "last_good_seq",
+    "last_good_hash",
+    "predecessor_tail_seq",
+    "predecessor_tail_hash",
+    "predecessor_signer_key",
+    "successor_session",
+    "successor_signer_key",
+    "successor_open_hash",
+    "observed_at",
     "signature",
 ];
 
@@ -96,6 +120,30 @@ pub struct ChainLink {
     pub signature: String,
 }
 
+/// Signed observation that a successor follows a damaged final shard. The
+/// seal binds the exact raw shard and complete prefix heads; it does not prove
+/// the damage was accidental or that an operator-controlled signer is honest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecoverySeal {
+    pub kind: String,
+    pub version: i64,
+    pub predecessor_session: String,
+    pub shard: String,
+    pub shard_size: u64,
+    pub shard_sha256: String,
+    pub damage_offset: u64,
+    pub last_good_seq: u64,
+    pub last_good_hash: String,
+    pub predecessor_tail_seq: u64,
+    pub predecessor_tail_hash: String,
+    pub predecessor_signer_key: String,
+    pub successor_session: String,
+    pub successor_signer_key: String,
+    pub successor_open_hash: String,
+    pub observed_at: String,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct BaseChain {
     pub session: String,
@@ -105,6 +153,7 @@ pub struct BaseChain {
     pub tail_hash: String,
     pub signer_key: String,
     pub link: Option<ChainLink>,
+    pub recovery_seal: Option<RecoverySeal>,
     pub link_file: Option<String>,
     pub link_trust: String,
     pub valid: bool,
@@ -132,14 +181,14 @@ impl BaseReport {
         self.findings.is_empty()
     }
 
-    /// Every chain no link file continues into. An unlinked chain is
+    /// Every chain no verified predecessor claim continues into. An unlinked chain is
     /// reported, never a finding: first runs, concurrent runs, and runs by
-    /// older binaries are honestly unlinked, and so is a run whose link file
+    /// older binaries are honestly unlinked, and so is a run whose claim file
     /// was deleted. A healthy report is therefore not proof of continuity.
     pub fn unlinked(&self) -> Vec<String> {
         self.chains
             .iter()
-            .filter(|c| c.link.is_none())
+            .filter(|c| c.link.is_none() && c.recovery_seal.is_none())
             .map(|c| c.session.clone())
             .collect()
     }
@@ -865,6 +914,172 @@ fn decode_chain_link(text: &str) -> Result<ChainLink, String> {
     })
 }
 
+/// Strictly decodes the v1 recovery-seal envelope. The fixed field order is
+/// used for signature bytes; aliases, duplicate keys, unknown fields, missing
+/// fields, and trailing JSON are rejected before any binding is considered.
+pub fn decode_recovery_seal(text: &str) -> Result<RecoverySeal, String> {
+    reject_duplicate_keys(text).map_err(|err| format!("unmarshal recovery seal: {err}"))?;
+    let value: Value =
+        serde_json::from_str(text).map_err(|err| format!("unmarshal recovery seal: {err}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "unmarshal recovery seal: not a JSON object".to_string())?;
+    for key in obj.keys() {
+        if RECOVERY_SEAL_FIELDS.contains(&key.as_str()) {
+            continue;
+        }
+        if let Some(name) = RECOVERY_SEAL_FIELDS
+            .iter()
+            .find(|name| go_fold_key(key) == **name)
+        {
+            return Err(format!(
+                "unmarshal recovery seal: case-folded key: \"{key}\" aliases \"{name}\""
+            ));
+        }
+        return Err(format!(
+            "unmarshal recovery seal: json: unknown field \"{key}\""
+        ));
+    }
+    let string = |field: &str| -> Result<String, String> {
+        match obj.get(field) {
+            Some(Value::String(value)) => Ok(value.clone()),
+            _ => Err(format!("unmarshal recovery seal: {field} must be a string")),
+        }
+    };
+    let number = |field: &str| -> Result<u64, String> {
+        match obj.get(field).and_then(Value::as_u64) {
+            Some(value) if value <= 9_007_199_254_740_991 => Ok(value),
+            _ => Err(format!(
+                "unmarshal recovery seal: {field} must be an unsigned integer <= 2^53-1"
+            )),
+        }
+    };
+    let version = match obj.get("version").and_then(Value::as_i64) {
+        Some(value) => value,
+        None => return Err("unmarshal recovery seal: version must be an integer".to_string()),
+    };
+    let seal = RecoverySeal {
+        kind: string("kind")?,
+        version,
+        predecessor_session: string("predecessor_session")?,
+        shard: string("shard")?,
+        shard_size: number("shard_size")?,
+        shard_sha256: string("shard_sha256")?,
+        damage_offset: number("damage_offset")?,
+        last_good_seq: number("last_good_seq")?,
+        last_good_hash: string("last_good_hash")?,
+        predecessor_tail_seq: number("predecessor_tail_seq")?,
+        predecessor_tail_hash: string("predecessor_tail_hash")?,
+        predecessor_signer_key: string("predecessor_signer_key")?,
+        successor_session: string("successor_session")?,
+        successor_signer_key: string("successor_signer_key")?,
+        successor_open_hash: string("successor_open_hash")?,
+        observed_at: string("observed_at")?,
+        signature: string("signature")?,
+    };
+    verify_recovery_seal(&seal)?;
+    Ok(seal)
+}
+
+fn recovery_seal_digest(seal: &RecoverySeal) -> Vec<u8> {
+    let canonical = format!(
+        "{{\"kind\":{},\"version\":{},\"predecessor_session\":{},\"shard\":{},\"shard_size\":{},\"shard_sha256\":{},\"damage_offset\":{},\"last_good_seq\":{},\"last_good_hash\":{},\"predecessor_tail_seq\":{},\"predecessor_tail_hash\":{},\"predecessor_signer_key\":{},\"successor_session\":{},\"successor_signer_key\":{},\"successor_open_hash\":{},\"observed_at\":{}}}",
+        go_json_string(&seal.kind), seal.version,
+        go_json_string(&seal.predecessor_session), go_json_string(&seal.shard),
+        seal.shard_size, go_json_string(&seal.shard_sha256), seal.damage_offset,
+        seal.last_good_seq, go_json_string(&seal.last_good_hash),
+        seal.predecessor_tail_seq, go_json_string(&seal.predecessor_tail_hash),
+        go_json_string(&seal.predecessor_signer_key), go_json_string(&seal.successor_session),
+        go_json_string(&seal.successor_signer_key), go_json_string(&seal.successor_open_hash),
+        go_json_string(&seal.observed_at),
+    );
+    let mut out = RECOVERY_SEAL_DOMAIN.as_bytes().to_vec();
+    out.extend_from_slice(canonical.as_bytes());
+    out
+}
+
+/// Verifies the seal's own canonical signature and format constraints.
+pub fn verify_recovery_seal(seal: &RecoverySeal) -> Result<(), String> {
+    if seal.kind != "recovery_seal" || seal.version != 1 {
+        return Err("unsupported recovery seal kind or version".to_string());
+    }
+    if seal.predecessor_session.chars().all(is_go_space)
+        || seal.successor_session.chars().all(is_go_space)
+        || seal.predecessor_session.contains(['/', '\\'])
+        || seal.successor_session.contains(['/', '\\'])
+        || seal.predecessor_session == seal.successor_session
+    {
+        return Err("recovery seal sessions must be non-empty and distinct".to_string());
+    }
+    let base = run_session_base(&seal.successor_session)
+        .ok_or_else(|| "recovery seal successor must be a run session".to_string())?;
+    if !is_base_chain(&seal.predecessor_session, base) {
+        return Err("recovery seal sessions must belong to one base".to_string());
+    }
+    if parse_evidence_filename(&seal.shard)
+        .as_ref()
+        .map(|(s, _)| s)
+        != Some(&seal.predecessor_session)
+        || seal.shard.contains('/')
+        || seal.shard.contains('\\')
+        || seal.shard == "."
+        || seal.shard == ".."
+    {
+        return Err("recovery seal shard is not a predecessor evidence basename".to_string());
+    }
+    for (field, value) in [
+        ("shard_sha256", seal.shard_sha256.as_str()),
+        ("successor_open_hash", seal.successor_open_hash.as_str()),
+    ] {
+        if !valid_lower_hex(value, 32) {
+            return Err(format!("recovery seal {field} is invalid"));
+        }
+    }
+    for (field, value) in [
+        ("last_good_hash", seal.last_good_hash.as_str()),
+        ("predecessor_tail_hash", seal.predecessor_tail_hash.as_str()),
+    ] {
+        if value != "genesis" && !valid_lower_hex(value, 32) {
+            return Err(format!("recovery seal {field} is invalid"));
+        }
+    }
+    if !valid_lower_hex(&seal.predecessor_signer_key, 32)
+        || !valid_lower_hex(&seal.successor_signer_key, 32)
+    {
+        return Err("recovery seal signer key is invalid".to_string());
+    }
+    if seal.shard_size == 0 || seal.damage_offset >= seal.shard_size {
+        return Err("recovery seal damage_offset must precede non-empty shard end".to_string());
+    }
+    if !canonical_utc_timestamp(&seal.observed_at) || seal.observed_at == "0001-01-01T00:00:00Z" {
+        return Err("recovery seal observed_at must be canonical UTC RFC3339Nano".to_string());
+    }
+    let sig_hex = seal
+        .signature
+        .strip_prefix(SIGNATURE_PREFIX)
+        .ok_or_else(|| {
+            format!("invalid recovery seal signature format: missing {SIGNATURE_PREFIX} prefix")
+        })?;
+    if sig_hex.len() != 128
+        || !sig_hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("invalid recovery seal signature".to_string());
+    }
+    let sig = hex::decode(sig_hex).map_err(|_| "invalid recovery seal signature".to_string())?;
+    let key: [u8; 32] = hex::decode(&seal.successor_signer_key)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("invalid recovery seal successor signer key")?;
+    let key = VerifyingKey::from_bytes(&key)
+        .map_err(|_| "invalid recovery seal successor signer key".to_string())?;
+    let signature =
+        Signature::from_slice(&sig).map_err(|_| "invalid recovery seal signature".to_string())?;
+    key.verify_strict(&recovery_seal_digest(seal), &signature)
+        .map_err(|_| "recovery seal signature verification failed".to_string())
+}
+
 /// Mirrors Go's `VerifyChainLink`: structure, then the successor-key
 /// signature over the domain-separated canonical fields.
 pub fn verify_chain_link(l: &ChainLink) -> Result<(), String> {
@@ -914,32 +1129,52 @@ pub fn verify_chain_link(l: &ChainLink) -> Result<(), String> {
         .map_err(|_| "chain link signature verification failed".to_string())
 }
 
-fn read_chain_link_file(path: &Path) -> Result<ChainLink, String> {
-    let info = fs::symlink_metadata(path).map_err(|err| format!("stat chain link file: {err}"))?;
-    if !info.file_type().is_file() {
-        return Err("chain link file is not a regular file".to_string());
-    }
-    if info.len() > MAX_CHAIN_LINK_FILE_BYTES {
-        return Err(format!(
-            "chain link file exceeds {MAX_CHAIN_LINK_FILE_BYTES} bytes"
-        ));
-    }
-    let bytes = read_verifier_bytes(path).map_err(|err| format!("read chain link file: {err}"))?;
-    if bytes.len() as u64 > MAX_CHAIN_LINK_FILE_BYTES {
-        return Err(format!(
-            "chain link file exceeds {MAX_CHAIN_LINK_FILE_BYTES} bytes"
-        ));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let link = decode_chain_link(&text)?;
-    verify_chain_link(&link)?;
-    Ok(link)
+fn read_chain_claim_file(path: &Path) -> ChainClaim {
+    let result = (|| -> Result<ChainClaim, String> {
+        let info =
+            fs::symlink_metadata(path).map_err(|err| format!("stat chain link file: {err}"))?;
+        if !info.file_type().is_file() {
+            return Err("chain link file is not a regular file".to_string());
+        }
+        if info.len() > MAX_CHAIN_LINK_FILE_BYTES {
+            return Err(format!(
+                "chain link file exceeds {MAX_CHAIN_LINK_FILE_BYTES} bytes"
+            ));
+        }
+        let bytes =
+            read_verifier_bytes(path).map_err(|err| format!("read chain link file: {err}"))?;
+        if bytes.len() as u64 > MAX_CHAIN_LINK_FILE_BYTES {
+            return Err(format!(
+                "chain link file exceeds {MAX_CHAIN_LINK_FILE_BYTES} bytes"
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|err| format!("read chain link file as UTF-8: {err}"))?;
+        let value: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+        if value.get("kind").and_then(Value::as_str) == Some("recovery_seal") {
+            return Ok(decode_recovery_seal(&text)
+                .map(ChainClaim::RecoverySeal)
+                .unwrap_or_else(ChainClaim::InvalidRecoverySeal));
+        }
+        let link = decode_chain_link(&text)?;
+        verify_chain_link(&link)?;
+        Ok(ChainClaim::Link(link))
+    })();
+    result.unwrap_or_else(ChainClaim::InvalidLink)
 }
 
 struct ChainLinkRecord {
     name: String,
     name_pred: String,
-    link: Result<ChainLink, String>,
+    claim: ChainClaim,
+}
+
+#[derive(Debug, Clone)]
+enum ChainClaim {
+    Link(ChainLink),
+    RecoverySeal(RecoverySeal),
+    InvalidRecoverySeal(String),
+    InvalidLink(String),
 }
 
 fn read_chain_link_files(dir: &Path) -> Result<Vec<ChainLinkRecord>, String> {
@@ -958,7 +1193,7 @@ fn read_chain_link_files(dir: &Path) -> Result<Vec<ChainLinkRecord>, String> {
             name_pred: chain_link_file_predecessor(&name)
                 .unwrap_or_default()
                 .to_string(),
-            link: read_chain_link_file(&dir.join(&name)),
+            claim: read_chain_claim_file(&dir.join(&name)),
             name,
         })
         .collect())
@@ -1012,6 +1247,253 @@ fn check_linked_tail(receipts: &[Receipt], link: &ChainLink) -> Result<(), Strin
     ))
 }
 
+/// Verifies a recovery seal against the predecessor bytes and both receipt
+/// chains, then binds it to the successor's signed genesis session_open.
+/// Nothing is attached to a report until every check succeeds.
+fn verify_recovery_recorder_sequence(lines: &[RecorderLine]) -> Result<(), String> {
+    for (index, line) in lines.iter().enumerate() {
+        let expected = u64::try_from(index)
+            .map_err(|_| "recovery recorder sequence exceeds u64".to_string())?;
+        let actual = u64_at(&line.entry, &["seq"]).unwrap_or(0);
+        if actual != expected {
+            return Err(format!(
+                "recovery recorder sequence mismatch: entry {index} has seq {actual}, expected {expected}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_recovery_binding(
+    ix: &EvidenceIndex,
+    data: &HashMap<String, BaseChainData>,
+    seal: &RecoverySeal,
+    opts: &BaseVerifyOptions,
+) -> Result<(), String> {
+    verify_recovery_seal(seal)?;
+    let files = index_files(ix, &seal.predecessor_session).map_err(|err| err.message)?;
+    let final_file = files
+        .last()
+        .ok_or_else(|| "predecessor has no evidence shards".to_string())?;
+    let final_name = final_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "predecessor shard name is not UTF-8".to_string())?;
+    if final_name != seal.shard {
+        return Err("recovery seal does not name the predecessor's final shard".to_string());
+    }
+    let raw = read_verifier_bytes(final_file).map_err(|err| err.to_string())?;
+    if raw.len() as u64 != seal.shard_size || sha256_hex(&raw) != seal.shard_sha256 {
+        return Err("recovery seal shard size or SHA-256 does not match".to_string());
+    }
+    let offset = usize::try_from(seal.damage_offset)
+        .map_err(|_| "recovery seal damage_offset is not addressable".to_string())?;
+    if offset > raw.len() || (offset > 0 && raw[offset - 1] != b'\n') {
+        return Err(
+            "recovery seal damage_offset is not the end of an LF-terminated prefix".to_string(),
+        );
+    }
+    let suffix = &raw[offset..];
+    if suffix.is_empty() {
+        return Err("recovery seal suffix is not a recognized torn final record".to_string());
+    }
+    // Go's tail inspector trims only trailing NUL bytes before classifying a
+    // torn record. Keep the full raw suffix covered by the signed size/hash,
+    // but apply the same rule here so a partial record followed by torn-write
+    // padding is accepted while embedded NULs remain invalid.
+    let effective_end = suffix
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map_or(0, |index| index + 1);
+    let torn_suffix = &suffix[..effective_end];
+    let trailing_nuls = torn_suffix.is_empty();
+    if torn_suffix.contains(&b'\n') {
+        return Err("recovery seal suffix is not a recognized torn final record".to_string());
+    }
+    if torn_suffix.contains(&0) {
+        return Err("recovery seal suffix contains an embedded NUL".to_string());
+    }
+    if torn_suffix.len() > MAX_RECORDER_ENTRY_LINE_BYTES {
+        return Err(format!(
+            "recovery seal torn suffix exceeds {MAX_RECORDER_ENTRY_LINE_BYTES}-byte recorder entry limit"
+        ));
+    }
+
+    let mut all_lines = Vec::new();
+    for file in &files[..files.len() - 1] {
+        all_lines.extend(read_entry_lines(file).map_err(|err| err.to_string())?);
+    }
+    let prefix = std::str::from_utf8(&raw[..offset])
+        .map_err(|err| format!("recovery seal prefix is not UTF-8: {err}"))?;
+    all_lines.extend(read_entry_lines_text(prefix).map_err(|err| err.to_string())?);
+
+    // The seal heads cover only complete LF-terminated entries. A complete
+    // JSON record without its final newline is still authenticated below.
+    let mut observed_lines = all_lines.clone();
+    if !trailing_nuls {
+        match std::str::from_utf8(torn_suffix) {
+            Ok(tail) if serde_json::from_str::<Value>(tail).is_ok() => {
+                observed_lines.extend(read_entry_lines_text(tail).map_err(|err| err.to_string())?);
+            }
+            Err(_) => {
+                // Go's json.Valid recognizes invalid UTF-8 inside an otherwise
+                // complete JSON string, then its evidence decoder rejects the
+                // record instead of treating it as a torn fragment. Lossy
+                // decoding is only a syntax probe; never use its value as
+                // evidence or as input to the signed-chain verifier.
+                let lossy = String::from_utf8_lossy(torn_suffix);
+                if serde_json::from_str::<Value>(&lossy).is_ok() {
+                    return Err(
+                        "recovery seal final JSON record contains invalid UTF-8".to_string()
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    for line in &observed_lines {
+        if line.entry.get("session_id").and_then(Value::as_str)
+            != Some(seal.predecessor_session.as_str())
+        {
+            return Err(
+                "recovery seal predecessor shard contains a different session_id".to_string(),
+            );
+        }
+    }
+    let raw_complete: Vec<&str> = all_lines.iter().map(|line| line.line.as_str()).collect();
+    if let Some(err) = verify_recorder_chain(&raw_complete) {
+        return Err(format!(
+            "recovery seal predecessor complete outer chain is invalid: {err}"
+        ));
+    }
+    let (outer_seq, outer_hash) = all_lines.last().map_or((0, "genesis".to_string()), |line| {
+        (
+            u64_at(&line.entry, &["seq"]).unwrap_or(0),
+            string_at(&line.entry, &["hash"])
+                .unwrap_or("genesis")
+                .to_string(),
+        )
+    });
+    if outer_seq != seal.last_good_seq || outer_hash != seal.last_good_hash {
+        return Err("recovery seal last-good outer recorder head does not match".to_string());
+    }
+
+    if observed_lines.len() != all_lines.len() {
+        let raw_observed: Vec<&str> = observed_lines
+            .iter()
+            .map(|line| line.line.as_str())
+            .collect();
+        if let Some(err) = verify_recorder_chain(&raw_observed) {
+            return Err(format!(
+                "recovery seal observed predecessor outer chain is invalid: {err}"
+            ));
+        }
+    }
+    verify_recovery_recorder_sequence(&observed_lines)?;
+    let extracted = extract_typed_from_lines(observed_lines).map_err(|err| err.to_string())?;
+    for receipt in &extracted.action {
+        let control = receipt
+            .get("action_record")
+            .and_then(|record| record.get("session_control"));
+        if control
+            .and_then(|control| control.get("kind"))
+            .and_then(Value::as_str)
+            == Some("session_open")
+        {
+            let recorder_session = control
+                .and_then(|control| control.get("open"))
+                .and_then(|open| open.get("recorder_session"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if recorder_session != seal.predecessor_session {
+                return Err(
+                    "recovery seal predecessor session_open binding does not match".to_string(),
+                );
+            }
+        }
+    }
+    let trusted = opts.trusted_keys.join(",");
+    if !extracted.action.is_empty() {
+        let result = crate::chain::verify_chain_with_options(
+            &extracted.action,
+            &trusted,
+            opts.trusted_keys.is_empty(),
+        );
+        if !chain_acceptable(&result) {
+            return Err(format!(
+                "recovery seal predecessor ActionReceipt chain is invalid: {}",
+                result
+                    .error
+                    .unwrap_or_else(|| "chain verification failed".to_string())
+            ));
+        }
+    }
+    if !extracted.evidence.is_empty() {
+        let key = evidence_chain_key(&trusted, &extracted.evidence);
+        let result = crate::chain::verify_chain_with_options(
+            &extracted.evidence,
+            &key,
+            opts.trusted_keys.is_empty(),
+        );
+        if !result.valid {
+            return Err(format!(
+                "recovery seal predecessor EvidenceReceipt chain is invalid: {}",
+                result
+                    .error
+                    .unwrap_or_else(|| "chain verification failed".to_string())
+            ));
+        }
+    }
+    let complete_extracted = extract_typed_from_lines(all_lines).map_err(|err| err.to_string())?;
+    let last_action = complete_extracted.action.last();
+    let (tail_seq, tail_hash, predecessor_key) = match last_action {
+        Some(receipt) => (
+            chain_seq(receipt),
+            receipt_hash(receipt),
+            signer_key(receipt).to_string(),
+        ),
+        None => (0, "genesis".to_string(), seal.successor_signer_key.clone()),
+    };
+    if tail_seq != seal.predecessor_tail_seq
+        || tail_hash != seal.predecessor_tail_hash
+        || predecessor_key != seal.predecessor_signer_key
+    {
+        return Err("recovery seal predecessor ActionReceipt head does not match".to_string());
+    }
+
+    if seal.successor_signer_key != seal.predecessor_signer_key
+        && !opts.trusted_keys.contains(&seal.successor_signer_key)
+    {
+        return Err(
+            "recovery seal successor key differs and is not explicitly trusted".to_string(),
+        );
+    }
+    let successor = data
+        .get(&seal.successor_session)
+        .ok_or_else(|| "recovery seal successor chain not found".to_string())?;
+    if !successor.chain.valid || successor.receipts.is_empty() {
+        return Err("recovery seal successor chain did not verify".to_string());
+    }
+    let first = &successor.receipts[0];
+    let control = first
+        .get("action_record")
+        .and_then(|record| record.get("session_control"));
+    let open = control
+        .filter(|control| control.get("kind").and_then(Value::as_str) == Some("session_open"))
+        .and_then(|control| control.get("open"))
+        .filter(|open| open.is_object())
+        .ok_or_else(|| "recovery seal successor does not begin with session_open".to_string())?;
+    if chain_seq(first) != 0
+        || signer_key(first) != seal.successor_signer_key
+        || receipt_hash(first) != seal.successor_open_hash
+        || open.get("recorder_session").and_then(Value::as_str)
+            != Some(seal.successor_session.as_str())
+    {
+        return Err("recovery seal successor session_open binding does not match".to_string());
+    }
+    Ok(())
+}
+
 struct BaseChainData {
     chain: BaseChain,
     receipts: Vec<Receipt>,
@@ -1051,10 +1533,17 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
         .iter()
         .filter(|lf| {
             is_base_chain(&lf.name_pred, base)
-                || lf.link.as_ref().is_ok_and(|l| {
-                    is_base_chain(&l.predecessor_session, base)
-                        || is_base_chain(&l.successor_session, base)
-                })
+                || match &lf.claim {
+                    ChainClaim::Link(link) => {
+                        is_base_chain(&link.predecessor_session, base)
+                            || is_base_chain(&link.successor_session, base)
+                    }
+                    ChainClaim::RecoverySeal(seal) => {
+                        is_base_chain(&seal.predecessor_session, base)
+                            || is_base_chain(&seal.successor_session, base)
+                    }
+                    _ => false,
+                }
         })
         .collect();
 
@@ -1069,6 +1558,7 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
                 tail_hash: String::new(),
                 signer_key: String::new(),
                 link: None,
+                recovery_seal: None,
                 link_file: None,
                 link_trust: String::new(),
                 valid: false,
@@ -1082,9 +1572,10 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
     }
 
     let mut successors: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut recovery_claims: Vec<(&ChainLinkRecord, RecoverySeal)> = Vec::new();
     for lf in scoped {
-        let link = match &lf.link {
-            Err(err) => {
+        let link = match &lf.claim {
+            ChainClaim::InvalidLink(err) => {
                 add(
                     FINDING_INVALID_LINK,
                     &lf.name_pred,
@@ -1092,7 +1583,44 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
                 );
                 continue;
             }
-            Ok(link) => link,
+            ChainClaim::InvalidRecoverySeal(err) => {
+                add(
+                    FINDING_INVALID_RECOVERY_SEAL,
+                    &lf.name_pred,
+                    format!("recovery seal file {}: {err}", lf.name),
+                );
+                continue;
+            }
+            ChainClaim::RecoverySeal(seal) => {
+                if seal.predecessor_session != lf.name_pred {
+                    add(
+                        FINDING_INVALID_RECOVERY_SEAL,
+                        &lf.name_pred,
+                        format!(
+                            "recovery seal file {} names a different predecessor",
+                            lf.name
+                        ),
+                    );
+                    continue;
+                }
+                if !is_base_chain(&seal.predecessor_session, base)
+                    || run_session_base(&seal.successor_session) != Some(base)
+                {
+                    add(
+                        FINDING_INVALID_RECOVERY_SEAL,
+                        &seal.successor_session,
+                        format!("recovery seal file {} is outside base {base:?}", lf.name),
+                    );
+                    continue;
+                }
+                successors
+                    .entry(seal.predecessor_session.clone())
+                    .or_default()
+                    .push(seal.successor_session.clone());
+                recovery_claims.push((lf, seal.clone()));
+                continue;
+            }
+            ChainClaim::Link(link) => link,
         };
         if link.predecessor_session != lf.name_pred {
             add(
@@ -1229,6 +1757,44 @@ pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<B
     }
     for s in &pending {
         verify(s, endorsed.contains(s), &mut data, &mut add);
+    }
+
+    for (lf, seal) in recovery_claims {
+        match verify_recovery_binding(&ix, &data, &seal, opts) {
+            Ok(()) => {
+                if let Some(successor) = data.get_mut(&seal.successor_session) {
+                    if successor.chain.link.is_some() || successor.chain.recovery_seal.is_some() {
+                        add(
+                            FINDING_INVALID_RECOVERY_SEAL,
+                            &seal.successor_session,
+                            "successor already has a predecessor claim".to_string(),
+                        );
+                    } else {
+                        successor.chain.recovery_seal = Some(seal.clone());
+                        successor.chain.link_file = Some(lf.name.clone());
+                        add(
+                            FINDING_ATTESTED_DISCONTINUITY,
+                            &seal.successor_session,
+                            format!(
+                                "linked across attested discontinuity from {} at {} byte {}",
+                                seal.predecessor_session, seal.shard, seal.damage_offset
+                            ),
+                        );
+                    }
+                } else {
+                    add(
+                        FINDING_INVALID_RECOVERY_SEAL,
+                        &seal.successor_session,
+                        "recovery seal successor chain not found".to_string(),
+                    );
+                }
+            }
+            Err(err) => add(
+                FINDING_INVALID_RECOVERY_SEAL,
+                &seal.successor_session,
+                format!("recovery seal file {}: {err}", lf.name),
+            ),
+        }
     }
 
     for s in &sessions {
@@ -1525,7 +2091,13 @@ pub fn chain_scoped_trust(
 
 #[cfg(test)]
 mod go_json_escape_tests {
-    use super::{decode_chain_link, go_json_string, verify_chain_link};
+    use super::{
+        decode_chain_link, decode_recovery_seal, go_json_string, recovery_seal_digest, verify_base,
+        verify_chain_link, verify_recovery_seal, BaseVerifyOptions, RecoverySeal,
+    };
+    use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
 
     // Written by the Go conformance test from encoding/json itself, so this
@@ -1535,6 +2107,46 @@ mod go_json_escape_tests {
             .join("../../conformance/testdata/go-json-escapes")
             .join(name);
         std::fs::read_to_string(path).expect("read fixture")
+    }
+
+    #[test]
+    fn rotated_recovery_fixture_requires_every_prefix_key_pinned() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/rotated");
+        let keys: Vec<String> = std::fs::read_to_string(fixture.join("signer.pub"))
+            .expect("read fixture keys")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read fixture seal"),
+        )
+        .expect("decode fixture seal");
+        for (pins, expected) in [
+            (keys.clone(), true),
+            (Vec::new(), false),
+            (keys[..1].to_vec(), false),
+            (keys[1..].to_vec(), false),
+        ] {
+            let report = verify_base(
+                &fixture.join("evidence"),
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: pins,
+                    endorsements: Vec::new(),
+                },
+            )
+            .expect("verify rotated fixture");
+            assert_eq!(
+                report
+                    .chains
+                    .iter()
+                    .any(|chain| chain.session == seal.successor_session
+                        && chain.recovery_seal.is_some()),
+                expected
+            );
+            assert!(!report.healthy());
+        }
     }
 
     #[test]
@@ -1558,5 +2170,492 @@ mod go_json_escape_tests {
         assert_ne!(changed, raw, "fixture shape changed");
         let edited = decode_chain_link(&changed).expect("decode edited");
         assert!(verify_chain_link(&edited).is_err());
+    }
+
+    fn signed_seal_json() -> String {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let verifying_key = hex::encode(key.verifying_key().to_bytes());
+        let mut seal = RecoverySeal {
+            kind: "recovery_seal".to_string(),
+            version: 1,
+            predecessor_session: "proxy.run.old".to_string(),
+            shard: "evidence-proxy.run.old-0.jsonl".to_string(),
+            shard_size: 42,
+            shard_sha256: "a".repeat(64),
+            damage_offset: 38,
+            last_good_seq: 3,
+            last_good_hash: "b".repeat(64),
+            predecessor_tail_seq: 1,
+            predecessor_tail_hash: "c".repeat(64),
+            predecessor_signer_key: verifying_key.clone(),
+            successor_session: "proxy.run.new".to_string(),
+            successor_signer_key: verifying_key,
+            successor_open_hash: "d".repeat(64),
+            observed_at: "2026-10-01T12:34:56Z".to_string(),
+            signature: String::new(),
+        };
+        seal.signature = format!(
+            "ed25519:{}",
+            hex::encode(key.sign(&recovery_seal_digest(&seal)).to_bytes())
+        );
+        recovery_seal_json(&seal)
+    }
+
+    fn recovery_seal_json(seal: &RecoverySeal) -> String {
+        format!(
+            "{{\"kind\":{},\"version\":{},\"predecessor_session\":{},\"shard\":{},\"shard_size\":{},\"shard_sha256\":{},\"damage_offset\":{},\"last_good_seq\":{},\"last_good_hash\":{},\"predecessor_tail_seq\":{},\"predecessor_tail_hash\":{},\"predecessor_signer_key\":{},\"successor_session\":{},\"successor_signer_key\":{},\"successor_open_hash\":{},\"observed_at\":{},\"signature\":{}}}",
+            go_json_string(&seal.kind), seal.version,
+            go_json_string(&seal.predecessor_session), go_json_string(&seal.shard),
+            seal.shard_size, go_json_string(&seal.shard_sha256), seal.damage_offset,
+            seal.last_good_seq, go_json_string(&seal.last_good_hash),
+            seal.predecessor_tail_seq, go_json_string(&seal.predecessor_tail_hash),
+            go_json_string(&seal.predecessor_signer_key),
+            go_json_string(&seal.successor_session),
+            go_json_string(&seal.successor_signer_key),
+            go_json_string(&seal.successor_open_hash),
+            go_json_string(&seal.observed_at), go_json_string(&seal.signature),
+        )
+    }
+
+    #[test]
+    fn recovery_seal_v1_signature_and_strict_envelope_verify() {
+        let raw = signed_seal_json();
+        let seal = decode_recovery_seal(&raw).expect("strict decode");
+        verify_recovery_seal(&seal).expect("signature verifies");
+        assert!(decode_recovery_seal(&raw.replacen(
+            "\"version\":1",
+            "\"version\":1,\"version\":1",
+            1
+        ))
+        .is_err());
+        assert!(decode_recovery_seal(&raw.replacen("\"version\":1", "\"version\":2", 1)).is_err());
+        assert!(decode_recovery_seal(&raw.replacen(
+            "\"version\":1",
+            "\"Version\":1,\"version\":1",
+            1
+        ))
+        .is_err());
+        assert!(decode_recovery_seal(&format!("{raw} {{}}")).is_err());
+        assert!(decode_recovery_seal(
+            &raw.replace("\"signature\":", "\"unknown\":true,\"signature\":")
+        )
+        .is_err());
+        // Ordinary-link decoders reject the discriminator as an unknown field.
+        assert!(decode_chain_link(&raw)
+            .unwrap_err()
+            .contains("unknown field \"kind\""));
+        let edited = raw.replace(&"a".repeat(64), &"e".repeat(64));
+        assert!(decode_recovery_seal(&edited).is_err());
+    }
+
+    #[test]
+    fn empty_complete_prefix_still_checks_a_valid_json_receipt_without_newline() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let source = fixture.join("evidence");
+        let original = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        assert_eq!(
+            std::fs::read_to_string(fixture.join("signer.pub"))
+                .expect("read signer pub")
+                .trim(),
+            pinned
+        );
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let run_dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-no-newline-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&run_dir).expect("create test evidence dir");
+        for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+            let entry = entry.expect("fixture entry");
+            std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+        }
+        let shard_path = run_dir.join(&original.shard);
+        let original_bytes = std::fs::read(&shard_path).expect("read predecessor shard");
+        let durable = &original_bytes[..original.damage_offset as usize];
+        let records: Vec<&[u8]> = durable.split_inclusive(|byte| *byte == b'\n').collect();
+        assert!(!records.is_empty(), "fixture needs a predecessor receipt");
+        let no_newline = records[0]
+            .strip_suffix(b"\n")
+            .unwrap_or(records[0])
+            .to_vec();
+        let mut seal = original.clone();
+        seal.shard_size = no_newline.len() as u64;
+        seal.shard_sha256 = super::sha256_hex(&no_newline);
+        seal.damage_offset = 0;
+        seal.last_good_seq = 0;
+        seal.last_good_hash = "genesis".to_string();
+        seal.predecessor_tail_seq = 0;
+        seal.predecessor_tail_hash = "genesis".to_string();
+        seal.predecessor_signer_key = seal.successor_signer_key.clone();
+        seal.signature.clear();
+        seal.signature = format!(
+            "ed25519:{}",
+            hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+        );
+        std::fs::write(&shard_path, no_newline).expect("write missing-newline evidence");
+        std::fs::write(
+            run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+            recovery_seal_json(&seal),
+        )
+        .expect("write re-signed seal");
+
+        let report = verify_base(
+            &run_dir,
+            "proxy",
+            &BaseVerifyOptions {
+                trusted_keys: vec![pinned],
+                endorsements: Vec::new(),
+            },
+        )
+        .expect("verify missing-newline recovery");
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| { finding.kind == super::FINDING_ATTESTED_DISCONTINUITY }));
+        assert!(report
+            .chains
+            .iter()
+            .any(|chain| chain.recovery_seal.is_some()));
+        std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+    }
+
+    #[test]
+    fn malformed_and_truncated_utf8_final_records_match_go_tail_classification() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let original = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        for (case, torn) in [
+            ("malformed-json", &b"{\"partial\":!invalid"[..]),
+            ("truncated-utf8", &b"{\"partial\":\"\xe2\x82"[..]),
+        ] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let run_dir = std::env::temp_dir().join(format!(
+                "pipelock-rust-torn-{case}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&run_dir).expect("create test evidence dir");
+            let source = fixture.join("evidence");
+            for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+                let entry = entry.expect("fixture entry");
+                std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+            }
+
+            let shard_path = run_dir.join(&original.shard);
+            let mut bytes = std::fs::read(&shard_path).expect("read predecessor shard");
+            bytes.truncate(original.damage_offset as usize);
+            bytes.extend_from_slice(torn);
+            bytes.extend_from_slice(&[0, 0]);
+            let mut seal = original.clone();
+            seal.shard_size = bytes.len() as u64;
+            seal.shard_sha256 = super::sha256_hex(&bytes);
+            seal.signature.clear();
+            seal.signature = format!(
+                "ed25519:{}",
+                hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+            );
+            std::fs::write(&shard_path, bytes).expect("write padded torn evidence");
+            std::fs::write(
+                run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+                recovery_seal_json(&seal),
+            )
+            .expect("write re-signed seal");
+
+            let report = verify_base(
+                &run_dir,
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: vec![pinned.clone()],
+                    endorsements: Vec::new(),
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: verify padded torn recovery: {err}"));
+            assert!(
+                report
+                    .chains
+                    .iter()
+                    .any(|chain| chain.recovery_seal.is_some()),
+                "{case}: valid seal should attach"
+            );
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.kind == super::FINDING_ATTESTED_DISCONTINUITY),
+                "{case}: valid seal should report discontinuity"
+            );
+            std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+        }
+    }
+
+    #[test]
+    fn invalid_record_boundaries_and_complete_invalid_utf8_json_are_rejected() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let original = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        let invalid_utf8_complete_json = [b"{\"partial\":\"".as_slice(), &[0xff], b"\"}"].concat();
+        for (case, torn) in [
+            ("line-feed", &b"partial\n"[..]),
+            ("embedded-nul", &b"partial\0record"[..]),
+            (
+                "complete-invalid-utf8-json",
+                invalid_utf8_complete_json.as_slice(),
+            ),
+        ] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let run_dir = std::env::temp_dir().join(format!(
+                "pipelock-rust-rejected-torn-{case}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&run_dir).expect("create test evidence dir");
+            let source = fixture.join("evidence");
+            for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+                let entry = entry.expect("fixture entry");
+                std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+            }
+
+            let shard_path = run_dir.join(&original.shard);
+            let mut bytes = std::fs::read(&shard_path).expect("read predecessor shard");
+            bytes.truncate(original.damage_offset as usize);
+            bytes.extend_from_slice(torn);
+            let mut seal = original.clone();
+            seal.shard_size = bytes.len() as u64;
+            seal.shard_sha256 = super::sha256_hex(&bytes);
+            seal.signature = format!(
+                "ed25519:{}",
+                hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+            );
+            std::fs::write(&shard_path, bytes).expect("write rejected torn evidence");
+            std::fs::write(
+                run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+                recovery_seal_json(&seal),
+            )
+            .expect("write re-signed seal");
+
+            let report = verify_base(
+                &run_dir,
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: vec![pinned.clone()],
+                    endorsements: Vec::new(),
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: verify rejected torn suffix: {err}"));
+            assert!(report
+                .chains
+                .iter()
+                .all(|chain| chain.recovery_seal.is_none()));
+            assert!(report.findings.iter().any(|finding| {
+                finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                    && finding.session == original.successor_session
+            }));
+            std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+        }
+    }
+
+    #[test]
+    fn rehashed_resequenced_recovery_prefix_is_rejected() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let mut seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let run_dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-resequenced-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&run_dir).expect("create test evidence dir");
+        let source = fixture.join("evidence");
+        for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+            let entry = entry.expect("fixture entry");
+            std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+        }
+
+        let shard_path = run_dir.join(&seal.shard);
+        let raw = std::fs::read(&shard_path).expect("read predecessor shard");
+        let prefix = &raw[..seal.damage_offset as usize];
+        let suffix = &raw[seal.damage_offset as usize..];
+        let mut resequenced = Vec::new();
+        let mut previous_hash = "genesis".to_string();
+        let mut count = 0u64;
+        for line in prefix.split_inclusive(|byte| *byte == b'\n') {
+            let mut entry: Value = serde_json::from_slice(line).expect("parse complete entry");
+            entry["seq"] = serde_json::json!(count + 1);
+            entry["prev_hash"] = serde_json::json!(previous_hash);
+            let encoded = serde_json::to_string(&entry).expect("encode resequenced entry");
+            let hash = crate::recorder_chain::recorder_entry_hash(&encoded)
+                .expect("hash resequenced entry");
+            entry["hash"] = serde_json::json!(hash);
+            previous_hash = hash;
+            let encoded = serde_json::to_string(&entry).expect("encode hashed entry");
+            resequenced.extend_from_slice(encoded.as_bytes());
+            resequenced.push(b'\n');
+            count += 1;
+        }
+        assert!(count > 0, "fixture needs a complete predecessor prefix");
+        seal.last_good_seq = count;
+        seal.last_good_hash = previous_hash;
+        seal.damage_offset = resequenced.len() as u64;
+        resequenced.extend_from_slice(suffix);
+        seal.shard_size = resequenced.len() as u64;
+        seal.shard_sha256 = super::sha256_hex(&resequenced);
+        seal.signature = format!(
+            "ed25519:{}",
+            hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+        );
+        std::fs::write(&shard_path, resequenced).expect("write resequenced shard");
+        std::fs::write(
+            run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+            recovery_seal_json(&seal),
+        )
+        .expect("write re-signed seal");
+
+        let report = verify_base(
+            &run_dir,
+            "proxy",
+            &BaseVerifyOptions {
+                trusted_keys: vec![pinned],
+                endorsements: Vec::new(),
+            },
+        )
+        .expect("verify rehashed resequenced recovery");
+        assert!(report
+            .chains
+            .iter()
+            .all(|chain| chain.recovery_seal.is_none()));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                && finding.detail.contains("sequence mismatch")
+        }));
+        std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+    }
+
+    #[test]
+    fn valid_json_final_record_without_newline_is_checked_for_sequence_gap() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let mut seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let run_dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-no-newline-sequence-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&run_dir).expect("create test evidence dir");
+        let source = fixture.join("evidence");
+        for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+            let entry = entry.expect("fixture entry");
+            std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+        }
+
+        let shard_path = run_dir.join(&seal.shard);
+        let raw = std::fs::read(&shard_path).expect("read predecessor shard");
+        let complete: Vec<&[u8]> = raw[..seal.damage_offset as usize]
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        assert!(
+            complete.len() >= 2,
+            "fixture needs a complete receipt prefix"
+        );
+        let durable_count = complete.len() - 1;
+        let mut prefix = complete[..durable_count].concat();
+        let last_complete: Value = serde_json::from_slice(complete[durable_count - 1])
+            .expect("parse final durable receipt");
+        let prefix_hash = last_complete["hash"]
+            .as_str()
+            .expect("durable recorder hash")
+            .to_string();
+        let mut final_record: Value =
+            serde_json::from_slice(complete[durable_count]).expect("parse final complete record");
+        final_record["seq"] = serde_json::json!(durable_count as u64 + 7);
+        final_record["prev_hash"] = serde_json::json!(prefix_hash);
+        let encoded = serde_json::to_string(&final_record).expect("encode final record");
+        let final_hash =
+            crate::recorder_chain::recorder_entry_hash(&encoded).expect("hash final record");
+        final_record["hash"] = serde_json::json!(final_hash);
+        let encoded = serde_json::to_string(&final_record).expect("encode hashed final record");
+        let damage_offset = prefix.len() as u64;
+        prefix.extend_from_slice(encoded.as_bytes());
+        let suffix = &raw[seal.damage_offset as usize..];
+        prefix.extend_from_slice(suffix);
+
+        seal.last_good_seq = durable_count as u64 - 1;
+        seal.last_good_hash = prefix_hash;
+        seal.damage_offset = damage_offset;
+        seal.shard_size = prefix.len() as u64;
+        seal.shard_sha256 = super::sha256_hex(&prefix);
+        seal.signature = format!(
+            "ed25519:{}",
+            hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+        );
+        std::fs::write(&shard_path, prefix).expect("write gapped final record");
+        std::fs::write(
+            run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+            recovery_seal_json(&seal),
+        )
+        .expect("write re-signed seal");
+
+        let report = verify_base(
+            &run_dir,
+            "proxy",
+            &BaseVerifyOptions {
+                trusted_keys: vec![pinned],
+                endorsements: Vec::new(),
+            },
+        )
+        .expect("verify gapped final record");
+        assert!(report
+            .chains
+            .iter()
+            .all(|chain| chain.recovery_seal.is_none()));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                && finding.detail.contains("sequence mismatch")
+        }));
+        std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
     }
 }

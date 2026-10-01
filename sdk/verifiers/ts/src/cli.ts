@@ -146,6 +146,12 @@ export interface ChainSetReport {
       predecessor_tail_seq: number;
       trust: string;
     }[];
+    discontinuities: {
+      session: string;
+      predecessor_session: string;
+      shard: string;
+      damage_offset: number;
+    }[];
     unlinked: string[];
     findings: BaseFinding[];
   };
@@ -358,6 +364,15 @@ async function runChainSetCommand(
           predecessor_session: (c.link as ChainLink).predecessor_session,
           predecessor_tail_seq: Number((c.link as ChainLink).predecessor_tail_seq),
           trust: c.link_trust === "" ? "untrusted" : c.link_trust,
+        })),
+      discontinuities: baseReport.chains
+        .filter((c) => c.recovery_seal !== undefined)
+        .map((c) => ({
+          session: c.session,
+          predecessor_session: (c.recovery_seal as NonNullable<typeof c.recovery_seal>)
+            .predecessor_session,
+          shard: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).shard,
+          damage_offset: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).damage_offset,
         })),
       unlinked: baseUnlinked(baseReport),
       findings: baseReport.findings,

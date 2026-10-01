@@ -64,6 +64,12 @@ func TestTornTailRestartPreservesShard(t *testing.T) {
 			if second.session == first.session || second.e.ChainLink() != nil {
 				t.Fatal("torn predecessor adopted")
 			}
+			if second.e.recoverySeal == nil {
+				t.Fatal("torn predecessor observation not signed")
+			}
+			if err := VerifyRecoveryBinding(dir, *second.e.recoverySeal, []string{second.e.SignerKeyHex()}); err != nil {
+				t.Fatal(err)
+			}
 			if !strings.Contains(notices.String(), "not linked") || !strings.Contains(notices.String(), "torn JSONL tail") {
 				t.Fatalf("missing discontinuity notice: %s", notices.String())
 			}

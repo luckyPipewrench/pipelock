@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -492,7 +493,17 @@ func TestConnectHeader_CredentialAudienceRequireReceipts(t *testing.T) {
 				cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 				cfg.APIAllowlist = nil
 			})
-			srv := httptest.NewServer(p.buildHandler(http.NewServeMux()))
+			// A hijacked CONNECT handler outlives srv.Close and records its
+			// close event after the relay ends. Wait for it to return before
+			// the recorder's temp dir is removed, or cleanup races the write.
+			var inflight sync.WaitGroup
+			defer inflight.Wait()
+			handler := p.buildHandler(http.NewServeMux())
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				inflight.Add(1)
+				defer inflight.Done()
+				handler.ServeHTTP(w, r)
+			}))
 			defer srv.Close()
 
 			conn := dialProxy(t, srv.Listener.Addr().String())

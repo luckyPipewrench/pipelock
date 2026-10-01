@@ -128,6 +128,20 @@ func TestReceiptTornTailReload(t *testing.T) {
 					if p.metrics.EvidenceTornTailSnapshot().Total != 1 {
 						t.Fatal("torn state not recorded exactly once")
 					}
+					sealBytes, err := os.ReadFile(filepath.Join(p.recorder.Dir(), receipt.ChainLinkFileName(oldSession)))
+					if err != nil {
+						t.Fatal("recovery seal missing: ", err)
+					}
+					seal, err := receipt.UnmarshalRecoverySeal(sealBytes)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if seal.SuccessorSession != p.recorder.SessionID() || seal.PredecessorSession != oldSession {
+						t.Fatal("seal names wrong recovery runs")
+					}
+					if err := receipt.VerifyRecoveryBinding(p.recorder.Dir(), seal, []string{old.SignerKeyHex(), p.receiptEmitterPtr.Load().SignerKeyHex()}); err != nil {
+						t.Fatal(err)
+					}
 					files, err := filepath.Glob(filepath.Join(p.recorder.Dir(), "evidence-"+p.recorder.SessionID()+"-*.jsonl"))
 					if err != nil || len(files) == 0 {
 						t.Fatalf("fresh shards=%v err=%v", files, err)

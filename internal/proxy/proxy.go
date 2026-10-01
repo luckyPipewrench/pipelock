@@ -632,6 +632,7 @@ type Proxy struct {
 	sizeExemptScanBudget sizeExemptScanBudget
 	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
 	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
+	recoveredSession     atomic.Pointer[string]                // fresh run session adopted after torn-tail recovery; overrides session
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptKeyPath       string                                // active signing key path, for reload comparison
@@ -696,6 +697,18 @@ func WithRecorder(rec *recorder.Recorder) Option {
 // WithRecorder, so this proxy's own decision entries land in the same
 // chain as the receipt and proxy_decision emitters built from that
 // recorder. Leaving it unset keeps the historical literal "proxy".
+// recordingSession is the session this proxy records under: a run adopted by
+// torn-tail recovery, else the configured session, else the default base.
+func (p *Proxy) recordingSession() string {
+	if s := p.recoveredSession.Load(); s != nil && *s != "" {
+		return *s
+	}
+	if p.session != "" {
+		return p.session
+	}
+	return recorder.DefaultSessionBase
+}
+
 func WithSession(session string) Option {
 	return func(p *Proxy) { p.session = session }
 }
@@ -1483,13 +1496,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 		summary += " (" + pattern + ")"
 	}
 
-	session := p.recorder.SessionID()
-	if session == "" {
-		session = p.session
-	}
-	if session == "" {
-		session = recorder.DefaultSessionBase
-	}
+	session := p.recordingSession()
 
 	// The comment above this method already promised these errors are
 	// "logged but never block the proxy hot path". They were discarded
@@ -1839,13 +1846,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	if err != nil {
 		return receiptEmitterStage{}, fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
-	activeSession := p.recorder.SessionID()
-	if activeSession == "" {
-		activeSession = p.session
-	}
-	if activeSession == "" {
-		activeSession = recorder.DefaultSessionBase
-	}
+	activeSession := p.recordingSession()
 	keys := append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex(), fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey)))
 	tornRecovery := p.receiptEmitterPtr.Load() != nil && p.receiptEmitterPtr.Load().SessionID() != activeSession
 	if tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys); tailErr != nil {
@@ -1868,6 +1869,11 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		if err != nil {
 			return receiptEmitterStage{}, fmt.Errorf("fresh receipt run unavailable; inspect flight_recorder.dir storage (flight_recorder.require_receipts remains enforced): %w", err)
 		}
+		// The recorder now writes only the fresh run. Adopt it so decision
+		// entries follow it, while a configured session that merely disagrees
+		// with the recorder still surfaces as a logged mismatch.
+		recovered := activeSession
+		p.recoveredSession.Store(&recovered)
 		tornRecovery = true
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 			fmt.Errorf("receipt evidence tail damaged; preserving shard and starting fresh run %s: %w", activeSession, tailErr))

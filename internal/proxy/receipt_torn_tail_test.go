@@ -279,3 +279,63 @@ func TestReceiptTornTailReloadFreshFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptReloadRejectsNewlineTerminatedHashTamper(t *testing.T) {
+	p, cfg, path, _ := tornTailProxy(t, true)
+	// Establish that this real producer's complete shard reloads successfully.
+	if !p.Reload(cfg, scanner.MustNew(cfg)) {
+		t.Fatal("positive control reload rejected")
+	}
+	entries, err := recorder.ReadEntries(path)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("real entries unavailable: %v", err)
+	}
+	entry := entries[0]
+	// Preserve the producer's signed detail bytes when serializing the mutation.
+	entry.Detail = entry.RawDetail
+	originalHash := entry.Hash
+	first := byte('0')
+	if entry.Hash[0] == first {
+		first = '1'
+	}
+	entry.Hash = string(first) + entry.Hash[1:]
+	if entry.Hash == originalHash || recorder.ComputeHash(entry) != originalHash {
+		t.Fatal("hash-only mutation failed")
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	mutated, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+	if err != nil || len(mutated) != 1 || recorder.ComputeHash(mutated[0]) != originalHash {
+		t.Fatalf("serialization changed more than the stored hash: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The append fast path checks crash shape, so complete JSONL remains appendable.
+	if err := recorder.InspectEvidenceTail(path, nil); err != nil {
+		t.Fatalf("crash-shape check changed: %v", err)
+	}
+	// Reload's whole-shard validation owns integrity, including the final record.
+	if err := recorder.ValidateEvidenceFile(path, nil); err == nil || errors.Is(err, recorder.ErrTornTail) || !bytes.Contains([]byte(err.Error()), []byte("hash mismatch")) {
+		t.Fatalf("want hash TAMPER, got %v", err)
+	}
+	old := p.receiptEmitterPtr.Load()
+	for range 2 {
+		if p.Reload(cfg, scanner.MustNew(cfg)) {
+			t.Fatal("reload accepted newline-terminated hash tamper")
+		}
+	}
+	if p.receiptEmitterPtr.Load() != old || old.HealthError() == nil {
+		t.Fatal("reload did not retain fail-closed admission")
+	}
+	if p.metrics.EvidenceTornTailSnapshot().Total != 0 {
+		t.Fatal("tamper classified as torn")
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || !bytes.Equal(data, after) {
+		t.Fatalf("tampered bytes changed: %v", err)
+	}
+}

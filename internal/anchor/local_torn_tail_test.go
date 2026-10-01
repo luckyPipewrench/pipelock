@@ -334,7 +334,7 @@ func TestReadLocalLogSegmentParity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, err := os.ReadFile(path + ".segment-00000000000000000002")
+	data, err := os.ReadFile(filepath.Clean(path + ".segment-00000000000000000002"))
 	if err != nil {
 		t.Fatal(err)
 	}

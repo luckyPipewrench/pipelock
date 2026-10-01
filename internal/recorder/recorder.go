@@ -1237,6 +1237,9 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 		return err
 	}
 	defer unlock()
+	// Append checks crash shape, not whole-shard integrity: a newline-terminated
+	// tail takes the bounded fast path even if a stored hash was modified.
+	// Reload's ValidateEvidenceFile and offline verification enforce integrity.
 	if err := InspectEvidenceTail(r.file.Name(), nil); err != nil {
 		var torn *TornTailError
 		if errors.As(err, &torn) {

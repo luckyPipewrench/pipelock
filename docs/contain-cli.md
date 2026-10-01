@@ -336,6 +336,8 @@ Published content is untrusted agent content in both directions. Pipelock doesn'
 
 ### Launching a contained systemd service
 
+> **Not supported in this release.** The recipe below doesn't start the agent: `service-posture` runs preflight probe 3 inside the agent network namespace, where the host's managed nftables table isn't visible, so the probe fails and systemd never starts the service. Use `pipelock contain run` to launch contained agents until a later release fixes the check.
+
 Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:
 
 ```ini

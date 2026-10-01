@@ -1,0 +1,323 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package policy
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func setDifferentDevice(t *testing.T, fn func(a, b os.FileInfo) bool) {
+	t.Helper()
+	old := differentDevice
+	differentDevice = fn
+	t.Cleanup(func() { differentDevice = old })
+}
+
+func chmodForTest(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // a directory needs search permission back so cleanup can remove it
+}
+
+// TestLocalPathIdentity_UnreadableOwnDirectoryFailsClosed is the case an owner
+// based allowance got wrong: the user owns the protected directory and the key
+// in it, cannot list it, and a hard link to the key must still be refused.
+func TestLocalPathIdentity_UnreadableOwnDirectoryFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	f := newLocalPathFixture(t)
+	key := filepath.Join(f.home, ".ssh", "id_ed25519")
+	f.write(t, key)
+	hardLink(t, key, filepath.Join(f.ws, "notes.txt"))
+	chmodForTest(t, filepath.Dir(key), 0o300)
+	if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "notes.txt")); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("hard link to a key in an own, unlistable SSH directory was not matched: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_HardLinkAcrossDevicesIsNotHeld(t *testing.T) {
+	f := newLocalPathFixture(t)
+	key := filepath.Join(f.home, ".ssh", "id_ed25519")
+	f.write(t, key)
+	hardLink(t, key, filepath.Join(f.ws, "notes.txt"))
+	value := filepath.Join(f.ws, "notes.txt")
+
+	// Positive control: on one device the link is found.
+	if v := checkPath(f.policy(true), testReadTool, "path", value); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("control: same-device hard link not matched: %+v", v)
+	}
+	// A file on another device than the directory cannot be linked into it, so
+	// the directory is not even read.
+	setDifferentDevice(t, func(_, _ os.FileInfo) bool { return true })
+	if v := checkPath(f.policy(true), testReadTool, "path", value); slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("a file on another device was matched as held by the directory: %+v", v)
+	}
+	if os.Geteuid() == 0 {
+		return
+	}
+	// The unlistable directory fails closed only when the device matches.
+	chmodForTest(t, filepath.Dir(key), 0o000)
+	if v := checkPath(f.policy(true), testReadTool, "path", value); slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("an unlistable directory on another device must not refuse the file: %+v", v)
+	}
+	setDifferentDevice(t, func(_, _ os.FileInfo) bool { return false })
+	if v := checkPath(f.policy(true), testReadTool, "path", value); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("an unlistable directory on the same device must refuse the file: %+v", v)
+	}
+}
+
+func TestLocalPathIdentity_HardLinkScanCoversSubtree(t *testing.T) {
+	cases := []struct {
+		name     string
+		linked   string // path under the fixture home
+		tool     string
+		wantRule string
+	}{
+		{"systemd drop-in", filepath.Join(".config", "systemd", "user", "x.service.d", "o.conf"), testWriteTool, testPersistenceRule},
+		{"systemd wants entry two levels down", filepath.Join(".config", "systemd", "user", "default.target.wants", "d", "x.service"), testWriteTool, testPersistenceRule},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLocalPathFixture(t)
+			target := filepath.Join(f.home, tc.linked)
+			f.write(t, target)
+			hardLink(t, target, filepath.Join(f.ws, "alias"))
+			value := filepath.Join(f.ws, "alias")
+			if v := checkPath(f.policy(false), tc.tool, "path", value); slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("fixture is not an alias: %q already matches %s", value, tc.wantRule)
+			}
+			if v := checkPath(f.policy(true), tc.tool, "path", value); !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("nested hard link not matched as %s: %+v", tc.wantRule, v)
+			}
+		})
+	}
+}
+
+func TestLocalPathIdentity_HardLinkScanSubtreeBounds(t *testing.T) {
+	newFixture := func(t *testing.T) (f localPathFixture, value string) {
+		f = newLocalPathFixture(t)
+		f.write(t, filepath.Join(f.ws, "a.txt"))
+		hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
+		return f, filepath.Join(f.ws, "b.txt")
+	}
+	ssh := func(f localPathFixture, parts ...string) string {
+		return filepath.Join(append([]string{f.home, ".ssh"}, parts...)...)
+	}
+	matched := func(f localPathFixture, value string) bool {
+		return slices.Contains(checkPath(f.policy(true), testReadTool, "path", value).Rules, testKeyReadRule)
+	}
+
+	t.Run("one entry bound across the whole walk", func(t *testing.T) {
+		f, value := newFixture(t)
+		f.write(t, ssh(f, "d1", "f1"))
+		f.write(t, ssh(f, "d2", "f2"))
+		f.write(t, ssh(f, "d3", "f3"))
+		// 3 directories and 3 files: 6 entries in total, none of them above 2 per level.
+		if matched(f, value) {
+			t.Fatal("control: unrelated file matched within the bound")
+		}
+		old := localPathMaxDirEntries
+		t.Cleanup(func() { localPathMaxDirEntries = old })
+		localPathMaxDirEntries = 5
+		if !matched(f, value) {
+			t.Fatal("a tree over the total entry bound must be treated as holding the file")
+		}
+		localPathMaxDirEntries = 6
+		if matched(f, value) {
+			t.Fatal("a tree exactly at the bound must complete")
+		}
+	})
+
+	t.Run("symlinked directory is not followed", func(t *testing.T) {
+		f, value := newFixture(t)
+		f.write(t, ssh(f, "keep"))
+		f.link(t, f.ws, ssh(f, "id_link"))
+		if matched(f, value) {
+			t.Fatal("a symlink inside the protected directory was followed")
+		}
+	})
+
+	t.Run("unreadable subdirectory on the same device", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads any directory")
+		}
+		f, value := newFixture(t)
+		f.write(t, ssh(f, "sub", "f"))
+		if matched(f, value) {
+			t.Fatal("control: unrelated file matched")
+		}
+		chmodForTest(t, ssh(f, "sub"), 0o000)
+		if !matched(f, value) {
+			t.Fatal("an unreadable same-device subdirectory must fail closed")
+		}
+		// The same subdirectory on another device cannot hold the file.
+		setDifferentDevice(t, func(_, b os.FileInfo) bool { return b.Name() == "sub" })
+		if matched(f, value) {
+			t.Fatal("a subtree on another device must be skipped")
+		}
+	})
+}
+
+func TestLocalPathIdentity_HomesFromEnvironmentAndAccountDatabase(t *testing.T) {
+	f := newLocalPathFixture(t)
+	other := t.TempDir()
+	key := filepath.Join(f.home, ".ssh", "id_ed25519")
+	f.write(t, key)
+	hardLink(t, key, filepath.Join(f.ws, "notes.txt"))
+	value := filepath.Join(f.ws, "notes.txt")
+	t.Setenv("HOME", other)
+	t.Setenv("ZDOTDIR", "")
+	old := accountHomeDir
+	t.Cleanup(func() { accountHomeDir = old })
+
+	enable := func() *Config {
+		pc := f.policy(false)
+		pc.EnableLocalPathIdentity()
+		return pc
+	}
+	// Control: with the account database naming no usable home, only $HOME is
+	// protected, so the fixture home's key is not found.
+	accountHomeDir = func() (string, error) { return "", errors.New("no account entry") }
+	if v := checkPath(enable(), testReadTool, "path", value); slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("control: matched without the account home: %+v", v)
+	}
+	accountHomeDir = func() (string, error) { return f.home, nil }
+	if v := checkPath(enable(), testReadTool, "path", value); !slices.Contains(v.Rules, testKeyReadRule) {
+		t.Fatalf("hard link into the account home's SSH directory not matched when $HOME differs: %+v", v)
+	}
+	// A tilde names each home.
+	l := newLocalPathIdentity(CredentialHomes(nil), f.ws)
+	got := l.paths("~/x", func(string) bool { return false })
+	if !slices.Equal(got, []string{other + "/x", f.home + "/x"}) {
+		t.Fatalf("~ expanded to %q", got)
+	}
+}
+
+// splitPolicyAlternatives splits a regular expression on the | operators that
+// are not inside a group or a character class.
+func splitPolicyAlternatives(t *testing.T, pattern string) []string {
+	t.Helper()
+	var parts []string
+	depth, start := 0, 0
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		switch c := pattern[i]; {
+		case c == '\\':
+			i++
+		case inClass:
+			if c == ']' {
+				inClass = false
+			}
+		case c == '[':
+			inClass = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == '|' && depth == 0:
+			parts = append(parts, pattern[start:i])
+			start = i + 1
+		}
+	}
+	if depth != 0 || inClass {
+		t.Fatalf("unbalanced pattern %q", pattern)
+	}
+	return append(parts, pattern[start:])
+}
+
+// localProtectedExemptRuleLocations are alternatives of the shipped path
+// patterns that the resolver's location lists deliberately do not carry, each
+// with the reason. A location a rule gains must be listed in
+// localProtectedHomePaths or localProtectedSystemPaths, or be added here.
+var localProtectedExemptRuleLocations = map[string]string{}
+
+// TestLocalProtectedPathsMatchRulePatterns keeps localProtectedHomePaths and
+// localProtectedSystemPaths in step with the shipped credential, persistence,
+// shell-profile and audit-log patterns in both directions: every alternative of
+// those patterns is covered by a listed location or exempted with a reason, and
+// every listed location is named by at least one alternative.
+func TestLocalProtectedPathsMatchRulePatterns(t *testing.T) {
+	var alternatives []string
+	for _, pattern := range []string{persistencePathPattern, shellProfilePathPattern, auditLogPathPattern, sensitiveFilePathPattern} {
+		alternatives = append(alternatives, splitPolicyAlternatives(t, pattern)...)
+	}
+	res := make(map[string]*regexp.Regexp, len(alternatives))
+	for _, alt := range alternatives {
+		res[alt] = regexp.MustCompile("(?i)" + alt)
+	}
+	// A listed location is named by an alternative when the location, a file
+	// below it, or a key below it matches.
+	probes := func(path string) []string {
+		return []string{path, path + "/x", path + "/id_rsa"}
+	}
+	named := func(re *regexp.Regexp, path string) bool {
+		for _, probe := range probes(path) {
+			if re.MatchString(probe) {
+				return true
+			}
+		}
+		return false
+	}
+	var locations []string
+	for _, rel := range localProtectedHomePaths {
+		locations = append(locations, "/home/u/"+rel)
+	}
+	locations = append(locations, localProtectedSystemPaths...)
+
+	// Rule to list.
+	for _, alt := range alternatives {
+		covered := false
+		for _, location := range locations {
+			if named(res[alt], location) {
+				covered = true
+			}
+		}
+		_, exempt := localProtectedExemptRuleLocations[alt]
+		switch {
+		case covered && exempt:
+			t.Errorf("alternative %q is covered by the location lists and also exempted; drop the exemption", alt)
+		case !covered && !exempt:
+			t.Errorf("the shipped path patterns name %q but localProtectedHomePaths and localProtectedSystemPaths do not cover it; add the location or an exemption with a reason", alt)
+		}
+	}
+	for alt, reason := range localProtectedExemptRuleLocations {
+		if !slices.Contains(alternatives, alt) {
+			t.Errorf("exemption %q no longer matches any alternative; remove it", alt)
+		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("exemption %q has no reason", alt)
+		}
+	}
+	// List to rule.
+	for _, location := range locations {
+		found := false
+		for _, alt := range alternatives {
+			if named(res[alt], location) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("listed location %q is not named by any shipped path pattern; remove it or add the pattern", location)
+		}
+	}
+	// The zsh startup files are home files the shell-profile rule names.
+	shell := regexp.MustCompile("(?i)" + shellProfilePathPattern)
+	for _, name := range localProtectedZshFiles {
+		if !shell.MatchString("/home/u/" + name) {
+			t.Errorf("zsh startup file %q is not named by the shell-profile pattern", name)
+		}
+		if !slices.Contains(localProtectedHomePaths, name) {
+			t.Errorf("zsh startup file %q is missing from localProtectedHomePaths", name)
+		}
+	}
+}

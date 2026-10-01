@@ -14,8 +14,9 @@ func mayHaveOtherLinks(_ os.FileInfo) bool {
 	return true
 }
 
-// ownedByCurrentUser reports whether this process's user owns the file. File
-// ownership is not exposed here, so no file is treated as owned.
-func ownedByCurrentUser(_ os.FileInfo) bool {
+// onDifferentDevice reports whether a and b are known to be on different
+// filesystems. This platform exposes no device through os.FileInfo, so it is
+// never known.
+func onDifferentDevice(_, _ os.FileInfo) bool {
 	return false
 }

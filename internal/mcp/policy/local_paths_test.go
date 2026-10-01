@@ -65,7 +65,7 @@ func (f localPathFixture) link(t *testing.T, target, name string) {
 func (f localPathFixture) policy(enabled bool) *Config {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
 	if enabled {
-		pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+		pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 	}
 	return pc
 }
@@ -221,7 +221,7 @@ func TestLocalPathIdentity_KeyScopedRule(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{
 		Name: ruleName, ToolPattern: `^copy_file$`, ArgKey: `^destination$`, ArgPattern: `guarded-target`,
 	}}})
-	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 
 	raw := json.RawMessage(`{"source":"a","destination":"innocent"}`)
 	v := pc.CheckToolCallWithArgs("copy_file", []string{"a", "innocent"}, raw)
@@ -241,7 +241,7 @@ func TestLocalPathIdentity_OrdinaryValuesUnchanged(t *testing.T) {
 	loopA, loopB := filepath.Join(f.ws, "loop-a"), filepath.Join(f.ws, "loop-b")
 	f.link(t, loopB, loopA)
 	f.link(t, loopA, loopB)
-	l := newLocalPathIdentity(f.home, f.ws)
+	l := newLocalPathIdentity([]string{f.home}, f.ws)
 
 	for _, values := range [][]string{
 		{filepath.Join(f.ws, "plain.txt")},
@@ -287,7 +287,7 @@ func TestLocalPathIdentity_NilAndDisabled(t *testing.T) {
 	if enabled.localPaths == nil {
 		t.Fatal("EnableLocalPathIdentity did not install a resolver")
 	}
-	if got := newLocalPathIdentity("", "").expand([]string{"~/x", "rel"}); !slices.Equal(got, []string{"~/x", "rel"}) {
+	if got := newLocalPathIdentity(nil, "").expand([]string{"~/x", "rel"}); !slices.Equal(got, []string{"~/x", "rel"}) {
 		t.Fatalf("identity without home or cwd resolved relative values: %q", got)
 	}
 }
@@ -347,7 +347,7 @@ func TestLocalPathIdentity_RelativeNameResolvesAgainstWriterDirectory(t *testing
 	// Pipelock's own directory (f.ws) holds no notes.txt; the writer resolves
 	// relative names against root.
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
-	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 	for _, value := range []string{"notes.txt", "./notes.txt"} {
 		if v := checkPath(pc, testWriteTool, "path", value); slices.Contains(v.Rules, testShellProfileRule) {
 			t.Fatalf("%q matched without the writer's base: %+v", value, v)
@@ -440,7 +440,7 @@ func TestLocalPathIdentity_NewBareNameInProtectedBase(t *testing.T) {
 	f.link(t, ssh, root)
 
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
-	pc.localPaths = newLocalPathIdentity(f.home, f.ws)
+	pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
 	if v := checkPath(pc, testReadTool, "path", "authorized_keys"); slices.Contains(v.Rules, testKeyReadRule) {
 		t.Fatalf("matched without the protected base: %+v", v)
 	}
@@ -449,7 +449,7 @@ func TestLocalPathIdentity_NewBareNameInProtectedBase(t *testing.T) {
 		t.Fatalf("new bare name under a base linked to ~/.ssh was not matched: %+v", v)
 	}
 	// An ordinary base still ignores a bare word that names nothing.
-	if got := newLocalPathIdentity(f.home, f.ws).expand([]string{"hello"}); !slices.Equal(got, []string{"hello"}) {
+	if got := newLocalPathIdentity([]string{f.home}, f.ws).expand([]string{"hello"}); !slices.Equal(got, []string{"hello"}) {
 		t.Fatalf("bare word under an ordinary base resolved: %q", got)
 	}
 }
@@ -638,17 +638,11 @@ func TestLocalPathIdentity_HardLinkScanFailsClosed(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chmod(ssh, 0o700) }) //nolint:gosec // a directory needs search permission back so cleanup can remove it
 
-		// A linked file this user owns cannot be one of another account's
-		// files, so an unreadable directory does not hold it.
-		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "b.txt")); slices.Contains(v.Rules, testKeyReadRule) {
-			t.Fatalf("a linked file the user owns must not be refused for an unreadable directory: %+v", v)
-		}
-		// A linked file owned by another account fails closed.
-		old := fileOwnedByCurrentUser
-		fileOwnedByCurrentUser = func(os.FileInfo) bool { return false }
-		t.Cleanup(func() { fileOwnedByCurrentUser = old })
+		// The directory is on the same filesystem, so it could hold the file and
+		// cannot be listed to say otherwise. This user owns both; ownership does
+		// not change the answer.
 		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "b.txt")); !slices.Contains(v.Rules, testKeyReadRule) {
-			t.Fatalf("an unreadable protected directory must fail closed for another account's linked file: %+v", v)
+			t.Fatalf("an unreadable protected directory on the same device must fail closed: %+v", v)
 		}
 		// A file with a single link cannot be a hard link, so it never reads the directory.
 		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "solo.txt")); slices.Contains(v.Rules, testKeyReadRule) {

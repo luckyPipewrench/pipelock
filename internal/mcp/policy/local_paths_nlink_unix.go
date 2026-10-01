@@ -22,8 +22,15 @@ func mayHaveOtherLinks(info os.FileInfo) bool {
 	return uint64(st.Nlink) > 1 //nolint:unconvert // width differs per platform
 }
 
-// ownedByCurrentUser reports whether this process's user owns the file.
-func ownedByCurrentUser(info os.FileInfo) bool {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int64(st.Uid) == int64(os.Getuid())
+// onDifferentDevice reports whether a and b are known to be on different
+// filesystems. A hard link cannot cross one. It is false when either device is
+// unknown.
+func onDifferentDevice(a, b os.FileInfo) bool {
+	sa, okA := a.Sys().(*syscall.Stat_t)
+	sb, okB := b.Sys().(*syscall.Stat_t)
+	if !okA || !okB {
+		return false
+	}
+	// Dev is uint64 on some platforms and int32 on others.
+	return uint64(sa.Dev) != uint64(sb.Dev) //nolint:unconvert // width differs per platform
 }

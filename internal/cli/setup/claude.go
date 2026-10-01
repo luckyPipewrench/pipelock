@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -930,29 +929,10 @@ var accountHomeDir = func() (string, error) {
 }
 
 // grepCredentialHomes returns every distinct absolute home directory whose
-// credential directories a search must not cover: the one named by the
-// environment and the one the account database records for the current user.
-// $HOME is set by whoever launched the process, so on its own it can point
-// away from the real home. A value that is not absolute names no location and
-// is ignored. None is returned when neither source yields a usable directory.
+// credential directories a search must not cover. The tool-policy resolver
+// builds its protected locations from the same set.
 func grepCredentialHomes() []string {
-	var homes []string
-	add := func(home string) {
-		if home == "" || !filepath.IsAbs(home) {
-			return
-		}
-		home = filepath.Clean(home)
-		if !slices.Contains(homes, home) {
-			homes = append(homes, home)
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add(home)
-	}
-	if home, err := accountHomeDir(); err == nil {
-		add(home)
-	}
-	return homes
+	return policy.CredentialHomes(accountHomeDir)
 }
 
 // grepTargetCoversCredentialDirUnder is grepTargetCoversCredentialDir for one

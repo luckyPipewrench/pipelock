@@ -8,7 +8,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -76,7 +78,9 @@ var (
 // localPathIdentity resolves submitted path values against the local
 // filesystem. Build one with newLocalPathIdentity.
 type localPathIdentity struct {
-	home string
+	// homes are the home directories whose protected locations are matched: the
+	// one the environment names and the one the account database records.
+	homes []string
 	// zdotdir is where zsh reads its startup files when ZDOTDIR is set.
 	zdotdir string
 	// bases are the directories a relative value may be resolved against:
@@ -94,9 +98,8 @@ func (pc *Config) EnableLocalPathIdentity(bases ...string) {
 	if pc == nil {
 		return
 	}
-	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
-	pc.localPaths = newLocalPathIdentity(home, append([]string{cwd}, bases...)...)
+	pc.localPaths = newLocalPathIdentity(CredentialHomes(nil), append([]string{cwd}, bases...)...)
 	if zdotdir := os.Getenv("ZDOTDIR"); filepath.IsAbs(zdotdir) {
 		pc.localPaths.zdotdir = filepath.Clean(zdotdir)
 	}
@@ -112,13 +115,57 @@ func (pc *Config) AddLocalPathBases(bases ...string) {
 	pc.localPaths.addBases(bases...)
 }
 
-func newLocalPathIdentity(home string, bases ...string) *localPathIdentity {
+func newLocalPathIdentity(homes []string, bases ...string) *localPathIdentity {
 	l := &localPathIdentity{}
-	if filepath.IsAbs(home) {
-		l.home = filepath.Clean(home)
+	for _, home := range homes {
+		if filepath.IsAbs(home) {
+			if home = filepath.Clean(home); !slices.Contains(l.homes, home) {
+				l.homes = append(l.homes, home)
+			}
+		}
 	}
 	l.addBases(bases...)
 	return l
+}
+
+// accountHomeDir returns the home directory the operating system records for
+// the user this process runs as. It is a variable so tests can supply one.
+var accountHomeDir = func() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
+
+// CredentialHomes returns every distinct absolute home directory whose
+// protected locations must be guarded: the one named by the environment and the
+// one the account database records for the current user. $HOME is set by
+// whoever launched the process, so on its own it can point away from the real
+// home. A value that is not absolute names no location and is ignored. None is
+// returned when neither source yields a usable directory. account supplies the
+// account database's answer; nil uses the operating system's.
+func CredentialHomes(account func() (string, error)) []string {
+	if account == nil {
+		account = accountHomeDir
+	}
+	var homes []string
+	add := func(home string) {
+		if home == "" || !filepath.IsAbs(home) {
+			return
+		}
+		home = filepath.Clean(home)
+		if !slices.Contains(homes, home) {
+			homes = append(homes, home)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(home)
+	}
+	if home, err := account(); err == nil {
+		add(home)
+	}
+	return homes
 }
 
 func (l *localPathIdentity) addBases(bases ...string) {
@@ -217,10 +264,11 @@ func (l *localPathIdentity) paths(value string, baseIsProtected func(string) boo
 	}
 	switch {
 	case value == "~" || strings.HasPrefix(value, "~/"):
-		if l.home == "" {
-			return nil
+		out := make([]string, 0, len(l.homes))
+		for _, home := range l.homes {
+			out = append(out, home+value[1:])
 		}
-		return []string{l.home + value[1:]}
+		return out
 	case filepath.IsAbs(value):
 		return []string{value}
 	}
@@ -360,10 +408,10 @@ func hasRealComponent(components []string) bool {
 // is a symlink records where it points even when that target does not exist
 // yet, since a write there creates the file the protected name exposes.
 func (l *localPathIdentity) protectedCandidates() []localProtectedCandidate {
-	paths := make([]string, 0, len(localProtectedHomePaths)+len(localProtectedZshFiles)+len(localProtectedSystemPaths))
-	if l.home != "" {
+	paths := make([]string, 0, len(l.homes)*len(localProtectedHomePaths)+len(localProtectedZshFiles)+len(localProtectedSystemPaths))
+	for _, home := range l.homes {
 		for _, rel := range localProtectedHomePaths {
-			paths = append(paths, filepath.Join(l.home, rel))
+			paths = append(paths, filepath.Join(home, rel))
 		}
 	}
 	if l.zdotdir != "" {
@@ -427,7 +475,7 @@ func protectedAliases(resolved string, candidates []localProtectedCandidate) []s
 			// the same file under another name. Only a regular file with
 			// another link can be one, so everything else skips the scan.
 			if info.Mode().IsRegular() && mayHaveOtherLinks(info) {
-				aliases = append(aliases, hardLinkAliasesInDir(candidate.path, resolved, info)...)
+				aliases = append(aliases, hardLinkAliasesInDir(candidate.path, resolved, info, candidate.info)...)
 			}
 			continue
 		}
@@ -438,64 +486,94 @@ func protectedAliases(resolved string, candidates []localProtectedCandidate) []s
 	return aliases
 }
 
-// localPathMaxDirEntries bounds how many entries of one protected directory
-// are examined for a hard link. A directory with more entries than this is
+// localPathMaxDirEntries bounds how many entries are examined across the whole
+// walk of one protected directory. A tree with more entries than this is
 // treated as holding the file, never as not holding it. It is a variable so
 // tests can reach the bound without creating thousands of files.
 var localPathMaxDirEntries = 8192
 
-// fileOwnedByCurrentUser is a variable so tests can treat a fixture file as
-// owned by another account, which they cannot create without root.
-var fileOwnedByCurrentUser = ownedByCurrentUser
+// differentDevice is a variable so tests can place a fixture on another
+// filesystem, which they cannot create without root.
+var differentDevice = onDifferentDevice
+
+// hardLinkScan is one walk of a protected directory tree looking for entries
+// that are the same file as target.
+type hardLinkScan struct {
+	target    os.FileInfo
+	remaining int
+	aliases   []string
+}
 
 // hardLinkAliasesInDir returns the protected spelling of file when it is the
-// same file (device and inode) as an entry directly inside dir, or when that
-// cannot be established. The directory is read once, not recursively, and at
-// most localPathMaxDirEntries entries are examined. It fails closed: a
-// directory that cannot be read, or that has more entries than the bound,
-// yields a protected spelling for file, because the answer is unknown. A
-// directory that does not exist holds no link.
-func hardLinkAliasesInDir(dir, resolved string, info os.FileInfo) []string {
+// same file (device and inode) as an entry anywhere under dir, or when that
+// cannot be established.
+//
+// A hard link cannot cross filesystems, so a file on another device than dir
+// is not held by it and the directory is not read. Otherwise the tree under dir
+// is walked, without following symlinks and skipping subtrees on another
+// device, examining at most localPathMaxDirEntries entries in total. It fails
+// closed: a directory on the same device that cannot be read, or more entries
+// than the bound, yields a protected spelling for file, because the answer is
+// unknown. Who owns the file or the directory does not change that: a user can
+// own a directory they cannot list, and root can link a user's file into one.
+// A directory that does not exist holds no link.
+func hardLinkAliasesInDir(dir, resolved string, info, dirInfo os.FileInfo) []string {
+	if dirInfo != nil && differentDevice(info, dirInfo) {
+		return nil
+	}
+	scan := hardLinkScan{target: info, remaining: localPathMaxDirEntries}
+	if !scan.walk(filepath.Clean(dir)) {
+		return unknownHardLinkAliases(dir, resolved)
+	}
+	return scan.aliases
+}
+
+// walk scans dir and the directories below it. It returns false when the
+// answer is unknown.
+func (s *hardLinkScan) walk(dir string) bool {
 	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		// A directory this process cannot list belongs to another account
-		// (the shared proxy's state directory, for example). A file this
-		// process owns is not one of that account's files, so it is not
-		// held there; failing closed on it would refuse ordinary work on
-		// every multi-link file the user owns (package-manager stores).
-		if fileOwnedByCurrentUser(info) {
-			return nil
-		}
-		return unknownHardLinkAliases(dir, resolved)
+		return os.IsNotExist(err)
 	}
-	defer func() { _ = f.Close() }()
-	entries, err := f.ReadDir(localPathMaxDirEntries + 1)
+	entries, err := f.ReadDir(s.remaining + 1)
+	_ = f.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
-		return unknownHardLinkAliases(dir, resolved)
+		return false
 	}
-	if len(entries) > localPathMaxDirEntries {
-		return unknownHardLinkAliases(dir, resolved)
+	if len(entries) > s.remaining {
+		return false
 	}
-	var aliases []string
+	s.remaining -= len(entries)
 	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-		entryInfo, err := entry.Info()
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue // removed since the listing
+		switch {
+		case entry.Type().IsRegular():
+			entryInfo, err := entry.Info()
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue // removed since the listing
+				}
+				return false
 			}
-			return unknownHardLinkAliases(dir, resolved)
-		}
-		if os.SameFile(info, entryInfo) {
-			aliases = append(aliases, filepath.Join(dir, entry.Name()))
+			if os.SameFile(s.target, entryInfo) {
+				s.aliases = append(s.aliases, filepath.Join(dir, entry.Name()))
+			}
+		case entry.IsDir():
+			entryInfo, err := entry.Info()
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return false
+			}
+			if differentDevice(s.target, entryInfo) {
+				continue
+			}
+			if !s.walk(filepath.Join(dir, entry.Name())) {
+				return false
+			}
 		}
 	}
-	return aliases
+	return true
 }
 
 // unknownHardLinkAliases is the fail-closed spelling for a file that may be a

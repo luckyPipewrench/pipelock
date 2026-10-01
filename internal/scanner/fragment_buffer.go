@@ -46,8 +46,32 @@ type fragment struct {
 
 // sessionBuffer accumulates outbound fragments for a single session.
 type sessionBuffer struct {
-	fragments  []fragment
-	totalBytes int
+	streamID     string
+	groupMembers map[string]struct{}
+	fragments    []fragment
+	storage      []fragment
+	totalBytes   int
+}
+
+// appendFragmentReusingStorage keeps the active descriptors contiguous and in
+// their original order. Front eviction can leave reusable capacity before the
+// active slice; compact into that capacity only when the tail fills. Payload
+// and request-ID bytes are immutable, and scan snapshots own descriptor copies.
+// Callers hold the FragmentBuffer lock.
+func appendFragmentReusingStorage(active, storage []fragment, next fragment) ([]fragment, []fragment) {
+	if len(active) == cap(active) {
+		// After a large trim, let normal append replace the oversized backing
+		// array instead of retaining historical high-water capacity forever.
+		if len(storage) > len(active) && len(storage)-len(active) <= len(active) {
+			n := copy(storage, active)
+			clear(storage[n:])
+			active = storage[:n]
+		} else {
+			active = append(active, next)
+			return active, active[:cap(active)]
+		}
+	}
+	return append(active, next), storage
 }
 
 // MaxPathPositions is the largest URL path depth that CEE tracks. It bounds
@@ -67,6 +91,7 @@ type pathPositionBuffer struct {
 	initial    []byte
 	varied     bool
 	fragments  []fragment
+	storage    []fragment
 	totalBytes int
 }
 
@@ -310,7 +335,14 @@ func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey strin
 }
 
 func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, payload, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
-	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
+	sb, exists := fb.sessions[streamKey]
+	streamID := ""
+	if sb != nil {
+		streamID = sb.streamID
+	}
+	if streamID == "" {
+		streamID = fragmentStreamID(fragmentStreamKindData, streamKey)
+	}
 	// Normalized once here so everything below can assume a non-empty owner:
 	// a caller that keeps one stream per client passes no owner, and that
 	// stream is then its own identity.
@@ -320,14 +352,14 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 	if group == "" {
 		group = streamID
 	}
-	sb, exists := fb.sessions[streamKey]
 	if !exists {
 		if !fb.canAdmitOwnerLocked(owner) {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
-		sb = &sessionBuffer{}
+		sb = &sessionBuffer{streamID: streamID}
 		fb.sessions[streamKey] = sb
 		fb.trackOwnerStreamLocked(owner, group, streamID)
+		sb.groupMembers = fb.owners[owner].budgets[group]
 	} else if !fb.streamOwnedByLocked(streamID, owner) {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
@@ -341,7 +373,7 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 	}
 
 	now := time.Now()
-	sb.fragments = append(sb.fragments, fragment{
+	sb.fragments, sb.storage = appendFragmentReusingStorage(sb.fragments, sb.storage, fragment{
 		data:            copied,
 		at:              now,
 		sourceRequestID: requestID,
@@ -356,13 +388,16 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 }
 
 func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
-	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
-	if owner == "" {
-		owner = streamID
-	}
 	sb := fb.sessions[streamKey]
 	if sb == nil {
 		return // another stream's shared budget already evicted this stream
+	}
+	streamID := sb.streamID
+	if streamID == "" {
+		streamID = fragmentStreamID(fragmentStreamKindData, streamKey)
+	}
+	if owner == "" {
+		owner = streamID
 	}
 	// Evict oldest fragments until within per-session byte cap.
 	// A single fragment larger than maxBytes is truncated to maxBytes.
@@ -376,8 +411,13 @@ func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
 		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
-	// The per-stream cap above bounds one stream; this bounds the identity that
-	// owns it, which is the unit the ledger admits.
+	// The per-stream cap also bounds a singleton budget group. Shared groups
+	// need the same group-budget enforcement as enforceOwnerBudgetLocked below.
+	// Keep the membership map, never its size: another request can add a
+	// sibling stream to the group while this stream remains live.
+	if sb.groupMembers != nil && len(sb.groupMembers) <= 1 {
+		return
+	}
 	fb.enforceOwnerBudgetLocked(owner, streamID)
 }
 
@@ -476,13 +516,10 @@ func (fb *FragmentBuffer) streamBytesLocked(streamID string) int {
 	return 0
 }
 
-// enforceOwnerBudgetLocked keeps one identity's retained bytes within the
-// configured cap by evicting its OWN oldest fragment until it fits. Evicting
-// within an identity is the same trade the per-stream cap already makes, and
-// the newest bytes are kept because they are the ones most likely to complete
-// a split secret. It never touches another identity's evidence: a fragment
-// dropped from a stranger's stream could let a later request complete a secret
-// in an emptied stream and pass uninspected.
+// enforceOwnerBudgetLocked keeps the stream's budget group within the configured
+// cap by evicting its oldest fragments. Independent groups retain their own caps.
+// The newest bytes are kept because they are the ones most likely to complete a
+// split secret. It never touches another group's evidence.
 func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	state := fb.owners[owner]
 	if state == nil {
@@ -505,9 +542,9 @@ func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	}
 }
 
-// evictOldestOwnerFragmentLocked drops the single oldest fragment held by one
-// identity and reports whether anything was removed. A false return means the
-// identity holds nothing further that can be released, which stops the caller
+// evictOldestOwnerFragmentLocked drops the single oldest fragment in the budget
+// group and reports whether anything was removed. A false return means the
+// group holds nothing further that can be released, which stops the caller
 // from spinning.
 func (fb *FragmentBuffer) evictOldestOwnerFragmentLocked(members map[string]struct{}) bool {
 	var (
@@ -678,7 +715,7 @@ func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEId
 
 func (fb *FragmentBuffer) appendPathFragmentLocked(ps *pathSessionBuffer, pb *pathPositionBuffer, payload []byte) {
 	copied := append([]byte(nil), payload...)
-	pb.fragments = append(pb.fragments, fragment{data: copied, at: time.Now()})
+	pb.fragments, pb.storage = appendFragmentReusingStorage(pb.fragments, pb.storage, fragment{data: copied, at: time.Now()})
 	pb.totalBytes += len(copied)
 	ps.totalBytes += len(copied)
 }

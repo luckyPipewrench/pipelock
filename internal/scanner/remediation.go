@@ -704,10 +704,10 @@ func annotateNestedURLGuidance(g RemediationGuidance, label, reason, stripped st
 	// Test the STRIPPED reason, never the raw one. The raw reason still carries
 	// the query key, which the client chooses, so matching on it let a parameter
 	// named after the budget suppress the sentence on a genuine destination block.
-	if strings.Contains(strings.ToLower(stripped), strings.ToLower(nestedURLBudgetReason)) {
+	if !containsLowerASCII(reason, "nested url in query parameter") {
 		return g
 	}
-	if !strings.Contains(strings.ToLower(reason), "nested url in query parameter") {
+	if containsLowerASCII(stripped, nestedURLBudgetReason) {
 		return g
 	}
 	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."
@@ -719,6 +719,42 @@ func annotateNestedURLGuidance(g RemediationGuidance, label, reason, stripped st
 	}
 	g.OperatorKnob += nestedKnob
 	return g
+}
+
+// containsLowerASCII matches a lowercase ASCII phrase without allocating a
+// lowercase copy of ordinary diagnostic text. Non-ASCII input retains the
+// strings.ToLower mapping used by guidance, including Unicode case mappings.
+func containsLowerASCII(text, phrase string) bool {
+	if phrase == "" {
+		return true
+	}
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c >= 0x80 {
+			return strings.Contains(strings.ToLower(text), phrase)
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != phrase[0] || len(text)-i < len(phrase) {
+			continue
+		}
+		matched := true
+		for j := 1; j < len(phrase); j++ {
+			c = text[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != phrase[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // OperatorHintForResult is OperatorHintFor with Reason-based disambiguation. Use

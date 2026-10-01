@@ -3379,7 +3379,7 @@ The `environment` block is a required nested mapping with all three keys present
 
 Mode resolution: `EffectiveMode()` reads the field above, returning `live`, `shadow`, or `capture`; any other value resolves to `shadow`. This means a typo in `mode` does not silently enable enforcement.
 
-Restart vs reload: `enabled`, `store_dir`, `roster_path`, `environment.*`, and `pinned_root_fingerprint` require a process restart to change. `mode` and `minimum_signatures` are read whenever the contract loader is rebuilt, which is a restart or, for `pipelock run`, a config reload.
+Restart vs reload: every `learn_lock` setting, including `mode` and `minimum_signatures`, requires a process restart to change. A `pipelock run` config reload that changes the block logs a warning and keeps the previous settings. It still rebuilds the contract loader from those settings, which is how a newly promoted manifest takes effect on reload.
 
 ## Health Watchdog
 

@@ -759,7 +759,10 @@ func (e *Engine) stripCommentTraps(doc string, xml bool) (string, int) {
 						}
 					}
 				}
-				if typ == html.StartTagToken && (ns != "" || rawTextElements[tag]) {
+				// HTML descendants mask integration-point state until their close.
+				// HTML ignores a trailing slash on non-void start tags.
+				trackHTML := ns == "" && !commentHTMLVoid(tag) && (len(boundaries) > 0 || rawTextElements[tag])
+				if (ns != "" && typ == html.StartTagToken) || trackHTML {
 					boundary.previous = -1
 					if index, ok := boundaryIndexes[tag]; ok {
 						boundary.previous = index
@@ -790,6 +793,16 @@ type commentBoundary struct {
 	tag, namespace    string
 	foreign, mathText bool
 	previous          int
+}
+
+// commentHTMLVoid identifies HTML elements that do not enter the open-element
+// stack. Foreign elements with the same names are not HTML void elements.
+func commentHTMLVoid(tag string) bool {
+	switch tag {
+	case "area", "base", "basefont", "bgsound", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	}
+	return false
 }
 
 // commentForeignBreakout identifies the standard tokens that leave foreign

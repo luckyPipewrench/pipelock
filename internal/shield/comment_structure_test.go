@@ -191,6 +191,19 @@ func TestCommentTrapNamespaceConsumerParity(t *testing.T) {
 	for _, tag := range []string{"b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var"} {
 		cases = append(cases, `<svg><g><`+tag+`><style>`+trap+`</style></`+tag+`></g></svg>`)
 	}
+	// A MathML text integration point grants foreign handling only to its
+	// direct mglyph/malignmark children, never to HTML descendants.
+	for _, integration := range []string{"mi", "mo", "mn", "ms", "mtext"} {
+		for _, child := range []string{"mglyph", "malignmark"} {
+			for _, htmlChild := range []string{"div", "span", "section", "custom-element"} {
+				for _, opener := range []string{"<" + htmlChild + ">", "<" + htmlChild + "/>"} {
+					cases = append(cases, "<math><"+integration+">"+opener+"<"+child+"><style>"+trap+"</style></"+child+"></"+htmlChild+"></"+integration+"></math>")
+				}
+			}
+			cases = append(cases, "<math><"+integration+"><br><"+child+"><style>"+trap+"</style></"+child+"></"+integration+"></math>")
+			cases = append(cases, "<math><"+integration+"><div></div><"+child+"><style>"+trap+"</style></"+child+"></"+integration+"></math>")
+		}
+	}
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
 			// The complete consumer parser supplies the independent namespace

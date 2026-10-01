@@ -331,20 +331,23 @@ func Whitespace(s string) string {
 // exactly so the two functions share one mental model for stego whitespace.
 func StripExoticWhitespace(s string) string {
 	return strings.Map(func(r rune) rune {
-		switch r {
-		case '\u00A0',
-			'\u1680',
-			'\u180E',
-			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004',
-			'\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A',
-			'\u2028', '\u2029',
-			'\u202F',
-			'\u205F',
-			'\u3000':
+		if isExoticWhitespace(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+func isExoticWhitespace(r rune) bool {
+	switch r {
+	case '\u00A0', '\u1680', '\u180E',
+		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004',
+		'\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A',
+		'\u2028', '\u2029', '\u202F', '\u205F', '\u3000':
+		return true
+	default:
+		return false
+	}
 }
 
 // ZalgoSuspiciousThreshold is the minimum consecutive-combining-mark count that
@@ -472,6 +475,9 @@ func ReplaceInvisibleWithSpace(s string) string {
 // attacks that NFKC does not handle (Cyrillic, Greek lookalikes).
 func ConfusableToASCII(s string) string {
 	return strings.Map(func(r rune) rune {
+		if r < 0x80 {
+			return r
+		}
 		if mapped, ok := confusableMap[r]; ok {
 			return mapped
 		}
@@ -499,14 +505,15 @@ func StripCombiningMarks(s string) string {
 // Used in DLP scanning paths.
 func StripControlChars(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) {
-			return -1
-		}
-		if unicode.Is(InvisibleRanges, r) {
+		if isDLPControl(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+func isDLPControl(r rune) bool {
+	return r <= 0x1F || r == 0x7F || (r >= 0x80 && r <= 0x9F) || unicode.Is(InvisibleRanges, r)
 }
 
 // ForDLP applies the standard DLP normalization pipeline: strip all control/
@@ -521,12 +528,32 @@ func StripControlChars(s string) string {
 //
 //pipelock:provenance-transform dlp_normalize
 func ForDLP(s string) string {
-	s = StripControlChars(s)
-	s = StripExoticWhitespace(s)
+	// Printable ASCII is unchanged by every step below. Keep non-ASCII and
+	// control bytes on the full pipeline, including malformed UTF-8.
+	if isPrintableASCII(s) {
+		return s
+	}
+	// These two stages only delete runes. Their union preserves the original
+	// order and strings.Map's malformed UTF-8 repair while walking once.
+	s = strings.Map(func(r rune) rune {
+		if isDLPControl(r) || isExoticWhitespace(r) {
+			return -1
+		}
+		return r
+	}, s)
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	return s
+}
+
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // ForMatching applies the standard normalization pipeline for response/injection
@@ -555,7 +582,8 @@ func matchingNormalize(s string, recompose bool) string {
 	return s
 }
 
-// ASCIIUpper folds ASCII a-z to A-Z and leaves every other byte unchanged.
+// ASCIIUpper folds ASCII a-z to A-Z and retains other Unicode scalars.
+// Malformed UTF-8 becomes U+FFFD, matching strings.Map.
 // DNS 0x20 and RFC 4648 base32 case differences use this fold. It is not
 // Unicode case mapping.
 //

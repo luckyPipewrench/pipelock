@@ -363,6 +363,25 @@ func TestAutoAnchorRotatedChainTrustDerivation(t *testing.T) {
 		if _, err := autoAnchorTrustedKeys(grafted, emitter.SignerKeyHex()); err == nil || !strings.Contains(err.Error(), "not authorized by the live head") {
 			t.Fatalf("grafted prefix trust derivation err = %v, want backward-trust rejection", err)
 		}
+		// The oracle above is the old backward walk; the production streaming
+		// verifier must reject the same graft on its own.
+		verifier, err := receipt.NewHeadTrustedVerifier(emitter.SignerKeyHex(), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = verifier.Close() }()
+		var walkErr error
+		for _, r := range grafted {
+			if walkErr = verifier.Add(r); walkErr != nil {
+				break
+			}
+		}
+		if walkErr == nil {
+			_, _, walkErr = verifier.Finish()
+		}
+		if walkErr == nil {
+			t.Fatal("production streaming verifier accepted a grafted foreign prefix")
+		}
 	})
 
 	t.Run("spliced_foreign_segment_refused_before_submit", func(t *testing.T) {

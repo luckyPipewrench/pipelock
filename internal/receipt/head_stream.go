@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -187,7 +188,8 @@ func (s *boundedRunStore) write(r storedRun) error {
 		if _, err := rand.Read(s.key[:]); err != nil {
 			return err
 		}
-		dir, err := os.MkdirTemp("", "pipelock-chain-runs-")
+		sweepStaleSpillDirs(os.TempDir(), time.Now())
+		dir, err := os.MkdirTemp("", spillDirPrefix)
 		if err != nil {
 			return err
 		}
@@ -218,7 +220,7 @@ func (s *boundedRunStore) persist(r storedRun) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(s.path(r.Run), raw, 0o600); err != nil {
+	if err := writeSpillFile(s.dir, s.path(r.Run), raw); err != nil {
 		return err
 	}
 	if old == nil {
@@ -337,4 +339,56 @@ func (s *boundedRunStore) close() error {
 		return nil
 	}
 	return os.RemoveAll(s.dir)
+}
+
+const (
+	spillDirPrefix = "pipelock-chain-runs-"
+	// A walk refreshes its spill directory's mtime on every write, so a
+	// directory untouched this long belongs to a killed process.
+	staleSpillAge = 24 * time.Hour
+)
+
+// writeSpillFile writes through a fresh exclusively created file and renames
+// it into place. Rename replaces a planted symlink instead of following it, so
+// a same-user race cannot redirect the write to another file.
+func writeSpillFile(dir, path string, raw []byte) error {
+	f, err := os.CreateTemp(dir, ".spill-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// sweepStaleSpillDirs removes spill directories left by killed processes. It
+// is best effort: directories it cannot remove (another user's, in a sticky
+// temp directory) are left alone.
+func sweepStaleSpillDirs(root string, now time.Time) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), spillDirPrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleSpillAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(root, e.Name()))
+	}
 }

@@ -486,8 +486,14 @@ func (m *autoAnchorMonitor) buildCheckpoint(currentSignerKey string, prefixCount
 		return checkpoint, prefix, err
 	}
 	defer func() {
-		if closeErr := verifier.Close(); closeErr != nil && err == nil {
-			err = fmt.Errorf("clean up receipt verification state: %w", closeErr)
+		if closeErr := verifier.Close(); closeErr != nil {
+			if err == nil {
+				err = fmt.Errorf("clean up receipt verification state: %w", closeErr)
+			} else {
+				// Keep the walk failure as the cause, but never hide a spill
+				// directory left on disk.
+				err = errors.Join(err, fmt.Errorf("clean up receipt verification state: %w", closeErr))
+			}
 		}
 	}()
 	if err := m.walkFn(m.recorder.Dir(), m.sessionID, verifier.Add); err != nil {

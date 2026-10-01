@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHeadTrustedVerifierRepeatedRotations(t *testing.T) {
@@ -288,5 +290,55 @@ func TestBoundedRunStoreAuthenticationAndRollback(t *testing.T) {
 				t.Fatal("mutated/replayed set accepted")
 			}
 		})
+	}
+}
+
+func TestWriteSpillFileReplacesPlantedSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "run")
+	if err := os.Symlink(victim, target); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := writeSpillFile(dir, target, []byte("spill")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Clean(victim)); string(got) != "keep" {
+		t.Fatalf("spill write followed a planted symlink; victim now %q", got)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("target still a symlink or missing: %v %v", info, err)
+	}
+}
+
+func TestSweepStaleSpillDirs(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	stale := filepath.Join(root, spillDirPrefix+"stale")
+	fresh := filepath.Join(root, spillDirPrefix+"fresh")
+	other := filepath.Join(root, "unrelated-dir")
+	for _, d := range []string{stale, fresh, other} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := now.Add(-2 * staleSpillAge)
+	for _, d := range []string{stale, other} {
+		if err := os.Chtimes(d, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepStaleSpillDirs(root, now)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale spill dir not removed: %v", err)
+	}
+	for _, d := range []string{fresh, other} {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("%s should survive: %v", d, err)
+		}
 	}
 }

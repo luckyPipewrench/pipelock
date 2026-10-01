@@ -425,6 +425,7 @@ def verify_receipt_file(
                 if receipt.get("payload_kind") == SECRET_EGRESS_PAYLOAD_KIND:
                     decision = payload.get("decision")
                     if isinstance(decision, dict):
+                        report["action_id"] = decision.get("action_id")
                         report["transport"] = decision.get("transport")
                 else:
                     report["transport"] = payload.get("transport")

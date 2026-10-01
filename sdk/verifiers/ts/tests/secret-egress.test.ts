@@ -419,6 +419,9 @@ test("secret-egress: raw version spelling, duplicates, and size checked in file 
     const report = await runReceipt(file, publicKey);
     assert.equal(report.valid, true, report.error);
     assert.equal(report.transport, "forward");
+    const actionID = (r.payload as { decision: { action_id: string } }).decision.action_id;
+    assert.notEqual(actionID, r.event_id);
+    assert.equal(report.action_id, actionID);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

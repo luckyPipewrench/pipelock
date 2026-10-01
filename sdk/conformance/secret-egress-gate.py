@@ -56,7 +56,7 @@ def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise GateError(f"duplicate manifest field: {key}")
+            raise GateError(f"duplicate JSON field: {key}")
         result[key] = value
     return result
 
@@ -154,10 +154,38 @@ def load_corpus(directory: Path) -> Corpus:
             raise GateError(f"{name}: fixture paths must be unique")
         names.add(name)
         paths.add(path)
-        cases.append(Case(name, path, entry["valid"]))
+        case = Case(name, path, entry["valid"])
+        if case.valid:
+            require_secret_egress_fixture(case)
+        cases.append(case)
     if {case.valid for case in cases} != {False, True}:
         raise GateError("corpus must include both valid and invalid cases")
     return Corpus(manifest["public_key_hex"], tuple(cases))
+
+
+def require_secret_egress_fixture(case: Case) -> None:
+    """Bind expected-valid cases to this lane, without duplicating verification.
+
+    Negative cases can deliberately use another kind or malformed JSON. The
+    Go conformance test separately pins the committed corpus byte-for-byte;
+    this guard also binds a caller-selected standalone corpus to the new kind.
+    """
+    try:
+        receipt = json.loads(
+            case.path.read_text(encoding="utf-8"), object_pairs_hook=unique_object
+        )
+    except (OSError, UnicodeError, ValueError, GateError) as exc:
+        raise GateError(
+            f"{case.name}: cannot read expected-valid fixture: {exc}"
+        ) from exc
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("record_type") != "evidence_receipt_v2"
+        or receipt.get("payload_kind") != "secret_egress_decision_v1"
+    ):
+        raise GateError(
+            f"{case.name}: expected-valid fixture must be a secret-egress evidence receipt"
+        )
 
 
 def load_commands(environ: Mapping[str, str]) -> dict[str, list[str]]:

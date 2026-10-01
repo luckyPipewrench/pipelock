@@ -57,7 +57,12 @@ pub fn run_receipt(
         }
     }
     if string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2") {
-        report.action_id = string_at(&receipt, &["event_id"]).map(str::to_string);
+        report.action_id =
+            if string_at(&receipt, &["payload_kind"]) == Some(crate::secret_egress::PAYLOAD_KIND) {
+                string_at(&receipt, &["payload", "decision", "action_id"]).map(str::to_string)
+            } else {
+                string_at(&receipt, &["event_id"]).map(str::to_string)
+            };
         report.verdict = string_at(&receipt, &["payload", "verdict"]).map(str::to_string);
         report.transport =
             if string_at(&receipt, &["payload_kind"]) == Some(crate::secret_egress::PAYLOAD_KIND) {

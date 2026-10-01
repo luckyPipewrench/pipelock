@@ -77,8 +77,16 @@ export async function runReceipt(
   }
   if (receipt.record_type === "evidence_receipt_v2") {
     const payload = receipt.payload as
-      { verdict?: string; transport?: string; decision?: { transport?: string } } | undefined;
-    report.action_id = receipt.event_id;
+      | {
+          verdict?: string;
+          transport?: string;
+          decision?: { action_id?: string; transport?: string };
+        }
+      | undefined;
+    report.action_id =
+      receipt.payload_kind === secretEgressDecisionKind
+        ? payload?.decision?.action_id
+        : receipt.event_id;
     report.verdict = payload?.verdict;
     report.transport =
       receipt.payload_kind === secretEgressDecisionKind

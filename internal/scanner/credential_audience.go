@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -293,10 +294,36 @@ var releaseGrantSASSignedParamSet = func() map[string]bool {
 // parameter of Azure's user-delegation SAS signature. A forged, truncated, or
 // account-key SAS is missing at least one of these, so it fails closed here
 // even when it sits beside a valid grant.
+// releaseGrantSASFieldFormats pins each signed parameter of Azure's
+// user-delegation SAS to its documented value format, as GitHub issues it:
+// service and key versions are dates, expiry and key start/expiry are UTC
+// timestamps, the key object and tenant IDs are GUIDs, the permission,
+// resource, protocol and key-service fields are short fixed codes, and the
+// signature is one base64 HMAC-SHA256. A field outside its format cannot
+// carry other data under the release grant's DLP and entropy allowance.
+var releaseGrantSASFieldFormats = map[string]*regexp.Regexp{
+	"sp":    regexp.MustCompile(`^[a-z]{1,16}$`),
+	"sv":    regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`),
+	"sr":    regexp.MustCompile(`^[a-z]{1,2}$`),
+	"spr":   regexp.MustCompile(`^https(,http)?$`),
+	"se":    regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?Z$`),
+	"skoid": regexp.MustCompile(`^(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`),
+	"sktid": regexp.MustCompile(`^(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`),
+	"skt":   regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?Z$`),
+	"ske":   regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,7})?Z$`),
+	"sks":   regexp.MustCompile(`^[a-z]$`),
+	"skv":   regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`),
+	"sig":   regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`),
+}
+
+// releaseGrantSASShapeValid reports whether the query carries every signed
+// user-delegation SAS parameter exactly once, each in its documented format.
 func releaseGrantSASShapeValid(parsed *url.URL) bool {
 	query := parsed.Query()
 	for _, name := range releaseGrantSASSignedParams {
-		if query.Get(name) == "" {
+		values := query[name]
+		format := releaseGrantSASFieldFormats[name]
+		if len(values) != 1 || format == nil || !format.MatchString(values[0]) {
 			return false
 		}
 	}
@@ -538,7 +565,9 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 // delegation-key GUID) would still be blocked by entropy even after DLP has
 // allowed it, which would make the fix inert for the operator.
 func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
-	if parsed == nil || !releaseGrantSASSignedParamSet[strings.ToLower(key)] {
+	// The name is matched exactly, as the shape check matches it, so a case
+	// alias of a signed field cannot take an exemption meant for the field.
+	if parsed == nil || !releaseGrantSASSignedParamSet[key] {
 		return false
 	}
 	host, ok := canonicalCredentialAudienceDestination(parsed.String())

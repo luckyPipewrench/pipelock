@@ -35,6 +35,8 @@ type claudeCodePayload struct {
 	ToolName      string          `json:"tool_name"`
 	ToolInput     json.RawMessage `json:"tool_input"`
 	ToolUseID     string          `json:"tool_use_id"`
+	// Cwd is the session's working directory, where a pathless Grep searches.
+	Cwd string `json:"cwd"`
 }
 
 // Tool-specific input structs parsed from tool_input.
@@ -362,6 +364,22 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		var input grepToolInput
 		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
 			return nil, fmt.Errorf("parsing Grep tool_input: %w", err)
+		}
+		// A recursive search reads every file under its target, so a target
+		// that is, contains, or sits inside a credential directory is refused
+		// before any path is checked. A pathless search targets the session's
+		// working directory.
+		target := input.Path
+		if target == "" {
+			target = p.Cwd
+		}
+		if target == "" {
+			// No path and no cwd: the search runs in the hook's own
+			// working directory, so check that instead of skipping.
+			target = "."
+		}
+		if dir, ok := grepTargetCoversCredentialDir(target, p.Cwd); ok {
+			return nil, fmt.Errorf("refusing Grep over %s, which covers the credential directory %s; search a narrower path", target, dir)
 		}
 		if input.Path != "" {
 			// Grep prints matching file contents, so a populated path is a
@@ -850,4 +868,120 @@ func writeClaudeSettingsFile(cmd *cobra.Command, targetPath, targetDir string, e
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrote pipelock hooks to %s\n", targetPath)
 	return nil
+}
+
+// claudeGrepCredentialDirs are locations the shipped Credential File Access
+// rule protects, each with one file the rule denies, so a parity test fails
+// if the rule and this list disagree. A relative dir is a home directory
+// whose every file is sensitive: a search of it, inside it, or above it is
+// refused. An absolute dir holds one sensitive file (probe): only a search
+// whose target contains that file is refused.
+var claudeGrepCredentialDirs = []struct{ dir, probe string }{
+	{".ssh", "id_ed25519"},
+	{".aws", "credentials"},
+	{"/etc", "shadow"},
+}
+
+// claudeGrepCredentialDirPath returns the absolute path of a listed dir.
+func claudeGrepCredentialDirPath(home, dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(home, dir)
+}
+
+// grepTargetCoversCredentialDir reports whether a recursive search of target
+// would read inside a credential directory: the target is one, sits inside
+// one, or is an ancestor of one. Paths are resolved against cwd, "~" expands
+// to the home directory, and symlinks are followed where they exist.
+func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
+	if target == "" {
+		return "", false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Without the home directory the credential directories cannot be
+		// located, so refuse rather than let the search run unchecked.
+		return "an unresolvable home directory", true
+	}
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	// Build the absolute target by concatenation, not filepath.Join or Abs:
+	// both clean lexically, which turns "link/.." into the link's parent
+	// before the link is followed. EvalSymlinks then applies ".." to the
+	// resolved path, as the kernel does.
+	switch {
+	case target == "~":
+		target = home
+	case strings.HasPrefix(target, "~/"):
+		target = home + string(filepath.Separator) + target[2:]
+	case !filepath.IsAbs(target):
+		target = cwd + string(filepath.Separator) + target
+		if cwd == "" {
+			target = target[1:]
+		}
+	}
+	// A relative cwd, or none, is relative to this process's directory.
+	// Anchor it so every comparison below is between absolute paths.
+	if !filepath.IsAbs(target) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "an unresolvable working directory", true
+		}
+		target = wd + string(filepath.Separator) + target
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	switch {
+	case err == nil:
+		target = resolved
+	case hasDotDotSegment(target):
+		// A ".." that cannot be resolved against the real filesystem could
+		// land anywhere, so refuse rather than fall back to a lexical guess.
+		return "an unresolvable path containing ..", true
+	default:
+		target = filepath.Clean(target)
+	}
+	// A single regular file is not a recursive search: the file-path policy
+	// that follows decides it, including the SSH public-key exception.
+	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
+		return "", false
+	}
+	for _, c := range claudeGrepCredentialDirs {
+		listed := claudeGrepCredentialDirPath(home, c.dir)
+		if filepath.IsAbs(c.dir) {
+			file := filepath.Join(listed, c.probe)
+			for _, protected := range []string{file, resolve(file)} {
+				if pathWithin(protected, target) {
+					return file, true
+				}
+			}
+			continue
+		}
+		for _, dir := range []string{listed, resolve(listed)} {
+			if pathWithin(target, dir) || pathWithin(dir, target) {
+				return listed, true
+			}
+		}
+	}
+	return "", false
+}
+
+// pathWithin reports whether path is dir or lies below it.
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// hasDotDotSegment reports whether path contains a ".." element.
+func hasDotDotSegment(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }

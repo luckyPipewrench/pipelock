@@ -59,6 +59,12 @@ class GateTest(unittest.TestCase):
         }
         for entry in self.manifest["cases"]:
             (self.corpus / entry["file"]).write_text("{}", encoding="utf-8")
+        # Inert lane identifiers only: fake CLIs still do no cryptography.
+        self.valid_fixture = {
+            "record_type": "evidence_receipt_v2",
+            "payload_kind": "secret_egress_decision_v1",
+        }
+        (self.corpus / "valid.json").write_text(json.dumps(self.valid_fixture))
         self.save_manifest()
         self.fake = self.root / "fake verifier.py"
         self.fake.write_text(
@@ -106,6 +112,56 @@ class GateTest(unittest.TestCase):
         self.assertIn(
             "invalid reject accept accept accept accept EXPECT-MISMATCH", output
         )
+
+    def test_expected_valid_fixture_must_select_secret_egress_kind(self) -> None:
+        for value in (
+            {},
+            [],
+            self.valid_fixture | {"payload_kind": "proxy_decision"},
+            self.valid_fixture | {"record_type": "action_receipt_v1"},
+        ):
+            with self.subTest(value=value):
+                (self.corpus / "valid.json").write_text(json.dumps(value))
+                with patch.object(GATE.subprocess, "run") as run:
+                    code, output = self.invoke()
+                    run.assert_not_called()
+                self.assertEqual(code, 2, output)
+                self.assertIn("expected-valid fixture must be", output)
+
+    def test_every_expected_valid_fixture_is_bound_not_only_smoke(self) -> None:
+        self.manifest["cases"].append(
+            {
+                "name": "second",
+                "file": "second.json",
+                "valid": True,
+                "reason": "wrong lane",
+            }
+        )
+        (self.corpus / "second.json").write_text(
+            json.dumps(self.valid_fixture | {"payload_kind": "proxy_decision"})
+        )
+        self.save_manifest()
+        code, output = self.invoke()
+        self.assertEqual(code, 2, output)
+        self.assertIn("second: expected-valid fixture must be", output)
+
+    def test_negative_fixture_can_deliberately_have_another_kind(self) -> None:
+        (self.corpus / "invalid.json").write_text(
+            json.dumps(self.valid_fixture | {"payload_kind": "proxy_decision"})
+        )
+        code, output = self.invoke()
+        self.assertEqual(code, 0, output)
+
+    def test_expected_valid_fixture_json_failure_is_configuration_error(self) -> None:
+        for raw in (
+            "{",
+            '{"payload_kind":"secret_egress_decision_v1","payload_kind":"proxy_decision"}',
+        ):
+            with self.subTest(raw=raw):
+                (self.corpus / "valid.json").write_text(raw)
+                code, output = self.invoke()
+                self.assertEqual(code, 2, output)
+                self.assertIn("cannot read expected-valid fixture", output)
 
     def test_all_reject_fails_known_valid_smoke(self) -> None:
         self.fake_body("sys.exit(1)\n")

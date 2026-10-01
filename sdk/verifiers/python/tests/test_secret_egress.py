@@ -111,6 +111,9 @@ def test_signed_secret_egress_receipt_verifies(tmp_path: Path) -> None:
     report = verify_receipt_file(_write(tmp_path, receipt), PUBLIC_KEY)
     assert report["valid"] is True, report
     assert report["transport"] == "forward"
+    action_id = receipt["payload"]["decision"]["action_id"]
+    assert action_id != receipt["event_id"]
+    assert report["action_id"] == action_id
     # A syntactically valid hash is not a membership assertion.
     receipt["payload"]["registry_hash"] = "sha256:" + "b" * 64
     _sign(receipt)

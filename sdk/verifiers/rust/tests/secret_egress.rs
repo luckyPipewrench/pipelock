@@ -10,6 +10,7 @@ use pipelock_verifier_rs::secret_egress::{
 use pipelock_verifier_rs::signing::normalize_evidence_receipt;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Write;
 
 fn decision() -> Value {
     json!({
@@ -721,14 +722,41 @@ impl TempFixture {
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        fs::write(&path, text).unwrap();
-        Self(path)
+        Self::create(path, text).unwrap()
+    }
+
+    fn create(path: std::path::PathBuf, text: &str) -> std::io::Result<Self> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let fixture = Self(path);
+        let result = file.write_all(text.as_bytes());
+        drop(file);
+        result?;
+        Ok(fixture)
     }
 }
 impl Drop for TempFixture {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
+}
+
+#[test]
+fn temp_fixture_preserves_existing_file_and_cleans_its_own_file() {
+    let fixture = TempFixture::new("benign original fixture");
+    let path = fixture.0.clone();
+    let error = TempFixture::create(path.clone(), "replacement")
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "benign original fixture"
+    );
+    drop(fixture);
+    assert!(!path.exists());
 }
 
 #[test]
@@ -746,7 +774,9 @@ fn independent_signed_receipt_is_verified_without_claiming_compliance() {
         assert!(report.valid, "{:?}", report.error);
         assert_eq!(report.transport.as_deref(), Some("forward"));
         assert_eq!(report.verdict, None);
-        assert_eq!(report.action_id.as_deref(), receipt["event_id"].as_str());
+        let action_id = receipt["payload"]["decision"]["action_id"].as_str();
+        assert_ne!(action_id, receipt["event_id"].as_str());
+        assert_eq!(report.action_id.as_deref(), action_id);
         let unpinned = run_receipt(fixture.0.to_str().unwrap(), "", false).unwrap();
         assert!(!unpinned.valid);
         assert_eq!(unpinned.unpinned, Some(true));

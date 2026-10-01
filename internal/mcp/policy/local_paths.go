@@ -5,6 +5,7 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -199,8 +200,16 @@ type localProtectedCandidate struct {
 // resolved paths and the protected spelling of any protected location they
 // reach. It returns values unchanged when nothing new is found.
 func (l *localPathIdentity) expand(values []string) []string {
+	out, _ := l.expandNoted(values)
+	return out
+}
+
+// expandNoted is expand plus the operator-facing notes for every protected
+// directory whose hard-link walk was inconclusive, so a block caused by the
+// fail-closed rule can say so instead of showing only the rule it matched.
+func (l *localPathIdentity) expandNoted(values []string) ([]string, []string) {
 	if l == nil || len(values) == 0 {
-		return values
+		return values, nil
 	}
 	var extra []string
 	var candidates []localProtectedCandidate
@@ -249,10 +258,10 @@ func (l *localPathIdentity) expand(values []string) []string {
 		}
 	}
 	if len(extra) == 0 {
-		return values
+		return values, links.notes
 	}
 	out := append([]string(nil), values...)
-	return append(out, extra...)
+	return append(out, extra...), links.notes
 }
 
 // paths returns the absolute spellings value may name, or none when it is not
@@ -529,6 +538,8 @@ type hardLinkIndex struct {
 	// all holds every file, for a target that has no key either.
 	unkeyed []indexedFile
 	all     []indexedFile
+	// cause says why the answer is unknown; it is empty when known.
+	cause string
 }
 
 // hardLinkIndexes caches one hardLinkIndex per protected directory and device
@@ -536,7 +547,16 @@ type hardLinkIndex struct {
 // once however many path values the call carries.
 type hardLinkIndexes struct {
 	byDir map[hardLinkIndexKey]*hardLinkIndex
+	// notes holds one operator-facing line per protected directory whose walk
+	// was inconclusive and made a file match as a possible hard link.
+	notes []string
 }
+
+// Causes of an inconclusive hard-link walk.
+const (
+	hardLinkCauseUnlistable = "could not be listed"
+	hardLinkCauseBound      = "holds more entries than the walk examines"
+)
 
 type hardLinkIndexKey struct {
 	dir string
@@ -576,9 +596,21 @@ func (h *hardLinkIndexes) aliases(dir, resolved string, info, dirInfo os.FileInf
 		h.byDir[key] = idx
 	}
 	if !idx.known {
+		h.noteInconclusive(dir, idx.cause)
 		return unknownHardLinkAliases(dir, resolved)
 	}
 	return idx.lookup(info)
+}
+
+// noteInconclusive records, once per directory, that a file could not be ruled
+// out as a hard link into dir.
+func (h *hardLinkIndexes) noteInconclusive(dir, cause string) {
+	note := fmt.Sprintf("a file with more than one link could not be ruled out as a hard link into protected directory %s because that directory %s; "+
+		"check that Pipelock can list it, or that the file has only one link (stat -c %%h FILE)", dir, cause)
+	if slices.Contains(h.notes, note) {
+		return
+	}
+	h.notes = append(h.notes, note)
 }
 
 func (x *hardLinkIndex) lookup(target os.FileInfo) []string {
@@ -616,14 +648,20 @@ func (x *hardLinkIndex) walk(dir string, dirInfo os.FileInfo) bool {
 	hardLinkDirRead(dir)
 	f, err := os.Open(filepath.Clean(dir))
 	if err != nil {
-		return os.IsNotExist(err)
+		if os.IsNotExist(err) {
+			return true
+		}
+		x.cause = hardLinkCauseUnlistable
+		return false
 	}
 	entries, err := f.ReadDir(x.remaining + 1)
 	_ = f.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
+		x.cause = hardLinkCauseUnlistable
 		return false
 	}
 	if len(entries) > x.remaining {
+		x.cause = hardLinkCauseBound
 		return false
 	}
 	x.remaining -= len(entries)
@@ -635,6 +673,7 @@ func (x *hardLinkIndex) walk(dir string, dirInfo os.FileInfo) bool {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue // removed since the listing
 				}
+				x.cause = hardLinkCauseUnlistable
 				return false
 			}
 			x.record(filepath.Join(dir, entry.Name()), info)
@@ -644,6 +683,7 @@ func (x *hardLinkIndex) walk(dir string, dirInfo os.FileInfo) bool {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
+				x.cause = hardLinkCauseUnlistable
 				return false
 			}
 			if dirInfo != nil && differentDevice(dirInfo, info) {

@@ -822,6 +822,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
+	reasons = append(reasons, policyVerdict.Notes...)
 	if bindingReason != "" {
 		reasons = append(reasons, bindingReason)
 	}

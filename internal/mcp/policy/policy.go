@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -172,6 +173,10 @@ type Verdict struct {
 	Rules            []string // names of matched rules
 	RedirectProfile  string   // redirect profile key (set when action=redirect)
 	ResolutionPolicy config.DeferResolutionPolicy
+	// Notes explain a cause the rule name does not show, such as a protected
+	// directory that could not be listed to rule out a hard link. They never
+	// change the action or the rule names.
+	Notes []string
 }
 
 // New compiles policy rules from config. Returns nil if disabled or no rules
@@ -277,7 +282,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	// With local path identity enabled, the resolved location of each submitted
 	// path joins the match set, so a link to a protected file matches the rule
 	// that protects it.
-	matchArgs := pc.localPaths.expand(argStrings)
+	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
 	tokens, joined := normalizeArgTokens(matchArgs, normalize.ForMatching, policyPreNormalize)
 	altTokens, altJoined := normalizeArgTokens(matchArgs, normalize.ForPolicy, policyPreNormalize)
 	baseTokens, baseJoined := normalizeArgTokens(matchArgs, normalize.ForMatching, nil)
@@ -320,7 +325,8 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings := pc.localPaths.expand(scoped.Strings)
+			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings)
+			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
@@ -330,7 +336,9 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				matchStrings := patchTargetMatchStrings(argStrings, pc.localPaths.expand(withPatchPrefixStripped(patchTargets)))
+				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets))
+				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
+				matchStrings := patchTargetMatchStrings(argStrings, expandedTargets)
 				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
 				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
 				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
@@ -401,7 +409,17 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		Rules:            matchedRules,
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
+		Notes:            linkNotes,
 	}
+}
+
+func appendUniqueNotes(notes, more []string) []string {
+	for _, n := range more {
+		if !slices.Contains(notes, n) {
+			notes = append(notes, n)
+		}
+	}
+	return notes
 }
 
 func appendUniqueRule(rules []string, rule string) []string {

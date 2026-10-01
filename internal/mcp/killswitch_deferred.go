@@ -58,33 +58,81 @@ func watchDeferredKillSwitch(ctx context.Context, ks *killswitch.Controller, man
 	}
 }
 
-// emitKillSwitchDenialReceipt signs the refusal of a tool call (or A2A
+// maxKillSwitchBatchReceipts caps how many members of one refused JSON-RPC
+// batch get an individual receipt. A batch is refused as a whole and every
+// member costs a signature on the reader goroutine, so an uncapped batch lets
+// one message become one receipt per member for as long as the kill switch is
+// active. The client's response is not capped: every member with an id still
+// gets its error.
+const maxKillSwitchBatchReceipts = 64
+
+// refuseKillSwitchRequest signs the refusal of a message the kill switch
+// denied and returns the batch response to send, or nil when the frame is not a
+// batch or no member has an id, so the caller keeps its single-message and
+// notification handling. A batch is parsed once for both the receipts and the
+// response.
+func refuseKillSwitchRequest(opts MCPProxyOpts, logW io.Writer, frame MCPFrame, d killswitch.Decision) []byte {
+	if !frame.IsBatch {
+		emitKillSwitchDenialReceipt(opts, logW, frame, d)
+		return nil
+	}
+	members := killSwitchBatchMembers(frame)
+	emitKillSwitchBatchReceipts(opts, logW, members, d)
+	return killSwitchBatchResponse(members, d.Message)
+}
+
+// emitKillSwitchBatchReceipts receipts the members of a refused batch that are
+// tool calls or A2A requests, up to maxKillSwitchBatchReceipts. The batch
+// wrapper has no target of its own, and a refused batch must not leave less
+// evidence than the same calls sent one at a time, but the evidence is bounded:
+// past the cap nothing more is signed and one warning says how many were not.
+func emitKillSwitchBatchReceipts(opts MCPProxyOpts, logW io.Writer, members []MCPFrame, d killswitch.Decision) {
+	if opts.receiptEmitter() == nil {
+		return
+	}
+	receipted, skipped := 0, 0
+	for _, member := range members {
+		if _, _, ok := killSwitchReceiptTarget(member); !ok {
+			continue
+		}
+		if receipted >= maxKillSwitchBatchReceipts {
+			skipped++
+			continue
+		}
+		receipted++
+		emitKillSwitchDenialReceipt(opts, logW, member, d)
+	}
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(logW, "pipelock: kill switch refused a batch: %d refused members were not individually receipted (cap %d)\n",
+			skipped, maxKillSwitchBatchReceipts)
+	}
+}
+
+// killSwitchReceiptTarget returns the receipt method and target of a frame, or
+// false when it has none: only a tool call or an A2A method is receipted, the
+// same rule every other MCP block uses.
+func killSwitchReceiptTarget(frame MCPFrame) (method, target string, ok bool) {
+	if frame.ToolCallName != "" {
+		return methodToolsCall, frame.ToolCallName, true
+	}
+	if IsA2AMethod(frame.Method) {
+		return frame.Method, frame.Method, true
+	}
+	return "", "", false
+}
+
+// emitKillSwitchDenialReceipt signs the refusal of a single tool call (or A2A
 // request) by the kill switch. Held calls the kill switch cancels already
 // produce a kill_switch resolution receipt; a plain call refused before it
 // reaches any other gate produced nothing, so the receipt chain showed an
 // allowed call followed by silence while the client had in fact been refused.
+// A batch goes through refuseKillSwitchRequest, which bounds its receipts.
 //
-// Only frames with a receipt target (a tool call or an A2A method) are
-// receipted, the same rule every other MCP block uses. A JSON-RPC batch is
-// refused as a whole, so each of its members that is a tool call or A2A request
-// gets its own receipt: the batch wrapper has no target of its own, and a
-// refused batch must not leave less evidence than the same calls sent one at a
-// time. A failure to emit is logged and, under require_receipts, reported; the
+// A failure to emit is logged and, under require_receipts, reported; the
 // denial itself stands either way because it is already fail-closed.
 func emitKillSwitchDenialReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFrame, d killswitch.Decision) {
-	if frame.IsBatch {
-		for _, member := range killSwitchBatchMembers(frame) {
-			emitKillSwitchDenialReceipt(opts, logW, member, d)
-		}
-		return
-	}
-	method := methodToolsCall
-	target := frame.ToolCallName
-	if target == "" && IsA2AMethod(frame.Method) {
-		method = frame.Method
-		target = frame.Method
-	}
-	if target == "" {
+	method, target, ok := killSwitchReceiptTarget(frame)
+	if !ok {
 		return
 	}
 	emitter := opts.receiptEmitter()
@@ -134,17 +182,14 @@ func killSwitchBatchMembers(frame MCPFrame) []MCPFrame {
 
 // killSwitchBatchResponse answers a refused batch the way the single-object
 // path answers a refused request: one -32004 error per member that carries an
-// id, as a JSON-RPC batch response. It returns nil when the frame is not a
-// batch or no member has an id (every member is a notification), so the caller
-// keeps its notification handling for that case.
-func killSwitchBatchResponse(frame MCPFrame, message string) []byte {
-	if !frame.IsBatch {
-		return nil
-	}
+// id, as a JSON-RPC batch response. It returns nil when no member has an id
+// (every member is a notification, or there are none), so the caller keeps its
+// notification handling for that case.
+func killSwitchBatchResponse(members []MCPFrame, message string) []byte {
 	var out bytes.Buffer
 	out.WriteByte('[')
 	count := 0
-	for _, member := range killSwitchBatchMembers(frame) {
+	for _, member := range members {
 		if member.ID == nil {
 			continue
 		}

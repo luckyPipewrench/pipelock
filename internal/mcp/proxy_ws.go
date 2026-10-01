@@ -204,8 +204,8 @@ func RunWSProxy(
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
-				emitKillSwitchDenialReceipt(wsOpts, safeLogW, frame, d)
-				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+				batchResp := refuseKillSwitchRequest(wsOpts, safeLogW, frame, d)
+				if batchResp != nil {
 					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 					}

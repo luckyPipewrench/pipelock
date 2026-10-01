@@ -113,7 +113,7 @@ func killSwitchBatchController() *killswitch.Controller {
 func TestKillSwitchBatchResponse(t *testing.T) {
 	for _, tc := range killSwitchBatchCases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := killSwitchBatchResponse(ParseMCPFrame([]byte(tc.body)), killSwitchBatchMessage)
+			got := killSwitchBatchResponse(killSwitchBatchMembers(ParseMCPFrame([]byte(tc.body))), killSwitchBatchMessage)
 			if tc.wantIDs == nil {
 				if got != nil {
 					t.Fatalf("response = %s, want nil", got)
@@ -124,7 +124,7 @@ func TestKillSwitchBatchResponse(t *testing.T) {
 		})
 	}
 	t.Run("single object is not answered as a batch", func(t *testing.T) {
-		if got := killSwitchBatchResponse(ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"}`)), "m"); got != nil {
+		if got := killSwitchBatchResponse(killSwitchBatchMembers(ParseMCPFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"}`))), "m"); got != nil {
 			t.Fatalf("response = %s, want nil", got)
 		}
 	})

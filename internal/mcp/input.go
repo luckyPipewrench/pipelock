@@ -370,8 +370,8 @@ func ForwardScannedInput(
 				if manager := opts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
-				emitKillSwitchDenialReceipt(opts, logW, frame, d)
-				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+				batchResp := refuseKillSwitchRequest(opts, logW, frame, d)
+				if batchResp != nil {
 					blockedCh <- BlockedRequest{
 						LogMessage:        fmt.Sprintf("pipelock: input line %d: kill switch denied batch (source=%s)", lineNum, d.Source),
 						SyntheticResponse: batchResp,
@@ -1129,6 +1129,7 @@ func ForwardScannedInput(
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
+		reasons = append(reasons, policyVerdict.Notes...)
 		if bindingReason != "" {
 			reasons = append(reasons, bindingReason)
 		}

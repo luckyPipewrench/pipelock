@@ -246,8 +246,8 @@ func RunHTTPProxy(
 				if manager := fwdOpts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
-				emitKillSwitchDenialReceipt(fwdOpts, safeLogW, frame, d)
-				if batchResp := killSwitchBatchResponse(frame, d.Message); batchResp != nil {
+				batchResp := refuseKillSwitchRequest(fwdOpts, safeLogW, frame, d)
+				if batchResp != nil {
 					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
 					}

@@ -971,6 +971,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				if urlDLPAction == "" {
 					urlDLPAction = config.ActionBlock
 				}
+				// The record must carry the verdict the live path enforces,
+				// including the critical-credential hard block below.
+				if shouldHardBlockRequestDLP(pathDLP.Matches, cfg) {
+					urlDLPAction = config.ActionBlock
+				}
 			}
 			captureAgent := reverseCaptureAgent(r)
 			rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
@@ -1651,8 +1656,33 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Forward to upstream. Response scanning happens in modifyResponse.
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
-	rp.proxy.ServeHTTP(w, r)
+	rp.proxy.ServeHTTP(&reverseInformationalGuardWriter{ResponseWriter: w}, r)
 }
+
+// reverseInformationalGuardWriter keeps an upstream's 1xx informational
+// responses (103 Early Hints and the like) from carrying Pipelock-namespace
+// headers. httputil.ReverseProxy copies those headers to the client writer and
+// sends them before modifyResponse runs, so the final-response strip cannot see
+// them and a forged X-Pipelock-Block-Reason would reach the client first.
+type reverseInformationalGuardWriter struct {
+	http.ResponseWriter
+}
+
+func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
+	if code >= http.StatusContinue && code < http.StatusOK && code != http.StatusSwitchingProtocols {
+		h := w.Header()
+		for name := range h {
+			if isPipelockNamespaceName(name) {
+				delete(h, name)
+			}
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the real writer for flush and
+// hijack, which the reverse proxy needs for streaming and upgrades.
+func (w *reverseInformationalGuardWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // reverseSigningRoundTripper wraps the base transport used by
 // httputil.ReverseProxy so envelope signing runs AFTER Director has
@@ -1883,6 +1913,12 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			if bodyAction == "" {
 				bodyAction = config.ActionBlock
 			}
+			// Mirror the hard blocks enforced below so the record matches the
+			// 403 the client receives.
+			if shouldHardBlockBodyCriticalDLP(result, rp.upstream.Hostname(), cfg) ||
+				shouldHardBlockBodyPromptInjection(result, rp.upstream.Hostname(), cfg) {
+				bodyAction = config.ActionBlock
+			}
 		}
 		captureAgent := reverseCaptureAgent(r)
 		rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
@@ -2087,7 +2123,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// caller.
 	blockreason.StripRecordedReceipt(resp.Header)
 	responseBodyLimit := rp.responseScanBodyLimit()
-	stripUpstreamShieldRewriteMarker(resp)
+	stripUpstreamPipelockNamespace(resp)
 	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
 	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
 	if cfg == nil || sc == nil {
@@ -3455,6 +3491,9 @@ func replaceWithMediaBlockResponse(resp *http.Response, reason string, info bloc
 	resp.ContentLength = int64(len(blockBody))
 	resp.StatusCode = http.StatusForbidden
 	resp.Status = http.StatusText(http.StatusForbidden)
+	// The block response is synthetic: no upstream trailer is announced or
+	// relayed with it.
+	resp.Trailer = nil
 	for k := range resp.Header {
 		delete(resp.Header, k)
 	}
@@ -3511,6 +3550,9 @@ func replaceWithBlockReason(resp *http.Response, reason string, info blockreason
 	resp.ContentLength = int64(len(blockBody))
 	resp.StatusCode = http.StatusForbidden
 	resp.Status = http.StatusText(http.StatusForbidden)
+	// The block response is synthetic: no upstream trailer is announced or
+	// relayed with it.
+	resp.Trailer = nil
 	// Clear all upstream headers. The blocked response is entirely
 	// synthetic - no upstream header should survive.
 	for k := range resp.Header {

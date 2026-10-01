@@ -3992,18 +3992,46 @@ func shieldRewriteHeaderValue(summary *receipt.ShieldSummary) string {
 // proxy relays upstream trailers after the body, so a forged marker there would
 // otherwise survive the header strip.
 func stripUpstreamShieldRewriteMarker(resp *http.Response) {
+	stripUpstreamResponseNames(resp, func(name string) bool {
+		return strings.EqualFold(name, shieldRewriteHeader)
+	})
+}
+
+// pipelockHeaderPrefix is the namespace Pipelock reserves for its own response
+// headers: the block-reason set, the recorded-receipt handle, hints and the
+// shield marker. An upstream has no business writing into it.
+const pipelockHeaderPrefix = "x-pipelock-"
+
+func isPipelockNamespaceName(name string) bool {
+	return len(name) >= len(pipelockHeaderPrefix) &&
+		strings.EqualFold(name[:len(pipelockHeaderPrefix)], pipelockHeaderPrefix)
+}
+
+// stripUpstreamPipelockNamespace removes every upstream-supplied X-Pipelock-*
+// name from a response: headers, trailer keys, and the names in the announced
+// Trailer list, including trailers that only appear once the body is read.
+// Only Pipelock's own values, applied after this runs, may carry the namespace.
+func stripUpstreamPipelockNamespace(resp *http.Response) {
+	stripUpstreamResponseNames(resp, isPipelockNamespaceName)
+}
+
+func stripUpstreamResponseNames(resp *http.Response, match func(name string) bool) {
 	if resp == nil {
 		return
 	}
 	if resp.Header != nil {
-		resp.Header.Del(shieldRewriteHeader)
+		for name := range resp.Header {
+			if match(name) {
+				delete(resp.Header, name)
+			}
+		}
 		if announced := resp.Header.Values("Trailer"); len(announced) > 0 {
 			kept := make([]string, 0, len(announced))
 			for _, value := range announced {
 				var names []string
 				for _, name := range strings.Split(value, ",") {
 					name = strings.TrimSpace(name)
-					if name == "" || strings.EqualFold(name, shieldRewriteHeader) {
+					if name == "" || match(name) {
 						continue
 					}
 					names = append(names, name)
@@ -4018,28 +4046,35 @@ func stripUpstreamShieldRewriteMarker(resp *http.Response) {
 			}
 		}
 	}
-	if resp.Trailer != nil {
-		resp.Trailer.Del(shieldRewriteHeader)
-	}
+	deleteMatchingTrailers(resp, match)
 	// The transport fills resp.Trailer only once the body reaches EOF, and the
 	// reverse proxy copies trailers after the body, so the delete above runs
 	// too early for a real trailer. Wrap the body to delete again at EOF.
 	if resp.Body != nil {
-		resp.Body = &shieldTrailerStrippingBody{ReadCloser: resp.Body, resp: resp}
+		resp.Body = &trailerStrippingBody{ReadCloser: resp.Body, resp: resp, match: match}
 	}
 }
 
-// shieldTrailerStrippingBody removes the marker from the response trailer map
-// the moment the body is exhausted, before any relay reads the trailers.
-type shieldTrailerStrippingBody struct {
-	io.ReadCloser
-	resp *http.Response
+func deleteMatchingTrailers(resp *http.Response, match func(name string) bool) {
+	for name := range resp.Trailer {
+		if match(name) {
+			delete(resp.Trailer, name)
+		}
+	}
 }
 
-func (b *shieldTrailerStrippingBody) Read(p []byte) (int, error) {
+// trailerStrippingBody removes matching names from the response trailer map
+// the moment the body is exhausted, before any relay reads the trailers.
+type trailerStrippingBody struct {
+	io.ReadCloser
+	resp  *http.Response
+	match func(name string) bool
+}
+
+func (b *trailerStrippingBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err != nil && b.resp.Trailer != nil {
-		b.resp.Trailer.Del(shieldRewriteHeader)
+		deleteMatchingTrailers(b.resp, b.match)
 	}
 	return n, err
 }

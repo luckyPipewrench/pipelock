@@ -649,11 +649,48 @@ func (e *Engine) stripTraps(s string, strictness string, xml bool) (string, int)
 
 	// Comment traps are stripped at standard and aggressive.
 	if strictness != config.ShieldStrictnessMinimal {
-		s, n = countReplace(e.commentTrapRe, s)
+		s, n = e.stripCommentTraps(s, xml)
 		total += n
 	}
 
 	return s, total
+}
+
+// stripCommentTraps bounds each match to one parsed comment so markup between
+// separate comments cannot become part of a removal. Raw token bytes preserve
+// the document's serialization, including malformed or incomplete input.
+func (e *Engine) stripCommentTraps(doc string, xml bool) (string, int) {
+	if !strings.Contains(doc, "<!--") {
+		return doc, 0
+	}
+	z := html.NewTokenizer(strings.NewReader(doc))
+	z.AllowCDATA(xml)
+	var out strings.Builder
+	out.Grow(len(doc))
+	hits := 0
+	for {
+		typ := z.Next()
+		raw := z.Raw()
+		if xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken) {
+			// XML has no HTML raw-text elements; literal comments remain markup
+			// inside style/title/textarea as well as after self-closing tags.
+			z.NextIsNotRawText()
+		}
+		match := raw
+		if typ == html.CommentToken && bytes.HasSuffix(raw, []byte("--!>")) {
+			// HTML accepts this alternate closing delimiter. Normalize only the
+			// matching view, retaining raw serialization for ordinary comments.
+			match = append(append([]byte(nil), raw[:len(raw)-4]...), []byte("-->")...)
+		}
+		if typ == html.CommentToken && e.commentTrapRe.Match(match) {
+			hits++
+		} else {
+			out.Write(raw)
+		}
+		if typ == html.ErrorToken {
+			return out.String(), hits
+		}
+	}
 }
 
 // buildShimList assembles the ordered list of shim scripts to inject.

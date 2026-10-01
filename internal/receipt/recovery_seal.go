@@ -513,11 +513,22 @@ func publishRecoverySeal(req linkRequest, predecessor string) (*RecoverySeal, er
 		if o == nil || o.RecorderSession != req.self || r.ActionRecord.ChainSeq != 0 {
 			return nil, errors.New("recovery requires a bound successor session_open")
 		}
+		// Apply the verifier's successor checks before signing, so a seal is
+		// never published that every verifier would reject.
+		if r.SignerKey != key {
+			return nil, errors.New("recovery successor session_open was signed by a different key than the seal")
+		}
+		if r.ActionRecord.ChainPrevHash != ComputeSessionOpenGenesis(*o) {
+			return nil, errors.New("recovery successor session_open does not start from its genesis")
+		}
 		s.SuccessorOpenHash, err = ReceiptHash(*r)
 		if err != nil {
 			return nil, err
 		}
 		break
+	}
+	if s.SuccessorOpenHash == "" {
+		return nil, errors.New("recovery requires a successor session_open before sealing")
 	}
 	s.SuccessorSession, s.ObservedAt = req.self, req.now.UTC().Format(time.RFC3339Nano)
 	s, err = SignRecoverySeal(s, req.privKey)

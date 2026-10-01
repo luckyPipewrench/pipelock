@@ -378,3 +378,31 @@ func TestRecoveryStreamLiveArchiveBeyondOfflineCeiling(t *testing.T) {
 		t.Fatalf("offline per-file ceiling lost: %v", err)
 	}
 }
+
+func TestPublishRecoverySealRequiresMatchingSuccessorKey(t *testing.T) {
+	dir, original, _ := recoveryFixture(t)
+	claim := filepath.Join(dir, ChainLinkFileName(original.PredecessorSession))
+	if err := os.Remove(claim); err != nil {
+		t.Fatal(err)
+	}
+	_, otherKey := generateTestKey(t)
+	_, err := publishRecoverySeal(linkRequest{dir: dir, self: original.SuccessorSession, privKey: otherKey, now: time.Now().UTC()}, original.PredecessorSession)
+	if err == nil || !strings.Contains(err.Error(), "signed by a different key") {
+		t.Fatalf("published a seal the verifier would reject, or wrong error: %v", err)
+	}
+	if _, statErr := os.Stat(claim); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected publication still wrote a claim file: %v", statErr)
+	}
+}
+
+func TestPublishRecoverySealRequiresSuccessorOpen(t *testing.T) {
+	dir, original, key := recoveryFixture(t)
+	if err := os.Remove(filepath.Join(dir, ChainLinkFileName(original.PredecessorSession))); err != nil {
+		t.Fatal(err)
+	}
+	missing := "proxy.run." + strings.Repeat("e", 32)
+	_, err := publishRecoverySeal(linkRequest{dir: dir, self: missing, privKey: key, now: time.Now().UTC()}, original.PredecessorSession)
+	if err == nil {
+		t.Fatal("sealed a recovery with no successor session_open")
+	}
+}

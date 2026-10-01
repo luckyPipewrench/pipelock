@@ -195,7 +195,12 @@ the run it continues. The doctor verifies every link file it finds and lists
 the runs no link file continues. Structural checks do not establish restart
 continuity: deleting a link file is not detected and makes its successor
 appear unlinked. Key trust across a link is judged by verify-receipt --chain,
-not here.`,
+not here.
+
+When a run's last shard was torn by a crash, the slot may instead hold a
+signed recovery seal. A valid seal is reported as an attested discontinuity:
+the damage stays a finding and the doctor still exits nonzero. A seal records
+what Pipelock observed; it does not prove the damage was accidental.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := runEvidenceDoctor(args[0])

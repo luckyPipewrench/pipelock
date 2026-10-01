@@ -513,7 +513,9 @@ Agent violates policy
 
 The examples below use port 9090. Replace with whatever you set in
 `kill_switch.api_listen`. If `api_listen` is not set, the API lives on the
-main proxy port (default 8888).
+main proxy port (default 8888). This API belongs to `pipelock run`: a standalone
+`pipelock mcp proxy` listener serves only the deferred-action routes, so these
+paths return 404 there.
 
 **Toggle:**
 

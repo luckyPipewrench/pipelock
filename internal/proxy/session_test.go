@@ -397,6 +397,32 @@ func TestSessionState_EscalationThresholdDoubles(t *testing.T) {
 	}
 }
 
+// TestSessionState_EscalationLadderCumulative pins the documented ladder: with
+// a base threshold T the levels are reached at T, 2T and 4T, because the
+// threshold doubles after each escalation. docs/configuration.md once said 3T.
+func TestSessionState_EscalationLadderCumulative(t *testing.T) {
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	defer sm.Close()
+	sess := sm.GetOrCreate(testClientIP)
+
+	const base = 5.0
+	reachedAt := map[int]float64{}
+	for range 40 {
+		before := sess.EscalationLevel()
+		sess.RecordSignal(session.SignalNearMiss, base) // +1 each
+		if lvl := sess.EscalationLevel(); lvl != before {
+			reachedAt[lvl] = sess.ThreatScore()
+		}
+	}
+	want := map[int]float64{1: base, 2: 2 * base, 3: 4 * base}
+	for lvl, score := range want {
+		if got := reachedAt[lvl]; got != score {
+			t.Errorf("level %d reached at score %.1f, want %.1f", lvl, got, score)
+		}
+	}
+}
+
 func TestSessionState_EscalationSticky(t *testing.T) {
 	cfg := testSessionConfig()
 	sm := NewSessionManager(cfg, nil, nil)

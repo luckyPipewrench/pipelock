@@ -18,9 +18,9 @@ import (
 // could match. When a prefix hits, only those specific patterns are tested
 // instead of the full set.
 type dlpPreFilter struct {
-	// prefixes maps each lowercased literal prefix to the pattern indices
+	// prefixes associates each lowercased literal prefix with the pattern indices
 	// in the parent Scanner.dlpPatterns slice that share that prefix.
-	prefixes map[string][]int
+	prefixes []dlpPrefix
 
 	// alwaysRun holds pattern indices that have no extractable literal prefix
 	// (e.g., SSN with \d digits, generic credential patterns with alternations).
@@ -28,12 +28,16 @@ type dlpPreFilter struct {
 	alwaysRun []int
 }
 
+type dlpPrefix struct {
+	text    string
+	indices []int
+}
+
 // newDLPPreFilter builds a pre-filter from compiled DLP patterns.
 // It extracts the longest literal prefix from each pattern's regex source.
 func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
-	pf := &dlpPreFilter{
-		prefixes: make(map[string][]int),
-	}
+	pf := &dlpPreFilter{}
+	prefixes := make(map[string][]int)
 
 	for i, p := range patterns {
 		anchors := extractRequiredLiteralAnchors(p.re.String())
@@ -44,9 +48,16 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 		for _, anchor := range anchors {
 			// Store lowercased: the input will also be lowercased before checking.
 			lower := strings.ToLower(anchor)
-			pf.prefixes[lower] = append(pf.prefixes[lower], i)
+			prefixes[lower] = append(prefixes[lower], i)
 		}
 	}
+	// Prefixes are immutable for this scanner. Compile the map into a compact
+	// slice once so every decoded view avoids walking the map's iterator.
+	pf.prefixes = make([]dlpPrefix, 0, len(prefixes))
+	for prefix, indices := range prefixes {
+		pf.prefixes = append(pf.prefixes, dlpPrefix{text: prefix, indices: indices})
+	}
+	sort.Slice(pf.prefixes, func(i, j int) bool { return pf.prefixes[i].text < pf.prefixes[j].text })
 
 	return pf
 }
@@ -326,11 +337,26 @@ func shortestStringLength(values []string) int {
 // The text should already be normalized (normalize.ForDLP) before calling.
 // Returns nil if no candidates are found (callers should still run alwaysRun).
 func (pf *dlpPreFilter) candidates(text string) []int {
+	if len(pf.prefixes) == 0 {
+		return nil
+	}
 	lower := strings.ToLower(text)
+	// A missing first byte rules out a literal without searching the string
+	// again. This is only a necessary condition; every possible prefix still
+	// goes through the same complete substring check.
+	var present [4]uint64
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
+		present[c/64] |= uint64(1) << (c % 64)
+	}
 	var hits []int
-	for prefix, indices := range pf.prefixes {
-		if strings.Contains(lower, prefix) {
-			hits = append(hits, indices...)
+	for _, prefix := range pf.prefixes {
+		first := prefix.text[0]
+		if present[first/64]&(uint64(1)<<(first%64)) == 0 {
+			continue
+		}
+		if strings.Contains(lower, prefix.text) {
+			hits = append(hits, prefix.indices...)
 		}
 	}
 	return hits

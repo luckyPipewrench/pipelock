@@ -9,12 +9,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 )
 
 // claudeCodeResponse is a test assertion type for Claude Code hook responses.
@@ -1876,8 +1879,10 @@ func TestClaudeHookCmd_GrepTool_CredentialDirectories(t *testing.T) {
 }
 
 // TestClaudeGrepCredentialDirsMatchCredentialRule keeps the Grep directory
-// list in step with the shipped Credential File Access rule: every listed
-// directory must hold a file that rule denies to Read.
+// list in step with the shipped Credential File Access rule in both
+// directions: every listed directory must hold a file that rule denies to
+// Read (below), and every location the rule names must be covered by the list
+// or be a deliberate exemption (TestClaudeGrepCredentialDirsCoverCredentialRule).
 func TestClaudeGrepCredentialDirsMatchCredentialRule(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, c := range claudeGrepCredentialDirs {
@@ -1901,6 +1906,7 @@ func TestClaudeGrepCredentialDirsMatchCredentialRule(t *testing.T) {
 // directories cannot be located to check the search against.
 func TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed(t *testing.T) {
 	t.Setenv("HOME", "")
+	setAccountHome(t, "", errors.New("no account entry"))
 	project := t.TempDir()
 	for _, input := range []string{
 		`{"pattern":"func","path":"` + project + `"}`,
@@ -1914,5 +1920,208 @@ func TestClaudeHookCmd_GrepTool_UnresolvableHomeFailsClosed(t *testing.T) {
 		if got != decisionDeny {
 			t.Errorf("Grep %s with HOME unset: got %s, want deny", input, got)
 		}
+	}
+}
+
+// claudeGrepExemptRuleLocations are alternatives of the Credential File Access
+// rule that the Grep directory list deliberately does not carry, each with the
+// reason. A location the rule gains must either be listed in
+// claudeGrepCredentialDirs or be added here with a reason.
+var claudeGrepExemptRuleLocations = map[string]string{
+	`\.env\b`: "a project-local file, not a directory a search is refused over; the file policy decides a single-file Grep",
+	`\.netrc`: "a single home-directory file; a search that could reach it starts at the home directory, which the .ssh entry already refuses",
+}
+
+// splitTopLevelAlternatives splits a regular expression on the | operators that
+// are not inside a group or a character class.
+func splitTopLevelAlternatives(t *testing.T, pattern string) []string {
+	t.Helper()
+	var parts []string
+	depth, start := 0, 0
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		switch c := pattern[i]; {
+		case c == '\\':
+			i++
+		case inClass:
+			if c == ']' {
+				inClass = false
+			}
+		case c == '[':
+			inClass = true
+			// A leading ] or ^] is literal, but the shipped patterns use neither.
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == '|' && depth == 0:
+			parts = append(parts, pattern[start:i])
+			start = i + 1
+		}
+	}
+	if depth != 0 || inClass {
+		t.Fatalf("unbalanced pattern %q", pattern)
+	}
+	return append(parts, pattern[start:])
+}
+
+// TestClaudeGrepCredentialDirsCoverCredentialRule is the reverse direction of
+// the parity check: it fails when the shipped Credential File Access rule names
+// a location that the Grep directory list neither covers nor exempts, so a new
+// location in the rule cannot leave Grep open over it unnoticed.
+func TestClaudeGrepCredentialDirsCoverCredentialRule(t *testing.T) {
+	var argPattern string
+	for _, rule := range policy.DefaultToolPolicyRules() {
+		if rule.Name == "Credential File Access" {
+			argPattern = rule.ArgPattern
+		}
+	}
+	const prefix, suffix = "(?i)(", ")"
+	if !strings.HasPrefix(argPattern, prefix) || !strings.HasSuffix(argPattern, suffix) {
+		t.Fatalf("Credential File Access ArgPattern has an unexpected shape: %q", argPattern)
+	}
+	alternatives := splitTopLevelAlternatives(t, strings.TrimSuffix(strings.TrimPrefix(argPattern, prefix), suffix))
+	if len(alternatives) < 2 {
+		t.Fatalf("expected several alternatives in %q", argPattern)
+	}
+	for _, alt := range alternatives {
+		re, err := regexp.Compile("(?i)" + alt)
+		if err != nil {
+			t.Fatalf("alternative %q: %v", alt, err)
+		}
+		covered := false
+		for _, c := range claudeGrepCredentialDirs {
+			if re.MatchString("/" + c.dir + "/" + c.probe) {
+				covered = true
+			}
+		}
+		_, exempt := claudeGrepExemptRuleLocations[alt]
+		switch {
+		case covered && exempt:
+			t.Errorf("alternative %q is covered by the Grep list and also exempted; drop the exemption", alt)
+		case !covered && !exempt:
+			t.Errorf("the Credential File Access rule names %q but claudeGrepCredentialDirs does not cover it; add the location to the list or to claudeGrepExemptRuleLocations with a reason", alt)
+		}
+	}
+	for alt := range claudeGrepExemptRuleLocations {
+		if !slices.Contains(alternatives, alt) {
+			t.Errorf("exemption %q no longer matches any alternative of the rule; remove it", alt)
+		}
+	}
+}
+
+func setAccountHome(t *testing.T, home string, err error) {
+	t.Helper()
+	old := accountHomeDir
+	accountHomeDir = func() (string, error) { return home, err }
+	t.Cleanup(func() { accountHomeDir = old })
+}
+
+// TestClaudeHookCmd_GrepTool_HomeFromAccountDatabase pins that the credential
+// directories are located through the account database as well as $HOME, so a
+// process launched with a different HOME still refuses a search of the real one.
+func TestClaudeHookCmd_GrepTool_HomeFromAccountDatabase(t *testing.T) {
+	realHome := t.TempDir()
+	project := filepath.Join(realHome, "src", "app")
+	other := t.TempDir()
+	unrelated := t.TempDir()
+	for _, dir := range []string{filepath.Join(realHome, ".ssh"), project} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(other)
+	grep := func(path string) string {
+		raw, err := json.Marshal(map[string]string{"pattern": ".", "path": path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":` + string(raw) + `,"tool_use_id":"t1","cwd":"` + other + `"}`
+		got, err := runClaudeHookDecision(t, payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return got
+	}
+	for _, tc := range []struct {
+		name        string
+		envHome     string
+		accountHome string
+		accountErr  error
+		path        string
+		want        string
+	}{
+		{"HOME elsewhere, account home searched", other, realHome, nil, filepath.Join(realHome, ".ssh"), decisionDeny},
+		{"HOME elsewhere, account home itself searched", other, realHome, nil, realHome, decisionDeny},
+		{"HOME relative, account home searched", "relative/home", realHome, nil, filepath.Join(realHome, ".ssh"), decisionDeny},
+		{"HOME empty, account home searched", "", realHome, nil, filepath.Join(realHome, ".ssh"), decisionDeny},
+		{"HOME correct, account database unavailable", realHome, "", errors.New("no entry"), filepath.Join(realHome, ".ssh"), decisionDeny},
+		{"HOME elsewhere, project under account home", other, realHome, nil, project, decisionAllow},
+		{"HOME elsewhere, unrelated directory", other, realHome, nil, unrelated, decisionAllow},
+		{"HOME relative, account database unavailable", "relative/home", "", errors.New("no entry"), project, decisionDeny},
+		{"HOME empty, account home not absolute", "", "relative", nil, project, decisionDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.envHome)
+			setAccountHome(t, tc.accountHome, tc.accountErr)
+			if got := grep(tc.path); got != tc.want {
+				t.Errorf("Grep %s: got %s, want %s", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClaudeHookCmd_RelativePathResolvesAgainstPayloadCwd pins that a relative
+// path in tool_input is resolved against the payload's cwd, the session's
+// directory, and not the directory the hook process happens to run in.
+func TestClaudeHookCmd_RelativePathResolvesAgainstPayloadCwd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	setAccountHome(t, home, nil)
+	project := filepath.Join(home, "proj")
+	elsewhere := t.TempDir()
+	for _, dir := range []string{filepath.Join(home, ".ssh"), project} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(project, "lnk")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "plain.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The hook process runs in a directory that has no lnk.
+	t.Chdir(elsewhere)
+
+	decide := func(tool, key, path, cwd string) string {
+		raw, err := json.Marshal(map[string]string{key: path, "pattern": "k"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"` + tool + `","tool_input":` + string(raw) + `,"tool_use_id":"t1","cwd":"` + cwd + `"}`
+		got, err := runClaudeHookDecision(t, payload)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return got
+	}
+	for _, tc := range []struct {
+		name, tool, key, path, cwd, want string
+	}{
+		{"Read through a link in the session directory", "Read", "file_path", "lnk/id_ed25519", project, decisionDeny},
+		{"Grep of a file through a link in the session directory", "Grep", "path", "lnk/id_ed25519", project, decisionDeny},
+		{"Read of the same relative path from a directory without the link", "Read", "file_path", "lnk/id_ed25519", elsewhere, decisionAllow},
+		{"Read of an ordinary relative file in the session directory", "Read", "file_path", "plain.txt", project, decisionAllow},
+		{"Read through a link, payload cwd not absolute", "Read", "file_path", "lnk/id_ed25519", "proj", decisionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decide(tc.tool, tc.key, tc.path, tc.cwd); got != tc.want {
+				t.Errorf("%s %s from %s: got %s, want %s", tc.tool, tc.path, tc.cwd, got, tc.want)
+			}
+		})
 	}
 }

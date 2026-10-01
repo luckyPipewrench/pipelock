@@ -99,9 +99,15 @@ Schema validation proves only that a document has the expected JSON shape. A
 valid anchor verification additionally requires:
 
 1. the receipt chain to verify under keys the relying party trusts;
-2. the recomputed receipt checkpoint to match `checkpoint`;
+2. the receipt checkpoint, recomputed over the first `receipt_count` receipts of the chain, to match `checkpoint`. Receipts written after the anchor are not covered by it, but they are not ignored: the verifier checks them as a chain (hash linkage and signatures under the trusted keys) and a break there makes the verdict invalid. A chain shorter than `receipt_count`, or one whose first `receipt_count` receipts differ, fails;
 3. top-level `backend` to match `proof.backend`; and
 4. the selected backend verifier to authenticate and validate the proof.
+
+Receipts after the anchored prefix are chain-verified only, under whatever keys
+the relying party supplied. A holder of the signing key can forge them, so no
+anchor vouches for them. A verifier reports how much of the chain the anchor
+covers (`covered_receipts` of `chain_length`) and may offer a strict mode that
+rejects any unanchored receipt.
 
 Successful anchoring constrains undetected rewriting or omission after the
 anchored point. It does not prove that receipt timestamps are truthful, that the

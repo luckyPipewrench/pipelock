@@ -502,3 +502,42 @@ func TestHandleDeferredList_RejectsNonGET(t *testing.T) {
 		t.Fatalf("status = %d, want 405", rr.Code)
 	}
 }
+
+// TestHandleDeferredAction_ApproveAfterKillSwitchReportsBlock pins the operator
+// API against the kill switch. An approve that arrives after the kill switch
+// activated is closed at release, so the API must report final_decision "block"
+// for it. It used to echo "allow" while the client received the kill error.
+func TestHandleDeferredAction_ApproveAfterKillSwitchReportsBlock(t *testing.T) {
+	mgr := newDeferManager()
+	rec := &resolveCapture{}
+	var rp config.DeferResolutionPolicy
+	rp.AllowOn.Approval = true
+	const id = "0193defer00000000000000000020"
+	if err := mgr.Hold(deferred.HeldAction{
+		DeferID: id, ActionID: id, Surface: deferred.SurfaceMCPStdio, Method: "tools/call",
+		Target: "shell.exec", Reason: "tool policy: defer", RulePolicy: rp,
+		Authority: deferred.AuthoritySnapshot{SessionID: "sess-1", Principal: "agent-a"},
+		// The kill switch activated after the hold was admitted.
+		BeforeAllow: func() (func(), bool) { return nil, false },
+		Resolve:     rec.cb,
+	}); err != nil {
+		t.Fatalf("seed hold: %v", err)
+	}
+	h := deferredTestHandler(mgr)
+
+	rr := deferredActionReq(t, h, id, deferredActionApprove, true)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var resp DeferredResolveResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.FinalDecision != config.ActionBlock {
+		t.Fatalf("API reported %q for a call the kill switch cancelled, want block", resp.FinalDecision)
+	}
+	n, res := rec.snapshot()
+	if n != 1 || res.FinalDecision != config.ActionBlock || res.ResolutionSource != deferred.SourceKillSwitch {
+		t.Fatalf("resume = %d x (%q,%q), want one block from the kill switch", n, res.FinalDecision, res.ResolutionSource)
+	}
+}

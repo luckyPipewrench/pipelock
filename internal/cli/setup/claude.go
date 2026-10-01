@@ -228,6 +228,11 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	// The agent's file tools act on this host, so a submitted path is also
 	// matched by the file it resolves to here.
 	pc.EnableLocalPathIdentity()
+	// A relative path in tool_input is relative to the session's directory,
+	// which is the payload's cwd and not necessarily this process's.
+	if filepath.IsAbs(payload.Cwd) {
+		pc.AddLocalPathBases(payload.Cwd)
+	}
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
@@ -898,12 +903,35 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	if target == "" {
 		return "", false
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	homes := grepCredentialHomes()
+	if len(homes) == 0 {
 		// Without the home directory the credential directories cannot be
 		// located, so refuse rather than let the search run unchecked.
 		return "an unresolvable home directory", true
 	}
+	for _, home := range homes {
+		if dir, ok := grepTargetCoversCredentialDirUnder(home, target, cwd); ok {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// accountHomeDir overrides the account-database home lookup in tests. Nil
+// uses the policy package's lookup, so the Grep check and the tool-policy
+// resolver protect the same homes.
+var accountHomeDir func() (string, error)
+
+// grepCredentialHomes returns every distinct absolute home directory whose
+// credential directories a search must not cover. The tool-policy resolver
+// builds its protected locations from the same set.
+func grepCredentialHomes() []string {
+	return policy.CredentialHomes(accountHomeDir)
+}
+
+// grepTargetCoversCredentialDirUnder is grepTargetCoversCredentialDir for one
+// home directory.
+func grepTargetCoversCredentialDirUnder(home, target, cwd string) (string, bool) {
 	resolve := func(path string) string {
 		if resolved, err := filepath.EvalSymlinks(path); err == nil {
 			return resolved

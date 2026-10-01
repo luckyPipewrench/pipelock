@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
@@ -1372,4 +1373,105 @@ func routeToServer(t *testing.T, srv *httptest.Server) func(context.Context, str
 func waitFor(t *testing.T, ok func() bool) {
 	t.Helper()
 	testwait.For(t, 3*time.Second, ok, "forwarder condition")
+}
+
+type fallbackResolver []string
+
+func (r fallbackResolver) LookupHost(context.Context, string) ([]string, error) {
+	return r, nil
+}
+
+func TestSafeDialContextFallsBackToNextValidatedAddress(t *testing.T) {
+	t.Parallel()
+	target, err := validateTarget("https://siem.vendor.example/events", []string{"siem.vendor.example"}, "", false)
+	if err != nil {
+		t.Fatalf("validateTarget: %v", err)
+	}
+	newFwd := func(addrs []string, dial func(context.Context, string, string) (net.Conn, error)) *Forwarder {
+		return &Forwarder{
+			target:       target,
+			resolver:     fallbackResolver(addrs),
+			isInternalIP: func(net.IP) bool { return false },
+			dial:         dial,
+		}
+	}
+
+	var tried []string
+	f := newFwd([]string{"203.0.113.1", "203.0.113.2"}, func(_ context.Context, _, addr string) (net.Conn, error) {
+		tried = append(tried, addr)
+		if strings.HasPrefix(addr, "203.0.113.1:") {
+			return nil, errors.New("unreachable")
+		}
+		c, _ := net.Pipe()
+		return c, nil
+	})
+	conn, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443")
+	if err != nil {
+		t.Fatalf("expected fallback, got %v", err)
+	}
+	_ = conn.Close()
+	if len(tried) != 2 || tried[1] != "203.0.113.2:443" {
+		t.Fatalf("tried = %v", tried)
+	}
+
+	// Any blocked address refuses the host before any dial.
+	dialed := false
+	f = newFwd([]string{"203.0.113.1", "169.254.169.254"}, func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("should not dial")
+	})
+	if _, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443"); err == nil || dialed {
+		t.Fatalf("expected refusal without dial, err=%v dialed=%v", err, dialed)
+	}
+
+	// All unreachable: error names the host.
+	f = newFwd([]string{"203.0.113.1", "203.0.113.2"}, func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("unreachable")
+	})
+	if _, err := f.safeDialContext(t.Context(), "tcp", "siem.vendor.example:443"); err == nil || !strings.Contains(err.Error(), "siem.vendor.example") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A host with many unreachable records costs a bounded number of attempts, and
+// an already-done context stops the loop; the dial stub ignores its context.
+func TestSafeDialContextBoundsAttempts(t *testing.T) {
+	t.Parallel()
+	target, err := validateTarget("https://siem.vendor.example/events", []string{"siem.vendor.example"}, "", false)
+	if err != nil {
+		t.Fatalf("validateTarget: %v", err)
+	}
+	addrs := []string{"203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4", "203.0.113.5", "203.0.113.6"}
+	var tried []string
+	newFwd := func() *Forwarder {
+		tried = nil
+		return &Forwarder{
+			target:       target,
+			resolver:     fallbackResolver(addrs),
+			isInternalIP: func(net.IP) bool { return false },
+			dial: func(_ context.Context, _, addr string) (net.Conn, error) {
+				tried = append(tried, addr)
+				return nil, errors.New("unreachable")
+			},
+		}
+	}
+
+	if _, err := newFwd().safeDialContext(t.Context(), "tcp", "siem.vendor.example:443"); err == nil {
+		t.Fatal("expected an error when every address is unreachable")
+	}
+	if len(tried) != dialfallback.MaxAttempts {
+		t.Fatalf("attempts = %d (%v), want %d", len(tried), tried, dialfallback.MaxAttempts)
+	}
+	if tried[0] != "203.0.113.1:443" || tried[1] != "203.0.113.2:443" {
+		t.Fatalf("addresses not tried in resolver order: %v", tried)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := newFwd().safeDialContext(ctx, "tcp", "siem.vendor.example:443"); err == nil {
+		t.Fatal("expected an error for a done context")
+	}
+	if len(tried) != 0 {
+		t.Fatalf("a done context must not dial, tried %v", tried)
+	}
 }

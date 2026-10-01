@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -260,7 +261,19 @@ def owned_proxy_address(output, total_bytes):
     return addresses[0] if addresses else None
 
 
-def wait_owned_proxy(process, opener, cancellation, timeout=15):
+def proxy_command(pipelock, config, listen=None):
+    """Let the CLI bind once; an occupied candidate fails closed, never retries."""
+    if listen is None:
+        # File-backed CLI configs require a nonzero port. Random selection is
+        # not an availability/ownership check: only the CLI's exclusive bind
+        # and its exact owned startup witness establish the listener identity.
+        listen = f"127.0.0.1:{49152 + secrets.randbelow(16384)}"
+    if not re.fullmatch(r"127\.0\.0\.1:([1-9][0-9]{0,4})", listen) or int(listen.rsplit(":", 1)[1]) > 65535:
+        raise ValueError("proxy listen address must be nonzero IPv4 loopback")
+    return [str(pipelock), "run", "--config", str(config), "--listen", listen]
+
+
+def wait_owned_proxy(process, opener, cancellation, timeout=15, expected_address=None):
     """A healthy unrelated listener is never a substitute for owned startup."""
     deadline = time.monotonic() + timeout
     while True:
@@ -270,6 +283,8 @@ def wait_owned_proxy(process, opener, cancellation, timeout=15):
         output, count = process.output_snapshot("stdout")
         address = owned_proxy_address(output, count)
         if address:
+            if expected_address is not None and address != expected_address:
+                raise RuntimeError("owned proxy startup address differs from the requested listener")
             try:
                 with opener.open(address + "/health", timeout=0.5) as response:
                     if response.status == 200:
@@ -366,9 +381,11 @@ def main():
             try:
                 if args.mode == "proxy-only":
                     report["containment"] = "not_tested_proxy_only"
-                    proxy_process = Process([str(args.pipelock), "run", "--config", env["PIPELOCK_CONFIG"], "--listen", "127.0.0.1:0"],
+                    command = proxy_command(args.pipelock, env["PIPELOCK_CONFIG"])
+                    proxy_process = Process(command,
                                             args.output / "proxy", env, work, cancellation)
-                    settings["proxy"] = wait_owned_proxy(proxy_process, opener, cancellation)
+                    settings["proxy"] = wait_owned_proxy(proxy_process, opener, cancellation,
+                                                        expected_address="http://" + command[-1])
                     report["proxy_startup_address"] = settings["proxy"]
                 write_json(work / "settings.json", settings)
                 command = [str(node_runtime), str(work / "driver.mjs"), str(work / "settings.json")]

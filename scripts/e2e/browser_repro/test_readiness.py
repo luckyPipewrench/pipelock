@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import Mock
 import urllib.request
 
-from run import Cancellation, Process, owned_proxy_address, wait_owned_proxy
+from run import Cancellation, Process, owned_proxy_address, proxy_command, wait_owned_proxy
 
 
 def startup(address):
@@ -28,6 +28,24 @@ def observed_process(output, poll=None, total=None):
 
 
 class ProxyReadinessTests(unittest.TestCase):
+    def test_proxy_command_requests_a_valid_nonzero_loopback_port(self):
+        for _ in range(32):
+            command = proxy_command("/candidate", "/generated-config.json")
+            self.assertEqual(command[:-1], ["/candidate", "run", "--config", "/generated-config.json", "--listen"])
+            host, port = command[-1].rsplit(":", 1)
+            self.assertEqual(host, "127.0.0.1")
+            self.assertTrue(49152 <= int(port) <= 65535)
+        for address in ("127.0.0.1:0", "127.0.0.1:65536", "0.0.0.0:8080", "localhost:8080", "[::1]:8080"):
+            with self.subTest(address=address), self.assertRaises(ValueError):
+                proxy_command("/candidate", "/generated-config.json", address)
+
+    def test_unexpected_owned_address_is_rejected_before_any_health_request(self):
+        opener = Mock()
+        with self.assertRaisesRegex(RuntimeError, "differs from the requested listener"):
+            wait_owned_proxy(observed_process(startup("127.0.0.1:54321")), opener,
+                             Cancellation(), expected_address="http://127.0.0.1:54322")
+        opener.open.assert_not_called()
+
     def test_complete_owned_record_selects_only_the_bound_loopback_address(self):
         evidence = b'{"event":"config_reload","listen":"127.0.0.1:1"}\n' + startup("127.0.0.1:54321")
         self.assertEqual(owned_proxy_address(evidence, len(evidence)), "http://127.0.0.1:54321")

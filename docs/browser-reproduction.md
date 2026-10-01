@@ -66,12 +66,16 @@ long-lived child launch if that cleanup facility is absent.
 
 ```bash
 make build
-python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
+PIPELOCK_BROWSER_TEST_BIN="$PWD/pipelock" \
+  python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
 node --check scripts/e2e/browser_repro/driver.mjs
 node --test scripts/e2e/browser_repro/test_contracts.mjs
 ```
 
-These commands validate the build and harness components. The default browser
+These commands validate the build and harness components, including real CLI
+startup and refusal of an occupied healthy listener. Without
+`PIPELOCK_BROWSER_TEST_BIN`, those CLI integration tests report an explicit skip.
+They do not establish browser or containment acceptance. The default browser
 run (`python3 scripts/e2e/browser_repro/run.py --pipelock ./pipelock --output
 /tmp/browser-repro-strict`) currently encounters the strict compatibility limit
 above and must not be requested as a passing acceptance rerun.
@@ -103,10 +107,13 @@ python3 scripts/e2e/browser_repro/run.py --mode proxy-only \
 
 The proxy-only mode leaves Chromium's own sandbox enabled and does not claim
 that raw direct egress is blocked. It binds a temporary proxy and fixture only
-to loopback. The proxy binds its own ephemeral port, and the runner accepts
-only the bound address from that invocation's complete JSON startup record
-before checking health. Missing, ambiguous or truncated startup evidence fails
-the run; an existing daemon's healthy endpoint cannot substitute for it.
+to loopback. The runner selects a random nonzero high port without probing or
+prebinding it, because file-backed CLI configuration rejects port zero. Only
+the candidate proxy binds that port. The runner requires its exact requested
+address in that invocation's complete JSON startup record before checking
+health. An occupied port fails the run; randomness is not proof of availability
+or ownership. Missing, mismatched, ambiguous or truncated startup evidence also
+fails; an existing daemon's healthy endpoint cannot substitute for it.
 
 ## Managed-contained browser adapter
 

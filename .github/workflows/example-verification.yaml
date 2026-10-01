@@ -72,20 +72,21 @@ jobs:
           command -v npx
           command -v python3
 
-      - name: Browser reproduction regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
-          node --check scripts/e2e/browser_repro/driver.mjs
-          node --test scripts/e2e/browser_repro/test_contracts.mjs
-
       - name: Run shipped verification scripts
         id: verification
         continue-on-error: true
         env:
           PIPELOCK_E2E_LIVE_UPSTREAM: '1'
         run: make verify-examples
+
+      - name: Browser reproduction regressions against the built candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PIPELOCK_BROWSER_TEST_BIN="$PWD/pipelock" \
+            python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
+          node --check scripts/e2e/browser_repro/driver.mjs
+          node --test scripts/e2e/browser_repro/test_contracts.mjs
 
       - name: Report verification result
         if: ${{ always() }}

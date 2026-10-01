@@ -1391,6 +1391,7 @@ func RunHTTPListenerProxy(
 		// Kill switch: deny all requests when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(body); d.Active {
+				emitKillSwitchDenialReceipt(requestBaseOpts, safeLogW, frame, d)
 				w.Header().Set("Content-Type", "application/json")
 				if d.IsNotification {
 					w.WriteHeader(http.StatusAccepted)

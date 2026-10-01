@@ -76,6 +76,52 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	return EmitDeferredResolutionReceipt(opts, logW, res)
 }
 
+// deferredReceiptSettlement lets a held call's Prepare hook write the allow
+// receipt before the manager journals and reports the decision. The receipt is
+// the evidence for a release, so when it is required and cannot be written the
+// call is never sent and the decision has to be a block everywhere it is
+// recorded: the journal and the value ResolveApprovalResult hands the operator
+// API. Emitting it later, from the Resolve callback, left both saying allow for
+// a call that was refused.
+//
+// Prepare and Resolve run in sequence on the resolving goroutine, so the
+// struct needs no lock.
+type deferredReceiptSettlement struct {
+	done     bool
+	err      error
+	decision string
+	source   string
+}
+
+// settleAllow emits the receipt for a decision that is about to release the
+// call. A required-receipt failure closes the decision; no source is special:
+// whatever allowed it, a release without its receipt does not go out.
+func (s *deferredReceiptSettlement) settleAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) deferred.Resolution {
+	if err := s.emit(opts, logW, res); err != nil && res.FinalDecision == config.ActionAllow {
+		res.FinalDecision = config.ActionBlock
+		res.ResolutionSource = deferred.SourceCancel
+		res.Reason = "required receipt could not be written"
+	}
+	return res
+}
+
+// ensure returns the outcome of emitting the receipt for the final resolution.
+// A receipt already written for exactly this decision and source is reused; any
+// other final resolution (a block, or an allow the journal then closed) gets its
+// own receipt so the chain describes what actually happened.
+func (s *deferredReceiptSettlement) ensure(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	if s.done && s.decision == res.FinalDecision && s.source == res.ResolutionSource {
+		return s.err
+	}
+	return s.emit(opts, logW, res)
+}
+
+func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
+	s.err = emitDeferredResolutionReceipt(opts, logW, res)
+	s.done, s.decision, s.source = true, res.FinalDecision, res.ResolutionSource
+	return s.err
+}
+
 // holdFailureResolution carries the surface-specific fields for a failed
 // Manager.Hold so both defer transports emit identical denial receipts.
 type holdFailureResolution struct {

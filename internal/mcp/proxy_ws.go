@@ -204,6 +204,7 @@ func RunWSProxy(
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
+				emitKillSwitchDenialReceipt(wsOpts, safeLogW, frame, d)
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue

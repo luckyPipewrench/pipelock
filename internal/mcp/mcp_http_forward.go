@@ -295,6 +295,7 @@ func RunHTTPProxy(
 			// gateBlock carries a release-time upstream gate denial from
 			// Prepare to Resolve for this hold.
 			var gateBlock *BlockedRequest
+			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    deferredReq.DeferID,
 				ActionID:   deferredReq.DeferID,
@@ -360,11 +361,15 @@ func RunHTTPProxy(
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
 					// claimDeferredRelease for the ordering argument.
-					return lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&upstreamMu, fwdOpts, deferredGeneration, res)
+					if prepared.FinalDecision == config.ActionAllow {
+						prepared = receiptSettle.settleAllow(fwdOpts, safeLogW, prepared)
+					}
+					return prepared, finish
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := emitDeferredResolutionReceipt(fwdOpts, safeLogW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(fwdOpts, safeLogW, res); emitErr != nil {
 						if !deferredReq.IsNotification {
 							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
 								ID:           deferredReq.ID,

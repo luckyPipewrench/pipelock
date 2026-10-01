@@ -1410,6 +1410,7 @@ func ForwardScannedInput(
 			heldAuthorityFrame := frame
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
+			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:    actionID,
 				ActionID:   actionID,
@@ -1451,11 +1452,15 @@ func ForwardScannedInput(
 					// first so no wait for another write sits between the
 					// kill-switch claim and this write; see
 					// claimDeferredRelease for the ordering argument.
-					return lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					prepared, finish := lockAndClaimDeferredRelease(&forwardMu, opts, deferredGeneration, res)
+					if prepared.FinalDecision == config.ActionAllow {
+						prepared = receiptSettle.settleAllow(opts, logW, prepared)
+					}
+					return prepared, finish
 				},
 				Resolve: func(res deferred.Resolution) {
 					authorityDenied := res.ResolutionSource == deferred.SourceAuthority
-					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
+					if emitErr := receiptSettle.ensure(opts, logW, res); emitErr != nil {
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
 								ID:           heldID,

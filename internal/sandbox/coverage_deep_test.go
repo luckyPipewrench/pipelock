@@ -126,10 +126,9 @@ func TestPrepareSandboxCmd_SetsIOStreams(t *testing.T) {
 	}
 }
 
-// NOTE: LaunchStandalone strict mode tests are not included because strict
-// mode blocks clone3 via seccomp, which prevents the Go runtime from
-// creating threads in the re-exec'd subprocess (cgo uses pthread_create).
 // Strict standalone mode is tested via the full binary integration tests.
+// Native pthread and Node compatibility with the strict seccomp filter is
+// covered separately by the linux/amd64 seccomp thread regressions.
 
 // ---------------------------------------------------------------------------
 // LaunchStandalone: proxy handler path with custom handler.

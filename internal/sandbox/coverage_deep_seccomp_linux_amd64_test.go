@@ -102,8 +102,8 @@ func TestSeccompConditionals_EncodeTheIntendedDecision(t *testing.T) {
 		if len(strict) != 2 || len(bestEffort) != 2 {
 			t.Fatalf("clone3 conditionals = %d and %d instructions, want 2 each", len(strict), len(bestEffort))
 		}
-		if strict[1] != deny {
-			t.Errorf("strict clone3 action = %+v, want EPERM", strict[1])
+		if strict[1] != bpfRet(unix.SECCOMP_RET_ERRNO|uint32(unix.ENOSYS)) {
+			t.Errorf("strict clone3 action = %+v, want ENOSYS", strict[1])
 		}
 		if bestEffort[1] != allow {
 			t.Errorf("best-effort clone3 action = %+v, want allow", bestEffort[1])

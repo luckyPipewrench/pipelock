@@ -55,6 +55,10 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(response.status, 303)
             self.assertEqual(response.headers["Location"], "/login")
             response.read()
+            connection.request("GET", "/account", headers={"Cookie": "fixture_session=synthetic-extra"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 303)
+            response.read()
             connection.request("POST", "/session", "user=fixture&code=wrong")
             response = connection.getresponse()
             self.assertEqual(response.status, 401)
@@ -83,6 +87,11 @@ class FixtureTests(unittest.TestCase):
             with self.assertRaises(http.client.IncompleteRead):
                 response.read()
             connection.close()
+            self.assertEqual(fixture.evidence()["auth_counts"], {
+                "session_submissions": 2, "session_rejections": 1,
+                "session_acceptances": 1, "account_authenticated": 1,
+                "account_login_required": 2,
+            })
 
     def test_route_evidence_does_not_store_queries_and_is_bounded(self):
         with Fixture(4096, delay=0) as fixture:

@@ -30,6 +30,22 @@ The default command requires the real strict sandbox. A failed launch remains
 failed/refused. The runner never retries with best-effort, disables Chromium's
 sandbox, changes host policy, installs dependencies or loads credentials.
 
+### Current strict Chromium compatibility limit
+
+The standalone `sandbox --strict` launch is currently unsupported for Chromium
+with Chromium's own sandbox enabled. It maps the workload to UID 0 in its user
+namespace, which Chromium rejects, and its unchanged seccomp policy denies the
+nested namespace operations Chromium's sandbox needs. A host satisfying the
+kernel prerequisites below does not remove these conflicts. Native Node thread
+compatibility does not establish Chromium compatibility. Do not disable either
+sandbox or relax namespace policy to make this diagnostic pass.
+
+The existing managed `contain run` path uses a dedicated nonroot identity and
+managed network namespace. The separate managed adapter below targets only an
+explicitly prepared synthetic-only VM. Its temporary fixture/configuration must
+not be redirected to an existing production proxy. The default strict run remains
+a failure diagnostic, not a supported browser acceptance command.
+
 ## Prerequisites and fresh setup
 
 Use a clean public-repository checkout and an explicitly built candidate binary.
@@ -52,17 +68,29 @@ long-lived child launch if that cleanup facility is absent.
 make build
 python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
 node --check scripts/e2e/browser_repro/driver.mjs
-python3 scripts/e2e/browser_repro/run.py \
-  --pipelock ./pipelock --output /tmp/browser-repro-strict
+node --test scripts/e2e/browser_repro/test_contracts.mjs
 ```
 
+These commands validate the build and harness components. The default browser
+run (`python3 scripts/e2e/browser_repro/run.py --pipelock ./pipelock --output
+/tmp/browser-repro-strict`) currently encounters the strict compatibility limit
+above and must not be requested as a passing acceptance rerun.
+
 The output directory must not already exist. `--node` and `--chromium` accept
-explicit executable paths. The selected Node executable is copied into the
-already granted disposable workspace; no extra host directory read grant is
-added. It must use system libraries available under the normal sandbox policy.
+explicit executable paths. The selected Node command is queried for its actual
+`process.execPath` in the isolated environment, so a version-manager launcher
+is not mistaken for the runtime. Node 22+ and a native Linux executable are
+required. That runtime is copied into the already granted disposable workspace;
+its content hash and copied executable identity are checked. No extra host
+directory read grant is added. A launcher that cannot resolve Node without its
+usual home/configuration must be replaced with an explicit native `--node` path.
+The runtime must use system libraries available under the normal sandbox policy.
 A runtime needing additional private dependencies is unsupported rather than a
 reason to broaden access. The browser profile and synthetic state are created
 in that fresh workspace and removed after cleanup.
+The executable identity probes run before containment; they do not establish
+strict Node or browser compatibility. The unchanged strict launch and cleanup
+assertions must still complete on the acceptance host.
 
 When strict launch is unavailable, an operator may explicitly run the separate
 proxy diagnostic below. This is **not Pipelock kernel containment**, even when
@@ -77,6 +105,120 @@ The proxy-only mode leaves Chromium's own sandbox enabled and does not claim
 that raw direct egress is blocked. It binds a temporary proxy and fixture only
 to loopback. A dynamically selected proxy port has a short bind/rebind race;
 startup failure is a failed run, not permission to reuse an existing daemon.
+
+## Managed-contained browser adapter
+
+`scripts/e2e/browser_repro/managed.py` reuses the same generated application and
+CDP scenarios through the existing `contain run` launch. It does not wrap
+Chromium in the incompatible standalone strict sandbox, and leaves Chromium's
+own sandbox enabled. The managed topology supplies its existing dedicated
+nonroot user, network namespace, proxy doorway, nftables rules, private temporary
+directories and mandatory launch preflight. This is a distinct containment mode,
+not a claim that the two sandbox implementations are identical.
+
+### Prepare artifacts, then authorize a disposable host
+
+Prepare against the exact built candidate and explicitly selected **native**
+Linux executables. The example executable paths depend on the distribution;
+launchers and shell wrappers are rejected rather than copied as runtimes.
+
+```bash
+python3 scripts/e2e/browser_repro/managed.py prepare \
+  --pipelock ./pipelock --node /usr/bin/node \
+  --chromium /usr/lib/chromium/chromium \
+  --output /tmp/browser-repro-managed-setup
+```
+
+Preparation only writes a synthetic JSON configuration and manifest. It creates
+no users, services, signing keys, grants, firewall rules or persistent access.
+The manifest pins the candidate, runtime files and harness sources and names one
+new workspace under `/srv/pipelock-browser-repro/`. It is not an installation or
+a successful runtime test.
+
+A local operator must separately authorize and prepare a **fresh, disposable,
+synthetic-only Linux VM**, using the existing [contain installation
+instructions](contain-cli.md). Never reuse a production installation or
+an account/profile carrying real credentials. The fixed managed service/socket
+names do not support a parallel isolated test instance on a shared host.
+Prerequisites for the adapter are:
+
+- systemd 254+, `systemctl`, `busctl`, cgroup v2 and the complete existing contain
+  installation prerequisites, with the normal network/user/proxy checks passing
+- The exact candidate installed at `/usr/local/bin/pipelock`, pinned by the
+  ordinary installer, and running as `pipelock.service`
+- The exact generated JSON policy installed at `/etc/pipelock/pipelock.yaml`;
+  no extra destinations, overrides or detection exceptions. The proxy must have
+  started after that file was installed; a stale running process is refused
+- The operator-authorized synthetic signing key at the generated configuration's
+  path. Existing contain setup owns key provisioning; this adapter never creates,
+  reads or transmits private key material
+- Root-owned native Node/Chromium binaries under root-controlled, nonwritable
+  runtime directories, with no setuid/setgid bits or file capabilities; an
+  agent/operator-writable version-manager installation
+  is not suitable for the privileged managed identity probe
+- One explicit `browser-repro-node` registration targeting the manifest's native
+  Node binary, using the existing `contain add-tool --target` mechanism. Duplicate
+  or PATH-fallback entries are refused
+- Exactly one nonlegacy `pipelock-agent` read-write workspace grant: the empty
+  directory named in the manifest. Use the existing `contain grant-workspace`
+  mechanism after reviewing that scope. Extra/ambiguous grants are refused
+- A root-owned, owner-only copy of the prepared manifest under a root-controlled
+  directory, and a new root-private evidence output outside the agent workspace
+- No existing process running as `pipelock-agent`. The adapter is exclusive to
+  this disposable diagnostic VM, not a concurrent agent session
+
+The adapter does not automate these host changes. A manifest acknowledgment is
+an operator declaration of fresh-host provenance, not independent proof that a
+machine never held secrets. Exact config, registry, workspace and runtime checks
+reject mismatches before the browser launch. A refused setup must be corrected
+through the authorized installation procedure, never by skipping preflight.
+The unchanged contain preflight includes an operator HTTPS reachability control
+to `example.com` and a denied TEST-NET-1 direct-egress control; browser traffic
+itself only targets the owned generated fixture.
+
+### Run and interpret the managed diagnostic
+
+Once the operator has approved and verified that setup, run on that VM:
+
+```bash
+sudo python3 scripts/e2e/browser_repro/managed.py run \
+  --pipelock /usr/local/bin/pipelock \
+  --manifest /var/lib/pipelock-browser-repro/manifest.json \
+  --output /var/lib/pipelock-browser-repro/run-001 \
+  --acknowledge-disposable-synthetic-host
+```
+
+The manifest/config/runtime hashes must match. Each invocation creates a new
+synthetic profile and results directory in the sole granted scratch workspace;
+only those newly created files are made accessible to the contained identity.
+Root evidence remains outside that workspace. The runtime checks the actual
+native Node identity, nonzero UID/GID, exact installed proxy route, different
+network namespace and inability to contact the parent's witnessed endpoint
+directly. Fixture counts corroborate all mediated/blocked controls and the
+original login `303`, authenticated data, restart and cookie-clearing recovery.
+
+Managed launch requests the optional `contain run --lifecycle-output` report.
+That report binds a random transient-unit identity, systemd InvocationID, launch
+arguments, binary/config/policy and signed posture capsule. Success additionally
+requires terminal service state and an empty/absent admitted cgroup. A successful
+`systemd-run` client or reaped local child alone cannot establish this. The
+existing process supervisor still owns the local client; its managed-only
+20-second graceful cancellation budget accommodates bounded service cleanup.
+No unknown or unrelated unit is stopped. Missing identity, changed invocation,
+incomplete cleanup or any failed browser scenario leaves the run failed.
+
+A verified complete run removes its synthetic profile/workspace subtree. If
+service cleanup cannot be established, generated scratch is retained for the
+operator rather than deleted underneath a possibly live browser. Root-private
+logs remain bounded. Keep failure evidence and use the exact owned-unit report
+when investigating; do not apply broad service-kill or sandbox-disable workarounds.
+
+The managed adapter's filesystem/identity/policy/lifecycle contracts have
+lightweight regression tests in the existing Example verification job. Actual
+systemd/nftables/Chromium sandbox behavior, rendered pixels and interrupted
+service cleanup still require the capable VM run; mocks are not that acceptance.
+No managed viewer, agent-browser daemon, TLS or production-authentication claim
+follows from the synthetic CDP diagnostic.
 
 ## What the runner observes
 
@@ -100,8 +242,9 @@ The matrix includes:
 - Exact-host mediated positive control, forbidden-host and literal-loopback
   refusal, outbound synthetic canary refusal, and a benign response marker
   matched by the shipped System Override rule
-- In strict mode only: distinct network namespace and direct failure against
-  the parent's witnessed, owned loopback endpoint. No outside target is probed
+- In standalone strict and managed-contain modes: distinct network namespace
+  and direct failure against the parent's witnessed, owned loopback endpoint.
+  This direct-endpoint check probes no outside target
 
 The parent fixture counts corroborate that outbound refusals never arrived,
 that the response marker did arrive before response scanning, and that each
@@ -110,11 +253,12 @@ without a parent witness and a namespace observation is not containment proof.
 
 ## Evidence and interpretation
 
-`summary.json` identifies the binary hash, checkout SHA, individual harness
-and supervisor hashes, tracked diff hash and dirty status, generated fixture
-hash, config hash, versions, scope and cleanup
-witnesses. The checkout SHA does not cryptographically prove the supplied binary
-was built from it; retain the separate build log and commit identity.
+Both runner summaries identify candidate/harness, generated fixture and
+configuration hashes, scope and cleanup witnesses. The standalone runner also
+records checkout SHA, tracked diff hash and dirty status; the managed adapter
+records installation/runtime/service identity and its lifecycle report instead.
+The checkout SHA does not cryptographically prove the supplied binary was built
+from it; retain the separate build log and commit identity.
 
 `browser.json` separates request TTFB/body completion, navigation-to-ready,
 application readiness, input round-trip and render frame samples. Request
@@ -122,6 +266,10 @@ latency includes proxy and origin work; it is not scanner-only CPU time. Run
 scanner profiling/benchmarks separately under an uncontended CPU window.
 `fixture.json` contains bounded route timing tails and arrival counts. Request
 URLs, cookies and submitted values are not logged by the fixture.
+Anonymous authentication counts separately witness one accepted login,
+authenticated account requests before and after restart, and unauthenticated
+account requests before login and after cookie clearing. Those witnesses are
+required alongside the browser's form/data assertions.
 
 ## Scanner-only baseline and candidate comparison
 
@@ -166,6 +314,17 @@ is reserved for a recognized strict-launch refusal. Missing, ambiguous or
 incomplete evidence never becomes a pass. The harness verifies PNG structure
 and dimensions; visually inspect captured pixels before making display claims.
 
+The truncated API control expects Pipelock's HTTP 403 `parse_error` refusal,
+corroborated by browser response metadata and the fixture's arrival witness.
+A generic 403 or an unrelated fetch failure does not satisfy it. Unexpected
+application-scenario failures are retained while later independent scenarios
+continue; any retained failure prevents overall completion. Login readiness
+checks the actual synthetic form and its origin rather than inferring state
+from a URL alone. Forward-proxy redirects are returned to the browser, which
+owns the fixture's original `303` login flow and session cookie. Authenticated
+account data, profile restart and cleared-cookie recovery must all be observed;
+a login form or a successful submission alone is not authentication acceptance.
+
 The standalone sandbox currently uses a no-op structured audit logger. Its
 configured logging settings do not create structured proxy audit evidence;
 use the launch stderr, observed responses and fixture counts. Retained process
@@ -180,10 +339,15 @@ harness does not reproduce externally observed daemon DISPLAY/Xauthority
 inheritance, undrained Chromium stderr, noVNC startup/CSS, controller conflicts,
 viewer reconnect or connected/disconnected rendering differences.
 
-Before merging a browser/response candidate, the user's local agent should:
+The following is the acceptance specification, not a claim that the current
+standalone harness can satisfy it. Use the managed-contain adapter on its
+separately authorized capable VM for a contained-browser rerun; the standalone
+strict Chromium path remains unsupported. Before merging a browser/response candidate, the
+user's local agent should:
 
 1. Check out the reviewed exact commit; build it and run the repository-required
-   applicable lint/tests, plus this harness's unit tests and strict run. Preserve
+   applicable lint/tests, plus this harness's unit tests and supported contained
+   browser run. Preserve
    failed/refused stages alongside successful stages
 2. On the separately authorized disposable managed host, run the existing
    `pipelock contain verify`, `pipelock contain doctor`, and documented

@@ -6,6 +6,7 @@ package metrics
 import (
 	"math"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -98,6 +99,8 @@ type EvidenceHealthStats struct {
 	DurabilityInvariantOK      bool                       `json:"durability_invariant_ok"`
 	Anchor                     *EvidenceAnchorStats       `json:"anchor"`
 	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
+	TornTails                  EvidenceTornTailStats      `json:"torn_tails"`
+	TornTailPresent            bool                       `json:"torn_tail_present"`
 	CPC                        any                        `json:"cpc"`
 	AnchoredFinalSeq           uint64                     `json:"-"`
 	AnchorLagReceipts          uint64                     `json:"-"`
@@ -190,7 +193,74 @@ func EvidenceLocalRecorderOperational(in EvidenceOperationalInput) bool {
 		!in.UnresolvedGaps && !in.UngatedFsyncFail
 }
 
+// EvidenceTornTailStats reports unsigned process-local observations of damaged shards.
+type EvidenceTornTailStats struct {
+	Total uint64                 `json:"total"`
+	Last  *EvidenceTornTailState `json:"last,omitempty"`
+}
+
+// EvidenceTornTailState locates the most recently observed incomplete write.
+type EvidenceTornTailState struct {
+	Path       string    `json:"path"`
+	Offset     int64     `json:"offset"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type evidenceTornTailKey struct {
+	path   string
+	offset int64
+}
+
+// RecordEvidenceTornTail counts a shard boundary once per process, including across reloads.
+func (m *Metrics) RecordEvidenceTornTail(path string, offset int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.evidenceTornTailSeen == nil {
+		m.evidenceTornTailSeen = make(map[evidenceTornTailKey]struct{})
+	}
+	key := evidenceTornTailKey{path: path, offset: offset}
+	if _, seen := m.evidenceTornTailSeen[key]; seen {
+		m.mu.Unlock()
+		return
+	}
+	m.evidenceTornTailSeen[key] = struct{}{}
+	m.evidenceTornTailStats.Total++
+	m.evidenceTornTailStats.Last = &EvidenceTornTailState{Path: path, Offset: offset, ObservedAt: time.Now().UTC()}
+	m.mu.Unlock()
+	if m.evidenceTornTails != nil {
+		m.evidenceTornTails.Inc()
+	}
+	if m.evidenceTornTailPresent != nil {
+		m.evidenceTornTailPresent.Set(1)
+	}
+}
+
+// EvidenceTornTailSnapshot returns an isolated copy of the observation state.
+func (m *Metrics) EvidenceTornTailSnapshot() EvidenceTornTailStats {
+	if m == nil {
+		return EvidenceTornTailStats{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := m.evidenceTornTailStats
+	if stats.Last != nil {
+		last := *stats.Last
+		stats.Last = &last
+	}
+	return stats
+}
+
 func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
+	m.evidenceTornTails = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock", Subsystem: "evidence", Name: "torn_tails_total",
+		Help: "Total distinct incomplete evidence shard boundaries observed in this process.",
+	})
+	m.evidenceTornTailPresent = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "pipelock", Subsystem: "evidence", Name: "torn_tail_present",
+		Help: "One after observing a torn evidence tail; remains set until process restart.",
+	})
 	m.evidenceSequenceGaps = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Subsystem: "evidence",
@@ -270,6 +340,8 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 	m.evidenceCollector = newEvidenceCollector(m)
 
 	reg.MustRegister(
+		m.evidenceTornTails,
+		m.evidenceTornTailPresent,
 		m.evidenceSequenceGaps,
 		m.evidenceHeartbeatInterval,
 		m.evidenceLastAnchorTimestamp,
@@ -536,6 +608,9 @@ func (m *Metrics) EvidenceHealthStatsSnapshot() (EvidenceHealthStats, bool) {
 	stats.RunState = EvidenceRunStateOpen
 	stats.RunID = nil
 	stats.AELArtifactCapability = CurrentEvidenceArtifactCapability()
+	// Damage survives a healthy emitter replacement or a stale health callback.
+	stats.TornTails = m.EvidenceTornTailSnapshot()
+	stats.TornTailPresent = stats.TornTails.Total > 0
 	return stats, true
 }
 

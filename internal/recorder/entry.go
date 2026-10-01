@@ -477,6 +477,20 @@ func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
 }
 
 func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, int64, error) {
+	// File-backed verification must report incomplete physical writes even if
+	// the final JSON object is valid. In-memory record parsing has no such
+	// newline contract. Inspect the existing handle to preserve secured opens.
+	if file, ok := r.(*os.File); ok {
+		info, err := file.Stat()
+		if err != nil {
+			return nil, false, 0, fmt.Errorf("stat evidence file: %w", err)
+		}
+		if info.Mode().IsRegular() && (limits.MaxBytes <= 0 || info.Size() <= limits.MaxBytes) {
+			if err := inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil)); err != nil {
+				return nil, false, 0, err
+			}
+		}
+	}
 	var entries []Entry
 	reader := bufio.NewReader(r)
 

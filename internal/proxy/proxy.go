@@ -632,6 +632,7 @@ type Proxy struct {
 	sizeExemptScanBudget sizeExemptScanBudget
 	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
 	session              string                                // recorder session this process records under; "proxy" when unset (see WithSession)
+	recoveredSession     atomic.Pointer[string]                // fresh run session adopted after torn-tail recovery; overrides session
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
 	receiptKeyPath       string                                // active signing key path, for reload comparison
@@ -696,6 +697,18 @@ func WithRecorder(rec *recorder.Recorder) Option {
 // WithRecorder, so this proxy's own decision entries land in the same
 // chain as the receipt and proxy_decision emitters built from that
 // recorder. Leaving it unset keeps the historical literal "proxy".
+// recordingSession is the session this proxy records under: a run adopted by
+// torn-tail recovery, else the configured session, else the default base.
+func (p *Proxy) recordingSession() string {
+	if s := p.recoveredSession.Load(); s != nil && *s != "" {
+		return *s
+	}
+	if p.session != "" {
+		return p.session
+	}
+	return recorder.DefaultSessionBase
+}
+
 func WithSession(session string) Option {
 	return func(p *Proxy) { p.session = session }
 }
@@ -1202,6 +1215,23 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+reason)
 				return newRedirectBlockedRequest(blockLayerContract, reason)
 			}
+			// A forward proxy must deliver this origin's redirect to its
+			// client so Location and Set-Cookie retain their browser origin
+			// and navigation semantics. Admission above still refuses unsafe
+			// redirect targets before releasing the response. The original
+			// 3xx body/headers then pass through the normal response scanner.
+			// Any client-followed request is admitted and signed separately;
+			// do not sign an unissued hop or share cookie state in p.client.
+			// Fetch mode alone follows internally and refreshes its envelope.
+			if redirectTransport == TransportForward {
+				// net/http has already opened GetBody for a 307/308. Its
+				// ErrUseLastResponse path leaves that unissued body open.
+				// Close it here, not req.Response.Body, which is scanned next.
+				if req.Body != nil {
+					safeClose(req.Body, "unissued redirect body", p.logger)
+				}
+				return http.ErrUseLastResponse
+			}
 			// Mediation envelope refresh: on every allowed redirect,
 			// rebuild the envelope on req so ph, hop, and @target-uri
 			// reflect the redirected leg rather than the original.
@@ -1483,10 +1513,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 		summary += " (" + pattern + ")"
 	}
 
-	session := p.session
-	if session == "" {
-		session = recorder.DefaultSessionBase
-	}
+	session := p.recordingSession()
 
 	// The comment above this method already promised these errors are
 	// "logged but never block the proxy hot path". They were discarded
@@ -1776,6 +1803,9 @@ func receiptChannelBrokenError(opts receipt.EmitOpts, err error) error {
 // either, so a failure in the second stage cannot leave the first already
 // stored under p.envelopeEmitterPtr while the config is still the old one.
 type receiptEmitterStage struct {
+	// tornRecovery means the old run remains damaged and must not be closed
+	// by appending a terminal record. The replacement owns a fresh run.
+	tornRecovery bool
 	// emitter is the new *receipt.Emitter to install. A nil value means
 	// "receipts are intentionally disabled for this cfg" - either no
 	// signing key path is set or the recorder is nil. The caller should
@@ -1833,17 +1863,52 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	if err != nil {
 		return receiptEmitterStage{}, fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
+	activeSession := p.recordingSession()
+	keys := append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex(), fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey)))
+	tornRecovery := p.receiptEmitterPtr.Load() != nil && p.receiptEmitterPtr.Load().SessionID() != activeSession
+	if tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys); tailErr != nil {
+		if !errors.Is(tailErr, recorder.ErrTornTail) {
+			p.receiptEmitterPtr.Load().MarkUnhealthy(tailErr)
+			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", tailErr)
+		}
+		var torn *recorder.TornTailError
+		if errors.As(tailErr, &torn) {
+			p.metrics.RecordEvidenceTornTail(torn.Path, torn.Offset)
+		}
+		base := activeSession
+		if runBase, ok := receipt.RunSessionBase(activeSession); ok {
+			base = runBase
+		}
+		// Mark the old emitter before moving the recorder. Any concurrent
+		// admission still holding it must fail rather than attest lost bytes.
+		p.receiptEmitterPtr.Load().MarkUnhealthy(tailErr)
+		activeSession, err = p.recorder.RecoverTornRunSession(base)
+		if err != nil {
+			return receiptEmitterStage{}, fmt.Errorf("fresh receipt run unavailable; inspect flight_recorder.dir storage (flight_recorder.require_receipts remains enforced): %w", err)
+		}
+		// The recorder now writes only the fresh run. Adopt it so decision
+		// entries follow it, while a configured session that merely disagrees
+		// with the recorder still surfaces as a logged mismatch.
+		recovered := activeSession
+		p.recoveredSession.Store(&recovered)
+		tornRecovery = true
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("receipt evidence tail damaged; preserving shard and starting fresh run %s: %w", activeSession, tailErr))
+	}
 
 	// Carry the v2 chain head forward across reload so the v2 proxy_decision
 	// chain stays continuous within the process when the emitter is rebuilt
 	// (e.g. key rotation). Cross-restart the chain restarts at genesis; the
 	// recorder's outer hash chain provides tamper-evidence across restarts.
 	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
-	if healthErr := p.v2EmitterPtr.Load().HealthError(); healthErr != nil {
+	if tornRecovery {
+		resumeSeq, resumePrev = 0, recorder.GenesisHash
+	}
+	if healthErr := p.v2EmitterPtr.Load().HealthError(); healthErr != nil && !tornRecovery {
 		return receiptEmitterStage{}, fmt.Errorf("resume proxy_decision chain: %w", healthErr)
 	}
 	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
-	if current := p.receiptEmitterPtr.Load(); current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
+	if current := p.receiptEmitterPtr.Load(); !tornRecovery && current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
 		v2 := p.v2EmitterPtr.Load()
 		if v2 == nil {
 			v2 = proxydecision.NewEmitter(proxydecision.EmitterConfig{
@@ -1854,7 +1919,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 				Actor:          "pipelock",
 				ResumeSeq:      resumeSeq,
 				ResumePrevHash: resumePrev,
-				Session:        p.session,
+				Session:        activeSession,
 			})
 		}
 		return receiptEmitterStage{
@@ -1884,7 +1949,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PostureBinding:      postureResult.Binding,
 		PostureAvailability: string(postureResult.Availability),
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
-		Session:             p.session,
+		Session:             activeSession,
 		// A tail under a different key is resumed only when this process
 		// itself loaded that key. The published emitter's key is not enough
 		// on its own: a reload whose session_open was written but not
@@ -1902,7 +1967,8 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	p.noteReceiptSignerKey(emitter.SignerKeyHex())
 
 	return receiptEmitterStage{
-		emitter: emitter,
+		tornRecovery: tornRecovery,
+		emitter:      emitter,
 		v2: proxydecision.NewEmitter(proxydecision.EmitterConfig{
 			Recorder:       p.recorder,
 			Signer:         proxydecision.NewKeyedSigner(privKey),
@@ -1911,7 +1977,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			Actor:          "pipelock",
 			ResumeSeq:      resumeSeq,
 			ResumePrevHash: resumePrev,
-			Session:        p.session,
+			Session:        activeSession,
 		}),
 		keyPath: keyPath,
 	}, nil
@@ -2336,7 +2402,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// replacement open is persisted only after this close succeeds, so aborting
 	// here cannot leave the current receipt chain behind a staged record.
 	currentReceiptEmitter := p.receiptEmitterPtr.Load()
-	if current := currentReceiptEmitter; current != nil && !receiptStage.reuseExisting && current != receiptStage.emitter {
+	if current := currentReceiptEmitter; current != nil && !receiptStage.tornRecovery && !receiptStage.reuseExisting && current != receiptStage.emitter {
 		if err := current.RetireNativeAEL(); err != nil {
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 				fmt.Errorf("native AEL rotation close failed, keeping old config: %w", err))
@@ -2349,6 +2415,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	if cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil && !receiptStage.reuseExisting && receiptStage.emitter != nil {
 		if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
+			if receiptStage.tornRecovery {
+				err = fmt.Errorf("fresh receipt run could not open; inspect flight_recorder.dir storage and flight_recorder.signing_key_path (flight_recorder.require_receipts remains enforced): %w", err)
+			}
 			// The old AEL run is already terminal. If the replacement receipt was
 			// written before its paired AEL open failed, the old emitter's chain
 			// head is stale. Brick it explicitly so no later request can fork the
@@ -2369,8 +2438,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// above can be stale by now. Retire the live emitter as the last fallible
 	// step and resume its replacement from the head it actually reached; a
 	// request still holding the old pointer then fails instead of forking.
+	if receiptStage.tornRecovery {
+		// The old run cannot receive another receipt; its v2 state is not
+		// adopted by the fresh run. Stop stale pointers without appending.
+		_, _, _ = p.v2EmitterPtr.Load().Retire()
+	}
 	if oldV2 := p.v2EmitterPtr.Load(); cfg.FlightRecorder.SigningKeyPath != "" && p.recorder != nil &&
-		oldV2 != nil && receiptStage.v2 != nil && receiptStage.v2 != oldV2 {
+		oldV2 != nil && receiptStage.v2 != nil && receiptStage.v2 != oldV2 && !receiptStage.tornRecovery {
 		seq, prev, err := oldV2.Retire()
 		if err != nil {
 			p.logger.LogError(audit.NewMethodLogContext("RELOAD"),

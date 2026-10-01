@@ -76,6 +76,16 @@ func compactStreamNames(location recorder.EvidenceLocation, session string) ([]s
 		if strings.HasSuffix(entry.Name(), ".raw.enc") {
 			return nil, fmt.Errorf("refuse raw escrow sidecar %q during compaction; sidecar-preserving compaction is not implemented", entry.Name())
 		}
+		if entry.Name() == recorder.AppendLockFileName {
+			info, err := entry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("inspect recorder append lock %q: %w", entry.Name(), err)
+			}
+			if !info.Mode().IsRegular() || info.Size() != 0 {
+				return nil, fmt.Errorf("refuse non-empty or irregular recorder append lock %q while compacting session %q", entry.Name(), session)
+			}
+			continue
+		}
 		got, _, ok := recorder.ParseEvidenceFilename(entry.Name())
 		if !ok || got != session {
 			return nil, fmt.Errorf("refuse non-selected evidence file %q while compacting session %q", entry.Name(), session)

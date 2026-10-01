@@ -55,12 +55,27 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
         self.assertIn('./scripts/verify-examples.sh', makefile)
         self.assertIn("run: make verify-examples", self.workflow)
 
+    def test_browser_regressions_reuse_the_existing_runtime_and_fail_visibly(self):
+        start = self.workflow.index("      - name: Browser reproduction regressions\n")
+        end = self.workflow.index("      - name: Run shipped verification scripts\n", start)
+        block = self.workflow[start:end]
+        self.assertLess(self.workflow.index("      - name: Set up Node.js\n"), start)
+        self.assertIn("node-version: '24'", self.workflow[:start])
+        self.assertIn("set -euo pipefail", block)
+        self.assertIn("python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'", block)
+        self.assertIn("node --check scripts/e2e/browser_repro/driver.mjs", block)
+        self.assertIn("node --test scripts/e2e/browser_repro/test_contracts.mjs", block)
+        self.assertNotIn("continue-on-error", block)
+        self.assertNotIn("uses:", block)
+        self.assertNotIn("secrets.", block)
+
     def test_push_and_pull_request_filters_match(self):
         push_paths = event_paths(self.workflow, "push")
         pull_request_paths = event_paths(self.workflow, "pull_request")
         self.assertEqual(push_paths, pull_request_paths)
         self.assertIn("examples/**", push_paths)
         self.assertIn("scripts/e2e/**", push_paths)
+        self.assertIn("scripts/ci_process_supervisor.py", push_paths)
         self.assertIn("internal/**", push_paths)
         self.assertIn("scripts/test_e2e_hermetic.py", push_paths)
         self.assertIn("scripts/test_example_verification_workflow.py", push_paths)

@@ -16,6 +16,7 @@ on:
       - 'go.sum'
       - 'internal/**'
       - 'scripts/e2e/**'
+      - 'scripts/ci_process_supervisor.py'
       - 'scripts/test_e2e_hermetic.py'
       - 'scripts/test_example_verification_workflow.py'
       - 'scripts/verify-examples.sh'
@@ -30,6 +31,7 @@ on:
       - 'go.sum'
       - 'internal/**'
       - 'scripts/e2e/**'
+      - 'scripts/ci_process_supervisor.py'
       - 'scripts/test_e2e_hermetic.py'
       - 'scripts/test_example_verification_workflow.py'
       - 'scripts/verify-examples.sh'
@@ -69,6 +71,14 @@ jobs:
           command -v jq
           command -v npx
           command -v python3
+
+      - name: Browser reproduction regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/e2e/browser_repro -p 'test_*.py'
+          node --check scripts/e2e/browser_repro/driver.mjs
+          node --test scripts/e2e/browser_repro/test_contracts.mjs
 
       - name: Run shipped verification scripts
         id: verification

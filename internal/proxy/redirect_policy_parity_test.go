@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -165,8 +166,8 @@ func TestCheckRedirect_TaintedProtectedActionExplicitApprovalAllows(t *testing.T
 	if decision := evaluateHTTPTaint(cfg, rec, redirectReq.Method, redirectReq.URL); decision.Result.Decision.String() != "ask" {
 		t.Fatalf("precondition: redirect decision = %q, want ask", decision.Result.Decision.String())
 	}
-	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err != nil {
-		t.Fatalf("explicitly approved redirect blocked: %v", err)
+	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("explicitly approved forward redirect = %v, want client-owned redirect", err)
 	}
 }
 
@@ -243,13 +244,13 @@ func TestCheckRedirect_SessionPoliciesAllowHarmlessRedirect(t *testing.T) {
 	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 	sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 	redirectReq = redirectReq.WithContext(context.WithValue(redirectReq.Context(), ctxKeyRedirectSessionRecorder, sess))
-	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err != nil {
-		t.Fatalf("clean session redirect blocked: %v", err)
+	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("clean session forward redirect = %v, want client-owned redirect", err)
 	}
 
 	redirectReq, originalReq = redirectPolicyRequests(t, cfg, sc)
-	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err != nil {
-		t.Fatalf("redirect without session recorder blocked: %v", err)
+	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("forward redirect without session recorder = %v, want client-owned redirect", err)
 	}
 }
 

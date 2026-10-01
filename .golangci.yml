@@ -46,6 +46,21 @@ linters:
       - path: internal/proxy/proxy\.go
         linters: [gosec]
         text: "G704"
+      # These owned plain-HTTP redirect fixtures must return cookies through
+      # the real client jar. Secure cookies would suppress the behavior under
+      # test; HttpOnly and SameSite remain explicit. No production cookie is
+      # covered by this exception.
+      - path: ^internal/proxy/(browser_forward_redirect|browser_repro_contract)_test\.go$
+        linters: [gosec]
+        text: "G124"
+      # Native-thread regression tests compile a fixed checked-in C fixture
+      # and execute it, the test binary, or the installed Node runtime in fresh
+      # processes. These variable executable paths are resolved by the test;
+      # no external command input is accepted. Executable generated shim
+      # fixtures require executable permissions to exercise native discovery.
+      - path: ^internal/sandbox/seccomp_thread_linux_amd64_test\.go$
+        linters: [gosec]
+        text: "G204|G306"
       # Descriptor-bound exec. Integrity verification hashes an opened file
       # descriptor and must then execute THAT descriptor, so the bytes hashed
       # and the bytes run are one inode rather than two independent name

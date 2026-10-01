@@ -5,6 +5,7 @@
 
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import CookieError, SimpleCookie
 import argparse
 import hashlib
 import json
@@ -24,7 +25,7 @@ APP = """<!doctype html><meta charset="utf-8"><title>Browser reproduction fixtur
 <output id="counted">0</output><output id="keyed">0</output><div id="motion"></div><script src="/bundle.js"></script>
 """
 LOGIN = """<!doctype html><meta charset="utf-8"><title>Synthetic login</title>
-<h1>Synthetic login</h1><form method="post" action="/session">
+<h1>Synthetic login</h1><form id="fixture-login" method="post" action="/session">
 <label>User <input id="user" name="user" autocomplete="off"></label>
 <label>Fixture code <input id="code" name="code" autocomplete="off"></label>
 <button id="login">Sign in</button></form>"""
@@ -94,6 +95,7 @@ class Fixture:
         self.events = defaultdict(lambda: deque(maxlen=32))
         self.counts = defaultdict(int)
         self.scenario_counts = defaultdict(int)
+        self.auth_counts = defaultdict(int)
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -118,14 +120,20 @@ class Fixture:
                 if self.path != "/session":
                     self.reply(404)
                     return
+                with fixture.lock:
+                    fixture.auth_counts["session_submissions"] += 1
                 size = int(self.headers.get("Content-Length", "0"))
                 if size > 1024:
                     self.reply(413)
                     return
                 fields = parse_qs(self.rfile.read(size).decode())
                 if fields != {"user": ["fixture"], "code": ["fixture-only"]}:
+                    with fixture.lock:
+                        fixture.auth_counts["session_rejections"] += 1
                     self.reply(401, b"synthetic login rejected")
                     return
+                with fixture.lock:
+                    fixture.auth_counts["session_acceptances"] += 1
                 self.reply(303, headers={"Location": "/account", "Set-Cookie":
                            "fixture_session=synthetic; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax"})
 
@@ -137,7 +145,17 @@ class Fixture:
                     fixture.counts[route if route in {"/", "/app", "/account", "/login", "/bundle.js", "/delayed.js", "/api/data", "/health", "/response-marker"} else "other"] += 1
                 try:
                     if route in ("/", "/app", "/account"):
-                        if route == "/account" and "fixture_session=synthetic" not in self.headers.get("Cookie", ""):
+                        cookies = SimpleCookie()
+                        try:
+                            cookies.load(self.headers.get("Cookie", ""))
+                        except CookieError:
+                            cookies.clear()
+                        session = cookies.get("fixture_session")
+                        authenticated = session is not None and session.value == "synthetic"
+                        if route == "/account":
+                            with fixture.lock:
+                                fixture.auth_counts["account_authenticated" if authenticated else "account_login_required"] += 1
+                        if route == "/account" and not authenticated:
                             self.reply(303, headers={"Location": "/login"})
                         else:
                             self.reply(200, APP.encode(), "text/html")
@@ -202,7 +220,9 @@ class Fixture:
 
     def evidence(self):
         with self.lock:
-            return {"counts": dict(self.counts), "scenario_counts": dict(self.scenario_counts), "routes": {key: list(value) for key, value in self.events.items()}}
+            return {"counts": dict(self.counts), "scenario_counts": dict(self.scenario_counts),
+                    "auth_counts": dict(self.auth_counts),
+                    "routes": {key: list(value) for key, value in self.events.items()}}
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -106,6 +107,50 @@ func TestRedirectBodyReplayFailuresBlockAndCleanUp(t *testing.T) {
 			}
 			if tt.wantBodyClosed && !body.closed.Load() {
 				t.Fatal("redirect replay body was not closed after read failure")
+			}
+		})
+	}
+}
+
+// The real stdlib opens GetBody before CheckRedirect, but does not close
+// that unissued body when the callback returns ErrUseLastResponse.
+func TestForwardRedirectClosesUnissuedReplayBody(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var initial, final, opened atomic.Int32
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/start" {
+					final.Add(1)
+					return
+				}
+				initial.Add(1)
+				w.Header().Set("Location", "/final")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, "Synthetic redirect remains readable")
+			}))
+			t.Cleanup(origin.Close)
+			_, base, _, p := newBrowserContractProxyClient(t, origin.URL)
+			ctx := context.WithValue(t.Context(), ctxKeyRedirectTransport, TransportForward)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/start", strings.NewReader("synthetic body"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			replay := &redirectFailureReadCloser{}
+			req.GetBody = func() (io.ReadCloser, error) {
+				opened.Add(1)
+				return replay, nil
+			}
+			resp, err := p.client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+			if opened.Load() != 1 || !replay.closed.Load() || initial.Load() != 1 || final.Load() != 0 {
+				t.Fatalf("replay cleanup: opened=%d closed=%t initial=%d final=%d", opened.Load(), replay.closed.Load(), initial.Load(), final.Load())
+			}
+			if readErr != nil || resp.StatusCode != status || string(body) != "Synthetic redirect remains readable" {
+				t.Fatalf("redirect response prematurely closed: status=%d body=%q error=%v", resp.StatusCode, body, readErr)
 			}
 		})
 	}

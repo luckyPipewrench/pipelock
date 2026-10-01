@@ -433,3 +433,23 @@ func testContainedAgentUser() *user.User {
 		HomeDir:  "/home/" + testAgentUser,
 	}
 }
+
+func TestLaunchContainedAgentLifecycleDoesNotUseLegacyExit255Probe(t *testing.T) {
+	env := containRunLinuxGuardEnv("966", "966", defaultLaunchScript)
+	lifecycle, _ := lifecycleFixture()
+	env.lifecycle = lifecycle
+	exitErr := exec.CommandContext(context.Background(), "/bin/sh", "-c", "exit 255").Run()
+	if exitErr == nil {
+		t.Fatal("expected synthetic process exit")
+	}
+	oldLaunch, oldStatus := runContainedAgentLifecycleCommand, containedAgentSystemdStatus
+	t.Cleanup(func() { runContainedAgentLifecycleCommand, containedAgentSystemdStatus = oldLaunch, oldStatus })
+	runContainedAgentLifecycleCommand = func(containedAgentCommandOptions, *containRunLifecycle) error { return exitErr }
+	containedAgentSystemdStatus = func(context.Context, string) (string, error) {
+		t.Fatal("optional lifecycle used unbounded legacy status query")
+		return "", nil
+	}
+	if err := launchContainedAgent(context.Background(), env, []string{"node"}, nil, io.Discard, io.Discard); err == nil || cliutil.ExitCodeOf(err) != 255 {
+		t.Fatalf("err=%v", err)
+	}
+}

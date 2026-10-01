@@ -1787,8 +1787,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-wrap body so the forwarded request gets the buffered bytes.
-		// GetBody is set so stdlib can replay on 307/308 redirects when
-		// the forward proxy's client follows a method-preserving hop.
+		// GetBody lets stdlib construct 307/308 redirect preflight requests
+		// so body-replay authority checks run before client-owned delivery.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
 		r.ContentLength = int64(len(buf))
 		bufCopy := buf
@@ -2324,6 +2324,23 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
+	// net/http preflights only the first Location value and skips the
+	// callback entirely for a missing first value or non-replayable body.
+	// Do not release an alternate or parser-ambiguous browser destination.
+	if ambiguousForwardRedirectLocation(resp) {
+		const reason = "ambiguous redirect location"
+		p.logger.LogBlocked(actx, responseScanLayer, reason)
+		p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID: actionID, RequestID: requestID, Agent: agent,
+			Method: r.Method, Target: targetURL, Layer: responseScanLayer,
+			Pattern: reason, Taint: forwardTaint,
+		})))
+		writeBlockedError(w, blockInfoFor(blockreason.ParseError, responseScanLayer), "blocked: "+reason, http.StatusForbidden)
+		outcomeStatus = strconv.Itoa(http.StatusForbidden)
+		outcomeReason = "ambiguous_redirect_location"
+		return
+	}
 	// An authenticated artifact is not a destination exemption. The proxy
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.
@@ -3298,6 +3315,31 @@ func copyResponseHeaders(dst, src http.Header) {
 	blockreason.SetRecordedReceipt(dst, recordedReceipt)
 	removeHopByHopHeaders(dst)
 	dst.Del("Content-Length")
+}
+
+// ambiguousForwardRedirectLocation rejects response shapes for which a
+// browser could choose a different target from net/http's redirect preflight.
+// Empty/absent Location is non-followable and keeps its existing semantics.
+func ambiguousForwardRedirectLocation(resp *http.Response) bool {
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		return false
+	}
+	locations := resp.Header.Values("Location")
+	if len(locations) > 1 {
+		return true
+	}
+	if len(locations) == 0 {
+		return false
+	}
+	for _, c := range locations[0] {
+		if c <= ' ' || c == '\x7f' || c == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.

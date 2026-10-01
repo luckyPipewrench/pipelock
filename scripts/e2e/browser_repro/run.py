@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -29,11 +30,57 @@ from fixture import CANARY, FORBIDDEN_HOST, HOST, Fixture
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 SUPERVISOR = ROOT / "scripts/ci_process_supervisor.py"
+NODE_IDENTITY = "JSON.stringify({execPath:process.execPath,version:process.versions.node,release:process.release.name})"
 
 
 def write_json(path, data):
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
+
+
+def node_identity(output):
+    """Resolve the runtime reported by Node, never copy a PATH launcher/shim."""
+    if len(output) > 4096:
+        raise RuntimeError("Node identity output exceeds its bound")
+    try:
+        identity = json.loads(output)
+        version = identity["version"]
+        executable = Path(identity["execPath"])
+        if identity["release"] != "node" or not isinstance(version, str):
+            raise ValueError("not a Node runtime")
+        match = re.fullmatch(r"(\d+)\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?", version)
+        if not match or int(match[1]) < 22:
+            raise ValueError("Node 22+ is required")
+        if not executable.is_absolute():
+            raise ValueError("Node execPath is not absolute")
+        executable = executable.resolve(strict=True)
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError("Node execPath is not executable")
+        with executable.open("rb") as stream:
+            if stream.read(4) != b"\x7fELF":
+                raise ValueError("Node execPath is not a native Linux executable")
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise RuntimeError(f"invalid Node runtime identity: {error}; use --node with the native executable") from error
+    return {"exec_path": str(executable), "version": version}
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def copy_node_runtime(identity, destination):
+    source = Path(identity["exec_path"])
+    source_hash = file_sha256(source)
+    shutil.copyfile(source, destination)
+    destination.chmod(0o750)
+    copied_hash = file_sha256(destination)
+    if copied_hash != source_hash:
+        raise RuntimeError("Node runtime changed while being copied")
+    return {"source_sha256": source_hash, "copied_sha256": copied_hash}
 
 
 def isolated_environment(root):
@@ -73,7 +120,10 @@ class Cancellation:
 
 class Process:
     """Continuously drain both pipes; cap retained bytes, never stop reading."""
-    def __init__(self, command, output, env, cwd, cancellation=None):
+    def __init__(self, command, output, env, cwd, cancellation=None, signal_grace_seconds=2):
+        if type(signal_grace_seconds) is not int or not 2 <= signal_grace_seconds <= 20:
+            raise ValueError("signal grace must be an integer from 2 to 20 seconds")
+        self.signal_grace_seconds = signal_grace_seconds
         self.cancellation = cancellation
         if cancellation:
             cancellation.check()
@@ -87,7 +137,8 @@ class Process:
         self.eof = {"stdout": False, "stderr": False}
         self.read_errors = {}
         self.process = subprocess.Popen(
-            [sys.executable, str(SUPERVISOR), "--status-file", str(output.with_suffix(".cleanup.json")), "--", *command],
+            [sys.executable, str(SUPERVISOR), "--status-file", str(output.with_suffix(".cleanup.json")),
+             "--signal-grace-seconds", str(signal_grace_seconds), "--", *command],
             cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.threads = []
         for name in self.buffers:
@@ -128,7 +179,7 @@ class Process:
         if self.process.poll() is None:
             self.process.send_signal(signal.SIGTERM)
             try:
-                self.process.wait(timeout=8)
+                self.process.wait(timeout=self.signal_grace_seconds + 6)
             except subprocess.TimeoutExpired:
                 # Do not invent cleanup success if the shipped supervisor stalls.
                 raise RuntimeError("process supervisor did not complete descendant cleanup")
@@ -152,6 +203,19 @@ class Process:
         if not cleanup.get("cleanup_complete") or cleanup.get("unexpected_live_descendants"):
             raise RuntimeError(f"descendant cleanup was incomplete or unexpected: {self.output.name}")
         return result
+
+
+def probe(command, name, output, env, work, cancellation, report):
+    process = Process(command, output / name, env, work, cancellation)
+    try:
+        code = process.wait(timeout=5)
+    finally:
+        report["processes"][name] = process.stop()
+    if code != 0:
+        raise RuntimeError(f"{name} probe failed; use an explicit installed native executable")
+    if process.counts["stdout"] > 4096:
+        raise RuntimeError(f"{name} probe output exceeds its bound")
+    return bytes(process.buffers["stdout"]).decode("utf-8").strip()
 
 
 def free_port():
@@ -205,20 +269,21 @@ def main():
         with tempfile.TemporaryDirectory(prefix="browser-repro-") as temporary, Fixture(args.bundle_bytes) as fixture:
             work = Path(temporary)
             env = isolated_environment(work)
-            for name, executable in (("node", args.node), ("chromium", args.chromium)):
-                version = Process([executable, "--version"], args.output / f"version-{name}", env, work, cancellation)
-                try:
-                    code = version.wait(timeout=5)
-                finally:
-                    report["processes"][f"version-{name}"] = version.stop()
-                report["versions"][name] = {"exit_code": code, "version": bytes(version.buffers["stdout"]).decode(errors="replace").strip()[:1024]}
-                if code != 0:
-                    raise RuntimeError(f"{name} version probe failed")
+            identity = node_identity(probe([args.node, "-p", NODE_IDENTITY], "identity-node",
+                                          args.output, env, work, cancellation, report))
+            report["versions"]["node"] = {"exit_code": 0, "version": identity["version"]}
+            chromium_version = probe([args.chromium, "--version"], "version-chromium",
+                                     args.output, env, work, cancellation, report)
+            report["versions"]["chromium"] = {"exit_code": 0, "version": chromium_version[:1024]}
             # The workspace is already the explicit writable/execute grant. Copy
             # this selected executable rather than widening host directory access.
             node_runtime = work / "node-runtime"
-            shutil.copyfile(Path(args.node).resolve(strict=True), node_runtime)
-            node_runtime.chmod(0o750)
+            report["node_runtime"] = {**identity, **copy_node_runtime(identity, node_runtime)}
+            copied = node_identity(probe([str(node_runtime), "-p", NODE_IDENTITY], "identity-node-copy",
+                                        args.output, env, work, cancellation, report))
+            if copied != {"exec_path": str(node_runtime.resolve()), "version": identity["version"]}:
+                raise RuntimeError("copied Node runtime identity does not match the selected runtime")
+            report["node_runtime"]["copied_identity_verified"] = True
             env["PIPELOCK_CONFIG"] = str(work / "pipelock.json")
             write_json(work / "pipelock.json", config_for())
             write_json(args.output / "config.json", config_for())
@@ -231,7 +296,8 @@ def main():
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(f"http://127.0.0.1:{fixture.port}/health", timeout=2) as response:
                 report["parent_fixture_witness"] = response.status
-            shutil.copyfile(HERE / "driver.mjs", work / "driver.mjs")
+            for name in ("driver.mjs", "contracts.mjs"):
+                shutil.copyfile(HERE / name, work / name)
             settings = {"mode": args.mode, "port": fixture.port, "canary": CANARY,
                         "chromium": str(Path(args.chromium).resolve()), "profile": str(work / "profile"),
                         "output": str(work), "parent_net_namespace": report["parent_net_namespace"]}
@@ -319,6 +385,14 @@ def main():
                 if evidence["counts"].get("/response-marker") != 1:
                     report["status"] = "fail"
                     report["failure"] = "response marker did not reach fixture exactly once before response scanning"
+                auth = evidence["auth_counts"]
+                report["auth_observations"] = auth
+                if (auth.get("session_submissions") != 1 or auth.get("session_acceptances") != 1
+                        or auth.get("session_rejections", 0) != 0
+                        or auth.get("account_authenticated", 0) < 2
+                        or auth.get("account_login_required", 0) < 2):
+                    report["status"] = "fail"
+                    report["failure"] = "fixture did not corroborate login, restart and cookie-clearing recovery"
         cancellation.check()
     except Exception as error:
         report["status"] = "fail"

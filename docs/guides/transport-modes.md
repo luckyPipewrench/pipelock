@@ -82,6 +82,34 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 
 **What the agent receives:** Raw HTTP response from the origin server.
 
+**Redirects and browser sessions:** Absolute-URI forwarding returns an allowed
+origin redirect (`3xx`, `Location`, and separate `Set-Cookie` headers) to the
+client instead of following it inside Pipelock. For redirects the outbound
+client could follow, existing target admission still runs before the response
+is released, including destination, credential,
+request-policy, taint, airlock, contract and body-replay restrictions. The
+original redirect response then passes normal response scanning and header
+sanitization. Responses already left unfollowed, such as a `307`/`308` with a
+non-replayable body, keep that behavior. A denied target is not contacted.
+For client-followable redirect statuses, ambiguous `Location` values (duplicates,
+raw backslashes or literal ASCII whitespace) fail closed before any redirect or
+cookie header is released. Ordinary single relative or absolute locations remain
+supported.
+
+The browser owns navigation and cookie state, so cookies retain the issuing
+origin and path. Pipelock does not create a shared cookie jar or move cookies
+between origins. Each client-followed request must still use the configured
+proxy route and receives full admission for its actual URL, headers and body.
+Earlier redirect approval cannot authorize different credentials on that request.
+
+Client-followed hops are separate requests, with fresh action/receipt IDs and
+fresh mediation envelopes, not one internally followed signed chain. The client
+controls its redirect limit; Pipelock's internal `/fetch` redirect counter does
+not carry across these separate requests. Configured per-request and session limits
+still apply. Confirmation policies can prompt for redirect preflight and again
+for the actual subsequent request; approval is not shared between them.
+`/fetch` retains its existing bounded internal follow-and-rescan behavior.
+
 **Use when:** Your application makes plaintext HTTP requests through `HTTP_PROXY`. Note that most modern APIs use HTTPS, making this mode less common.
 
 ```bash

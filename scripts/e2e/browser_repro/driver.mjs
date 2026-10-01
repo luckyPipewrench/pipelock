@@ -9,6 +9,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import {performance} from 'node:perf_hooks';
+import {checkAPIError,checkManagedIdentity,collectScenarios,isLoginRequired,loginObservation,responseBlockReason} from './contracts.mjs';
 
 const settings = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const report = {schema: 1, mode: settings.mode, cases: [], processes: [], unsupported: [
@@ -103,6 +104,7 @@ class Browser {
       const entry=this.requests.get(p.requestId);if(entry)entry.from_cache=true;
     } else if(message.method==='Network.responseReceived'){
       const entry=this.requests.get(p.requestId);if(entry)Object.assign(entry,{status:p.response.status,
+        block_reason:responseBlockReason(p.response.headers),
         ttfb_ms:(p.timestamp-entry.start)*1000,from_disk_cache:!!p.response.fromDiskCache,from_service_worker:!!p.response.fromServiceWorker});
     } else if(message.method==='Network.loadingFinished'||message.method==='Network.loadingFailed'){
       const entry=this.requests.get(p.requestId);if(!entry)return;this.requests.delete(p.requestId);
@@ -133,6 +135,9 @@ class Browser {
     check(!result.errorText,result.errorText);
     if(result.loaderId)await until(()=>this.mainFrame?.loaderId===result.loaderId);return started;}
   async state(){return this.evaluate('window.fixture ? JSON.parse(JSON.stringify(window.fixture)) : null');}
+  response(route){return [...(this.routes.get(route)||[]),...this.requests.values()].findLast(
+    item=>item.route===route&&item.phase===this.phase&&item.status!==undefined);}
+  async loginRequired(){return until(async()=>{const value=await this.evaluate(loginObservation);return isLoginRequired(value,origin)?value:false;});}
   async ready(){return until(async()=>{const value=await this.state();return value?.state==='ready'?value:false;});}
   async click(selector){const box=await this.evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await this.call('Input.dispatchMouseEvent',{type:'mousePressed',...box,button:'left',clickCount:1});
@@ -165,8 +170,13 @@ class Browser {
 }
 async function run() {
   report.namespace={net:fs.readlinkSync('/proc/self/ns/net'),user:fs.readlinkSync('/proc/self/ns/user')};
+  report.runtime_identity={uid:process.getuid(),gid:process.getgid(),exec_path:process.execPath,
+    version:process.versions.node,release:process.release.name};
+  if(settings.mode==='managed-contain'){
+    checkManagedIdentity(settings,report.runtime_identity,{upper:proxy,lower:process.env.http_proxy});
+  }
   report.direct_control=await directProbe();
-  if(settings.mode==='sandbox'){
+  if(settings.mode==='sandbox'||settings.mode==='managed-contain'){
     check(report.namespace.net!==settings.parent_net_namespace,'sandbox inherited host network namespace');
     check(report.direct_control.outcome!=='connected','direct own-host endpoint is reachable inside sandbox');
   }
@@ -216,20 +226,22 @@ async function run() {
         dimensions:await browser.evaluate('({innerWidth,innerHeight,screenWidth:screen.width,screenHeight:screen.height,devicePixelRatio})'),
         frame_intervals_ms:state.frames.slice(-60),paint_entries:await browser.evaluate("performance.getEntriesByType('paint').map(({name,startTime})=>({name,startTime}))")});
     }
-    for(const scenario of ['error','incomplete','pending']){
+    // Keep later independent diagnostics observable, without erasing a failure.
+    report.cases.push(...await collectScenarios(['error','incomplete','pending'],async scenario=>{
       await browser.navigate('/app?scenario='+scenario);
       await until(async()=>!!(await browser.state()));
       if(scenario==='pending'){
         await pause(800);const state=await browser.state();check(state.state==='loading','pending fixture falsely completed');
-        report.cases.push({name:scenario,status:'expected_pending',app_state:state.state,observation_ms:800});
+        return {status:'expected_pending',app_state:state.state,observation_ms:800};
       }else{
         const state=await until(async()=>{const value=await browser.state();return value?.state==='error'?value:false;});
-        if(scenario==='error')check(state.error==='HTTP 503','error case did not observe intended HTTP 503');
-        else check(['Failed to fetch','HTTP 502'].includes(state.error),'incomplete case observed an unrelated error: '+state.error);
-        report.cases.push({name:scenario,status:'expected_error',app_state:state.state,error:state.error});
+        const response=await until(()=>browser.response('/api/data'));
+        checkAPIError(scenario,state,response);
+        return {status:'expected_error',app_state:state.state,error:state.error,
+          http_status:response.status,block_reason:response.block_reason};
       }
-    }
-    await browser.navigate('/account');await until(async()=>(await browser.evaluate('location.pathname'))==='/login');
+    }));
+    await browser.navigate('/account');await browser.loginRequired();
     await browser.type('#user','fixture');await browser.type('#code','fixture-only');await browser.click('#login');await browser.ready();
     check(await browser.evaluate('location.pathname')==='/account','login redirect failed');
     report.cases.push({name:'synthetic_login',status:'pass',app_state:'ready'});
@@ -238,9 +250,9 @@ async function run() {
     check(await browser.evaluate("localStorage.getItem('restart-only-sentinel')")==='synthetic-preserved','persistent storage lost');
     report.cases.push({name:'profile_restart',status:'pass',app_state:'ready'});
     await browser.call('Network.clearBrowserCookies');await browser.navigate('/account');
-    await until(async()=>(await browser.evaluate('location.pathname'))==='/login');
-    report.cases.push({name:'cleared_cookie_redirect',status:'pass',app_state:'login_required'});
+    const login=await browser.loginRequired();
+    report.cases.push({name:'cleared_cookie_redirect',status:'pass',app_state:'login_required',browser_path:login.path});
   }finally{await browser.close();}
 }
-try{await run();check(report.processes.every(item=>item.browser_errors.length===0&&item.graceful_shutdown),'browser runtime, protocol, shutdown or output-drain failure');report.status='complete';report.assertions='pass';}catch(error){report.status='fail';report.assertions='fail';report.failure=error.message;process.exitCode=1;}
+try{await run();check(!report.cases.some(item=>item.status==='fail'),'one or more independent application scenarios failed');check(report.processes.every(item=>item.browser_errors.length===0&&item.graceful_shutdown),'browser runtime, protocol, shutdown or output-drain failure');report.status='complete';report.assertions='pass';}catch(error){report.status='fail';report.assertions='fail';report.failure=error.message;process.exitCode=1;}
 fs.writeFileSync(path.join(settings.output,'browser.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600});

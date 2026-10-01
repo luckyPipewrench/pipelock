@@ -52,8 +52,14 @@ func TestNewReverseProxyServer_HasNoServerWideWriteTimeout(t *testing.T) {
 // scan time.
 func TestReverseProxyServer_ResponseSlowerThanStallWindowIsDelivered(t *testing.T) {
 	const size = 3 << 20
-	addr := serveReverseTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(4 * reverseWriteTestStall)
+	addr := serveReverseTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Upstream/scan latency longer than the stall window, bounded by a timer
+		// and abandoned if the client goes away.
+		select {
+		case <-time.After(4 * reverseWriteTestStall):
+		case <-r.Context().Done():
+			return
+		}
 		_, _ = w.Write([]byte(strings.Repeat("a", size)))
 	}))
 
@@ -147,7 +153,8 @@ func TestReverseProxyServer_DripReaderIsCutOffByTotalBudget(t *testing.T) {
 				return
 			}
 			_ = http.NewResponseController(w).Flush()
-			time.Sleep(30 * time.Millisecond)
+			pace := time.NewTimer(30 * time.Millisecond) // drip cadence, inside the stall window
+			<-pace.C
 		}
 		done <- result{nil, time.Since(start)}
 	}), reverseWriteTestStall, budget)

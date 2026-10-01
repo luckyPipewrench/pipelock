@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const dialFallbackHost = "multi.vendor.example"
@@ -75,10 +76,7 @@ func TestSSRFSafeDialContext_FallsBackToNextValidatedAddress(t *testing.T) {
 	if got := conn.RemoteAddr().String(); got != net.JoinHostPort("127.0.0.1", port) {
 		t.Fatalf("connected to %s, want 127.0.0.1", got)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for accepted.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.For(t, 2*time.Second, func() bool { return accepted.Load() > 0 }, "listener to accept the fallback connection")
 	if accepted.Load() != 1 {
 		t.Fatalf("listener accepted %d, want 1", accepted.Load())
 	}
@@ -129,9 +127,17 @@ func TestSSRFSafeDialContext_MetadataAddressRefusesBeforeAnyConnect(t *testing.T
 			t.Errorf("order %v: %d connect attempts, want 0", order, attempts.Load())
 		}
 	}
-	time.Sleep(100 * time.Millisecond)
-	if accepted.Load() != 0 {
-		t.Errorf("listener saw %d connections, want 0", accepted.Load())
+	// Barrier instead of a wall-clock wait: the kernel queues connections in
+	// order and the accept loop is sequential, so once this probe connection is
+	// counted any earlier connection to the listener has been counted too.
+	probe, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Fatalf("probe dial: %v", err)
+	}
+	_ = probe.Close()
+	testwait.For(t, 2*time.Second, func() bool { return accepted.Load() > 0 }, "listener to accept the probe connection")
+	if got := accepted.Load(); got != 1 {
+		t.Errorf("listener saw %d connections, want 1 (the probe only)", got)
 	}
 }
 

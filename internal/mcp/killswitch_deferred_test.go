@@ -89,7 +89,20 @@ func TestDeferredStdioKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.
 
 			// Allow direction: nothing is active, so the hold must stay held
 			// across several polls.
-			time.Sleep(15 * deferKillSwitchPollInterval)
+			window := time.NewTimer(15 * deferKillSwitchPollInterval)
+			recheck := time.NewTicker(deferKillSwitchPollInterval)
+		quiet:
+			for {
+				select {
+				case <-window.C:
+					break quiet
+				case <-recheck.C:
+					if got := manager.HeldCount(); got != 1 {
+						t.Fatalf("hold cancelled with no kill active: held = %d", got)
+					}
+				}
+			}
+			recheck.Stop()
 			if got := manager.HeldCount(); got != 1 {
 				t.Fatalf("hold cancelled with no kill active: held = %d", got)
 			}

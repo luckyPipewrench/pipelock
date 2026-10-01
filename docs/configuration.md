@@ -1577,7 +1577,7 @@ Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$
 
 ### Defer Action
 
-`action: defer` withholds a matched tool call instead of forwarding or blocking it, and resolves the held action to a terminal decision later. Defer is **fail-closed and affirmative-clearing**: the held action resolves to **allow only on an explicit positive signal**; timeout, cancellation, parse error, kill switch, capacity overflow, resolver error, process restart, and any non-affirmative result all resolve to **block**. The absence of an adverse signal is never treated as permission. Kill-switch activation blocks every held call that has not yet claimed its upstream send (`resolution_source: kill_switch`); a send already claimed before activation is in flight and cannot be recalled.
+`action: defer` withholds a matched tool call instead of forwarding or blocking it, and resolves the held action to a terminal decision later. Defer is **fail-closed and affirmative-clearing**: the held action resolves to **allow only on an explicit positive signal**; timeout, cancellation, parse error, kill switch, capacity overflow, resolver error, process restart, and any non-affirmative result all resolve to **block**. The absence of an adverse signal is never treated as permission. Kill-switch activation blocks every held call that has not yet claimed its upstream send (`resolution_source: kill_switch`); a send already claimed before activation is in flight and cannot be recalled. While anything is held, the proxy checks the kill switch about once a second, so every source, including `sentinel_file`, cancels held calls within about a second without waiting for the next request or for the resolver to finish.
 
 Defer is supported on **MCP stdio and the stdio-to-HTTP bridge**. On any other MCP transport, a `defer`-matched tool call is blocked (fail-closed) rather than held, because those transports cannot enforce a held-action resume.
 
@@ -1623,9 +1623,9 @@ The configured `exec` runs as a child process with a restricted environment and 
 
 #### Deferred operator API
 
-When defer is enabled, `kill_switch.api_listen` and an API token expose the operator-only deferred-action routes on a separate listener. `GET /api/v1/deferred` lists pending actions. Send `POST /api/v1/deferred/{id}/approve` or `/deny` with `Authorization: Bearer <token>` to resolve one. The API result reports the terminal decision actually applied, which may be `block` even after an approve request if the rule does not allow operator approval. In `pipelock mcp proxy`, this listener exposes the deferred routes only.
+When defer is enabled, `kill_switch.api_listen` and an API token expose the operator-only deferred-action routes on a separate listener. `GET /api/v1/deferred` lists pending actions. Send `POST /api/v1/deferred/{id}/approve` or `/deny` with `Authorization: Bearer <token>` to resolve one. The API result reports the terminal decision actually applied, which may be `block` even after an approve request: if the rule does not allow operator approval, if the kill switch activated first, or if the stdio-to-HTTP bridge's release check refuses the call. In `pipelock mcp proxy`, this listener exposes the deferred routes only, so `POST /api/v1/killswitch`, `GET /api/v1/killswitch/status` and the session routes return 404 there; use `sentinel_file` to trigger the kill switch for an MCP proxy, or run the kill switch API on a `pipelock run` listener.
 
-For example, to exercise `resolution_source: upstream_contract`, run a stdio-to-HTTP bridge with `pipelock mcp proxy --upstream https://api.vendor.example/mcp`, configure an applicable `action: defer` rule whose resolver returns `allow`, and start with an active [Learn and Lock contract](guides/learn-and-lock.md) that permits the configured upstream URL under `mcp_upstream`. Hold a matching call, then promote a new active manifest that denies that URL and wait for the runtime to reload it. Approve the held call after the new manifest is active. The bridge checks the live contract immediately before forwarding, so the call resolves to block with `resolution_source: upstream_contract`.
+For example, to exercise `resolution_source: upstream_contract`, run a stdio-to-HTTP bridge with `pipelock mcp proxy --upstream https://api.vendor.example/mcp`, configure an applicable `action: defer` rule whose resolver returns `allow`, and start with an active [Learn and Lock contract](guides/learn-and-lock.md) that permits the configured upstream URL. The bridge checks the upstream URL as an HTTP `POST` with the effective action `mcp_upstream`, so a contract rule permits it with a selector whose `host` is the upstream host (and, optionally, `paths` and `methods`); adding `effective_action: mcp_upstream` to that selector limits the rule to the bridge's own upstream check instead of every request to that host. `mcp_upstream` is that label, not a separate contract section. Hold a matching call, then promote a new active manifest that denies that URL and wait for the runtime to reload it. Approve the held call after the new manifest is active. The bridge checks the live contract immediately before forwarding, so the call resolves to block with `resolution_source: upstream_contract`.
 
 Resolution sources include `approval`, `operator`, `authority`, `timeout`, `cancel`, `context`, `restart_recovery`, `kill_switch`, `capacity`, `cascade`, `cascade_limit`, `duplicate_defer_id`, `policy_reload`, `tool_inventory`, and `upstream_contract`.
 
@@ -1804,13 +1804,15 @@ adaptive signal resets the consecutive-clean counter.
 
 ### Escalation Levels
 
-Sessions progress through three levels as threat score accumulates past `escalation_threshold` multiples. Each level can independently upgrade action severity.
+Sessions progress through three levels as threat score accumulates. The threshold doubles after each escalation, so the score needed for each level is `escalation_threshold` times 1, 2, then 4. Each level can independently upgrade action severity.
 
 | Level | Trigger | Description |
 |-------|---------|-------------|
 | `elevated` | Score ≥ threshold × 1 | First escalation. Session shows suspicious behavior. |
 | `high` | Score ≥ threshold × 2 | Second escalation. Session is actively concerning. |
-| `critical` | Score ≥ threshold × 3 | Third escalation. Session is high-confidence threat. |
+| `critical` | Score ≥ threshold × 4 | Third escalation. Session is high-confidence threat. |
+
+With the default `escalation_threshold` of 5.0 that is 5, 10, and 20. Scores move in whole signal steps, so a session first reports `critical` at the first score at or past 20.
 
 ### Level Actions
 

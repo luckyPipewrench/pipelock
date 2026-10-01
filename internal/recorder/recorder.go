@@ -1176,7 +1176,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	r.evidenceDir = dirInfo
 
 	if r.file != nil {
-		return InspectEvidenceTail(r.file.Name(), nil)
+		return nil
 	}
 
 	// filepath.Base as defense-in-depth: session ID is already validated
@@ -1229,6 +1229,23 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
 	}
 	lineBytes := int64(len(data)) + int64(len("\n"))
+	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
+		return fmt.Errorf("opening evidence file: %w", err)
+	}
+	unlock, err := acquireAppendLock(r.cfg.Dir, e.SessionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := InspectEvidenceTail(r.file.Name(), nil); err != nil {
+		var torn *TornTailError
+		if errors.As(err, &torn) {
+			if sink, ok := r.metrics.(interface{ RecordEvidenceTornTail(string, int64) }); ok {
+				sink.RecordEvidenceTornTail(torn.Path, torn.Offset)
+			}
+		}
+		return err
+	}
 	if err := r.ensureEntryCapacityLocked(e.SessionID, e.Sequence, lineBytes); err != nil {
 		return err
 	}

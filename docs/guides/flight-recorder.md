@@ -248,6 +248,10 @@ The TypeScript and Rust verifier CLIs default `--dir` to the legacy `proxy` sess
 
 Evidence written by older binaries lives in the plain `proxy` session. It is still verified as before.
 
+An incomplete final write is reported as a torn tail: trailing NUL bytes, a truncated final line, or a final JSON record without its newline. Pipelock never appends to that shard or rewrites it. A reload that encounters a torn tail in its current run starts a fresh run session and publishes the configuration only after the new receipt emitter opens successfully. Malformed complete records, invalid signatures, and broken hash links still reject the reload. If the fresh run cannot open, inspect `flight_recorder.dir` storage and `flight_recorder.signing_key_path`; `flight_recorder.require_receipts` continues to enforce receipt availability.
+
+The unsigned `evidence_health.torn_tails` snapshot records the latest observed shard path, byte offset, and observation time. `pipelock_evidence_torn_tails_total` counts each observed shard boundary once per process. `pipelock evidence doctor DIR` reports retained torn shards as damaged. Recovery doesn't certify the damaged bytes or restore missing evidence; restart continuity uses the existing predecessor-link rules below.
+
 **Restart continuity is an optional signed link file.** When a run writes its first receipt, it looks for the most recent chain of the same base whose writer has exited and that no run has continued yet. If it finds one, it publishes `chain-link-<predecessor>.json` beside the chains. The file is signed by the new run's key and names the predecessor's exact final receipt (sequence and hash). The name comes from the predecessor, and the file is created atomically and only if absent, so at most one run can continue a given chain. The link lives beside the chain, never inside it.
 
 A run is legitimately *unlinked* when it is the first run, when its predecessor was still running (concurrent processes), when its predecessor's tail was damaged, or when the platform cannot prove the earlier writer has exited. Unlinked runs are reported, not treated as failures.

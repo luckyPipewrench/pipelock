@@ -33,7 +33,7 @@ func TestLocalLogTornTailRecovery(t *testing.T) {
 			if _, err := log.Submit(cp); err != nil {
 				t.Fatal(err)
 			}
-			original, err := os.ReadFile(path)
+			original, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,7 +66,7 @@ func TestLocalLogTornTailRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,7 +93,7 @@ func TestLocalLogTamperBeforeTornFailsClosed(t *testing.T) {
 			if _, err := log.Submit(cp); err != nil {
 				t.Fatal(err)
 			}
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestLocalLogTamperBeforeTornFailsClosed(t *testing.T) {
 			if _, err := log.Submit(cp); err == nil || errors.Is(err, recorder.ErrTornTail) {
 				t.Fatalf("tamper must fail closed, got %v", err)
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -209,7 +209,7 @@ func TestLocalLogRepeatedSegmentRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		proofs = append(proofs, proof)
-		f, err := os.OpenFile(damagedPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(filepath.Clean(damagedPath), os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,10 +5,14 @@ package evidence
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestEvidenceDoctorTornTail(t *testing.T) {
@@ -71,5 +75,41 @@ func TestEvidenceDoctorTornTail(t *testing.T) {
 				t.Fatal("doctor rewrote shard")
 			}
 		})
+	}
+}
+
+func TestEvidenceDoctorSignatureBeforeTornTail(t *testing.T) {
+	dir := t.TempDir()
+	writeActualDoctorReceipt(t, dir)
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	entries, err := recorder.ReadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := receipt.Unmarshal(entries[0].RawDetail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Signature = "ed25519:" + strings.Repeat("0", 128)
+	entries[0].Detail, entries[0].RawDetail = r, nil
+	entries[0].Hash = recorder.ComputeHash(entries[0])
+	line, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append(line, '\n'), 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Damaged() {
+		t.Fatal("invalid signature reported healthy")
+	}
+	for _, finding := range report.Findings {
+		if finding.Kind == "torn_tail" {
+			t.Fatal("invalid signature hidden by torn suffix")
+		}
 	}
 }

@@ -54,6 +54,26 @@ func InspectEvidenceTail(path string, validate func(Entry) error) error {
 	return InspectJSONLTailWithValidator(path, evidenceTailValidator(validate))
 }
 
+// ValidateEvidenceFile streams a whole shard with bounded per-record memory.
+// Reload uses this for its current run: an intact final line cannot hide
+// corruption in an earlier complete line. Tail-only legacy queries stay bounded.
+func ValidateEvidenceFile(path string, validate func(Entry) error) error {
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	validator := evidenceTailValidator(validate)
+	if err := inspectJSONLTail(file, info, path, validator); err != nil {
+		return err
+	}
+	err = inspectJSONLRecords(io.NewSectionReader(file, 0, info.Size()), path, validator, false)
+	if changed := ensureEvidenceFileUnchanged(file, info); changed != nil {
+		return changed
+	}
+	return err
+}
+
 func inspectJSONLTail(file *os.File, info os.FileInfo, path string, validate func([]byte) error) error {
 	size := info.Size()
 	if size == 0 {
@@ -82,7 +102,10 @@ func inspectJSONLTail(file *os.File, info os.FileInfo, path string, validate fun
 			return err
 		}
 		if last[0] == '\n' {
-			return ensureEvidenceFileUnchanged(file, info)
+			// A complete snapshot is safe for append classification even when
+			// another writer appends an atomic complete line after it. Readers
+			// still enforce their own unchanged-file check after parsing.
+			return nil
 		}
 	}
 	err := inspectJSONLTornPrefix(io.NewSectionReader(file, 0, end), path, validate)
@@ -103,6 +126,10 @@ func InspectEvidenceTailBytes(path string, data []byte, validate func(Entry) err
 }
 
 func inspectJSONLTornPrefix(input io.Reader, path string, validate func([]byte) error) error {
+	return inspectJSONLRecords(input, path, validate, true)
+}
+
+func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) error, torn bool) error {
 	reader := bufio.NewReader(input)
 	var offset, lastGood int64
 	for {
@@ -149,7 +176,10 @@ func inspectJSONLTornPrefix(input io.Reader, path string, validate func([]byte) 
 			break
 		}
 	}
-	return &TornTailError{Path: path, Offset: lastGood, LastGoodOffset: lastGood}
+	if torn {
+		return &TornTailError{Path: path, Offset: lastGood, LastGoodOffset: lastGood}
+	}
+	return nil
 }
 
 func evidenceTailValidator(validate func(Entry) error) func([]byte) error {

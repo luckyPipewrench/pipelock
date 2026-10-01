@@ -5,7 +5,11 @@
 
 package recorder
 
-import "os"
+import (
+	"os"
+
+	"golang.org/x/sys/windows"
+)
 
 const (
 	evidenceReadNoFollowFlag = 0
@@ -31,6 +35,14 @@ func validateEvidenceFileAccess() error {
 // writers advertise nothing.
 func lockEvidenceFileForWrite(_ *os.File) error {
 	return nil
+}
+
+func lockEvidenceAppend(f *os.File) error {
+	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &windows.Overlapped{})
+}
+
+func unlockEvidenceAppend(f *os.File) error {
+	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &windows.Overlapped{})
 }
 
 // unlockEvidenceFile mirrors the no-op Windows writer lock.

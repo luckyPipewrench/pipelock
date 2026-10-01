@@ -51,7 +51,7 @@ func TestInspectJSONLTailClassification(t *testing.T) {
 					t.Fatalf("tail = %+v", tail)
 				}
 			}
-			after, err := os.ReadFile(path)
+			after, err := os.ReadFile(filepath.Clean(path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +80,7 @@ func TestDirectionalReadersRejectTornTail(t *testing.T) {
 	for _, suffix := range []string{"\x00\x00", "{\"type\":", "valid-json"} {
 		path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
 		writeDirectionalEntries(t, path, 1)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,7 +106,7 @@ func TestDirectionalReadersRejectTornTail(t *testing.T) {
 			}
 			suffix = string(data)
 		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,6 +117,16 @@ func TestDirectionalReadersRejectTornTail(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, read := range []func() error{
+			func() error { _, err := ReadEntries(path); return err },
+			func() error {
+				file, err := os.Open(filepath.Clean(path))
+				if err != nil {
+					return err
+				}
+				defer func() { _ = file.Close() }()
+				_, err = ReadEntriesFromReader(file)
+				return err
+			},
 			func() error { _, _, err := ReadHeadEntriesBounded(path, 1, MaxEvidenceReadFileBytes); return err },
 			func() error { _, _, err := ReadTailEntriesBounded(path, 1, MaxEvidenceReadFileBytes); return err },
 			func() error { _, _, err := FindLastEntry(path, func(Entry) bool { return true }); return err },
@@ -138,7 +148,7 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := rec.file.Name()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +158,7 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(path)
+	before, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +184,7 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 	if err := rec.AcquireSession(next); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.ReadFile(path)
+	after, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +193,34 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 	}
 	if _, err := rec.RecoverTornRunSession("proxy"); err == nil {
 		t.Fatal("healthy recovery accepted")
+	}
+}
+
+func TestRecorderTornTailCannotEscapeBySizeRotation(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	defer func() { _ = rec.Close() }()
+	session, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(Entry{SessionID: session, Type: "request"}); err != nil {
+		t.Fatal(err)
+	}
+	path := rec.file.Name()
+	// A sparse NUL tail fills the shard to its rotation boundary.
+	if err := os.Truncate(filepath.Clean(path), MaxEvidenceReadFileBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(Entry{SessionID: session, Type: "request"}); !errors.Is(err, ErrTornTail) {
+		t.Fatalf("rotation bypassed torn tail: %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(rec.Dir(), "evidence-*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files=%v err=%v", files, err)
+	}
+	info, err := os.Stat(filepath.Clean(path))
+	if err != nil || info.Size() != MaxEvidenceReadFileBytes {
+		t.Fatalf("damaged shard changed: info=%v err=%v", info, err)
 	}
 }
 
@@ -202,7 +240,7 @@ func TestInspectJSONLTailBoundedLineAndAccess(t *testing.T) {
 func TestEvidenceTornTailCannotMaskHashTamper(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
 	writeDirectionalEntries(t, path, 1)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

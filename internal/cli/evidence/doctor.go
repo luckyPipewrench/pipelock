@@ -391,7 +391,7 @@ func (d *evidenceDoctor) scanJSONL(name string) {
 			return errors.New("broken recorder hash link")
 		}
 		previous = &entry
-		return nil
+		return receipt.ValidateEvidenceEntry(entry, nil)
 	})
 	if tailErr != nil {
 		var torn *recorder.TornTailError

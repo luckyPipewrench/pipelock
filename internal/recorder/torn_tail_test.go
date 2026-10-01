@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -238,19 +239,53 @@ func TestInspectJSONLTailBoundedLineAndAccess(t *testing.T) {
 }
 
 func TestEvidenceTornTailCannotMaskHashTamper(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
-	writeDirectionalEntries(t, path, 1)
-	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString("\x00"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := InspectEvidenceTail(path, nil); err == nil || errors.Is(err, ErrTornTail) {
-		t.Fatalf("hash tamper masked: %v", err)
+	for _, tc := range []struct{ name, suffix string }{
+		{"complete", "\n"},
+		{"complete with NUL", "\n\x00\x00"},
+		{"unterminated", ""},
+		{"unterminated with NUL", "\x00\x00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newTestRecorderForAcquire(t)
+			if err := rec.Record(Entry{SessionID: "hash-test", Type: "request", Summary: "real producer"}); err != nil {
+				t.Fatal(err)
+			}
+			path := rec.file.Name()
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateEvidenceFile(path, nil); err != nil {
+				t.Fatalf("positive control: %v", err)
+			}
+			entries, err := ReadEntries(path)
+			if err != nil || len(entries) == 0 {
+				t.Fatalf("entries=%v err=%v", entries, err)
+			}
+			entry := entries[0]
+			if entry.Version == 0 || entry.Hash != ComputeHash(entry) {
+				t.Fatal("fixture is not real hashed evidence")
+			}
+			flipped := byte('0')
+			if entry.Hash[0] == flipped {
+				flipped = '1'
+			}
+			entry.Hash = string(flipped) + entry.Hash[1:]
+			data, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(data, []byte(tc.suffix)...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err = ValidateEvidenceFile(path, nil)
+			if err == nil || errors.Is(err, ErrTornTail) || !strings.Contains(err.Error(), "hash mismatch") {
+				t.Fatalf("want hash TAMPER, got %v", err)
+			}
+			if tc.suffix != "\n" {
+				if err := InspectEvidenceTail(path, nil); err == nil || errors.Is(err, ErrTornTail) || !strings.Contains(err.Error(), "hash mismatch") {
+					t.Fatalf("tail inspection masked hash TAMPER: %v", err)
+				}
+			}
+		})
 	}
 }

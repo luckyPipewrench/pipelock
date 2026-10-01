@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -223,7 +224,7 @@ def proxy_fixture(manifest, config_hash):
     }
 
 
-def lifecycle_fixture():
+def lifecycle_fixture(outcome="complete"):
     expected = {"argv_sha256": "aa" * 32, "binary_sha256": "bb" * 32,
                 "config_sha256": "cc" * 32, "posture_capsule_sha256": "dd" * 32}
     run_id = "01" * 16
@@ -239,6 +240,14 @@ def lifecycle_fixture():
         "terminal": {"Id": unit, "LoadState": "loaded", "ActiveState": "inactive",
                      "SubState": "dead", "MainPID": "0", "InvocationID": invocation_id},
     }
+    # superviseLifecycleService publishes incomplete for a failed or cancelled
+    # command even when stopLifecycleService verified the owned cgroup empty.
+    if outcome != "complete":
+        record["phase"] = "incomplete"
+        record["failure"] = "context canceled" if outcome == "cancelled" else "exit status 7"
+        record["cancelled"] = outcome == "cancelled"
+        record["terminal"]["ActiveState"] = "failed"
+        record["terminal"]["SubState"] = "failed"
     return record, expected
 
 
@@ -252,6 +261,25 @@ def fixture_evidence():
 
 
 class ManagedBindingTests(unittest.TestCase):
+    def test_failed_and_cancelled_lifecycle_cleanup_is_not_success_acceptance(self):
+        for outcome in ("failed", "cancelled"):
+            record, expected = lifecycle_fixture(outcome)
+            with self.subTest(outcome=outcome):
+                self.assertEqual(managed.validate_lifecycle_cleanup(record, expected), record)
+                with self.assertRaisesRegex(ValueError, "lifecycle is incomplete"):
+                    managed.validate_lifecycle(record, expected)
+                for field in ("final", "admission_observed", "argv_observed", "cleanup_complete", "cgroup_empty"):
+                    with self.subTest(missing=field), self.assertRaises(ValueError):
+                        managed.validate_lifecycle_cleanup({**record, field: False}, expected)
+                for field in expected:
+                    with self.subTest(mismatch=field), self.assertRaises(ValueError):
+                        managed.validate_lifecycle_cleanup({**record, field: "ff" * 32}, expected)
+                for field, value in (("phase", "admitted"), ("cancelled", 1),
+                                     ("terminal", {"Id": record["unit"], "LoadState": "loaded",
+                                                   "ActiveState": "active", "MainPID": "321"})):
+                    with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                        managed.validate_lifecycle_cleanup({**record, field: value}, expected)
+
     def test_argv_digest_matches_go_encoding_json_golden_bytes(self):
         argv = ["browser-repro-node", "<>&", "\u2028\u2029", "café", '"\\\n']
         # Independent encoding/json.Marshal golden bytes: Go escapes HTML and
@@ -855,7 +883,13 @@ class ManagedFailureFlowTests(unittest.TestCase):
         # root ownership, procfs capability and systemd execution are unavailable
         # boundaries mocked below. The HTTP fixture, generated files, report
         # writes, and safe removal are real and limited to this temporary tree.
-        for scenario in ("missing", "partial", "local-cleanup-failed", "accessibility-failed", "bound-complete"):
+        verified_scenarios = ("bound-complete", "nonzero-failed-report", "nonzero-complete-report",
+                              "nonzero-missing-report", "nonzero-malformed-report", "nonzero-symlink-report",
+                              "nonzero-save-failed-report", "nonzero-screenshot-invalid", "nonzero-screenshot-save-failed",
+                              "nonzero-summary-save-failed", "nonzero-final-summary-save-failed",
+                              "nonzero-cancelled-report", "zero-cancelled-report", "cleanup-signal",
+                              "zero-failed-report", "zero-malformed-report", "zero-screenshot-invalid")
+        for scenario in ("missing", "partial", "local-cleanup-failed", "accessibility-failed", *verified_scenarios):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 workspace_root = root / "workspace-root"
@@ -871,11 +905,25 @@ class ManagedFailureFlowTests(unittest.TestCase):
                 config_raw = json.dumps(manifest["configuration"]).encode()
                 config_hash = hashlib.sha256(config_raw).hexdigest()
                 proof_raw = b"generated synthetic posture binding fixture\n"
-                agent = SimpleNamespace(pw_uid=1234, pw_gid=1235)
+                # Generated artifacts use this test process's real ownership;
+                # managed host admission remains an explicitly mocked boundary.
+                agent = SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid())
+                browser_record = {"schema": 1, "mode": "managed-contain", "status": "fail",
+                                  "failure": "generated browser failure detail", "cases": []}
+                if scenario in ("nonzero-complete-report", "zero-screenshot-invalid", "zero-cancelled-report", "cleanup-signal"):
+                    browser_record["status"] = "complete"
+                valid_report_scenarios = ("nonzero-failed-report", "nonzero-complete-report", "zero-failed-report",
+                    "nonzero-save-failed-report", "nonzero-screenshot-invalid", "nonzero-screenshot-save-failed",
+                    "nonzero-summary-save-failed", "nonzero-final-summary-save-failed",
+                    "nonzero-cancelled-report", "zero-cancelled-report", "cleanup-signal",
+                    "zero-screenshot-invalid")
+                png = b"\x89PNG\r\n\x1a\ngenerated screenshot fixture; not rendered pixels"
+                driver_exit = 7 if scenario.startswith("nonzero-") else 0
                 launched = []
                 original_read = managed.read_regular
                 original_is_file = Path.is_file
                 probes = []
+                cancellation = managed.Cancellation()
 
                 def command_probe(command, name, *unused):
                     probes.append(command)
@@ -891,6 +939,8 @@ class ManagedFailureFlowTests(unittest.TestCase):
                     path = Path(path)
                     if path == Path("/var/lib/pipelock/contain/posture/proof.json"):
                         return proof_raw
+                    if scenario == "cleanup-signal" and path == managed.INSTALLED_CONFIG:
+                        return config_raw
                     if not path.is_relative_to(root):
                         raise AssertionError(f"unexpected host file read: {path}")
                     return original_read(path, limit=limit)
@@ -907,7 +957,8 @@ class ManagedFailureFlowTests(unittest.TestCase):
                             raise AssertionError("managed cleanup grace changed")
                         if scenario == "missing":
                             return
-                        record, _ = lifecycle_fixture()
+                        outcome = "cancelled" if "cancelled-report" in scenario else "failed" if driver_exit else "complete"
+                        record, _ = lifecycle_fixture(outcome)
                         tool_args = command[command.index("--") + 1:]
                         record.update({"argv_sha256": managed.argv_sha256(tool_args),
                             "binary_sha256": manifest["pipelock_sha256"], "config_sha256": config_hash,
@@ -918,13 +969,54 @@ class ManagedFailureFlowTests(unittest.TestCase):
                         lifecycle.mkdir(mode=0o700)
                         (lifecycle / "lifecycle.json").write_text(json.dumps(record))
                         (lifecycle / "lifecycle.json").chmod(0o600)
+                        artifact = Path(tool_args[1]).parent / "results" / "browser.json"
+                        if scenario in valid_report_scenarios:
+                            artifact.write_text(json.dumps(browser_record))
+                            if scenario == "nonzero-save-failed-report":
+                                (args.output / "browser.json").mkdir()
+                        elif scenario in ("nonzero-malformed-report", "zero-malformed-report"):
+                            artifact.write_text('{"generated":"truncated"')
+                        elif scenario == "nonzero-symlink-report":
+                            reference = root / "owned-reference.json"
+                            reference.write_text(json.dumps(browser_record))
+                            artifact.symlink_to(reference)
+                        if scenario in verified_scenarios:
+                            for name in ("cold.png", "delayed.png"):
+                                (artifact.parent / name).write_bytes(png)
+                            if scenario in ("nonzero-screenshot-invalid", "zero-screenshot-invalid"):
+                                (artifact.parent / "cold.png").write_bytes(b"generated invalid PNG")
+                            elif scenario == "nonzero-screenshot-save-failed":
+                                (args.output / "cold.png").mkdir()
+                            if scenario == "nonzero-summary-save-failed":
+                                (args.output / "summary.json").mkdir()
                     def wait(self, timeout):
-                        return 0
+                        return driver_exit
                     def stop(self):
                         if scenario == "local-cleanup-failed":
                             raise RuntimeError("synthetic local descendant cleanup failed")
                         return {"streams_drained": True, "cleanup": {"cleanup_complete": True,
-                                "unexpected_live_descendants": False}, "exit_code": 0}
+                                "unexpected_live_descendants": False}, "exit_code": driver_exit}
+
+                original_write_json = managed.write_json
+                original_rmtree = shutil.rmtree
+                def remove_with_cancellation(path, *args, **kwargs):
+                    result = original_rmtree(path, *args, **kwargs)
+                    if scenario == "cleanup-signal" and Path(path).parent == Path(manifest["workspace"]):
+                        cancellation.interrupted(signal.SIGTERM, None)
+                    return result
+                remove_with_cancellation.avoids_symlink_attacks = original_rmtree.avoids_symlink_attacks
+
+                summary_writes = 0
+                def write_with_late_destination_failure(path, data, **kwargs):
+                    nonlocal summary_writes
+                    if path == args.output / "summary.json":
+                        summary_writes += 1
+                        if scenario == "nonzero-final-summary-save-failed" and summary_writes == 2:
+                            # Keep the real incomplete snapshot, then cause the
+                            # terminal write to fail through actual filesystem I/O.
+                            path.rename(args.output / "summary-before-cleanup.json")
+                            path.mkdir()
+                    return original_write_json(path, data, **kwargs)
 
                 with contextlib.ExitStack() as stack:
                     overrides = {
@@ -939,10 +1031,23 @@ class ManagedFailureFlowTests(unittest.TestCase):
                         "node_identity": Mock(return_value={"exec_path": manifest["node"]["path"], "version": "24.0.0"}),
                         "proxy_snapshot": Mock(return_value=proxy_fixture(manifest, config_hash)),
                         "os.chown": Mock(), "Process": SyntheticManagedProcess,
+                        "Cancellation": Mock(return_value=cancellation),
                     }
+                    if scenario == "cleanup-signal":
+                        # Supply independently defined successful observations
+                        # so the cancellation, not an earlier fixture failure,
+                        # determines the terminal state. No browser is launched.
+                        overrides.update({"Fixture.evidence": Mock(return_value=fixture_evidence()),
+                            "require_root_runtime": Mock(), "require_quiet_agent": Mock(),
+                            "executable_identity": lambda path: manifest["node"] if str(path) == manifest["node"]["path"]
+                                else manifest["chromium"] if str(path) == manifest["chromium"]["path"]
+                                else {"path": str(args.pipelock), "sha256": manifest["pipelock_sha256"]}})
                     for target, replacement in overrides.items():
                         stack.enter_context(patch("managed." + target, replacement))
-                    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    stack.enter_context(patch("run.write_json", write_with_late_destination_failure))
+                    stack.enter_context(patch("run.shutil.rmtree", remove_with_cancellation))
+                    stdout = io.StringIO()
+                    stack.enter_context(contextlib.redirect_stdout(stdout))
                     self.assertEqual(managed.run_managed(args), 2)
                 self.assertEqual(len(probes), 2)
                 if scenario == "accessibility-failed":
@@ -951,6 +1056,29 @@ class ManagedFailureFlowTests(unittest.TestCase):
                     self.assertEqual(len(launched), 1)
                     self.assertEqual(launched[0][:3], ["/usr/local/bin/pipelock", "contain", "run"])
                     self.assertIn("--lifecycle-output", launched[0])
+                if scenario in ("nonzero-summary-save-failed", "nonzero-final-summary-save-failed"):
+                    console = json.loads(stdout.getvalue())
+                    self.assertEqual(console["status"], "fail")
+                    self.assertEqual(console["containment"], "not_established")
+                    self.assertEqual(console["driver_exit"], 7)
+                    self.assertIn("summary_write_error", console)
+                    self.assertEqual(json.loads((args.output / "browser.json").read_text()), browser_record)
+                    self.assertEqual((args.output / "delayed.png").read_bytes(), png)
+                    if scenario == "nonzero-summary-save-failed":
+                        self.assertFalse(console["workspace_removed"])
+                        retained = Path(console["retained_synthetic_workspace"])
+                        self.assertTrue(retained.is_relative_to(Path(manifest["workspace"])))
+                        self.assertEqual(json.loads((retained / "results" / "browser.json").read_text()), browser_record)
+                    else:
+                        self.assertTrue(console["workspace_removed"])
+                        self.assertNotIn("retained_synthetic_workspace", console)
+                        self.assertEqual(list(Path(manifest["workspace"]).iterdir()), [])
+                        pending = json.loads((args.output / "summary-before-cleanup.json").read_text())
+                        self.assertEqual(pending["status"], "incomplete")
+                        self.assertEqual(pending["containment"], "not_established")
+                        self.assertEqual(pending["driver_exit"], 7)
+                        self.assertEqual(pending["failure"], "contained browser command failed (exit 7)")
+                    continue
                 report = json.loads((args.output / "summary.json").read_text())
                 self.assertEqual(report["status"], "fail")
                 self.assertEqual(report["containment"], "not_established")
@@ -958,13 +1086,57 @@ class ManagedFailureFlowTests(unittest.TestCase):
                     self.assertNotIn("driver_exit", report)
                     self.assertIn("scratch access refused", report["failure"])
                 else:
-                    self.assertEqual(report["driver_exit"], 0)
+                    self.assertEqual(report["driver_exit"], driver_exit)
                 self.assertEqual((args.output / "summary.json").stat().st_mode & 0o777, 0o600)
-                if scenario == "bound-complete":
-                    self.assertTrue(report["workspace_removed"])
-                    self.assertEqual(list(Path(manifest["workspace"]).iterdir()), [])
-                    self.assertTrue(report["lifecycle"]["cleanup_complete"])
+                if driver_exit:
+                    self.assertEqual(report["failure"], "contained browser command failed (exit 7)")
+                if scenario == "cleanup-signal":
+                    self.assertEqual(report["interrupted_signal"], signal.SIGTERM)
+                if scenario == "zero-cancelled-report":
+                    self.assertEqual(report["failure"], "managed service lifecycle is incomplete")
+                if scenario in verified_scenarios:
+                    if scenario in ("nonzero-save-failed-report", "nonzero-screenshot-save-failed"):
+                        self.assertFalse(report["workspace_removed"])
+                        retained = Path(report["retained_synthetic_workspace"])
+                        self.assertEqual(json.loads((retained / "results" / "browser.json").read_text()), browser_record)
+                    else:
+                        self.assertTrue(report["workspace_removed"])
+                        self.assertEqual(list(Path(manifest["workspace"]).iterdir()), [])
+                    self.assertTrue(report["lifecycle_cleanup"]["cleanup_complete"])
+                    if driver_exit or scenario == "zero-cancelled-report":
+                        self.assertNotIn("lifecycle", report)
+                        self.assertEqual(report["lifecycle_cleanup"]["phase"], "incomplete")
+                        self.assertTrue(report["lifecycle_cleanup"]["failure"])
+                    else:
+                        self.assertTrue(report["lifecycle"]["cleanup_complete"])
                     self.assertTrue((args.output / "proof.json").is_file())
+                    saved_browser = args.output / "browser.json"
+                    self.assertEqual((args.output / "delayed.png").read_bytes(), png)
+                    if scenario in ("nonzero-screenshot-invalid", "zero-screenshot-invalid", "nonzero-screenshot-save-failed"):
+                        self.assertFalse((args.output / "cold.png").is_file())
+                        self.assertIn("screenshot_artifact_error", report)
+                        if scenario == "nonzero-screenshot-save-failed":
+                            self.assertTrue(report["screenshot_artifact_save_failed"])
+                        if scenario == "zero-screenshot-invalid":
+                            self.assertEqual(report["failure"], report["screenshot_artifact_error"])
+                    else:
+                        self.assertEqual((args.output / "cold.png").read_bytes(), png)
+                    if scenario in valid_report_scenarios and scenario != "nonzero-save-failed-report":
+                        self.assertEqual(report["browser_artifact_status"], "preserved")
+                        self.assertEqual(json.loads(saved_browser.read_text()), browser_record)
+                        self.assertEqual(saved_browser.stat().st_mode & 0o777, 0o600)
+                        self.assertNotIn("browser_artifact_error", report)
+                        if scenario == "zero-failed-report":
+                            self.assertEqual(report["failure"], "browser diagnostics are incomplete")
+                    elif scenario == "nonzero-save-failed-report":
+                        self.assertFalse(saved_browser.is_file())
+                        self.assertEqual(report["browser_artifact_status"], "save_failed")
+                        self.assertIn("could not be saved", report["browser_artifact_error"])
+                    else:
+                        self.assertFalse(saved_browser.exists())
+                        self.assertEqual(report["browser_artifact_status"],
+                            "missing" if scenario in ("bound-complete", "nonzero-missing-report") else "rejected")
+                        self.assertIn("browser result", report["browser_artifact_error"])
                 else:
                     self.assertFalse(report["workspace_removed"])
                     retained = Path(report["retained_synthetic_workspace"])
@@ -1013,6 +1185,7 @@ class ManagedSupervisorGraceTests(unittest.TestCase):
             for grace in (2, 20):
                 process = Process.__new__(Process)
                 process.signal_grace_seconds = grace
+                process.output_lock = threading.Lock()
                 process.output = Path(temporary) / f"child-{grace}"
                 process.process = Mock(returncode=0)
                 process.process.poll.return_value = None

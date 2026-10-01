@@ -24,7 +24,7 @@ func lifecycleFixture() (*containRunLifecycle, map[string]string) {
 	fields := map[string]string{
 		"Id": unit, "LoadState": "loaded", "ActiveState": "active", "SubState": "running", "MainPID": "123",
 		"Transient": "yes", "Description": lifecycleDescriptionPrefix + runID, "InvocationID": strings.Repeat("b", 32),
-		"ControlGroup": "/system.slice/" + unit, "User": "966", "ExecStart": "{ path=" + defaultLaunchScript + " ; argv[]=private ; }",
+		"ControlGroup": "/system.slice/" + unit, "User": "966",
 		"PrivateNetwork": "yes", "PrivateTmp": "yes", "JoinsNamespaceOf": containedNetworkNamespaceUnit,
 		"KillMode": "control-group", "SendSIGKILL": "yes", "Restart": "no",
 	}
@@ -51,7 +51,7 @@ func lifecycleTestBackend(fields map[string]string) lifecycleBackend {
 func TestLifecycleOwnedRejectsAmbiguousIdentity(t *testing.T) {
 	changes := map[string]string{
 		"Id": "unrelated.service", "Transient": "no", "Description": "unrelated", "InvocationID": "", "ControlGroup": "/system.slice/unrelated.service", "User": "0",
-		"ExecStart": "{ path=/usr/bin/true ; }", "PrivateNetwork": "no", "PrivateTmp": "no", "JoinsNamespaceOf": "unrelated.service",
+		"PrivateNetwork": "no", "PrivateTmp": "no", "JoinsNamespaceOf": "unrelated.service",
 		"KillMode": "process", "SendSIGKILL": "no", "Restart": "always",
 	}
 	for key, value := range changes {
@@ -451,7 +451,8 @@ func TestLifecycleTypedArgvPreservesArgumentBoundaries(t *testing.T) {
 func TestLifecycleTypedArgvRejectsMalformedPayload(t *testing.T) {
 	for _, body := range []string{
 		`not json`, `{"type":"as","data":[]}`, `{"type":"a(sasbttttuii)","data":[]}`, `{"type":"a(sasbttttuii)","data":[[]]}`,
-		`{"type":"a(sasbttttuii)","data":[["/wrong",["/wrong"],false,0,0,0,0,0,0,0]]}`,
+		`{"type":"a(sasbttttuii)","data":[["/usr/bin/true",["/usr/local/bin/plk-launch"],false,0,0,0,0,0,0,0]]}`,
+		`{"type":"a(sasbttttuii)","data":[["/usr/local/bin/plk-launch",["/usr/bin/true"],false,0,0,0,0,0,0,0]]}`,
 		`{"type":"a(sasbttttuii)","data":[["/usr/local/bin/plk-launch",["/usr/local/bin/plk-launch"],true,0,0,0,0,0,0,0]]}`,
 		`{"type":"a(sasbttttuii)","data":[[12,[],false,0,0,0,0,0,0,0]]}`,
 		`{"type":"a(sasbttttuii)","type":"a(sasbttttuii)","data":[]}`,

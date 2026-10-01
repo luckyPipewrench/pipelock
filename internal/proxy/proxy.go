@@ -1077,7 +1077,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				redirectWarnCtx.Transport = TransportFetch
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
-			result := currentScanner.Scan(redirectScanCtx, redirectURL)
+			// Forward redirects are returned to the client, so this admission
+			// must not spend a slot for an unissued request. The client's next
+			// request calls Scan and atomically consumes its own slot. Fetch
+			// redirects dispatch here and keep consuming in this callback.
+			var result scanner.Result
+			if redirectTransport == TransportForward {
+				result = currentScanner.ScanPreflight(redirectScanCtx, redirectURL)
+			} else {
+				result = currentScanner.Scan(redirectScanCtx, redirectURL)
+			}
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)

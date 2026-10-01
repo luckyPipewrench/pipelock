@@ -104,7 +104,7 @@ func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.C
 	if opts.lifecycleRunID != "" {
 		args = append([]string{
 			"--system", "--no-ask-password",
-			"--description=pipelock-contain-lifecycle:" + opts.lifecycleRunID,
+			"--description=" + lifecycleDescriptionPrefix + opts.lifecycleRunID,
 			"--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=TimeoutStopSec=5s", "--property=Restart=no",
 		}, args...)
 	}

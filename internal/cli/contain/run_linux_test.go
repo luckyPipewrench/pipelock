@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
@@ -451,5 +452,103 @@ func TestLaunchContainedAgentLifecycleDoesNotUseLegacyExit255Probe(t *testing.T)
 	}
 	if err := launchContainedAgent(context.Background(), env, []string{"node"}, nil, io.Discard, io.Discard); err == nil || cliutil.ExitCodeOf(err) != 255 {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLaunchContainedAgentPreservesLifecycleExitCauses(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		command func(context.Context) *exec.Cmd
+		code    int
+		message string
+	}{
+		{
+			"numeric exit",
+			func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 7") },
+			7, "contained agent exited with status 7",
+		},
+		{
+			"systemd client exit",
+			func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 255") },
+			255, "contained agent exited with status 255",
+		},
+		{
+			"signal exit",
+			func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "/bin/sh", "-c", "kill -TERM $$") },
+			128 + int(syscall.SIGTERM), "contained agent terminated by signal terminated",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			child := tt.command(ctx)
+			child.WaitDelay = time.Second
+			childErr := child.Run()
+			var childExit *exec.ExitError
+			if !errors.As(childErr, &childExit) || ctx.Err() != nil {
+				t.Fatalf("bounded helper exit = %v, context = %v", childErr, ctx.Err())
+			}
+			admissionErr := errors.New("synthetic admission failure")
+			cleanupErr := errors.New("synthetic cleanup failure")
+			causes := []error{admissionErr, cleanupErr, childErr, context.Canceled}
+			runErr := errors.Join(causes...)
+			for _, mode := range []string{"lifecycle", "legacy"} {
+				t.Run(mode, func(t *testing.T) {
+					env := containRunLinuxGuardEnv("966", "966", defaultLaunchScript)
+					if mode == "lifecycle" {
+						env.lifecycle, _ = lifecycleFixture()
+					}
+					oldRun, oldLifecycle := runContainedAgentCommand, runContainedAgentLifecycleCommand
+					oldStatus, oldCleanup := containedAgentSystemdStatus, containedAgentSystemdCleanup
+					t.Cleanup(func() {
+						runContainedAgentCommand, runContainedAgentLifecycleCommand = oldRun, oldLifecycle
+						containedAgentSystemdStatus, containedAgentSystemdCleanup = oldStatus, oldCleanup
+					})
+					runContainedAgentCommand = func(*exec.Cmd) error {
+						if env.lifecycle != nil {
+							t.Fatal("lifecycle used legacy launcher")
+						}
+						return runErr
+					}
+					runContainedAgentLifecycleCommand = func(_ containedAgentCommandOptions, l *containRunLifecycle) error {
+						if l == nil || l != env.lifecycle {
+							t.Fatal("lifecycle launcher received the wrong record")
+						}
+						return runErr
+					}
+					containedAgentSystemdStatus = func(context.Context, string) (string, error) {
+						if env.lifecycle != nil {
+							t.Fatal("lifecycle used legacy status query")
+						}
+						return "exited\n255\n", nil
+					}
+					var cleanups int
+					containedAgentSystemdCleanup = func(context.Context, string) { cleanups++ }
+
+					err := launchContainedAgent(t.Context(), env, []string{"node"}, nil, io.Discard, io.Discard)
+					if got := cliutil.ExitCodeOf(err); got != tt.code {
+						t.Fatalf("exit code = %d, want %d: %v", got, tt.code, err)
+					}
+					var gotExit *exec.ExitError
+					if env.lifecycle == nil {
+						if err.Error() != tt.message || errors.As(err, &gotExit) || cleanups != 1 {
+							t.Fatalf("legacy result changed: err=%v cleanups=%d", err, cleanups)
+						}
+						return
+					}
+					if !strings.HasPrefix(err.Error(), tt.message+": ") || cleanups != 0 {
+						t.Fatalf("lifecycle result = %v, legacy cleanups = %d", err, cleanups)
+					}
+					for _, cause := range causes {
+						if !errors.Is(err, cause) || !strings.Contains(err.Error(), cause.Error()) {
+							t.Errorf("lost lifecycle cause %v: %v", cause, err)
+						}
+					}
+					if !errors.As(err, &gotExit) || gotExit != childExit {
+						t.Fatalf("lost child exit identity: %v", err)
+					}
+				})
+			}
+		})
 	}
 }

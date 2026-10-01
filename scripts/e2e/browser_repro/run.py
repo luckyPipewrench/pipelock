@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,16 +34,200 @@ SUPERVISOR = ROOT / "scripts/ci_process_supervisor.py"
 NODE_IDENTITY = "JSON.stringify({execPath:process.execPath,version:process.versions.node,release:process.release.name})"
 
 
-def write_json(path, data):
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+def write_json(path, data, before_replace=None):
+    """Publish JSON only after a private same-directory file is complete."""
+    raw = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        remaining = memoryview(raw)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("JSON evidence write made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        closing, descriptor = descriptor, None
+        os.close(closing)
+        if before_replace is not None:
+            before_replace()
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
-def write_final_report(path, report):
+class _ReportInterrupted(Exception):
+    """Discard a prepared summary whose cancellation state became stale."""
+
+
+def write_final_report(path, report, cancellation=None):
     """Failed or interrupted diagnostics cannot retain a success claim."""
-    if report.get("status") != "complete" and report.get("containment") != "not_tested_proxy_only":
-        report["containment"] = "not_established"
-    write_json(path, report)
+    def normalize():
+        if cancellation is not None and cancellation.signum is not None:
+            report["status"] = "fail"
+            report["interrupted_signal"] = cancellation.signum
+            report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
+        if report.get("status") != "complete" and report.get("containment") != "not_tested_proxy_only":
+            report["containment"] = "not_established"
+
+    def check_interruption():
+        if (cancellation is not None and cancellation.signum is not None
+                and report.get("interrupted_signal") != cancellation.signum):
+            raise _ReportInterrupted()
+
+    normalize()
+    try:
+        write_json(path, report, before_replace=check_interruption)
+    except _ReportInterrupted:
+        # Cancellation is sticky: one retry publishes only a failed record.
+        # The abandoned candidate never replaced the incomplete snapshot.
+        normalize()
+        write_json(path, report)
+
+
+def decode_json(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=unique,
+                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+
+
+def read_regular(path, limit=65536, owner=None, private=False, root_controlled=False):
+    """Bounded, alias-free reads with optional evidence/policy ownership gates.
+
+    Root-controlled policy may be readable by others, but neither its bytes nor
+    any ancestor may be writable by a nonroot identity. Private evidence retains
+    the stronger owner-only file permission requirement.
+    """
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("expected a clean absolute path")
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        def check_parent(info):
+            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
+                raise ValueError("installed policy has an untrusted parent")
+            if private and (info.st_uid != owner or info.st_mode & 0o022):
+                raise ValueError("evidence path has an untrusted parent")
+
+        check_parent(os.fstat(descriptor))
+        for part in path.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+            check_parent(os.fstat(descriptor))
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
+                raise ValueError("expected one bounded regular file")
+            if owner is not None and info.st_uid != owner:
+                raise ValueError("unexpected file owner")
+            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
+                raise ValueError("installed policy is not root-controlled")
+            if private and info.st_mode & 0o077:
+                raise ValueError("evidence file is not owner-only")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(limit + 1)
+            if len(raw) > limit:
+                raise ValueError("file exceeds size bound")
+            return raw
+        finally:
+            os.close(fd)
+    finally:
+        os.close(descriptor)
+
+
+def preserve_browser_report(result_dir, output, mode, owner, report):
+    """Retain bounded child diagnostics without treating them as acceptance."""
+    try:
+        raw = read_regular(result_dir / "browser.json", 2 * 1024 * 1024, owner=owner)
+        browser = decode_json(raw)
+        if (not isinstance(browser, dict) or type(browser.get("schema")) is not int
+                or browser["schema"] != 1 or browser.get("mode") != mode
+                or browser.get("status") not in ("complete", "fail")):
+            raise ValueError("invalid browser report identity or status")
+    except FileNotFoundError:
+        report["browser_artifact_status"] = "missing"
+        report["browser_artifact_error"] = "browser result absent; inspect driver.stderr for the exact launch refusal"
+        return None
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        report["browser_artifact_status"] = "rejected"
+        report["browser_artifact_error"] = f"browser result rejected: {error}"[:1024]
+        return None
+    try:
+        (output / "browser.json").write_bytes(raw)
+        (output / "browser.json").chmod(0o600)
+    except OSError as error:
+        report["browser_artifact_status"] = "save_failed"
+        report["browser_artifact_error"] = f"browser result could not be saved: {error}"[:1024]
+        return None
+    report["browser_artifact_status"] = "preserved"
+    return browser
+
+
+def copy_browser_screenshots(result_dir, output, owner, report=None):
+    """Copy only bounded regular PNG artifacts from the generated workspace."""
+    # The generated driver emits exactly these four names. Do not enumerate
+    # arbitrary workspace entries or turn extra PNGs into unbounded evidence.
+    errors = []
+    for name in ("cold.png", "warm.png", "reload.png", "delayed.png"):
+        screenshot = result_dir / name
+        try:
+            raw = read_regular(screenshot, 8 * 1024 * 1024, owner=owner)
+            if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("invalid browser screenshot")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as error:
+            errors.append(f"{name}: {error}"[:1024])
+            continue
+        try:
+            (output / screenshot.name).write_bytes(raw)
+            (output / screenshot.name).chmod(0o600)
+        except OSError as error:
+            errors.append(f"{name}: could not be saved: {error}"[:1024])
+            if report is not None:
+                report["screenshot_artifact_save_failed"] = True
+    if errors:
+        raise ValueError(("browser screenshots could not all be preserved: " + "; ".join(errors))[:1024])
+
+
+def finalize_workspace(work, summary_path, report, cleanup_verified):
+    """Remove owned scratch only after verified cleanup and saved evidence."""
+    report["workspace_removed"] = False
+    report["retained_synthetic_workspace"] = str(work)
+    if (not cleanup_verified or report.get("browser_artifact_status") not in ("preserved", "missing", "rejected")
+            or report.get("screenshot_artifact_save_failed")):
+        report["status"] = "fail"
+        report.setdefault("failure", "workspace retained because cleanup or evidence saving is incomplete")
+        return
+    try:
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise OSError("safe generated-workspace cleanup is unavailable")
+        # Do not lose the only evidence if the output directory stops accepting
+        # writes. Until removal finishes, this snapshot cannot claim success.
+        write_final_report(summary_path, {**report, "status": "incomplete"})
+        shutil.rmtree(work)
+    except OSError as error:
+        report["status"] = "fail"
+        report["workspace_cleanup_error"] = str(error)[:1024]
+        report.setdefault("failure", f"synthetic workspace cleanup failed: {error}"[:1024])
+    else:
+        report["workspace_removed"] = True
+        report.pop("retained_synthetic_workspace", None)
 
 
 def node_identity(output):
@@ -195,17 +380,26 @@ class Process:
             self.process.send_signal(signal.SIGTERM)
             try:
                 self.process.wait(timeout=self.signal_grace_seconds + 6)
-            except subprocess.TimeoutExpired:
-                # Do not invent cleanup success if the shipped supervisor stalls.
-                raise RuntimeError("process supervisor did not complete descendant cleanup")
+            except subprocess.TimeoutExpired as error:
+                # The sole descendant owner must remain alive. Preserve bounded
+                # diagnosis without accepting a stale witness or killing it.
+                result = {"exit_code": None, "supervisor_timeout": True,
+                          "streams_drained": False, "read_errors": dict(self.read_errors),
+                          "cleanup": {"cleanup_complete": False}, "streams": {}}
+                save_errors = self.save_output(result)
+                try:
+                    write_json(self.output.with_suffix(".process.json"), result)
+                except OSError as save_error:
+                    save_errors.append(f"process record: {save_error}"[:512])
+                message = "process supervisor did not complete descendant cleanup"
+                if save_errors:
+                    message += "; evidence saving failed: " + "; ".join(save_errors)
+                raise RuntimeError(message) from error
         for thread in self.threads:
             thread.join(timeout=2)
         drained = all(self.eof.values()) and not self.read_errors and not any(thread.is_alive() for thread in self.threads)
         result = {"exit_code": self.process.returncode, "streams_drained": drained, "read_errors": self.read_errors, "streams": {}}
-        for name, data in self.buffers.items():
-            self.output.with_suffix("."+name).write_bytes(bytes(data))
-            self.output.with_suffix("."+name).chmod(0o600)
-            result["streams"][name] = {"total_bytes": self.counts[name], "retained_bytes": len(data), "truncated": self.counts[name] > len(data)}
+        save_errors = self.save_output(result)
         cleanup_path = self.output.with_suffix(".cleanup.json")
         try:
             cleanup = json.loads(cleanup_path.read_text())
@@ -213,11 +407,29 @@ class Process:
             raise RuntimeError(f"missing or invalid cleanup witness: {self.output.name}") from error
         result["cleanup"] = cleanup
         write_json(self.output.with_suffix(".process.json"), result)
+        if save_errors:
+            raise RuntimeError("process evidence saving failed: " + "; ".join(save_errors))
         if not drained:
             raise RuntimeError(f"output drain did not reach EOF: {self.output.name}")
         if not cleanup.get("cleanup_complete") or cleanup.get("unexpected_live_descendants"):
             raise RuntimeError(f"descendant cleanup was incomplete or unexpected: {self.output.name}")
         return result
+
+    def save_output(self, result):
+        """Save a consistent bounded snapshot even while a failed owner drains."""
+        errors = []
+        for name in self.buffers:
+            data, total = self.output_snapshot(name)
+            result["streams"][name] = {"total_bytes": total, "retained_bytes": len(data),
+                                       "truncated": total > len(data)}
+            try:
+                self.output.with_suffix("."+name).write_bytes(data)
+                self.output.with_suffix("."+name).chmod(0o600)
+            except OSError as error:
+                errors.append(f"{name}: {error}"[:512])
+        if errors:
+            result["evidence_errors"] = errors
+        return errors
 
 
 def probe(command, name, output, env, work, cancellation, report):
@@ -339,6 +551,8 @@ def main():
               "scope": "generated HTTP fixtures only; no production acceptance", "processes": {}, "versions": {}}
     cancellation = Cancellation()
     cancellation.install()
+    work = None
+    workspace_cleanup_verified = False
     try:
         report.update({
             "binary_sha256": hashlib.sha256(args.pipelock.read_bytes()).hexdigest(),
@@ -348,8 +562,8 @@ def main():
             "supervisor_sha256": hashlib.sha256(SUPERVISOR.read_bytes()).hexdigest(),
             "harness_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in HERE.iterdir() if path.suffix in (".py", ".mjs")},
         })
-        with tempfile.TemporaryDirectory(prefix="browser-repro-") as temporary, Fixture(args.bundle_bytes) as fixture:
-            work = Path(temporary)
+        work = Path(tempfile.mkdtemp(prefix="browser-repro-"))
+        with Fixture(args.bundle_bytes) as fixture:
             env = isolated_environment(work)
             identity = node_identity(probe([args.node, "-p", NODE_IDENTITY], "identity-node",
                                           args.output, env, work, cancellation, report))
@@ -406,21 +620,26 @@ def main():
                 driver_process = Process(command, args.output / "driver", env, work, cancellation)
                 code = driver_process.wait(timeout=180)
                 report["driver_exit"] = code
-                if (work / "browser.json").exists():
-                    browser = json.loads((work / "browser.json").read_text())
-                    write_json(args.output / "browser.json", browser)
-                    report["status"] = browser["status"] if code == 0 else "fail"
+                browser = preserve_browser_report(work, args.output, args.mode, os.geteuid(), report)
+                if code != 0:
+                    report["status"] = "fail"
+                    report["failure"] = f"browser command failed (exit {code}); inspect driver.stderr"
+                elif browser is not None:
+                    report["status"] = browser["status"]
                     if args.mode == "sandbox" and report.get("preflight_exit") != 0:
                         report["status"] = "fail"
                         report["failure"] = "strict preflight was not ready; actual launch retained for diagnosis only"
                     if args.mode == "sandbox" and report["status"] == "complete":
                         report["containment"] = "strict_launch_and_own_endpoint_boundary_observed"
-                    for image in work.glob("*.png"):
-                        shutil.copyfile(image, args.output / image.name)
-                        (args.output / image.name).chmod(0o600)
                 else:
                     report["status"] = "fail"
-                    report["failure"] = "browser result absent; inspect driver.stderr for the exact launch refusal"
+                    report["failure"] = report["browser_artifact_error"]
+                try:
+                    copy_browser_screenshots(work, args.output, os.geteuid(), report)
+                except (OSError, ValueError) as error:
+                    report["screenshot_artifact_error"] = str(error)[:1024]
+                    if code == 0:
+                        raise
             finally:
                 cleanup_errors = []
                 for name, process in (("driver", driver_process), ("proxy", proxy_process)):
@@ -436,7 +655,14 @@ def main():
                 write_json(args.output / "fixture.json", fixture.evidence())
                 if cleanup_errors:
                     raise RuntimeError("; ".join(cleanup_errors))
-                if args.mode == "sandbox" and driver_process and not (work / "browser.json").exists():
+                workspace_cleanup_verified = driver_process is not None and all(
+                    result.get("streams_drained") is True
+                    and result.get("cleanup", {}).get("cleanup_complete") is True
+                    and result.get("cleanup", {}).get("unexpected_live_descendants") is False
+                    for result in report["processes"].values())
+                if not workspace_cleanup_verified:
+                    raise RuntimeError("workspace cleanup lacks complete process witnesses")
+                if args.mode == "sandbox" and driver_process and report.get("browser_artifact_status") == "missing":
                     stderr = (args.output / "driver.stderr").read_text(errors="replace")
                     if "unix proxy listen:" in stderr and "operation not permitted" in stderr:
                         report["status"] = "refused"
@@ -477,10 +703,26 @@ def main():
                 report["status"] = "fail"
                 report["interrupted_signal"] = cancellation.signum
                 report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
-            write_final_report(args.output / "summary.json", report)
+            if work is not None:
+                finalize_workspace(work, args.output / "summary.json", report, workspace_cleanup_verified)
+            if cancellation.signum is not None:
+                report["status"] = "fail"
+                report["interrupted_signal"] = cancellation.signum
+                report.setdefault("failure", f"runner interrupted by signal {cancellation.signum}")
+            try:
+                write_final_report(args.output / "summary.json", report, cancellation)
+            except OSError as error:
+                report["status"] = "fail"
+                if report["containment"] != "not_tested_proxy_only":
+                    report["containment"] = "not_established"
+                report["summary_write_error"] = str(error)[:1024]
         finally:
             cancellation.restore()
-    print(json.dumps({"status": report["status"], "mode": args.mode, "containment": report["containment"], "output": str(args.output)}))
+    console = {"status": report["status"], "mode": args.mode, "containment": report["containment"], "output": str(args.output)}
+    for name in ("workspace_removed", "retained_synthetic_workspace", "summary_write_error"):
+        if name in report:
+            console[name] = report[name]
+    print(json.dumps(console))
     return 0 if report["status"] == "complete" else 2
 
 

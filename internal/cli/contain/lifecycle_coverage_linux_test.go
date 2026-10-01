@@ -135,6 +135,78 @@ func TestLifecycleSystemdShowParsesBoundUnitOnly(t *testing.T) {
 	}
 }
 
+func TestLifecycleSystemdShowExcludesTextualExecStart(t *testing.T) {
+	if slices.Contains(strings.Split(lifecycleSystemdProperties, ","), "ExecStart") {
+		t.Fatal("scalar observation requested human-readable argv")
+	}
+}
+
+func TestLifecycleSupervisionPreservesMultilineArgv(t *testing.T) {
+	l, fields := lifecycleFixture()
+	l.argv = []string{defaultLaunchScript, "printf", "%s", "first line\nsecond line\n"}
+	row := []any{defaultLaunchScript, l.argv, false, 0, 0, 0, 0, 0, 0, 0}
+	body, err := json.Marshal(map[string]any{"type": "a(sasbttttuii)", "data": [][]any{row}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := lifecycleTestBackend(fields)
+	var observations, typedReads, actions int
+	b.show = func(_ context.Context, unit string) (map[string]string, error) {
+		if unit != l.record.Unit {
+			t.Fatal("observed a different unit")
+		}
+		observations++
+		var out strings.Builder
+		for _, property := range strings.Split(lifecycleSystemdProperties, ",") {
+			value := fields[property]
+			if property == "ExecStart" {
+				// systemctl joins argv with spaces without escaping newlines.
+				value = "{ path=" + defaultLaunchScript + " ; argv[]=" + strings.Join(l.argv, " ") + " ; }"
+			}
+			out.WriteString(property + "=" + value + "\n")
+		}
+		return parseLifecycleSystemdShow(unit, out.String(), 0)
+	}
+	b.execStart = func(_ context.Context, unit string) ([]string, error) {
+		if unit != l.record.Unit {
+			t.Fatal("read typed argv from a different unit")
+		}
+		typedReads++
+		return parseLifecycleExecStart(body)
+	}
+	b.cgroupEmpty = func(group string) (bool, error) {
+		if group != "/system.slice/"+l.record.Unit {
+			t.Fatal("checked a different cgroup")
+		}
+		return actions != 0, nil
+	}
+	b.action = func(_ context.Context, unit string, args ...string) error {
+		if unit != l.record.Unit || !slices.Equal(args, []string{"--no-block", "stop"}) || observations != 4 || typedReads != 2 || !l.record.AdmissionObserved || !l.record.ArgvObserved {
+			t.Fatalf("action lacked confirmed ownership: %s %v observations=%d typed=%d record=%+v", unit, args, observations, typedReads, l.record)
+		}
+		actions++
+		fields["ActiveState"], fields["MainPID"] = "inactive", "0"
+		return nil
+	}
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	done := make(chan error, 1)
+	l.save = func(record containLifecycleRecord) error {
+		if record.Phase == "admitted" {
+			if observations != 2 || typedReads != 1 || !record.ArgvObserved || record.InvocationID != fields["InvocationID"] {
+				t.Fatalf("admission lacked typed command confirmation: %+v", record)
+			}
+			done <- nil
+		}
+		return nil
+	}
+	if err := superviseLifecycleService(context.Background(), done, func() { done <- nil }, l, 966, b); err != nil {
+		t.Fatal(err)
+	}
+	if observations != 5 || typedReads != 2 || actions != 1 || !l.record.Final || !l.record.CleanupComplete || !l.record.CgroupEmpty || l.record.Phase != "complete" {
+		t.Fatalf("incomplete multiline supervision: observations=%d typed=%d actions=%d record=%+v", observations, typedReads, actions, l.record)
+	}
+}
+
 func TestLifecycleRecordFailurePreservesPublishedWitness(t *testing.T) {
 	for _, failure := range []string{"oversized", "temporary collision", "closed directory"} {
 		t.Run(failure, func(t *testing.T) {

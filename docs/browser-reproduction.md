@@ -91,7 +91,10 @@ usual home/configuration must be replaced with an explicit native `--node` path.
 The runtime must use system libraries available under the normal sandbox policy.
 A runtime needing additional private dependencies is unsupported rather than a
 reason to broaden access. The browser profile and synthetic state are created
-in that fresh workspace and removed after cleanup.
+in that fresh workspace. Removal requires verified local process cleanup and
+successful evidence saves. Incomplete cleanup or an evidence-save failure keeps
+the workspace and reports its path. An incomplete summary is saved before removal;
+the terminal summary can claim completion only after required cleanup succeeds.
 The executable identity probes run before containment; they do not establish
 strict Node or browser compatibility. The unchanged strict launch and cleanup
 assertions must still complete on the acceptance host.
@@ -229,11 +232,37 @@ existing process supervisor still owns the local client; its managed-only
 No unknown or unrelated unit is stopped. Missing identity, changed invocation,
 incomplete cleanup or any failed browser scenario leaves the run failed.
 
-A verified complete run removes its synthetic profile/workspace subtree. If
-service cleanup cannot be established, generated scratch is retained for the
-operator rather than deleted underneath a possibly live browser. Root-private
-logs remain bounded. Keep failure evidence and use the exact owned-unit report
-when investigating; do not apply broad service-kill or sandbox-disable workarounds.
+The producer marks failed or cancelled commands `incomplete` even when their
+owned service and cgroup have been cleaned up. The adapter records independently
+bound cleanup as `lifecycle_cleanup` so it can preserve diagnostics and remove
+only that invocation's scratch. This does not establish successful execution:
+acceptance still requires a complete, non-cancelled lifecycle without a failure,
+a zero driver exit and the remaining browser/fixture checks.
+
+When service cleanup is verified, the adapter removes its synthetic profile and
+workspace subtree, including after a failed browser command. Before removal,
+it preserves a valid bounded `browser.json` failure report and supported PNGs in
+the evidence directory. Missing or rejected reports and screenshot errors are
+identified in the summary; a nonzero command exit remains a failure even if the
+child report says complete. The adapter saves an incomplete summary before removing
+scratch, then writes the terminal result. If a valid report, screenshot or the
+pre-removal summary cannot be saved, its workspace is retained. If service cleanup
+cannot be established, generated scratch
+is retained for the operator rather than deleted underneath a possibly live
+browser. `cleanup_complete`
+establishes that the owned service/cgroup is stopped and empty; failed transient
+unit records may remain after that cleanup. Root-private logs remain bounded.
+Keep failure evidence and use the exact owned-unit report when investigating;
+do not apply broad service-kill or sandbox-disable workarounds.
+
+If the local process supervisor misses its cleanup deadline, the runner saves
+bounded output snapshots and a failed process record where the evidence directory
+remains writable, retains scratch, and reports cleanup as unproven. It does not
+kill the sole descendant owner or interpret a stale cleanup file as success.
+Recovery from a stalled supervisor requires a separate ownership design and is
+outside this harness's acceptance claim. Failed transient units are likewise
+retained: the manager's name-addressed reset operation cannot atomically verify
+the recorded InvocationID, so the adapter does not issue `reset-failed`.
 
 The managed adapter's filesystem/identity/policy/lifecycle contracts have
 lightweight regression tests in the existing Example verification job. Actual
@@ -287,6 +316,20 @@ earlier namespace or lifecycle observations succeeded. Those observations stay
 in the report for diagnosis; a later fixture, cleanup or cancellation failure
 cannot leave an aggregate success claim. Proxy-only runs retain their explicit
 `not_tested_proxy_only` label and never establish containment.
+
+JSON publication prepares a private temporary file in the same directory,
+completes its write, flush and close, then atomically replaces the destination.
+A preparation or replacement failure preserves the prior incomplete summary.
+Cancellation is checked after workspace cleanup and again before the terminal
+publication, so an interruption during cleanup or file preparation remains failed.
+
+Both runners read child artifacts through bounded, descriptor-relative opens
+that refuse symlinks in any path component, nonregular files, multiple hard
+links and unexpected file owners. A valid `browser.json` is at most 2 MiB and is
+preserved byte-for-byte. Screenshot collection reads only `cold.png`, `warm.png`,
+`reload.png` and `delayed.png`, at most 8 MiB each, and checks the PNG signature.
+Other workspace files cannot expand the retained artifact set. These checks
+protect artifact ingestion; they do not establish rendered-pixel acceptance.
 
 `browser.json` separates request TTFB/body completion, navigation-to-ready,
 application readiness, input round-trip and render frame samples. Request

@@ -333,6 +333,7 @@ class FixtureTests(unittest.TestCase):
             with self.subTest(complete=complete, unexpected=unexpected, eof=eof), tempfile.TemporaryDirectory() as temporary:
                 process = Process.__new__(Process)
                 process.output = Path(temporary) / "child"
+                process.output_lock = threading.Lock()
                 process.process = Mock(returncode=0)
                 process.process.poll.return_value = 0
                 process.threads = []

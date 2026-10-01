@@ -167,8 +167,12 @@ func defaultLifecycleBackend() lifecycleBackend {
 	return lifecycleBackend{show: lifecycleSystemdShow, action: lifecycleSystemdAction, cgroupEmpty: lifecycleCgroupEmpty, wait: waitForReadiness, now: time.Now, execStart: lifecycleExecStart}
 }
 
+// Keep the line-based observation scalar-only. ExecStart's display format can
+// contain argument newlines; the typed reader verifies its path and exact argv.
+const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart"
+
 func lifecycleSystemdShow(ctx context.Context, unit string) (map[string]string, error) {
-	out, code, err := lifecycleSystemctl(ctx, "show", unit, "--property=Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecStart,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart")
+	out, code, err := lifecycleSystemctl(ctx, "show", unit, "--property="+lifecycleSystemdProperties)
 	if err != nil {
 		return nil, err
 	}
@@ -375,10 +379,6 @@ func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid
 	}
 	if fields["ControlGroup"] != "/system.slice/"+record.Unit {
 		return errors.New("lifecycle cgroup differs from reserved service")
-	}
-	path, err := systemdExecStartPath(fields["ExecStart"])
-	if err != nil || path != defaultLaunchScript {
-		return errors.New("lifecycle executable differs from plk-launch")
 	}
 	if fields["PrivateNetwork"] != "yes" || fields["PrivateTmp"] != "yes" || fields["JoinsNamespaceOf"] != containedNetworkNamespaceUnit || fields["KillMode"] != "control-group" || fields["SendSIGKILL"] != "yes" || fields["Restart"] != "no" {
 		return errors.New("lifecycle service properties differ from managed launch")

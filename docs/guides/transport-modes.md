@@ -108,6 +108,9 @@ controls its redirect limit; Pipelock's internal `/fetch` redirect counter does
 not carry across these separate requests. Configured per-request and session limits
 still apply. Confirmation policies can prompt for redirect preflight and again
 for the actual subsequent request; approval is not shared between them.
+Forward redirect preflight checks remaining rate-limit capacity without consuming
+it; each actual request charges once, while `/fetch` keeps charging its internally
+followed hops.
 `/fetch` retains its existing bounded internal follow-and-rescan behavior.
 
 **Use when:** Your application makes plaintext HTTP requests through `HTTP_PROXY`. Note that most modern APIs use HTTPS, making this mode less common.

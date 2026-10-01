@@ -25,7 +25,8 @@ import urllib.request
 
 from fixture import CANARY, Fixture
 from run import (HERE, ROOT, SUPERVISOR, Cancellation, Process, config_for, file_sha256,
-                 isolated_environment, node_identity, NODE_IDENTITY, probe, write_final_report, write_json)
+                 isolated_environment, node_identity, NODE_IDENTITY, probe, write_final_report, write_json,
+                 copy_browser_screenshots, decode_json, finalize_workspace, preserve_browser_report, read_regular)
 
 SCHEMA = 1
 PURPOSE = "pipelock-disposable-synthetic-browser-v1"
@@ -44,64 +45,6 @@ ID128 = re.compile(r"[0-9a-f]{32}\Z")
 def same_json(left, right):
     # Python equality treats True and 1 as equal; policy identity must not.
     return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(right, sort_keys=True, allow_nan=False)
-
-
-def decode_json(raw):
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = value
-        return result
-    return json.loads(raw, object_pairs_hook=unique,
-                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
-
-
-def read_regular(path, limit=65536, owner=None, private=False, root_controlled=False):
-    """Bounded, alias-free reads with optional evidence/policy ownership gates.
-
-    Root-controlled policy may be readable by others, but neither its bytes nor
-    any ancestor may be writable by a nonroot identity. Private evidence retains
-    the stronger owner-only file permission requirement.
-    """
-    path = Path(path)
-    if not path.is_absolute() or ".." in path.parts:
-        raise ValueError("expected a clean absolute path")
-    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        def check_parent(info):
-            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
-                raise ValueError("installed policy has an untrusted parent")
-            if private and (info.st_uid != owner or info.st_mode & 0o022):
-                raise ValueError("evidence path has an untrusted parent")
-
-        check_parent(os.fstat(descriptor))
-        for part in path.parts[1:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-            check_parent(os.fstat(descriptor))
-        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
-                raise ValueError("expected one bounded regular file")
-            if owner is not None and info.st_uid != owner:
-                raise ValueError("unexpected file owner")
-            if root_controlled and (info.st_uid != 0 or info.st_mode & 0o022):
-                raise ValueError("installed policy is not root-controlled")
-            if private and info.st_mode & 0o077:
-                raise ValueError("evidence file is not owner-only")
-            with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(limit + 1)
-            if len(raw) > limit:
-                raise ValueError("file exceeds size bound")
-            return raw
-        finally:
-            os.close(fd)
-    finally:
-        os.close(descriptor)
 
 
 def require_private_parent(path):
@@ -387,13 +330,14 @@ def argv_sha256(argv):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def validate_lifecycle(value, expected):
+def validate_lifecycle_cleanup(value, expected):
+    """Verify owned service cleanup independently of the command's outcome."""
     if not isinstance(value, dict) or type(value.get("schema")) is not int or value["schema"] != 1:
         raise ValueError("lifecycle report is missing or unsupported")
-    if (value.get("phase") != "complete" or any(value.get(name) is not True for name in
+    if (value.get("phase") not in ("complete", "incomplete") or any(value.get(name) is not True for name in
             ("final", "admission_observed", "argv_observed", "cleanup_complete", "cgroup_empty"))
-            or value.get("cancelled") is not False or value.get("failure")):
-        raise ValueError("managed service lifecycle is incomplete")
+            or type(value.get("cancelled")) is not bool):
+        raise ValueError("managed service cleanup is incomplete")
     run_id, invocation_id = value.get("run_id"), value.get("invocation_id")
     if (not isinstance(run_id, str) or not ID128.fullmatch(run_id) or run_id == "0" * 32
             or not isinstance(invocation_id, str) or not ID128.fullmatch(invocation_id) or invocation_id == "0" * 32):
@@ -419,6 +363,13 @@ def validate_lifecycle(value, expected):
         raise ValueError("terminal service state is missing")
     if terminal.get("InvocationID") not in (None, "", invocation_id):
         raise ValueError("terminal service belongs to another invocation")
+    return value
+
+
+def validate_lifecycle(value, expected):
+    validate_lifecycle_cleanup(value, expected)
+    if value.get("phase") != "complete" or value.get("cancelled") is not False or value.get("failure"):
+        raise ValueError("managed service lifecycle is incomplete")
     return value
 
 
@@ -521,27 +472,29 @@ def run_managed(args):
             proof_raw = read_regular(Path("/var/lib/pipelock/contain/posture/proof.json"), 2 * 1024 * 1024)
             expected = {"argv_sha256": argv_sha256(tool_args), "binary_sha256": candidate["sha256"],
                         "config_sha256": report["config_sha256"], "posture_capsule_sha256": hashlib.sha256(proof_raw).hexdigest()}
-            validate_lifecycle(lifecycle, expected)
-            report["lifecycle"] = lifecycle
+            validate_lifecycle_cleanup(lifecycle, expected)
+            report["lifecycle_cleanup"] = lifecycle
             (output / "proof.json").write_bytes(proof_raw)
             (output / "proof.json").chmod(0o600)
-            if report["driver_exit"] != 0:
-                raise ValueError("contained browser command failed")
+            # Preserve valid failure diagnostics before verified cleanup can
+            # remove the workspace. A report never overrides command failure.
             result_dir = work / "results"
-            browser_raw = read_regular(result_dir / "browser.json", 2 * 1024 * 1024, owner=agent.pw_uid)
-            browser = decode_json(browser_raw)
-            write_json(output / "browser.json", browser)
-            if browser.get("status") != "complete" or browser.get("mode") != "managed-contain":
+            browser = preserve_browser_report(result_dir, output, "managed-contain", agent.pw_uid, report)
+            try:
+                copy_browser_screenshots(result_dir, output, agent.pw_uid, report)
+            except (OSError, ValueError) as error:
+                report["screenshot_artifact_error"] = str(error)[:1024]
+            if report["driver_exit"] != 0:
+                raise ValueError(f"contained browser command failed (exit {report['driver_exit']})")
+            validate_lifecycle(lifecycle, expected)
+            report["lifecycle"] = lifecycle
+            if browser is None:
+                raise ValueError(report["browser_artifact_error"])
+            if browser.get("status") != "complete":
                 raise ValueError("browser diagnostics are incomplete")
+            if "screenshot_artifact_error" in report:
+                raise ValueError(report["screenshot_artifact_error"])
             fixture_acceptance(evidence)
-            for screenshot in result_dir.glob("*.png"):
-                if not re.fullmatch(r"[a-z_]+\.png", screenshot.name):
-                    raise ValueError("unexpected browser screenshot name")
-                raw = read_regular(screenshot, 8 * 1024 * 1024, owner=agent.pw_uid)
-                if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
-                    raise ValueError("invalid browser screenshot")
-                (output / screenshot.name).write_bytes(raw)
-                (output / screenshot.name).chmod(0o600)
             config_after = read_regular(INSTALLED_CONFIG, 32768)
             if config_after != config_raw or proxy_snapshot(command_probe, manifest, config_after) != before:
                 raise ValueError("managed proxy changed during diagnostic")
@@ -561,29 +514,31 @@ def run_managed(args):
         report["failure"] = str(error)[:1024]
     finally:
         try:
-            if work is not None:
-                # Never destroy the only child evidence until the owned service
-                # is proven empty. Failed cleanup deliberately retains scratch
-                # and tells the operator; no broad service cleanup is attempted.
-                if report.get("lifecycle", {}).get("cleanup_complete") is True:
-                    try:
-                        shutil.rmtree(work)
-                        report["workspace_removed"] = True
-                    except OSError as error:
-                        report["status"] = "fail"
-                        report["workspace_removed"] = False
-                        report["failure"] = f"synthetic workspace cleanup failed: {error}"[:1024]
-                else:
-                    report["workspace_removed"] = False
-                    report["retained_synthetic_workspace"] = str(work)
             if cancellation.signum is not None:
                 report["status"] = "fail"
                 report["interrupted_signal"] = cancellation.signum
-            write_final_report(output / "summary.json", report)
+            if work is not None:
+                # Only the invocation-bound, validated service lifecycle can
+                # authorize removal; local client cleanup alone is insufficient.
+                finalize_workspace(work, output / "summary.json", report,
+                                   report.get("lifecycle_cleanup", {}).get("cleanup_complete") is True)
+            if cancellation.signum is not None:
+                report["status"] = "fail"
+                report["interrupted_signal"] = cancellation.signum
+            try:
+                write_final_report(output / "summary.json", report, cancellation)
+            except OSError as error:
+                report["status"] = "fail"
+                report["containment"] = "not_established"
+                report["summary_write_error"] = str(error)[:1024]
         finally:
             cancellation.restore()
-    print(json.dumps({"status": report["status"], "mode": report["mode"],
-                      "containment": report["containment"], "output": str(output)}))
+    console = {"status": report["status"], "mode": report["mode"],
+               "containment": report["containment"], "output": str(output)}
+    for name in ("driver_exit", "workspace_removed", "retained_synthetic_workspace", "summary_write_error"):
+        if name in report:
+            console[name] = report[name]
+    print(json.dumps(console))
     return 0 if report["status"] == "complete" else 2
 
 

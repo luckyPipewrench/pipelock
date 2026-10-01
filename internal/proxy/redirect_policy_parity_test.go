@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -256,11 +257,15 @@ func TestCheckRedirect_SessionPoliciesAllowHarmlessRedirect(t *testing.T) {
 
 func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T) {
 	tests := []struct {
-		name  string
-		setup func(*testing.T, *Proxy)
+		name       string
+		wantReason blockreason.Reason
+		wantLayer  string
+		setup      func(*testing.T, *Proxy)
 	}{
 		{
-			name: "taint reauthorization",
+			name:       "taint reauthorization",
+			wantLayer:  "taint_policy",
+			wantReason: blockreason.RedirectScanDenied,
 			setup: func(t *testing.T, p *Proxy) {
 				t.Helper()
 				cfg := p.CurrentConfig()
@@ -269,7 +274,8 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 			},
 		},
 		{
-			name: "scoped airlock",
+			name:       "scoped airlock",
+			wantReason: blockreason.AirlockActive,
 			setup: func(t *testing.T, p *Proxy) {
 				t.Helper()
 				sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
@@ -323,7 +329,9 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 				Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
 				Timeout:   2 * time.Second,
 			}
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://source.vendor.example/start", strings.NewReader("payload"))
+			// A bodyless POST preserves the method across 307 without the
+			// earlier cross-authority body replay guard masking this policy.
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://source.vendor.example/start", nil)
 			if err != nil {
 				t.Fatalf("new request: %v", err)
 			}
@@ -335,6 +343,12 @@ func TestForwardRedirect_SessionPoliciesBlockBeforeRedirectedEgress(t *testing.T
 			if resp.StatusCode != http.StatusForbidden {
 				body, _ := io.ReadAll(resp.Body)
 				t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, body)
+			}
+			if got := resp.Header.Get(blockreason.HeaderLayer); got != tt.wantLayer {
+				t.Fatalf("block layer = %q, want %q", got, tt.wantLayer)
+			}
+			if got := resp.Header.Get(blockreason.HeaderReason); got != string(tt.wantReason) {
+				t.Fatalf("block reason = %q, want %q", got, tt.wantReason)
 			}
 			if initialHits.Load() != 1 {
 				t.Fatalf("initial upstream hits = %d, want 1", initialHits.Load())

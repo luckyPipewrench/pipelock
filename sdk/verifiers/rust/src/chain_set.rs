@@ -71,6 +71,7 @@ const CHAIN_LINK_DOMAIN: &str = "pipelock-chain-link-v1\0";
 const RECOVERY_SEAL_DOMAIN: &str = "pipelock-recovery-seal-v1\0";
 const SIGNATURE_PREFIX: &str = "ed25519:";
 const MAX_CHAIN_LINK_FILE_BYTES: u64 = 64 << 10;
+const MAX_RECORDER_ENTRY_LINE_BYTES: usize = 1 << 20;
 const APPENDED_AFTER_LINK: &str = "entries were appended to the predecessor after the linked tail";
 
 const CHAIN_LINK_FIELDS: [&str; 9] = [
@@ -1249,6 +1250,20 @@ fn check_linked_tail(receipts: &[Receipt], link: &ChainLink) -> Result<(), Strin
 /// Verifies a recovery seal against the predecessor bytes and both receipt
 /// chains, then binds it to the successor's signed genesis session_open.
 /// Nothing is attached to a report until every check succeeds.
+fn verify_recovery_recorder_sequence(lines: &[RecorderLine]) -> Result<(), String> {
+    for (index, line) in lines.iter().enumerate() {
+        let expected = u64::try_from(index)
+            .map_err(|_| "recovery recorder sequence exceeds u64".to_string())?;
+        let actual = u64_at(&line.entry, &["seq"]).unwrap_or(0);
+        if actual != expected {
+            return Err(format!(
+                "recovery recorder sequence mismatch: entry {index} has seq {actual}, expected {expected}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn verify_recovery_binding(
     ix: &EvidenceIndex,
     data: &HashMap<String, BaseChainData>,
@@ -1298,6 +1313,11 @@ fn verify_recovery_binding(
     if torn_suffix.contains(&0) {
         return Err("recovery seal suffix contains an embedded NUL".to_string());
     }
+    if torn_suffix.len() > MAX_RECORDER_ENTRY_LINE_BYTES {
+        return Err(format!(
+            "recovery seal torn suffix exceeds {MAX_RECORDER_ENTRY_LINE_BYTES}-byte recorder entry limit"
+        ));
+    }
 
     let mut all_lines = Vec::new();
     for file in &files[..files.len() - 1] {
@@ -1311,18 +1331,24 @@ fn verify_recovery_binding(
     // JSON record without its final newline is still authenticated below.
     let mut observed_lines = all_lines.clone();
     if !trailing_nuls {
-        let tail = std::str::from_utf8(torn_suffix)
-            .map_err(|err| format!("recovery seal torn suffix is not UTF-8: {err}"))?;
-        match serde_json::from_str::<Value>(tail) {
-            Ok(_) => {
-                observed_lines.extend(read_entry_lines_text(tail).map_err(|err| err.to_string())?)
+        match std::str::from_utf8(torn_suffix) {
+            Ok(tail) if serde_json::from_str::<Value>(tail).is_ok() => {
+                observed_lines.extend(read_entry_lines_text(tail).map_err(|err| err.to_string())?);
             }
-            Err(err) if err.is_eof() => {}
-            Err(err) => {
-                return Err(format!(
-                    "recovery seal suffix is not an incomplete JSON record: {err}"
-                ))
+            Err(_) => {
+                // Go's json.Valid recognizes invalid UTF-8 inside an otherwise
+                // complete JSON string, then its evidence decoder rejects the
+                // record instead of treating it as a torn fragment. Lossy
+                // decoding is only a syntax probe; never use its value as
+                // evidence or as input to the signed-chain verifier.
+                let lossy = String::from_utf8_lossy(torn_suffix);
+                if serde_json::from_str::<Value>(&lossy).is_ok() {
+                    return Err(
+                        "recovery seal final JSON record contains invalid UTF-8".to_string()
+                    );
+                }
             }
+            _ => {}
         }
     }
     for line in &observed_lines {
@@ -1363,6 +1389,7 @@ fn verify_recovery_binding(
             ));
         }
     }
+    verify_recovery_recorder_sequence(&observed_lines)?;
     let extracted = extract_typed_from_lines(observed_lines).map_err(|err| err.to_string())?;
     for receipt in &extracted.action {
         let control = receipt
@@ -2084,6 +2111,7 @@ mod go_json_escape_tests {
         verify_chain_link, verify_recovery_seal, BaseVerifyOptions, RecoverySeal,
     };
     use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
 
@@ -2278,7 +2306,7 @@ mod go_json_escape_tests {
     }
 
     #[test]
-    fn incomplete_final_record_with_trailing_nuls_matches_go_tail_classification() {
+    fn malformed_and_truncated_utf8_final_records_match_go_tail_classification() {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../conformance/testdata/recovery-seals/valid");
         let original = decode_recovery_seal(
@@ -2288,13 +2316,163 @@ mod go_json_escape_tests {
         let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
         let signing_key = SigningKey::from_bytes(&seed);
         let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        for (case, torn) in [
+            ("malformed-json", &b"{\"partial\":!invalid"[..]),
+            ("truncated-utf8", &b"{\"partial\":\"\xe2\x82"[..]),
+        ] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let run_dir = std::env::temp_dir().join(format!(
+                "pipelock-rust-torn-{case}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&run_dir).expect("create test evidence dir");
+            let source = fixture.join("evidence");
+            for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+                let entry = entry.expect("fixture entry");
+                std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+            }
 
+            let shard_path = run_dir.join(&original.shard);
+            let mut bytes = std::fs::read(&shard_path).expect("read predecessor shard");
+            bytes.truncate(original.damage_offset as usize);
+            bytes.extend_from_slice(torn);
+            bytes.extend_from_slice(&[0, 0]);
+            let mut seal = original.clone();
+            seal.shard_size = bytes.len() as u64;
+            seal.shard_sha256 = super::sha256_hex(&bytes);
+            seal.signature.clear();
+            seal.signature = format!(
+                "ed25519:{}",
+                hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+            );
+            std::fs::write(&shard_path, bytes).expect("write padded torn evidence");
+            std::fs::write(
+                run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+                recovery_seal_json(&seal),
+            )
+            .expect("write re-signed seal");
+
+            let report = verify_base(
+                &run_dir,
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: vec![pinned.clone()],
+                    endorsements: Vec::new(),
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: verify padded torn recovery: {err}"));
+            assert!(
+                report
+                    .chains
+                    .iter()
+                    .any(|chain| chain.recovery_seal.is_some()),
+                "{case}: valid seal should attach"
+            );
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.kind == super::FINDING_ATTESTED_DISCONTINUITY),
+                "{case}: valid seal should report discontinuity"
+            );
+            std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+        }
+    }
+
+    #[test]
+    fn invalid_record_boundaries_and_complete_invalid_utf8_json_are_rejected() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let original = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        let invalid_utf8_complete_json = [b"{\"partial\":\"".as_slice(), &[0xff], b"\"}"].concat();
+        for (case, torn) in [
+            ("line-feed", &b"partial\n"[..]),
+            ("embedded-nul", &b"partial\0record"[..]),
+            (
+                "complete-invalid-utf8-json",
+                invalid_utf8_complete_json.as_slice(),
+            ),
+        ] {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let run_dir = std::env::temp_dir().join(format!(
+                "pipelock-rust-rejected-torn-{case}-{}-{nonce}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&run_dir).expect("create test evidence dir");
+            let source = fixture.join("evidence");
+            for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+                let entry = entry.expect("fixture entry");
+                std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+            }
+
+            let shard_path = run_dir.join(&original.shard);
+            let mut bytes = std::fs::read(&shard_path).expect("read predecessor shard");
+            bytes.truncate(original.damage_offset as usize);
+            bytes.extend_from_slice(torn);
+            let mut seal = original.clone();
+            seal.shard_size = bytes.len() as u64;
+            seal.shard_sha256 = super::sha256_hex(&bytes);
+            seal.signature = format!(
+                "ed25519:{}",
+                hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+            );
+            std::fs::write(&shard_path, bytes).expect("write rejected torn evidence");
+            std::fs::write(
+                run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+                recovery_seal_json(&seal),
+            )
+            .expect("write re-signed seal");
+
+            let report = verify_base(
+                &run_dir,
+                "proxy",
+                &BaseVerifyOptions {
+                    trusted_keys: vec![pinned.clone()],
+                    endorsements: Vec::new(),
+                },
+            )
+            .unwrap_or_else(|err| panic!("{case}: verify rejected torn suffix: {err}"));
+            assert!(report
+                .chains
+                .iter()
+                .all(|chain| chain.recovery_seal.is_none()));
+            assert!(report.findings.iter().any(|finding| {
+                finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                    && finding.session == original.successor_session
+            }));
+            std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+        }
+    }
+
+    #[test]
+    fn rehashed_resequenced_recovery_prefix_is_rejected() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let mut seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
         let run_dir = std::env::temp_dir().join(format!(
-            "pipelock-rust-torn-padding-{}-{nonce}",
+            "pipelock-rust-resequenced-{}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir(&run_dir).expect("create test evidence dir");
@@ -2304,20 +2482,39 @@ mod go_json_escape_tests {
             std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
         }
 
-        let shard_path = run_dir.join(&original.shard);
-        let mut bytes = std::fs::read(&shard_path).expect("read predecessor shard");
-        bytes.truncate(original.damage_offset as usize);
-        bytes.extend_from_slice(b"{\"partial\":");
-        bytes.extend_from_slice(&[0, 0]);
-        let mut seal = original;
-        seal.shard_size = bytes.len() as u64;
-        seal.shard_sha256 = super::sha256_hex(&bytes);
-        seal.signature.clear();
+        let shard_path = run_dir.join(&seal.shard);
+        let raw = std::fs::read(&shard_path).expect("read predecessor shard");
+        let prefix = &raw[..seal.damage_offset as usize];
+        let suffix = &raw[seal.damage_offset as usize..];
+        let mut resequenced = Vec::new();
+        let mut previous_hash = "genesis".to_string();
+        let mut count = 0u64;
+        for line in prefix.split_inclusive(|byte| *byte == b'\n') {
+            let mut entry: Value = serde_json::from_slice(line).expect("parse complete entry");
+            entry["seq"] = serde_json::json!(count + 1);
+            entry["prev_hash"] = serde_json::json!(previous_hash);
+            let encoded = serde_json::to_string(&entry).expect("encode resequenced entry");
+            let hash = crate::recorder_chain::recorder_entry_hash(&encoded)
+                .expect("hash resequenced entry");
+            entry["hash"] = serde_json::json!(hash);
+            previous_hash = hash;
+            let encoded = serde_json::to_string(&entry).expect("encode hashed entry");
+            resequenced.extend_from_slice(encoded.as_bytes());
+            resequenced.push(b'\n');
+            count += 1;
+        }
+        assert!(count > 0, "fixture needs a complete predecessor prefix");
+        seal.last_good_seq = count;
+        seal.last_good_hash = previous_hash;
+        seal.damage_offset = resequenced.len() as u64;
+        resequenced.extend_from_slice(suffix);
+        seal.shard_size = resequenced.len() as u64;
+        seal.shard_sha256 = super::sha256_hex(&resequenced);
         seal.signature = format!(
             "ed25519:{}",
             hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
         );
-        std::fs::write(&shard_path, bytes).expect("write padded torn evidence");
+        std::fs::write(&shard_path, resequenced).expect("write resequenced shard");
         std::fs::write(
             run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
             recovery_seal_json(&seal),
@@ -2332,15 +2529,108 @@ mod go_json_escape_tests {
                 endorsements: Vec::new(),
             },
         )
-        .expect("verify padded torn recovery");
+        .expect("verify rehashed resequenced recovery");
         assert!(report
             .chains
             .iter()
-            .any(|chain| chain.recovery_seal.is_some()));
+            .all(|chain| chain.recovery_seal.is_none()));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                && finding.detail.contains("sequence mismatch")
+        }));
+        std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
+    }
+
+    #[test]
+    fn valid_json_final_record_without_newline_is_checked_for_sequence_gap() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/testdata/recovery-seals/valid");
+        let mut seal = decode_recovery_seal(
+            &std::fs::read_to_string(fixture.join("seal.json")).expect("read seal fixture"),
+        )
+        .expect("decode Go seal");
+        let seed: [u8; 32] = Sha256::digest(b"pipelock-recovery-seal-conformance-v1").into();
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pinned = hex::encode(signing_key.verifying_key().to_bytes());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let run_dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-no-newline-sequence-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&run_dir).expect("create test evidence dir");
+        let source = fixture.join("evidence");
+        for entry in std::fs::read_dir(&source).expect("list fixture evidence") {
+            let entry = entry.expect("fixture entry");
+            std::fs::copy(entry.path(), run_dir.join(entry.file_name())).expect("copy fixture");
+        }
+
+        let shard_path = run_dir.join(&seal.shard);
+        let raw = std::fs::read(&shard_path).expect("read predecessor shard");
+        let complete: Vec<&[u8]> = raw[..seal.damage_offset as usize]
+            .split_inclusive(|byte| *byte == b'\n')
+            .collect();
+        assert!(
+            complete.len() >= 2,
+            "fixture needs a complete receipt prefix"
+        );
+        let durable_count = complete.len() - 1;
+        let mut prefix = complete[..durable_count].concat();
+        let last_complete: Value = serde_json::from_slice(complete[durable_count - 1])
+            .expect("parse final durable receipt");
+        let prefix_hash = last_complete["hash"]
+            .as_str()
+            .expect("durable recorder hash")
+            .to_string();
+        let mut final_record: Value =
+            serde_json::from_slice(complete[durable_count]).expect("parse final complete record");
+        final_record["seq"] = serde_json::json!(durable_count as u64 + 7);
+        final_record["prev_hash"] = serde_json::json!(prefix_hash);
+        let encoded = serde_json::to_string(&final_record).expect("encode final record");
+        let final_hash =
+            crate::recorder_chain::recorder_entry_hash(&encoded).expect("hash final record");
+        final_record["hash"] = serde_json::json!(final_hash);
+        let encoded = serde_json::to_string(&final_record).expect("encode hashed final record");
+        let damage_offset = prefix.len() as u64;
+        prefix.extend_from_slice(encoded.as_bytes());
+        let suffix = &raw[seal.damage_offset as usize..];
+        prefix.extend_from_slice(suffix);
+
+        seal.last_good_seq = durable_count as u64 - 1;
+        seal.last_good_hash = prefix_hash;
+        seal.damage_offset = damage_offset;
+        seal.shard_size = prefix.len() as u64;
+        seal.shard_sha256 = super::sha256_hex(&prefix);
+        seal.signature = format!(
+            "ed25519:{}",
+            hex::encode(signing_key.sign(&recovery_seal_digest(&seal)).to_bytes())
+        );
+        std::fs::write(&shard_path, prefix).expect("write gapped final record");
+        std::fs::write(
+            run_dir.join(format!("chain-link-{}.json", seal.predecessor_session)),
+            recovery_seal_json(&seal),
+        )
+        .expect("write re-signed seal");
+
+        let report = verify_base(
+            &run_dir,
+            "proxy",
+            &BaseVerifyOptions {
+                trusted_keys: vec![pinned],
+                endorsements: Vec::new(),
+            },
+        )
+        .expect("verify gapped final record");
         assert!(report
-            .findings
+            .chains
             .iter()
-            .any(|finding| finding.kind == super::FINDING_ATTESTED_DISCONTINUITY));
+            .all(|chain| chain.recovery_seal.is_none()));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == super::FINDING_INVALID_RECOVERY_SEAL
+                && finding.detail.contains("sequence mismatch")
+        }));
         std::fs::remove_dir_all(run_dir).expect("cleanup test evidence dir");
     }
 }

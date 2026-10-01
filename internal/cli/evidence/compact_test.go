@@ -731,6 +731,37 @@ func TestCompactStreamNamesRejectsDuplicateShardStarts(t *testing.T) {
 	}
 }
 
+func TestCompactStreamNamesRecorderAppendLock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content []byte
+		wantErr string
+	}{
+		{name: "empty lock is ignored", content: nil},
+		{name: "non-empty lock is refused", content: []byte("{}\n"), wantErr: "non-empty or irregular recorder append lock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, recorder.AppendLockFileName), tc.content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			names, err := compactStreamNames(recorder.EvidenceLocation{Root: dir, Dir: dir}, "proxy")
+			if tc.wantErr == "" {
+				if err != nil || len(names) != 1 || names[0] != "evidence-proxy-0.jsonl" {
+					t.Fatalf("names=%v err=%v, want only the shard", names, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestCompactStreamNamesFailsClosedOnUnsafeDirectoryShapes(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

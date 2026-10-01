@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 )
 
+// AppendLockFileName is the recorder's empty per-directory append lock.
+// Directory scanners that refuse unknown files must allow it (and only while
+// it is an empty regular file, so it can never carry evidence bytes).
+const AppendLockFileName = ".append.lock"
+
 // acquireAppendLock serializes tail inspection and append for legacy sessions
 // which can still have multiple writers. A shared evidence-presence lock cannot
 // do this: inspecting another writer's in-progress append would report TORN.
@@ -16,7 +21,7 @@ import (
 // One stable inode per directory bounds lock files across run sessions and
 // rotations. Never unlink on unlock: waiters must lock the same inode.
 func acquireAppendLock(dir string) (func(), error) {
-	path := filepath.Join(filepath.Clean(dir), ".append.lock")
+	path := filepath.Join(filepath.Clean(dir), AppendLockFileName)
 	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_RDWR|evidenceReadNoFollowFlag, filePermissions)
 	if err != nil {
 		return nil, fmt.Errorf("open evidence append lock: %w", err)

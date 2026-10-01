@@ -372,18 +372,27 @@ func writeSpillFile(dir, path string, raw []byte) error {
 // is best effort: directories it cannot remove (another user's, in a sticky
 // temp directory) are left alone.
 func sweepStaleSpillDirs(root string, now time.Time) {
-	entries, err := os.ReadDir(root)
+	dir, err := os.Open(filepath.Clean(root))
 	if err != nil {
 		return
 	}
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), spillDirPrefix) {
-			continue
+	defer func() { _ = dir.Close() }()
+	// Read in batches: a large shared temp directory must not be loaded and
+	// sorted in one allocation just to find a few stale spill directories.
+	for {
+		entries, readErr := dir.ReadDir(256)
+		for _, e := range entries {
+			if !e.IsDir() || !strings.HasPrefix(e.Name(), spillDirPrefix) {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || now.Sub(info.ModTime()) < staleSpillAge {
+				continue
+			}
+			_ = os.RemoveAll(filepath.Join(root, e.Name()))
 		}
-		info, err := e.Info()
-		if err != nil || now.Sub(info.ModTime()) < staleSpillAge {
-			continue
+		if readErr != nil || len(entries) == 0 {
+			return
 		}
-		_ = os.RemoveAll(filepath.Join(root, e.Name()))
 	}
 }

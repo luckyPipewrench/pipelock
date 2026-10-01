@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -228,6 +230,11 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	// The agent's file tools act on this host, so a submitted path is also
 	// matched by the file it resolves to here.
 	pc.EnableLocalPathIdentity()
+	// A relative path in tool_input is relative to the session's directory,
+	// which is the payload's cwd and not necessarily this process's.
+	if filepath.IsAbs(payload.Cwd) {
+		pc.AddLocalPathBases(payload.Cwd)
+	}
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
@@ -898,12 +905,59 @@ func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
 	if target == "" {
 		return "", false
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	homes := grepCredentialHomes()
+	if len(homes) == 0 {
 		// Without the home directory the credential directories cannot be
 		// located, so refuse rather than let the search run unchecked.
 		return "an unresolvable home directory", true
 	}
+	for _, home := range homes {
+		if dir, ok := grepTargetCoversCredentialDirUnder(home, target, cwd); ok {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// accountHomeDir returns the home directory the operating system records for
+// the user this process runs as. It is a variable so tests can supply one.
+var accountHomeDir = func() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
+
+// grepCredentialHomes returns every distinct absolute home directory whose
+// credential directories a search must not cover: the one named by the
+// environment and the one the account database records for the current user.
+// $HOME is set by whoever launched the process, so on its own it can point
+// away from the real home. A value that is not absolute names no location and
+// is ignored. None is returned when neither source yields a usable directory.
+func grepCredentialHomes() []string {
+	var homes []string
+	add := func(home string) {
+		if home == "" || !filepath.IsAbs(home) {
+			return
+		}
+		home = filepath.Clean(home)
+		if !slices.Contains(homes, home) {
+			homes = append(homes, home)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(home)
+	}
+	if home, err := accountHomeDir(); err == nil {
+		add(home)
+	}
+	return homes
+}
+
+// grepTargetCoversCredentialDirUnder is grepTargetCoversCredentialDir for one
+// home directory.
+func grepTargetCoversCredentialDirUnder(home, target, cwd string) (string, bool) {
 	resolve := func(path string) string {
 		if resolved, err := filepath.EvalSymlinks(path); err == nil {
 			return resolved

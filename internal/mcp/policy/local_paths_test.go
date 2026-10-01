@@ -17,6 +17,7 @@ import (
 const (
 	testShellProfileRule = "Shell Profile Modification"
 	testKeyReadRule      = "Credential File Access"
+	testPersistenceRule  = "Persistence Path Write"
 	testPatchTool        = "apply_patch"
 	testWriteTool        = "write_file"
 	testReadTool         = "read_file"
@@ -500,4 +501,167 @@ func TestLinkTargetStart(t *testing.T) {
 	if start != volume+sep || !slices.Contains(parts, "Users") || parts[len(parts)-1] != "x" {
 		t.Errorf("root-relative target: %q, %q", start, parts)
 	}
+}
+
+func hardLink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(newname), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(oldname, newname); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalPathIdentity_HardLinkIntoProtectedDirectory(t *testing.T) {
+	cases := []struct {
+		name     string
+		setup    func(t *testing.T, f localPathFixture) string
+		tool     string
+		key      string
+		wantRule string // empty means no rule may match
+	}{
+		{
+			name: "hard link to a private key inside the SSH directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".ssh", "id_ed25519"))
+				hardLink(t, filepath.Join(f.home, ".ssh", "id_ed25519"), filepath.Join(f.ws, "notes.txt"))
+				return filepath.Join(f.ws, "notes.txt")
+			},
+			tool: testReadTool, key: "path", wantRule: testKeyReadRule,
+		},
+		{
+			name: "relative hard link to a private key inside the SSH directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".ssh", "id_rsa"))
+				hardLink(t, filepath.Join(f.home, ".ssh", "id_rsa"), filepath.Join(f.ws, "k"))
+				return "k"
+			},
+			tool: testReadTool, key: "path", wantRule: testKeyReadRule,
+		},
+		{
+			name: "hard link to a user unit file",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".config", "systemd", "user", "x.service"))
+				hardLink(t, filepath.Join(f.home, ".config", "systemd", "user", "x.service"), filepath.Join(f.ws, "svc"))
+				return filepath.Join(f.ws, "svc")
+			},
+			tool: testWriteTool, key: "path", wantRule: testPersistenceRule,
+		},
+		{
+			name: "hard link to a public key stays readable",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".ssh", "id_ed25519.pub"))
+				hardLink(t, filepath.Join(f.home, ".ssh", "id_ed25519.pub"), filepath.Join(f.ws, "pub.txt"))
+				return filepath.Join(f.ws, "pub.txt")
+			},
+			tool: testReadTool, key: "path",
+		},
+		{
+			name: "linked file unrelated to the protected directory",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".ssh", "id_ed25519"))
+				f.write(t, filepath.Join(f.ws, "a.txt"))
+				hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
+				return filepath.Join(f.ws, "b.txt")
+			},
+			tool: testReadTool, key: "path",
+		},
+		{
+			name: "file with the same content as a key is not the key",
+			setup: func(t *testing.T, f localPathFixture) string {
+				f.write(t, filepath.Join(f.home, ".ssh", "id_ed25519"))
+				f.write(t, filepath.Join(f.ws, "copy.txt"))
+				return filepath.Join(f.ws, "copy.txt")
+			},
+			tool: testReadTool, key: "path",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLocalPathFixture(t)
+			value := tc.setup(t, f)
+
+			if tc.wantRule == "" {
+				v := checkPath(f.policy(true), tc.tool, tc.key, value)
+				if slices.Contains(v.Rules, testKeyReadRule) || slices.Contains(v.Rules, testPersistenceRule) {
+					t.Fatalf("%q must not be matched as a protected file: %+v", value, v)
+				}
+				return
+			}
+			// Positive control: the submitted text alone does not name the file.
+			if v := checkPath(f.policy(false), tc.tool, tc.key, value); slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("fixture is not an alias: %q already matches %s by text", value, tc.wantRule)
+			}
+			v := checkPath(f.policy(true), tc.tool, tc.key, value)
+			if !slices.Contains(v.Rules, tc.wantRule) {
+				t.Fatalf("hard link into a protected directory not matched as %s for %q: %+v", tc.wantRule, value, v)
+			}
+		})
+	}
+}
+
+func TestLocalPathIdentity_HardLinkScanFailsClosed(t *testing.T) {
+	t.Run("directory over the entry bound", func(t *testing.T) {
+		f := newLocalPathFixture(t)
+		for _, name := range []string{"id_a", "id_b", "id_c"} {
+			f.write(t, filepath.Join(f.home, ".ssh", name))
+		}
+		f.write(t, filepath.Join(f.ws, "a.txt"))
+		hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
+		value := filepath.Join(f.ws, "b.txt")
+
+		// Within the bound the scan completes and the unrelated file is clear.
+		if v := checkPath(f.policy(true), testReadTool, "path", value); slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("unrelated linked file matched within the bound: %+v", v)
+		}
+		old := localPathMaxDirEntries
+		localPathMaxDirEntries = 2
+		t.Cleanup(func() { localPathMaxDirEntries = old })
+		if v := checkPath(f.policy(true), testReadTool, "path", value); !slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("a directory over the entry bound must be treated as holding the file: %+v", v)
+		}
+	})
+
+	t.Run("unreadable directory", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads any directory")
+		}
+		f := newLocalPathFixture(t)
+		f.write(t, filepath.Join(f.home, ".ssh", "id_ed25519"))
+		f.write(t, filepath.Join(f.ws, "a.txt"))
+		hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
+		f.write(t, filepath.Join(f.ws, "solo.txt"))
+		ssh := filepath.Join(f.home, ".ssh")
+		if err := os.Chmod(ssh, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ssh, 0o700) }) //nolint:gosec // a directory needs search permission back so cleanup can remove it
+
+		// A linked file this user owns cannot be one of another account's
+		// files, so an unreadable directory does not hold it.
+		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "b.txt")); slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("a linked file the user owns must not be refused for an unreadable directory: %+v", v)
+		}
+		// A linked file owned by another account fails closed.
+		old := fileOwnedByCurrentUser
+		fileOwnedByCurrentUser = func(os.FileInfo) bool { return false }
+		t.Cleanup(func() { fileOwnedByCurrentUser = old })
+		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "b.txt")); !slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("an unreadable protected directory must fail closed for another account's linked file: %+v", v)
+		}
+		// A file with a single link cannot be a hard link, so it never reads the directory.
+		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "solo.txt")); slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("a single-link file must not consult the directory: %+v", v)
+		}
+	})
+
+	t.Run("absent directory holds no link", func(t *testing.T) {
+		f := newLocalPathFixture(t)
+		f.write(t, filepath.Join(f.ws, "a.txt"))
+		hardLink(t, filepath.Join(f.ws, "a.txt"), filepath.Join(f.ws, "b.txt"))
+		if v := checkPath(f.policy(true), testReadTool, "path", filepath.Join(f.ws, "b.txt")); slices.Contains(v.Rules, testKeyReadRule) {
+			t.Fatalf("no .ssh directory exists, nothing to match: %+v", v)
+		}
+	})
 }

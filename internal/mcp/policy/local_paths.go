@@ -4,6 +4,9 @@
 package policy
 
 import (
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,16 +412,100 @@ func protectedAliases(resolved string, candidates []localProtectedCandidate) []s
 				continue
 			}
 		}
-		if candidate.info == nil || candidate.info.IsDir() {
+		if candidate.info == nil {
 			continue
 		}
 		if !statDone {
 			info, _ = os.Stat(resolved)
 			statDone = true
 		}
-		if info != nil && os.SameFile(info, candidate.info) {
+		if info == nil {
+			continue
+		}
+		if candidate.info.IsDir() {
+			// A hard link to a file directly inside a protected directory is
+			// the same file under another name. Only a regular file with
+			// another link can be one, so everything else skips the scan.
+			if info.Mode().IsRegular() && mayHaveOtherLinks(info) {
+				aliases = append(aliases, hardLinkAliasesInDir(candidate.path, resolved, info)...)
+			}
+			continue
+		}
+		if os.SameFile(info, candidate.info) {
 			aliases = append(aliases, candidate.path)
 		}
+	}
+	return aliases
+}
+
+// localPathMaxDirEntries bounds how many entries of one protected directory
+// are examined for a hard link. A directory with more entries than this is
+// treated as holding the file, never as not holding it. It is a variable so
+// tests can reach the bound without creating thousands of files.
+var localPathMaxDirEntries = 8192
+
+// fileOwnedByCurrentUser is a variable so tests can treat a fixture file as
+// owned by another account, which they cannot create without root.
+var fileOwnedByCurrentUser = ownedByCurrentUser
+
+// hardLinkAliasesInDir returns the protected spelling of file when it is the
+// same file (device and inode) as an entry directly inside dir, or when that
+// cannot be established. The directory is read once, not recursively, and at
+// most localPathMaxDirEntries entries are examined. It fails closed: a
+// directory that cannot be read, or that has more entries than the bound,
+// yields a protected spelling for file, because the answer is unknown. A
+// directory that does not exist holds no link.
+func hardLinkAliasesInDir(dir, resolved string, info os.FileInfo) []string {
+	f, err := os.Open(filepath.Clean(dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		// A directory this process cannot list belongs to another account
+		// (the shared proxy's state directory, for example). A file this
+		// process owns is not one of that account's files, so it is not
+		// held there; failing closed on it would refuse ordinary work on
+		// every multi-link file the user owns (package-manager stores).
+		if fileOwnedByCurrentUser(info) {
+			return nil
+		}
+		return unknownHardLinkAliases(dir, resolved)
+	}
+	defer func() { _ = f.Close() }()
+	entries, err := f.ReadDir(localPathMaxDirEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return unknownHardLinkAliases(dir, resolved)
+	}
+	if len(entries) > localPathMaxDirEntries {
+		return unknownHardLinkAliases(dir, resolved)
+	}
+	var aliases []string
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // removed since the listing
+			}
+			return unknownHardLinkAliases(dir, resolved)
+		}
+		if os.SameFile(info, entryInfo) {
+			aliases = append(aliases, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return aliases
+}
+
+// unknownHardLinkAliases is the fail-closed spelling for a file that may be a
+// hard link into dir: the file's own name under dir, plus, for an SSH
+// directory, a private key name, since only key and authorized-keys names are
+// protected there.
+func unknownHardLinkAliases(dir, resolved string) []string {
+	aliases := []string{filepath.Join(dir, filepath.Base(resolved))}
+	if filepath.Base(dir) == ".ssh" {
+		aliases = append(aliases, filepath.Join(dir, "id_rsa"))
 	}
 	return aliases
 }

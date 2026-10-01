@@ -381,6 +381,32 @@ func (d *evidenceDoctor) scanJSONL(name string) {
 		d.addFinding("file_read_error", fmt.Sprintf("%s: %v", name, err))
 		return
 	}
+	path := filepath.Join(d.location.Dir, name)
+	var previous *recorder.Entry
+	tailErr := recorder.InspectEvidenceTailBytes(path, data, func(entry recorder.Entry) error {
+		if computed := recorder.ComputeHash(entry); computed != entry.Hash {
+			return fmt.Errorf("entry hash mismatch at seq %d", entry.Sequence)
+		}
+		if previous != nil && (entry.Sequence != previous.Sequence+1 || entry.PrevHash != previous.Hash) {
+			return errors.New("broken recorder hash link")
+		}
+		previous = &entry
+		return nil
+	})
+	if tailErr != nil {
+		var torn *recorder.TornTailError
+		if errors.As(tailErr, &torn) {
+			observedAt := time.Now().UTC().Format(time.RFC3339Nano)
+			fileTime := "unknown"
+			if info, statErr := os.Lstat(path); statErr == nil && info.Mode().IsRegular() {
+				fileTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+			}
+			d.addFinding("torn_tail", fmt.Sprintf("%s: byte %d, file time %s, observed at %s; damaged shard preserved", torn.Path, torn.Offset, fileTime, observedAt))
+		} else {
+			d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, tailErr))
+		}
+		return
+	}
 	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
 		d.addFinding("malformed_jsonl", fmt.Sprintf("%s: %v", name, err))

@@ -6,6 +6,7 @@ package metrics
 import (
 	"math"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -98,6 +99,7 @@ type EvidenceHealthStats struct {
 	DurabilityInvariantOK      bool                       `json:"durability_invariant_ok"`
 	Anchor                     *EvidenceAnchorStats       `json:"anchor"`
 	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
+	TornTails                  EvidenceTornTailStats      `json:"torn_tails"`
 	CPC                        any                        `json:"cpc"`
 	AnchoredFinalSeq           uint64                     `json:"-"`
 	AnchorLagReceipts          uint64                     `json:"-"`
@@ -190,7 +192,67 @@ func EvidenceLocalRecorderOperational(in EvidenceOperationalInput) bool {
 		!in.UnresolvedGaps && !in.UngatedFsyncFail
 }
 
+// EvidenceTornTailStats reports unsigned process-local observations of damaged shards.
+type EvidenceTornTailStats struct {
+	Total uint64                 `json:"total"`
+	Last  *EvidenceTornTailState `json:"last,omitempty"`
+}
+
+// EvidenceTornTailState locates the most recently observed incomplete write.
+type EvidenceTornTailState struct {
+	Path       string    `json:"path"`
+	Offset     int64     `json:"offset"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type evidenceTornTailKey struct {
+	path   string
+	offset int64
+}
+
+// RecordEvidenceTornTail counts a shard boundary once per process, including across reloads.
+func (m *Metrics) RecordEvidenceTornTail(path string, offset int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.evidenceTornTailSeen == nil {
+		m.evidenceTornTailSeen = make(map[evidenceTornTailKey]struct{})
+	}
+	key := evidenceTornTailKey{path: path, offset: offset}
+	if _, seen := m.evidenceTornTailSeen[key]; seen {
+		m.mu.Unlock()
+		return
+	}
+	m.evidenceTornTailSeen[key] = struct{}{}
+	m.evidenceTornTailStats.Total++
+	m.evidenceTornTailStats.Last = &EvidenceTornTailState{Path: path, Offset: offset, ObservedAt: time.Now().UTC()}
+	m.mu.Unlock()
+	if m.evidenceTornTails != nil {
+		m.evidenceTornTails.Inc()
+	}
+}
+
+// EvidenceTornTailSnapshot returns an isolated copy of the observation state.
+func (m *Metrics) EvidenceTornTailSnapshot() EvidenceTornTailStats {
+	if m == nil {
+		return EvidenceTornTailStats{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := m.evidenceTornTailStats
+	if stats.Last != nil {
+		last := *stats.Last
+		stats.Last = &last
+	}
+	return stats
+}
+
 func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
+	m.evidenceTornTails = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock", Subsystem: "evidence", Name: "torn_tails_total",
+		Help: "Total distinct incomplete evidence shard boundaries observed in this process.",
+	})
 	m.evidenceSequenceGaps = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Subsystem: "evidence",
@@ -270,6 +332,7 @@ func (m *Metrics) registerEvidenceMetrics(reg *prometheus.Registry) {
 	m.evidenceCollector = newEvidenceCollector(m)
 
 	reg.MustRegister(
+		m.evidenceTornTails,
 		m.evidenceSequenceGaps,
 		m.evidenceHeartbeatInterval,
 		m.evidenceLastAnchorTimestamp,

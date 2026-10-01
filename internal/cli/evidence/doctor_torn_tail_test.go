@@ -18,6 +18,10 @@ func TestEvidenceDoctorTornTail(t *testing.T) {
 		torn   bool
 	}{
 		{"healthy", func(b []byte) []byte { return b }, false},
+		{"empty", func(_ []byte) []byte { return nil }, false},
+		{"bad prefix hash with NUL", func(b []byte) []byte {
+			return append(bytes.Replace(b, []byte(`"summary":"test"`), []byte(`"summary":"edited"`), 1), 0)
+		}, false},
 		{"nul", func(b []byte) []byte { return append(b, 0, 0) }, true},
 		{"truncated", func(b []byte) []byte { return append(b, []byte(`{"version":`)...) }, true},
 		{"missing newline", func(b []byte) []byte { return b[:len(b)-1] }, true},

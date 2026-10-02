@@ -345,6 +345,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	// An expired containment grant is dropped from the effective set rather
+	// than refusing to start, so a lapsed entry can never take the proxy, and
+	// every contained agent's egress, down with it.
+	if _, err := cfg.LapseExpiredContainmentGrants(time.Now()); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 
 	s := &Server{
 		opts:                      opts,
@@ -413,6 +419,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.reportContainmentMetricsDrift(cfg, "startup", containmentErr)
 		}
 	}
+	s.reportLapsedContainmentGrants(cfg, "startup")
 	runtimeMode := config.RuntimeForward
 	if hasMCPListen {
 		runtimeMode = config.RuntimeForwardWithMCPListener

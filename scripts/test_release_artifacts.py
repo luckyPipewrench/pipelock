@@ -392,10 +392,14 @@ class TestReleaseArtifacts(unittest.TestCase):
         # status such as `exit "$?"` can all return success. Quotes and
         # backslashes are dropped first so `'exit' 0` or `\exit 0` is still
         # seen, and the status must be 1-255 because the shell takes it
-        # modulo 256 (`exit 256` succeeds).
+        # modulo 256 (`exit 256` succeeds). Backslash-continued lines are
+        # joined first, as the shell does, so `exi\` + `t 0` is one command.
+        # This guards against an accidental edit to the gate, not a
+        # determined attempt to hide a successful exit from a regex.
         exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
+        commands = re.sub(r"\\\n", "", gate_runs[0]).splitlines()
         not_failing = [
-            line for line in gate_lines
+            line for line in self._executable_lines("\n".join(commands))
             for status in exit_command.findall(re.sub(r"['\"\\]", "", line))
             if not (re.fullmatch(r"[1-9][0-9]{0,2}", status) and int(status) <= 255)
         ]

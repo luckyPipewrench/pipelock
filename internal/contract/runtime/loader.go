@@ -371,6 +371,19 @@ func (l *Loader) acceptedChainReachesCurrent(state store.State, prev *ActiveSet,
 // return; spawn it in a goroutine if the caller wants background
 // behaviour.
 func (l *Loader) Watch(ctx context.Context) error {
+	return l.watch(ctx, nil)
+}
+
+// reloadReporting runs Reload and hands a rejected reload to onError. The
+// previous ActiveSet stays in force on error, so reporting is purely so an
+// operator can see the rejected promote; it never changes enforcement.
+func (l *Loader) reloadReporting(onError func(error)) {
+	if err := l.Reload(); err != nil && onError != nil {
+		onError(err)
+	}
+}
+
+func (l *Loader) watch(ctx context.Context, onError func(error)) error {
 	if l == nil {
 		return errors.New("contract runtime: nil loader")
 	}
@@ -384,6 +397,11 @@ func (l *Loader) Watch(ctx context.Context) error {
 		return fmt.Errorf("contract runtime: watch %s: %w", l.storeDir, err)
 	}
 	l.readyOnce.Do(func() { close(l.ready) })
+
+	// Close the gap between the loader's construction-time read and the
+	// watch being armed: a promote that landed in between produced no event
+	// this watcher can see. Same-hash reloads are no-ops.
+	l.reloadReporting(onError)
 
 	// debounce is reset on every relevant event. When it fires, a single
 	// Reload runs and debounce resets to nil so a quiescent loop does not
@@ -436,7 +454,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 				// instead of resetting the debounce window again, so a
 				// runaway producer cannot starve a real promote.
 				debounce = nil
-				_ = l.Reload()
+				l.reloadReporting(onError)
 				burstStart = time.Time{}
 				continue
 			}
@@ -449,7 +467,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 			// rejected, error). Error return is informational; a rejected
 			// reload is fail-soft and the watcher keeps running so the
 			// next event is another opportunity.
-			_ = l.Reload()
+			l.reloadReporting(onError)
 
 		case _, ok := <-watcher.Errors:
 			if !ok {
@@ -477,7 +495,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 				// the recovery path lands under exactly the conditions
 				// it was added for.
 				debounce = nil
-				_ = l.Reload()
+				l.reloadReporting(onError)
 				burstStart = time.Time{}
 				continue
 			}
@@ -553,4 +571,75 @@ func (l *Loader) validateActiveReadOnly() (store.State, error) {
 	opts.PreviousGeneration = 0
 	opts.ReadOnly = true
 	return l.store.ValidateEnvelope(raw, opts)
+}
+
+// StartWatch runs the store watcher in a background goroutine and returns
+// once the watch is armed, so a promote committed after StartWatch returns is
+// always observed. Rejected reloads are reported to onError (may be nil) while
+// the previous ActiveSet stays in force. A watcher that cannot start or that
+// dies later (for example the store directory was removed) is also reported
+// to onError; the loader then keeps serving its last accepted ActiveSet.
+//
+// The returned stop function cancels the watcher and waits for the goroutine
+// to exit, so a replaced loader leaks neither a goroutine nor an fsnotify
+// handle. It is safe to call more than once. Cancelling ctx stops the watcher
+// as well.
+func (l *Loader) StartWatch(ctx context.Context, onError func(error)) (stop func(), err error) {
+	if l == nil {
+		return nil, errors.New("contract runtime: nil loader")
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	armed := make(chan struct{})
+	var armOnce sync.Once
+	signalArmed := func() { armOnce.Do(func() { close(armed) }) }
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		defer signalArmed()
+		werr := l.watch(wctx, onError)
+		if werr != nil {
+			errCh <- werr
+		}
+	}()
+	// ready is closed by the first Watch to arm; a loader reused across
+	// watchers has it closed already, so also race against the goroutine
+	// exiting and a bounded wait handled by the caller's ctx.
+	go func() {
+		select {
+		case <-l.ready:
+			signalArmed()
+		case <-done:
+		}
+	}()
+	select {
+	case <-armed:
+	case <-ctx.Done():
+	}
+	select {
+	case werr := <-errCh:
+		cancel()
+		<-done
+		return func() {}, werr
+	default:
+	}
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	// Surface a late watcher failure without blocking the caller.
+	go func() {
+		<-done
+		select {
+		case werr := <-errCh:
+			if onError != nil {
+				onError(werr)
+			}
+		default:
+		}
+	}()
+	return stop, nil
 }

@@ -609,6 +609,7 @@ type Proxy struct {
 	redactMatcherPtr     atomic.Pointer[redact.Matcher]         // nil when redaction disabled
 	reqPolicyPtr         atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
 	contractLoaderPtr    atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
+	contractWatch        contractWatchState                     // active-manifest watcher for the published loader
 	authorityVerifier    authority.Verifier                     // nil preserves pre-authority forwarding behavior
 	logger               *audit.Logger
 	metrics              *metrics.Metrics
@@ -2545,6 +2546,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	// Move the active-manifest watcher onto the loader just published and
+	// stop the replaced loader's watcher.
+	p.syncContractWatcher()
 	oldIssuer := p.issuerCookieRuntime.Load()
 	issuerStore := newIssuerBoundCookieStore()
 	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
@@ -2972,6 +2976,7 @@ func (p *Proxy) updateCEEStats() {
 }
 
 func (p *Proxy) Close() {
+	p.stopContractWatcher()
 	if runtime := p.issuerCookieRuntime.Load(); runtime != nil {
 		runtime.store.flush(time.Now(), true)
 	}
@@ -4982,6 +4987,7 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		p.wd.Start(ctx)
 	}
 
+	p.startContractWatcher(ctx)
 	handler := p.buildHandler(p.buildMux())
 
 	// CONNECT tunnels and WebSocket connections need to live beyond any single

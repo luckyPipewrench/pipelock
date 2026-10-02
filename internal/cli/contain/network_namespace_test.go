@@ -378,6 +378,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 		boundaryStatus       string
 		missingNamespaceUnit bool
 		doorwayState         string
+		relayState           string
 		doorwayEnabled       string
 		wantStatus           string
 		wantDetail           string
@@ -416,8 +417,34 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			agentNamespace: "net:[200]",
 			boundaryStatus: statusPass,
 			doorwayState:   "failed",
+			relayState:     "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket",
+			wantDetail:     "run `systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket`",
+		},
+		{
+			name:           "running relay must be stopped before the socket can listen",
+			agentNamespace: "net:[200]",
+			boundaryStatus: statusPass,
+			doorwayState:   "inactive",
+			wantStatus:     statusFail,
+			wantDetail:     "run `systemctl stop pipelock-agent-proxy.service && systemctl start pipelock-agent-proxy.socket`",
+		},
+		{
+			name:           "masked doorway socket names the unmask remedy",
+			agentNamespace: "net:[200]",
+			boundaryStatus: statusPass,
+			doorwayEnabled: "masked",
+			relayState:     "inactive",
+			wantStatus:     statusFail,
+			wantDetail:     "run `systemctl unmask pipelock-agent-proxy.socket && systemctl enable --now pipelock-agent-proxy.socket`",
+		},
+		{
+			name:           "missing doorway socket names the reinstall remedy",
+			agentNamespace: "net:[200]",
+			boundaryStatus: statusPass,
+			doorwayEnabled: "not-found",
+			wantStatus:     statusFail,
+			wantDetail:     "not persistently enabled (not-found); the unit is missing; rerun `pipelock contain install`",
 		},
 		{
 			name:           "disabled doorway socket names the enable remedy",
@@ -483,6 +510,9 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 				case strings.HasPrefix(joined, "is-active "):
 					if tt.doorwayState != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderSocketPath)) {
 						return tt.doorwayState + "\n", 3, nil
+					}
+					if tt.relayState != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderServicePath)) {
+						return tt.relayState + "\n", 3, nil
 					}
 					return systemctlActive + "\n", 0, nil
 				case strings.HasPrefix(joined, "show "):

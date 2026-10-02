@@ -157,7 +157,7 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 		}
 	}
 	// mountLink is a host network namespace with the given mount identities.
-	mountLink := func(self, host string, selfErr error) func(string) (string, error) {
+	mountLink := func(self, host string, selfErr, hostErr error) func(string) (string, error) {
 		return func(path string) (string, error) {
 			switch path {
 			case "/proc/self/ns/net", "/proc/1/ns/net":
@@ -165,7 +165,7 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 			case "/proc/self/ns/mnt":
 				return self, selfErr
 			case "/proc/1/ns/mnt":
-				return host, nil
+				return host, hostErr
 			}
 			return "", os.ErrNotExist
 		}
@@ -183,8 +183,9 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 		{"missing reader refused", nil, "unavailable"},
 		// A unit that joins the agent namespace shares its private /tmp: host
 		// network alone is not enough for host-side probes.
-		{"agent mount namespace refused", mountLink("mnt:[2]", "mnt:[1]", nil), "not the host mount namespace"},
-		{"unreadable mount namespace refused", mountLink("", "mnt:[1]", os.ErrPermission), "read own mount namespace"},
+		{"agent mount namespace refused", mountLink("mnt:[2]", "mnt:[1]", nil, nil), "not the host mount namespace"},
+		{"unreadable mount namespace refused", mountLink("", "mnt:[1]", os.ErrPermission, nil), "read own mount namespace"},
+		{"unreadable host mount namespace refused", mountLink("mnt:[1]", "", nil, os.ErrPermission), "read host mount namespace"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

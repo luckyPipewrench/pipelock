@@ -19,11 +19,38 @@ import (
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 )
 
-func TestFormatVerifyAgeCeilsPartialDay(t *testing.T) {
+func TestFormatVerifyAgeCompletedDays(t *testing.T) {
 	t.Parallel()
+	now := time.Now()
+	for _, tc := range []struct {
+		name string
+		ts   time.Time
+		want string
+	}{
+		{"fresh", now, "0d"},
+		{"one hour", now.Add(-time.Hour), "0d"},
+		{"under day", now.Add(-24*time.Hour + time.Minute), "0d"},
+		{"exact day", now.Add(-24 * time.Hour), "1d"},
+		{"multiple days", now.Add(-73 * time.Hour), "3d"},
+		{"future", now.Add(time.Hour), "0d"},
+		{"zero", time.Time{}, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatVerifyAge(tc.ts); got != tc.want {
+				t.Fatalf("age = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
-	if got := formatVerifyAge(time.Now().Add(-time.Hour)); got != "1d" {
-		t.Fatalf("one-hour age = %q, want 1d", got)
+func TestPostureVerifyRenderedCompletedAge(t *testing.T) {
+	t.Parallel()
+	cmd := postureCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printVerifyResult(cmd, &posturepkg.VerifyResult{Passed: true}, &posturepkg.Capsule{GeneratedAt: time.Now().Add(-time.Hour)}, 30)
+	if !strings.Contains(buf.String(), "age: 0d, max: 30d") {
+		t.Fatalf("rendered output: %s", buf.String())
 	}
 }
 

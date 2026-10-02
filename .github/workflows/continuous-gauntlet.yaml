@@ -91,6 +91,7 @@ jobs:
           done
 
       - name: Run portable canonical benchmark
+        id: portable_runner
         shell: bash
         run: |
           set -euo pipefail
@@ -314,6 +315,8 @@ jobs:
       - name: Render owner-facing run summary
         if: ${{ !cancelled() }}
         shell: bash
+        env:
+          PORTABLE_RUNNER_OUTCOME: ${{ steps.portable_runner.outcome }}
         run: |
           set -euo pipefail
           mkdir -p "$GAUNTLET_ARTIFACT_DIR"
@@ -358,6 +361,17 @@ jobs:
               } >> "$summary_path"
               summary_exit=1
             fi
+          fi
+          if [[ "${PORTABLE_RUNNER_OUTCOME:-unknown}" != "success" ]]; then
+            {
+              echo '## Pipelock Gauntlet workflow: FAILED'
+              echo
+              echo 'The portable runner step did not complete successfully. Diagnostics may be incomplete; inspect the job log.'
+              echo
+              cat "$summary_path"
+            } > "$summary_path.tmp"
+            mv "$summary_path.tmp" "$summary_path"
+            summary_exit=1
           fi
           cat "$summary_path" >> "$GITHUB_STEP_SUMMARY"
           exit "$summary_exit"

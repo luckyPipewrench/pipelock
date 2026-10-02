@@ -226,6 +226,9 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertNotIn("--development", self.workflow)
 
     def test_entrypoint_diagnostics_preserve_exit_and_result_presence(self):
+        self.assertIn("id: portable_runner", step_block(self.workflow, "Run portable canonical benchmark"))
+        self.assertIn("PORTABLE_RUNNER_OUTCOME: ${{ steps.portable_runner.outcome }}",
+                      step_block(self.workflow, "Render owner-facing run summary"))
         cases = ((0, True, "success"), (22, False, "early"),
                  (9, True, "later"), (127, False, "missing-script"),
                  (1, False, "missing-root"), (22, False, "capture-failure"),
@@ -285,12 +288,18 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                 self.assertIn(diagnostic, run.stderr)
                 self.assertEqual((artifacts / "results.jsonl").exists(), results)
                 self.assertFalse((artifacts / "continuous-gauntlet-pipelock.json").exists())
+                env["PORTABLE_RUNNER_OUTCOME"] = "failure" if run.returncode else "success"
                 summary = subprocess.run(
                     ["bash", "-eu", "-o", "pipefail", "-c",
                      step_run_script(self.workflow, "Render owner-facing run summary")],
                     cwd=root, env=env, capture_output=True, text=True, timeout=10)
                 text = (root / "summary.md").read_text()
-                self.assertEqual(summary.returncode, 0 if exit_code == 0 else 1, summary.stderr)
+                self.assertEqual(summary.returncode, 0 if run.returncode == 0 else 1, summary.stderr)
+                if run.returncode:
+                    self.assertTrue(text.startswith("## Pipelock Gauntlet workflow: FAILED"), text)
+                    self.assertIn("Diagnostics may be incomplete", text)
+                else:
+                    self.assertNotIn("workflow: FAILED", text)
                 if exit_code:
                     self.assertIn(f"Portable runner exit status: {exit_code}", text)
                     self.assertIn("Result records are available" if results else "No result records were produced", text)
@@ -299,6 +308,31 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                 else:
                     self.assertNotIn("Portable runner failed", text)
                     self.assertIn("Fixture owner summary", text)
+
+    def test_summary_rejects_incomplete_step_without_diagnostic_files(self):
+        for outcome in ("failure", "skipped", "cancelled", "", "unknown"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / "bench" / "scripts"
+                scripts.mkdir(parents=True)
+                (scripts / "render_gauntlet_run_summary.py").write_text(
+                    'print("Fixture successful result")\n', encoding="utf-8")
+                env = os.environ | {
+                    "AEB_ROOT": str(scripts.parent), "GAUNTLET_ARTIFACT_DIR": str(root / "artifacts"),
+                    "PIPELOCK_GAUNTLET_BASELINE": str(root / "baseline.json"),
+                    "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "1",
+                    "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                    "PORTABLE_RUNNER_OUTCOME": outcome,
+                }
+                result = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c",
+                     step_run_script(self.workflow, "Render owner-facing run summary")],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                text = (root / "summary.md").read_text()
+                self.assertTrue(text.startswith("## Pipelock Gauntlet workflow: FAILED"), text)
+                self.assertIn("Diagnostics may be incomplete", text)
+                self.assertEqual(text, (root / "artifacts" / "owner-summary.md").read_text())
 
     def test_workflow_cannot_publish_or_modify_repositories(self):
         permissions = self.workflow[

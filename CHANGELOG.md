@@ -159,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cross-request detection** uses a keyed per-session bucket digest, requires classified identities, inspects a completing fragment before eviction, keeps exact contributors, clears the keys production writes on reset, and keys MCP state on the session key alone. Cross-request blocks emit receipts with a neutral client message. (#1489, #1517, #1526, #1547, #1563, #1579)
 - **Partial (206) responses fail closed** when Shield, media stripping or redaction would change their bytes, and decoding or truncating a partial body is refused. (#1653)
 - **Empty and mistyped media responses** pass or block with a named reason instead of a parse error. (#1643)
-- **False positives in ordinary work:** spaced assignments as URL credentials, prose read as AWS resource IDs, environment lookups in tool commands, base64 identifiers, bot checks, the jailbreak pattern inside encoded data, percent-encoded query exclusion keys, OAuth `redirect_uri`, PKCE challenges and static asset hashes. (#1482, #1664, #1669, #1671, #1680, #1683)
+- **False positives in ordinary work:** spaced assignments as URL credentials, prose read as AWS resource IDs, environment lookups in tool commands, base64 identifiers, bot checks, the jailbreak pattern inside encoded data, percent-encoded query exclusion keys, OAuth `redirect_uri`, PKCE challenges and static asset hashes, including short hyphenated build hashes. (#1482, #1664, #1669, #1671, #1680, #1683, #1757)
 - **WebSocket relays end as soon as either side leaves** instead of waiting out the idle timeout, and scoped DLP controls apply to frame scans. (#1604, #1674)
 - **Go 1.27 compatibility fixes preserve signed evidence** when it records invalid UTF-8. (#1673)
 - **TLS interception finds its default CA in the Pipelock home** (`--home`, `PIPELOCK_HOME`, then `~/.pipelock`) and refuses to guess when two exist. (#1651)
@@ -204,7 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies
 
-- Weekly dependency updates, `fast-uri` 3.1.7 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492)
+- Weekly dependency updates, `fast-uri` 3.1.8 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492, #1742)
 - The init and license-service images use Alpine 3.24.2 (OpenSSL 3.5.8), and the source Dockerfile builds with Go 1.27.1. (#1716)
 
 ### Testing and CI

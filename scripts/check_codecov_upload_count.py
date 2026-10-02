@@ -15,6 +15,8 @@ from yaml_contracts import UniqueKeyLoader, yaml
 
 ACTION = re.compile(r"^codecov/codecov-action@[^\s]+$", re.IGNORECASE)
 EXPRESSION = re.compile(r"\$\{\{")
+# GitHub Actions' documented maximum number of generated jobs per matrix.
+MAX_MATRIX_JOBS = 256
 
 
 class TopologyError(ValueError):
@@ -36,8 +38,17 @@ def enabled(value: object, label: str) -> bool:
 
 
 def static(value: object, label: str) -> None:
-    if isinstance(value, (dict, list)) or EXPRESSION.search(str(value)):
-        raise TopologyError(f"{label} has a dynamic or nested value")
+    pending = [(value, frozenset())]
+    while pending:
+        item, ancestors = pending.pop()
+        if isinstance(item, dict):
+            if id(item) in ancestors:
+                raise TopologyError(f"{label} has a cyclic object")
+            branch = ancestors | {id(item)}
+            for key, member in item.items():
+                pending.extend(((key, branch), (member, branch)))
+        elif isinstance(item, list) or EXPRESSION.search(str(item)):
+            raise TopologyError(f"{label} has a dynamic or unsupported list value")
 
 
 def uploads_coverage(step: dict, label: str) -> bool:
@@ -66,7 +77,6 @@ def cells(job: dict, label: str) -> list[dict]:
             raise TopologyError(f"{label}.matrix.{key} must be a nonempty static list")
         for value in values:
             static(value, f"{label}.matrix.{key}")
-    result = [dict(zip(axes, values)) for values in itertools.product(*axes.values())] if axes else []
     for name in ("exclude", "include"):
         entries = matrix.get(name, [])
         if not isinstance(entries, list):
@@ -80,7 +90,17 @@ def cells(job: dict, label: str) -> list[dict]:
     for entry in matrix.get("exclude", []):
         if not set(entry) <= axes.keys():
             raise TopologyError(f"{label}.matrix.exclude references unknown axis")
-        result = [cell for cell in result if not all(cell[key] == value for key, value in entry.items())]
+    # Filter lazily: excluded combinations do not consume the generated-job
+    # allowance, and an oversized matrix never becomes an unbounded list.
+    result = []
+    combinations = itertools.product(*axes.values()) if axes else ()
+    for values in combinations:
+        cell = dict(zip(axes, values, strict=True))
+        if any(all(cell[key] == value for key, value in entry.items()) for entry in matrix.get("exclude", [])):
+            continue
+        if len(result) == MAX_MATRIX_JOBS:
+            raise TopologyError(f"{label}.matrix exceeds {MAX_MATRIX_JOBS} generated jobs")
+        result.append(cell)
     # Includes can extend original combinations, never another include-only row.
     # Keep the two sets separate, including for an include-only matrix.
     additions = []
@@ -90,6 +110,8 @@ def cells(job: dict, label: str) -> list[dict]:
             for cell in matching:
                 cell.update(entry)
         else:
+            if len(result) + len(additions) == MAX_MATRIX_JOBS:
+                raise TopologyError(f"{label}.matrix exceeds {MAX_MATRIX_JOBS} generated jobs")
             additions.append(dict(entry))
     result.extend(additions)
     if not result:
@@ -99,6 +121,33 @@ def cells(job: dict, label: str) -> list[dict]:
 
 def upload_count(workflow: dict) -> int:
     jobs = mapping(workflow.get("jobs"), "workflow.jobs")
+    reachable = {}
+    visiting = set()
+
+    def can_run(name: str) -> bool:
+        if name in visiting:
+            raise TopologyError(f"job {name} has cyclic needs")
+        if name in reachable:
+            return reachable[name]
+        if name not in jobs:
+            raise TopologyError(f"needs references missing job {name}")
+        job = mapping(jobs[name], f"job {name}")
+        if not enabled(job.get("if"), f"job {name}"):
+            reachable[name] = False
+            return False
+        dependencies = job.get("needs", [])
+        if isinstance(dependencies, str):
+            dependencies = [dependencies]
+        if not isinstance(dependencies, list) or any(not isinstance(dep, str) for dep in dependencies):
+            raise TopologyError(f"job {name}.needs must name jobs")
+        visiting.add(name)
+        ready = all([can_run(dep) for dep in dependencies])
+        visiting.remove(name)
+        if ready:
+            cells(job, f"job {name}")
+        reachable[name] = ready
+        return ready
+
     count = 0
     for name, raw in jobs.items():
         job = mapping(raw, f"job {name}")
@@ -108,7 +157,7 @@ def upload_count(workflow: dict) -> int:
         uploads = [step for step in steps if isinstance(step, dict) and ACTION.fullmatch(str(step.get("uses", "")))]
         if not uploads:
             continue
-        if not enabled(job.get("if"), f"job {name}"):
+        if not can_run(name):
             continue
         expansion = cells(job, f"job {name}")
         for step in uploads:
@@ -121,8 +170,8 @@ def upload_count(workflow: dict) -> int:
 
 def check(workflow_path: Path, codecov_path: Path) -> tuple[int, int]:
     try:
-        workflow = mapping(yaml.load(workflow_path.read_text(), Loader=UniqueKeyLoader), "workflow")
-        codecov = mapping(yaml.load(codecov_path.read_text(), Loader=UniqueKeyLoader), "codecov config")
+        workflow = mapping(yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader), "workflow")
+        codecov = mapping(yaml.load(codecov_path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader), "codecov config")
     except (OSError, ValueError, TypeError, yaml.YAMLError) as error:
         raise TopologyError(str(error)) from error
     expected = upload_count(workflow)

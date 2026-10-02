@@ -6,13 +6,17 @@
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
-from check_codecov_upload_count import TopologyError, check, main, upload_count
+from check_codecov_upload_count import TopologyError, cells, check, main, upload_count
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +50,77 @@ class UploadCountTest(unittest.TestCase):
         self.workflow["jobs"]["first"]["if"] = False
         self.workflow["jobs"]["single"]["steps"][0]["if"] = False
         self.assertEqual(upload_count(self.workflow), 3)
+
+    def test_dependency_reachability(self) -> None:
+        jobs = self.workflow["jobs"]
+        jobs["single"]["needs"] = "prepare"
+        jobs["prepare"] = {"needs": ["unrelated"]}
+        self.assertEqual(upload_count(self.workflow), 6)
+        jobs["unrelated"]["if"] = False
+        self.assertEqual(upload_count(self.workflow), 5)
+        jobs["unrelated"]["if"] = "${{ inputs.enabled }}"
+        with self.assertRaises(TopologyError):
+            upload_count(self.workflow)
+        jobs["unrelated"].pop("if")
+        jobs["prepare"]["needs"] = ["single"]
+        with self.assertRaisesRegex(TopologyError, "cyclic"):
+            upload_count(self.workflow)
+        for dependencies in (["missing"], None, 3, [3]):
+            jobs["prepare"]["needs"] = dependencies
+            with self.subTest(dependencies=dependencies), self.assertRaises(TopologyError):
+                upload_count(self.workflow)
+
+    def test_documented_object_axis(self) -> None:
+        matrix = {"os": ["ubuntu-latest", "macos-latest"],
+                  "node": [{"version": 14}, {"version": 20, "env": "NODE_OPTIONS=--openssl-legacy-provider"}]}
+        self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "example")), 4)
+        matrix["exclude"] = [{"os": "macos-latest", "node": {"version": 14}}]
+        self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "example")), 3)
+        matrix["node"][0]["version"] = "${{ inputs.version }}"
+        with self.assertRaises(TopologyError):
+            cells({"strategy": {"matrix": matrix}}, "example")
+
+    def test_effective_matrix_limit(self) -> None:
+        matrix = {"a": list(range(16)), "b": list(range(16))}
+        self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "limit")), 256)
+        matrix["b"] = list(range(17))
+        with self.assertRaisesRegex(TopologyError, "256"):
+            cells({"strategy": {"matrix": matrix}}, "limit")
+        matrix["exclude"] = [{"a": 0}]
+        self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "limit")), 255)
+        matrix["include"] = [{"a": 0, "b": 0}]
+        self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "limit")), 256)
+        matrix["include"].append({"a": 0, "b": 1})
+        with self.assertRaisesRegex(TopologyError, "256"):
+            cells({"strategy": {"matrix": matrix}}, "limit")
+        with self.assertRaisesRegex(TopologyError, "256"):
+            cells({"strategy": {"matrix": {"include": [{"a": n} for n in range(257)]}}}, "limit")
+
+    def test_cyclic_or_dynamic_object_is_rejected(self) -> None:
+        cycle = {}
+        cycle["self"] = cycle
+        for value in (cycle, {"nested": {"version": "${{ inputs.version }}"}}, {"items": [1, 2]}):
+            with self.subTest(value=repr(value)), self.assertRaises(TopologyError):
+                cells({"strategy": {"matrix": {"node": [value]}}}, "object")
+
+    def test_expansion_stops_at_first_excess_job(self) -> None:
+        def combinations(*_):
+            for number in range(257):
+                yield (number,)
+            self.fail("expanded beyond the first excess job")
+        with patch("check_codecov_upload_count.itertools.product", combinations):
+            with self.assertRaisesRegex(TopologyError, "256"):
+                cells({"strategy": {"matrix": {"a": list(range(300))}}}, "limit")
+
+    def test_utf8_files_in_ascii_locale(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            workflow, codecov = Path(temp) / "ci.yaml", Path(temp) / "codecov.yml"
+            workflow.write_text("# caf\u00e9\n" + yaml.safe_dump(self.workflow), encoding="utf-8")
+            codecov.write_text("# caf\u00e9\ncodecov: {notify: {after_n_builds: 6}}", encoding="utf-8")
+            env = dict(os.environ, LC_ALL="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/check_codecov_upload_count.py"),
+                                     str(workflow), str(codecov)], env=env, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_action_name_case(self) -> None:
         self.workflow["jobs"]["single"]["steps"][0]["uses"] = ACTION.upper()

@@ -20,7 +20,11 @@ if ! git ls-files -z --cached --others --exclude-standard -- '*_test.go' >"$test
   echo "check-test-stability: cannot discover Go tests." >&2
   exit 2
 fi
-mapfile -d '' -t test_files <"$test_list"
+# Avoid mapfile so discovery also works with older Bash installations.
+test_files=()
+while IFS= read -r -d '' test_file; do
+  test_files+=("$test_file")
+done <"$test_list"
 if [[ ${#test_files[@]} -eq 0 ]]; then
   echo "check-test-stability: no Go tests found; refusing an empty scan." >&2
   exit 2

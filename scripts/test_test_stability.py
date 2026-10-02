@@ -45,6 +45,16 @@ class StabilityTests(unittest.TestCase):
         self.write("root_test.go", "package example\n")
         self.assertEqual(self.run_gate().returncode, 0)
 
+    def test_discovery_without_mapfile(self):
+        self.write("shell-env", "if type -t mapfile >/dev/null; then enable -n mapfile; fi\n")
+        self.env["BASH_ENV"] = str(self.root / "shell-env")
+        self.write("new component/clean_test.go", "package example\n")
+        self.assertEqual(self.run_gate().returncode, 0)
+        self.write("new component/clean_test.go", "time.Sleep(1)\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("new component/clean_test.go:1:", result.stderr)
+
     def test_sleep_in_each_previously_omitted_root(self):
         for root in ("scripts", "configs", "future component"):
             with self.subTest(root=root):

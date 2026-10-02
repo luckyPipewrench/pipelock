@@ -5,7 +5,10 @@
 """Structural tests for the Pipelock-owned candidate-only Gauntlet lane."""
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,6 +39,8 @@ EVIDENCE_FILES = (
     "corpus-manifest.txt",
     "checksums.txt",
     "entrypoint-command.txt",
+    "entrypoint.stderr",
+    "entrypoint-exit.txt",
     "raw-summary.json",
     "results.jsonl",
     "runner.stderr",
@@ -55,6 +60,12 @@ def step_block(workflow, name):
         raise AssertionError(f"missing workflow step: {name}")
     next_step = workflow.find("\n      - name:", start + len(marker))
     return workflow[start:] if next_step < 0 else workflow[start:next_step]
+
+
+def step_run_script(workflow, name):
+    block = step_block(workflow, name)
+    lines = block.split("        run: |\n", 1)[1].splitlines()
+    return "\n".join(line[10:] if line else "" for line in lines)
 
 
 class GauntletCandidateWorkflowTest(unittest.TestCase):
@@ -213,6 +224,81 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn("--deadline-epoch", run)
         self.assertNotIn("go build", self.workflow)
         self.assertNotIn("--development", self.workflow)
+
+    def test_entrypoint_diagnostics_preserve_exit_and_result_presence(self):
+        cases = ((0, True, "success"), (22, False, "early"),
+                 (9, True, "later"), (127, False, "missing-script"),
+                 (1, False, "missing-root"), (22, False, "capture-failure"),
+                 (0, True, "capture-failure-success"))
+        for exit_code, results, scenario in cases:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                bench = root / "bench"
+                scripts = bench / "scripts"
+                scripts.mkdir(parents=True)
+                artifacts = root / "artifacts"
+                (root / "runner").mkdir()
+                runner = scripts / "run-pipelock-gauntlet.sh"
+                if scenario != "missing-script":
+                    runner.write_text(
+                        "#!/bin/bash\n"
+                        "echo fixture-entrypoint-diagnostic >&2\n"
+                        # Mirrors the real entrypoint contract: it creates the
+                        # output directory itself and refuses an existing one.
+                        '[[ ! -e "$GAUNTLET_ARTIFACT_DIR" ]] || '
+                        '{ echo "output directory must not already exist" >&2; exit 97; }\n'
+                        'mkdir "$GAUNTLET_ARTIFACT_DIR"\n'
+                        + ('echo fixture-result > "$GAUNTLET_ARTIFACT_DIR/results.jsonl"\n' if results else "")
+                        + f"exit {exit_code}\n", encoding="utf-8")
+                    runner.chmod(0o700)
+                # The renderer is a local fixture; neither step contacts the
+                # benchmark service or downloads a release.
+                (scripts / "render_gauntlet_run_summary.py").write_text(
+                    'print("Fixture owner summary")\n', encoding="utf-8")
+                env = os.environ | {
+                    "AEB_ROOT": str(root / "absent" if scenario == "missing-root" else bench),
+                    "GAUNTLET_ARTIFACT_DIR": str(artifacts),
+                    "JOB_STARTED_EPOCH": "100", "JOB_TIMEOUT_MINUTES": "35",
+                    "PIPELOCK_RELEASE_PIN": str(root / "release.env"),
+                    "PIPELOCK_GAUNTLET_BASELINE": str(root / "baseline.json"),
+                    "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "1",
+                    "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                    "RUNNER_TEMP": str(root / "runner"),
+                }
+                if scenario.startswith("capture-failure"):
+                    tools = root / "tools"
+                    tools.mkdir()
+                    tee = tools / "tee"
+                    tee.write_text(
+                        '#!/bin/bash\n/usr/bin/tee "$@"\nexit 42\n', encoding="utf-8"
+                    )
+                    tee.chmod(0o700)
+                    env["PATH"] = str(tools) + os.pathsep + env["PATH"]
+                run = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c",
+                     step_run_script(self.workflow, "Run portable canonical benchmark")],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(run.returncode, 42 if scenario == "capture-failure-success" else exit_code, run.stderr)
+                self.assertEqual((artifacts / "entrypoint-exit.txt").read_text().strip(), str(exit_code))
+                diagnostic = (artifacts / "entrypoint.stderr").read_text()
+                self.assertTrue(diagnostic)
+                self.assertIn(diagnostic, run.stderr)
+                self.assertEqual((artifacts / "results.jsonl").exists(), results)
+                self.assertFalse((artifacts / "continuous-gauntlet-pipelock.json").exists())
+                summary = subprocess.run(
+                    ["bash", "-eu", "-o", "pipefail", "-c",
+                     step_run_script(self.workflow, "Render owner-facing run summary")],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+                text = (root / "summary.md").read_text()
+                self.assertEqual(summary.returncode, 0 if exit_code == 0 else 1, summary.stderr)
+                if exit_code:
+                    self.assertIn(f"Portable runner exit status: {exit_code}", text)
+                    self.assertIn("Result records are available" if results else "No result records were produced", text)
+                    self.assertIn("not a product verdict" if not results else "does not establish a product verdict", text)
+                    self.assertNotIn("release acquisition", text)
+                else:
+                    self.assertNotIn("Portable runner failed", text)
+                    self.assertIn("Fixture owner summary", text)
 
     def test_workflow_cannot_publish_or_modify_repositories(self):
         permissions = self.workflow[

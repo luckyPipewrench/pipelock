@@ -1225,3 +1225,27 @@ func TestSignVerifyReport_InvalidUTF8DetailVerifiesAfterParse(t *testing.T) {
 		t.Fatal("signature does not verify over the parsed report")
 	}
 }
+
+func TestVerifyReportConfigAndScopeParity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy with spaces.yaml")
+	report := BuildVerifyReport(&VerifyEnv{RunCtx: "host"}, nil, path)
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded VerifyReport
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	printVerifyTable(&out, report, false)
+	if decoded.ConfigFile != path || !strings.Contains(out.String(), "Config: "+decoded.ConfigFile) {
+		t.Fatalf("config provenance mismatch: %s", &out)
+	}
+	if !strings.Contains(decoded.Scope, "does not verify real client routing") || !strings.Contains(out.String(), decoded.Scope) {
+		t.Fatalf("synthetic scope mismatch: %s", &out)
+	}
+	if strings.Contains(VerifyInstallCmd().Short, "protecting this agent") {
+		t.Fatal("short help claims current-agent protection")
+	}
+}

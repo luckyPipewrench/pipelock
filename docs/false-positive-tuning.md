@@ -2,13 +2,16 @@
 
 When pipelock blocks or warns on legitimate traffic, this guide walks you through identifying the source, suppressing known-good findings, and tuning thresholds so the scanner stays useful without getting in the way.
 
-**Start in audit mode.** If you're seeing unexpected blocks, switch to audit first. Audit logs everything but blocks nothing, giving you a clear picture of what's firing before you make changes.
+**Start with the explanation and the active config.** Keep the config path printed by `pipelock init` (prefer an absolute path when changing directories). For a URL finding:
 
 ```bash
-pipelock generate config --preset audit > pipelock.yaml
+pipelock explain --config "/absolute/path/pipelock.yaml" "https://api.vendor.example/resource"
+pipelock check --config "/absolute/path/pipelock.yaml" --url "https://api.vendor.example/resource"
 ```
 
-**Fastest path for a single URL.** Run [`pipelock explain <url>`](cli/explain.md) to see which scanner blocked a specific URL and the exact, narrowest config knob that scanner consults — without resolving DNS or fetching anything. It names the correct knob per scanner (for example, URL-DLP false positives point at `dlp.patterns[].exempt_domains`, not the top-level `suppress:` list, which URL DLP never reads).
+[`explain`](cli/explain.md) names the scanner, matching rule, and narrowest applicable correction without DNS or fetching. Confirm that the traffic is legitimate, change only that rule or scoped exception in the active config, then repeat the same check. URL DLP uses `dlp.patterns[].exempt_domains`, not the top-level `suppress:` list. Core floors have their own restrictions; a broad allowlist or suppression is not a universal override.
+
+For response or MCP findings, use the corresponding explanation command and recheck that surface through the actual client integration. A successful local URL check or `verify-install --config` synthetic test does not establish client routing. Use redacted logs to confirm which config and scanner handled the real request; do not publish credentials or raw payloads.
 
 ## Identifying Which Scanner Triggered
 
@@ -41,7 +44,6 @@ Pipelock does not have a raw "dump the secret back to me" verbose mode. That wou
 
 Use these instead:
 
-- `mode: audit` or `enforce: false` to let traffic through while logging what would have triggered.
 - Normal logs to see the `scanner`, `rule`/`pattern`, request ID, and verdict.
 - The flight recorder to preserve a tamper-evident decision trail with redacted detail.
 
@@ -95,7 +97,7 @@ dlp:
       severity: "high"
 ```
 
-There is no top-level `dlp.action`. If you want DLP to stop blocking while you tune rules, use audit mode. If you want transport-level redaction, configure the specific surface that supports it, such as `request_body_scanning.action`.
+There is no top-level `dlp.action`. Prefer a correction scoped to the matched pattern and destination. If you want transport-level redaction, configure the specific surface that supports it, such as `request_body_scanning.action`.
 
 ### Per-pattern domain exemptions
 
@@ -181,7 +183,7 @@ Suppressions apply per normalization pass to configurable patterns, so a suppres
 ```yaml
 response_scanning:
   enabled: true
-  action: warn
+  action: block
   exempt_domains:
     - "docs.vendor.example"
     - "*.docs.vendor.example"
@@ -189,7 +191,7 @@ response_scanning:
 
 With `response_scanning.enabled: false`, only the immutable core response floor scans responses; the configurable layer is off. `exempt_domains` still applies to that core floor: a core finding on a listed host is downgraded to `warn` and forwarded rather than blocked, so the list is not dormant. Remove the host if the core floor should still block there. If a host cannot be intercepted at all, for example because of certificate pinning, prefer `tls_interception.passthrough_domains` instead. See [configuration.md](configuration.md) for the full response-scanning reference.
 
-Switching from `block` to `warn` for response scanning gives visibility without interrupting the agent. This is useful during initial deployment when you're learning what your agent fetches.
+Changing the whole response scanner to `warn` lets configurable injection findings through on every destination. Reserve that for a deliberate isolated audit trial; use the scoped correction above for an individual false positive and recheck both the legitimate response and a synthetic negative case.
 
 ## Rolling out a new DLP pattern safely
 
@@ -252,14 +254,22 @@ cross_request_detection:
 | Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Declare a `response_scanning.core_observe_exceptions` entry for that host and pattern, or fix pattern precision; `exempt_domains` is the whole-host fallback |
 | Hash-based object storage paths | entropy | (path entropy) | Add storage domain to `subdomain_entropy_exclusions` |
 
-## Transitioning from Audit to Enforcement
+## Deliberate Audit Rollouts
 
-1. Run audit mode for a full agent work session (at least a few hours of real usage)
+Audit mode is an explicit rollout choice for an isolated test environment with synthetic data and separately enforced egress controls. It weakens configurable blocking and is not the default recovery for a false positive. Immutable safety floors can still block; audit does not mean every request is allowed. Preserve the working policy and use a separate output file:
+
+```bash
+pipelock generate config --preset audit > pipelock-audit-trial.yaml
+```
+
+To transition a deliberate audit trial to enforcement:
+
+1. Run representative synthetic traffic in the isolated trial
 2. Review findings: `pipelock logs --file pipelock-audit.log --filter blocked`
 3. For each finding, decide: real threat or false positive?
 4. Add suppressions and exemptions for confirmed false positives
-5. Switch to balanced mode with `action: warn` on scanners you're less sure about
-6. After a week of clean warn-mode operation, switch to `action: block`
+5. Restore the intended enforcement policy and recheck each affected surface
+6. Confirm legitimate traffic succeeds and the relevant negative checks still block before using the policy outside the trial
 
 ## Reporting False Positives
 

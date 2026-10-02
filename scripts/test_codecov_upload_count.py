@@ -112,6 +112,15 @@ class UploadCountTest(unittest.TestCase):
             with self.assertRaisesRegex(TopologyError, "256"):
                 cells({"strategy": {"matrix": {"a": list(range(300))}}}, "limit")
 
+    def test_excluded_candidates_consume_validation_budget(self) -> None:
+        matrix = {"a": [0, 1, 2], "b": [0, 1, 2],
+                  "exclude": [{"a": n} for n in range(3)], "include": [{"a": 3}]}
+        with patch("check_codecov_upload_count.MAX_MATRIX_CANDIDATES", 9, create=True):
+            self.assertEqual(cells({"strategy": {"matrix": matrix}}, "budget"), [{"a": 3}])
+        with patch("check_codecov_upload_count.MAX_MATRIX_CANDIDATES", 8, create=True):
+            with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                cells({"strategy": {"matrix": matrix}}, "budget")
+
     def test_utf8_files_in_ascii_locale(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             workflow, codecov = Path(temp) / "ci.yaml", Path(temp) / "codecov.yml"

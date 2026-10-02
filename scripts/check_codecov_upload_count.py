@@ -17,6 +17,9 @@ ACTION = re.compile(r"^codecov/codecov-action@[^\s]+$", re.IGNORECASE)
 EXPRESSION = re.compile(r"\$\{\{")
 # GitHub Actions' documented maximum number of generated jobs per matrix.
 MAX_MATRIX_JOBS = 256
+# Local analysis budget, not a GitHub job limit. Permit substantial exclusion
+# filtering without letting the checker traverse an arbitrarily large product.
+MAX_MATRIX_CANDIDATES = MAX_MATRIX_JOBS ** 2
 
 
 class TopologyError(ValueError):
@@ -94,7 +97,12 @@ def cells(job: dict, label: str) -> list[dict]:
     # allowance, and an oversized matrix never becomes an unbounded list.
     result = []
     combinations = itertools.product(*axes.values()) if axes else ()
-    for values in combinations:
+    for examined, values in enumerate(combinations):
+        if examined == MAX_MATRIX_CANDIDATES:
+            raise TopologyError(
+                f"{label}.matrix exceeds validation work budget of {MAX_MATRIX_CANDIDATES} candidates; "
+                "simplify matrix axes or exclusions"
+            )
         cell = dict(zip(axes, values, strict=True))
         if any(all(cell[key] == value for key, value in entry.items()) for entry in matrix.get("exclude", [])):
             continue

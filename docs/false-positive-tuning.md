@@ -269,7 +269,7 @@ writes to stdout, so it does not create the log used below.
 To transition a deliberate audit trial to enforcement:
 
 1. Run representative synthetic traffic in the isolated trial
-2. Review findings: `pipelock logs --file pipelock-audit.log --filter blocked`
+2. Review all trial events: `pipelock logs --file pipelock-audit.log`. Include findings that audit mode allowed through, not only blocked events.
 3. For each finding, decide: real threat or false positive?
 4. Add suppressions and exemptions for confirmed false positives
 5. Restore the intended enforcement policy and recheck each affected surface

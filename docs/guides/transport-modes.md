@@ -297,7 +297,7 @@ Receipt emission is best-effort by default on the async flight-recorder channel 
 
 ### Intentional no-receipt and summarized cases
 
-The guarantee is "every configured enforcement event is provable," not "every frame produces a receipt." The matrix below is the canonical, single-source-of-truth list of when a signed action receipt is and is not emitted, including the deliberate no-receipt cases (clean streaming frames are summarized to avoid an O(n)-in-stream-length receipt flood that a chatty peer could weaponize as a denial-of-service vector). It is generated from and drift-checked against `TestReceiptCoverage_MatrixMatchesDocs` in `internal/proxy/receipt_coverage_matrix_test.go`; edit the matrix there and run `UPDATE_GOLDEN=1 go test ./internal/proxy/ -run TestReceiptCoverage_MatrixMatchesDocs` to regenerate this block.
+Receipt emission depends on the transport and enforcement path. CONNECT handshake-header DLP blocks are logged and counted without a signed receipt. The matrix below is the canonical, single-source-of-truth list of when a signed action receipt is and is not emitted, including summarized cases (clean streaming frames are summarized to avoid an O(n)-in-stream-length receipt flood that a chatty peer could weaponize as a denial-of-service vector). It is generated from and drift-checked against `TestReceiptCoverage_MatrixMatchesDocs` in `internal/proxy/receipt_coverage_matrix_test.go`; edit the matrix there and run `UPDATE_GOLDEN=1 go test ./internal/proxy/ -run TestReceiptCoverage_MatrixMatchesDocs` to regenerate this block.
 
 <!-- BEGIN receipt-coverage-matrix (generated; edit internal/proxy/receipt_coverage_matrix_test.go) -->
 

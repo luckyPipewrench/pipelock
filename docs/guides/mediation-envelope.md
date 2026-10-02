@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Mediation envelope
 
-When enabled, the mediation envelope adds sideband metadata to requests Pipelock forwards on [supported transports](../mediation-envelope.md#transport-coverage). It tells downstream services the verdict and action, the actor identity and trust level, and the receipt ID for correlation with the flight recorder. Blocked requests do not reach downstream services; use signed receipts to audit those decisions.
+When enabled, the mediation envelope adds sideband metadata to requests Pipelock forwards on [supported transports](../mediation-envelope.md#transport-coverage). It tells downstream services the verdict and action, the actor identity and trust level, and the receipt ID for correlation with the flight recorder. Blocked requests do not reach downstream services. Use signed receipts for the paths listed in [receipt coverage](transport-modes.md#signed-action-receipt-coverage); CONNECT handshake-header DLP blocks are logged and counted without a signed receipt.
 
 ## When to use
 
@@ -65,7 +65,7 @@ This example and the MCP example below use the same illustrative decision. The p
 Optional fields (`taint`, `task`, `auth`, `authr`, `reauth`) are omitted
 when they carry no value.
 
-The mediation envelope rides only on requests pipelock forwards downstream. Blocked requests do not reach the backend, so use signed receipts rather than headers to audit blocked decisions.
+The mediation envelope rides only on requests pipelock forwards downstream. Blocked requests do not reach the backend. Audit them through the signed receipts or logs identified in [receipt coverage](transport-modes.md#signed-action-receipt-coverage).
 
 ## MCP meta format
 

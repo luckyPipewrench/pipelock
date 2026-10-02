@@ -56,7 +56,10 @@ def uploads_coverage(step: dict, label: str) -> bool:
 def cells(job: dict, label: str) -> list[dict]:
     if "strategy" not in job:
         return [{}]
-    matrix = mapping(mapping(job["strategy"], f"{label}.strategy").get("matrix"), f"{label}.matrix")
+    strategy = mapping(job["strategy"], f"{label}.strategy")
+    if "matrix" not in strategy:
+        return [{}]
+    matrix = mapping(strategy["matrix"], f"{label}.matrix")
     axes = {key: value for key, value in matrix.items() if key not in ("include", "exclude")}
     for key, values in axes.items():
         if not isinstance(values, list) or not values:

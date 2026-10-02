@@ -51,6 +51,17 @@ class UploadCountTest(unittest.TestCase):
         self.workflow["jobs"]["single"]["steps"][0]["uses"] = ACTION.upper()
         self.assertEqual(upload_count(self.workflow), 6)
 
+    def test_strategy_without_matrix_is_one_run(self) -> None:
+        for strategy in ({}, {"fail-fast": False}, {"max-parallel": 1}):
+            with self.subTest(strategy=strategy):
+                self.workflow["jobs"]["single"]["strategy"] = strategy
+                self.assertEqual(upload_count(self.workflow), 6)
+        for matrix in (None, [], "invalid"):
+            with self.subTest(matrix=matrix):
+                self.workflow["jobs"]["single"]["strategy"] = {"matrix": matrix}
+                with self.assertRaises(TopologyError):
+                    upload_count(self.workflow)
+
     def test_dry_run_does_not_upload(self) -> None:
         step = self.workflow["jobs"]["first"]["steps"][0]
         for value in (True, "true"):

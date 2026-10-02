@@ -9,11 +9,57 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 type errCollector struct {
 	mu   sync.Mutex
 	errs []error
+}
+
+func TestLoader_StartWatch_RestartWaitsForCatchUp(t *testing.T) {
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.Root(), "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, err := loader.StartWatch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	loader.reloadMu.Lock()
+	returned := make(chan struct{})
+	var restartStop func()
+	var restartErr error
+	go func() {
+		restartStop, restartErr = loader.StartWatch(context.Background(), nil)
+		close(returned)
+	}()
+	var premature bool
+	select {
+	case <-returned:
+		premature = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	loader.reloadMu.Unlock()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart did not finish after catch-up was released")
+	}
+	if restartStop != nil {
+		restartStop()
+	}
+	if restartErr != nil {
+		t.Fatal(restartErr)
+	}
+	if premature {
+		t.Fatal("restarted watch reported ready before its catch-up reload completed")
+	}
 }
 
 func (c *errCollector) add(err error) {

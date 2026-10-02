@@ -371,7 +371,7 @@ func (l *Loader) acceptedChainReachesCurrent(state store.State, prev *ActiveSet,
 // return; spawn it in a goroutine if the caller wants background
 // behaviour.
 func (l *Loader) Watch(ctx context.Context) error {
-	return l.watch(ctx, nil)
+	return l.watch(ctx, nil, nil)
 }
 
 // reloadReporting runs Reload and hands a rejected reload to onError. The
@@ -383,7 +383,7 @@ func (l *Loader) reloadReporting(onError func(error)) {
 	}
 }
 
-func (l *Loader) watch(ctx context.Context, onError func(error)) error {
+func (l *Loader) watch(ctx context.Context, onError func(error), onReady func()) error {
 	if l == nil {
 		return errors.New("contract runtime: nil loader")
 	}
@@ -403,6 +403,9 @@ func (l *Loader) watch(ctx context.Context, onError func(error)) error {
 	// and never races the reload's store lock.
 	l.reloadReporting(onError)
 	l.readyOnce.Do(func() { close(l.ready) })
+	if onReady != nil {
+		onReady()
+	}
 
 	// debounce is reset on every relevant event. When it fires, a single
 	// Reload runs and debounce resets to nil so a quiescent loop does not
@@ -598,21 +601,13 @@ func (l *Loader) StartWatch(ctx context.Context, onError func(error)) (stop func
 	go func() {
 		defer close(done)
 		defer signalArmed()
-		werr := l.watch(wctx, onError)
+		werr := l.watch(wctx, onError, signalArmed)
 		if werr != nil {
 			errCh <- werr
 		}
 	}()
-	// ready is closed by the first Watch to arm; a loader reused across
-	// watchers has it closed already, so also race against the goroutine
-	// exiting and a bounded wait handled by the caller's ctx.
-	go func() {
-		select {
-		case <-l.ready:
-			signalArmed()
-		case <-done:
-		}
-	}()
+	// Each invocation must finish its own catch-up before reporting ready.
+	// The loader's legacy ready channel only describes its first watcher.
 	select {
 	case <-armed:
 	case <-ctx.Done():

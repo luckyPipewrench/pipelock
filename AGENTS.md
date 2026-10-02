@@ -134,7 +134,7 @@ Configured MCP upstream dialing uses the cloud metadata floor in `internal/mcp/u
 
 `internal/config/schema.go` is the authoritative list of top-level YAML fields and action constants. Config loads from YAML; hot reload uses fsnotify plus SIGHUP with atomic swaps of config, scanner, and session state. Kill switch runtime activation state persists across reloads.
 
-The kill switch controller in `internal/killswitch/killswitch.go` OR-composes six activation sources: config, API, remote kill, stale bundle, SIGUSR1, and sentinel file. Any active source denies traffic, subject to endpoint and IP exemptions in the controller.
+The kill switch controller in `internal/killswitch/killswitch.go` OR-composes seven activation sources: config, API, remote kill, stale bundle, uncertain Conductor apply, SIGUSR1, and sentinel file. Any active source denies traffic, subject to endpoint and IP exemptions in the controller; IP allowlist exemptions do not apply during uncertain Conductor apply.
 
 Emission is non-blocking for webhook output through an async buffer; syslog is synchronous UDP. Event severity is defined by event type, while configuration controls emission thresholds.
 

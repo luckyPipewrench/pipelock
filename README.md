@@ -254,7 +254,7 @@ For agents running uncensored or abliterated models, the [`hostile-model` preset
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
 | WebSocket proxy (frame scanning) | Yes | No | No | No |
 | MCP HTTP transport (Streamable HTTP) | Yes | No | No | No |
-| Emergency kill switch (6 sources) | Yes | No | No | No |
+| Emergency kill switch (7 sources) | Yes | No | No | No |
 | Tool call chain detection | Yes | No | No | No |
 | Process sandbox (no Docker) | Yes | No | No | Yes (kernel-level) |
 | Single binary, no runtime deps | Yes | No (Python) | No (npm) | No (kernel) |
@@ -372,7 +372,7 @@ pipelock contain run -- claude-code
 
 ### Operability
 
-- **Kill switch:** six independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, and stale-bundle detection. Any one active source blocks traffic, with endpoint and IP exemptions in the controller.
+- **Kill switch:** seven independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic, with endpoint and IP exemptions in the controller; IP allowlist exemptions do not apply during uncertain Conductor apply.
 - **Scan API:** programmatic scanning for `url`, `dlp`, `prompt_injection`, and `tool_call` verdicts with bearer token auth, per-token rate limiting, structured findings, and Prometheus metrics. See [docs/scan-api.md](docs/scan-api.md).
 - **Filesystem sentinel:** watches agent working directories for secrets written to disk and attributes writes to the MCP subprocess lineage on Linux. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
 - **Event emission:** forwards audit events to SIEMs, webhook receivers, syslog, CEF, OTLP, and metrics outputs without blocking the proxy hot path. See [docs/guides/siem-integration.md](docs/guides/siem-integration.md).
@@ -434,7 +434,7 @@ All detection, enforcement, containment, receipt verification, and the free sing
 |---|:--:|:--:|:--:|
 | Scanning and detection (ordered URL pipeline, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
 | MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners; configured upstreams allow local/private servers and still block cloud metadata) | Yes | Yes | Yes |
-| Containment, sandbox, host `contain`, 6-source kill switch | Yes | Yes | Yes |
+| Containment, sandbox, host `contain`, 7-source kill switch | Yes | Yes | Yes |
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |
 | Canary tokens, skill-scan, `explain`, single-instance Prometheus and Grafana | Yes | Yes | Yes |
 | Per-agent profiles: identity, budgets, config and scanner isolation, per-agent sandbox | No | Yes | Yes |
@@ -720,7 +720,7 @@ internal/
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
     integrity/         MCP binary/script integrity manifests and trust workflow
   discover/            IDE/agent config discovery (Claude Code, Cursor, VS Code, JetBrains)
-  killswitch/          Emergency deny-all (6 sources) + port-isolated API
+  killswitch/          Emergency deny-all (7 sources) + port-isolated API
   envelope/            Mediation envelope (RFC 8941) for sideband metadata
   media/               Image metadata stripping (JPEG/PNG byte-level surgery)
   normalize/           Text-normalization transforms (NFKC, invisible chars, leetspeak, whitespace, vowel-fold) for the scanner cascade

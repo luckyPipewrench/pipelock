@@ -1981,12 +1981,13 @@ See "Published agent services" in `contain-cli.md` for install, verification, an
 
 ## Kill Switch
 
-Emergency deny-all with six independent activation sources: `enabled`,
-`sentinel_file`, API, `SIGUSR1`, Conductor remote kill, and Conductor
-stale-bundle detection. Any one active denies normal traffic (OR-composed)
-except for configured exemptions (`health_exempt`, `metrics_exempt`,
-`api_exempt`, `allowlist_ips`). The two Conductor-driven sources are activated
-by the enterprise follower runtime. See [Kill Switch](../README.md#operability)
+Emergency deny-all with seven independent activation sources: `enabled`,
+`sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor
+stale-bundle detection, and uncertain Conductor apply. Any one active denies
+normal traffic (OR-composed) except for configured exemptions (`health_exempt`,
+`metrics_exempt`, `api_exempt`, `allowlist_ips`); `allowlist_ips` is not
+consulted during uncertain Conductor apply. The three Conductor-driven sources
+are activated by the enterprise follower runtime. See [Kill Switch](../README.md#operability)
 for operational details. Activation blocks every deferred (`action: defer`)
 tool call held on MCP stdio or the stdio-to-HTTP bridge that has not yet
 claimed its upstream send (`resolution_source: kill_switch`); a send already

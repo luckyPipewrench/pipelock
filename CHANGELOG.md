@@ -116,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The contained systemd service starts again.** `contain service-posture` runs its host-side checks from the host network namespace, where the managed nftables table is visible, so the documented `ExecStartPre` recipe works. `contain run` no longer requires a published listener before the agent that creates it has started. (#1759)
+- **The contained systemd service starts again.** `contain service-posture` runs its host-side checks from the host network namespace, where the managed nftables table is visible, so the documented `ExecStartPre` recipe works. `contain run` no longer requires a published listener before the agent that creates it has started. (#1759, #1770)
 - **An expired loopback or published service entry no longer takes the proxy down.** An expired `containment.loopback_services` or `containment.published_services` entry is dropped and reported at load, startup, reload, install and nft reconciliation instead of refusing the whole configuration. Other entries keep working, a malformed entry still rejects, and `contain verify` still fails and names the expired entry. Retiring a forwarder also stops the relay its socket started, and cleanup only touches units whose definitions match what Pipelock installed. (#1759)
 - **`contain doctor` checks the in-namespace forwarder services,** and doctor and verify give remedies that work when a unit is masked or a relay still holds the port. (#1759)
 - **A promoted Learn and Lock manifest applies live** in `pipelock mcp proxy` and `pipelock run` without a restart. A rejected promote keeps the last accepted contract and is logged. (#1759)

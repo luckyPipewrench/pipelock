@@ -258,7 +258,7 @@ func TestReloadDropsOnlyExpiredPublications(t *testing.T) {
 	var warned []string
 	two := publishedTestConfig +
 		"    - name: console\n      agent_port: 5901\n      operator_user: operator\n" +
-		"      owner: ops\n      reason: second\n      expires_at: \"2000-01-01T00:00:00Z\"\n"
+		"      owner: ops\n      reason: second\n      expires_at: \"" + expiredLoopbackTestStamp + "\"\n"
 	env := &nftReloadEnv{
 		configPath: "/etc/pipelock/pipelock.yaml",
 		readFile:   func(string) ([]byte, error) { return []byte(two), nil },

@@ -90,7 +90,7 @@ func TestParseContainmentLoopbackServicesPartitionsExpiry(t *testing.T) {
 func TestReloadNFTRulesKeepsUnexpiredSiblingOfExpiredLoopbackService(t *testing.T) {
 	t.Parallel()
 	persisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200), loopbackTestService(9201)})
-	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, "2099-01-01T00:00:00Z"), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
+	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, futureExpiryForTest), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, body, persisted)
 	var forwarded []config.ContainmentLoopbackService
 	fx.env.reconcileForwarders = func(_ context.Context, _ int, services []config.ContainmentLoopbackService) error {
@@ -119,7 +119,7 @@ func TestReloadNFTRulesKeepsUnexpiredSiblingOfExpiredLoopbackService(t *testing.
 func TestReloadNFTRulesStillDropsEveryForwarderOnMalformedSibling(t *testing.T) {
 	t.Parallel()
 	persisted := RenderNFTRulesWithLoopbackServices(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, []config.ContainmentLoopbackService{loopbackTestService(9200)})
-	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, "2099-01-01T00:00:00Z"), loopbackEntryYAML("localhost", 9201, "2099-01-01T00:00:00Z"))
+	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, futureExpiryForTest), loopbackEntryYAML("localhost", 9201, futureExpiryForTest))
 	fx := newNFTReloadTestFixture(t, nftReloadTestLiveWithOneService, body, persisted)
 	var forwarded []config.ContainmentLoopbackService
 	forwarders := func(_ context.Context, _ int, services []config.ContainmentLoopbackService) error {
@@ -144,7 +144,7 @@ func TestReloadNFTRulesStillDropsEveryForwarderOnMalformedSibling(t *testing.T) 
 // entry so it can be checked.
 func TestVerifyLoopbackDeclarationNamesExpiredEntryAndKeepsSibling(t *testing.T) {
 	t.Parallel()
-	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, "2099-01-01T00:00:00Z"), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
+	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, futureExpiryForTest), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
 	env := &probeEnv{
 		configPath: "/etc/pipelock/pipelock.yaml",
 		readFile:   func(string) ([]byte, error) { return []byte(body), nil },
@@ -186,7 +186,7 @@ func writeLoopbackProbeUnits(t *testing.T, env *probeEnv, service config.Contain
 // is the verify contract: probe 21 FAILS naming the expired entry, and the
 // unexpired sibling is still checked (a drifted sibling unit is reported too).
 func TestProbeAgentNetworkNamespaceFailsNamingExpiredEntryWhileCheckingSibling(t *testing.T) {
-	sibling := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200, Owner: "owner-9200", Reason: "local index", ExpiresAt: "2099-01-01T00:00:00Z"}
+	sibling := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200, Owner: "owner-9200", Reason: "local index", ExpiresAt: futureExpiryForTest}
 	body := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, sibling.ExpiresAt), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
 
 	setup := func(t *testing.T, withExpired bool) *probeEnv {
@@ -351,7 +351,7 @@ func TestRetiredLoopbackRelayIsStoppedSoThePortCanBeReAdded(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := func(port int) config.ContainmentLoopbackService {
-		return config.ContainmentLoopbackService{Host: "127.0.0.1", Port: port, Owner: "o", Reason: "r", ExpiresAt: "2099-01-01T00:00:00Z"}
+		return config.ContainmentLoopbackService{Host: "127.0.0.1", Port: port, Owner: "o", Reason: "r", ExpiresAt: futureExpiryForTest}
 	}
 	apply := func(services ...config.ContainmentLoopbackService) error {
 		_, err := stepInstallNetworkNamespaceWithServices(&services).apply(context.Background(), env)
@@ -401,7 +401,7 @@ func TestForeignActiveRelayIsStillRefused(t *testing.T) {
 	}
 	foreign := relayUnit(9300) + ".service"
 	systemd.active[foreign] = true
-	services := []config.ContainmentLoopbackService{{Host: "127.0.0.1", Port: 9300, Owner: "o", Reason: "r", ExpiresAt: "2099-01-01T00:00:00Z"}}
+	services := []config.ContainmentLoopbackService{{Host: "127.0.0.1", Port: 9300, Owner: "o", Reason: "r", ExpiresAt: futureExpiryForTest}}
 	_, err := stepInstallNetworkNamespaceWithServices(&services).apply(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "enable contained namespace socket") {
 		t.Fatalf("err = %v, want the refused socket enable to surface", err)
@@ -429,7 +429,7 @@ func TestInstallNamespaceStepDropsExpiredEntryAndWarns(t *testing.T) {
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	cfg := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, "2099-01-01T00:00:00Z"), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
+	cfg := loopbackConfigYAML(loopbackEntryYAML("127.0.0.1", 9200, futureExpiryForTest), loopbackEntryYAML("127.0.0.1", 9201, expiredLoopbackTestStamp))
 	if err := os.WriteFile(managedPipelockConfigPath(env), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

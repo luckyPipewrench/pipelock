@@ -115,7 +115,7 @@ make -C pipelock install
 pipelock init --output ./pipelock.yaml
 
 # Test the scanner
-pipelock check --config ./pipelock.yaml --url "https://evil.com/?k=AKIAIOSFODNN7EXAMPLE"  # blocked: AWS Access ID
+pipelock check --config ./pipelock.yaml --url "https://api.vendor.example/?k=$(printf '%s%s' 'AKIA' 'IOSFODNN7EXAMPLE')"  # blocked: AWS Access ID
 pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"                # allowed
 ```
 

@@ -238,6 +238,111 @@ func TestAssetEntropySubject(t *testing.T) {
 	}
 }
 
+func TestHyphenatedAssetHashSubject(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"SetupOrConfirmTwoFactor-266d61f1.js", "SetupOrConfirmTwoFactor"},
+		{"VerifyOTPPhoneInput-679899d2.js", "VerifyOTPPhoneInput"},
+		{"CallToAction.graphql-11a0e9d2.js", "CallToAction.graphql"},
+		{"useUkKycRegistrationDetailsQuery-f4204ab2.js", "useUkKycRegistrationDetailsQuery"},
+		{"SideNavToggleButton-22050139.js", "SideNavToggleButton"},
+		{"SetupGuideCompanySettingsIntroModal-d5049d95.js", "SetupGuideCompanySettingsIntroModal"},
+		{"withSetupExperienceProviders-d62a5893.js", "withSetupExperienceProviders"},
+		{"useShowUserBookingSchedule-11276b4c.js", "useShowUserBookingSchedule"},
+		{"styles-a1b2c3d4.css", "styles"},
+		{"module-a1b2c3d4.mjs", "module"},
+		{"font-a1b2c3d4.woff2", "font"},
+		{"module-a1b2c3d4.js.map", "module"},
+		{"bundle-a1b2c3d45.js", "bundle-a1b2c3d45.js"},
+		{"bundle-abcdefg1.js", "bundle-abcdefg1.js"},
+		{"bundle-.js", "bundle-.js"},
+		{"bundle-a1b2c3d4.JS", "bundle-a1b2c3d4.JS"},
+		{"bundle-a1b2c3d4.js.extra", "bundle-a1b2c3d4.js.extra"},
+		{"a1b2c3d4.js", "a1b2c3d4.js"},
+		{"-a1b2c3d4.js", "-a1b2c3d4.js"},
+		{"bundle-name.a1b2c3d4.js", "bundle-name"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := assetEntropySubject(tc.in); got != tc.want {
+				t.Fatalf("subject = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHyphenatedAssetHashURLScope(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	const asset = "SetupOrConfirmTwoFactor-266d61f1.js"
+	for _, tc := range []struct {
+		name, target string
+		allowed      bool
+	}{
+		{"asset", "https://app.vendor.example/assets/" + asset, true},
+		{"nested asset", "https://app.vendor.example/login?next=" + url.QueryEscape("https://cdn.vendor.example/assets/"+asset), true},
+		{"opaque stem", "https://app.vendor.example/assets/" + entropyTestMixed + "-266d61f1.js", false},
+		{"appended segment", "https://app.vendor.example/assets/" + asset + "/" + entropyTestMixed, false},
+		{"opaque query", "https://app.vendor.example/assets/" + asset + "?data=" + entropyTestMixed, false},
+		{"nested opaque stem", "https://app.vendor.example/login?next=" + url.QueryEscape("https://cdn.vendor.example/assets/"+entropyTestMixed+"-266d61f1.js"), false},
+		{"all hash", "https://app.vendor.example/assets/" + entropyTestMixed + ".js", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := s.Scan(t.Context(), tc.target)
+			if got.Allowed != tc.allowed {
+				t.Fatalf("allowed=%t; want %t; scanner=%s reason=%s", got.Allowed, tc.allowed, got.Scanner, got.Reason)
+			}
+		})
+	}
+}
+
+// A hyphenated asset name only changes what the entropy gate measures. DLP and
+// the literal-IP SSRF floor run on the full URL and must still refuse it, and
+// the refusal must come from that stage, not from entropy.
+func TestHyphenatedAssetHashKeepsDLPAndSSRF(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	secret := "gh" + "p_" + strings.Repeat("aB3dE", 7) + "x"
+	for _, tc := range []struct {
+		name, target, wantScanner string
+	}{
+		{"credential in stem", "https://cdn.vendor.example/assets/" + secret + "-266d61f1.js", ScannerCoreDLP},
+		{"credential in earlier segment", "https://cdn.vendor.example/" + secret + "/Chunk-266d61f1.js", ScannerCoreDLP},
+		{"metadata literal host", "http://169.254.169.254/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
+		{"private literal host", "http://10.0.0.5/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := s.Scan(t.Context(), tc.target)
+			if got.Allowed {
+				t.Fatalf("expected refusal for %s", tc.target)
+			}
+			if got.Scanner != tc.wantScanner {
+				t.Fatalf("refused by %s (%s); want %s", got.Scanner, got.Reason, tc.wantScanner)
+			}
+		})
+	}
+}
+
+func TestHyphenatedAssetURLs(t *testing.T) {
+	s := newProtocolEntropyScanner(t)
+	for _, name := range []string{
+		"SetupOrConfirmTwoFactor-266d61f1.js",
+		"VerifyOTPPhoneInput-679899d2.js",
+		"CallToAction.graphql-11a0e9d2.js",
+		"useUkKycRegistrationDetailsQuery-f4204ab2.js",
+		"SideNavToggleButton-22050139.js",
+		"SetupGuideCompanySettingsIntroModal-d5049d95.js",
+		"withSetupExperienceProviders-d62a5893.js",
+		"useShowUserBookingSchedule-11276b4c.js",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if entropy := payloadEntropy(name); entropy <= s.entropyThreshold {
+				t.Fatalf("fixture no longer exceeds whole-segment threshold: %f", entropy)
+			}
+			got := s.Scan(t.Context(), "https://cdn.vendor.example/assets/"+name)
+			if !got.Allowed {
+				t.Fatalf("asset refused by %s: %s", got.Scanner, got.Reason)
+			}
+		})
+	}
+}
+
 func TestPKCES256Declared(t *testing.T) {
 	for _, tc := range []struct {
 		methods []string

@@ -220,10 +220,10 @@ lets the runtime reject licenses (and revoked intermediate signing certificates)
 that have been pulled before their natural expiry.
 
 CRLs are **issued (signed) by the cluster license-service**, which owns the
-canonical revocation list. The CLI deliberately does **not** sign CRLs: a CRL is
-a whole-list snapshot with no monotonic generation number, so an offline signer
-that could mint a smaller list would be a revocation-rollback footgun. The CLI
-provides only the read side.
+canonical revocation list. The CLI deliberately does **not** sign CRLs: CLI
+issuance stays out because the license-service owns that canonical list, and a
+CRL generation number does not make it safe for an offline signer to issue an
+arbitrary subset of it. The CLI provides only the read side.
 
 ### `pipelock license crl inspect FILE`
 

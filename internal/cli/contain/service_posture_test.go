@@ -102,8 +102,11 @@ func TestServicePostureCmdRunsValidatedRequest(t *testing.T) {
 func TestRunContainServicePostureSignsWithoutLaunching(t *testing.T) {
 	probe := allPassEnv(t)
 	probe.readLink = func(path string) (string, error) {
-		if path == "/proc/self/ns/net" || path == "/proc/1/ns/net" {
+		switch path {
+		case "/proc/self/ns/net", "/proc/1/ns/net":
 			return "net:[1]", nil
+		case "/proc/self/ns/mnt", "/proc/1/ns/mnt":
+			return "mnt:[1]", nil
 		}
 		return "net:[2]", nil
 	}
@@ -346,6 +349,8 @@ func TestRunContainServicePostureHostHalfProbe3(t *testing.T) {
 					return tc.selfNS, nil
 				case "/proc/1/ns/net":
 					return "net:[1]", nil
+				case "/proc/self/ns/mnt", "/proc/1/ns/mnt":
+					return "mnt:[1]", nil
 				}
 				return "net:[2]", nil
 			}

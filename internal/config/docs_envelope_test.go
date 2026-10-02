@@ -87,9 +87,44 @@ func envelopeDocFence(t *testing.T, body, heading, language string) string {
 	if !ok {
 		t.Fatalf("missing %q code fence in %q", language, heading)
 	}
-	block, _, ok = strings.Cut(block, "\n```")
+	block, ok = closeEnvelopeDocFence(block)
 	if !ok {
 		t.Fatalf("unclosed code fence in %q", heading)
 	}
 	return block
+}
+
+// The opener above is exactly three backticks. A closing marker may be longer,
+// but cannot contain non-whitespace text after its backticks.
+func closeEnvelopeDocFence(block string) (string, bool) {
+	offset := 0
+	for _, line := range strings.Split(block, "\n") {
+		marker := strings.TrimRight(line, " \t")
+		if strings.HasPrefix(marker, "```") && strings.Trim(marker, "`") == "" {
+			return strings.TrimSuffix(block[:offset], "\n"), true
+		}
+		offset += len(line) + 1
+	}
+	return "", false
+}
+
+func TestCloseEnvelopeDocFence(t *testing.T) {
+	for _, tc := range []struct {
+		name, block, want string
+		ok                bool
+	}{
+		{"normal", "value\n```\nafter", "value", true},
+		{"longer", "value\n```` \t\nafter", "value", true},
+		{"text suffix", "value\n```ignored\nmore\n```", "value\n```ignored\nmore", true},
+		{"wrong character", "value\n~~~", "", false},
+		{"short marker", "value\n``", "", false},
+		{"no closing marker", "value\n```ignored", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := closeEnvelopeDocFence(tc.block)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("closeEnvelopeDocFence() = %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
 }

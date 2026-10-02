@@ -136,7 +136,8 @@ func isAssetHashSlot(token string) bool {
 
 // assetEntropySubject returns the part of a path segment the entropy gate
 // measures. For a static asset named <stem>.<hash>.<ext>, where <hash> is a
-// whole slot of at most eight characters, that is the stem alone. Every other
+// whole slot of at most eight characters, that is the stem alone. A hyphen
+// separator is also accepted for a bounded hexadecimal hash. Every other
 // segment, including an asset whose name is all hash, is measured whole.
 func assetEntropySubject(segment string) string {
 	rest := segment
@@ -155,10 +156,21 @@ func assetEntropySubject(segment string) string {
 		return segment
 	}
 	dot := strings.LastIndexByte(rest, '.')
-	if dot < 0 || !isAssetHashSlot(rest[dot+1:]) {
+	if dot >= 0 && isAssetHashSlot(rest[dot+1:]) {
+		return rest[:dot]
+	}
+	hyphen := strings.LastIndexByte(rest, '-')
+	if hyphen <= 0 || !isAssetHashSlot(rest[hyphen+1:]) {
 		return segment
 	}
-	return rest[:dot]
+	for _, c := range rest[hyphen+1:] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return segment
+		}
+	}
+	return rest[:hyphen]
 }
 
 // pathSegmentEntropy measures one path segment. It reports the entropy and

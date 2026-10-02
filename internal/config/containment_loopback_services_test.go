@@ -259,7 +259,7 @@ func TestContainmentLoopbackServicesEmptyYAMLShapesDecodeToNoDeclarations(t *tes
 			if len(cfg.Containment.LoopbackServices) != 0 {
 				t.Fatalf("decoded %+v, want no declared services", cfg.Containment.LoopbackServices)
 			}
-			if err := cfg.validateContainmentLoopbackServices(); err != nil {
+			if err := cfg.validateContainmentLoopbackServices(nil); err != nil {
 				t.Fatalf("an empty declaration must validate: %v", err)
 			}
 		})
@@ -280,7 +280,7 @@ func TestContainmentLoopbackServicesYAMLDecodesADeclaration(t *testing.T) {
 	if len(cfg.Containment.LoopbackServices) != 1 || cfg.Containment.LoopbackServices[0].Port != 9222 {
 		t.Fatalf("decoded %+v, want one entry on port 9222", cfg.Containment.LoopbackServices)
 	}
-	if err := cfg.validateContainmentLoopbackServices(); err != nil {
+	if err := cfg.validateContainmentLoopbackServices(nil); err != nil {
 		t.Fatalf("decoded declaration must validate: %v", err)
 	}
 }
@@ -316,7 +316,7 @@ func TestConfigValidateContainmentLoopbackServicesEmptyIsNoOp(t *testing.T) {
 	cfg := Defaults()
 	cfg.FetchProxy.Listen = "not-a-valid-listen-address"
 	cfg.Containment.LoopbackServices = nil
-	if err := cfg.validateContainmentLoopbackServices(); err != nil {
+	if err := cfg.validateContainmentLoopbackServices(nil); err != nil {
 		t.Fatalf("empty loopback_services must short-circuit before parsing fetch_proxy.listen: %v", err)
 	}
 }

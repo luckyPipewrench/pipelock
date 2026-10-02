@@ -218,14 +218,17 @@ func TestServer_ReloadRejectsInvalidLoopbackServiceCandidate(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "expired declaration",
+			// An expired entry is a lapsed grant and is dropped, not rejected
+			// (see TestServer_ReloadAppliesContainmentGrantPartition). Expiry
+			// must not hide a malformed sibling: a duplicate still rejects.
+			name: "expired duplicate of a live declaration",
 			mutate: func(c *config.Config) {
-				c.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
-					Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
-					ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
-				}}
+				c.Containment.LoopbackServices = []config.ContainmentLoopbackService{
+					{Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index", ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)},
+					{Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index", ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)},
+				}
 			},
-			wantErr: "expired",
+			wantErr: "duplicates",
 		},
 		{
 			name: "host that is not a loopback literal",
@@ -382,8 +385,8 @@ func TestServer_ReloadDoesNotPromiseReconciliationForARejectedCandidate(t *testi
 		t.Fatalf("load candidate: %v", loadErr)
 	}
 	rejected.Containment.LoopbackServices = []config.ContainmentLoopbackService{{
-		Host: "127.0.0.1", Port: 9200, Owner: "search-team", Reason: "local index",
-		ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+		Host: "10.20.0.20", Port: 9200, Owner: "search-team", Reason: "local index",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
 	}}
 	if err := s.Reload(rejected); err == nil {
 		t.Fatal("this test is vacuous unless the candidate is rejected")

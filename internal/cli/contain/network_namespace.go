@@ -266,6 +266,22 @@ UMask=0022
 }
 
 func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, string) {
+	decl := readVerifyLoopbackDeclaration(env, env.port)
+	status, detail := probeAgentNetworkNamespaceForServices(ctx, env, decl)
+	if !decl.lapsedOnly {
+		return status, detail
+	}
+	// An expired declaration is a lapsed grant: the unexpired entries were
+	// still checked above, but the probe cannot pass while the managed config
+	// carries an entry Pipelock had to drop.
+	lapsed := "containment.loopback_services cannot be honored: " + decl.problem
+	if status != statusPass {
+		return status, detail + "; also " + lapsed
+	}
+	return statusFail, lapsed
+}
+
+func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, decl verifyLoopbackDeclaration) (string, string) {
 	units := []struct {
 		path string
 		want string
@@ -287,9 +303,9 @@ func probeAgentNetworkNamespace(ctx context.Context, env *probeEnv) (string, str
 			return statusFail, fmt.Sprintf("contained network namespace unit %s does not match the managed definition; rerun `pipelock contain install`", unit.path)
 		}
 	}
-	services, problem, unusable := declaredContainmentLoopbackServicesForVerify(env, env.port)
-	if unusable {
-		return statusFail, "containment.loopback_services cannot be forwarded into the private namespace: " + problem
+	services := decl.services
+	if decl.unusable && !decl.lapsedOnly {
+		return statusFail, "containment.loopback_services cannot be forwarded into the private namespace: " + decl.problem
 	}
 	wantInventory, err := json.MarshalIndent(desiredLoopbackForwarders(services), "", "  ")
 	if err != nil {
@@ -388,12 +404,28 @@ func managedDoorwaySocketNames(proxySocketPath string, services []config.Contain
 // between connections; the socket is the continuously active doorway.
 func probeManagedDoorwaySockets(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) (string, string) {
 	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
-		if out, code, err := env.runCmd(ctx, "systemctl", "is-enabled", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlEnabled {
-			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); run `systemctl enable --now %s`", socket, oneLine(out), socket)
+		enabled, active, ok := doctorUnitState(ctx, env, socket)
+		if !ok {
+			return statusFail, fmt.Sprintf("managed doorway socket %s state could not be read", socket)
 		}
-		if out, code, err := env.runCmd(ctx, "systemctl", "is-active", socket); err != nil || code != 0 || strings.TrimSpace(out) != systemctlActive {
-			return statusFail, fmt.Sprintf("managed doorway socket %s is %s; run `systemctl reset-failed %s && systemctl start %s`", socket, oneLine(out), socket, socket)
+		if enabled == systemctlEnabled && active == systemctlActive {
+			continue
 		}
+		// Same remedy doctor gives: a masked unit needs unmasking and a
+		// still-running relay keeps the socket from listening.
+		relay := strings.TrimSuffix(socket, ".socket") + ".service"
+		relayActive := true
+		if _, relayState, relayOK := doctorUnitState(ctx, env, relay); relayOK {
+			relayActive = relayState == systemctlActive
+		}
+		remedy := "run `" + doorwaySocketRemedy(socket, relay, enabled, active, relayActive) + "`"
+		if enabled == systemctlNotFound {
+			remedy = doorwaySocketRemedy(socket, relay, enabled, active, relayActive)
+		}
+		if enabled != systemctlEnabled {
+			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); %s", socket, oneLine(enabled), remedy)
+		}
+		return statusFail, fmt.Sprintf("managed doorway socket %s is %s; %s", socket, oneLine(active), remedy)
 	}
 	return statusPass, "all managed doorway sockets are enabled and active"
 }
@@ -860,11 +892,17 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			if serviceOverride != nil {
 				services = append([]config.ContainmentLoopbackService(nil), (*serviceOverride)...)
 			} else {
-				var err error
-				services, err = declaredContainmentLoopbackServices(env, env.proxyPort)
+				var (
+					err    error
+					lapsed []config.LapsedContainmentGrant
+				)
+				services, lapsed, err = declaredContainmentLoopbackServicesWithLapsed(env, env.proxyPort)
 				if err != nil {
 					return false, err
 				}
+				warnLapsedContainmentGrants(func(message string) {
+					_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
+				}, managedPipelockConfigPath(env), lapsed)
 			}
 			warnUnavailableHostLoopbackServices(ctx, services, env.dialCtx, func(message string) {
 				_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
@@ -977,6 +1015,17 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", running); err != nil {
 						return true, fmt.Errorf("disable stale loopback forwarder %s: %w", running, err)
 					}
+				}
+				// The host relay is socket-activated: stopping its socket does
+				// not stop a relay it already started. Left running, it
+				// outlives the unit file removed below and keeps systemd from
+				// ever listening on the same socket again ("Socket service ...
+				// already active, refusing"), so re-declaring the port fails.
+				// Only a relay this install owns (named by the inventory or
+				// found as a managed unit file) is stopped here; a foreign
+				// active service is never touched.
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", unit+".service"); err != nil {
+					return true, fmt.Errorf("stop stale loopback forwarder relay %s.service: %w", unit, err)
 				}
 				for _, suffix := range []string{".socket", ".service", "-netns.service"} {
 					path := filepath.Join(unitDir, unit+suffix)
@@ -1240,7 +1289,9 @@ func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwa
 				}
 				for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
 					if base, ok := strings.CutSuffix(name, suffix); ok {
-						add(base)
+						if isManagedLoopbackUnitSet(env, unitDir, base) {
+							add(base)
+						}
 						break
 					}
 				}
@@ -1249,4 +1300,47 @@ func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwa
 	}
 	sort.Strings(out)
 	return out
+}
+
+// isManagedLoopbackUnitSet verifies directory-discovered units before cleanup.
+// A familiar name alone never authorizes stopping or removing operator units.
+func isManagedLoopbackUnitSet(env *installEnv, unitDir, base string) bool {
+	name, ok := strings.CutPrefix(base, loopbackUnitPrefix)
+	if !ok {
+		return false
+	}
+	family, portText, ok := strings.Cut(name, "-")
+	port, err := strconv.Atoi(portText)
+	if !ok || err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	service := config.ContainmentLoopbackService{Port: port}
+	switch family {
+	case "v4":
+		service.Host = "127.0.0.1"
+	case "v6":
+		service.Host = "::1"
+	default:
+		return false
+	}
+	if base != loopbackForwarderUnitBase(service.Host, port) {
+		return false
+	}
+	bodies := map[string]string{
+		".socket":        renderDeclaredLoopbackSocketUnit(env.agentUserName, service),
+		".service":       renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service),
+		"-netns.service": renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
+	}
+	found := false
+	for suffix, want := range bodies {
+		body, readErr := env.readFile(filepath.Join(unitDir, base+suffix))
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil || string(body) != want {
+			return false
+		}
+		found = true
+	}
+	return found
 }

@@ -187,6 +187,9 @@ type probeEnv struct {
 	// Empty preserves the ordinary plk-launch value used by contain run.
 	postureLauncher string
 	procRoot        string
+	// prelaunch marks a preflight that runs before the contained agent starts,
+	// so listeners the agent itself will create are pending rather than absent.
+	prelaunch bool
 
 	now func() time.Time
 
@@ -2506,6 +2509,22 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 // from a host that never declared a service, and failing the probe on it
 // would refuse every host without a managed config at this path.
 func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentLoopbackService, string, bool) {
+	decl := readVerifyLoopbackDeclaration(env, proxyPort)
+	return decl.services, decl.problem, decl.unusable
+}
+
+// verifyLoopbackDeclaration is what verify learned from the managed config's
+// containment.loopback_services. When lapsedOnly is set the only defect is one
+// or more expired entries: services holds the unexpired ones, which a probe
+// can still check, and the probe must still FAIL naming the expired entry.
+type verifyLoopbackDeclaration struct {
+	services   []config.ContainmentLoopbackService
+	problem    string
+	unusable   bool
+	lapsedOnly bool
+}
+
+func readVerifyLoopbackDeclaration(env *probeEnv, proxyPort int) verifyLoopbackDeclaration {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2514,15 +2533,33 @@ func declaredContainmentLoopbackServicesForVerify(env *probeEnv, proxyPort int) 
 			// than reporting no problem at all: an operator who expects a
 			// declared service reachable needs to know verify found no
 			// managed config to read it from.
-			return nil, fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath), false
+			return verifyLoopbackDeclaration{problem: fmt.Sprintf("no managed config was found at %s; containment.loopback_services cannot be honored until it exists", env.configPath)}
 		}
-		return nil, fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err), false
+		return verifyLoopbackDeclaration{problem: fmt.Sprintf("managed config %s could not be read (%v); treating the declared set as empty until it is readable again", env.configPath, err)}
 	}
-	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentLoopbackServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err), true
+		return verifyLoopbackDeclaration{problem: fmt.Sprintf("managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); treating the declared set as empty until it is fixed and containment is reconciled -- remove or re-approve the offending entry, then run the reconciliation command", env.configPath, err), unusable: true}
 	}
-	return declared, "", false
+	if len(lapsed) > 0 {
+		// An expired entry is a lapsed grant: the usable entries are still
+		// returned so a caller can check them, and the bool still reports an
+		// unusable declaration so the probe FAILS and names the expired one.
+		return verifyLoopbackDeclaration{services: declared, problem: lapsedLoopbackServicesProblem(env.configPath, lapsed), unusable: true, lapsedOnly: true}
+	}
+	return verifyLoopbackDeclaration{services: declared}
+}
+
+// lapsedLoopbackServicesProblem names every expired containment.loopback_services
+// entry for verify and doctor output. The unexpired entries are still
+// reconciled and checked; the FAIL stays until the expired entry is renewed or
+// removed from the managed config.
+func lapsedLoopbackServicesProblem(configPath string, lapsed []config.LapsedContainmentGrant) string {
+	names := make([]string, 0, len(lapsed))
+	for _, grant := range lapsed {
+		names = append(names, grant.Message)
+	}
+	return fmt.Sprintf("managed config %s declares expired containment.loopback_services (%s); the expired entry is dropped from the effective set and unexpired entries are still checked -- renew or remove it, then run the reconciliation command", configPath, strings.Join(names, "; "))
 }
 
 // containmentBypassDetailPrefix is the single wording for a definite agent-UID

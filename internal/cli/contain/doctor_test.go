@@ -113,7 +113,7 @@ func TestDoctorDoorwaySocketReaderConfigAvailability(t *testing.T) {
 				},
 				runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
 					calls++
-					if name != "systemctl" || len(args) != 2 || args[1] != "pipelock-agent-proxy.socket" {
+					if name != "systemctl" || len(args) != 2 || (args[1] != "pipelock-agent-proxy.socket" && args[1] != containedNamespaceForwarderUnit) {
 						t.Fatalf("unexpected socket probe: %s %v", name, args)
 					}
 					if args[0] == "is-enabled" {
@@ -131,7 +131,7 @@ func TestDoctorDoorwaySocketReaderConfigAvailability(t *testing.T) {
 			if result.status != tc.wantStatus || !strings.Contains(result.detail, tc.wantDetail) {
 				t.Fatalf("result = (%q, %q), want %q containing %q", result.status, result.detail, tc.wantStatus, tc.wantDetail)
 			}
-			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 2 {
+			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 4 {
 				t.Fatalf("socket probe calls = %d for %s", calls, tc.name)
 			}
 		})

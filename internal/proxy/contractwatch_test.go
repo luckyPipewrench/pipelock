@@ -196,3 +196,31 @@ func TestProxyContractWatcher_LogContractWatchErrorHandlesNilLogger(t *testing.T
 	p.logger = nil
 	p.logContractWatchError(os.ErrInvalid)
 }
+
+// A watcher that fails to start must not mark its loader as watched: the next
+// sync retries instead of leaving promotions unobserved until a reload.
+func TestProxyContractWatcher_FailedStartIsRetried(t *testing.T) {
+	h := newContractWatchHarness(t)
+	p := newTestProxyWithConfig(t, h.cfg)
+	if !p.Reload(h.cfg, scanner.MustNew(h.cfg)) {
+		t.Fatal("reload failed")
+	}
+	moved := h.storeDir + ".moved"
+	if err := os.Rename(h.storeDir, moved); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p.startContractWatcher(ctx)
+	if got := p.contractWatch.active.Load(); got != 0 {
+		t.Fatalf("active watchers = %d with the store missing, want 0", got)
+	}
+	if err := os.Rename(moved, h.storeDir); err != nil {
+		t.Fatal(err)
+	}
+	p.syncContractWatcher()
+	if got := p.contractWatch.active.Load(); got != 1 {
+		t.Fatalf("active watchers after retry = %d, want 1", got)
+	}
+	t.Cleanup(p.stopContractWatcher)
+}

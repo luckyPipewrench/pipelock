@@ -260,3 +260,33 @@ func TestLoader_StartWatch_StoreRemovalIsReportedAndKeepsContract(t *testing.T) 
 		t.Fatal("watcher loss dropped the last accepted contract")
 	}
 }
+
+// A caller that gives up before the watch finishes its catch-up must get an
+// error, never a stop function for a watcher that is not running.
+func TestLoader_StartWatch_CancelBeforeArmedReturnsError(t *testing.T) {
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.Root(), "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	loader.reloadMu.Lock()
+	returned := make(chan error, 1)
+	go func() {
+		_, startErr := loader.StartWatch(ctx, nil)
+		returned <- startErr
+	}()
+	cancel()
+	loader.reloadMu.Unlock()
+	select {
+	case startErr := <-returned:
+		if startErr == nil {
+			t.Fatal("StartWatch reported success after its context was cancelled before the watch armed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartWatch did not return after cancellation")
+	}
+}

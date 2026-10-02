@@ -207,6 +207,9 @@ func (p *Proxy) syncContractWatcher() {
 	stop, err := loader.StartWatch(st.ctx, p.logContractWatchError)
 	if err != nil {
 		p.logContractWatchError(fmt.Errorf("active manifest watcher not running, keeping last accepted contract: %w", err))
+		// Forget the loader so the next sync (start or reload) retries the
+		// watch instead of treating this loader as already watched.
+		st.loader = nil
 		return
 	}
 	st.started.Add(1)

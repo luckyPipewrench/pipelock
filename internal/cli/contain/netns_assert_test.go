@@ -190,11 +190,11 @@ func TestHostNamespaceCommandArgs(t *testing.T) {
 	}
 }
 
-func TestRunInHostNetworkNamespaceMissingNsenter(t *testing.T) {
+func TestRunInHostNetworkNamespaceFailsForUnprivilegedCaller(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can join namespaces; the failure path needs an unprivileged caller")
 	}
 	if err := runInHostNetworkNamespace(context.Background(), io.Discard, io.Discard, []string{"version"}); err == nil {
-		t.Fatal("expected failure without nsenter")
+		t.Fatal("expected the host-namespace re-exec to fail for an unprivileged caller")
 	}
 }

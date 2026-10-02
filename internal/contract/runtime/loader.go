@@ -611,6 +611,16 @@ func (l *Loader) StartWatch(ctx context.Context, onError func(error)) (stop func
 	select {
 	case <-armed:
 	case <-ctx.Done():
+		// The caller gave up before the watch armed: never report a
+		// watcher that did not finish its catch-up as running.
+		cancel()
+		<-done
+		select {
+		case werr := <-errCh:
+			return func() {}, werr
+		default:
+		}
+		return func() {}, ctx.Err()
 	}
 	select {
 	case werr := <-errCh:

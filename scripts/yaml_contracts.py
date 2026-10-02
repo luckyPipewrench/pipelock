@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Load validation inputs without silently accepting duplicate mapping keys."""
 
+import re
 import sys
 
 try:
@@ -29,3 +30,36 @@ class UniqueKeyLoader(yaml.SafeLoader):
                     raise ValueError(f"duplicate YAML key: {key}")
                 keys.add(key)
         super().flatten_mapping(node)
+
+
+class WorkflowLoader(UniqueKeyLoader):
+    """Resolve plain scalars using the YAML 1.2 core schema used by workflows."""
+
+    # YAML 1.2.2 section 10.3.2 defines these scalar spellings.
+    integer = re.compile(r"(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)\Z")
+    floating = re.compile(r"(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))\Z")
+
+    def resolve(self, kind, value, implicit):
+        if kind is yaml.ScalarNode and implicit[0]:
+            tag = "str"
+            if value in ("", "~", "null", "Null", "NULL"):
+                tag = "null"
+            elif value in ("true", "True", "TRUE", "false", "False", "FALSE"):
+                tag = "bool"
+            elif self.integer.fullmatch(value):
+                tag = "int"
+            elif self.floating.fullmatch(value):
+                tag = "float"
+            elif value == "<<":
+                tag = "merge"
+            return "tag:yaml.org,2002:" + tag
+        return super().resolve(kind, value, implicit)
+
+    def construct_core_int(self, node):
+        value = self.construct_scalar(node)
+        if not self.integer.fullmatch(value):
+            raise ValueError("unsupported workflow integer spelling")
+        return int(value, 8 if value.startswith("0o") else 16 if value.startswith("0x") else 10)
+
+
+WorkflowLoader.add_constructor("tag:yaml.org,2002:int", WorkflowLoader.construct_core_int)

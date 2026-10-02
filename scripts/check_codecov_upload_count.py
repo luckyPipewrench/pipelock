@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from yaml_contracts import UniqueKeyLoader, yaml
+from yaml_contracts import UniqueKeyLoader, WorkflowLoader, yaml
 
 
 ACTION = re.compile(r"^codecov/codecov-action@[^\s]+$", re.IGNORECASE)
@@ -67,6 +67,8 @@ class MatrixBudget:
                 return False
             else:
                 self.spend(scalar_cost(left) + scalar_cost(right))
+                if isinstance(left, (int, float)) and isinstance(right, (int, float)) and isinstance(left, bool) != isinstance(right, bool):
+                    raise TopologyError("mixed boolean/number matrix matching is unsupported; use consistent value types")
                 if left != right:
                     return False
         return True
@@ -242,7 +244,7 @@ def upload_count(workflow: dict) -> int:
 
 def check(workflow_path: Path, codecov_path: Path) -> tuple[int, int]:
     try:
-        workflow = mapping(yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader), "workflow")
+        workflow = mapping(yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=WorkflowLoader), "workflow")
         codecov = mapping(yaml.load(codecov_path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader), "codecov config")
     except (OSError, ValueError, TypeError, yaml.YAMLError) as error:
         raise TopologyError(str(error)) from error

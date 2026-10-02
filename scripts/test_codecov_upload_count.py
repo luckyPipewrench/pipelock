@@ -51,6 +51,33 @@ class UploadCountTest(unittest.TestCase):
         self.workflow["jobs"]["single"]["steps"][0]["if"] = False
         self.assertEqual(upload_count(self.workflow), 3)
 
+    def test_boolean_numeric_matching_is_explicitly_unsupported(self) -> None:
+        for operation in ("include", "exclude"):
+            for left, right in ((False, 0), (True, 1), (0, False), (1.0, True)):
+                for nested in (False, True):
+                    a = {"value": left} if nested else left
+                    b = {"value": right} if nested else right
+                    matrix = {"a": [a], operation: [{"a": b}]}
+                    with self.subTest(operation=operation, left=left, nested=nested):
+                        with self.assertRaisesRegex(TopologyError, "mixed boolean/number"):
+                            cells({"strategy": {"matrix": matrix}}, "mixed")
+        self.assertTrue(MatrixBudget("bool").equal(True, True))
+        self.assertFalse(MatrixBudget("bool").equal(True, False))
+        self.assertTrue(MatrixBudget("numeric").equal(1, 1.0))
+
+    def test_workflow_matrix_preserves_core_string_values(self) -> None:
+        from yaml_contracts import WorkflowLoader
+        workflow = yaml.load("""jobs:
+  upload:
+    strategy:
+      matrix:
+        flag: [on, true]
+        exclude: [{flag: true}]
+    steps:
+      - uses: codecov/codecov-action@0123456789abcdef
+""", Loader=WorkflowLoader)
+        self.assertEqual(upload_count(workflow), 1)
+
     def test_dependency_reachability(self) -> None:
         jobs = self.workflow["jobs"]
         jobs["single"]["needs"] = "prepare"
@@ -293,7 +320,7 @@ class UploadCountTest(unittest.TestCase):
         self.assertEqual(expected, actual)
 
     def test_go126_variants_upload_their_own_profiles(self) -> None:
-        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())["jobs"]
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))["jobs"]
         for variant, profile in (("oss", "coverage-oss-"), ("enterprise", "coverage-")):
             with self.subTest(variant=variant):
                 steps = jobs[f"test-{variant}-go126"]["steps"]

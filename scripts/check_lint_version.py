@@ -27,7 +27,7 @@ def workflow_pin(path):
                 continue
             action = step.get("uses", "")
             if isinstance(action, str) and re.fullmatch(
-                r"golangci/golangci-lint-action@[^\s]+", action
+                r"golangci/golangci-lint-action@[^\s]+", action, re.IGNORECASE
             ):
                 settings = step.get("with")
                 pin = settings.get("version") if isinstance(settings, dict) else None

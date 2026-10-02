@@ -11,19 +11,21 @@ except ImportError:
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
-    pass
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.validated_mappings = set()
 
-
-def construct_mapping(loader, node):
-    result = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node)
-        if key in result:
-            raise ValueError(f"duplicate YAML key: {key}")
-        result[key] = loader.construct_object(value_node)
-    return result
-
-
-UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_mapping
-)
+    def flatten_mapping(self, node):
+        # Validate the original keys before SafeLoader expands merges. Merged
+        # defaults may overlap each other or be overridden by explicit keys.
+        if node not in self.validated_mappings:
+            self.validated_mappings.add(node)
+            keys = set()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue
+                key = self.construct_object(key_node)
+                if key in keys:
+                    raise ValueError(f"duplicate YAML key: {key}")
+                keys.add(key)
+        super().flatten_mapping(node)

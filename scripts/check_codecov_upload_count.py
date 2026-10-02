@@ -13,7 +13,7 @@ from pathlib import Path
 from yaml_contracts import UniqueKeyLoader, yaml
 
 
-ACTION = re.compile(r"^codecov/codecov-action@[^\s]+$")
+ACTION = re.compile(r"^codecov/codecov-action@[^\s]+$", re.IGNORECASE)
 EXPRESSION = re.compile(r"\$\{\{")
 
 
@@ -38,6 +38,19 @@ def enabled(value: object, label: str) -> bool:
 def static(value: object, label: str) -> None:
     if isinstance(value, (dict, list)) or EXPRESSION.search(str(value)):
         raise TopologyError(f"{label} has a dynamic or nested value")
+
+
+def uploads_coverage(step: dict, label: str) -> bool:
+    settings = mapping(step.get("with", {}), f"{label}.with")
+    dry_run = settings.get("dry_run", False)
+    if dry_run is True or dry_run == "true":
+        return False
+    if dry_run is not False and dry_run != "false":
+        raise TopologyError(f"{label}.dry_run must be a static boolean")
+    for key, default in (("run_command", "upload-coverage"), ("report_type", "coverage")):
+        if settings.get(key, default) != default:
+            raise TopologyError(f"{label}.{key} has an unsupported upload mode")
+    return True
 
 
 def cells(job: dict, label: str) -> list[dict]:
@@ -96,7 +109,7 @@ def upload_count(workflow: dict) -> int:
             continue
         expansion = cells(job, f"job {name}")
         for step in uploads:
-            if enabled(step.get("if"), f"job {name} upload step"):
+            if enabled(step.get("if"), f"job {name} upload step") and uploads_coverage(step, f"job {name} upload step"):
                 count += len(expansion)
     if count == 0:
         raise TopologyError("workflow has no reachable Codecov uploads")

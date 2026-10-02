@@ -63,6 +63,7 @@ class LintVersionContract(unittest.TestCase):
         with: {version: v1.64.8}
 """
         self.assertEqual(self.run_check(workflow).returncode, 0)
+        self.assertEqual(self.run_check(workflow.replace("golangci/golangci-lint-action", "GolangCI/GolangCI-Lint-Action")).returncode, 0)
         self.assertNotEqual(self.run_check(workflow, "1.64.7").returncode, 0)
         self.assertNotEqual(self.run_check(workflow, "1.64.8-dev").returncode, 0)
         self.assertNotEqual(self.run_check(workflow, "unknown").returncode, 0)

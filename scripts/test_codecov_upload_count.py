@@ -47,6 +47,31 @@ class UploadCountTest(unittest.TestCase):
         self.workflow["jobs"]["single"]["steps"][0]["if"] = False
         self.assertEqual(upload_count(self.workflow), 3)
 
+    def test_action_name_case(self) -> None:
+        self.workflow["jobs"]["single"]["steps"][0]["uses"] = ACTION.upper()
+        self.assertEqual(upload_count(self.workflow), 6)
+
+    def test_dry_run_does_not_upload(self) -> None:
+        step = self.workflow["jobs"]["first"]["steps"][0]
+        for value in (True, "true"):
+            step["with"] = {"dry_run": value}
+            self.assertEqual(upload_count(self.workflow), 4)
+        for value in (False, "false"):
+            step["with"] = {"dry_run": value}
+            self.assertEqual(upload_count(self.workflow), 6)
+
+    def test_unsupported_upload_modes_fail(self) -> None:
+        step = self.workflow["jobs"]["single"]["steps"][0]
+        for settings in (
+            {"dry_run": "${{ inputs.dry_run }}"}, {"dry_run": "maybe"},
+            {"run_command": "send-notifications"}, {"run_command": "empty-upload"},
+            {"report_type": "test_results"}, "malformed",
+        ):
+            with self.subTest(settings=settings):
+                step["with"] = settings
+                with self.assertRaises(TopologyError):
+                    upload_count(self.workflow)
+
     def test_include_only_rows_remain_distinct(self) -> None:
         self.workflow["jobs"]["first"]["strategy"]["matrix"] = {
             "include": [{"shard": "a"}, {"shard": "b"}],

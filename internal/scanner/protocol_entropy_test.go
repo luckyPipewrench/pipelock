@@ -300,20 +300,20 @@ func TestHyphenatedAssetHashKeepsDLPAndSSRF(t *testing.T) {
 	s := newProtocolEntropyScanner(t)
 	secret := "gh" + "p_" + strings.Repeat("aB3dE", 7) + "x"
 	for _, tc := range []struct {
-		name, target, notScanner string
+		name, target, wantScanner string
 	}{
-		{"credential in stem", "https://cdn.vendor.example/assets/" + secret + "-266d61f1.js", ScannerEntropy},
-		{"credential in earlier segment", "https://cdn.vendor.example/" + secret + "/Chunk-266d61f1.js", ScannerEntropy},
-		{"metadata literal host", "http://169.254.169.254/assets/Chunk-266d61f1.js", ScannerEntropy},
-		{"private literal host", "http://10.0.0.5/assets/Chunk-266d61f1.js", ScannerEntropy},
+		{"credential in stem", "https://cdn.vendor.example/assets/" + secret + "-266d61f1.js", ScannerCoreDLP},
+		{"credential in earlier segment", "https://cdn.vendor.example/" + secret + "/Chunk-266d61f1.js", ScannerCoreDLP},
+		{"metadata literal host", "http://169.254.169.254/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
+		{"private literal host", "http://10.0.0.5/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := s.Scan(t.Context(), tc.target)
 			if got.Allowed {
 				t.Fatalf("expected refusal for %s", tc.target)
 			}
-			if got.Scanner == tc.notScanner {
-				t.Fatalf("refused by %s (%s); want a non-entropy stage", got.Scanner, got.Reason)
+			if got.Scanner != tc.wantScanner {
+				t.Fatalf("refused by %s (%s); want %s", got.Scanner, got.Reason, tc.wantScanner)
 			}
 		})
 	}

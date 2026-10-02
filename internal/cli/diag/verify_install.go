@@ -1086,7 +1086,7 @@ func writeVerifyReportFile(report VerifyReport, path string) error {
 
 func printVerifyTable(w io.Writer, report VerifyReport, color bool) {
 	_, _ = fmt.Fprintf(w, "pipelock verify-install %s\n\n", report.Version)
-	_, _ = fmt.Fprintf(w, "Config: %s\nScope: %s\n\n", report.ConfigFile, report.Scope)
+	_, _ = fmt.Fprintf(w, "Config: %q\nScope: %s\n\n", report.ConfigFile, report.Scope)
 
 	lastCat := ""
 	for _, c := range report.Checks {

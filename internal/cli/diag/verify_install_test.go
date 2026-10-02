@@ -1239,7 +1239,7 @@ func TestVerifyReportConfigAndScopeParity(t *testing.T) {
 	}
 	var out bytes.Buffer
 	printVerifyTable(&out, report, false)
-	if decoded.ConfigFile != path || !strings.Contains(out.String(), "Config: "+decoded.ConfigFile) {
+	if decoded.ConfigFile != path || !strings.Contains(out.String(), fmt.Sprintf("Config: %q", decoded.ConfigFile)) {
 		t.Fatalf("config provenance mismatch: %s", &out)
 	}
 	if !strings.Contains(decoded.Scope, "does not verify real client routing") || !strings.Contains(out.String(), decoded.Scope) {
@@ -1247,5 +1247,33 @@ func TestVerifyReportConfigAndScopeParity(t *testing.T) {
 	}
 	if strings.Contains(VerifyInstallCmd().Short, "protecting this agent") {
 		t.Fatal("short help claims current-agent protection")
+	}
+}
+
+func TestVerifyReportQuotesConfigPath(t *testing.T) {
+	for _, tc := range []struct{ name, path, want string }{
+		{"spaces", "policy name.yaml", `Config: "policy name.yaml"`},
+		{"quotes", `policy "name".yaml`, `Config: "policy \"name\".yaml"`},
+		{"newline", "policy\nname.yaml", `Config: "policy\nname.yaml"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := BuildVerifyReport(&VerifyEnv{RunCtx: "host"}, nil, tc.path)
+			var out bytes.Buffer
+			printVerifyTable(&out, report, false)
+			if !strings.Contains(out.String(), tc.want+"\nScope:") {
+				t.Fatalf("config path was not quoted on one line: %q", out.String())
+			}
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded VerifyReport
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if report.ConfigFile != tc.path || decoded.ConfigFile != tc.path {
+				t.Fatalf("report config path changed: %q, JSON %q", report.ConfigFile, decoded.ConfigFile)
+			}
+		})
 	}
 }

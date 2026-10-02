@@ -280,12 +280,12 @@ If your agent handles secrets and you need content-level DLP on HTTPS traffic, e
 
 ## Signed Action Receipt Coverage
 
-Every configured enforcement event produces a signed action receipt: every block, and — under `flight_recorder.require_receipts: true` — every allow on the per-request proxy and MCP decision paths (including A2A method allows). Clean frames of a long-lived stream are summarized rather than individually receipted; the deliberate exceptions are listed in [Intentional no-receipt and summarized cases](#intentional-no-receipt-and-summarized-cases) below. The table below enumerates which deny paths are covered on each transport. Every row has been exercised by a test in the signed-receipt-coverage suite.
+The table below lists deny paths covered by signed action receipts. Under `flight_recorder.require_receipts: true`, per-request proxy and MCP allow paths require receipts before forwarding (including A2A method allows). Coverage is not universal: CONNECT handshake-header DLP blocks are logged and counted but currently do not emit a signed block receipt. Clean frames of a long-lived stream are summarized rather than individually receipted; see [Intentional no-receipt and summarized cases](#intentional-no-receipt-and-summarized-cases) below.
 
 | Transport | Pre-forward blocks | Post-forward blocks | Transport-specific blocks | Receipt path |
 |-----------|-------------------|---------------------|---------------------------|--------------|
 | Fetch (`/fetch`) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, cross-request exfiltration | — | Direct emit to flight recorder |
-| CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist, CONNECT handshake-header DLP | — | Inner redirects are not visible | CONNECT decision receipts; no inner HTTPS content |
+| CONNECT (no TLS intercept) | URL scan, URL DLP, SSRF, blocklist | — | Inner redirects are not visible | CONNECT decision receipts; excludes handshake-header DLP blocks and inner HTTPS content |
 | CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts; required inner-request allows are durable before upstream |
 | Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
 | WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame **block** receipts + session close (clean frames summarized, not individually receipted) |

@@ -37,7 +37,9 @@ func checkGuideEnvelopeExamples(t *testing.T) {
 		if !ok {
 			t.Fatalf("example must begin with %s header", envelope.HeaderName)
 		}
-		header = strings.Join(strings.Fields(header), " ")
+		if strings.ContainsAny(header, "\r\n") {
+			t.Fatal("documented HTTP header must occupy one physical line")
+		}
 		got, err := envelope.Parse(header)
 		if err != nil {
 			t.Fatalf("parse documented header: %v", err)

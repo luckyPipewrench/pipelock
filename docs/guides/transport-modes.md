@@ -7,7 +7,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | Mode | Endpoint | Protocol | Content Inspection | Response Scanning | Best For |
 |------|----------|----------|-------------------|-------------------|----------|
 | Fetch | `/fetch?url=...` | HTTP | Full body | Injection detection | AI agents that need extracted text |
-| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients (no interception) |
+| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | CONNECT metadata and handshake headers; no encrypted content | None | Standard HTTPS clients (no interception) |
 | CONNECT + TLS interception | `HTTPS_PROXY` | HTTPS tunnel (MITM) | Full body + headers | Injection detection | Full DLP on HTTPS traffic |
 | Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | Injection detection (when enabled) | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
@@ -43,6 +43,8 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 
 **Scanning (without TLS interception):**
 - Ordered URL scan on the target hostname (before tunnel)
+- CONNECT handshake-header DLP when header scanning is enabled
+- Tunnel accounting and applicable metadata controls; see [TLS interception](tls-interception.md#what-is-enforced-when-interception-is-off)
 - No content inspection during the tunnel (encrypted bytes)
 - No response scanning
 
@@ -57,10 +59,10 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 
 **What the agent receives:** Without interception: raw HTTPS response from the origin server. With interception: response re-encrypted by pipelock after scanning.
 
-**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively. Enable TLS interception for full DLP and injection scanning. Without interception, only hostname-level protection applies.
+**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively. Enable TLS interception for full DLP and injection scanning. Without interception, controls use CONNECT metadata and tunnel accounting; the inner HTTPS content stays opaque.
 
 ```bash
-# Without TLS interception (hostname scanning only)
+# Without TLS interception (CONNECT metadata and tunnel controls)
 HTTPS_PROXY=http://localhost:8888 curl https://example.com
 
 # With TLS interception (full body/header DLP + response scanning)
@@ -246,14 +248,14 @@ Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.
 
 ### CONNECT Tunnels: With and Without TLS Interception
 
-Without TLS interception (`tls_interception.enabled: false`, the default), CONNECT tunnels are opaque encrypted bytes after the hostname scan. DLP cannot detect secrets in bodies or headers, and response injection scanning does not apply.
+Without TLS interception (`tls_interception.enabled: false`, the default), CONNECT tunnels carry opaque encrypted bytes after the handshake. DLP can inspect CONNECT handshake headers when header scanning is enabled, but cannot inspect the inner HTTPS headers or bodies. Response injection scanning does not apply to encrypted responses.
 
 With TLS interception enabled, pipelock performs a TLS MITM: it terminates TLS with the client (forged certificate), scans the decrypted traffic, then forwards to the upstream server over a separate TLS connection. This closes the body-blindness gap.
 
 **Without interception:**
 - DLP cannot detect secrets in HTTPS request/response bodies
 - Response injection scanning does not apply
-- Only destination-visible URL scanning applies; encrypted request and response content remains opaque
+- Controls can use CONNECT metadata, handshake headers, and tunnel accounting; encrypted request and response content remains opaque
 
 **With interception:**
 - Full request body DLP (JSON, form, multipart)
@@ -283,7 +285,7 @@ Every configured enforcement event produces a signed action receipt: every block
 | Transport | Pre-forward blocks | Post-forward blocks | Transport-specific blocks | Receipt path |
 |-----------|-------------------|---------------------|---------------------------|--------------|
 | Fetch (`/fetch`) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, cross-request exfiltration | — | Direct emit to flight recorder |
-| CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist | — | Redirect inside tunnel (not visible) | Hostname-only receipts |
+| CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist, CONNECT handshake-header DLP | — | Inner redirects are not visible | CONNECT decision receipts; no inner HTTPS content |
 | CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts; required inner-request allows are durable before upstream |
 | Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
 | WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame **block** receipts + session close (clean frames summarized, not individually receipted) |

@@ -311,6 +311,34 @@ func relayUnit(port int) string {
 	return loopbackForwarderUnitBase("127.0.0.1", port)
 }
 
+func TestRetirementPreservesForeignPrefixedUnit(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	systemd := newFakeSystemd()
+	env.runCmd = systemd.run
+	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
+	if err := os.MkdirAll(unitDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	foreign := relayUnit(9300) + ".service"
+	body := []byte("[Service]\nExecStart=/usr/bin/true\n")
+	path := filepath.Join(unitDir, foreign)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	systemd.active[foreign] = true
+	services := []config.ContainmentLoopbackService{}
+	if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if !systemd.active[foreign] {
+		t.Error("retirement stopped an unrecorded foreign relay")
+	}
+	got, err := os.ReadFile(filepath.Clean(path))
+	if err != nil || string(got) != string(body) {
+		t.Errorf("retirement changed the foreign unit: %q, %v", got, err)
+	}
+}
+
 // TestRetiredLoopbackRelayIsStoppedSoThePortCanBeReAdded is the regression
 // for the orphaned host relay: retiring a declaration must stop the relay
 // service its socket activated, or re-adding the port is refused by systemd.

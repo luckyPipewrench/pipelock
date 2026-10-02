@@ -1289,7 +1289,9 @@ func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwa
 				}
 				for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
 					if base, ok := strings.CutSuffix(name, suffix); ok {
-						add(base)
+						if isManagedLoopbackUnitSet(env, unitDir, base) {
+							add(base)
+						}
 						break
 					}
 				}
@@ -1298,4 +1300,47 @@ func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwa
 	}
 	sort.Strings(out)
 	return out
+}
+
+// isManagedLoopbackUnitSet verifies directory-discovered units before cleanup.
+// A familiar name alone never authorizes stopping or removing operator units.
+func isManagedLoopbackUnitSet(env *installEnv, unitDir, base string) bool {
+	name, ok := strings.CutPrefix(base, loopbackUnitPrefix)
+	if !ok {
+		return false
+	}
+	family, portText, ok := strings.Cut(name, "-")
+	port, err := strconv.Atoi(portText)
+	if !ok || err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	service := config.ContainmentLoopbackService{Port: port}
+	switch family {
+	case "v4":
+		service.Host = "127.0.0.1"
+	case "v6":
+		service.Host = "::1"
+	default:
+		return false
+	}
+	if base != loopbackForwarderUnitBase(service.Host, port) {
+		return false
+	}
+	bodies := map[string]string{
+		".socket":        renderDeclaredLoopbackSocketUnit(env.agentUserName, service),
+		".service":       renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service),
+		"-netns.service": renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
+	}
+	found := false
+	for suffix, want := range bodies {
+		body, readErr := env.readFile(filepath.Join(unitDir, base+suffix))
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil || string(body) != want {
+			return false
+		}
+		found = true
+	}
+	return found
 }

@@ -1156,8 +1156,11 @@ func TestDeclaredLoopbackOrphanListenerIsRetired(t *testing.T) {
 		t.Fatal(err)
 	}
 	orphan := loopbackForwarderUnitBase("127.0.0.1", 9222)
-	for _, suffix := range []string{"-netns.service", ".service"} {
-		body := "[Unit]\nRequires=" + orphan + ".socket\n[Service]\nExecStart=/bin/true\n"
+	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+	for suffix, body := range map[string]string{
+		"-netns.service": renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
+		".service":       renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service),
+	} {
 		if err := os.WriteFile(filepath.Join(unitDir, orphan+suffix), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}

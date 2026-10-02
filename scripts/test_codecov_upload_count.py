@@ -114,7 +114,7 @@ class UploadCountTest(unittest.TestCase):
 
     def test_nested_matching_consumes_validation_budget(self) -> None:
         matrices = [
-            ({"a": [0, 1], "exclude": [{"a": n} for n in range(2, 12)]}, 110),
+            ({"a": [0, 1], "exclude": [{"a": n} for n in range(2, 12)]}, 140),
             ({"a": [0, 1], "include": [{"flag": str(n)} for n in range(10)]}, 160),
         ]
         for matrix, limit in matrices:
@@ -147,6 +147,33 @@ class UploadCountTest(unittest.TestCase):
         with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 80):
             with self.assertRaisesRegex(TopologyError, "validation work budget"):
                 cells({"strategy": {"matrix": matrix}}, "budget")
+
+    def test_binary_values_consume_validation_and_comparison_budget(self) -> None:
+        value = yaml.safe_load('!!binary "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo="')
+        self.assertIsInstance(value, bytes)
+        job = {"strategy": {"matrix": {"a": [value]}}}
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 1000):
+            self.assertEqual(cells(job, "binary"), [{"a": value}])
+            self.assertTrue(MatrixBudget("binary").equal(value, bytes(bytearray(value))))
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 20):
+            with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                cells(job, "binary")
+            with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                MatrixBudget("binary").equal(value, bytes(bytearray(value)))
+
+    def test_other_yaml_value_types_fail_explicitly(self) -> None:
+        for source in ('!!set {a: null}', '2026-01-01', '!!binary "JHt7"'):
+            with self.subTest(source=source), self.assertRaises(TopologyError):
+                cells({"strategy": {"matrix": {"a": [yaml.safe_load(source)]}}}, "typed")
+
+    def test_integer_cost_scales_without_text_conversion(self) -> None:
+        value = 1 << 1000
+        job = {"strategy": {"matrix": {"a": [value]}}}
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 1000):
+            self.assertEqual(cells(job, "integer"), [{"a": value}])
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 20):
+            with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                cells(job, "integer")
 
     def test_utf8_files_in_ascii_locale(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

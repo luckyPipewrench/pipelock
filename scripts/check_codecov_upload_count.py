@@ -26,6 +26,16 @@ class TopologyError(ValueError):
     pass
 
 
+def scalar_cost(value: object) -> int:
+    if isinstance(value, (str, bytes)):
+        return len(value)
+    if isinstance(value, int):
+        return max(1, (value.bit_length() + 7) // 8)
+    if value is None or isinstance(value, float):
+        return 1
+    raise TopologyError("matrix has an unsupported scalar type")
+
+
 class MatrixBudget:
     def __init__(self, label: str) -> None:
         self.label = label
@@ -49,14 +59,14 @@ class MatrixBudget:
                     return False
                 self.spend(len(left))
                 for key, value in left.items():
-                    self.spend(len(key) if isinstance(key, str) else 1)
+                    self.spend(scalar_cost(key))
                     if key not in right:
                         return False
                     pending.append((value, right[key]))
             elif isinstance(left, dict) or isinstance(right, dict):
                 return False
             else:
-                self.spend(sum(len(value) for value in (left, right) if isinstance(value, str)))
+                self.spend(scalar_cost(left) + scalar_cost(right))
                 if left != right:
                     return False
         return True
@@ -89,8 +99,8 @@ def static(value: object, label: str, budget: MatrixBudget) -> None:
             for key, member in item.items():
                 pending.extend(((key, branch), (member, branch)))
         else:
-            budget.spend(len(item) if isinstance(item, str) else 1)
-            if isinstance(item, list) or EXPRESSION.search(str(item)):
+            budget.spend(scalar_cost(item))
+            if (isinstance(item, str) and EXPRESSION.search(item)) or (isinstance(item, bytes) and b"${{" in item):
                 raise TopologyError(f"{label} has a dynamic or unsupported list value")
 
 
@@ -146,7 +156,7 @@ def cells(job: dict, label: str) -> list[dict]:
     def matches(cell: dict, entry: dict, axes_only: bool = False) -> bool:
         budget.spend()
         for key, value in entry.items():
-            budget.spend(len(key) if isinstance(key, str) else 1)
+            budget.spend(scalar_cost(key))
             if axes_only and key not in axes:
                 continue
             if not budget.equal(cell.get(key), value):

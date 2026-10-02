@@ -256,7 +256,7 @@ cross_request_detection:
 
 ## Deliberate Audit Rollouts
 
-Audit mode is an explicit rollout choice for an isolated test environment with synthetic data and separately enforced egress controls. It weakens configurable blocking and is not the default recovery for a false positive. Immutable safety floors can still block; audit does not mean every request is allowed. Preserve the working policy and use a separate output file:
+Audit mode is an explicit rollout choice for an isolated test environment with synthetic data and separately enforced egress controls. It can forward requests containing detected credentials, including core URL/request-body DLP matches, and is not the default recovery for a false positive. SSRF, fail-closed transport checks, and adaptive escalation can still block; audit does not mean every request is allowed. Preserve the working policy and use a separate output file:
 
 ```bash
 pipelock generate config --preset audit > pipelock-audit-trial.yaml

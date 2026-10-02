@@ -239,9 +239,9 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, contents                              string
 		skipValidate, skipCanary, dryRun, wantError bool
-		jsonOutput, wantLoadError                   bool
+		jsonOutput, wantLoadError, wantCanaryBlock  bool
 	}{
-		{name: "retained strict blocks before DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n", wantError: true},
+		{name: "retained strict blocks before DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n", wantError: true, wantCanaryBlock: true},
 		{name: "malformed", contents: "mode: [", wantError: true, wantLoadError: true},
 		{name: "malformed JSON", contents: "mode: [", wantError: true, wantLoadError: true, jsonOutput: true},
 		{name: "malformed canary only", contents: "mode: [", skipValidate: true, wantError: true, wantLoadError: true},
@@ -274,7 +274,7 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 					t.Fatalf("expected only file-repair guidance after load failure: %s", &out)
 				}
 			}
-			if tc.name == "retained strict blocks before DLP" {
+			if tc.wantCanaryBlock {
 				var exitErr *cliutil.ExitError
 				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "allowlist"`) {
 					t.Fatalf("expected allowlist-stage canary failure, got %v", err)

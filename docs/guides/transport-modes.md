@@ -309,7 +309,7 @@ The guarantee is "every configured enforcement event is provable," not "every fr
 | A2A method block | yes | Block receipt with the A2A method name as `target`. |
 | A2A method allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
 | A2A method allow, default | no | Allow receipts are opt-in via `require_receipts`. |
-| Proxy block (fetch / CONNECT / forward / WS handshake) | yes | Pre- or post-forward block receipt. |
+| Proxy block (fetch / CONNECT / forward / WS handshake) | yes | Pre- or post-forward block receipt, except CONNECT handshake-header DLP blocks (logged and counted only). |
 | Proxy allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
 | Clean WebSocket frame | no (intentional) | Per-frame allow receipts are O(n) in stream length; summarized, not emitted, to avoid a receipt-flood denial-of-service vector. |
 | Clean SSE / streamed response chunk | no (intentional) | Streamed response chunks are summarized, not receipted per chunk. |

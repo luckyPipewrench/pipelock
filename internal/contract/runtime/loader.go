@@ -396,12 +396,13 @@ func (l *Loader) watch(ctx context.Context, onError func(error)) error {
 	if err := watcher.Add(l.storeDir); err != nil {
 		return fmt.Errorf("contract runtime: watch %s: %w", l.storeDir, err)
 	}
-	l.readyOnce.Do(func() { close(l.ready) })
-
 	// Close the gap between the loader's construction-time read and the
 	// watch being armed: a promote that landed in between produced no event
-	// this watcher can see. Same-hash reloads are no-ops.
+	// this watcher can see. Same-hash reloads are no-ops. This runs before
+	// ready closes so a caller that waits for ready sees the caught-up set
+	// and never races the reload's store lock.
 	l.reloadReporting(onError)
+	l.readyOnce.Do(func() { close(l.ready) })
 
 	// debounce is reset on every relevant event. When it fires, a single
 	// Reload runs and debounce resets to nil so a quiescent loop does not

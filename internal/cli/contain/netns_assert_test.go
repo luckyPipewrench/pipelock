@@ -150,6 +150,22 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 				return self, selfErr
 			case "/proc/1/ns/net":
 				return host, hostErr
+			case "/proc/self/ns/mnt", "/proc/1/ns/mnt":
+				return "mnt:[1]", nil
+			}
+			return "", os.ErrNotExist
+		}
+	}
+	// mountLink is a host network namespace with the given mount identities.
+	mountLink := func(self, host string, selfErr, hostErr error) func(string) (string, error) {
+		return func(path string) (string, error) {
+			switch path {
+			case "/proc/self/ns/net", "/proc/1/ns/net":
+				return "net:[1]", nil
+			case "/proc/self/ns/mnt":
+				return self, selfErr
+			case "/proc/1/ns/mnt":
+				return host, hostErr
 			}
 			return "", os.ErrNotExist
 		}
@@ -165,6 +181,11 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 		{"unreadable self refused", link("", "net:[1]", os.ErrPermission, nil), "read own network namespace"},
 		{"unreadable host refused", link("net:[1]", "", nil, os.ErrPermission), "read host network namespace"},
 		{"missing reader refused", nil, "unavailable"},
+		// A unit that joins the agent namespace shares its private /tmp: host
+		// network alone is not enough for host-side probes.
+		{"agent mount namespace refused", mountLink("mnt:[2]", "mnt:[1]", nil, nil), "not the host mount namespace"},
+		{"unreadable mount namespace refused", mountLink("", "mnt:[1]", os.ErrPermission, nil), "read own mount namespace"},
+		{"unreadable host mount namespace refused", mountLink("mnt:[1]", "", nil, os.ErrPermission), "read host mount namespace"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,7 +205,7 @@ func TestRequireHostNetworkNamespace(t *testing.T) {
 
 func TestHostNamespaceCommandArgs(t *testing.T) {
 	got := strings.Join(hostNamespaceCommandArgs("/usr/local/bin/pipelock", []string{"contain", "service-posture", "--", "tool"}), " ")
-	want := "--net=/proc/1/ns/net -- /usr/local/bin/pipelock contain service-posture -- tool"
+	want := "--net=/proc/1/ns/net --mount=/proc/1/ns/mnt -- /usr/local/bin/pipelock contain service-posture -- tool"
 	if got != want {
 		t.Fatalf("args = %q, want %q", got, want)
 	}

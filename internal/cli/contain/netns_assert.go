@@ -165,36 +165,45 @@ func directContainedProxyHealth(ctx context.Context, port int) error {
 const (
 	selfNetworkNamespacePath = "/proc/self/ns/net"
 	hostNetworkNamespacePath = "/proc/1/ns/net"
+	selfMountNamespacePath   = "/proc/self/ns/mnt"
+	hostMountNamespacePath   = "/proc/1/ns/mnt"
 	// nsenterPath joins the initial namespace for the host-side half of
 	// service-posture.
 	nsenterPath = "/usr/bin/nsenter"
 )
 
 // requireHostNetworkNamespace fails closed unless the calling process is in the
-// initial network namespace (the one PID 1 holds). Unreadable identity is a
-// refusal, never a pass.
+// initial network and mount namespaces (the ones PID 1 holds). A systemd unit
+// that joins the agent namespace shares its private /tmp as well as its
+// network, so host-side probes that write operator canaries must run in the
+// host mount namespace too. Unreadable identity is a refusal, never a pass.
 func requireHostNetworkNamespace(readLink func(string) (string, error)) error {
 	if readLink == nil {
 		return errors.New("network namespace identity reader is unavailable")
 	}
-	self, err := readLink(selfNetworkNamespacePath)
-	if err != nil {
-		return fmt.Errorf("read own network namespace identity: %w", err)
-	}
-	host, err := readLink(hostNetworkNamespacePath)
-	if err != nil {
-		return fmt.Errorf("read host network namespace identity: %w", err)
-	}
-	if self == "" || self != host {
-		return fmt.Errorf("process network namespace %q is not the host network namespace %q; refusing to evaluate host containment state from another namespace", self, host)
+	for _, ns := range []struct{ kind, self, host string }{
+		{"network", selfNetworkNamespacePath, hostNetworkNamespacePath},
+		{"mount", selfMountNamespacePath, hostMountNamespacePath},
+	} {
+		self, err := readLink(ns.self)
+		if err != nil {
+			return fmt.Errorf("read own %s namespace identity: %w", ns.kind, err)
+		}
+		host, err := readLink(ns.host)
+		if err != nil {
+			return fmt.Errorf("read host %s namespace identity: %w", ns.kind, err)
+		}
+		if self == "" || self != host {
+			return fmt.Errorf("process %s namespace %q is not the host %s namespace %q; refusing to evaluate host containment state from another namespace", ns.kind, self, ns.kind, host)
+		}
 	}
 	return nil
 }
 
 // hostNamespaceCommandArgs builds the nsenter argv that re-runs this binary in
-// the initial network namespace.
+// the initial network and mount namespaces.
 func hostNamespaceCommandArgs(self string, args []string) []string {
-	out := []string{"--net=" + hostNetworkNamespacePath, "--", self}
+	out := []string{"--net=" + hostNetworkNamespacePath, "--mount=" + hostMountNamespacePath, "--", self}
 	return append(out, args...)
 }
 

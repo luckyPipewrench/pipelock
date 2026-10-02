@@ -243,6 +243,13 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 			if err := cfg.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid config: %w", err)
 			}
+			// An expired containment grant is a lapsed grant, not a broken
+			// file: drop it from the effective set before the policy hash is
+			// taken so it is never exposed, and keep it recorded for the
+			// runtime to report.
+			if _, err := cfg.LapseExpiredContainmentGrants(time.Now()); err != nil {
+				return nil, fmt.Errorf("invalid config: %w", err)
+			}
 		} else {
 			if err := cfg.validateForRules(); err != nil {
 				return nil, fmt.Errorf("invalid rules config: %w", err)

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -47,6 +48,13 @@ type ContainmentConfig struct {
 	// doorway. The managed host nftables rule restricts the listener to the
 	// relay account and root. Empty keeps the shared proxy listener.
 	AgentListener string `yaml:"agent_listener,omitempty"`
+
+	// lapsed records the declared loopback_services and published_services
+	// entries whose expires_at passed and that LapseExpiredContainmentGrants
+	// removed from the effective lists above. It is never serialized and never
+	// part of the policy hash; it exists so the runtime and validators can
+	// keep reporting a lapsed grant after it has been dropped.
+	lapsed []LapsedContainmentGrant
 }
 
 // ValidateContainmentAgentListener checks containment.agent_listener: a
@@ -307,22 +315,37 @@ func ValidateContainmentMetricsExposure(listen string, proxyPort int, policy *Co
 // validateContainmentExceptionLifecycle enforces the shared owner/reason/expiry
 // contract every declared containment exception carries: ContainmentMetricsExposure
 // and ContainmentLoopbackService both call this instead of duplicating the
-// RFC3339 parse and expiry comparison.
+// RFC3339 parse and expiry comparison. An expired entry is an error here;
+// callers that treat expiry as a lapsed grant rather than a malformed file use
+// containmentExceptionLapsed instead.
 func validateContainmentExceptionLifecycle(field, owner, reason, expiresAt string, now time.Time) error {
+	lapsed, expiredAt, err := containmentExceptionLapsed(field, owner, reason, expiresAt, now)
+	if err != nil {
+		return err
+	}
+	if lapsed {
+		return fmt.Errorf("%s expired at %s", field, expiredAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// containmentExceptionLapsed separates the two things a lifecycle check can
+// find. A missing owner or reason or an unparseable expires_at is malformed
+// and returned as an error, whatever the date says: an entry that cannot be
+// read is never treated as merely expired. A well-formed entry whose
+// expires_at has passed reports lapsed with the parsed time.
+func containmentExceptionLapsed(field, owner, reason, expiresAt string, now time.Time) (bool, time.Time, error) {
 	if strings.TrimSpace(owner) == "" {
-		return fmt.Errorf("%s.owner is required", field)
+		return false, time.Time{}, fmt.Errorf("%s.owner is required", field)
 	}
 	if strings.TrimSpace(reason) == "" {
-		return fmt.Errorf("%s.reason is required", field)
+		return false, time.Time{}, fmt.Errorf("%s.reason is required", field)
 	}
 	expiresAtParsed, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresAt))
 	if err != nil {
-		return fmt.Errorf("%s.expires_at must use RFC3339: %w", field, err)
+		return false, time.Time{}, fmt.Errorf("%s.expires_at must use RFC3339: %w", field, err)
 	}
-	if !expiresAtParsed.After(now) {
-		return fmt.Errorf("%s expired at %s", field, expiresAtParsed.UTC().Format(time.RFC3339))
-	}
-	return nil
+	return !expiresAtParsed.After(now), expiresAtParsed, nil
 }
 
 func validateContainmentMetricsExposurePolicy(policy *ContainmentMetricsExposure, now time.Time) error {
@@ -370,14 +393,47 @@ func ContainmentMetricsExposureAllowsSource(policy *ContainmentMetricsExposure, 
 	return false
 }
 
-// ValidateContainmentLoopbackServices enforces the declared-exception
-// lifecycle for every containment.loopback_services entry: a loopback-literal
-// host, a TCP port distinct from the proxy port and from every other
-// declared entry, and the same required owner/reason/expires_at contract as
-// containment.metrics_exposure. An empty or nil list is valid: the contained
-// agent's only implicit loopback destination remains the proxy port.
-func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+// Declared-grant kinds recorded on a LapsedContainmentGrant.
+const (
+	ContainmentGrantLoopbackService  = "loopback_services"
+	ContainmentGrantPublishedService = "published_services"
+)
+
+// LapsedContainmentGrant describes one declared containment entry whose
+// expires_at has passed. Expiry ends a grant; it does not make the file
+// malformed, so a lapsed entry is dropped from the effective set and reported
+// instead of aborting startup or reconciliation of its unexpired siblings.
+type LapsedContainmentGrant struct {
+	// Kind is ContainmentGrantLoopbackService or ContainmentGrantPublishedService.
+	Kind string
+	// Name identifies the entry: host:port for a loopback service, the
+	// service name for a published one.
+	Name      string
+	Owner     string
+	ExpiresAt string
+	// Message is the operator-facing description, naming the entry, its
+	// owner, its list position, and when it expired.
+	Message string
+}
+
+// ContainmentGrantField returns the config field a grant kind lives under.
+func ContainmentGrantField(kind string) string {
+	return "containment." + kind
+}
+
+// ResolveContainmentLoopbackServices applies the declared-exception contract
+// to every containment.loopback_services entry and splits the result. A
+// malformed entry (non-loopback or padded host, port out of range or equal to
+// the proxy port, duplicate, missing owner or reason, unparseable expires_at)
+// is an error regardless of its date, so a bad declaration still fails
+// closed. A well-formed entry whose expires_at has passed is returned in
+// lapsed and left out of active: it must never be exposed or rendered. An
+// empty or nil list is valid: the contained agent's only implicit loopback
+// destination remains the proxy port.
+func ResolveContainmentLoopbackServices(services []ContainmentLoopbackService, proxyPort int, now time.Time) ([]ContainmentLoopbackService, []LapsedContainmentGrant, error) {
 	seen := make(map[string]struct{}, len(services))
+	var active []ContainmentLoopbackService
+	var lapsed []LapsedContainmentGrant
 	for i, svc := range services {
 		field := fmt.Sprintf("containment.loopback_services[%d]", i)
 		// Compare the host EXACTLY as declared, without trimming. The
@@ -391,28 +447,66 @@ func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, 
 		// identical by construction rather than by two agreeing trims.
 		host := svc.Host
 		if host != "127.0.0.1" && host != "::1" {
-			return fmt.Errorf("%s.host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace, not a hostname, wildcard, or CIDR", field, svc.Host)
+			return nil, nil, fmt.Errorf("%s.host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace, not a hostname, wildcard, or CIDR", field, svc.Host)
 		}
 		if svc.Port < 1 || svc.Port > 65535 {
-			return fmt.Errorf("%s.port %d must be between 1 and 65535", field, svc.Port)
+			return nil, nil, fmt.Errorf("%s.port %d must be between 1 and 65535", field, svc.Port)
 		}
 		if svc.Port == proxyPort {
-			return fmt.Errorf("%s.port %d collides with the agent-accessible proxy port; the proxy allow is implicit and does not need a declared exception", field, svc.Port)
+			return nil, nil, fmt.Errorf("%s.port %d collides with the agent-accessible proxy port; the proxy allow is implicit and does not need a declared exception", field, svc.Port)
 		}
 		key := host + ":" + strconv.Itoa(svc.Port)
 		if _, dup := seen[key]; dup {
-			return fmt.Errorf("%s duplicates an already-declared loopback service at %s", field, key)
+			return nil, nil, fmt.Errorf("%s duplicates an already-declared loopback service at %s", field, key)
 		}
 		seen[key] = struct{}{}
-		if err := validateContainmentExceptionLifecycle(field, svc.Owner, svc.Reason, svc.ExpiresAt, now); err != nil {
+		expired, expiredAt, err := containmentExceptionLapsed(field, svc.Owner, svc.Reason, svc.ExpiresAt, now)
+		if err != nil {
 			// Repeat the host:port and owner in the wrapped error so a caller
 			// that only sees the flattened message (contain verify's FAIL
 			// detail, an operator's terminal) can still tell WHICH declared
 			// service is unusable without cross-referencing the index.
-			return fmt.Errorf("%s:%d (owner=%s): %w", host, svc.Port, svc.Owner, err)
+			return nil, nil, fmt.Errorf("%s:%d (owner=%s): %w", host, svc.Port, svc.Owner, err)
 		}
+		if expired {
+			stamp := expiredAt.UTC().Format(time.RFC3339)
+			lapsed = append(lapsed, LapsedContainmentGrant{
+				Kind:      ContainmentGrantLoopbackService,
+				Name:      key,
+				Owner:     svc.Owner,
+				ExpiresAt: stamp,
+				Message:   fmt.Sprintf("%s (owner=%s): %s expired at %s", key, svc.Owner, field, stamp),
+			})
+			continue
+		}
+		active = append(active, svc)
+	}
+	return active, lapsed, nil
+}
+
+// ValidateContainmentLoopbackServices is the strict form of
+// ResolveContainmentLoopbackServices: a lapsed entry is an error too. Callers
+// that must refuse to proceed on an expired declaration, such as a verify
+// probe reporting it, use this; startup and reconciliation use Resolve and
+// drop only the lapsed entry.
+func ValidateContainmentLoopbackServices(services []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+	_, lapsed, err := ResolveContainmentLoopbackServices(services, proxyPort, now)
+	if err != nil {
+		return err
+	}
+	if len(lapsed) > 0 {
+		return errors.New(lapsed[0].Message)
 	}
 	return nil
+}
+
+// containmentLoopbackExpired reports whether an entry is well formed and past
+// its expires_at. It never errors: an entry it cannot read is not expired, so
+// callers that only need to ignore a lapsed grant keep treating a malformed
+// one as present.
+func containmentLoopbackExpired(svc ContainmentLoopbackService, now time.Time) bool {
+	expired, _, err := containmentExceptionLapsed("", svc.Owner, svc.Reason, svc.ExpiresAt, now)
+	return err == nil && expired
 }
 
 // ContainmentPublishedService declares INBOUND publication of one listener the
@@ -478,18 +572,26 @@ var (
 	publishedSocketPathPattern = regexp.MustCompile(`^/run/[A-Za-z0-9._/-]+\.sock$`)
 )
 
-// ValidateContainmentPublishedServices enforces the declared-exception
-// lifecycle for every containment.published_services entry. loopback is the
-// declared outbound list, used only to refuse port collisions: a published
-// agent_port would collide with the in-namespace listener a declared loopback
-// service reserves, and a host_listen port with the host service that
-// declaration forwards to.
-func ValidateContainmentPublishedServices(services []ContainmentPublishedService, loopback []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+// ResolveContainmentPublishedServices applies the declared-exception contract
+// to every containment.published_services entry and splits the result the way
+// ResolveContainmentLoopbackServices does: malformed, duplicate, or colliding
+// entries are an error, and a well-formed entry past its expires_at is returned
+// in lapsed and left out of active. loopback is the declared outbound list,
+// used only to refuse port collisions: a published agent_port would collide
+// with the in-namespace listener a declared loopback service reserves, and a
+// host_listen port with the host service that declaration forwards to. A
+// lapsed loopback declaration reserves nothing.
+func ResolveContainmentPublishedServices(services []ContainmentPublishedService, loopback []ContainmentLoopbackService, proxyPort int, now time.Time) ([]ContainmentPublishedService, []LapsedContainmentGrant, error) {
 	reserved := make(map[int]string)
 	reserved[proxyPort] = "the agent-accessible proxy port"
 	for _, svc := range loopback {
+		if containmentLoopbackExpired(svc, now) {
+			continue
+		}
 		reserved[svc.Port] = "a declared containment.loopback_services port"
 	}
+	var active []ContainmentPublishedService
+	var lapsed []LapsedContainmentGrant
 	names := map[string]struct{}{}
 	agentPorts := map[int]struct{}{}
 	sockets := map[string]struct{}{}
@@ -497,61 +599,87 @@ func ValidateContainmentPublishedServices(services []ContainmentPublishedService
 	for i, svc := range services {
 		field := fmt.Sprintf("containment.published_services[%d]", i)
 		if !publishedServiceNamePattern.MatchString(svc.Name) {
-			return fmt.Errorf("%s.name %q must be 1-32 lowercase letters, digits, or hyphens starting with a letter or digit", field, svc.Name)
+			return nil, nil, fmt.Errorf("%s.name %q must be 1-32 lowercase letters, digits, or hyphens starting with a letter or digit", field, svc.Name)
 		}
 		if _, dup := names[svc.Name]; dup {
-			return fmt.Errorf("%s.name %q is declared more than once", field, svc.Name)
+			return nil, nil, fmt.Errorf("%s.name %q is declared more than once", field, svc.Name)
 		}
 		names[svc.Name] = struct{}{}
 		if svc.AgentHost != "" && svc.AgentHost != "127.0.0.1" && svc.AgentHost != "::1" {
-			return fmt.Errorf("%s.agent_host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace", field, svc.AgentHost)
+			return nil, nil, fmt.Errorf("%s.agent_host %q must be a loopback literal (127.0.0.1 or ::1) with no surrounding whitespace", field, svc.AgentHost)
 		}
 		if svc.AgentPort < 1 || svc.AgentPort > 65535 {
-			return fmt.Errorf("%s.agent_port %d must be between 1 and 65535", field, svc.AgentPort)
+			return nil, nil, fmt.Errorf("%s.agent_port %d must be between 1 and 65535", field, svc.AgentPort)
 		}
 		if what, taken := reserved[svc.AgentPort]; taken {
-			return fmt.Errorf("%s.agent_port %d collides with %s", field, svc.AgentPort, what)
+			return nil, nil, fmt.Errorf("%s.agent_port %d collides with %s", field, svc.AgentPort, what)
 		}
 		if _, dup := agentPorts[svc.AgentPort]; dup {
-			return fmt.Errorf("%s.agent_port %d is already published by another entry", field, svc.AgentPort)
+			return nil, nil, fmt.Errorf("%s.agent_port %d is already published by another entry", field, svc.AgentPort)
 		}
 		agentPorts[svc.AgentPort] = struct{}{}
 		if svc.HostSocket != "" {
 			if !publishedSocketPathPattern.MatchString(svc.HostSocket) || filepath.Clean(svc.HostSocket) != svc.HostSocket {
-				return fmt.Errorf("%s.host_socket %q must be a clean absolute path under /run/ ending in .sock", field, svc.HostSocket)
+				return nil, nil, fmt.Errorf("%s.host_socket %q must be a clean absolute path under /run/ ending in .sock", field, svc.HostSocket)
 			}
 			if strings.HasPrefix(filepath.Base(svc.HostSocket), "pipelock-agent-") || strings.HasPrefix(svc.HostSocket, "/run/pipelock-contain/") {
-				return fmt.Errorf("%s.host_socket %q is reserved for Pipelock's own containment doorways", field, svc.HostSocket)
+				return nil, nil, fmt.Errorf("%s.host_socket %q is reserved for Pipelock's own containment doorways", field, svc.HostSocket)
 			}
 		}
 		socket := svc.EffectiveHostSocket()
 		if _, dup := sockets[socket]; dup {
-			return fmt.Errorf("%s.host_socket %q is already used by another entry", field, socket)
+			return nil, nil, fmt.Errorf("%s.host_socket %q is already used by another entry", field, socket)
 		}
 		sockets[socket] = struct{}{}
 		if !publishedOperatorUserPattern.MatchString(svc.OperatorUser) {
-			return fmt.Errorf("%s.operator_user %q must name the one local user allowed to connect", field, svc.OperatorUser)
+			return nil, nil, fmt.Errorf("%s.operator_user %q must name the one local user allowed to connect", field, svc.OperatorUser)
 		}
 		if svc.HostListen != "" {
 			host, portText, err := net.SplitHostPort(svc.HostListen)
 			if err != nil || (host != "127.0.0.1" && host != "::1") {
-				return fmt.Errorf("%s.host_listen %q must be 127.0.0.1:<port> or [::1]:<port>", field, svc.HostListen)
+				return nil, nil, fmt.Errorf("%s.host_listen %q must be 127.0.0.1:<port> or [::1]:<port>", field, svc.HostListen)
 			}
 			port, err := strconv.Atoi(portText)
 			if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != portText {
-				return fmt.Errorf("%s.host_listen %q has an invalid port", field, svc.HostListen)
+				return nil, nil, fmt.Errorf("%s.host_listen %q has an invalid port", field, svc.HostListen)
 			}
 			if what, taken := reserved[port]; taken {
-				return fmt.Errorf("%s.host_listen port %d collides with %s", field, port, what)
+				return nil, nil, fmt.Errorf("%s.host_listen port %d collides with %s", field, port, what)
 			}
 			if _, dup := hostPorts[port]; dup {
-				return fmt.Errorf("%s.host_listen port %d is already used by another entry", field, port)
+				return nil, nil, fmt.Errorf("%s.host_listen port %d is already used by another entry", field, port)
 			}
 			hostPorts[port] = struct{}{}
 		}
-		if err := validateContainmentExceptionLifecycle(field, svc.Owner, svc.Reason, svc.ExpiresAt, now); err != nil {
-			return fmt.Errorf("published service %s (owner=%s): %w", svc.Name, svc.Owner, err)
+		expired, expiredAt, err := containmentExceptionLapsed(field, svc.Owner, svc.Reason, svc.ExpiresAt, now)
+		if err != nil {
+			return nil, nil, fmt.Errorf("published service %s (owner=%s): %w", svc.Name, svc.Owner, err)
 		}
+		if expired {
+			stamp := expiredAt.UTC().Format(time.RFC3339)
+			lapsed = append(lapsed, LapsedContainmentGrant{
+				Kind:      ContainmentGrantPublishedService,
+				Name:      svc.Name,
+				Owner:     svc.Owner,
+				ExpiresAt: stamp,
+				Message:   fmt.Sprintf("published service %s (owner=%s): %s expired at %s", svc.Name, svc.Owner, field, stamp),
+			})
+			continue
+		}
+		active = append(active, svc)
+	}
+	return active, lapsed, nil
+}
+
+// ValidateContainmentPublishedServices is the strict form of
+// ResolveContainmentPublishedServices: a lapsed entry is an error too.
+func ValidateContainmentPublishedServices(services []ContainmentPublishedService, loopback []ContainmentLoopbackService, proxyPort int, now time.Time) error {
+	_, lapsed, err := ResolveContainmentPublishedServices(services, loopback, proxyPort, now)
+	if err != nil {
+		return err
+	}
+	if len(lapsed) > 0 {
+		return errors.New(lapsed[0].Message)
 	}
 	return nil
 }

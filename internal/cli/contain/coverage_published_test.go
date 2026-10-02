@@ -606,7 +606,7 @@ func TestCovPubAgentNamespaceListensIPv6HostMissingFile(t *testing.T) {
 	env := &probeEnv{
 		readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
 	}
-	got, err := agentNamespaceListens(env, "/proc", 4242, "::1", 9000)
+	got, err := agentNamespaceListens(env, 4242, "::1", 9000)
 	if err != nil || got {
 		t.Fatalf("got=%v err=%v, want false,nil when the tcp6 table is absent", got, err)
 	}

@@ -117,6 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`pipelock init` checks the saved or retained configuration,** and prints follow-up commands with that exact config path. Malformed retained files no longer pass checks against an unused preset; dry runs continue to check the proposed config.
 - **The reverse proxy now hard-blocks a critical credential in the URL path or query in enforce mode, even when `request_body_scanning.action` is `warn`.** Before this fix, the shipped presets forwarded such a request upstream while `/fetch` and the forward proxy refuse the same key. A body block on the reverse proxy now also counts toward the session's adaptive score, as URL and header blocks already did. (#1748)
 - **Reverse-proxy response blocks now carry the `X-Pipelock-Block-Reason` header set,** as the block-reason documentation says. Injection, compressed-response, oversize, scan-failure and media-policy blocks used to return the reason only in the JSON body. (#1748)
 - **The adaptive escalation table is corrected: the levels are reached at 1, 2 and 4 times `escalation_threshold`,** not 1, 2 and 3. The code always doubled the threshold after each escalation; the documentation was wrong. (#1748)
@@ -193,6 +194,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **Onboarding checks state their scope.** Init's local canary and `verify-install`'s temporary-proxy fixtures distinguish synthetic verification from real-client routing, with configuration provenance in human and JSON output. False-positive recovery starts with an explanation, the smallest applicable correction and a recheck.
 - Install and release examples, receipt anchoring and SCITT scope, and the MCP upstream SSRF exception are corrected. (#1431, #1432, #1468, #1594)
 - The internal release checklist moved out of the public repository. (#1608)
 - Configuration, tool policy, receipt verification, flight recorder, integration and containment guides are corrected to match current behavior, including that a promoted Learn and Lock manifest applies at start and on config reload, and that the sandbox guide covers Ubuntu's AppArmor user-namespace restriction. `audit-packet --help` says trust needs `--key` or `--expect-sha256`. (#1736, #1748, #1755)

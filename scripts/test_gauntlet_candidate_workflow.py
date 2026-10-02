@@ -246,6 +246,7 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                     runner.write_text(
                         "#!/bin/bash\n"
                         "echo fixture-entrypoint-diagnostic >&2\n"
+                        "echo fixture-entrypoint-stdout\n"
                         # Mirrors the real entrypoint contract: it creates the
                         # output directory itself and refuses an existing one.
                         '[[ ! -e "$GAUNTLET_ARTIFACT_DIR" ]] || '
@@ -286,6 +287,11 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                 diagnostic = (artifacts / "entrypoint.stderr").read_text()
                 self.assertTrue(diagnostic)
                 self.assertIn(diagnostic, run.stderr)
+                if scenario not in ("missing-script", "missing-root"):
+                    self.assertIn("fixture-entrypoint-stdout\n", run.stdout)
+                    self.assertNotIn("fixture-entrypoint-stdout", run.stderr)
+                else:
+                    self.assertEqual(run.stdout, "")
                 self.assertEqual((artifacts / "results.jsonl").exists(), results)
                 self.assertFalse((artifacts / "continuous-gauntlet-pipelock.json").exists())
                 env["PORTABLE_RUNNER_OUTCOME"] = "failure" if run.returncode else "success"

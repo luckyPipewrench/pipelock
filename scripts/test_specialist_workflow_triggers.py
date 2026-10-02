@@ -96,6 +96,9 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
             "go.work.sum",
             "cmd/pipelock/**",
             "cmd/pipelock-verifier/**",
+            "cmd/pipelock-verifier-wasm/**",
+            "deploy/wasm-verify/**",
+            "Makefile",
             "internal/**",
             "docs/specs/**",
             "sdk/verifiers/**",
@@ -108,6 +111,11 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         for changed in (
             "cmd/pipelock/main.go",
             "cmd/pipelock-verifier/main.go",
+            "cmd/pipelock-verifier-wasm/main.go",
+            "deploy/wasm-verify/build.sh",
+            "deploy/wasm-verify/chain-parity.test.js",
+            "deploy/wasm-verify/chain_oracle.go",
+            "Makefile",
             "internal/receipt/emitter.go",
             "sdk/verifiers/python/requirements.txt",
             "sdk/verifiers/rust/Cargo.lock",
@@ -119,11 +127,16 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
         for unrelated in (
             "README.md",
             "cmd/license-service/main.go",
-            "cmd/pipelock-verifier-wasm/main.go",
             "docs/guides/quickstart.md",
             "website/index.html",
         ):
             self.assertFalse(is_selected(push_paths, unrelated), unrelated)
+
+    def test_wasm_parity_runs_without_soft_failure(self):
+        job = job_block(self.verifiers, "wasm-parity")
+        self.assertIn("run: make test-wasm-verifier\n", job)
+        self.assertNotIn("continue-on-error:", job)
+        self.assertNotIn("if:", job)
 
     def test_example_push_and_pr_inputs_stay_equivalent(self):
         self.assertEqual(

@@ -386,11 +386,17 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertEqual(len(gate_runs), 1, "expected exactly one main attestation gate")
         gate_lines = self._executable_lines(gate_runs[0])
         self.assertEqual(gate_lines[-1], "exit 1")
-        # No path through the gate may leave successfully: `exit 0` or a bare
-        # `exit` (which returns the last command's status) anywhere in a line,
-        # including after `&&`, `;` or inside `if ...; then ...; fi`.
-        success_exit = re.compile(r"(?:^|[;&|({\s])exit(?:\s+0)?\s*(?:$|[;&|)}#])")
-        self.assertFalse([line for line in gate_lines if success_exit.search(line)])
+        # No path through the gate may leave successfully. Every `exit`
+        # anywhere in a line (after `&&`, `;`, inside `if ... fi`) must carry
+        # a literal nonzero status: `exit 0`, a bare `exit` and a computed
+        # status such as `exit "$?"` can all return success.
+        exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
+        not_failing = [
+            line for line in gate_lines
+            for status in exit_command.findall(line)
+            if not re.fullmatch(r"[1-9][0-9]*", status)
+        ]
+        self.assertFalse(not_failing)
 
     def test_verified_staging_indexes_promote_only_in_protected_job(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")

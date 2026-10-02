@@ -62,8 +62,11 @@ RFC 8941 Structured Fields Dictionary:
 
 ```
 Pipelock-Mediation: v=1, act="read", vd="allow", se="external_read", actor="agent-1",
-  aa="bound", ph=:dGVzdA==:, rid="019...", ts=1712764800
+  aa="bound", ph=:AAECAwQFBgcICQoLDA0ODw==:,
+  rid="01961f3a-7b2c-7000-8000-000000000001", ts=1712764800
 ```
+
+This example and the MCP example below use the same illustrative decision. The policy fingerprint contains 16 bytes (`00` through `0f`); a live envelope carries the fingerprint of its effective policy. The receipt ID and timestamp are fixed sample values.
 
 Optional fields (`taint`, `task`, `auth`, `authr`, `reauth`) are omitted
 when they carry no value.
@@ -85,8 +88,8 @@ the `com.pipelock/mediation` key:
       "se": "external_read",
       "actor": "agent-1",
       "aa": "bound",
-      "ph": "sha256-128:dGVzdA==",
-      "rid": "019...",
+      "ph": "sha256-128:AAECAwQFBgcICQoLDA0ODw==",
+      "rid": "01961f3a-7b2c-7000-8000-000000000001",
       "ts": 1712764800
     }
   }

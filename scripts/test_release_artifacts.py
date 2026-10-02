@@ -371,6 +371,15 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn(expected_condition, normalized_gate)
         self.assertNotIn("== 'failure'", normalized_gate)
 
+        release_build = yaml.safe_load(self.workflow)["jobs"]["release-build"]
+        self.assertIs(release_build.get("continue-on-error", False), False)
+        verify_steps = [
+            step for step in release_build["steps"]
+            if step.get("name") == "Verify attestation"
+        ]
+        self.assertEqual(len(verify_steps), 1, "expected exactly one main attestation gate")
+        self.assertIs(verify_steps[0].get("continue-on-error", False), False)
+
         # The condition alone proves nothing if the step it guards succeeds:
         # the gate's executable body must end the job with a nonzero exit.
         gate_runs = [script for name, script in self._job_runs("release-build") if name == "Verify attestation"]

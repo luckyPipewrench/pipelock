@@ -356,11 +356,11 @@ For each entry, `contain install` writes a socket unit, `pipelock-published-<nam
 
 A state the probe can't read counts as a failure. An idle relay is normal, because the next connection starts it.
 
+The preflight of `contain run` and `service-posture` runs before the agent exists, so there it treats a missing agent listener as pending rather than failed, and says so in the probe line. It still fails with a foreign occupant error when a different account already listens on the published address inside the agent namespace. Run `contain verify` after the agent is serving to confirm the listener.
+
 Published content is untrusted agent content in both directions. Pipelock doesn't ship a viewer or serve the endpoint remotely. Remote access is your job, behind your own authentication.
 
 ### Launching a contained systemd service
-
-> **Not supported in this release.** The recipe below doesn't start the agent: `service-posture` runs preflight probe 3 inside the agent network namespace, where the host's managed nftables table isn't visible, so the probe fails and systemd never starts the service. Use `pipelock contain run` to launch contained agents until a later release fixes the check.
 
 Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:
 
@@ -384,7 +384,7 @@ Restart=on-failure
 
 The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `JoinsNamespaceOf=` belongs in `[Unit]`; systemd ignores it under `[Service]` and logs `Unknown key 'JoinsNamespaceOf' in section [Service], ignoring`, and the unit then gets its own empty namespace. `PrivateNetwork=true` creates that separate empty namespace whenever the join has no valid target, so it isn't enough on its own.
 
-The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. A mismatch or inconclusive check fails the pre-start command, so systemd never starts the agent. The signer exits before the agent starts and never receives agent input or output.
+The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. It then runs the rest of the containment preflight, including the nftables ruleset and the private-namespace checks, in the host network namespace through `nsenter`, because that is where the managed ruleset and host loopback live. The host-side step refuses to run unless it is in the host namespace, and a missing table or any failed probe fails the pre-start command. A mismatch or inconclusive check on either side fails the pre-start command, so systemd never starts the agent. The command needs `nsenter` from util-linux at `/usr/bin/nsenter`. The signer exits before the agent starts and never receives agent input or output.
 
 Immediately before it executes the tool, `plk-launch` checks its user, its real kernel namespace identity, the interfaces visible in that namespace, and the Pipelock health endpoint. The root preflight and probe 21 also compare the managed namespace with the host and inspect every live process under the agent user. The service settings state the intended isolation. These checks prove the running process received it.
 
@@ -394,7 +394,7 @@ The pre-start signer writes the same signed posture capsule path used by `contai
 
 Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
-Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Don't replace an earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above in this release, because that recipe can't start the agent (see the note at the top of this section). Use `pipelock contain run` to launch contained agents. An old drop-in still performs a preflight, but it doesn't emit a capsule.
+Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. An earlier `ExecStartPre=+... contain run --dry-run` drop-in still performs a preflight, but it doesn't emit a capsule. Replace it with the `service-posture` line above to get the signed pre-start capsule.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking

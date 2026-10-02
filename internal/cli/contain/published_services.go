@@ -649,6 +649,7 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
+	var pending []string
 	for _, service := range services {
 		for _, item := range publishedServiceFiles(unitDir, env.pipelockTarget, env.proxyUserName, service) {
 			body, readErr := env.readFile(item.path)
@@ -694,13 +695,35 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 		default:
 			return statusFail, fmt.Sprintf("published service %s: relay %s is in unrecognized state %q", service.Name, relay, state)
 		}
-		listening, listenErr := agentNamespaceListens(env, procRoot, holderPID, service.EffectiveAgentHost(), service.AgentPort)
+		owners, listenErr := agentNamespaceListeners(env, procRoot, holderPID, service.EffectiveAgentHost(), service.AgentPort)
 		if listenErr != nil {
 			return statusFail, fmt.Sprintf("published service %s: agent listener state unknown: %v", service.Name, listenErr)
 		}
-		if !listening {
+		if env.prelaunch {
+			// The agent that creates this listener has not started, so its
+			// absence is the expected state. What must still hold is that no
+			// other principal already owns the address inside the agent
+			// namespace: the relay would hand the operator to that occupant.
+			agentUID, uidErr := agentUIDString(env)
+			if uidErr != nil {
+				return statusFail, fmt.Sprintf("published service %s: agent listener state unknown: %v", service.Name, uidErr)
+			}
+			for _, owner := range owners {
+				if owner != agentUID {
+					return statusFail, fmt.Sprintf("published service %s: foreign occupant: %s is already listened on by uid %s, not %s (uid %s); stop it before launching", service.Name, publishedAgentTarget(service), owner, env.agentUserName, agentUID)
+				}
+			}
+			if len(owners) == 0 {
+				pending = append(pending, service.Name)
+			}
+			continue
+		}
+		if len(owners) == 0 {
 			return statusFail, fmt.Sprintf("published service %s: absent listener: no matching listener on %s (an IPv6-only or unknown wildcard does not count for an IPv4 target)", service.Name, publishedAgentTarget(service))
 		}
+	}
+	if len(pending) > 0 {
+		return statusPass, fmt.Sprintf("%d published service(s) wired; agent listener pending until the agent starts: %s (rerun `pipelock contain verify` once it is serving)", len(services), strings.Join(pending, ", "))
 	}
 	for _, service := range services {
 		if service.HostListen != "" {
@@ -739,13 +762,27 @@ func probePublishedSocketAccess(env *probeEnv, service config.ContainmentPublish
 	return statusPass, ""
 }
 
-// agentNamespaceListens reads the socket table of the namespace holder.
+// agentUIDString resolves the managed agent's numeric uid for owner checks.
+func agentUIDString(env *probeEnv) (string, error) {
+	if env.lookupUser == nil {
+		return "", errors.New("cannot resolve the agent uid: user lookup is unavailable")
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return "", fmt.Errorf("lookup %s: %w", env.agentUserName, err)
+	}
+	return agent.Uid, nil
+}
+
+// agentNamespaceListeners reads the socket table of the namespace holder and
+// returns the owning uid of every matching listener ("?" when the owner field
+// is unreadable, which never equals a real uid).
 // /proc/<pid>/net/tcp reports the network namespace of that process (proc(5)),
 // so this sees the agent's listeners without entering the namespace. A
 // wildcard listener counts only within the target's address family.
-func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host string, port int) (bool, error) {
+func agentNamespaceListeners(env *probeEnv, procRoot string, holderPID int, host string, port int) ([]string, error) {
 	if holderPID <= 1 {
-		return false, fmt.Errorf("namespace holder pid %d is invalid", holderPID)
+		return nil, fmt.Errorf("namespace holder pid %d is invalid", holderPID)
 	}
 	want := map[string]bool{"00000000000000000000000000000000": true}
 	files := []string{"tcp6"}
@@ -758,6 +795,7 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 		want["0100007F"] = true
 		want["00000000"] = true
 	}
+	var owners []string
 	portHex := fmt.Sprintf("%04X", port)
 	for _, name := range files {
 		data, err := env.readFile(filepath.Join(procRoot, strconv.Itoa(holderPID), "net", name))
@@ -765,7 +803,7 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			if name == "tcp6" && errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return false, err
+			return nil, err
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
@@ -774,9 +812,15 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			}
 			addr, p, ok := strings.Cut(fields[1], ":")
 			if ok && p == portHex && fields[3] == "0A" && want[addr] {
-				return true, nil
+				owner := "?"
+				if len(fields) > 7 {
+					if _, convErr := strconv.ParseUint(fields[7], 10, 32); convErr == nil {
+						owner = fields[7]
+					}
+				}
+				owners = append(owners, owner)
 			}
 		}
 	}
-	return false, nil
+	return owners, nil
 }

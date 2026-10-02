@@ -76,6 +76,8 @@ func servicePostureCmdWithEnv(commandEnv servicePostureCommandEnv) *cobra.Comman
 	cmd.Flags().StringVarP(&opts.configFile, "config", "c", opts.configFile, "pipelock config file for the signed posture capsule")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "pipelock listen port to probe on loopback")
 	cmd.Flags().StringVar(&opts.postureOutput, "posture-output", opts.postureOutput, "directory for the signed service posture capsule")
+	cmd.Flags().BoolVar(&opts.hostNamespace, "host-namespace", false, "internal: host-side half re-executed in the initial network namespace")
+	_ = cmd.Flags().MarkHidden("host-namespace")
 	return cmd
 }
 

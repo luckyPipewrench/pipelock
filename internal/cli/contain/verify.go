@@ -187,6 +187,9 @@ type probeEnv struct {
 	// Empty preserves the ordinary plk-launch value used by contain run.
 	postureLauncher string
 	procRoot        string
+	// prelaunch marks a preflight that runs before the contained agent starts,
+	// so listeners the agent itself will create are pending rather than absent.
+	prelaunch bool
 
 	now func() time.Time
 

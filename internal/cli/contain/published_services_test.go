@@ -549,16 +549,16 @@ func TestAgentNamespaceListensRealProcTable(t *testing.T) {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	env := &probeEnv{readFile: os.ReadFile}
-	got, err := agentNamespaceListens(env, "/proc", os.Getpid(), "127.0.0.1", port)
+	got, err := agentNamespaceListens(env, os.Getpid(), "127.0.0.1", port)
 	if err != nil || !got {
 		t.Fatalf("live listener on %d not found: %v %v", port, got, err)
 	}
 	_ = ln.Close()
-	got, err = agentNamespaceListens(env, "/proc", os.Getpid(), "127.0.0.1", port)
+	got, err = agentNamespaceListens(env, os.Getpid(), "127.0.0.1", port)
 	if err != nil || got {
 		t.Fatalf("closed listener on %d still reported: %v %v", port, got, err)
 	}
-	if _, err := agentNamespaceListens(env, "/proc", 1, "127.0.0.1", port); err == nil {
+	if _, err := agentNamespaceListens(env, 1, "127.0.0.1", port); err == nil {
 		t.Fatal("pid 1 must be refused as a namespace holder")
 	}
 }
@@ -573,7 +573,7 @@ func TestAgentNamespaceListensRejectsIPv6OnlyWildcardForIPv4(t *testing.T) {
 		}
 		return []byte("header\n"), nil
 	}}
-	got, probeErr := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	got, probeErr := agentNamespaceListens(env, 4242, "127.0.0.1", port)
 	if probeErr != nil || got {
 		t.Fatalf("IPv6-only wildcard reported as IPv4 listener: got=%t err=%v", got, probeErr)
 	}
@@ -589,7 +589,7 @@ func TestAgentNamespaceListensIPv4WildcardFamilies(t *testing.T) {
 		}
 		return []byte("header\n"), nil
 	}}
-	got, err := agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	got, err := agentNamespaceListens(env, 4242, "127.0.0.1", port)
 	if err != nil || got {
 		t.Fatalf("IPv6 wildcard with unknown per-socket V6ONLY = %v, %v; want false, nil", got, err)
 	}
@@ -599,7 +599,7 @@ func TestAgentNamespaceListensIPv4WildcardFamilies(t *testing.T) {
 		}
 		return []byte("header\n"), nil
 	}
-	got, err = agentNamespaceListens(env, "/proc", 4242, "127.0.0.1", port)
+	got, err = agentNamespaceListens(env, 4242, "127.0.0.1", port)
 	if err != nil || !got {
 		t.Fatalf("IPv4 wildcard = %v, %v; want true, nil", got, err)
 	}

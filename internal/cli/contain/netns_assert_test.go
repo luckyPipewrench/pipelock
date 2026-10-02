@@ -6,9 +6,11 @@ package contain
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/user"
 	"strings"
 	"testing"
@@ -137,5 +139,62 @@ func TestDirectContainedProxyHealth(t *testing.T) {
 				t.Fatalf("directContainedProxyHealth() error = %v, want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRequireHostNetworkNamespace(t *testing.T) {
+	link := func(self, host string, selfErr, hostErr error) func(string) (string, error) {
+		return func(path string) (string, error) {
+			switch path {
+			case "/proc/self/ns/net":
+				return self, selfErr
+			case "/proc/1/ns/net":
+				return host, hostErr
+			}
+			return "", os.ErrNotExist
+		}
+	}
+	tests := []struct {
+		name     string
+		readLink func(string) (string, error)
+		wantErr  string
+	}{
+		{"host namespace passes", link("net:[1]", "net:[1]", nil, nil), ""},
+		{"agent namespace refused", link("net:[2]", "net:[1]", nil, nil), "not the host network namespace"},
+		{"empty identity refused", link("", "", nil, nil), "not the host network namespace"},
+		{"unreadable self refused", link("", "net:[1]", os.ErrPermission, nil), "read own network namespace"},
+		{"unreadable host refused", link("net:[1]", "", nil, os.ErrPermission), "read host network namespace"},
+		{"missing reader refused", nil, "unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireHostNetworkNamespace(tc.readLink)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestHostNamespaceCommandArgs(t *testing.T) {
+	got := strings.Join(hostNamespaceCommandArgs("/usr/local/bin/pipelock", []string{"contain", "service-posture", "--", "tool"}), " ")
+	want := "--net=/proc/1/ns/net -- /usr/local/bin/pipelock contain service-posture -- tool"
+	if got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+func TestRunInHostNetworkNamespaceMissingNsenter(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can join namespaces; the failure path needs an unprivileged caller")
+	}
+	if err := runInHostNetworkNamespace(context.Background(), io.Discard, io.Discard, []string{"version"}); err == nil {
+		t.Fatal("expected failure without nsenter")
 	}
 }

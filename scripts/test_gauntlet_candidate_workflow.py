@@ -315,6 +315,19 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
                     self.assertNotIn("Portable runner failed", text)
                     self.assertIn("Fixture owner summary", text)
 
+    def test_failure_evidence_steps_run_after_runner_failure(self):
+        for name in (
+            "Ensure fail-closed decision exists",
+            "Upload candidate evidence",
+            "Render owner-facing run summary",
+            "Upload owner review artifact",
+        ):
+            with self.subTest(step=name):
+                self.assertRegex(
+                    step_block(self.workflow, name),
+                    r"(?m)^        if: \$\{\{ !cancelled\(\) \}\}$",
+                )
+
     def test_summary_rejects_incomplete_step_without_diagnostic_files(self):
         for outcome in ("failure", "skipped", "cancelled", "", "unknown"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:

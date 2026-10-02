@@ -4,9 +4,13 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
@@ -155,6 +159,95 @@ func buildContractLoader(cfg *config.Config) (*contractruntime.Loader, error) {
 		return nil, fmt.Errorf("contract loader init: %w", err)
 	}
 	return loader, nil
+}
+
+// contractWatchState tracks the single active-manifest watcher bound to the
+// currently published contract loader.
+type contractWatchState struct {
+	mu     sync.Mutex
+	ctx    context.Context // process lifecycle context; nil until start
+	loader *contractruntime.Loader
+	stop   func()
+
+	// started counts watchers armed and active counts watchers still
+	// running; reload tests assert the replaced loader's watcher is gone.
+	started atomic.Int32
+	active  atomic.Int32
+}
+
+// syncContractWatcher makes the active-manifest watcher follow whatever
+// loader is published: a promoted Learn and Lock manifest then applies live
+// without a restart. It is a no-op before the proxy starts (start syncs once
+// the lifecycle context exists) and when the published loader is unchanged.
+// A replaced loader's watcher is stopped and awaited before the new one
+// arms, so a reload leaks neither a goroutine nor an fsnotify handle.
+//
+// A watcher failure is logged and never clears the loader: the last
+// accepted contract stays in force, which is the loader's own fail-closed
+// semantics for a rejected or unreadable promote.
+func (p *Proxy) syncContractWatcher() {
+	st := &p.contractWatch
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.ctx == nil {
+		return
+	}
+	loader := p.currentContractLoader()
+	if loader == st.loader {
+		return
+	}
+	if st.stop != nil {
+		st.stop()
+		st.stop = nil
+	}
+	st.loader = loader
+	if loader == nil {
+		return
+	}
+	stop, err := loader.StartWatch(st.ctx, p.logContractWatchError)
+	if err != nil {
+		p.logContractWatchError(fmt.Errorf("active manifest watcher not running, keeping last accepted contract: %w", err))
+		// Forget the loader so the next sync (start or reload) retries the
+		// watch instead of treating this loader as already watched.
+		st.loader = nil
+		return
+	}
+	st.started.Add(1)
+	st.active.Add(1)
+	var once sync.Once
+	st.stop = func() {
+		stop()
+		once.Do(func() { st.active.Add(-1) })
+	}
+}
+
+func (p *Proxy) logContractWatchError(err error) {
+	if p.logger == nil || err == nil {
+		return
+	}
+	p.logger.LogError(audit.NewMethodLogContext("CONTRACT_WATCH"), err)
+}
+
+// startContractWatcher records the lifecycle context and starts the watcher.
+func (p *Proxy) startContractWatcher(ctx context.Context) {
+	p.contractWatch.mu.Lock()
+	p.contractWatch.ctx = ctx
+	p.contractWatch.mu.Unlock()
+	p.syncContractWatcher()
+}
+
+// stopContractWatcher stops the active watcher and forbids a later sync from
+// starting another (used on Close).
+func (p *Proxy) stopContractWatcher() {
+	st := &p.contractWatch
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.ctx = nil
+	if st.stop != nil {
+		st.stop()
+		st.stop = nil
+	}
+	st.loader = nil
 }
 
 func (p *Proxy) currentContractLoader() *contractruntime.Loader {

@@ -69,11 +69,14 @@ type VerifyResult struct {
 	Evidence map[string]string `json:"evidence,omitempty"`
 }
 
+const verifyInstallScope = "Synthetic checks with a temporary proxy and controlled fixtures; does not verify real client routing. DNS-based SSRF and environment leak scanning are disabled for fixtures."
+
 // VerifyReport is the full verification report.
 type VerifyReport struct {
 	Version    string              `json:"version"`
 	Timestamp  string              `json:"timestamp"`
 	ConfigFile string              `json:"config_file"`
+	Scope      string              `json:"scope,omitempty"`
 	RunContext string              `json:"run_context"`
 	Checks     []VerifyReportCheck `json:"checks"`
 	Summary    VerifyReportSummary `json:"summary"`
@@ -128,10 +131,15 @@ func VerifyInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify-install",
-		Short: "Verify pipelock is protecting this agent",
+		Short: "Run synthetic configuration checks with a temporary proxy",
 		Long: `Run 15 deterministic checks to verify pipelock's scanning pipeline,
 local enforcement surfaces, and network containment. Produces a verifiable
 report with optional Ed25519 signature.
+
+Scanning uses a temporary proxy and controlled fixtures, not your running proxy
+or a real client. Passing checks do not prove that an agent is routed through
+Pipelock. DNS-based SSRF and environment leak scanning are disabled for these
+fixtures; disabled configured controls remain disabled.
 
 Scanning checks (12): config validation, proxy health, DLP blocking, CONNECT
 blocking, WebSocket blocklist blocking, MCP input scanning, injection
@@ -969,6 +977,7 @@ func BuildVerifyReport(env *VerifyEnv, checks []VerifyCheck, cfgLabel string) Ve
 		Version:    cliutil.Version,
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		ConfigFile: cfgLabel,
+		Scope:      verifyInstallScope,
 		RunContext: env.RunCtx,
 	}
 
@@ -1077,6 +1086,7 @@ func writeVerifyReportFile(report VerifyReport, path string) error {
 
 func printVerifyTable(w io.Writer, report VerifyReport, color bool) {
 	_, _ = fmt.Fprintf(w, "pipelock verify-install %s\n\n", report.Version)
+	_, _ = fmt.Fprintf(w, "Config: %q\nScope: %s\n\n", report.ConfigFile, report.Scope)
 
 	lastCat := ""
 	for _, c := range report.Checks {

@@ -39,7 +39,10 @@ const flightRecorderPublicKeyMode os.FileMode = 0o640
 const defaultConfigSubdir = "pipelock"
 
 // initResult holds the outcome of each phase for reporting.
+const initCheckScope = "Local configuration and synthetic URL-scanner checks; does not verify real client routing."
+
 type initResult struct {
+	Scope    string              `json:"scope"`
 	Discover *initDiscoverResult `json:"discover"`
 	Setup    *initSetupResult    `json:"setup"`
 	Auditor  *initAuditorResult  `json:"evidence_corpus_auditor,omitempty"`
@@ -57,6 +60,7 @@ type initDiscoverResult struct {
 
 type initSetupResult struct {
 	ConfigPath     string `json:"config_path"`
+	Source         string `json:"config_source"`
 	Preset         string `json:"preset"`
 	Written        bool   `json:"written"`
 	SkippedExsting bool   `json:"skipped_existing,omitempty"`
@@ -120,12 +124,13 @@ func InitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Set up pipelock in one command",
 		Long: `Discover IDE and agent configs, generate a pipelock config, and validate
-it works. Run it once and you're set up.
+it parses. Checks use the saved or retained config; dry runs check the proposed
+config. Client routing must be configured and verified separately.
 
 Workflow:
   1. Discover:  find IDE configs (Claude Code, Cursor, VS Code, JetBrains)
   2. Setup:     generate a config file with sensible defaults
-  3. Validate:  check the generated config parses and compiles (skippable)
+  3. Validate:  check the saved or retained config parses and compiles (skippable)
   4. Canary:    run a synthetic secret through the real scanner (skippable)
   5. Summary:   show what was discovered, configured, and validated
 
@@ -196,7 +201,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 			err)
 	}
 
-	result := &initResult{}
+	result := &initResult{Scope: initCheckScope}
 	w := cmd.OutOrStdout()
 
 	// Phase 1: Discover
@@ -242,6 +247,11 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		configPath = filepath.Join(cfgDir, defaultConfigSubdir, "pipelock.yaml")
 	}
 
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return cliutil.ExitCodeError(initExitError, fmt.Errorf("resolving config path: %w", err))
+	}
+
 	// Wire the flight recorder to disk so receipts ("verify the boundary") are
 	// live out of the box: a recorder directory and an Ed25519 signing key beside
 	// the config. Absolute paths so the generated config records regardless of
@@ -254,6 +264,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 
 	result.Setup = &initSetupResult{
 		ConfigPath: configPath,
+		Source:     "proposed",
 		Preset:     opts.preset,
 	}
 
@@ -273,6 +284,8 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 			}
 			result.Setup.Written = false
 			result.Setup.SkippedExsting = true
+			result.Setup.Source = "retained"
+			result.Setup.Preset = "" // The requested preset was not applied.
 		} else {
 			if err := ensureFlightRecorderSigningKey(signingKeyPath, recorderDir); err != nil {
 				return cliutil.ExitCodeError(initExitError, fmt.Errorf("provisioning flight recorder: %w", err))
@@ -281,6 +294,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 				return cliutil.ExitCodeError(initExitError, fmt.Errorf("writing config: %w", err))
 			}
 			result.Setup.Written = true
+			result.Setup.Source = "saved"
 			if !opts.jsonOutput {
 				_, _ = fmt.Fprintf(w, "  Config written to: %s\n", configPath)
 				_, _ = fmt.Fprintf(w, "  Preset: %s\n\n", opts.preset)
@@ -295,6 +309,13 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		result.Auditor = auditorResult
 	}
 
+	// Validate the bytes that subsequent commands will load, not an unused preset.
+	// Dry runs deliberately check the proposed config without reading the target.
+	var configLoadErr error
+	if !opts.dryRun && (!opts.skipValidate || !opts.skipCanary) {
+		cfg, configLoadErr = config.Load(configPath)
+	}
+
 	// Phase 3: Validate config
 	if opts.skipValidate {
 		result.Verify = &initVerifyResult{Skipped: true}
@@ -306,7 +327,12 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintln(w, "[3/5] Validating config...")
 		}
-		vr := runInitVerify(cfg)
+		var vr *initVerifyResult
+		if configLoadErr != nil {
+			vr = &initVerifyResult{Failed: 1, Detail: fmt.Sprintf("loading config %q: %v", configPath, configLoadErr)}
+		} else {
+			vr = runInitVerify(cfg)
+		}
 		result.Verify = vr
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  Passed: %d, Failed: %d\n", vr.Passed, vr.Failed)
@@ -328,11 +354,16 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintln(w, "[4/5] Testing canary detection...")
 		}
-		cr := runInitCanary(cfg)
+		var cr *initCanaryResult
+		if configLoadErr != nil {
+			cr = &initCanaryResult{Skipped: true, Detail: "Canary not run: saved configuration could not be loaded."}
+		} else {
+			cr = runInitCanary(cfg)
+		}
 		result.Canary = cr
 		if !opts.jsonOutput {
 			if cr.Detected {
-				_, _ = fmt.Fprintln(w, "  Canary secret detected in URL scan. DLP is working.")
+				_, _ = fmt.Fprintln(w, "  Synthetic canary detected by the local URL scanner. This does not verify client routing.")
 			} else {
 				_, _ = fmt.Fprintf(w, "  %s\n", cr.Detail)
 			}
@@ -347,8 +378,14 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		if err := enc.Encode(result); err != nil {
 			return cliutil.ExitCodeError(initExitError, fmt.Errorf("encoding JSON: %w", err))
 		}
+	} else if configLoadErr != nil {
+		_, _ = fmt.Fprintf(w, "Fix the configuration file %q and rerun the same pipelock init command.\n", configPath)
 	} else {
 		printProof(w, result)
+	}
+
+	if configLoadErr != nil {
+		return cliutil.ExitCodeError(initExitError, fmt.Errorf("loading config %q: %w", configPath, configLoadErr))
 	}
 
 	// Exit 1 if validation failed or canary was not detected.
@@ -356,7 +393,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		return &cliutil.ExitError{Err: fmt.Errorf("config validation failed"), Code: initExitFailure}
 	}
 	if result.Canary != nil && !result.Canary.Skipped && !result.Canary.Detected {
-		return &cliutil.ExitError{Err: fmt.Errorf("canary secret was not detected by DLP"), Code: initExitFailure}
+		return &cliutil.ExitError{Err: fmt.Errorf("%s", result.Canary.Detail), Code: initExitFailure}
 	}
 
 	return nil
@@ -659,7 +696,7 @@ func runInitVerify(cfg *config.Config) *initVerifyResult {
 
 	detail := ""
 	if failed > 0 {
-		detail = "Config validation failed. Run 'pipelock verify-install' for full verification."
+		detail = "Config validation failed. Use the config-specific commands in Next steps."
 	}
 
 	return &initVerifyResult{
@@ -674,32 +711,29 @@ func runInitCanary(cfg *config.Config) *initCanaryResult {
 	// by allowlist before the DLP scanner runs.
 	canaryURL := "https://github.com/test?key=" + canaryToken()
 
-	// Build a scanner from the config and test.
-	scanResult := scanCanaryURL(cfg, canaryURL)
-
-	if scanResult {
-		return &initCanaryResult{
-			Detected: true,
-			Detail:   "Canary AWS key detected in URL scan.",
-		}
-	}
-
-	return &initCanaryResult{
-		Detected: false,
-		Detail:   "Canary was not detected. Run 'pipelock check --url \"" + canaryURL + "\"' to debug.",
-	}
+	return scanCanaryResult(cfg, canaryURL)
 }
 
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
+	return scanCanaryResult(cfg, canaryURL).Detected
+}
+
+func scanCanaryResult(cfg *config.Config, canaryURL string) *initCanaryResult {
 	sc, err := scanner.New(cfg)
 	if err != nil {
-		return false
+		return &initCanaryResult{Detail: fmt.Sprintf("Canary was not detected: scanner initialization failed: %v", err)}
 	}
 	defer sc.Close()
 	result := sc.Scan(context.Background(), canaryURL)
 	// Assert the block came from DLP specifically, not an allowlist or other layer.
 	// Core DLP (immutable safety floor) also counts as DLP detection.
-	return !result.Allowed && (result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP)
+	if !result.Allowed && (result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP) {
+		return &initCanaryResult{Detected: true, Detail: "Synthetic canary detected in the local URL scanner; client routing was not tested."}
+	}
+	if !result.Allowed {
+		return &initCanaryResult{Detail: fmt.Sprintf("Synthetic canary was blocked before DLP by scanner %q; DLP detection was not verified.", result.Scanner)}
+	}
+	return &initCanaryResult{Detail: "Canary was not detected by DLP. Use the config-specific check command in Next steps."}
 }
 
 func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
@@ -726,7 +760,11 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 	default:
 		_, _ = fmt.Fprintf(w, "  Config would be at: %s (dry run)\n", result.Setup.ConfigPath)
 	}
-	_, _ = fmt.Fprintf(w, "  Preset:             %s\n", result.Setup.Preset)
+	if result.Setup.SkippedExsting {
+		_, _ = fmt.Fprintln(w, "  Preset:             not applied (retained existing config)")
+	} else {
+		_, _ = fmt.Fprintf(w, "  Preset:             %s\n", result.Setup.Preset)
+	}
 	_, _ = fmt.Fprintln(w)
 
 	// Validate
@@ -748,7 +786,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (--no-auditor)")
 		case auditorStatusSkippedDryRun:
 			_, _ = fmt.Fprintln(w, "  Evidence auditor:   skipped (dry run)")
-		case auditorStatusSkippedNoSystemd, auditorStatusSkippedNoRecorderDir:
+		case auditorStatusSkippedNoSystemd, auditorStatusSkippedNoRecorderDir, auditorStatusSkippedUnreadableConfig:
 			_, _ = fmt.Fprintf(w, "  Evidence auditor:   skipped (%s)\n", result.Auditor.Detail)
 		}
 	}
@@ -758,7 +796,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 		if result.Canary.Skipped {
 			_, _ = fmt.Fprintln(w, "  Canary:             skipped")
 		} else if result.Canary.Detected {
-			_, _ = fmt.Fprintln(w, "  Canary:             detected (DLP working)")
+			_, _ = fmt.Fprintln(w, "  Canary:             detected (synthetic local URL scan only)")
 		} else {
 			_, _ = fmt.Fprintln(w, "  Canary:             not detected (check config)")
 		}
@@ -766,13 +804,19 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Next steps:")
-	if result.Setup.Written {
-		_, _ = fmt.Fprintf(w, "  pipelock run --config %s\n", result.Setup.ConfigPath)
-	} else {
-		_, _ = fmt.Fprintln(w, "  pipelock run --config <your-config-path>")
+	if !result.Setup.Written && !result.Setup.SkippedExsting {
+		_, _ = fmt.Fprintln(w, "  Dry run checked the proposed config only. Save it before running these commands.")
 	}
-	_, _ = fmt.Fprintln(w, "  pipelock discover --generate    (wrap unprotected MCP servers)")
-	_, _ = fmt.Fprintln(w, "  pipelock verify-install          (full verification suite)")
+	if runtime.GOOS == "windows" {
+		_, _ = fmt.Fprintln(w, "  Commands below use PowerShell quoting.")
+	}
+	pathArg := initCommandQuote(result.Setup.ConfigPath, runtime.GOOS)
+	_, _ = fmt.Fprintf(w, "  pipelock check --config %s --url %s\n", pathArg, initCommandQuote("https://github.com/test?key="+canaryToken(), runtime.GOOS))
+	_, _ = fmt.Fprintf(w, "  pipelock doctor --config %s\n", pathArg)
+	_, _ = fmt.Fprintf(w, "  pipelock verify-install --config %s     # temporary-proxy synthetic checks\n", pathArg)
+	_, _ = fmt.Fprintf(w, "  pipelock run --config %s\n", pathArg)
+	_, _ = fmt.Fprintln(w, "  pipelock discover --generate     # wrap unprotected MCP servers")
+	_, _ = fmt.Fprintln(w, "  These checks do not prove a real client is routed through Pipelock. Verify the client's wrapper/proxy configuration and a request from that client.")
 	_, _ = fmt.Fprintln(w)
 }
 
@@ -785,4 +829,12 @@ func canaryToken() string {
 		b.WriteByte('A')
 	}
 	return b.String()
+}
+
+// initCommandQuote renders copyable POSIX-shell or PowerShell arguments.
+func initCommandQuote(value, goos string) string {
+	if goos == "windows" {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return shellQuote(value)
 }

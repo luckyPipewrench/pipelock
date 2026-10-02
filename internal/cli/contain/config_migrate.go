@@ -154,7 +154,10 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := config.ValidateContainmentLoopbackServices(loopbackServices, proxyPort, time.Now()); err != nil {
+	// An expired declaration is a lapsed grant: staging the config must not
+	// refuse because of it, or an operator cannot re-run install to retire it.
+	// Malformed, duplicate, and proxy-port entries still refuse.
+	if _, _, err := config.ResolveContainmentLoopbackServices(loopbackServices, proxyPort, time.Now()); err != nil {
 		return nil, nil, err
 	}
 
@@ -282,13 +285,24 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 }
 
 // parseContainmentLoopbackServicesFromConfigBytes parses and validates
-// containment.loopback_services out of raw managed-config YAML bytes. It is
-// the single source both contain install (declaredContainmentLoopbackServices,
+// containment.loopback_services out of raw managed-config YAML bytes and
+// returns the EFFECTIVE set: expired entries are dropped, never returned. It
+// is the single source both contain install (declaredContainmentLoopbackServices,
 // which fails install closed on any error) and the boot/operator nft
 // reconciler (which instead falls back to zero declared services on any
 // error, logging why) call, so both consumers agree on exactly what counts
-// as a usable declared exception.
+// as a usable declared exception. An expired entry is a lapsed grant, not an
+// error; callers that must name it use the WithLapsed form.
 func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentLoopbackService, error) {
+	active, _, err := parseContainmentLoopbackServicesWithLapsed(data, proxyPort, now)
+	return active, err
+}
+
+// parseContainmentLoopbackServicesWithLapsed is the partitioning form of
+// parseContainmentLoopbackServicesFromConfigBytes: the usable entries, plus
+// the well-formed entries whose expires_at has passed. A malformed,
+// duplicate, or proxy-port entry is still an error, expired or not.
+func parseContainmentLoopbackServicesWithLapsed(data []byte, proxyPort int, now time.Time) ([]config.ContainmentLoopbackService, []config.LapsedContainmentGrant, error) {
 	root, err := parseSingleYAMLDocument(data)
 	if err != nil {
 		// A document with no YAML content at all -- empty, or only
@@ -296,22 +310,19 @@ func parseContainmentLoopbackServicesFromConfigBytes(data []byte, proxyPort int,
 		// containment key. Reporting that as an unhonorable declaration is a
 		// much louder claim than the file supports.
 		if errors.Is(err, io.EOF) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("parse managed config: %w", err)
+		return nil, nil, fmt.Errorf("parse managed config: %w", err)
 	}
 	mapping := documentMapping(root)
 	if mapping == nil {
-		return nil, errors.New("managed config must be a YAML mapping")
+		return nil, nil, errors.New("managed config must be a YAML mapping")
 	}
 	declared, err := containmentLoopbackServicesFromMapping(mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := config.ValidateContainmentLoopbackServices(declared, proxyPort, now); err != nil {
-		return nil, err
-	}
-	return declared, nil
+	return config.ResolveContainmentLoopbackServices(declared, proxyPort, now)
 }
 
 // containmentLoopbackServicesFromMapping is the outbound-exception sibling of

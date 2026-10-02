@@ -220,6 +220,9 @@ for conductor_doc in \
 	check_conductor_serve_scope "$conductor_doc"
 done
 
+echo "docs-check: checking example guide links"
+python3 "$repo_root/examples/check_guide_links.py"
+
 echo "docs-check: printing canonical local stats"
 make stats
 

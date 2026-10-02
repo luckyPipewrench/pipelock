@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -1346,6 +1347,7 @@ Key-free evidence capture:
 			if contractLoaderErr != nil {
 				return fmt.Errorf("building MCP contract loader: %w", contractLoaderErr)
 			}
+			defer startMCPContractWatch(heartbeatCtx, contractLoader, auditLogger)()
 			contractAgent := agentName
 			if contractAgent == "" {
 				contractAgent = captureProfile
@@ -2022,4 +2024,26 @@ func mcpSessionManagerOptions(cfg *config.Config, auditLogger *audit.Logger) pro
 		opts.AirlockCfg = &cfg.Airlock
 	}
 	return opts
+}
+
+// startMCPContractWatch keeps a promoted Learn and Lock manifest live for the
+// MCP proxy: the watcher swaps the loader's active set in place, and every
+// transport reads it through the one loader. A rejected or unreadable promote
+// keeps the last accepted set and is logged. The returned stop function
+// cancels the watcher and waits for it to exit; it is never nil.
+func startMCPContractWatch(ctx context.Context, loader *contractruntime.Loader, logger *audit.Logger) func() {
+	if loader == nil {
+		return func() {}
+	}
+	logWatchErr := func(err error) {
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext("CONTRACT_WATCH"), err)
+		}
+	}
+	stop, err := loader.StartWatch(ctx, logWatchErr)
+	if err != nil {
+		logWatchErr(fmt.Errorf("active manifest watcher not running, keeping last accepted contract: %w", err))
+		return func() {}
+	}
+	return stop
 }

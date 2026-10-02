@@ -12,10 +12,23 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# Roots scanned for *_test.go. Repo-wide so the no-sleep / no-fixed-port rule
-# is not silently scoped to a subtree: enterprise/ is the highest-concurrency
-# code in the tree and must be covered.
-roots=(internal cmd enterprise sdk bench)
+# Include tracked and new, non-ignored tests in every directory. Keep filenames
+# NUL-delimited so spaces cannot split a path into separate search arguments.
+test_list=$(mktemp)
+trap 'rm -f "$test_list"' EXIT
+if ! git ls-files -z --cached --others --exclude-standard -- '*_test.go' >"$test_list"; then
+  echo "check-test-stability: cannot discover Go tests." >&2
+  exit 2
+fi
+# Avoid mapfile so discovery also works with older Bash installations.
+test_files=()
+while IFS= read -r -d '' test_file; do
+  test_files+=("$test_file")
+done <"$test_list"
+if [[ ${#test_files[@]} -eq 0 ]]; then
+  echo "check-test-stability: no Go tests found; refusing an empty scan." >&2
+  exit 2
+fi
 
 allowlist="scripts/test-stability-allowlist.txt"
 status=0
@@ -38,9 +51,9 @@ scan() {
   pattern="$1"
   set +e
   if command -v rg >/dev/null 2>&1; then
-    out="$(rg -n "$pattern" "${roots[@]}" --glob '*_test.go')"
+    out="$(rg -nH -- "$pattern" "${test_files[@]}")"
   elif command -v grep >/dev/null 2>&1; then
-    out="$(grep -RInE --include='*_test.go' "$pattern" "${roots[@]}")"
+    out="$(grep -nHE -- "$pattern" "${test_files[@]}")"
   else
     echo "check-test-stability: neither ripgrep (rg) nor grep is on PATH." >&2
     echo "The stability gate must fail closed when it cannot scan." >&2
@@ -50,6 +63,7 @@ scan() {
   set -e
   if [[ "$rc" -gt 1 ]]; then
     echo "check-test-stability: search exited with $rc while scanning for: $pattern" >&2
+    echo "If a tracked test was intentionally removed, stage its deletion before rerunning." >&2
     echo "The stability gate must fail closed on scan errors, not pass with zero scans." >&2
     exit "$rc"
   fi

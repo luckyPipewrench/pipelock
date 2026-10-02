@@ -66,7 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 |-------|------|---------|-------------|
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
-| `enforce` | bool | `true` | When false, all blocks become warnings |
+| `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting
@@ -101,7 +101,7 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | Logs everything, blocks nothing. | Evaluation before enforcement |
+| **audit** | Logs findings, including core URL/request-body DLP, without normal blocking. SSRF, fail-closed transport checks, and adaptive escalation can still block. | Evaluation before enforcement |
 
 ## API Allowlist
 
@@ -1629,7 +1629,7 @@ To see `resolution_source: upstream_contract`, run a stdio-to-HTTP bridge with `
 
 The bridge runs the same upstream check again immediately before it forwards an approved call. A call that check refuses, or can't evaluate, resolves to block with `resolution_source: upstream_contract`.
 
-A standalone `pipelock mcp proxy` loads its contract once at startup. Promoting a new manifest while a call is held doesn't change what that process enforces, so the call is forwarded. A bridge restarted on a manifest that denies the upstream exits at startup and never holds a call. The release check therefore refuses a held call only when something else in the check changes during the hold, such as the scanner's verdict on the upstream URL (for example, DNS for the upstream host now resolving to an address the SSRF check blocks) or the check becoming unevaluable.
+A standalone `pipelock mcp proxy` watches its contract store, so promoting a manifest that denies the upstream while a call is held takes effect for that call once the watcher picks up the promotion, which is debounced by a fraction of a second: the release check sees the promoted manifest, the call isn't forwarded, and it resolves with `resolution_source: upstream_contract`. A bridge started on a manifest that already denies the upstream exits at startup and never holds a call. The release check can also refuse a held call when something else in the check changes during the hold, such as the scanner's verdict on the upstream URL (for example, DNS for the upstream host now resolving to an address the SSRF check blocks) or the check becoming unevaluable.
 
 Resolution sources include `approval`, `operator`, `authority`, `timeout`, `cancel`, `context`, `restart_recovery`, `kill_switch`, `capacity`, `cascade`, `cascade_limit`, `duplicate_defer_id`, `policy_reload`, `tool_inventory`, and `upstream_contract`.
 
@@ -1942,7 +1942,9 @@ containment:
       expires_at: 2026-12-01T00:00:00Z
 ```
 
-`host` must be `127.0.0.1` or `::1`; Pipelock rejects a hostname, wildcard, or CIDR. `port` is a single TCP port from 1 through 65535 and can't equal the proxy port. `owner`, `reason`, and a future RFC3339 `expires_at` value are required. An expired, malformed, duplicate, or proxy-port entry fails config validation.
+`host` must be `127.0.0.1` or `::1`; Pipelock rejects a hostname, wildcard, or CIDR. `port` is a single TCP port from 1 through 65535 and can't equal the proxy port. `owner`, `reason`, and a future RFC3339 `expires_at` value are required. A malformed, duplicate, or proxy-port entry fails config validation, even when its date has passed.
+
+An expired entry is a lapsed grant, not a broken file. Pipelock drops it from the effective set at startup and on every reload, so it is never exposed or rendered, and the unexpired entries beside it keep working. It prints a warning that names the entry and its owner, writes an audit log error with the method `CONTAINMENT_GRANT_LAPSED`, and emits a `containment_grant_lapsed` event. The warning repeats on every start and reload until you renew or remove the entry. `pipelock check` and `pipelock contain verify` still report it, and verify fails until you act.
 
 `contain install` creates a socket with the declared address and port inside the agent namespace. A socket-activated service in the host namespace forwards accepted connections to the same host loopback address and port. This exposes one listening socket without adding a network interface, gateway, or route.
 
@@ -1952,7 +1954,7 @@ This declaration isn't needed for a listener that the contained tool starts. The
 
 The built-in proxy uses a host pathname doorway: `pipelock-agent-proxy.socket` creates `/run/pipelock-agent-proxy.sock`, and the host `pipelock-agent-proxy.service` relay forwards it to the Pipelock listener. `pipelock-agent-netns-forward.service` creates the `127.0.0.1:<proxy-port>` listener inside the private namespace and connects it to the doorway. The runtime proxy URL stays `http://127.0.0.1:<proxy-port>`.
 
-Run `sudo pipelock contain reload-nft-rules` after every add, removal, or expiry. The command also reconciles the namespace socket units and their root-owned inventory. If the managed config is missing or unreadable, or the set contains a malformed or expired entry, reconciliation removes all declared forwarders and logs the reason. The base namespace and proxy socket stay active. See "Declared loopback services" in `contain-cli.md` for install, verification, and service-launch details.
+Run `sudo pipelock contain reload-nft-rules` after every add, removal, or expiry. The command also reconciles the namespace socket units and their root-owned inventory. If the managed config is missing or unreadable, or the set contains a malformed, duplicate, or proxy-port entry, reconciliation removes all declared forwarders and logs the reason. An expired entry removes only itself: its namespace socket and host relay are stopped and its units are deleted, the warning names it, and unexpired siblings keep their forwarders. The same service can then be declared again. The base namespace and proxy socket stay active. See "Declared loopback services" in `contain-cli.md` for install, verification, and service-launch details.
 
 ### Published services (containment)
 
@@ -1969,7 +1971,7 @@ containment:
       expires_at: 2026-12-01T00:00:00Z
 ```
 
-`name` is 1 to 32 lowercase letters, digits, or hyphens and names the systemd units. `agent_host` defaults to `127.0.0.1` and may only be `127.0.0.1` or `::1`. `agent_port` can't equal the proxy port, a declared `loopback_services` port, or another publication's port. `operator_user` names the one local account allowed to connect. `owner`, `reason`, and a future RFC3339 `expires_at` value are required, with the same validation and expiry handling as `loopback_services`.
+`name` is 1 to 32 lowercase letters, digits, or hyphens and names the systemd units. `agent_host` defaults to `127.0.0.1` and may only be `127.0.0.1` or `::1`. `agent_port` can't equal the proxy port, a declared `loopback_services` port, or another publication's port. `operator_user` names the one local account allowed to connect. `owner`, `reason`, and a future RFC3339 `expires_at` value are required, with the same validation and expiry handling as `loopback_services`: an expired publication is dropped from the effective set with a warning, its doorway closes at the next reconciliation, and other publications are unaffected.
 
 By default the host endpoint is the unix socket `/run/pipelock-contain-published/<name>.sock`, owned by `operator_user` with mode `0600`, so only that account and root can connect. `host_socket` overrides the path; it must be a clean absolute path under `/run/` ending in `.sock`, and Pipelock refuses paths inside its own containment directories. `host_listen: 127.0.0.1:<port>` (or `[::1]:<port>`) adds a loopback TCP endpoint as an explicit opt-in. Any local account can connect to a TCP endpoint, so prefer the socket.
 
@@ -3370,7 +3372,7 @@ learn_lock:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable the live-lock runtime. When false, the proxy ignores any active manifest and runs as scanner-only. When true, every other field below is required; partial config is rejected at startup so a half-wired lock never silently downgrades. |
 | `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty values use `shadow`; unknown values are rejected so a misspelled lock mode cannot silently change enforcement. |
-| `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime reads this directory when it builds the contract loader: at startup, and for `pipelock run` again on each config reload. It doesn't watch the directory, so a manifest promoted while `pipelock mcp proxy` is running applies only after a restart. Loading is fail-closed. A loader that already holds a manifest recovers a skipped promotion on reload by walking the accepted-history chain; a fresh start reads and validates `active.json` directly. |
+| `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime watches this directory (fsnotify) in both `pipelock run` and `pipelock mcp proxy`, so a promoted manifest applies live without a restart or config reload. A rejected or unreadable promotion is logged and the previous manifest stays in force. Loading is fail-closed. A loader that already holds a manifest recovers a skipped promotion on reload by walking the accepted-history chain; a fresh start reads and validates `active.json` directly. |
 | `roster_path` | `""` | Absolute path to the deployment-level roster JSON file naming which signing keys are authorised for which purposes. Required when `enabled` is true. The roster's root fingerprint must match `pinned_root_fingerprint`. |
 | `environment.id` | `""` | Deployment environment identifier (e.g., `production`, `staging`). Required key when `enabled` is true; non-empty value enforced by validation. |
 | `environment.tenant` | `""` | Tenant scope for contract activation. Required key when `enabled` is true; explicit empty string means intentionally unscoped tenant. |
@@ -3382,7 +3384,7 @@ The `environment` block is a required nested mapping with all three keys present
 
 Mode resolution: `EffectiveMode()` reads the field above, returning `live`, `shadow`, or `capture`; any other value resolves to `shadow`. This means a typo in `mode` does not silently enable enforcement.
 
-Restart vs reload: every `learn_lock` setting, including `mode` and `minimum_signatures`, requires a process restart to change. A `pipelock run` config reload that changes the block logs a warning and keeps the previous settings. It still rebuilds the contract loader from those settings, which is how a newly promoted manifest takes effect on reload.
+Restart vs reload: every `learn_lock` setting, including `mode` and `minimum_signatures`, requires a process restart to change. A `pipelock run` config reload that changes the block logs a warning and keeps the previous settings. A reload still rebuilds the contract loader from the running settings and moves the manifest watcher onto the new loader. This is separate from picking up a promoted manifest, which needs neither a restart nor a reload because the store is watched.
 
 ## Health Watchdog
 

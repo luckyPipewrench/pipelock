@@ -500,13 +500,16 @@ func canonicalManagedNFTLine(line string) string {
 
 // reconcileDeclaredContainmentLoopbackServicesForReload resolves the
 // declared loopback services whose namespace forwarders this reload should
-// reconcile, from the managed config rather than stale runtime state. On any failure to
-// read, parse, or validate the declaration -- unreadable managed config,
-// malformed YAML, or an expired/malformed entry -- it fails closed by
-// returning zero declared services (the agent stays contained and only
-// loses the extra declared service) and reports exactly which entry was
-// dropped and why via env.warn, rather than silently keeping whatever was
-// last rendered.
+// reconcile, from the managed config rather than stale runtime state. On any
+// failure to read, parse, or validate the declaration -- unreadable managed
+// config, malformed YAML, or a malformed, duplicate, or proxy-port entry -- it
+// fails closed by returning zero declared services (the agent stays contained
+// and only loses the extra declared service) and reports why via env.warn,
+// rather than silently keeping whatever was last rendered.
+//
+// An expired entry is a lapsed grant, not a malformed file: only that entry is
+// dropped (and named via env.warn), so its unexpired siblings keep their
+// forwarders.
 func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, proxyPort int) []config.ContainmentLoopbackService {
 	now := time.Now
 	if env.now != nil {
@@ -531,14 +534,27 @@ func reconcileDeclaredContainmentLoopbackServicesForReload(env *nftReloadEnv, pr
 		}
 		return nil
 	}
-	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, now())
+	declared, lapsed, err := parseContainmentLoopbackServicesWithLapsed(data, proxyPort, now())
 	if err != nil {
 		if env.warn != nil {
 			env.warn(fmt.Sprintf("containment: managed config %s declares containment.loopback_services that Pipelock cannot honor (%v); reloading without any declared loopback services until it is fixed — remove or re-approve the offending entry, then run `pipelock contain reload-nft-rules`", env.configPath, err))
 		}
 		return nil
 	}
+	warnLapsedContainmentGrants(env.warn, env.configPath, lapsed)
 	return declared
+}
+
+// warnLapsedContainmentGrants names every expired grant a reconciliation
+// dropped, so an operator can see exactly which declaration ended and that its
+// siblings were kept.
+func warnLapsedContainmentGrants(warn func(string), configPath string, lapsed []config.LapsedContainmentGrant) {
+	if warn == nil {
+		return
+	}
+	for _, grant := range lapsed {
+		warn(fmt.Sprintf("containment: %s in %s has expired and was dropped; its doorway is closed while unexpired %s stay in place — renew or remove the entry in the config, then run `pipelock contain reload-nft-rules`", grant.Message, configPath, grant.Kind))
+	}
 }
 
 // renderNFTManagedChainReloadScript removes complete, unlabelled legacy

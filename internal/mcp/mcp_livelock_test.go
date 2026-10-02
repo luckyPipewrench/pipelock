@@ -10,9 +10,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -23,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -111,6 +116,12 @@ func mcpLiveLockOpts(t *testing.T, mode contractruntime.Mode, rules ...contract.
 
 func mcpLiveLockConfig(t *testing.T) *config.Config {
 	t.Helper()
+	cfg, _ := mcpLiveLockConfigWithFixture(t)
+	return cfg
+}
+
+func mcpLiveLockConfigWithFixture(t *testing.T) (*config.Config, contractruntimetest.Fixture) {
+	t.Helper()
 	fixture := contractruntimetest.NewFixture(t)
 	storeDir := t.TempDir()
 	env := contractruntimetest.Env()
@@ -129,7 +140,7 @@ func mcpLiveLockConfig(t *testing.T) *config.Config {
 	cfg.LearnLock.PinnedRootFingerprint = fixture.RootFingerprint()
 	cfg.LearnLock.Environment = config.LearnLockEnvironment{ID: env.ID, Tenant: env.Tenant, DeploymentID: env.DeploymentID}
 	cfg.LearnLock.MinimumSignatures = 1
-	return cfg
+	return cfg, fixture
 }
 
 func mcpToolCall(tool, args string) string {
@@ -992,3 +1003,55 @@ func TestMCPToolLiveLock_HTTPWarnScannerThenContractBlocks(t *testing.T) {
 type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) { return len(p), nil }
+
+// TestMCPContractLoaderFromConfigWatchAppliesPromotion builds the loader the
+// way `pipelock mcp proxy` does and shows a promoted manifest applying with no
+// restart once the watcher runs, and a corrupt manifest keeping the last good
+// contract.
+func TestMCPContractLoaderFromConfigWatchAppliesPromotion(t *testing.T) {
+	cfg, fixture := mcpLiveLockConfigWithFixture(t)
+	loader, err := NewContractLoaderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("NewContractLoaderFromConfig: %v", err)
+	}
+	good := loader.Current()
+	if good == nil || good.Generation() != 1 {
+		t.Fatalf("initial current = %+v, want generation 1", good)
+	}
+	var reportedMu sync.Mutex
+	var reported []error
+	stop, err := loader.StartWatch(context.Background(), func(e error) {
+		reportedMu.Lock()
+		defer reportedMu.Unlock()
+		reported = append(reported, e)
+	})
+	if err != nil {
+		t.Fatalf("StartWatch: %v", err)
+	}
+	t.Cleanup(stop)
+
+	contractruntimetest.WriteSignedActiveStore(t, fixture, cfg.LearnLock.StoreDir, contractruntimetest.ActiveStoreOptions{
+		Agent:       mcpLiveLockAgent,
+		Rules:       []contract.Rule{mcpToolRule("r-allow", nil)},
+		Generation:  2,
+		PriorHash:   good.ManifestHash(),
+		Environment: contractruntimetest.Env(),
+	})
+	testwait.For(t, 10*time.Second, func() bool {
+		s := loader.Current()
+		return s != nil && s.Generation() == 2
+	}, "generation 2 to apply live")
+
+	applied := loader.Current()
+	if err := os.WriteFile(filepath.Join(cfg.LearnLock.StoreDir, "active.json"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	testwait.For(t, 10*time.Second, func() bool {
+		reportedMu.Lock()
+		defer reportedMu.Unlock()
+		return len(reported) > 0
+	}, "corrupt manifest to be reported")
+	if loader.Current() != applied {
+		t.Fatal("corrupt manifest changed the enforced contract")
+	}
+}

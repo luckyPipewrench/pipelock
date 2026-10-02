@@ -270,43 +270,57 @@ func containmentPublishedServicesFromMapping(root *yaml.Node) ([]config.Containm
 }
 
 // parseContainmentPublishedServicesFromConfigBytes is the single parser that
-// install (fails closed), reload (drops to zero publications), and verify
-// (reports FAIL) all use, so they agree on what counts as honorable.
+// install (fails closed), reload (drops to the unexpired set), and verify
+// (reports FAIL) all use, so they agree on what counts as honorable. It
+// returns the EFFECTIVE set: an expired publication is dropped, never
+// returned.
 func parseContainmentPublishedServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentPublishedService, error) {
+	active, _, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, now)
+	return active, err
+}
+
+// parseContainmentPublishedServicesWithLapsed also returns the well-formed
+// publications whose expires_at has passed. Malformed, duplicate, and
+// colliding entries are still an error, expired or not.
+func parseContainmentPublishedServicesWithLapsed(data []byte, proxyPort int, now time.Time) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, error) {
 	root, err := parseSingleYAMLDocument(data)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("parse managed config: %w", err)
+		return nil, nil, fmt.Errorf("parse managed config: %w", err)
 	}
 	mapping := documentMapping(root)
 	if mapping == nil {
-		return nil, errors.New("managed config must be a YAML mapping")
+		return nil, nil, errors.New("managed config must be a YAML mapping")
 	}
 	declared, loopback, err := containmentPublishedServicesFromMapping(mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := config.ValidateContainmentPublishedServices(declared, loopback, effectiveProxyPort(mapping, proxyPort), now); err != nil {
-		return nil, err
-	}
-	return declared, nil
+	return config.ResolveContainmentPublishedServices(declared, loopback, effectiveProxyPort(mapping, proxyPort), now)
 }
 
 func declaredContainmentPublishedServices(env *installEnv, proxyPort int) ([]config.ContainmentPublishedService, error) {
+	declared, _, err := declaredContainmentPublishedServicesWithLapsed(env, proxyPort)
+	return declared, err
+}
+
+// declaredContainmentPublishedServicesWithLapsed also returns the expired
+// publications it dropped, so install proceeds and retires their doorways.
+func declaredContainmentPublishedServicesWithLapsed(env *installEnv, proxyPort int) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, error) {
 	data, err := env.readFile(managedPipelockConfigPath(env))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	return declared, nil
+	return declared, lapsed, nil
 }
 
 // checkPublishedOperators resolves every operator before anything is written.
@@ -345,11 +359,17 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			if serviceOverride != nil {
 				services = append([]config.ContainmentPublishedService(nil), (*serviceOverride)...)
 			} else {
-				var err error
-				services, err = declaredContainmentPublishedServices(env, env.proxyPort)
+				var (
+					err    error
+					lapsed []config.LapsedContainmentGrant
+				)
+				services, lapsed, err = declaredContainmentPublishedServicesWithLapsed(env, env.proxyPort)
 				if err != nil {
 					return false, err
 				}
+				warnLapsedContainmentGrants(func(message string) {
+					_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
+				}, managedPipelockConfigPath(env), lapsed)
 			}
 			if err := checkPublishedOperators(env, services); err != nil {
 				return false, err
@@ -578,7 +598,9 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 
 // reconcileDeclaredContainmentPublishedServicesForReload fails closed: any
 // problem reading or validating the declaration yields zero publications, so
-// the reload closes every doorway rather than keeping a stale one open.
+// the reload closes every doorway rather than keeping a stale one open. An
+// expired publication is a lapsed grant, not a malformed file: only that
+// doorway closes and its unexpired siblings stay.
 func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, proxyPort int) []config.ContainmentPublishedService {
 	now := time.Now
 	if env.now != nil {
@@ -590,13 +612,14 @@ func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, p
 		// unreadable managed config; the outcome here is the same.
 		return nil
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, now())
 	if err != nil {
 		if env.warn != nil {
 			env.warn(fmt.Sprintf("containment: managed config %s declares containment.published_services that Pipelock cannot honor (%v); closing every published service until it is fixed — remove or re-approve the offending entry, then run `pipelock contain reload-nft-rules`", env.configPath, err))
 		}
 		return nil
 	}
+	warnLapsedContainmentGrants(env.warn, env.configPath, lapsed)
 	return declared
 }
 
@@ -604,18 +627,37 @@ func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, p
 // an unreadable config or an unhonorable declaration is a problem verify
 // reports, never an empty list it passes.
 func declaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentPublishedService, string, bool) {
+	services, lapsed, problem, unusable := readDeclaredContainmentPublishedServicesForVerify(env, proxyPort)
+	if len(lapsed) > 0 {
+		return services, lapsedPublishedServicesProblem(env.configPath, lapsed), true
+	}
+	return services, problem, unusable
+}
+
+// readDeclaredContainmentPublishedServicesForVerify is the partitioning form:
+// the unexpired publications and the expired ones, separately, so a probe can
+// still check the former while it FAILS naming the latter.
+func readDeclaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, string, bool) {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, "", false
+			return nil, nil, "", false
 		}
-		return nil, fmt.Sprintf("read managed config %s: %v", env.configPath, err), true
+		return nil, nil, fmt.Sprintf("read managed config %s: %v", env.configPath, err), true
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, err.Error(), true
+		return nil, nil, err.Error(), true
 	}
-	return declared, "", false
+	return declared, lapsed, "", false
+}
+
+func lapsedPublishedServicesProblem(configPath string, lapsed []config.LapsedContainmentGrant) string {
+	names := make([]string, 0, len(lapsed))
+	for _, grant := range lapsed {
+		names = append(names, grant.Message)
+	}
+	return fmt.Sprintf("managed config %s declares expired containment.published_services (%s); the expired entry is dropped from the effective set and unexpired entries are still checked -- renew or remove it, then run the reconciliation command", configPath, strings.Join(names, "; "))
 }
 
 // probePublishedServices reports each publication's live state. The failure
@@ -625,10 +667,25 @@ func declaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int)
 // is not dialing the agent's loopback), absent listener (the agent is not
 // serving). Any state the probe cannot read is a failure, never a pass.
 func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, agentNamespace string) (string, string) {
-	services, problem, unusable := declaredContainmentPublishedServicesForVerify(env, env.port)
+	services, lapsed, problem, unusable := readDeclaredContainmentPublishedServicesForVerify(env, env.port)
 	if unusable {
 		return statusFail, "containment.published_services cannot be honored: " + problem
 	}
+	status, detail := probePublishedServicesFor(ctx, env, holderPID, agentNamespace, services)
+	if len(lapsed) == 0 {
+		return status, detail
+	}
+	// An expired publication is a lapsed grant: the unexpired ones were still
+	// checked above, but the probe cannot pass while the managed config carries
+	// an entry Pipelock had to drop.
+	expired := "containment.published_services cannot be honored: " + lapsedPublishedServicesProblem(env.configPath, lapsed)
+	if status != statusPass {
+		return status, detail + "; also " + expired
+	}
+	return statusFail, expired
+}
+
+func probePublishedServicesFor(ctx context.Context, env *probeEnv, holderPID int, agentNamespace string, services []config.ContainmentPublishedService) (string, string) {
 	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
 	got, err := env.readFile(recordPath)
 	switch {
@@ -649,6 +706,7 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
+	var pending []string
 	for _, service := range services {
 		for _, item := range publishedServiceFiles(unitDir, env.pipelockTarget, env.proxyUserName, service) {
 			body, readErr := env.readFile(item.path)
@@ -694,13 +752,35 @@ func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, a
 		default:
 			return statusFail, fmt.Sprintf("published service %s: relay %s is in unrecognized state %q", service.Name, relay, state)
 		}
-		listening, listenErr := agentNamespaceListens(env, procRoot, holderPID, service.EffectiveAgentHost(), service.AgentPort)
+		owners, listenErr := agentNamespaceListeners(env, procRoot, holderPID, service.EffectiveAgentHost(), service.AgentPort)
 		if listenErr != nil {
 			return statusFail, fmt.Sprintf("published service %s: agent listener state unknown: %v", service.Name, listenErr)
 		}
-		if !listening {
+		if env.prelaunch {
+			// The agent that creates this listener has not started, so its
+			// absence is the expected state. What must still hold is that no
+			// other principal already owns the address inside the agent
+			// namespace: the relay would hand the operator to that occupant.
+			agentUID, uidErr := agentUIDString(env)
+			if uidErr != nil {
+				return statusFail, fmt.Sprintf("published service %s: agent listener state unknown: %v", service.Name, uidErr)
+			}
+			for _, owner := range owners {
+				if owner != agentUID {
+					return statusFail, fmt.Sprintf("published service %s: foreign occupant: %s is already listened on by uid %s, not %s (uid %s); stop it before launching", service.Name, publishedAgentTarget(service), owner, env.agentUserName, agentUID)
+				}
+			}
+			if len(owners) == 0 {
+				pending = append(pending, service.Name)
+			}
+			continue
+		}
+		if len(owners) == 0 {
 			return statusFail, fmt.Sprintf("published service %s: absent listener: no matching listener on %s (an IPv6-only or unknown wildcard does not count for an IPv4 target)", service.Name, publishedAgentTarget(service))
 		}
+	}
+	if len(pending) > 0 {
+		return statusPass, fmt.Sprintf("%d published service(s) wired; agent listener pending until the agent starts: %s (rerun `pipelock contain verify` once it is serving)", len(services), strings.Join(pending, ", "))
 	}
 	for _, service := range services {
 		if service.HostListen != "" {
@@ -739,13 +819,27 @@ func probePublishedSocketAccess(env *probeEnv, service config.ContainmentPublish
 	return statusPass, ""
 }
 
-// agentNamespaceListens reads the socket table of the namespace holder.
+// agentUIDString resolves the managed agent's numeric uid for owner checks.
+func agentUIDString(env *probeEnv) (string, error) {
+	if env.lookupUser == nil {
+		return "", errors.New("cannot resolve the agent uid: user lookup is unavailable")
+	}
+	agent, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return "", fmt.Errorf("lookup %s: %w", env.agentUserName, err)
+	}
+	return agent.Uid, nil
+}
+
+// agentNamespaceListeners reads the socket table of the namespace holder and
+// returns the owning uid of every matching listener ("?" when the owner field
+// is unreadable, which never equals a real uid).
 // /proc/<pid>/net/tcp reports the network namespace of that process (proc(5)),
 // so this sees the agent's listeners without entering the namespace. A
 // wildcard listener counts only within the target's address family.
-func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host string, port int) (bool, error) {
+func agentNamespaceListeners(env *probeEnv, procRoot string, holderPID int, host string, port int) ([]string, error) {
 	if holderPID <= 1 {
-		return false, fmt.Errorf("namespace holder pid %d is invalid", holderPID)
+		return nil, fmt.Errorf("namespace holder pid %d is invalid", holderPID)
 	}
 	want := map[string]bool{"00000000000000000000000000000000": true}
 	files := []string{"tcp6"}
@@ -758,6 +852,7 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 		want["0100007F"] = true
 		want["00000000"] = true
 	}
+	var owners []string
 	portHex := fmt.Sprintf("%04X", port)
 	for _, name := range files {
 		data, err := env.readFile(filepath.Join(procRoot, strconv.Itoa(holderPID), "net", name))
@@ -765,7 +860,7 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			if name == "tcp6" && errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return false, err
+			return nil, err
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(line)
@@ -774,9 +869,15 @@ func agentNamespaceListens(env *probeEnv, procRoot string, holderPID int, host s
 			}
 			addr, p, ok := strings.Cut(fields[1], ":")
 			if ok && p == portHex && fields[3] == "0A" && want[addr] {
-				return true, nil
+				owner := "?"
+				if len(fields) > 7 {
+					if _, convErr := strconv.ParseUint(fields[7], 10, 32); convErr == nil {
+						owner = fields[7]
+					}
+				}
+				owners = append(owners, owner)
 			}
 		}
 	}
-	return false, nil
+	return owners, nil
 }

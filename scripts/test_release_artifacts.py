@@ -389,12 +389,15 @@ class TestReleaseArtifacts(unittest.TestCase):
         # No path through the gate may leave successfully. Every `exit`
         # anywhere in a line (after `&&`, `;`, inside `if ... fi`) must carry
         # a literal nonzero status: `exit 0`, a bare `exit` and a computed
-        # status such as `exit "$?"` can all return success.
+        # status such as `exit "$?"` can all return success. Quotes and
+        # backslashes are dropped first so `'exit' 0` or `\exit 0` is still
+        # seen, and the status must be 1-255 because the shell takes it
+        # modulo 256 (`exit 256` succeeds).
         exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
         not_failing = [
             line for line in gate_lines
-            for status in exit_command.findall(line)
-            if not re.fullmatch(r"[1-9][0-9]*", status)
+            for status in exit_command.findall(re.sub(r"['\"\\]", "", line))
+            if not (re.fullmatch(r"[1-9][0-9]{0,2}", status) and int(status) <= 255)
         ]
         self.assertFalse(not_failing)
 

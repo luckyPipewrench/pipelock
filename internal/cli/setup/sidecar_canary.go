@@ -10,7 +10,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// sidecarCanaryResult holds the outcome of the in-cluster canary phase.
+// sidecarCanaryResult holds the outcome of the local synthetic canary phase.
 type sidecarCanaryResult struct {
 	Detected bool   `json:"detected"`
 	Skipped  bool   `json:"skipped"`
@@ -26,21 +26,23 @@ func runSidecarCanary(w io.Writer, cfg *config.Config, opts sidecarOptions, json
 
 	// Use the same canary URL and scanner as the IDE init flow.
 	canaryURL := "https://github.com/test?key=" + canaryToken()
-	detected := scanCanaryURL(cfg, canaryURL)
+	canary := scanCanaryResult(cfg, canaryURL)
 
-	if detected {
+	if canary.Detected {
 		return &sidecarCanaryResult{
 			Detected: true,
-			Detail:   "Canary secret detected in URL scan. DLP is working.",
+			Detail:   canary.Detail,
 		}
 	}
 
+	detail := fmt.Sprintf("%s After deploying the generated proxy, run inside its container: /pipelock check --config %s --url %s", canary.Detail,
+		initCommandQuote(sidecarConfigMount+"/"+sidecarConfigFile, "linux"), initCommandQuote(canaryURL, "linux"))
 	if !jsonOutput {
-		_, _ = fmt.Fprintln(w, "  Canary was not detected. Check the generated config.")
+		_, _ = fmt.Fprintln(w, "  "+detail)
 	}
 
 	return &sidecarCanaryResult{
 		Detected: false,
-		Detail:   "Canary was not detected. Run 'pipelock check --url \"" + canaryURL + "\"' to debug.",
+		Detail:   detail,
 	}
 }

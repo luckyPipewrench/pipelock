@@ -1,6 +1,6 @@
 # `pipelock verify-install`
 
-`pipelock verify-install` runs deterministic smoke checks against the local Pipelock binary and configuration. It proves the scanner surfaces are wired. Its direct-egress probes report a successful direct connection as exposure, while an unsuccessful connection without boundary attribution is inconclusive.
+`pipelock verify-install` runs deterministic smoke checks against the local Pipelock binary and configuration. It starts a temporary proxy with controlled fixtures; it does not connect to your running proxy or prove that a real client is routed through Pipelock. DNS-based SSRF and environment leak scanning are disabled for these fixtures. Its direct-egress probes report a successful direct connection as exposure, while an unsuccessful connection without boundary attribution is inconclusive.
 
 It complements `pipelock doctor`:
 
@@ -10,8 +10,10 @@ It complements `pipelock doctor`:
 ## Usage
 
 ```bash
-pipelock verify-install --no-color
+pipelock verify-install --config "/absolute/path/pipelock.yaml" --no-color
 ```
+
+Human output and JSON identify the same `config_file` and synthetic scope. Without `--config`, this command checks built-in test defaults, not the file saved by init. Disabled configured controls remain disabled and can fail checks.
 
 Useful flags:
 

@@ -5,11 +5,13 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"strings"
@@ -156,6 +158,62 @@ func directContainedProxyHealth(ctx context.Context, port int) error {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health endpoint returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+const (
+	selfNetworkNamespacePath = "/proc/self/ns/net"
+	hostNetworkNamespacePath = "/proc/1/ns/net"
+	// nsenterPath joins the initial namespace for the host-side half of
+	// service-posture.
+	nsenterPath = "/usr/bin/nsenter"
+)
+
+// requireHostNetworkNamespace fails closed unless the calling process is in the
+// initial network namespace (the one PID 1 holds). Unreadable identity is a
+// refusal, never a pass.
+func requireHostNetworkNamespace(readLink func(string) (string, error)) error {
+	if readLink == nil {
+		return errors.New("network namespace identity reader is unavailable")
+	}
+	self, err := readLink(selfNetworkNamespacePath)
+	if err != nil {
+		return fmt.Errorf("read own network namespace identity: %w", err)
+	}
+	host, err := readLink(hostNetworkNamespacePath)
+	if err != nil {
+		return fmt.Errorf("read host network namespace identity: %w", err)
+	}
+	if self == "" || self != host {
+		return fmt.Errorf("process network namespace %q is not the host network namespace %q; refusing to evaluate host containment state from another namespace", self, host)
+	}
+	return nil
+}
+
+// hostNamespaceCommandArgs builds the nsenter argv that re-runs this binary in
+// the initial network namespace.
+func hostNamespaceCommandArgs(self string, args []string) []string {
+	out := []string{"--net=" + hostNetworkNamespacePath, "--", self}
+	return append(out, args...)
+}
+
+// runInHostNetworkNamespace re-executes this binary with args in the initial
+// network namespace, streaming its output. The caller is root; joining a
+// namespace needs CAP_SYS_ADMIN, which systemd's credential prefix keeps.
+func runInHostNetworkNamespace(ctx context.Context, stdout, stderr io.Writer, args []string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate pipelock binary: %w", err)
+	}
+	// Fixed nsenter path; argv is this binary plus validated flags and the
+	// registered tool name.
+	cmd := exec.CommandContext(ctx, nsenterPath)
+	cmd.Args = append([]string{nsenterPath}, hostNamespaceCommandArgs(self, args)...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run host-namespace preflight: %w", err)
 	}
 	return nil
 }

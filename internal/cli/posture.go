@@ -422,11 +422,14 @@ func exitVerifyIntegrityError(
 }
 
 func formatVerifyAge(ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
 	elapsed := time.Since(ts)
 	if elapsed <= 0 {
 		return "0d"
 	}
-	days := int((elapsed + (24 * time.Hour) - time.Nanosecond) / (24 * time.Hour))
+	days := int(elapsed / (24 * time.Hour))
 	return fmt.Sprintf("%dd", days)
 }
 

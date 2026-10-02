@@ -773,7 +773,10 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// The learn-lock block constructs one coupled runtime: its trust root,
 	// roster, active-store watcher, environment binding, signature threshold,
 	// and enforcement mode must all agree. Server reload preserves this block
-	// from the running configuration rather than rebuilding that runtime.
+	// from the running configuration, so a changed setting is ignored. The
+	// proxy still rebuilds the contract loader from the preserved settings on
+	// reload and moves the active-manifest watcher onto it; a promoted
+	// manifest itself applies live through that watcher and needs no reload.
 	if old.LearnLock != updated.LearnLock {
 		warnings = append(warnings, advisoryReloadWarning("learn_lock", "learn_lock config changes require restart — ignored on reload"))
 	}

@@ -66,7 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 |-------|------|---------|-------------|
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
-| `enforce` | bool | `true` | When false, all blocks become warnings |
+| `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting

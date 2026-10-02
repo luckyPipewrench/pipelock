@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import yaml
 
-from check_codecov_upload_count import TopologyError, cells, check, main, upload_count
+from check_codecov_upload_count import MatrixBudget, TopologyError, cells, check, main, upload_count
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,12 +112,39 @@ class UploadCountTest(unittest.TestCase):
             with self.assertRaisesRegex(TopologyError, "256"):
                 cells({"strategy": {"matrix": {"a": list(range(300))}}}, "limit")
 
-    def test_excluded_candidates_consume_validation_budget(self) -> None:
+    def test_nested_matching_consumes_validation_budget(self) -> None:
+        matrices = [
+            ({"a": [0, 1], "exclude": [{"a": n} for n in range(2, 12)]}, 110),
+            ({"a": [0, 1], "include": [{"flag": str(n)} for n in range(10)]}, 160),
+        ]
+        for matrix, limit in matrices:
+            with self.subTest(matrix=matrix):
+                with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 1000):
+                    self.assertEqual(len(cells({"strategy": {"matrix": matrix}}, "budget")), 2)
+                with patch("check_codecov_upload_count.MAX_MATRIX_WORK", limit):
+                    # The input alone fits; repeated matching across rows does not.
+                    single = dict(matrix, a=[0])
+                    self.assertEqual(len(cells({"strategy": {"matrix": single}}, "budget")), 1)
+                    with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                        cells({"strategy": {"matrix": matrix}}, "budget")
+
+    def test_nested_objects_consume_comparison_budget(self) -> None:
+        left = {"outer": {"a": "value", "b": "other"}}
+        right = copy.deepcopy(left)
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 100):
+            self.assertTrue(MatrixBudget("nested").equal(left, right))
+            right["outer"]["b"] = "different"
+            self.assertFalse(MatrixBudget("nested").equal(left, right))
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 10):
+            with self.assertRaisesRegex(TopologyError, "validation work budget"):
+                MatrixBudget("nested").equal(left, copy.deepcopy(left))
+
+    def test_excluded_candidates_still_consume_work(self) -> None:
         matrix = {"a": [0, 1, 2], "b": [0, 1, 2],
                   "exclude": [{"a": n} for n in range(3)], "include": [{"a": 3}]}
-        with patch("check_codecov_upload_count.MAX_MATRIX_CANDIDATES", 9, create=True):
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 1000):
             self.assertEqual(cells({"strategy": {"matrix": matrix}}, "budget"), [{"a": 3}])
-        with patch("check_codecov_upload_count.MAX_MATRIX_CANDIDATES", 8, create=True):
+        with patch("check_codecov_upload_count.MAX_MATRIX_WORK", 80):
             with self.assertRaisesRegex(TopologyError, "validation work budget"):
                 cells({"strategy": {"matrix": matrix}}, "budget")
 

@@ -18,12 +18,48 @@ EXPRESSION = re.compile(r"\$\{\{")
 # GitHub Actions' documented maximum number of generated jobs per matrix.
 MAX_MATRIX_JOBS = 256
 # Local analysis budget, not a GitHub job limit. Permit substantial exclusion
-# filtering without letting the checker traverse an arbitrarily large product.
-MAX_MATRIX_CANDIDATES = MAX_MATRIX_JOBS ** 2
+# filtering while bounding validation, traversal, matching, and row updates.
+MAX_MATRIX_WORK = MAX_MATRIX_JOBS ** 2
 
 
 class TopologyError(ValueError):
     pass
+
+
+class MatrixBudget:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.remaining = MAX_MATRIX_WORK
+
+    def spend(self, amount: int = 1) -> None:
+        self.remaining -= amount
+        if self.remaining < 0:
+            raise TopologyError(
+                f"{self.label}.matrix exceeds validation work budget; "
+                "simplify matrix axes, exclusions, or includes"
+            )
+
+    def equal(self, left: object, right: object) -> bool:
+        pending = [(left, right)]
+        while pending:
+            left, right = pending.pop()
+            self.spend()
+            if isinstance(left, dict) and isinstance(right, dict):
+                if len(left) != len(right):
+                    return False
+                self.spend(len(left))
+                for key, value in left.items():
+                    self.spend(len(key) if isinstance(key, str) else 1)
+                    if key not in right:
+                        return False
+                    pending.append((value, right[key]))
+            elif isinstance(left, dict) or isinstance(right, dict):
+                return False
+            else:
+                self.spend(sum(len(value) for value in (left, right) if isinstance(value, str)))
+                if left != right:
+                    return False
+        return True
 
 
 def mapping(value: object, label: str) -> dict:
@@ -40,18 +76,22 @@ def enabled(value: object, label: str) -> bool:
     raise TopologyError(f"{label} has unsupported condition {value!r}")
 
 
-def static(value: object, label: str) -> None:
+def static(value: object, label: str, budget: MatrixBudget) -> None:
     pending = [(value, frozenset())]
     while pending:
         item, ancestors = pending.pop()
+        budget.spend()
         if isinstance(item, dict):
             if id(item) in ancestors:
                 raise TopologyError(f"{label} has a cyclic object")
+            budget.spend(len(ancestors) + 2 * len(item))
             branch = ancestors | {id(item)}
             for key, member in item.items():
                 pending.extend(((key, branch), (member, branch)))
-        elif isinstance(item, list) or EXPRESSION.search(str(item)):
-            raise TopologyError(f"{label} has a dynamic or unsupported list value")
+        else:
+            budget.spend(len(item) if isinstance(item, str) else 1)
+            if isinstance(item, list) or EXPRESSION.search(str(item)):
+                raise TopologyError(f"{label} has a dynamic or unsupported list value")
 
 
 def uploads_coverage(step: dict, label: str) -> bool:
@@ -74,37 +114,49 @@ def cells(job: dict, label: str) -> list[dict]:
     if "matrix" not in strategy:
         return [{}]
     matrix = mapping(strategy["matrix"], f"{label}.matrix")
+    budget = MatrixBudget(label)
+    budget.spend(len(matrix))
     axes = {key: value for key, value in matrix.items() if key not in ("include", "exclude")}
     for key, values in axes.items():
+        static(key, f"{label}.matrix axis", budget)
         if not isinstance(values, list) or not values:
             raise TopologyError(f"{label}.matrix.{key} must be a nonempty static list")
         for value in values:
-            static(value, f"{label}.matrix.{key}")
+            static(value, f"{label}.matrix.{key}", budget)
     for name in ("exclude", "include"):
         entries = matrix.get(name, [])
         if not isinstance(entries, list):
             raise TopologyError(f"{label}.matrix.{name} must be a static list")
         for entry in entries:
+            budget.spend()
             mapping(entry, f"{label}.matrix.{name} entry")
             if not entry:
                 raise TopologyError(f"{label}.matrix.{name} entry cannot be empty")
             for key, value in entry.items():
-                static(value, f"{label}.matrix.{name}.{key}")
+                static(key, f"{label}.matrix.{name} key", budget)
+                static(value, f"{label}.matrix.{name}.{key}", budget)
     for entry in matrix.get("exclude", []):
+        budget.spend(len(entry))
         if not set(entry) <= axes.keys():
             raise TopologyError(f"{label}.matrix.exclude references unknown axis")
     # Filter lazily: excluded combinations do not consume the generated-job
     # allowance, and an oversized matrix never becomes an unbounded list.
     result = []
     combinations = itertools.product(*axes.values()) if axes else ()
-    for examined, values in enumerate(combinations):
-        if examined == MAX_MATRIX_CANDIDATES:
-            raise TopologyError(
-                f"{label}.matrix exceeds validation work budget of {MAX_MATRIX_CANDIDATES} candidates; "
-                "simplify matrix axes or exclusions"
-            )
+    def matches(cell: dict, entry: dict, axes_only: bool = False) -> bool:
+        budget.spend()
+        for key, value in entry.items():
+            budget.spend(len(key) if isinstance(key, str) else 1)
+            if axes_only and key not in axes:
+                continue
+            if not budget.equal(cell.get(key), value):
+                return False
+        return True
+
+    for values in combinations:
+        budget.spend(1 + len(axes))
         cell = dict(zip(axes, values, strict=True))
-        if any(all(cell[key] == value for key, value in entry.items()) for entry in matrix.get("exclude", [])):
+        if any(matches(cell, entry) for entry in matrix.get("exclude", [])):
             continue
         if len(result) == MAX_MATRIX_JOBS:
             raise TopologyError(f"{label}.matrix exceeds {MAX_MATRIX_JOBS} generated jobs")
@@ -113,13 +165,15 @@ def cells(job: dict, label: str) -> list[dict]:
     # Keep the two sets separate, including for an include-only matrix.
     additions = []
     for entry in matrix.get("include", []):
-        matching = [cell for cell in result if all(cell.get(key) == value for key, value in entry.items() if key in axes)]
+        matching = [cell for cell in result if matches(cell, entry, axes_only=True)]
         if matching:
             for cell in matching:
+                budget.spend(len(entry))
                 cell.update(entry)
         else:
             if len(result) + len(additions) == MAX_MATRIX_JOBS:
                 raise TopologyError(f"{label}.matrix exceeds {MAX_MATRIX_JOBS} generated jobs")
+            budget.spend(len(entry))
             additions.append(dict(entry))
     result.extend(additions)
     if not result:

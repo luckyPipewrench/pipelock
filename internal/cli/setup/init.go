@@ -61,7 +61,7 @@ type initDiscoverResult struct {
 type initSetupResult struct {
 	ConfigPath     string `json:"config_path"`
 	Source         string `json:"config_source"`
-	Preset         string `json:"preset,omitempty"`
+	Preset         string `json:"preset"`
 	Written        bool   `json:"written"`
 	SkippedExsting bool   `json:"skipped_existing,omitempty"`
 }
@@ -378,6 +378,8 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		if err := enc.Encode(result); err != nil {
 			return cliutil.ExitCodeError(initExitError, fmt.Errorf("encoding JSON: %w", err))
 		}
+	} else if configLoadErr != nil {
+		_, _ = fmt.Fprintf(w, "Fix the configuration file %q and rerun the same pipelock init command.\n", configPath)
 	} else {
 		printProof(w, result)
 	}
@@ -391,7 +393,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		return &cliutil.ExitError{Err: fmt.Errorf("config validation failed"), Code: initExitFailure}
 	}
 	if result.Canary != nil && !result.Canary.Skipped && !result.Canary.Detected {
-		return &cliutil.ExitError{Err: fmt.Errorf("canary secret was not detected by DLP"), Code: initExitFailure}
+		return &cliutil.ExitError{Err: fmt.Errorf("%s", result.Canary.Detail), Code: initExitFailure}
 	}
 
 	return nil
@@ -709,32 +711,29 @@ func runInitCanary(cfg *config.Config) *initCanaryResult {
 	// by allowlist before the DLP scanner runs.
 	canaryURL := "https://github.com/test?key=" + canaryToken()
 
-	// Build a scanner from the config and test.
-	scanResult := scanCanaryURL(cfg, canaryURL)
-
-	if scanResult {
-		return &initCanaryResult{
-			Detected: true,
-			Detail:   "Synthetic canary detected in the local URL scanner; client routing was not tested.",
-		}
-	}
-
-	return &initCanaryResult{
-		Detected: false,
-		Detail:   "Canary was not detected by DLP. Use the config-specific check command in Next steps.",
-	}
+	return scanCanaryResult(cfg, canaryURL)
 }
 
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
+	return scanCanaryResult(cfg, canaryURL).Detected
+}
+
+func scanCanaryResult(cfg *config.Config, canaryURL string) *initCanaryResult {
 	sc, err := scanner.New(cfg)
 	if err != nil {
-		return false
+		return &initCanaryResult{Detail: fmt.Sprintf("Canary was not detected: scanner initialization failed: %v", err)}
 	}
 	defer sc.Close()
 	result := sc.Scan(context.Background(), canaryURL)
 	// Assert the block came from DLP specifically, not an allowlist or other layer.
 	// Core DLP (immutable safety floor) also counts as DLP detection.
-	return !result.Allowed && (result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP)
+	if !result.Allowed && (result.Scanner == scanner.ScannerDLP || result.Scanner == scanner.ScannerCoreDLP) {
+		return &initCanaryResult{Detected: true, Detail: "Synthetic canary detected in the local URL scanner; client routing was not tested."}
+	}
+	if !result.Allowed {
+		return &initCanaryResult{Detail: fmt.Sprintf("Synthetic canary was blocked before DLP by scanner %q; DLP detection was not verified.", result.Scanner)}
+	}
+	return &initCanaryResult{Detail: "Canary was not detected by DLP. Use the config-specific check command in Next steps."}
 }
 
 func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {

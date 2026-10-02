@@ -270,6 +270,18 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 				if !errors.As(err, &exitErr) || exitErr.Code != initExitError || !strings.Contains(err.Error(), "loading config") || !strings.Contains(err.Error(), path) {
 					t.Fatalf("expected retained-config load error with exit %d, got %v", initExitError, err)
 				}
+				if !tc.jsonOutput && (strings.Contains(out.String(), "Next steps:") || !strings.Contains(out.String(), "Fix the configuration file") || !strings.Contains(out.String(), "rerun the same pipelock init command")) {
+					t.Fatalf("expected only file-repair guidance after load failure: %s", &out)
+				}
+			}
+			if tc.name == "retained strict blocks before DLP" {
+				var exitErr *cliutil.ExitError
+				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "allowlist"`) {
+					t.Fatalf("expected allowlist-stage canary failure, got %v", err)
+				}
+				if !strings.Contains(out.String(), err.Error()) {
+					t.Fatalf("canary failure detail missing from output: %s", &out)
+				}
 			}
 			if tc.jsonOutput {
 				var result initResult
@@ -282,6 +294,17 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 				if result.Canary == nil || !result.Canary.Skipped || result.Canary.Detected {
 					t.Fatalf("expected skipped canary without detection: %+v", result.Canary)
 				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(out.Bytes(), &fields); err != nil {
+					t.Fatal(err)
+				}
+				var setupFields map[string]json.RawMessage
+				if err := json.Unmarshal(fields["setup"], &setupFields); err != nil {
+					t.Fatal(err)
+				}
+				if string(setupFields["preset"]) != `""` {
+					t.Fatalf("retained preset must remain present and empty: %s", fields["setup"])
+				}
 			}
 			got, err := os.ReadFile(filepath.Clean(path))
 			if err != nil || string(got) != tc.contents {
@@ -291,6 +314,26 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 				t.Fatalf("retained config created keys: %v", err)
 			}
 		})
+	}
+}
+
+func TestSidecarCanaryReportsSyntheticScopeAndConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	var out bytes.Buffer
+	result := runSidecarCanary(&out, cfg, sidecarOptions{}, false)
+	if !result.Detected || !strings.Contains(result.Detail, "client routing was not tested") || strings.Contains(result.Detail, "DLP is working") {
+		t.Fatalf("unexpected synthetic success: %+v", result)
+	}
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.vendor.example"}
+	result = runSidecarCanary(&out, cfg, sidecarOptions{}, false)
+	want := "/pipelock check --config " + initCommandQuote(sidecarConfigMount+"/"+sidecarConfigFile, "linux") + " --url "
+	if result.Detected || !strings.Contains(result.Detail, "blocked before DLP") || !strings.Contains(result.Detail, want) || !strings.Contains(result.Detail, "inside its container") {
+		t.Fatalf("unexpected canary recovery: %+v", result)
+	}
+	if !strings.Contains(out.String(), result.Detail) {
+		t.Fatalf("missing human recovery: %s", &out)
 	}
 }
 

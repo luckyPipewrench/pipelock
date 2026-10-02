@@ -5,17 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Mediation envelope
 
-The mediation envelope is sideband metadata that pipelock attaches to every
-proxied request. It tells downstream services what pipelock decided (verdict,
-action), who the agent is (actor identity and trust level), and how to
-correlate the decision with the flight recorder (receipt ID).
+When enabled, the mediation envelope adds sideband metadata to requests Pipelock forwards on [supported transports](../mediation-envelope.md#transport-coverage). It tells downstream services the verdict and action, the actor identity and trust level, and the receipt ID for correlation with the flight recorder. Blocked requests do not reach downstream services; use signed receipts to audit those decisions.
 
 ## When to use
 
 Enable the mediation envelope when:
 
-- A backend service needs to know whether pipelock allowed, blocked, or warned
-  on the request without parsing pipelock's log stream.
+- A backend service needs the verdict for a forwarded request without parsing Pipelock's log stream.
 - You are building a trust chain where each hop carries evidence of the
   previous hop's security decision.
 - You want to correlate backend audit logs with pipelock's flight recorder
@@ -98,22 +94,7 @@ the `com.pipelock/mediation` key:
 
 ## Envelope fields
 
-| Wire key | Name | Description |
-|----------|------|-------------|
-| `v` | Version | Schema version (currently `1`) |
-| `act` | Action | Classified action type: `read`, `derive`, `write`, `delegate`, `authorize`, `spend`, `commit`, `actuate`, `unclassified` |
-| `vd` | Verdict | Enforcement verdict: `allow`, `block`, or `warn` |
-| `se` | SideEffect | Side effect description (empty when none) |
-| `actor` | Actor | Agent identity string |
-| `aa` | ActorAuth | Trust level: `bound` (infra-set), `matched` (profile match), `config-default` (operator-set default), `self-declared` (unverified) |
-| `ph` | PolicyHash | Truncated SHA-256 of the active config (16 bytes, base64 in MCP) |
-| `rid` | ReceiptID | UUIDv7 receipt ID for flight recorder correlation |
-| `ts` | Timestamp | Unix epoch seconds |
-| `taint` | SessionTaint | Session taint state (omitted when clean) |
-| `task` | TaskID | Task boundary identifier (omitted when no active task) |
-| `auth` | AuthorityKind | Authority type backing this action (omitted when absent) |
-| `authr` | AuthorityRef | Authority reference (omitted when absent) |
-| `reauth` | RequiresReauth | True when the action requires re-authorization |
+The [wire-format reference](../mediation-envelope.md#wire-format) defines each field, its type, and when it is present, including the optional redirect counter `hop`. Use that reference when implementing a consumer; the HTTP and MCP examples above illustrate the same decision on each transport.
 
 ## Inbound stripping
 

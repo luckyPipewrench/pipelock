@@ -66,7 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 |-------|------|---------|-------------|
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
-| `enforce` | bool | `true` | When false, all blocks become warnings |
+| `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting
@@ -101,7 +101,7 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | Logs everything, blocks nothing. | Evaluation before enforcement |
+| **audit** | Logs findings, including core URL/request-body DLP, without normal blocking. SSRF, fail-closed transport checks, and adaptive escalation can still block. | Evaluation before enforcement |
 
 ## API Allowlist
 

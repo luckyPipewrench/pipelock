@@ -62,7 +62,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | Reason | When |
 |---|---|
 | `airlock_active` | Adaptive enforcement raised the airlock; all egress denied for the cooldown window. |
-| `kill_switch_active` | The four-source kill switch is asserted (config, API, SIGUSR1, or sentinel file). |
+| `kill_switch_active` | The kill switch is asserted by an active source (config, API, Conductor remote kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, or sentinel file). |
 | `envelope_verify_failed` | Inbound mediation envelope verification failed. |
 | `outbound_envelope_failed` | Outbound envelope injection, refresh, or signing failed before forwarding. |
 | `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and the required allow-path receipt could not be emitted before forwarding. |

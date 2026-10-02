@@ -88,7 +88,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | Code | When | Severity | Retry |
 |---|---|---|---|
 | `airlock_active` | Adaptive enforcement escalated this session into the airlock tier. | `critical` | `transient` |
-| `kill_switch_active` | One of the four kill-switch sources is active. | `critical` | `transient` |
+| `kill_switch_active` | A kill-switch activation source is active (config, API, Conductor remote kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, or sentinel file). | `critical` | `transient` |
 | `envelope_verify_failed` | Inbound mediation envelope did not verify (signature / replay / trust). | `critical` | `none` |
 | `outbound_envelope_failed` | Outbound envelope injection / refresh / signing failed before the request left pipelock. Distinct from `envelope_verify_failed` so agents can tell inbound verification from outbound emission. | `critical` | `transient` |
 | `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and Pipelock could not emit the allow-path receipt before forwarding. The action is denied so there is no unreceipted upstream traffic. | `critical` | `transient` |

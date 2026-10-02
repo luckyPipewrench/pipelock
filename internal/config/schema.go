@@ -1558,9 +1558,10 @@ func (f CrossRequestFragments) ResolvedMaxSessions() int {
 
 // KillSwitch configures the emergency deny-all kill switch.
 // When active, all requests are rejected except health/metrics endpoints
-// and allowlisted IPs. Six activation sources (config, API, Conductor remote
-// kill, Conductor stale bundle, SIGUSR1, sentinel file) are OR-composed: any
-// one active means the kill switch is engaged.
+// and allowlisted IPs (IP allowlist exemptions do not apply during uncertain
+// Conductor apply). Seven activation sources (config, API, Conductor remote
+// kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, sentinel
+// file) are OR-composed: any one active means the kill switch is engaged.
 type KillSwitch struct {
 	Enabled       bool     `yaml:"enabled"`
 	SentinelFile  string   `yaml:"sentinel_file"`

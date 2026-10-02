@@ -371,6 +371,14 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn(expected_condition, normalized_gate)
         self.assertNotIn("== 'failure'", normalized_gate)
 
+        # The condition alone proves nothing if the step it guards succeeds:
+        # the gate's executable body must end the job with a nonzero exit.
+        gate_runs = [script for name, script in self._job_runs("release-build") if name == "Verify attestation"]
+        self.assertEqual(len(gate_runs), 1, "expected exactly one main attestation gate")
+        gate_lines = self._executable_lines(gate_runs[0])
+        self.assertEqual(gate_lines[-1], "exit 1")
+        self.assertFalse(any(line.startswith("exit 0") for line in gate_lines))
+
     def test_verified_staging_indexes_promote_only_in_protected_job(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")
         proof_gate = self.workflow.index("- name: Verify attestation")

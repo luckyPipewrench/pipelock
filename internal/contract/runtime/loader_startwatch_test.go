@@ -175,6 +175,7 @@ func TestLoader_StartWatch_StopIsIdempotentAndHaltsWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWatch: %v", err)
 	}
+	prior := loader.Current().ManifestHash()
 	stop()
 	stop() // second call must not block or panic
 
@@ -182,6 +183,19 @@ func TestLoader_StartWatch_StopIsIdempotentAndHaltsWatcher(t *testing.T) {
 	// working by hand.
 	if loader.Current() == nil {
 		t.Fatal("stop dropped the active set")
+	}
+
+	// The watcher is gone: a promote is not picked up on its own...
+	writeSignedActiveStore(t, fixture, storeDir, 2, prior, env)
+	if waitFor(func() bool { return loader.Current().Generation() == 2 }) {
+		t.Fatal("a promote applied after stop, so the watcher is still running")
+	}
+	// ...but an explicit Reload still applies it.
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload after stop: %v", err)
+	}
+	if got := loader.Current().Generation(); got != 2 {
+		t.Fatalf("generation after manual Reload = %d, want 2", got)
 	}
 }
 

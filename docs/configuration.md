@@ -101,7 +101,7 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | Logs configurable findings without enforcing them. Immutable safety floors still apply. | Evaluation before enforcement |
+| **audit** | Logs findings, including core URL/request-body DLP, without normal blocking. SSRF, fail-closed transport checks, and adaptive escalation can still block. | Evaluation before enforcement |
 
 ## API Allowlist
 

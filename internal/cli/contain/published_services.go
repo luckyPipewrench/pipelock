@@ -270,43 +270,57 @@ func containmentPublishedServicesFromMapping(root *yaml.Node) ([]config.Containm
 }
 
 // parseContainmentPublishedServicesFromConfigBytes is the single parser that
-// install (fails closed), reload (drops to zero publications), and verify
-// (reports FAIL) all use, so they agree on what counts as honorable.
+// install (fails closed), reload (drops to the unexpired set), and verify
+// (reports FAIL) all use, so they agree on what counts as honorable. It
+// returns the EFFECTIVE set: an expired publication is dropped, never
+// returned.
 func parseContainmentPublishedServicesFromConfigBytes(data []byte, proxyPort int, now time.Time) ([]config.ContainmentPublishedService, error) {
+	active, _, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, now)
+	return active, err
+}
+
+// parseContainmentPublishedServicesWithLapsed also returns the well-formed
+// publications whose expires_at has passed. Malformed, duplicate, and
+// colliding entries are still an error, expired or not.
+func parseContainmentPublishedServicesWithLapsed(data []byte, proxyPort int, now time.Time) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, error) {
 	root, err := parseSingleYAMLDocument(data)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("parse managed config: %w", err)
+		return nil, nil, fmt.Errorf("parse managed config: %w", err)
 	}
 	mapping := documentMapping(root)
 	if mapping == nil {
-		return nil, errors.New("managed config must be a YAML mapping")
+		return nil, nil, errors.New("managed config must be a YAML mapping")
 	}
 	declared, loopback, err := containmentPublishedServicesFromMapping(mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := config.ValidateContainmentPublishedServices(declared, loopback, effectiveProxyPort(mapping, proxyPort), now); err != nil {
-		return nil, err
-	}
-	return declared, nil
+	return config.ResolveContainmentPublishedServices(declared, loopback, effectiveProxyPort(mapping, proxyPort), now)
 }
 
 func declaredContainmentPublishedServices(env *installEnv, proxyPort int) ([]config.ContainmentPublishedService, error) {
+	declared, _, err := declaredContainmentPublishedServicesWithLapsed(env, proxyPort)
+	return declared, err
+}
+
+// declaredContainmentPublishedServicesWithLapsed also returns the expired
+// publications it dropped, so install proceeds and retires their doorways.
+func declaredContainmentPublishedServicesWithLapsed(env *installEnv, proxyPort int) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, error) {
 	data, err := env.readFile(managedPipelockConfigPath(env))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	return declared, nil
+	return declared, lapsed, nil
 }
 
 // checkPublishedOperators resolves every operator before anything is written.
@@ -345,11 +359,17 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			if serviceOverride != nil {
 				services = append([]config.ContainmentPublishedService(nil), (*serviceOverride)...)
 			} else {
-				var err error
-				services, err = declaredContainmentPublishedServices(env, env.proxyPort)
+				var (
+					err    error
+					lapsed []config.LapsedContainmentGrant
+				)
+				services, lapsed, err = declaredContainmentPublishedServicesWithLapsed(env, env.proxyPort)
 				if err != nil {
 					return false, err
 				}
+				warnLapsedContainmentGrants(func(message string) {
+					_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
+				}, managedPipelockConfigPath(env), lapsed)
 			}
 			if err := checkPublishedOperators(env, services); err != nil {
 				return false, err
@@ -578,7 +598,9 @@ func removePublishedServices(ctx context.Context, env *installEnv) error {
 
 // reconcileDeclaredContainmentPublishedServicesForReload fails closed: any
 // problem reading or validating the declaration yields zero publications, so
-// the reload closes every doorway rather than keeping a stale one open.
+// the reload closes every doorway rather than keeping a stale one open. An
+// expired publication is a lapsed grant, not a malformed file: only that
+// doorway closes and its unexpired siblings stay.
 func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, proxyPort int) []config.ContainmentPublishedService {
 	now := time.Now
 	if env.now != nil {
@@ -590,13 +612,14 @@ func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, p
 		// unreadable managed config; the outcome here is the same.
 		return nil
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, now())
 	if err != nil {
 		if env.warn != nil {
 			env.warn(fmt.Sprintf("containment: managed config %s declares containment.published_services that Pipelock cannot honor (%v); closing every published service until it is fixed — remove or re-approve the offending entry, then run `pipelock contain reload-nft-rules`", env.configPath, err))
 		}
 		return nil
 	}
+	warnLapsedContainmentGrants(env.warn, env.configPath, lapsed)
 	return declared
 }
 
@@ -604,18 +627,37 @@ func reconcileDeclaredContainmentPublishedServicesForReload(env *nftReloadEnv, p
 // an unreadable config or an unhonorable declaration is a problem verify
 // reports, never an empty list it passes.
 func declaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentPublishedService, string, bool) {
+	services, lapsed, problem, unusable := readDeclaredContainmentPublishedServicesForVerify(env, proxyPort)
+	if len(lapsed) > 0 {
+		return services, lapsedPublishedServicesProblem(env.configPath, lapsed), true
+	}
+	return services, problem, unusable
+}
+
+// readDeclaredContainmentPublishedServicesForVerify is the partitioning form:
+// the unexpired publications and the expired ones, separately, so a probe can
+// still check the former while it FAILS naming the latter.
+func readDeclaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, string, bool) {
 	data, err := env.readFile(env.configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, "", false
+			return nil, nil, "", false
 		}
-		return nil, fmt.Sprintf("read managed config %s: %v", env.configPath, err), true
+		return nil, nil, fmt.Sprintf("read managed config %s: %v", env.configPath, err), true
 	}
-	declared, err := parseContainmentPublishedServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, err.Error(), true
+		return nil, nil, err.Error(), true
 	}
-	return declared, "", false
+	return declared, lapsed, "", false
+}
+
+func lapsedPublishedServicesProblem(configPath string, lapsed []config.LapsedContainmentGrant) string {
+	names := make([]string, 0, len(lapsed))
+	for _, grant := range lapsed {
+		names = append(names, grant.Message)
+	}
+	return fmt.Sprintf("managed config %s declares expired containment.published_services (%s); the expired entry is dropped from the effective set and unexpired entries are still checked -- renew or remove it, then run the reconciliation command", configPath, strings.Join(names, "; "))
 }
 
 // probePublishedServices reports each publication's live state. The failure
@@ -625,10 +667,25 @@ func declaredContainmentPublishedServicesForVerify(env *probeEnv, proxyPort int)
 // is not dialing the agent's loopback), absent listener (the agent is not
 // serving). Any state the probe cannot read is a failure, never a pass.
 func probePublishedServices(ctx context.Context, env *probeEnv, holderPID int, agentNamespace string) (string, string) {
-	services, problem, unusable := declaredContainmentPublishedServicesForVerify(env, env.port)
+	services, lapsed, problem, unusable := readDeclaredContainmentPublishedServicesForVerify(env, env.port)
 	if unusable {
 		return statusFail, "containment.published_services cannot be honored: " + problem
 	}
+	status, detail := probePublishedServicesFor(ctx, env, holderPID, agentNamespace, services)
+	if len(lapsed) == 0 {
+		return status, detail
+	}
+	// An expired publication is a lapsed grant: the unexpired ones were still
+	// checked above, but the probe cannot pass while the managed config carries
+	// an entry Pipelock had to drop.
+	expired := "containment.published_services cannot be honored: " + lapsedPublishedServicesProblem(env.configPath, lapsed)
+	if status != statusPass {
+		return status, detail + "; also " + expired
+	}
+	return statusFail, expired
+}
+
+func probePublishedServicesFor(ctx context.Context, env *probeEnv, holderPID int, agentNamespace string, services []config.ContainmentPublishedService) (string, string) {
 	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
 	got, err := env.readFile(recordPath)
 	switch {

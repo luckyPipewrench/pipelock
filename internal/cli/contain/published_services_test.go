@@ -235,10 +235,42 @@ func TestInstallPublishedServicesRefusesBadOperators(t *testing.T) {
 	}
 }
 
-func TestInstallPublishedServicesRefusesExpiredDeclaration(t *testing.T) {
-	env, _ := publishedInstallEnv(t, expiredPublishedTestConfig(t))
-	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("expired declaration: err=%v", err)
+func TestInstallPublishedServicesDropsExpiredDeclaration(t *testing.T) {
+	env, runner := publishedInstallEnv(t, expiredPublishedTestConfig(t))
+	changed, err := stepInstallPublishedServices(nil).apply(context.Background(), env)
+	if err != nil || changed || len(runner.calls) != 0 {
+		t.Fatalf("an expired publication is a lapsed grant and must not fail install or publish anything: changed=%v err=%v calls=%v", changed, err, runner.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), "pipelock-published-viewer.socket")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expired publication was rendered: %v", statErr)
+	}
+}
+
+func TestInstallPublishedServicesStillRefusesMalformedExpiredEntry(t *testing.T) {
+	body := strings.Replace(expiredPublishedTestConfig(t), "operator_user: operator", "operator_user: Not A User", 1)
+	env, _ := publishedInstallEnv(t, body)
+	if _, err := stepInstallPublishedServices(nil).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "operator_user") {
+		t.Fatalf("a malformed entry must still fail closed even when it is also expired: err=%v", err)
+	}
+}
+
+func TestReloadDropsOnlyExpiredPublications(t *testing.T) {
+	var warned []string
+	two := publishedTestConfig +
+		"    - name: console\n      agent_port: 5901\n      operator_user: operator\n" +
+		"      owner: ops\n      reason: second\n      expires_at: \"2000-01-01T00:00:00Z\"\n"
+	env := &nftReloadEnv{
+		configPath: "/etc/pipelock/pipelock.yaml",
+		readFile:   func(string) ([]byte, error) { return []byte(two), nil },
+		now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+		warn:       func(m string) { warned = append(warned, m) },
+	}
+	got := reconcileDeclaredContainmentPublishedServicesForReload(env, 8888)
+	if len(got) != 1 || got[0].Name != "viewer" {
+		t.Fatalf("effective publications = %+v, want only the unexpired viewer", got)
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "console") || !strings.Contains(warned[0], "expired") {
+		t.Fatalf("warnings = %v, want one naming the expired console publication", warned)
 	}
 }
 
@@ -246,17 +278,19 @@ func TestReloadClosesPublicationsOnUnhonorableDeclaration(t *testing.T) {
 	var warned []string
 	env := &nftReloadEnv{
 		configPath: "/etc/pipelock/pipelock.yaml",
-		readFile:   func(string) ([]byte, error) { return []byte(publishedTestConfig), nil },
-		now:        func() time.Time { return time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC) },
-		warn:       func(m string) { warned = append(warned, m) },
+		readFile: func(string) ([]byte, error) {
+			return []byte(strings.Replace(publishedTestConfig, "operator_user: operator", "operator_user: Not A User", 1)), nil
+		},
+		now:  func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+		warn: func(m string) { warned = append(warned, m) },
 	}
 	if got := reconcileDeclaredContainmentPublishedServicesForReload(env, 8888); got != nil {
-		t.Fatalf("expired publication must reconcile to none, got %+v", got)
+		t.Fatalf("malformed publication must reconcile to none, got %+v", got)
 	}
 	if len(warned) != 1 || !strings.Contains(warned[0], "closing every published service") {
 		t.Fatalf("warnings = %v", warned)
 	}
-	env.now = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	env.readFile = func(string) ([]byte, error) { return []byte(publishedTestConfig), nil }
 	if got := reconcileDeclaredContainmentPublishedServicesForReload(env, 8888); len(got) != 1 {
 		t.Fatalf("current publication dropped: %+v", got)
 	}

@@ -1709,18 +1709,28 @@ func managedPipelockConfigPath(env *installEnv) string {
 // service. Any other read/parse/validation failure fails install closed:
 // contain install must never load an nft ruleset it cannot account for.
 func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, error) {
+	declared, _, err := declaredContainmentLoopbackServicesWithLapsed(env, proxyPort)
+	return declared, err
+}
+
+// declaredContainmentLoopbackServicesWithLapsed is
+// declaredContainmentLoopbackServices plus the expired entries it dropped. An
+// expired entry is a lapsed grant: install proceeds without it, so the
+// operator can re-run install to retire its doorway, while a malformed,
+// duplicate, or proxy-port entry still fails install closed.
+func declaredContainmentLoopbackServicesWithLapsed(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, []config.LapsedContainmentGrant, error) {
 	data, err := env.readFile(managedPipelockConfigPath(env))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentLoopbackServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	return declared, nil
+	return declared, lapsed, nil
 }
 
 // bytesEqual compares two byte slices without dragging in the bytes

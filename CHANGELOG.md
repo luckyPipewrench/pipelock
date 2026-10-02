@@ -208,6 +208,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies
 
+- The standalone receipt verifier packages move to 0.4.1 (`@pipelock/verifier-ts` on npm, `pipelock-verifier-rs` on crates.io) so they are built from the same verifier source as this release. (#1771)
 - Weekly dependency updates, `fast-uri` 3.1.8 in the TypeScript verifier, and `@unicode/unicode-15.0.0` 2.x. (#1416, #1441, #1469, #1492, #1742)
 - The init and license-service images use Alpine 3.24.2 (OpenSSL 3.5.8), and the source Dockerfile builds with Go 1.27.1. (#1716)
 

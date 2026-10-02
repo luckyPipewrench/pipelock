@@ -629,6 +629,18 @@ func (l *Loader) StartWatch(ctx context.Context, onError func(error)) (stop func
 		return func() {}, werr
 	default:
 	}
+	// Both select cases can be ready when cancellation lands during the
+	// catch-up; never report a cancelled start as a running watcher.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		cancel()
+		<-done
+		select {
+		case werr := <-errCh:
+			return func() {}, werr
+		default:
+		}
+		return func() {}, ctxErr
+	}
 	var once sync.Once
 	stop = func() {
 		once.Do(func() {

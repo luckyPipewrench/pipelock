@@ -206,7 +206,10 @@ func runInHostNetworkNamespace(ctx context.Context, stdout, stderr io.Writer, ar
 	if err != nil {
 		return fmt.Errorf("locate pipelock binary: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, nsenterPath, hostNamespaceCommandArgs(self, args)...) //nolint:gosec // G204: fixed nsenter path; argv is this binary plus validated flags and the registered tool name.
+	// Fixed nsenter path; argv is this binary plus validated flags and the
+	// registered tool name.
+	cmd := exec.CommandContext(ctx, nsenterPath)
+	cmd.Args = append([]string{nsenterPath}, hostNamespaceCommandArgs(self, args)...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {

@@ -239,11 +239,13 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, contents                              string
 		skipValidate, skipCanary, dryRun, wantError bool
+		jsonOutput, wantLoadError                   bool
 	}{
 		{name: "retained strict blocks before DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n", wantError: true},
-		{name: "malformed", contents: "mode: [", wantError: true},
-		{name: "malformed canary only", contents: "mode: [", skipValidate: true, wantError: true},
-		{name: "malformed validate only", contents: "mode: [", skipCanary: true, wantError: true},
+		{name: "malformed", contents: "mode: [", wantError: true, wantLoadError: true},
+		{name: "malformed JSON", contents: "mode: [", wantError: true, wantLoadError: true, jsonOutput: true},
+		{name: "malformed canary only", contents: "mode: [", skipValidate: true, wantError: true, wantLoadError: true},
+		{name: "malformed validate only", contents: "mode: [", skipCanary: true, wantError: true, wantLoadError: true},
 		{name: "explicit skips", contents: "mode: [", skipValidate: true, skipCanary: true},
 		{name: "dry run proposed config", contents: "mode: [", dryRun: true},
 	} {
@@ -256,12 +258,30 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 			var out bytes.Buffer
 			cmd := &cobra.Command{}
 			cmd.SetOut(&out)
-			err := runInit(cmd, initOptions{preset: config.ModeBalanced, scanHome: home, output: path, noAuditor: true, skipValidate: tc.skipValidate, skipCanary: tc.skipCanary, dryRun: tc.dryRun})
+			err := runInit(cmd, initOptions{preset: config.ModeBalanced, scanHome: home, output: path, noAuditor: true, skipValidate: tc.skipValidate, skipCanary: tc.skipCanary, dryRun: tc.dryRun, jsonOutput: tc.jsonOutput})
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error = %v; output: %s", err, &out)
 			}
 			if tc.wantError && strings.Contains(out.String(), "Canary:             detected") {
 				t.Fatalf("misleading success: %s", &out)
+			}
+			if tc.wantLoadError {
+				var exitErr *cliutil.ExitError
+				if !errors.As(err, &exitErr) || exitErr.Code != initExitError || !strings.Contains(err.Error(), "loading config") || !strings.Contains(err.Error(), path) {
+					t.Fatalf("expected retained-config load error with exit %d, got %v", initExitError, err)
+				}
+			}
+			if tc.jsonOutput {
+				var result initResult
+				if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.Verify == nil || result.Verify.Skipped || result.Verify.Failed != 1 || !strings.Contains(result.Verify.Detail, "loading config") {
+					t.Fatalf("expected failed validation: %+v", result.Verify)
+				}
+				if result.Canary == nil || !result.Canary.Skipped || result.Canary.Detected {
+					t.Fatalf("expected skipped canary without detection: %+v", result.Canary)
+				}
 			}
 			got, err := os.ReadFile(filepath.Clean(path))
 			if err != nil || string(got) != tc.contents {

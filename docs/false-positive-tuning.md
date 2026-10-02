@@ -262,6 +262,10 @@ Audit mode is an explicit rollout choice for an isolated test environment with s
 pipelock generate config --preset audit > pipelock-audit-trial.yaml
 ```
 
+Before starting the trial, set `logging.output` to `file` and `logging.file` to
+`pipelock-audit.log` in `pipelock-audit-trial.yaml`. The audit preset otherwise
+writes to stdout, so it does not create the log used below.
+
 To transition a deliberate audit trial to enforcement:
 
 1. Run representative synthetic traffic in the isolated trial

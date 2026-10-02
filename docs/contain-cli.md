@@ -315,13 +315,13 @@ containment:
       expires_at: 2026-12-01T00:00:00Z
 ```
 
-Each entry uses the same reviewable lifecycle as `containment.metrics_exposure`. `host` must be `127.0.0.1` or `::1`, and `port` must be from 1 through 65535 without colliding with the proxy port. `owner`, `reason`, and a future RFC3339 `expires_at` value are required. Pipelock rejects malformed, expired, duplicate, and proxy-port entries during config validation.
+Each entry uses the same reviewable lifecycle as `containment.metrics_exposure`. `host` must be `127.0.0.1` or `::1`, and `port` must be from 1 through 65535 without colliding with the proxy port. `owner`, `reason`, and a future RFC3339 `expires_at` value are required. Pipelock rejects malformed, duplicate, and proxy-port entries during config validation. An expired entry is a lapsed grant instead: Pipelock drops it from the effective set, warns by name, and keeps starting, so a date passing can't stop the proxy or cut off every contained agent's egress.
 
-`contain install` writes one socket and forwarder service pair for each declaration. It also writes a root-owned inventory containing the address, port, owner, reason, and expiry. `contain reload-nft-rules` re-reads the managed config and reconciles those units from the current declaration set. Removing an entry or letting it expire disables and removes its namespace socket at the next successful reconciliation. The host nftables rules never gain an allow for a declared service.
+`contain install` writes one socket and forwarder service pair for each declaration. It also writes a root-owned inventory containing the address, port, owner, reason, and expiry. `contain reload-nft-rules` re-reads the managed config and reconciles those units from the current declaration set. Removing an entry or letting it expire stops its namespace listener, its socket, and the host relay service the socket started, then deletes the three unit files, at the next successful reconciliation. Because the relay is stopped with the rest, you can declare the same port again afterward. Only units named in the inventory or carrying Pipelock's managed unit names are stopped; a service that Pipelock doesn't own is never touched, and systemd's refusal to listen next to it still stands. The host nftables rules never gain an allow for a declared service.
 
 `pipelock contain install` prints a warning when a declared address has no reachable host TCP listener. It keeps the declaration because the host service may be temporarily stopped or start later. This still reserves the address inside the private namespace: if the contained tool is supposed to bind that port itself, remove the declaration instead of ignoring the warning.
 
-Run `sudo pipelock contain reload-nft-rules` after changing `containment.loopback_services`. The boot-time persistence unit runs the same reconciliation on startup. If the managed config is missing or unreadable, or the declared set is malformed or expired, reconciliation uses zero declared forwarders and logs the reason. The base namespace and proxy socket stay in place, so the agent loses the extra service without gaining another path.
+Run `sudo pipelock contain reload-nft-rules` after changing `containment.loopback_services`. The boot-time persistence unit runs the same reconciliation on startup. If the managed config is missing or unreadable, or the declared set is malformed, duplicated, or collides with the proxy port, reconciliation uses zero declared forwarders and logs the reason. An expired entry doesn't do that: reconciliation removes only the expired entry, prints a warning naming it, and keeps its unexpired siblings. The base namespace and proxy socket stay in place, so the agent loses the extra service without gaining another path.
 
 The boot-time persistence unit runs the same reconciliation command on every boot.
 
@@ -334,6 +334,8 @@ contain install` as root.
 
 An exclusive lock prevents `contain install` and `contain reload-nft-rules` from reconciling the same config at once. The root-owned lock file lives beside the persisted rules under `/etc/nftables.d/`. Reconciliation rejects a symlink, named pipe, or non-root owner at that path.
 
+`contain verify` still fails while the managed config carries an expired loopback or published entry, and the failure names the entry and its owner. It keeps checking the unexpired entries in the same probe, so a drifted sibling is reported next to the expired one. Renew or remove the expired entry and rerun reconciliation to clear it.
+
 `contain verify` compares the declared set with the root-owned forwarder inventory and each managed unit file. It requires every declared socket to be persistently enabled and active. The live namespace probe fails when the namespace is missing, shares the host network namespace, reaches a host loopback canary, can't reach the Pipelock proxy socket, or finds a managed-agent process outside the namespace. The process check catches older and custom services that run under the correct user but never entered the managed namespace.
 
 ## Published agent services
@@ -344,7 +346,7 @@ An exclusive lock prevents `contain install` and `contain reload-nft-rules` from
 
 For each entry, `contain install` writes a socket unit, `pipelock-published-<name>.socket`, and a socket-activated relay, `pipelock-published-<name>.service`. systemd creates the host socket owned by `operator_user` with mode `0600`. The relay runs `pipelock contain netns-forward` as the proxy service user and joins the agent's network namespace, so it dials the agent's own loopback. It never runs as `pipelock-agent`, and the agent gets no host-side process and no new outbound route. The nftables rules don't change. An optional `host_listen` adds a `pipelock-published-<name>-tcp` socket and relay pair. `contain install` refuses an `operator_user` that doesn't exist or that names the agent account.
 
-`contain reload-nft-rules`, the boot-time persistence unit, and the expiry timer reconcile publications from the managed config along with loopback services. A removed or expired entry has its socket disabled and its units removed at the next successful reconciliation, including after an earlier successful install. If the managed config declares a publication that Pipelock can't honor, reconciliation closes every publication and logs the reason. A failed install restores the previous units and their runtime state. `contain rollback` closes every recorded publication.
+`contain reload-nft-rules`, the boot-time persistence unit, and the expiry timer reconcile publications from the managed config along with loopback services. A removed or expired entry has its socket disabled and its units removed at the next successful reconciliation, including after an earlier successful install. If the managed config declares a malformed or colliding publication, reconciliation closes every publication and logs the reason. An expired publication closes only its own doorway and is named in a warning. A failed install restores the previous units and their runtime state. `contain rollback` closes every recorded publication.
 
 `contain verify` checks publications as part of the private-namespace probe. It reports these failures separately:
 
@@ -356,11 +358,11 @@ For each entry, `contain install` writes a socket unit, `pipelock-published-<nam
 
 A state the probe can't read counts as a failure. An idle relay is normal, because the next connection starts it.
 
+The preflight of `contain run` and `service-posture` runs before the agent exists, so there it treats a missing agent listener as pending rather than failed, and says so in the probe line. It still fails with a foreign occupant error when a different account already listens on the published address inside the agent namespace. Run `contain verify` after the agent is serving to confirm the listener.
+
 Published content is untrusted agent content in both directions. Pipelock doesn't ship a viewer or serve the endpoint remotely. Remote access is your job, behind your own authentication.
 
 ### Launching a contained systemd service
-
-> **Not supported in this release.** The recipe below doesn't start the agent: `service-posture` runs preflight probe 3 inside the agent network namespace, where the host's managed nftables table isn't visible, so the probe fails and systemd never starts the service. Use `pipelock contain run` to launch contained agents until a later release fixes the check.
 
 Use a systemd drop-in to keep a continuously supervised agent unprivileged. Replace `agent-tool` and its arguments with a registered tool:
 
@@ -384,7 +386,7 @@ Restart=on-failure
 
 The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `JoinsNamespaceOf=` belongs in `[Unit]`; systemd ignores it under `[Service]` and logs `Unknown key 'JoinsNamespaceOf' in section [Service], ignoring`, and the unit then gets its own empty namespace. `PrivateNetwork=true` creates that separate empty namespace whenever the join has no valid target, so it isn't enough on its own.
 
-The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. A mismatch or inconclusive check fails the pre-start command, so systemd never starts the agent. The signer exits before the agent starts and never receives agent input or output.
+The short-lived `ExecStartPre` command runs with root credentials because of the `!` prefix, but retains the service's namespace restrictions. Before it signs anything, `service-posture` compares its own live kernel network-namespace identity with `pipelock-agent-netns.service`, requires loopback to be the only interface, and checks the Pipelock proxy doorway from inside that namespace. It then runs the rest of the containment preflight, including the nftables ruleset and the private-namespace checks, in the host network namespace through `nsenter`, because that is where the managed ruleset and host loopback live. The host-side step refuses to run unless it is in the host namespace, and a missing table or any failed probe fails the pre-start command. A mismatch or inconclusive check on either side fails the pre-start command, so systemd never starts the agent. The command needs `nsenter` from util-linux at `/usr/bin/nsenter`. The signer exits before the agent starts and never receives agent input or output.
 
 Immediately before it executes the tool, `plk-launch` checks its user, its real kernel namespace identity, the interfaces visible in that namespace, and the Pipelock health endpoint. The root preflight and probe 21 also compare the managed namespace with the host and inspect every live process under the agent user. The service settings state the intended isolation. These checks prove the running process received it.
 
@@ -394,7 +396,7 @@ The pre-start signer writes the same signed posture capsule path used by `contai
 
 Both paths use the private key named by `flight_recorder.signing_key_path`. The key is operator-chosen; `pipelock init` normally places it under `/etc/pipelock/keys/`. It must not be readable by `pipelock-agent`, because an agent that holds the key can forge its own evidence. Before either path emits a containment capsule, Pipelock checks the real access decision as `pipelock-agent` and refuses to sign if the key is readable or the check is inconclusive.
 
-Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. Don't replace an earlier `ExecStartPre=+... contain run --dry-run` recipe with the `service-posture` line above in this release, because that recipe can't start the agent (see the note at the top of this section). Use `pipelock contain run` to launch contained agents. An old drop-in still performs a preflight, but it doesn't emit a capsule.
+Pipelock doesn't rewrite operator-owned service drop-ins during upgrade. An earlier `ExecStartPre=+... contain run --dry-run` drop-in still performs a preflight, but it doesn't emit a capsule. Replace it with the `service-posture` line above to get the signed pre-start capsule.
 
 The nftables probes fail closed when attribution is ambiguous. A regular
 lookalike chain, a table-wide listing that happens to contain matching-looking
@@ -492,7 +494,7 @@ Checks:
 | 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error, no hang, no bypass. |
 | 6 | `raw_egress_blocked` | A DNS-free direct, proxy-bypassing canary reports that its TCP dial did not complete and coincides with an increment in the positively attributed managed catch-all DROP counter. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
 | 7 | `managed_chain_structure` | The live managed nftables chain can be read and has the installed structure. This is a qualified structural result only; check 6 observes packet enforcement. |
-| 8 | `managed_doorway_sockets` | Every managed doorway socket, the proxy doorway plus one per declared `containment.loopback_services` entry, is persistently enabled and active. A socket that is not enabled or not active reports FAIL naming the socket and the `systemctl` command that restores it; a declared service set that cannot be honored reports FAIL. |
+| 8 | `managed_doorway_sockets` | Every managed doorway socket, the proxy doorway plus one per declared `containment.loopback_services` entry, is persistently enabled and active, and so is every in-namespace forwarder service: `pipelock-agent-netns-forward.service` plus one `-netns.service` per declared entry. A unit that is inactive, failed, masked, disabled or missing reports FAIL naming the unit; a declared service set that cannot be honored reports FAIL. The remediation matches the observed state. A stopped doorway socket whose relay service is still running gets `systemctl stop <relay>.service` first, because systemd refuses to start a socket while its service is active. A masked unit is unmasked first, a failed one is reset first, and a missing one points at `pipelock contain install`. If `systemctl` can't be run, the check reports `unknown`. |
 | 9 | `agent_display_rfb` (conditional) | Present when `containment.display.backend: xvnc`. The TigerVNC display RFB socket is available. |
 | 10 | `viewer_service` (conditional) | Present when `containment.display.backend: xvnc`. The viewer socket is available to its operator. |
 | 11 | `viewer_rfb_access` (conditional) | Present when `containment.display.backend: xvnc`. The viewer RFB socket group is exact. |

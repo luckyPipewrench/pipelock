@@ -559,7 +559,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 ```bash
 # Docker
 docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
-docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
+docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
   ghcr.io/luckypipewrench/pipelock:3.6.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 

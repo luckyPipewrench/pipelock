@@ -62,7 +62,7 @@ echo "release-ready gate: version=$VER"
 # exactly the shards accepted by ci_test_packages.py. Ordinary CI and release CI
 # are separate workflow surfaces; keeping this assertion in the preflight stops
 # a stale release-only shard name before the tag workflow fans out.
-(cd "$REPO_ROOT" && python3 -m unittest scripts.test_ci_test_packages scripts.test_release_artifacts)
+(cd "$REPO_ROOT" && python3 -m unittest scripts.test_ci_test_packages scripts.test_release_artifacts scripts.test_release_doc_versions)
 
 # 1. CHANGELOG: a "## [<ver>] - <YYYY-MM-DD>" heading must exist with a real date.
 # Match the version LITERALLY (grep -F) so metacharacters in a version string
@@ -132,6 +132,14 @@ elif [ "$changes_appversion" != "$VER" ]; then
   note "charts/pipelock/Chart.yaml artifacthub.io/changes describes appVersion '$changes_appversion', expected '$VER'. Artifact Hub renders this block as $VER's release notes and the published chart is immutable, so a stale block cannot be corrected after the tag. Rewrite the changes entries for this release."
 else
   echo "  [ok]   Chart changes annotation: appVersion $changes_appversion"
+fi
+
+# 2d. Current installation examples and release-facing version pins must move
+# with the release. The checker recognizes only documented product references;
+# it excludes changelog history, frozen benchmark comparisons, and explicitly
+# old-version upgrade examples.
+if ! python3 "$REPO_ROOT/scripts/release_doc_versions.py" "$REPO_ROOT" "$VERSION"; then
+  fail=1
 fi
 
 # 3. The release keyring must be present BEFORE anything is built.

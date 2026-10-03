@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -70,18 +71,34 @@ const (
 	tierAssess          = "assess"
 )
 
+type tierPolicy struct {
+	features []string
+	lifetime time.Duration
+}
+
+// tierPolicies defines the accepted tiers and their token metadata.
+// Enterprise variants carry the fleet control plane in addition to agents;
+// their one-time variants differ only in lifetime and renewal handling.
+var tierPolicies = map[string]tierPolicy{
+	tierFoundingPro:     {features: []string{license.FeatureAgents}, lifetime: tokenLifetime},
+	tierPro:             {features: []string{license.FeatureAgents}, lifetime: tokenLifetime},
+	tierEnterprise:      {features: []string{license.FeatureAgents, license.FeatureFleet}, lifetime: tokenLifetime},
+	tierEnterpriseEval:  {features: []string{license.FeatureAgents, license.FeatureFleet}, lifetime: evalTokenLifetime},
+	tierEnterpriseTrial: {features: []string{license.FeatureAgents, license.FeatureFleet}, lifetime: enterpriseTrialTokenLifetime},
+	tierTrial:           {features: []string{license.FeatureAgents}, lifetime: trialTokenLifetime},
+	tierAssess:          {features: []string{license.FeatureAssess}, lifetime: tokenLifetime},
+}
+
 // validTiers is the allowlist of accepted pipelock_tier metadata values.
 // Unknown tier values are rejected to prevent misconfigured Polar products
 // from silently granting paid features.
-var validTiers = map[string]bool{
-	tierFoundingPro:     true,
-	tierPro:             true,
-	tierEnterprise:      true,
-	tierEnterpriseEval:  true,
-	tierEnterpriseTrial: true,
-	tierTrial:           true,
-	tierAssess:          true,
-}
+var validTiers = func() map[string]bool {
+	tiers := make(map[string]bool, len(tierPolicies))
+	for tier := range tierPolicies {
+		tiers[tier] = true
+	}
+	return tiers
+}()
 
 // WebhookHandler processes Polar webhook events and coordinates license
 // issuance, entitlement tracking, and email delivery.
@@ -1360,22 +1377,7 @@ func (h *WebhookHandler) subscriptionProduct(productID string) (SubscriptionProd
 // Returns nil for unknown tiers (fail-closed). Callers must validate
 // tiers via mapProductToTier before reaching this point.
 func (h *WebhookHandler) tierToFeatures(tier string) []string {
-	switch tier {
-	case tierFoundingPro, tierPro, tierTrial:
-		return []string{license.FeatureAgents}
-	case tierEnterprise, tierEnterpriseEval, tierEnterpriseTrial:
-		// Enterprise, Enterprise Eval, and Enterprise Trial carry the fleet control
-		// plane (Conductor + audit sink) on top of the Pro multi-agent profile
-		// feature. Eval gets the same capabilities as full Enterprise; the only
-		// difference is the 60-day, non-renewing token lifetime. Add additional
-		// Enterprise-only features (hosted services, transparency log, …) to this
-		// slice as they ship.
-		return []string{license.FeatureAgents, license.FeatureFleet}
-	case tierAssess:
-		return []string{license.FeatureAssess}
-	default:
-		return nil
-	}
+	return slices.Clone(tierPolicies[tier].features)
 }
 
 // tokenLifetimeForTier returns the token validity period for a given tier.
@@ -1383,16 +1385,10 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 // All one-time tiers have no renewal. Other tiers get 45 days with rolling
 // refresh.
 func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
-	switch tier {
-	case tierTrial:
-		return trialTokenLifetime
-	case tierEnterpriseEval:
-		return evalTokenLifetime
-	case tierEnterpriseTrial:
-		return enterpriseTrialTokenLifetime
-	default:
-		return tokenLifetime
+	if policy, ok := tierPolicies[tier]; ok {
+		return policy.lifetime
 	}
+	return tokenLifetime
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.

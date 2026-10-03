@@ -55,7 +55,7 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "GitHub Action tag",
-        re.compile(r"uses:\s*luckyPipewrench/pipelock(?:/[^@\s]+)?@(?P<version>v[0-9][^\s`\"']*)"),
+        re.compile(r"uses:\s*luckyPipewrench/pipelock(?:/[^@\s]+)?@(?P<version>v?[0-9][^\s`\"']*)"),
     ),
     (
         "release archive URL",
@@ -156,6 +156,9 @@ def check(root: Path, release_tag: str) -> list[str]:
                     references.append(("health response version", match.group("version"), None))
 
             for surface, reference, prefixed in references:
+                reference = reference.strip("\"'`").removesuffix(".")
+                if surface == "GitHub Action tag" and re.fullmatch(r"[0-9a-fA-F]{40}", reference):
+                    continue
                 # Generic placeholders and intentional floating tags such as
                 # `latest` are not current-version pins. A numeric-looking
                 # malformed value remains recognized and fails closed.

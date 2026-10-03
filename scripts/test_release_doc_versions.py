@@ -60,6 +60,23 @@ class ReleaseDocVersionTests(unittest.TestCase):
                 findings = check(root, "v3.6.0")
                 self.assertTrue(any("expected" in finding and "README.md" in finding for finding in findings), findings)
 
+    def test_quoted_stale_pins_cannot_hide_behind_current_pins(self) -> None:
+        for quote in ("'", '"', "`"):
+            for line in (
+                f"git clone --branch {quote}v3.5.0{quote} https://github.com/luckyPipewrench/pipelock.git",
+                f"- uses: luckyPipewrench/pipelock@0123456789abcdef0123456789abcdef01234567 # {quote}v3.5.0{quote}",
+            ):
+                with self.subTest(line=line), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_tree(root, current=CURRENT + line + "\n")
+                    self.assertTrue(any("3.5.0" in finding for finding in check(root, "v3.6.0")))
+
+    def test_unprefixed_action_tag_cannot_hide_behind_current_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_tree(root, current=CURRENT + "- uses: luckyPipewrench/pipelock@3.5.0\n")
+            self.assertTrue(any("incorrect v prefix" in finding for finding in check(root, "v3.6.0")))
+
     def test_stale_health_output_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

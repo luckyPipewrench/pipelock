@@ -47,8 +47,9 @@ type coreDLPPattern struct {
 	severity                            string
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
-	credentialAudienceCarrierMask       uint8
+	credentialAudienceCarrierMask       uint16
 	credentialAudienceGitHosts          []string
+	credentialAudienceRegistryHosts     []string
 }
 
 // coreResponsePattern defines a single immutable response scanning pattern.
@@ -77,6 +78,7 @@ func coreDLPPatternDefs() []coreDLPPattern {
 			credentialAudienceAuthorizationOnly: pattern.CredentialAudienceAuthorizationOnly,
 			credentialAudienceCarrierMask:       pattern.CredentialAudienceCarrierMask,
 			credentialAudienceGitHosts:          append([]string(nil), pattern.CredentialAudienceGitHosts...),
+			credentialAudienceRegistryHosts:     append([]string(nil), pattern.CredentialAudienceRegistryHosts...),
 		})
 	}
 	return out
@@ -225,6 +227,7 @@ func initCoreScanner(cfg *config.Config) *compiledCoreScanner {
 			credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 			credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 			credentialAudienceGitHosts:          config.AppendDeclaredCredentialAudienceHosts(p.name, p.credentialAudienceGitHosts, github, gitlab),
+			credentialAudienceRegistryHosts:     append([]string(nil), p.credentialAudienceRegistryHosts...),
 			validate:                            builtinDLPValidatorForRegex(p.regex),
 			validateJoined:                      builtinDLPJoinedValidatorForRegex(p.regex),
 		})
@@ -540,6 +543,7 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
 			})
 		}
@@ -597,6 +601,7 @@ func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string) []TextDL
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
 			})
 		}
@@ -620,6 +625,7 @@ func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets [
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, "", ""),
 			})
 		}

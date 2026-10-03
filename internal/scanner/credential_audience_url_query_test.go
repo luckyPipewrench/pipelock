@@ -350,7 +350,7 @@ func TestBuiltInAudiencesQueryCarriageIsJWTOnly(t *testing.T) {
 		hasReleaseSAS := p.CredentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0
 		switch p.Name {
 		case jwtPatternName:
-			if !hasQuery || hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery ||
+			if !hasQuery || hasReleaseSAS || p.CredentialAudienceCarrierMask != config.CredentialAudienceCarrierURLQuery|config.CredentialAudienceCarrierRegistryBearer ||
 				len(p.CredentialAudienceHosts) != 1 || p.CredentialAudienceHosts[0] != githubReleaseAssetsHost {
 				t.Errorf("JWT audience = hosts %v mask %d", p.CredentialAudienceHosts, p.CredentialAudienceCarrierMask)
 			}

@@ -452,7 +452,10 @@ const (
 	// ReleaseGrantSAS audience for the same release-asset host, so the shipped
 	// GitHub release redirect's Azure SAS can be admitted alongside its JWT
 	// grant instead of blocking on its own.
-	goldenHashDefaults = "59ec0cc1e1e870c8115e367c5a395482d00d0bcf34cca3cacbcf3fa7b256b529"
+	// Re-bumped when GitHub package registries gained a compiled Basic
+	// audience, RubyGems gained Bearer, and the container-registry JWT
+	// gained a bearer audience for ghcr.io.
+	goldenHashDefaults = "0be0c38dc3a1d4397ee93f0832ffc9a9c60f0db65fe48430c014c397c1cf04e3"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -692,7 +695,7 @@ const (
 	// Re-bumped for the Azure SAS Token ReleaseGrantSAS audience; see
 	// goldenHashDefaults above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "a1bcc8678f52ea06ccf6e260fffe96e724a3a462e063377d02272be9fb0a660a"
+	goldenHashRichConfig = "eaa096eb5b530175b99ac23e63684fbd4f1e963f77858aa0e31acae15c4cc015"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1266,8 +1269,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// the GitLab native token headers in the default sensitive headers.
 		// the compiled Authorization-only Google credential audience policy and the
 		// JWT Token URL-query audience.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "4daff47d4861987c45a41031babdf7f4664850cae52752d06b39b7ce87844f36"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "d55aa63c070121149020bd98c728c099d35c735798db9199c8d872c7ea3e4007"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "320088219026008560342466860a9a7a1a1450fa19d014c19457e9d56ed3232a"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "248db284ccd7e75902b19ad120018036ce410cb9de01f55a858a14e541a937a1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

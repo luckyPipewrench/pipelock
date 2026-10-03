@@ -64,6 +64,8 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		{"real grant", "jwt=" + grant, true},
 		{"audience list naming the host", "jwt=" + claimJWT(`{"aud":["other.example","release-assets.githubusercontent.com"],"iss":"github.com","nbf":1000,"exp":1300}`), false},
 		{"extra claim beside a valid grant shape", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":1300,"x":"data"}`), false},
+		{"archive grant lifetime", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":2800,"path":"releaseassetproduction.blob.core.windows.net"}`), true},
+		{"lifetime one second past an archive grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":2801,"path":"releaseassetproduction.blob.core.windows.net"}`), false},
 		{"lifetime longer than a grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":4600}`), false},
 		{"expiry before not-before", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1300,"exp":1000}`), false},
 		{"header with an extra field", "jwt=" + oddHeaderJWT(), false},

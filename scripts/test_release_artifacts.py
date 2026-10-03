@@ -128,6 +128,16 @@ class TestReleaseArtifacts(unittest.TestCase):
             "chart publication must stay in the tag release path; a manual workflow can run branch-selected code",
         )
 
+    def test_tap_preflight_is_not_manually_dispatched(self) -> None:
+        document = load_workflow(WORKFLOWS_DIR / "homebrew-tap-preflight.yaml")
+        events = workflow_events(document)
+        self.assertIn("schedule", events)
+        self.assertNotIn(
+            "workflow_dispatch",
+            events,
+            "a manual run would let the selected branch receive the tap credential",
+        )
+
     def test_no_workflow_pairs_a_manual_trigger_with_package_write(self) -> None:
         """The class behind the deleted chart publisher, not just that one file.
 

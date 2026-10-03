@@ -2,13 +2,15 @@ name: Homebrew tap preflight
 
 # Proves the release credential can read the tap before tag day. This
 # workflow has no pull_request trigger, so a fork cannot receive the secret.
-# The GitHub token for this repository stays read-only. The tap credential is
-# used only for one contents read and is not written to the log.
+# It also has no manual trigger. A manual run selects a branch, and that
+# branch supplies the script that receives the tap credential. The scheduled
+# run uses the default branch. The GitHub token for this repository stays
+# read-only. The tap credential is used only for one contents read and is
+# not written to the log.
 
 on:
   schedule:
     - cron: '17 13 * * 1'
-  workflow_dispatch:
 
 permissions:
   contents: read

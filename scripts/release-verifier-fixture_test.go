@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -601,6 +602,318 @@ func TestReleaseVerifierInstallGateRejectsTargetAllowlistingFake(t *testing.T) {
 	}
 }
 
+func TestReleaseVerifierSourceDriftRequiresBase(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
+		"--source-drift-only")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "--source-drift-only requires --base") {
+		t.Fatalf("missing base error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftAllowsAnUnchangedTree(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err != nil {
+		t.Fatalf("unchanged tree failed: %v\n%s", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftRejectsARustOnlyEditWithoutAVersionBump(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	appendStagedFile(t, root, filepath.Join("sdk", "verifiers", "rust", "src", "main.rs"), "\n// rust-only edit\n")
+	commitReleaseVerifierFixture(t, root, "sdk/verifiers/rust/src/main.rs")
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("unbumped rust source edit error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftRejectsASourceEditWithoutAVersionBump(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	appendStagedVerifierSource(t, root, "\n// sibling edit\n")
+	commitReleaseVerifierFixture(t, root, "sdk/verifiers/ts/src/types.ts")
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("unbumped source edit error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftRejectsAPendingInventoryThatDoesNotBump(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+		inventory["release_blocked"] = true
+	})
+	appendStagedVerifierSource(t, root, "\n// pending but unbumped\n")
+	commitReleaseVerifierFixture(t, root, "sdk/verifiers/ts/src/types.ts", "release/verifier-installers.json")
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("pending unbumped edit error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftRejectsABumpThatIsNotPendingPublication(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, 1), false)
+	appendStagedVerifierSource(t, root, "\n// versioned edit\n")
+	commitReleaseVerifierFixture(t, root,
+		"sdk/verifiers/ts/src/types.ts",
+		"sdk/verifiers/ts/package.json",
+		"sdk/verifiers/ts/package-lock.json",
+		"sdk/verifiers/rust/Cargo.toml",
+		"sdk/verifiers/rust/Cargo.lock",
+		"release/verifier-installers.json",
+	)
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "not marked pending publication") {
+		t.Fatalf("unblocked bump error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftRejectsASharedDowngrade(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, -1), true)
+	appendStagedVerifierSource(t, root, "\n// downgraded edit\n")
+	commitReleaseVerifierFixture(t, root,
+		"sdk/verifiers/ts/src/types.ts",
+		"sdk/verifiers/ts/package.json",
+		"sdk/verifiers/ts/package-lock.json",
+		"sdk/verifiers/rust/Cargo.toml",
+		"sdk/verifiers/rust/Cargo.lock",
+		"release/verifier-installers.json",
+	)
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("shared downgrade error = %v, output = %q", err, output)
+	}
+}
+
+func TestReleaseVerifierSourceDriftAcceptsAPendingSharedBump(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, 1), true)
+	appendStagedVerifierSource(t, root, "\n// versioned edit\n")
+	commitReleaseVerifierFixture(t, root,
+		"sdk/verifiers/ts/src/types.ts",
+		"sdk/verifiers/ts/package.json",
+		"sdk/verifiers/ts/package-lock.json",
+		"sdk/verifiers/rust/Cargo.toml",
+		"sdk/verifiers/rust/Cargo.lock",
+		"release/verifier-installers.json",
+	)
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err != nil {
+		t.Fatalf("pending shared bump failed: %v\n%s", err, output)
+	}
+}
+
+func appendStagedVerifierSource(t *testing.T, root, suffix string) {
+	t.Helper()
+	appendStagedFile(t, root, filepath.Join("sdk", "verifiers", "ts", "src", "types.ts"), suffix)
+}
+
+func appendStagedFile(t *testing.T, root, relativePath, suffix string) {
+	t.Helper()
+	sourcePath := filepath.Join(root, relativePath)
+	source, err := os.ReadFile(sourcePath) // #nosec G304 -- fixed source path under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, append(source, []byte(suffix)...), 0o600); err != nil {
+		t.Fatalf("write staged source: %v", err)
+	}
+}
+
+func stagedVerifierVersion(t *testing.T, root string) string {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml")) // #nosec G304 -- path is the staged fixture under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged rust manifest: %v", err)
+	}
+	for _, line := range strings.Split(string(manifest), "\n") {
+		if strings.HasPrefix(line, "version = \"") && strings.HasSuffix(line, "\"") {
+			return strings.TrimSuffix(strings.TrimPrefix(line, "version = \""), "\"")
+		}
+	}
+	t.Fatal("staged rust manifest has no version")
+	return ""
+}
+
+func adjacentVerifierVersion(t *testing.T, root string, delta int) string {
+	t.Helper()
+	parts := strings.Split(stagedVerifierVersion(t, root), ".")
+	if len(parts) != 3 {
+		t.Fatalf("staged version %q is not major.minor.patch", stagedVerifierVersion(t, root))
+	}
+	numbers := make([]int, 3)
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil {
+			t.Fatalf("staged version component %q: %v", part, err)
+		}
+		numbers[i] = number
+	}
+	if delta >= 0 {
+		numbers[2] += delta
+		return formatVerifierVersion(numbers)
+	}
+	for i := 2; i >= 0; i-- {
+		if numbers[i] > 0 {
+			numbers[i]--
+			return formatVerifierVersion(numbers)
+		}
+	}
+	t.Fatal("staged version cannot move backward")
+	return ""
+}
+
+func formatVerifierVersion(numbers []int) string {
+	return strconv.Itoa(numbers[0]) + "." + strconv.Itoa(numbers[1]) + "." + strconv.Itoa(numbers[2])
+}
+
+func TestAdjacentVerifierVersionBorrowsFromAZeroPatch(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("version = \"1.2.0\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := adjacentVerifierVersion(t, root, -1); got != "1.1.0" {
+		t.Fatalf("downgrade from a zero patch = %s", got)
+	}
+	if got := adjacentVerifierVersion(t, root, 1); got != "1.2.1" {
+		t.Fatalf("forward from a zero patch = %s", got)
+	}
+}
+
+func bumpStagedVerifierPackages(t *testing.T, root, version string, releaseBlocked bool) {
+	t.Helper()
+	rewriteJSONFile(t, filepath.Join(root, "sdk", "verifiers", "ts", "package.json"), func(document map[string]interface{}) {
+		document["version"] = version
+	})
+	rewriteJSONFile(t, filepath.Join(root, "sdk", "verifiers", "ts", "package-lock.json"), func(document map[string]interface{}) {
+		document["version"] = version
+		packages, ok := document["packages"].(map[string]interface{})
+		if !ok {
+			t.Fatal("staged lockfile packages is not an object")
+		}
+		rootPackage, ok := packages[""].(map[string]interface{})
+		if !ok {
+			t.Fatal("staged lockfile root package is not an object")
+		}
+		rootPackage["version"] = version
+	})
+	current := stagedVerifierVersion(t, root)
+	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml"), "version = \""+current+"\"", "version = \""+version+"\"")
+	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.lock"), "name = \"pipelock-verifier-rs\"\nversion = \""+current+"\"", "name = \"pipelock-verifier-rs\"\nversion = \""+version+"\"")
+	rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+		inventory["release_blocked"] = releaseBlocked
+		entries, ok := inventory["verifiers"].([]interface{})
+		if !ok {
+			t.Fatal("staged inventory has no verifiers array")
+		}
+		for _, language := range []string{"TypeScript", "Rust"} {
+			found := false
+			for _, entry := range entries {
+				record, ok := entry.(map[string]interface{})
+				if !ok || record["language"] != language {
+					continue
+				}
+				record["version"] = version
+				found = true
+			}
+			if !found {
+				t.Fatalf("staged inventory has no %s verifier entry", language)
+			}
+		}
+	})
+}
+
+func rewriteJSONFile(t *testing.T, path string, apply func(map[string]interface{})) {
+	t.Helper()
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is a fixture file under t.TempDir.
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	apply(document)
+	raw, err = json.Marshal(document)
+	if err != nil {
+		t.Fatalf("encode %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func replaceOnce(t *testing.T, path, old, replacement string) {
+	t.Helper()
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is a fixture file under t.TempDir.
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	updated := strings.Replace(string(raw), old, replacement, 1)
+	if updated == string(raw) {
+		t.Fatalf("%s did not contain %q", path, old)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func releaseVerifierFixtureHEAD(t *testing.T, root string) string {
+	t.Helper()
+	return strings.TrimSpace(runReleaseVerifierGit(t, root, "rev-parse", "HEAD"))
+}
+
+func commitReleaseVerifierFixture(t *testing.T, root string, paths ...string) {
+	t.Helper()
+	runReleaseVerifierGit(t, root, append([]string{"add"}, paths...)...)
+	runReleaseVerifierGit(t, root, "-c", "user.name=Pipelock Test", "-c", "user.email=test@pipelock.invalid", "commit", "--no-gpg-sign", "-m", "fixture edit")
+}
+
+func runReleaseVerifierGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	gitHome := t.TempDir()
+	hooksDir := filepath.Join(gitHome, "empty-hooks")
+	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+		t.Fatalf("create empty hooks directory: %v", err)
+	}
+	gitArgs := append([]string{"-c", "core.hooksPath=" + hooksDir}, args...)
+	command := exec.CommandContext(t.Context(), "git", gitArgs...) // #nosec G204 -- arguments are fixed by this test.
+	command.Dir = root
+	command.Env = append(os.Environ(),
+		"HOME="+gitHome,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func runReleaseVerifierSourceDrift(t *testing.T, root, base string) (string, error) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts", "release-verifier-install-gate.sh"), // #nosec G204 -- executes the checked-in script copied under t.TempDir.
+		"--source-drift-only", "--base", base)
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
 func stageReleaseVerifierInventoryTest(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -622,6 +935,7 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 		"sdk/verifiers/ts/src/types.ts",
 		"sdk/verifiers/rust/Cargo.toml",
 		"sdk/verifiers/rust/Cargo.lock",
+		"sdk/verifiers/rust/src/main.rs",
 	}
 	for _, relativePath := range stagedPaths {
 		raw, err := os.ReadFile(filepath.Join(repoRoot, relativePath)) // #nosec G304 -- relativePath comes from the fixed list above.

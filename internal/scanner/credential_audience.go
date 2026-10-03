@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
@@ -153,7 +154,8 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
-			!registryBearerAllowed(candidate, host, target, surface) {
+			!registryBearerAllowed(candidate, host, target, surface) &&
+			!attestationBundleSASCandidateAllowed(candidate, host, target, surface) {
 			continue
 		}
 		keep[i] = false
@@ -498,6 +500,105 @@ func releaseGrantSASCandidateAllowed(candidate credentialAudienceCandidate, host
 	return releaseGrantSASAllowed(candidate.hosts, host, target)
 }
 
+// githubAttestationBundleHosts are the storage accounts GitHub names as the
+// bundle_url host for artifact attestations. Each entry is one account.
+// *.blob.core.windows.net is not an audience: any Azure customer can create
+// an account on that suffix.
+//
+//   - tmaproduction: bundle_url host returned by
+//     GET https://api.github.com/repos/luckyPipewrench/pipelock/attestations/sha256:<digest>
+//     on 2026-10-03 (the issuer of the URL gh attestation verify fetches).
+//   - tmastaging: bundle_url host in the published List attestations example.
+//     https://docs.github.com/en/rest/orgs/attestations
+var githubAttestationBundleHosts = []string{
+	"tmaproduction.blob.core.windows.net",
+	"tmastaging.blob.core.windows.net",
+}
+
+// attestationBundleSASMaxLifetime is the longest se-st window GitHub has
+// published for an attestation bundle SAS. The live production URL above is
+// one hour (st 2026-10-03T21:29:55Z, se 2026-10-03T22:29:55Z). The REST example
+// is twenty-four hours (st 2024-11-08T17:13:43Z, se 2024-11-09T17:13:43Z).
+// The cap is that published window. A longer SAS stays a standing credential
+// and keeps the DLP match.
+const attestationBundleSASMaxLifetime = 24 * time.Hour
+
+// attestationBundleSASSignedParams is the release-grant user-delegation set
+// plus st. GitHub's attestation bundle SAS signs the start time; the release
+// redirect does not send st, so it stays off releaseGrantSASSignedParams.
+var attestationBundleSASSignedParams = []string{"sp", "sv", "sr", "spr", "st", "se", "skoid", "sktid", "skt", "ske", "sks", "skv", "sig"}
+
+var attestationBundleSASSignedParamSet = func() map[string]bool {
+	set := make(map[string]bool, len(attestationBundleSASSignedParams))
+	for _, name := range attestationBundleSASSignedParams {
+		set[name] = true
+	}
+	return set
+}()
+
+// attestationBundleSASAllowed grants an Azure SAS that GitHub's attestations
+// API puts in bundle_url. There is no co-located JWT. The proxy cannot check
+// the HMAC, so the predicate is the whole trust decision: exact published
+// account, https, path under /attestations/, read-only blob SAS (sp=r, sr=b,
+// spr=https), every signed field once in its documented format including st,
+// and an se-st lifetime no longer than attestationBundleSASMaxLifetime.
+// Anything else keeps the match.
+func attestationBundleSASAllowed(host, target string) bool {
+	if !destination.MatchesDomainList(host, githubAttestationBundleHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	if !attestationBundlePath(parsed) {
+		return false
+	}
+	return attestationBundleSASQueryValid(parsed)
+}
+
+func attestationBundlePath(u *url.URL) bool {
+	p := u.EscapedPath()
+	if p == "" || strings.Contains(p, "%") || path.Clean(p) != p {
+		return false
+	}
+	rest, ok := strings.CutPrefix(p, "/attestations/")
+	return ok && rest != ""
+}
+
+func attestationBundleSASQueryValid(parsed *url.URL) bool {
+	query := parsed.Query()
+	for _, name := range attestationBundleSASSignedParams {
+		values := query[name]
+		format := releaseGrantSASFieldFormats[name]
+		if name == "st" {
+			format = releaseGrantSASFieldFormats["se"]
+		}
+		if len(values) != 1 || format == nil || !format.MatchString(values[0]) {
+			return false
+		}
+	}
+	if query.Get("sp") != "r" || query.Get("sr") != "b" || query.Get("spr") != "https" {
+		return false
+	}
+	start, err := time.Parse(time.RFC3339, query.Get("st"))
+	if err != nil {
+		return false
+	}
+	expiry, err := time.Parse(time.RFC3339, query.Get("se"))
+	if err != nil || !expiry.After(start) {
+		return false
+	}
+	return expiry.Sub(start) <= attestationBundleSASMaxLifetime
+}
+
+func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+		return false
+	}
+	return attestationBundleSASAllowed(host, target)
+}
+
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
 	return p != nil && (p.credentialAudienceAuthorizationOnly || p.credentialAudienceCarrierMask != 0)
 }
@@ -723,7 +824,7 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
 	// The name is matched exactly, as the shape check matches it, so a case
 	// alias of a signed field cannot take an exemption meant for the field.
-	if parsed == nil || !releaseGrantSASSignedParamSet[key] {
+	if parsed == nil || (!releaseGrantSASSignedParamSet[key] && !attestationBundleSASSignedParamSet[key]) {
 		return false
 	}
 	host, ok := canonicalCredentialAudienceDestination(parsed.String())
@@ -738,7 +839,10 @@ func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) 
 		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 			continue
 		}
-		if releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+			return true
+		}
+		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String()) {
 			return true
 		}
 	}
@@ -834,7 +938,9 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// (not merely alongside a query that happens to look right) so a SAS
 	// planted in the path or elsewhere cannot ride a genuine grant's query.
 	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
-		if len(grants) == 0 || !releaseGrantSASShapeValid(parsed) {
+		host, hostOK := canonicalCredentialAudienceDestination(parsed.String())
+		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String())
+		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed)) {
 			return bareURLSurface
 		}
 		matchInView := func(view string) bool {

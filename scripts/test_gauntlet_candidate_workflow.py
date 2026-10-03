@@ -127,13 +127,13 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
             assignments,
             {
                 "PIPELOCK_REPO": "luckyPipewrench/pipelock",
-                "PIPELOCK_TAG": "v3.5.0",
-                "PIPELOCK_VERSION": "3.5.0",
+                "PIPELOCK_TAG": "v3.6.0",
+                "PIPELOCK_VERSION": "3.6.0",
                 "PIPELOCK_ASSET_SHA256_AMD64": (
-                    "0e9fe1461107e8fc6a7f7969c87e7810824b019eaabd6fa7318f642ca9e4b858"
+                    "2f5ed499ae715c33f38ef7794f71c7c2df9cc475475c54eee0bee67d783a67d4"
                 ),
                 "PIPELOCK_ASSET_SHA256_ARM64": (
-                    "e7a72741ef6ac679d74656ae438262b5638934a34616adb6ac87d2c8634216c6"
+                    "3923f2eef699b1fab3e9d7a94e81dc07ae4bb4a70d6ef4217618ab3a065c9231"
                 ),
             },
         )

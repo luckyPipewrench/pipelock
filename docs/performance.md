@@ -5,7 +5,7 @@ benchmarks below. The proxy is generally I/O bound while waiting for upstream
 responses. Response scanning and MCP scanning on large payloads can use
 measurable CPU at high throughput (see tables below).
 
-Numbers are from Go benchmarks on an AMD Ryzen 7 7800X3D (8 cores / 16 threads) on Linux. The single-request latency tables were measured at pre-release v3.6.0 commit `7283f25e7` with Go 1.26.0 in a process limited to four CPUs; later changes aren't represented by that measurement. The CPU limit matters for response scanning because it evaluates patterns in parallel. The Unicode normalization rows, concurrent scaling sections and HTTP proxy overhead section are older measurements on Go 1.25 with 16 CPUs and weren't refreshed for v3.6.0. Run `make bench` to reproduce on your hardware. See [benchmarks.md](benchmarks.md) for raw ns/op data.
+The scanner and MCP latency tables use medians from three runs on an AMD Ryzen 7 7800X3D (8 cores / 16 threads), Linux/amd64, at released v3.6.0 commit `3e868ac5d` with Go 1.26.8 and `GOMAXPROCS=4`. The standard `make bench` run used Go's default one-second benchmark target and `-count=3`. A few heavy cases still have high variance: the 256KiB uniform-filler clean case completed only three iterations per sample, and the 20-query URL case completed five or six. Fixture-backed browser and saved JavaScript bundle benchmarks were skipped because they need generated input directories. Response scanning evaluates patterns in parallel, so its figures depend on the CPUs available. This refresh covers scanner and MCP Go benchmarks only. Unicode normalization, the multi-core scaling curves, concurrent scaling, HTTP proxy overhead, CPU-at-scale estimates, and deployment sizing below remain historical or guidance and weren't recalculated for v3.6.0. Run `make bench` to measure your hardware. See [benchmarks.md](benchmarks.md) for the raw ns/op data and full run details.
 
 ## Scanning Latency (single request)
 
@@ -20,12 +20,24 @@ and final context checks.
 
 | Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Allowed URL (DNS SSRF, rate limit and data budget off) | ~53 μs | ~19,000/sec |
-| Blocklist block (early exit) | ~2.8 μs | ~355,000/sec |
-| DLP pattern match (65 patterns, pre-filtered) | ~15 μs | ~66,000/sec |
-| DLP pre-filter only (clean text, two small allocations) | ~1.1 μs | ~897,000/sec |
-| Entropy detection | ~91 μs | ~11,000/sec |
-| Complex URL (ports, query params) | ~255 μs | ~3,900/sec |
+| Allowed URL (DNS SSRF, rate limit and data budget off) | ~25 μs | ~40,000/sec |
+| Blocklist block (early exit) | ~2.6 μs | ~381,000/sec |
+| DLP pattern match (65 patterns, pre-filtered) | ~12 μs | ~82,000/sec |
+| DLP pre-filter only (clean text, two small allocations) | ~0.58 μs | ~1,729,000/sec |
+| Entropy detection | ~46 μs | ~21,700/sec |
+| URL rejected by length check | ~140 ns | ~7,128,000/sec |
+| Complex URL (ports, query params) | ~158 μs | ~6,300/sec |
+
+The `BenchmarkScan_ManyQueryParamsAllowed` case uses a clean allowed URL with 20 query parameters, forcing all DLP passes to complete. It measured ~206 ms and allocated ~43.5 MB. This is a deliberately heavy stress case, not a typical URL scan. Each sample completed only five or six iterations.
+
+### Canary Text Scanning
+
+| Operation | Latency | Throughput (one request at a time) |
+|-----------|---------|------------------------------------:|
+| Ordinary clean text with a canary configured | ~21 μs | ~47,700/sec |
+| Nested-encoded payload | ~36 μs | ~27,800/sec |
+
+An earlier interleaved comparison measured clean-text canary scanning about 54% slower than v3.5.0 in the release-candidate comparison. This v3.6.0 run didn't include a v3.5.0 control, so it reports the released build's cost but doesn't remeasure that percentage.
 
 ### MCP Scanning (tool call/response inspection)
 
@@ -33,9 +45,9 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 | Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Clean tool response | ~316 μs | ~3,200/sec |
-| Injection detected (early exit) | ~280 μs | ~3,600/sec |
-| Text extraction | ~9.5 μs | ~106,000/sec |
+| Clean tool response | ~197 μs | ~5,100/sec |
+| Injection detected (early exit) | ~155 μs | ~6,500/sec |
+| Text extraction | ~6.6 μs | ~152,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
@@ -44,23 +56,26 @@ fetched page content.
 
 | Operation | Latency | Throughput (one request at a time) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~66 μs | ~15,000/sec |
-| 10KB clean text | ~5.5 ms | ~180/sec |
-| Injection detected (early exit) | ~67 μs | ~15,000/sec |
-| State/control clean | ~384 μs | ~2,600/sec |
+| Short clean text (~90B) | ~69 μs | ~14,400/sec |
+| 10KB clean text | ~4.0 ms | ~250/sec |
+| Injection detected (early exit) | ~73 μs | ~13,800/sec |
+| State/control clean | ~406 μs | ~2,500/sec |
+| State/control match | ~290 μs | ~3,400/sec |
 
-The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no injection keywords are present in the normalized text. This cut clean-text latency by 29%, large-content latency by 27%, and injection-detected latency by 3.1x (early keyword match skips later normalization passes). The 10KB response scan remains the current ceiling due to 6 sequential normalization passes. Content size tiering (skipping passes 3-6 for large content) is planned.
+The current run also tested clean and injected bodies at 64KiB and 256KiB. Latency ranged from about 17.6ms to 112.6ms for 64KiB and 66.0ms to 439.8ms for 256KiB, depending on content shape and injection position. The 256KiB uniform-filler clean case completed only three iterations per sample. See [benchmarks.md](benchmarks.md) for each case. The earlier keyword pre-filter percentage comparisons and content-size tiering proposal are historical notes, not conclusions from this release-tag run.
 
 ### Supporting Operations
 
+The Unicode measurements are historical Go 1.25 results; Unicode normalization wasn't included in the v3.6.0 scanner/MCP run.
+
 | Operation | Latency |
 |-----------|---------|
-| Unicode normalization (DLP mode) | ~1.1 μs |
-| Unicode normalization (matching mode) | ~1.3 μs |
-| Unicode normalization (tool text mode) | ~2.1 μs |
+| Unicode normalization (DLP mode, historical) | ~1.1 μs |
+| Unicode normalization (matching mode, historical) | ~1.3 μs |
+| Unicode normalization (tool text mode, historical) | ~2.1 μs |
 | Shannon entropy calculation | ~2.2 μs |
-| Domain matching (exact) | ~267 ns |
-| Domain matching (wildcard) | ~341 ns |
+| Domain matching (exact) | ~2.4 ns |
+| Domain matching (wildcard) | ~43 ns |
 
 ## Concurrent Scaling
 
@@ -68,7 +83,7 @@ The scanner's core detection pipeline (scheme, blocklist, DLP, entropy, SSRF) is
 
 ### Parallel throughput (`b.RunParallel`)
 
-These benchmarks run across all available goroutines simultaneously, measuring total operations per second as parallelism increases.
+The v3.6.0 tagged run includes parallel samples at `GOMAXPROCS=4`, but not the full CPU-count sweep below. For example, `Parallel_URLScan` measured ~48.9 μs/op (~20,500 ops/sec), `Parallel_ResponseScan` ~20.4 μs/op (~49,100 ops/sec), and `Parallel_MCPScanClean` ~53.5 μs/op (~18,700 ops/sec). These are concurrent `b.RunParallel` samples; they are not the one-request-at-a-time figures in the earlier tables. The 1/2/4/8/16 CPU scaling curves below remain historical and were not refreshed for v3.6.0.
 
 **URL Scanning:**
 
@@ -159,9 +174,9 @@ Sustained 2-second runs at increasing goroutine counts. Measures total operation
 
 **The pattern:** near-linear scaling up to physical core count (8), small gains from hyperthreading (16), then plateau. No degradation past core count. Adding more concurrent agents doesn't slow anything down, you just stop getting additional throughput once all cores are saturated.
 
-### HTTP Proxy Overhead
+### HTTP Proxy Overhead (historical)
 
-Raw HTTP handler throughput measured with [hey](https://github.com/rakyll/hey) against the running proxy.
+These Go 1.25 results were measured with [hey](https://github.com/rakyll/hey) against the running proxy. They weren't rerun in the v3.6.0 scanner/MCP benchmark run.
 
 | Concurrency | Requests | Req/sec | P50 | P99 |
 |------------:|--------:|--------:|----:|----:|
@@ -171,9 +186,9 @@ Raw HTTP handler throughput measured with [hey](https://github.com/rakyll/hey) a
 
 This measures HTTP accept/parse/route/respond overhead. Actual scanning latency adds the per-operation costs from the tables above.
 
-## CPU Cost at Scale
+## CPU Cost at Scale (historical)
 
-How much CPU does scanning consume at various request rates? These numbers cover scanning overhead only, not network I/O.
+These estimates predate the v3.6.0 release-tag run. They cover scanning overhead only, not network I/O, and were not recalculated here.
 
 ### Request-side scanning (URL + MCP)
 
@@ -194,6 +209,8 @@ How much CPU does scanning consume at various request rates? These numbers cover
 Response scanning is the most CPU-intensive path. At high throughput with large payloads, it dominates. For request-side scanning only, 1,000 requests per second uses less than 15% of a single CPU core. Network latency (waiting for upstream HTTP responses) dominates total request time by orders of magnitude.
 
 ## Deployment Sizing
+
+The recommendations below are older rules of thumb. The v3.6.0 scanner/MCP benchmark run didn't measure deployment-level request mixes or memory use.
 
 | Deployment | Expected load | CPU recommendation |
 |------------|--------------|-------------------|
@@ -219,7 +236,7 @@ wc -c < pipelock
 
 ## Design Decisions That Affect Performance
 
-**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits resolve in ~2μs. DLP matches exit before DNS resolution.
+**Early exit on block.** Blocked URLs short-circuit at the first failing layer. Blocklist hits measured ~2.6μs in the v3.6.0 run. DLP matches exit before DNS resolution.
 
 **Pre-DNS checks.** CRLF injection, path traversal, allowlist, blocklist, and DLP checks all execute before any network call. This prevents secret exfiltration via DNS queries and keeps the fast path fast.
 
@@ -232,8 +249,8 @@ wc -c < pipelock
 ## Reproducing These Numbers
 
 ```bash
-# Full benchmark suite (sequential)
-make bench
+# Released-tag scanner and MCP benchmark suite
+GOMAXPROCS=4 make bench
 
 # Parallel scaling (URL scanner)
 go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/

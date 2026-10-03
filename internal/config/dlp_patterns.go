@@ -89,6 +89,14 @@ var githubRegistryHosts = []string{"ghcr.io", "maven.pkg.github.com", "nuget.pkg
 // https://distribution.github.io/distribution/spec/auth/jwt/
 var githubRegistryBearerHosts = []string{"ghcr.io"}
 
+// RegistryBearerHosts returns the registries whose own token exchange issues
+// the bearer the registry-bearer carrier allows. The JWT pattern carries the
+// wider Basic host list, because GitHub's stateless installation token is a
+// ghs_-prefixed JWT that also matches it; the bearer rule narrows to these.
+func RegistryBearerHosts() []string {
+	return append([]string(nil), githubRegistryBearerHosts...)
+}
+
 // githubDownloadGrantAudienceHosts are the hosts GitHub's signed release
 // redirect points at. github.com/<owner>/<repo>/releases/download/... answers
 // 302 to release-assets.githubusercontent.com with a GitHub-issued JWT in the
@@ -375,7 +383,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
 	// JSON-object prefixes so the precision fix does not drop compact
 	// JWTs serialized with whitespace.
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceRegistryHosts: githubRegistryBearerHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery | CredentialAudienceCarrierRegistryBearer},
+	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery | CredentialAudienceCarrierRegistryBearer | CredentialAudienceCarrierRegistryBasic},
 
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or

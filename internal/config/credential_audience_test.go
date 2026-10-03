@@ -422,7 +422,7 @@ func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
 	}
 	wantHosts := []string{"release-assets.githubusercontent.com"}
 	if strings.Join(builtIn.CredentialAudienceHosts, ",") != strings.Join(wantHosts, ",") ||
-		builtIn.CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery|CredentialAudienceCarrierRegistryBearer ||
+		builtIn.CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery|CredentialAudienceCarrierRegistryBearer|CredentialAudienceCarrierRegistryBasic ||
 		builtIn.CredentialAudienceAuthorizationOnly || len(builtIn.CredentialAudienceGitHosts) != 0 {
 		t.Fatalf("JWT compiled audience = %#v", builtIn)
 	}
@@ -453,7 +453,7 @@ func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
 	exact.CredentialAudienceHosts, exact.CredentialAudienceCarrierMask = nil, 0
 	patterns := []DLPPattern{exact}
 	markBuiltInCredentialAudienceHosts(patterns)
-	if len(patterns[0].CredentialAudienceHosts) != 1 || patterns[0].CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery|CredentialAudienceCarrierRegistryBearer {
+	if len(patterns[0].CredentialAudienceHosts) != 1 || patterns[0].CredentialAudienceCarrierMask != CredentialAudienceCarrierURLQuery|CredentialAudienceCarrierRegistryBearer|CredentialAudienceCarrierRegistryBasic {
 		t.Fatalf("exact built-in lost its audience: %#v", patterns[0])
 	}
 }

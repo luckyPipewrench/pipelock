@@ -300,13 +300,18 @@ func basicUserPassword(value string) (string, string, bool) {
 	return user, password, true
 }
 
+// registryBearerHosts narrows the bearer carrier to registries that issue
+// their own bearer; see config.RegistryBearerHosts.
+var registryBearerHosts = config.RegistryBearerHosts()
+
 // registryBearerAllowed accepts the bearer a container registry issues for
 // itself. The JWT audience must name this host. The signature is not
 // checked: the allow only delivers the token back to that registry host.
 func registryBearerAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
 	if surface != CredentialAudienceAuthorizationHeaderSurface ||
 		candidate.carrierMask&config.CredentialAudienceCarrierRegistryBearer == 0 ||
-		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) {
+		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) ||
+		!destination.MatchesDomainList(host, registryBearerHosts) {
 		return false
 	}
 	parsed, err := url.Parse(target)

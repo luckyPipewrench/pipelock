@@ -42,6 +42,10 @@ func TestRegistryCredentialAudience(t *testing.T) {
 		"access": []any{map[string]any{"type": "repository"}},
 	})
 	noAccess := registryJWT(t, map[string]any{"aud": "ghcr.io"})
+	mavenAud := registryJWT(t, map[string]any{
+		"aud":    "maven.pkg.github.com",
+		"access": []any{map[string]any{"type": "repository"}},
+	})
 
 	type tc struct {
 		name    string
@@ -75,6 +79,7 @@ func TestRegistryCredentialAudience(t *testing.T) {
 		{"registry jwt other aud blocked", otherAud, "JWT Token", "Authorization", "Bearer " + otherAud, "https://ghcr.io/v2/", false, ""},
 		{"registry jwt no access blocked", noAccess, "JWT Token", "Authorization", "Bearer " + noAccess, "https://ghcr.io/v2/", false, ""},
 		{"registry jwt at maven blocked", registryJWTValue, "JWT Token", "Authorization", "Bearer " + registryJWTValue, "https://maven.pkg.github.com/o/r", false, ""},
+		{"registry jwt naming maven blocked", mavenAud, "JWT Token", "Authorization", "Bearer " + mavenAud, "https://maven.pkg.github.com/o/r", false, ""},
 		{"registry jwt other host blocked", registryJWTValue, "JWT Token", "Authorization", "Bearer " + registryJWTValue, "https://registry.vendor.example/v2/", false, ""},
 	}
 	for _, tc := range cases {
@@ -227,5 +232,36 @@ func TestRegistryAllowGuardsDirect(t *testing.T) {
 	bad.headerValue = "Basic " + jwt
 	if registryBearerAllowed(bad, "ghcr.io", "https://ghcr.io/v2/", CredentialAudienceAuthorizationHeaderSurface) {
 		t.Fatal("bearer allowed with Basic scheme")
+	}
+}
+
+// GitHub's stateless installation token is a ghs_-prefixed JWT, so the JWT
+// pattern also matches inside it. A validated Basic login must clear both.
+func TestRegistryBasicStatelessInstallationToken(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	seg := func(v string) string { return base64.RawURLEncoding.EncodeToString([]byte(v)) }
+	stateless := "ghs_" + seg(`{"alg":"ES256","typ":"JWT"}`) + "." +
+		seg(`{"iss":"github","sub":"installation","pad":"`+strings.Repeat("x", 120)+`"}`) + "." +
+		strings.Repeat("B", 86)
+	matches := s.ScanTextForDLP(context.Background(), stateless).Matches
+	if !hasTextDLPMatch(matches, "JWT Token", "") || !hasTextDLPMatch(matches, "GitHub Token", "") {
+		t.Fatalf("fixture must match both patterns: %v", matches)
+	}
+	for _, target := range []string{"https://ghcr.io/token", "https://maven.pkg.github.com/o/r/p.jar", "https://nuget.pkg.github.com/o/index.json"} {
+		retained, _ := s.FilterHeaderDLPMatches(matches, target, "Authorization", registryBasic("octocat", stateless))
+		if len(retained) != 0 {
+			t.Fatalf("%s: stateless token login retained %v", target, retained)
+		}
+	}
+	for _, tc := range []struct{ target, value string }{
+		{"https://registry.vendor.example/token", registryBasic("octocat", stateless)},
+		{"https://ghcr.io/token", registryBasic(stateless, "pw")},
+		{"https://maven.pkg.github.com/o/r", "Bearer " + stateless},
+	} {
+		retained, _ := s.FilterHeaderDLPMatches(matches, tc.target, "Authorization", tc.value)
+		if !matchRetained(retained, "JWT Token") {
+			t.Fatalf("%s %q: JWT match dropped", tc.target, tc.value[:12])
+		}
 	}
 }

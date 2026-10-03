@@ -26,13 +26,13 @@ func TestFragmentContinuityKeepsSiblingLeavesApart(t *testing.T) {
 	t.Run("split field still matches", func(t *testing.T) {
 		fb := NewFragmentBuffer(4096, 4, 300)
 		t.Cleanup(fb.Close)
-		if _, matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
+		if matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
 			{Continuity: []byte("content"), Data: prefix},
 			{Continuity: []byte("decoy"), Data: []byte("INTRUDERTEXT")},
 		}); len(matches) != 0 {
 			t.Fatalf("first half matched: %#v", matches)
 		}
-		_, matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
+		matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
 			{Continuity: []byte("content"), Data: suffix},
 			{Continuity: []byte("decoy"), Data: []byte("INTRUDERTEXT")},
 		})
@@ -44,7 +44,7 @@ func TestFragmentContinuityKeepsSiblingLeavesApart(t *testing.T) {
 	t.Run("one request does not match around a sibling", func(t *testing.T) {
 		fb := NewFragmentBuffer(4096, 4, 300)
 		t.Cleanup(fb.Close)
-		_, matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
+		matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
 			{Continuity: []byte("content"), Data: prefix},
 			{Continuity: []byte("decoy"), Data: []byte("INTRUDERTEXT")},
 			{Continuity: []byte("content"), Data: suffix},
@@ -57,11 +57,11 @@ func TestFragmentContinuityKeepsSiblingLeavesApart(t *testing.T) {
 	t.Run("sibling halves do not match", func(t *testing.T) {
 		fb := NewFragmentBuffer(4096, 4, 300)
 		t.Cleanup(fb.Close)
-		_, _ = appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
+		_ = appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
 			{Continuity: []byte("content"), Data: []byte("xxxxordinary")},
 			{Continuity: []byte("decoy"), Data: prefix},
 		})
-		_, matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
+		matches := appendLeaves(t, fb, sc, owner, group, stream, []FragmentPiece{
 			{Continuity: []byte("content"), Data: suffix},
 			{Continuity: []byte("decoy"), Data: []byte("yyyyordinary")},
 		})
@@ -71,7 +71,7 @@ func TestFragmentContinuityKeepsSiblingLeavesApart(t *testing.T) {
 	})
 }
 
-func appendLeaves(t *testing.T, fb *FragmentBuffer, sc *Scanner, owner identitykey.CEEIdentity, group, stream identitykey.CEEStream, pieces []FragmentPiece) (FragmentAppendResult, []DLPMatch) {
+func appendLeaves(t *testing.T, fb *FragmentBuffer, sc *Scanner, owner identitykey.CEEIdentity, group, stream identitykey.CEEStream, pieces []FragmentPiece) []DLPMatch {
 	t.Helper()
 	result, matches := fb.AppendAndScanOwnedBatch(t.Context(), owner, []FragmentAppend{{
 		Group:  group,
@@ -84,5 +84,5 @@ func appendLeaves(t *testing.T, fb *FragmentBuffer, sc *Scanner, owner identityk
 	if len(matches) != 1 {
 		t.Fatalf("match groups = %d, want 1", len(matches))
 	}
-	return result, matches[0]
+	return matches[0]
 }

@@ -744,11 +744,39 @@ func adjacentVerifierVersion(t *testing.T, root string, delta int) string {
 		}
 		numbers[i] = number
 	}
-	numbers[2] += delta
-	if numbers[2] < 0 {
-		t.Fatal("staged patch version cannot move backward")
+	if delta >= 0 {
+		numbers[2] += delta
+		return formatVerifierVersion(numbers)
 	}
+	for i := 2; i >= 0; i-- {
+		if numbers[i] > 0 {
+			numbers[i]--
+			return formatVerifierVersion(numbers)
+		}
+	}
+	t.Fatal("staged version cannot move backward")
+	return ""
+}
+
+func formatVerifierVersion(numbers []int) string {
 	return strconv.Itoa(numbers[0]) + "." + strconv.Itoa(numbers[1]) + "." + strconv.Itoa(numbers[2])
+}
+
+func TestAdjacentVerifierVersionBorrowsFromAZeroPatch(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("version = \"1.2.0\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := adjacentVerifierVersion(t, root, -1); got != "1.1.0" {
+		t.Fatalf("downgrade from a zero patch = %s", got)
+	}
+	if got := adjacentVerifierVersion(t, root, 1); got != "1.2.1" {
+		t.Fatalf("forward from a zero patch = %s", got)
+	}
 }
 
 func bumpStagedVerifierPackages(t *testing.T, root, version string, releaseBlocked bool) {

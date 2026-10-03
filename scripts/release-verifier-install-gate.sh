@@ -18,15 +18,23 @@ CI_RETRY="$ROOT_DIR/scripts/ci-retry.sh"
 usage() {
 	cat <<'EOF'
 Usage: scripts/release-verifier-install-gate.sh --tag vX.Y.Z [--inventory-only]
+       scripts/release-verifier-install-gate.sh --source-drift-only --base <git-rev>
 
 Builds a signed receipt with the checked-out candidate, installs each public
 verifier into an empty directory, and proves every verifier accepts the
 candidate receipt while rejecting its tampered copy.
+
+--source-drift-only does not talk to a package registry and does not need the
+verifier tag. It fails when committed verifier package source differs from
+--base unless both package versions advanced together and the inventory is
+marked pending publication.
 EOF
 }
 
 tag=""
 inventory_only=0
+source_drift_only=0
+base_rev=""
 while (($#)); do
 	case "$1" in
 		--tag)
@@ -37,6 +45,15 @@ while (($#)); do
 		--inventory-only)
 			inventory_only=1
 			shift
+			;;
+		--source-drift-only)
+			source_drift_only=1
+			shift
+			;;
+		--base)
+			(($# >= 2)) || { usage >&2; exit 64; }
+			base_rev="$2"
+			shift 2
 			;;
 		-h|--help)
 			usage
@@ -50,7 +67,15 @@ while (($#)); do
 	esac
 done
 
-if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+if ((source_drift_only && inventory_only)); then
+	printf 'release verifier install gate: --source-drift-only and --inventory-only are different checks\n' >&2
+	exit 64
+fi
+if ((source_drift_only)) && [[ -z "$base_rev" ]]; then
+	printf 'release verifier install gate: --source-drift-only requires --base\n' >&2
+	exit 64
+fi
+if ((source_drift_only == 0)) && [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
 	printf 'release verifier install gate: --tag must be a release tag such as v3.4.0\n' >&2
 	exit 64
 fi
@@ -164,7 +189,11 @@ if ((${#rows[@]} != 4)); then
 	exit 2
 fi
 
-printf 'Customer-installable verifier inventory for %s:\n' "$tag"
+if [[ -n "$tag" ]]; then
+	printf 'Customer-installable verifier inventory for %s:\n' "$tag"
+else
+	printf 'Customer-installable verifier inventory:\n'
+fi
 printf '%-11s %-28s %-16s %-24s %-46s %s\n' LANGUAGE PACKAGE VERSION ARTIFACT_DIGEST INSTALL_SOURCE TRUSTED_PUBLISHER
 for row in "${rows[@]}"; do
 	IFS=$'\t' read -r language package version install_source artifact_digest repository workflow environment source_ref source_commit <<<"$row"
@@ -226,6 +255,61 @@ if [[ "$tree_ts_version" != "$ts_version" || "$tree_ts_lock_version" != "$ts_ver
 	printf 'release verifier install gate: source manifests declare TS %s/%s and Rust %s/%s, inventory requires %s/%s\n' \
 		"$tree_ts_version" "$tree_ts_lock_version" "$tree_rust_version" "$tree_rust_lock_version" "$ts_version" "$rust_version" >&2
 	exit 2
+fi
+
+# Files whose bytes can change what a published verifier package does. The
+# tag-time comparison below uses this same list.
+verifier_source_paths=(
+	sdk/verifiers/ts/src
+	sdk/verifiers/ts/scripts
+	sdk/verifiers/ts/package.json
+	sdk/verifiers/ts/package-lock.json
+	sdk/verifiers/ts/tsconfig.json
+	sdk/verifiers/rust/src
+	sdk/verifiers/rust/build.rs
+	sdk/verifiers/rust/Cargo.toml
+	sdk/verifiers/rust/Cargo.lock
+)
+
+check_source_drift_against_base() {
+	require_command git
+	local resolved base_ts base_rust release_blocked
+	if ! resolved="$(git -C "$ROOT_DIR" rev-parse --verify "${base_rev}^{commit}" 2>/dev/null)"; then
+		printf 'release verifier install gate: --base does not resolve to a commit: %s\n' "$base_rev" >&2
+		exit 2
+	fi
+	if git -C "$ROOT_DIR" diff --quiet "$resolved" HEAD -- "${verifier_source_paths[@]}"; then
+		return 0
+	fi
+	if ! base_ts="$(git -C "$ROOT_DIR" show "$resolved:sdk/verifiers/ts/package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"; then
+		printf 'release verifier install gate: could not read the TypeScript package version at %s\n' "$resolved" >&2
+		exit 2
+	fi
+	if ! base_rust="$(git -C "$ROOT_DIR" show "$resolved:sdk/verifiers/rust/Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p')"; then
+		printf 'release verifier install gate: could not read the Rust package version at %s\n' "$resolved" >&2
+		exit 2
+	fi
+	base_rust="${base_rust%%$'\n'*}"
+	if [[ -z "$base_ts" || -z "$base_rust" ]]; then
+		printf 'release verifier install gate: %s is missing a TypeScript or Rust package version\n' "$resolved" >&2
+		exit 2
+	fi
+	if [[ "$tree_ts_version" == "$base_ts" || "$tree_rust_version" == "$base_rust" || "$tree_ts_version" != "$tree_rust_version" ]]; then
+		printf 'release verifier install gate: verifier source changed relative to %s without one new shared package version (TypeScript %s -> %s, Rust %s -> %s)\n' \
+			"${resolved:0:12}" "$base_ts" "$tree_ts_version" "$base_rust" "$tree_rust_version" >&2
+		exit 2
+	fi
+	release_blocked="$(python3 -c 'import json, sys; print(str(json.load(open(sys.argv[1], encoding="utf-8"))["release_blocked"]).lower())' "$INVENTORY")"
+	if [[ "$release_blocked" != "true" ]]; then
+		printf 'release verifier install gate: verifier source changed relative to %s and the inventory is not marked pending publication\n' \
+			"${resolved:0:12}" >&2
+		exit 2
+	fi
+}
+
+if ((source_drift_only)); then
+	check_source_drift_against_base
+	exit 0
 fi
 
 if ((inventory_only)); then
@@ -297,11 +381,7 @@ fi
 # A verifier version cannot continue to certify new implementation bytes after
 # its immutable source tag. Documentation may evolve independently, but every
 # file that can change package behavior or contents must still match the tag.
-if ! git -C "$ROOT_DIR" diff --quiet "$verifier_commit" HEAD -- \
-	sdk/verifiers/ts/src sdk/verifiers/ts/scripts \
-	sdk/verifiers/ts/package.json sdk/verifiers/ts/package-lock.json sdk/verifiers/ts/tsconfig.json \
-	sdk/verifiers/rust/src sdk/verifiers/rust/build.rs \
-	sdk/verifiers/rust/Cargo.toml sdk/verifiers/rust/Cargo.lock; then
+if ! git -C "$ROOT_DIR" diff --quiet "$verifier_commit" HEAD -- "${verifier_source_paths[@]}"; then
 	printf 'release verifier install gate: verifier package source differs from immutable tag %s\n' "$ts_ref" >&2
 	exit 2
 fi

@@ -6,8 +6,8 @@ name: Verifiers
 # file adds matching CI coverage for the other verifier implementations.
 # Regressions fail at the PR stage instead of merging silently.
 #
-# Security note: no run: step in this workflow consumes untrusted
-# github.event.* input. Every command runs over repo-controlled paths.
+# Security note: run steps do not interpolate pull request text. The source
+# drift job accepts github.event.before only after it matches a commit id.
 
 on:
   push:
@@ -27,6 +27,8 @@ on:
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
+      - 'release/verifier-installers.json'
+      - 'scripts/release-verifier-install-gate.sh'
       - '.github/workflows/verifiers.yaml'
   pull_request:
     paths:
@@ -44,6 +46,8 @@ on:
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
+      - 'release/verifier-installers.json'
+      - 'scripts/release-verifier-install-gate.sh'
       - '.github/workflows/verifiers.yaml'
 
 concurrency:
@@ -432,6 +436,43 @@ jobs:
           if tampered.get("valid") is not False or tampered.get("broken_at_seq") != 1:
               raise SystemExit(f"Python ext tamper not rejected at seq 1: {tampered}")
           PY
+
+  # A pull request checkout is the merge commit, so its first parent is the
+  # base. A main push compares with the previous tip, and only after that
+  # value is checked to be a commit id.
+  verifier-source-drift:
+    name: Verifier source drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pipelock
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fail source drift that does not bump the verifier packages
+        env:
+          DRIFT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            parents="$(git rev-list --parents -n 1 HEAD)"
+            set -- $parents
+            if [ "$#" -lt 3 ]; then
+              echo "pull request checkout is not a merge commit" >&2
+              exit 1
+            fi
+            base="$2"
+          else
+            if ! [[ "${DRIFT_BEFORE:-}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "push base is not a commit id" >&2
+              exit 1
+            fi
+            base="$DRIFT_BEFORE"
+          fi
+          git cat-file -e "${base}^{commit}"
+          scripts/release-verifier-install-gate.sh --source-drift-only --base "$base"
 
       - name: Run AARP cross-language gate
         env:

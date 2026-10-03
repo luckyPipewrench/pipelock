@@ -248,12 +248,15 @@ class TestReleaseArtifacts(unittest.TestCase):
         holders = []
         for job_name, job in parsed["jobs"].items():
             for step in job.get("steps", []):
-                blocks = (step.get("env") or {}, step.get("with") or {})
-                if any(
-                    "HOMEBREW_TAP_TOKEN" in str(value)
-                    for block in blocks
+                texts = [
+                    str(value)
+                    for block in (step.get("env") or {}, step.get("with") or {})
                     for value in block.values()
-                ):
+                ]
+                run = step.get("run")
+                if run is not None:
+                    texts.append(str(run))
+                if any("HOMEBREW_TAP_TOKEN" in text for text in texts):
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
             holders,

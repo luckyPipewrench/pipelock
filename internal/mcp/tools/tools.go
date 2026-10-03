@@ -109,6 +109,10 @@ type ToolScanResult struct {
 	RPCID        json.RawMessage `json:"-"` // parsed ID for block responses (avoids re-parse)
 	ToolNames    []string        `json:"-"` // tool names from tools/list (for session binding)
 	ToolDefs     []ToolDef       `json:"-"` // accepted definitions for transport header binding
+	// ResourceDetail names the tool, field and bound behind an uninspectable
+	// verdict for the operator log. It is never sent to the agent: it quotes
+	// an upstream-chosen tool name from the very definition being refused.
+	ResourceDetail string `json:"-"`
 }
 
 // ExtraPoisonPattern is a tool-poison pattern from a community rule bundle.
@@ -1431,7 +1435,7 @@ func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
 func extractToolGeneralText(t ToolDef) string {
 	var parts []string
 	// Dropping a truncated key set is only safe because
-	// toolDefinitionsHaveUninspectableText has already refused the definition
+	// uninspectableToolDefinition has already refused the definition
 	// by the time this runs. That pre-scan checks key-extraction truncation
 	// directly, through toolKeyExtractionTruncated, on every field this
 	// function reads. It has to: key extraction truncates on breadth as well as
@@ -1827,9 +1831,18 @@ func schemaValueDepthTruncated(value interface{}, depth int) bool {
 	return false
 }
 
-// maxSchemaDepth limits recursion depth for schema walking to prevent stack
-// overflow on maliciously deep schemas.
-const maxSchemaDepth = 20
+// maxSchemaDepth bounds every schema walk: the inspectability gate and the
+// description, parameter-name and text walkers all stop at the same depth, so
+// nothing the gate admits lies beyond what the walkers read. The tools/list
+// envelope scan re-reads every schema through the general MCP JSON extractor
+// (jsonrpc maxExtractDepth, 64) counted from the tools array, two levels above
+// a schema root, so the gate sits two below that bound: a schema it admits is
+// never truncated, and the whole tools/list withheld, one stage later. Generated
+// schemas exceed the former 20 levels routinely: a list of records with
+// optional union fields costs five levels per record, and refusing one such
+// definition withholds the server's entire tools/list. Size and breadth are
+// bounded separately by maxToolDefinitionTextBytes and the key budget.
+const maxSchemaDepth = 62
 
 // schemaTextFields are JSON Schema fields whose string values should be
 // extracted for poisoning detection. CyberArk research showed attackers
@@ -2178,7 +2191,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		// A malformed tool definition cannot be parsed into a complete
 		// inspectable inventory. Unknown extension fields are preserved and
 		// scanned by ToolDef.UnmarshalJSON, so they do not take this path.
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", RPCID: rpc.ID}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: "tools/list result is not a complete tool inventory", RPCID: rpc.ID}
 	}
 	if tools == nil {
 		// tools/list response with empty or all-unnamed tools - still a tools/list,
@@ -2214,8 +2227,8 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 		names[i] = t.Name
 	}
 
-	if toolDefinitionsHaveUninspectableText(tools) {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
+	if detail := uninspectableToolDefinition(tools); detail != "" {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: detail, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
 	}
 	if resourceLimit := toolScanCapacityLimit(tools, names, cfg); resourceLimit != "" {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
@@ -2236,7 +2249,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 	return ToolScanResult{IsToolsList: true, Clean: false, Matches: matches, Observations: observations, RPCID: rpc.ID, ToolNames: names, ToolDefs: tools}
 }
 
-// toolDefinitionsHaveUninspectableText rejects a definition whose structured
+// uninspectableToolDefinition rejects a definition whose structured
 // or extension fields exceed extraction bounds, or contain opaque media that
 // cannot be scanned as text. Unknown names alone are never uninspectable:
 // their readable values are scanned by extractToolGeneralText.
@@ -2280,7 +2293,7 @@ func toolDefinitionTextExceedsBudget(t ToolDef) bool {
 	return false
 }
 
-func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
+func uninspectableToolDefinition(defs []ToolDef) string {
 	for _, tool := range defs {
 		// Bound the total agent-visible text before any of it is scanned. The
 		// depth and key budgets do not constrain SIZE: one enormous string, or
@@ -2291,41 +2304,73 @@ func toolDefinitionsHaveUninspectableText(defs []ToolDef) bool {
 		// the bound local to tool scanning, so the shared extractor and its
 		// other consumers are unaffected.
 		if toolDefinitionTextExceedsBudget(tool) {
-			return true
+			return uninspectableDetail(tool.Name, "definition", fmt.Sprintf("agent-visible text exceeds %d bytes", maxToolDefinitionTextBytes))
 		}
-		for _, field := range []json.RawMessage{tool.InputSchema, tool.OutputSchema} {
+		for _, field := range []struct {
+			name string
+			raw  json.RawMessage
+		}{{"inputSchema", tool.InputSchema}, {"outputSchema", tool.OutputSchema}} {
 			// Schemas get the opaque-media check too, not just the depth check.
 			// A schema can carry a content block under default, const or
 			// examples, so a server that moved a binary payload out of _meta
 			// and into outputSchema would otherwise skip the refusal that the
 			// same payload triggers anywhere else.
-			if len(field) == 0 {
+			if len(field.raw) == 0 {
 				continue
 			}
-			if schemaTextExtractionTruncated(field) || toolKeyExtractionTruncated(field) ||
-				toolFieldContainsOpaqueMedia(field) {
-				return true
+			if schemaTextExtractionTruncated(field.raw) {
+				return uninspectableDetail(tool.Name, field.name, fmt.Sprintf("nests deeper than %d levels", maxSchemaDepth))
+			}
+			if reason := fieldUninspectableReason(field.raw, false); reason != "" {
+				return uninspectableDetail(tool.Name, field.name, reason)
 			}
 		}
-		for _, field := range []json.RawMessage{tool.Annotations, tool.Meta} {
-			if len(field) == 0 {
+		for _, field := range []struct {
+			name string
+			raw  json.RawMessage
+		}{{"annotations", tool.Annotations}, {"_meta", tool.Meta}} {
+			if len(field.raw) == 0 {
 				continue
 			}
-			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
-			if extracted.Truncated || toolKeyExtractionTruncated(field) ||
-				toolFieldContainsOpaqueMedia(field) {
-				return true
+			if reason := fieldUninspectableReason(field.raw, true); reason != "" {
+				return uninspectableDetail(tool.Name, field.name, reason)
 			}
 		}
 		for _, field := range tool.unknown {
-			extracted := jsonrpc.ExtractStringsFromJSONResult(field)
-			if extracted.Truncated || toolKeyExtractionTruncated(field) ||
-				toolFieldContainsOpaqueMedia(field) {
-				return true
+			// The extension field name is upstream-chosen too; the tool name
+			// alone locates the definition for the operator.
+			if reason := fieldUninspectableReason(field, true); reason != "" {
+				return uninspectableDetail(tool.Name, "an extension field", reason)
 			}
 		}
 	}
-	return false
+	return ""
+}
+
+// fieldUninspectableReason applies the extraction-bound and opaque-media
+// checks to one field, naming the bound that refused it.
+func fieldUninspectableReason(raw json.RawMessage, extractStrings bool) string {
+	if extractStrings && jsonrpc.ExtractStringsFromJSONResult(raw).Truncated {
+		return "exceeds the string extraction bound"
+	}
+	if toolKeyExtractionTruncated(raw) {
+		return "exceeds the key extraction bound"
+	}
+	if toolFieldContainsOpaqueMedia(raw) {
+		return "carries opaque media that cannot be scanned as text"
+	}
+	return ""
+}
+
+// maxDetailToolNameBytes bounds how much of an upstream tool name an operator
+// log line quotes.
+const maxDetailToolNameBytes = 96
+
+func uninspectableDetail(toolName, field, reason string) string {
+	if len(toolName) > maxDetailToolNameBytes {
+		toolName = toolName[:maxDetailToolNameBytes] + "..."
+	}
+	return fmt.Sprintf("tool %q: %s %s", toolName, field, reason)
 }
 
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
@@ -2341,6 +2386,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	var allNames []string
 	var allDefs []ToolDef
 	resourceLimit := ""
+	resourceDetail := ""
 	var firstID json.RawMessage
 	isToolsList := false
 
@@ -2357,6 +2403,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 			allDefs = append(allDefs, r.ToolDefs...)
 			if resourceLimit == "" {
 				resourceLimit = r.ResourceLimit
+				resourceDetail = r.ResourceDetail
 			}
 		}
 	}
@@ -2366,7 +2413,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	}
 
 	if resourceLimit != "" {
-		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: resourceLimit, ResourceDetail: resourceDetail, RPCID: firstID, ToolNames: allNames, ToolDefs: allDefs, Observations: allObservations}
 	}
 
 	if len(allMatches) == 0 {
@@ -2648,7 +2695,11 @@ func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
 // LogToolFindings writes per-tool scan findings to the log writer.
 func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 	if result.ResourceLimit != "" {
-		_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list cannot be safely inspected: %s\n", lineNum, result.ResourceLimit)
+		if result.ResourceDetail != "" {
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list cannot be safely inspected: %s (%s)\n", lineNum, result.ResourceLimit, result.ResourceDetail)
+		} else {
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list cannot be safely inspected: %s\n", lineNum, result.ResourceLimit)
+		}
 	}
 	for _, m := range result.Matches {
 		var reasons []string

@@ -621,6 +621,17 @@ func TestReleaseVerifierSourceDriftAllowsAnUnchangedTree(t *testing.T) {
 	}
 }
 
+func TestReleaseVerifierSourceDriftRejectsARustOnlyEditWithoutAVersionBump(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	appendStagedFile(t, root, filepath.Join("sdk", "verifiers", "rust", "src", "main.rs"), "\n// rust-only edit\n")
+	commitReleaseVerifierFixture(t, root, "sdk/verifiers/rust/src/main.rs")
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("unbumped rust source edit error = %v, output = %q", err, output)
+	}
+}
+
 func TestReleaseVerifierSourceDriftRejectsASourceEditWithoutAVersionBump(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	base := releaseVerifierFixtureHEAD(t, root)
@@ -705,7 +716,12 @@ func TestReleaseVerifierSourceDriftAcceptsAPendingSharedBump(t *testing.T) {
 
 func appendStagedVerifierSource(t *testing.T, root, suffix string) {
 	t.Helper()
-	sourcePath := filepath.Join(root, "sdk", "verifiers", "ts", "src", "types.ts")
+	appendStagedFile(t, root, filepath.Join("sdk", "verifiers", "ts", "src", "types.ts"), suffix)
+}
+
+func appendStagedFile(t *testing.T, root, relativePath, suffix string) {
+	t.Helper()
+	sourcePath := filepath.Join(root, relativePath)
 	source, err := os.ReadFile(sourcePath) // #nosec G304 -- fixed source path under t.TempDir.
 	if err != nil {
 		t.Fatalf("read staged source: %v", err)
@@ -919,6 +935,7 @@ func stageReleaseVerifierInventoryTest(t *testing.T) string {
 		"sdk/verifiers/ts/src/types.ts",
 		"sdk/verifiers/rust/Cargo.toml",
 		"sdk/verifiers/rust/Cargo.lock",
+		"sdk/verifiers/rust/src/main.rs",
 	}
 	for _, relativePath := range stagedPaths {
 		raw, err := os.ReadFile(filepath.Join(repoRoot, relativePath)) // #nosec G304 -- relativePath comes from the fixed list above.

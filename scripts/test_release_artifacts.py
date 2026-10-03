@@ -137,6 +137,16 @@ class TestReleaseArtifacts(unittest.TestCase):
             events,
             "a manual run would let the selected branch receive the tap credential",
         )
+        self.assertNotIn(
+            "pull_request",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
+        self.assertNotIn(
+            "pull_request_target",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
 
     def test_no_workflow_pairs_a_manual_trigger_with_package_write(self) -> None:
         """The class behind the deleted chart publisher, not just that one file.

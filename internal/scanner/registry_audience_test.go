@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func registryBasic(user, password string) string {
@@ -92,5 +94,138 @@ func TestRegistryCredentialAudience(t *testing.T) {
 				t.Fatalf("pattern %s was allowed: retained=%v allows=%#v", tc.pattern, matchRetained(retained, tc.pattern), allows)
 			}
 		})
+	}
+}
+
+func TestBasicUserPassword(t *testing.T) {
+	t.Parallel()
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	raw := func(s string) string { return base64.RawStdEncoding.EncodeToString([]byte(s)) }
+	cases := []struct {
+		name, value, user, password string
+		ok                          bool
+	}{
+		{"scheme and value", "Basic " + enc("octocat:pw"), "octocat", "pw", true},
+		{"scheme case-insensitive", "basic " + enc("octocat:pw"), "octocat", "pw", true},
+		{"bare field", enc("octocat:pw"), "octocat", "pw", true},
+		{"unpadded base64", "Basic " + raw("octocat:p"), "octocat", "p", true},
+		{"password keeps later colons", "Basic " + enc("octocat:a:b"), "octocat", "a:b", true},
+		{"wrong scheme", "Bearer " + enc("octocat:pw"), "", "", false},
+		{"empty", "", "", "", false},
+		{"three fields", "Basic " + enc("octocat:pw") + " extra", "", "", false},
+		{"not base64", "Basic !!!", "", "", false},
+		{"no colon", "Basic " + enc("octocat"), "", "", false},
+		{"empty password", "Basic " + enc("octocat:"), "", "", false},
+		{"empty user", "Basic " + enc(":pw"), "", "", false},
+		{"crlf in decoded value", "Basic " + enc("octocat:pw\r\nX-Injected: 1"), "", "", false},
+		{"lf in decoded value", "Basic " + enc("octo\ncat:pw"), "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			user, password, ok := basicUserPassword(tc.value)
+			if ok != tc.ok || user != tc.user || password != tc.password {
+				t.Fatalf("basicUserPassword(%q) = %q, %q, %v; want %q, %q, %v", tc.value, user, password, ok, tc.user, tc.password, tc.ok)
+			}
+		})
+	}
+}
+
+func TestRegistryJWTAudienceMatches(t *testing.T) {
+	t.Parallel()
+	access := []any{map[string]any{"type": "repository"}}
+	seg := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	head := seg(map[string]any{"alg": "none"})
+	cases := []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{"string aud", registryJWT(t, map[string]any{"aud": "ghcr.io", "access": access}), true},
+		{"array aud with host", registryJWT(t, map[string]any{"aud": []string{"other.example", "ghcr.io"}, "access": access}), true},
+		{"array aud without host", registryJWT(t, map[string]any{"aud": []string{"other.example"}, "access": access}), false},
+		{"empty array aud", registryJWT(t, map[string]any{"aud": []string{}, "access": access}), false},
+		{"numeric aud", registryJWT(t, map[string]any{"aud": 7, "access": access}), false},
+		{"missing aud", registryJWT(t, map[string]any{"access": access}), false},
+		{"empty access", registryJWT(t, map[string]any{"aud": "ghcr.io", "access": []any{}}), false},
+		{"access not array", registryJWT(t, map[string]any{"aud": "ghcr.io", "access": "pull"}), false},
+		{"two segments", head + "." + seg(map[string]any{"aud": "ghcr.io"}), false},
+		{"payload not base64", head + ".!!!.sig", false},
+		{"payload not json", head + "." + base64.RawURLEncoding.EncodeToString([]byte("nope")) + ".sig", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := registryJWTAudienceMatches(tc.token, "ghcr.io"); got != tc.want {
+				t.Fatalf("registryJWTAudienceMatches = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRegistryBearerRejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
+	s := MustNew(credentialAudienceTestConfig())
+	jwt := registryJWT(t, map[string]any{"aud": "ghcr.io", "access": []any{map[string]any{"type": "repository"}}})
+	matches := s.ScanTextForDLP(context.Background(), jwt).Matches
+	cases := []struct{ name, target, value string }{
+		{"cleartext target", "http://ghcr.io/v2/", "Bearer " + jwt},
+		{"unparseable target", "https://ghcr.io/%zz", "Bearer " + jwt},
+		{"basic scheme", "https://ghcr.io/v2/", "Basic " + jwt},
+		{"extra field", "https://ghcr.io/v2/", "Bearer " + jwt + " x"},
+		{"missing value", "https://ghcr.io/v2/", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retained, allows := s.FilterHeaderDLPMatches(matches, tc.target, "Authorization", tc.value)
+			if !matchRetained(retained, "JWT Token") || audienceAllowFor(allows, "JWT Token") {
+				t.Fatalf("registry bearer allowed: allows=%#v", allows)
+			}
+		})
+	}
+	gh := "ghp_" + strings.Repeat("a", 36)
+	ghMatches := s.ScanTextForDLP(context.Background(), gh).Matches
+	retained, allows := s.FilterHeaderDLPMatches(ghMatches, "https://ghcr.io/%zz", "Authorization", registryBasic("octocat", gh))
+	if !matchRetained(retained, "GitHub Token") || audienceAllowFor(allows, "GitHub Token") {
+		t.Fatalf("registry basic allowed on unparseable target: allows=%#v", allows)
+	}
+}
+
+func TestRegistryAllowGuardsDirect(t *testing.T) {
+	t.Parallel()
+	gh := "ghp_" + strings.Repeat("a", 36)
+	jwt := registryJWT(t, map[string]any{"aud": "ghcr.io", "access": []any{map[string]any{"type": "repository"}}})
+	basic := credentialAudienceCandidate{
+		carrierMask:   config.CredentialAudienceCarrierRegistryBasic,
+		registryHosts: []string{"ghcr.io"},
+		headerValue:   registryBasic("octocat", gh),
+	}
+	bearer := credentialAudienceCandidate{
+		carrierMask:   config.CredentialAudienceCarrierRegistryBearer,
+		registryHosts: []string{"ghcr.io"},
+		headerValue:   "Bearer " + jwt,
+	}
+	if !registryBasicAllowed(basic, "ghcr.io", "https://ghcr.io/token", credentialAudienceAuthorizationBasicSurface) {
+		t.Fatal("positive basic control refused")
+	}
+	if !registryBearerAllowed(bearer, "ghcr.io", "https://ghcr.io/v2/", CredentialAudienceAuthorizationHeaderSurface) {
+		t.Fatal("positive bearer control refused")
+	}
+	for _, target := range []string{"http://ghcr.io/token", "https://ghcr.io/%zz"} {
+		if registryBasicAllowed(basic, "ghcr.io", target, credentialAudienceAuthorizationBasicSurface) {
+			t.Fatalf("basic allowed for %q", target)
+		}
+		if registryBearerAllowed(bearer, "ghcr.io", target, CredentialAudienceAuthorizationHeaderSurface) {
+			t.Fatalf("bearer allowed for %q", target)
+		}
+	}
+	bad := bearer
+	bad.headerValue = "Basic " + jwt
+	if registryBearerAllowed(bad, "ghcr.io", "https://ghcr.io/v2/", CredentialAudienceAuthorizationHeaderSurface) {
+		t.Fatal("bearer allowed with Basic scheme")
 	}
 }

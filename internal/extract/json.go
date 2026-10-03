@@ -85,11 +85,26 @@ func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloa
 	return state.payloads, true
 }
 
+// JSONBucketLeaf is one scalar value and the path identity that later
+// reassembly must keep contiguous. Continuity is stable for the same path
+// under one document shape. It is not a bucket id: several leaves share a
+// bucket, and concatenating them would let a sibling value sit between two
+// halves of a secret.
+type JSONBucketLeaf struct {
+	Continuity []byte
+	Value      []byte
+}
+
 // JSONLeafBucketPayloads groups every scalar JSON leaf into one of bucketCount
 // buckets. Unlike JSONLeafPayloadsPartial, it never discards a leaf to enforce
 // a path-count ceiling: the fixed bucket count is the resource bound. Deep
 // paths are reduced to a truncated-plus-digest representation before bucket
 // selection, so a depth limit does not omit their content.
+//
+// The returned bytes concatenate every leaf in that bucket. That map is a
+// containment view, not a secret stream: a caller that reassembles a value
+// split across requests must use JSONLeafBucketLeaves so sibling leaves stay
+// apart.
 //
 // Bucket selection is a keyed digest of the normalized path. The same path
 // stays in the same bucket for one key; a different key is a different map.
@@ -109,30 +124,73 @@ func JSONLeafPayloadsPartial(raw json.RawMessage, limits JSONLeafLimits) (payloa
 // payload map is trustworthy for the leaves it contains but is NOT a complete
 // inspection; callers keyed on valid=false must still scan their raw fallback.
 func JSONLeafBucketPayloads(raw json.RawMessage, limits JSONLeafLimits, bucketCount int, key []byte) (payloads map[string][]byte, valid bool) {
+	leaves, valid := JSONLeafBucketLeaves(raw, limits, bucketCount, key)
+	return concatJSONBucketLeaves(leaves), valid
+}
+
+// JSONLeafBucketLeaves is JSONLeafBucketPayloads with path identity preserved.
+// Leaves in one bucket keep separate Continuity values, so a shared bucket
+// cannot glue unrelated fields into one scannable string.
+func JSONLeafBucketLeaves(raw json.RawMessage, limits JSONLeafLimits, bucketCount int, key []byte) (leaves map[string][]JSONBucketLeaf, valid bool) {
 	if len(raw) == 0 || limits.MaxDepth < 0 || limits.MaxPathBytes <= 0 || bucketCount <= 0 || bucketCount > maxJSONLeafBuckets || len(key) == 0 {
 		return nil, false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: bucketCount, key: key, raw: raw}
+	state := jsonLeafBucketState{
+		leaves:      make(map[string][]jsonBucketLeaf),
+		pathUses:    make(map[string]int),
+		bucketCount: bucketCount,
+		key:         key,
+		raw:         raw,
+	}
 	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
-		return jsonLeafBucketResult(state.payloads), false
+		return exportJSONBucketLeaves(state.leaves), false
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return jsonLeafBucketResult(state.payloads), false
+		return exportJSONBucketLeaves(state.leaves), false
 	}
-	return jsonLeafBucketResult(state.payloads), true
+	return exportJSONBucketLeaves(state.leaves), true
 }
 
-func jsonLeafBucketResult(payloads map[string][]byte) map[string][]byte {
-	if len(payloads) == 0 {
+func exportJSONBucketLeaves(in map[string][]jsonBucketLeaf) map[string][]JSONBucketLeaf {
+	if len(in) == 0 {
 		return nil
 	}
-	return payloads
+	out := make(map[string][]JSONBucketLeaf, len(in))
+	for bucket, items := range in {
+		exported := make([]JSONBucketLeaf, len(items))
+		for i, item := range items {
+			exported[i] = JSONBucketLeaf{Continuity: item.continuity, Value: item.value}
+		}
+		out[bucket] = exported
+	}
+	return out
+}
+
+func concatJSONBucketLeaves(leaves map[string][]JSONBucketLeaf) map[string][]byte {
+	if len(leaves) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(leaves))
+	for bucket, items := range leaves {
+		var buf []byte
+		for _, item := range items {
+			buf = append(buf, item.Value...)
+		}
+		out[bucket] = buf
+	}
+	return out
+}
+
+type jsonBucketLeaf struct {
+	continuity []byte
+	value      []byte
 }
 
 type jsonLeafBucketState struct {
-	payloads    map[string][]byte
+	leaves      map[string][]jsonBucketLeaf
+	pathUses    map[string]int
 	bucketCount int
 	key         []byte
 	// raw is the whole input, so an over-depth fold the decoder refuses to
@@ -148,7 +206,7 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 	// stack. jsonLeafBucketIndex already reduces an over-depth path to a
 	// digest, so no leaf is discarded; it is bucketed rather than descended.
 	if depth > limits.MaxDepth {
-		return bucketOverDepthValue(decoder, state, path, depth, limits.MaxDepth)
+		return bucketOverDepthValue(decoder, state, path, depth, limits.MaxDepth, limits.MaxPathBytes)
 	}
 	token, err := decoder.Token()
 	if err != nil {
@@ -219,7 +277,7 @@ func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketSta
 // the truncated-plus-digest path and no content is discarded. Object member
 // names are consumed but not bucketed, matching the value-only contract of the
 // recursive path. The fixed bucket count still bounds retained state.
-func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth, maxDepth int) (complete bool) {
+func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth, maxDepth, maxPathBytes int) (complete bool) {
 	// json.Decoder's own nesting limit differs by Go release (Go 1.27 stops
 	// at 10000 levels). When it refuses to go on, bucket the untokenized
 	// remainder of the input raw rather than drop it; the walk still reports
@@ -230,28 +288,61 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 	resume := decoder.InputOffset()
 	defer func() {
 		if !complete && resume >= 0 && resume < int64(len(state.raw)) {
+			// The decoder stopped inside a token, so the unread remainder has
+			// no trustworthy key or index. Those leaves stay on the boundary
+			// path and are separated only by occurrence.
 			foldRemainingJSONScalars(state.raw[resume:], func(value string) {
 				appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
 			})
 		}
 	}()
-	// stack element true = inside an object (tokens alternate key/value),
-	// false = inside an array (every element is a value).
-	var stack []bool
-	// expectKey is meaningful only while the top of stack is an object.
-	expectKey := false
+	// Each frame is one container. path is the container's own path, not the
+	// path of the leaf currently being read. A folded leaf keeps that inner
+	// path so a sibling inserted earlier in the container cannot take its
+	// identity. The bucket index still uses the boundary path.
+	type depthFrame struct {
+		inObject   bool
+		path       []byte
+		index      int
+		expectKey  bool
+		pending    string
+		hasPending bool
+	}
+	var stack []depthFrame
+	// valuePath is the path of the value about to be consumed. It copies
+	// because appendJSONLeafPathPartPartial may append onto the slice.
+	valuePath := func() []byte {
+		if len(stack) == 0 {
+			return append([]byte(nil), path...)
+		}
+		top := &stack[len(stack)-1]
+		if top.inObject {
+			if !top.hasPending {
+				return append([]byte(nil), top.path...)
+			}
+			part := top.pending
+			top.hasPending = false
+			top.expectKey = true
+			return appendJSONLeafPathPartPartial(top.path, part, maxPathBytes)
+		}
+		idx := top.index
+		top.index++
+		return appendJSONLeafPathPartPartial(top.path, strconv.Itoa(idx), maxPathBytes)
+	}
 	for {
-		if len(stack) > 0 && stack[len(stack)-1] && expectKey && decoder.More() {
-			// Consume and discard the object member name.
+		if len(stack) > 0 && stack[len(stack)-1].inObject && stack[len(stack)-1].expectKey && decoder.More() {
 			resume = decoder.InputOffset()
 			keyTok, err := decoder.Token()
 			if err != nil {
 				return false
 			}
-			if _, ok := keyTok.(string); !ok {
+			keyString, ok := keyTok.(string)
+			if !ok {
 				return false
 			}
-			expectKey = false
+			stack[len(stack)-1].pending = keyString
+			stack[len(stack)-1].hasPending = true
+			stack[len(stack)-1].expectKey = false
 		}
 		resume = decoder.InputOffset()
 		token, err := decoder.Token()
@@ -262,28 +353,23 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 		case json.Delim:
 			switch value {
 			case '{':
-				stack = append(stack, true)
-				expectKey = true
+				stack = append(stack, depthFrame{inObject: true, path: valuePath(), expectKey: true})
 			case '[':
-				stack = append(stack, false)
+				stack = append(stack, depthFrame{inObject: false, path: valuePath()})
 			case '}', ']':
 				if len(stack) == 0 {
 					return false
 				}
 				stack = stack[:len(stack)-1]
-				expectKey = len(stack) > 0 && stack[len(stack)-1]
 			}
 		case string:
-			appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
-			expectKey = len(stack) > 0 && stack[len(stack)-1]
+			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, value)
 		case json.Number:
-			appendJSONLeafBucketValue(state, path, depth, maxDepth, value.String())
-			expectKey = len(stack) > 0 && stack[len(stack)-1]
+			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, value.String())
 		case bool:
-			appendJSONLeafBucketValue(state, path, depth, maxDepth, strconv.FormatBool(value))
-			expectKey = len(stack) > 0 && stack[len(stack)-1]
+			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, strconv.FormatBool(value))
 		case nil:
-			expectKey = len(stack) > 0 && stack[len(stack)-1]
+			_ = valuePath()
 		}
 		if len(stack) == 0 {
 			return true
@@ -369,8 +455,35 @@ func jsonStringEnd(raw []byte, start int) int {
 }
 
 func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {
+	if state.leaves == nil {
+		state.leaves = make(map[string][]jsonBucketLeaf)
+	}
+	if state.pathUses == nil {
+		state.pathUses = make(map[string]int)
+	}
 	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount, state.key))
-	state.payloads[bucket] = append(state.payloads[bucket], value...)
+	continuity := bucketLeafContinuity(state, path)
+	state.leaves[bucket] = append(state.leaves[bucket], jsonBucketLeaf{continuity: continuity, value: []byte(value)})
+}
+
+// bucketLeafContinuity copies path so later walker mutations cannot rewrite a
+// stored leaf. A second leaf with the exact same path (a duplicate key, or a
+// scalar the decoder could not attribute to a key) gets an ordinal. The
+// ordinal is not a position among siblings: those keep their own paths.
+func bucketLeafContinuity(state *jsonLeafBucketState, path []byte) []byte {
+	base := append([]byte(nil), path...)
+	key := string(base)
+	n := state.pathUses[key]
+	state.pathUses[key] = n + 1
+	// Tag every leaf. A decimal ordinal between two NUL bytes cannot be
+	// impersonated by another path: the walker path is only a suffix, and
+	// the first occurrence of path "a#1" is not the second occurrence of "a".
+	ord := strconv.Itoa(n)
+	out := make([]byte, 0, 2+len(ord)+len(base))
+	out = append(out, 0)
+	out = append(out, ord...)
+	out = append(out, 0)
+	return append(out, base...)
 }
 
 func jsonLeafBucketIndex(path []byte, depth, maxDepth, bucketCount int, key []byte) int {

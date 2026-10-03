@@ -1917,7 +1917,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads, BodyFragmentLeaves: ceePayloads.bodyFragmentLeaves,
 		PartitionReason: ceePayloads.partitionReason,
 		KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,

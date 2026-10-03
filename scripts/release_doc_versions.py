@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -48,10 +49,6 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"oci://ghcr\.io/luckypipewrench/charts/pipelock[^\n]*?"
             r"--version\s+(?P<version>[0-9A-Za-z._+-]+)"
         ),
-    ),
-    (
-        "release download command",
-        re.compile(r"gh\s+release\s+download\s+(?P<version>v?[0-9][^\s`\"']*)"),
     ),
     (
         "GitHub Action tag",
@@ -143,8 +140,59 @@ def check(root: Path, release_tag: str) -> list[str]:
         if pending:
             logical_lines.append((first_line, pending))
 
+        # Folded YAML joins ordinary equally-indented lines, but preserves
+        # blank and more-indented lines. Keep physical lines too, so malformed
+        # or unsupported scalar shapes cannot conceal an already-visible pin.
+        for index, source in enumerate(lines):
+            header = re.match(r"^(\s*)(?:-\s+)?[\w-]+:\s*>[+-]?[1-9]?[+-]?\s*(?:#.*)?$", source)
+            if not header:
+                continue
+            header_indent = len(header.group(1))
+            block: list[tuple[int, str]] = []
+            for offset, body in enumerate(lines[index + 1:], start=index + 2):
+                if body.strip() and len(body) - len(body.lstrip()) <= header_indent:
+                    break
+                block.append((offset, body))
+            indent = min((len(body) - len(body.lstrip()) for _, body in block if body.strip()), default=0)
+            folded = ""
+            first = index + 2
+            for number, body in block:
+                if not body.strip() or len(body) - len(body.lstrip()) > indent:
+                    if folded:
+                        logical_lines.append((first, folded))
+                    folded = ""
+                    logical_lines.append((number, body))
+                    continue
+                if not folded:
+                    first = number
+                folded += body.strip() + " "
+            if folded:
+                logical_lines.append((first, folded))
+
         for number, line in logical_lines:
             references: list[tuple[str, str, bool | None]] = []
+            for command in re.finditer(r"\bgh\s+release\s+download\s+([^;|&\n]+)", line):
+                try:
+                    arguments = shlex.split(command.group(1), comments=True)
+                except ValueError:
+                    issues.append(f"{relative}:{number}: malformed release download command")
+                    continue
+                skip_value = False
+                for argument in arguments:
+                    if skip_value:
+                        skip_value = False
+                        continue
+                    if argument in {"--repo", "-R", "--pattern", "-p", "--dir", "-D", "--archive", "-A"}:
+                        skip_value = True
+                        continue
+                    if argument.startswith("-"):
+                        if argument not in {"--", "--clobber", "--skip-existing"} and not any(
+                            argument.startswith(option + "=") for option in {"--repo", "--pattern", "--dir", "--archive"}
+                        ) and not argument.startswith(("-R", "-p", "-D", "-A")):
+                            issues.append(f"{relative}:{number}: unsupported release download option {argument!r}")
+                        continue
+                    references.append(("release download command", argument.removesuffix("."), True))
+                    break
             for surface, pattern in SURFACE_PATTERNS:
                 for match in pattern.finditer(line):
                     if surface == "release archive URL":

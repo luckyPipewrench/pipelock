@@ -77,6 +77,37 @@ class ReleaseDocVersionTests(unittest.TestCase):
             write_tree(root, current=CURRENT + "- uses: luckyPipewrench/pipelock@3.5.0\n")
             self.assertTrue(any("incorrect v prefix" in finding for finding in check(root, "v3.6.0")))
 
+    def test_download_options_and_folded_yaml_stale_pins_fail(self) -> None:
+        cases = (
+            "gh release download --repo luckyPipewrench/pipelock v3.5.0",
+            "gh release download -R luckyPipewrench/pipelock --dir ./out v3.5.0",
+            "gh release download --repo=luckyPipewrench/pipelock v3.5.0",
+            "run: >-\n  gh release download\n  --repo luckyPipewrench/pipelock\n  v3.5.0\n",
+        )
+        for source in cases:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root)
+                (root / "examples").mkdir()
+                (root / "examples" / "install.yaml").write_text(source)
+                self.assertTrue(any("3.5.0" in finding for finding in check(root, "v3.6.0")))
+
+    def test_folded_and_download_option_positive_controls(self) -> None:
+        cases = (
+            "gh release download --repo luckyPipewrench/pipelock --clobber v3.6.0",
+            "gh release download --dir 3.5.0 --pattern '*.tar.gz' v3.6.0",
+            "run: >+\n  gh release download\n  --repo luckyPipewrench/pipelock\n  v3.6.0\n",
+            "run: >-\n  gh release download\n\n  v3.5.0\n",
+            "run: >-\n  gh release download\n    v3.5.0\n",
+        )
+        for source in cases:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root)
+                (root / "examples").mkdir()
+                (root / "examples" / "install.yaml").write_text(source)
+                self.assertEqual(check(root, "v3.6.0"), [])
+
     def test_stale_health_output_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

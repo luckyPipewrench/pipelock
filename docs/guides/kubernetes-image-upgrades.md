@@ -15,13 +15,13 @@ updates your cluster.
 
 ## Get the exact image set
 
-This downloads the immutable image set for v3.5.0 into the current directory.
+This downloads the immutable image set for v3.6.0 into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.5.0
-gh release download v3.5.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.5.0
-cat pipelock-v3.5.0/release-images.json
+mkdir -p pipelock-v3.6.0
+gh release download v3.6.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.6.0
+cat pipelock-v3.6.0/release-images.json
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -30,7 +30,7 @@ then verifies the main Pipelock image named in the bundle. It requires a current
 GitHub CLI login and registry access when the image is not public:
 
 ```bash
-PIPELOCK_RELEASE=v3.5.0
+PIPELOCK_RELEASE=v3.6.0
 PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
@@ -65,7 +65,7 @@ The file has this shape:
 ```json
 {
   "schema": "pipelock-release-images-v1",
-  "tag": "v3.5.0",
+  "tag": "v3.6.0",
   "commit": "the release commit",
   "images": [
     {
@@ -77,7 +77,7 @@ The file has this shape:
 }
 ```
 
-Use a `repository@digest` reference. A tag such as `:3.5.0` can be moved; a
+Use a `repository@digest` reference. A tag such as `:3.6.0` can be moved; a
 manifest digest cannot.
 
 ## Helm chart
@@ -130,18 +130,18 @@ image.
 image:
   repository: ghcr.io/luckypipewrench/pipelock
   tag: ""
-  digest: "sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965"
+  digest: "sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47"
 ```
 
-That is the v3.5.0 digest. For another release, replace it with the `pipelock`
+That is the v3.6.0 digest. For another release, replace it with the `pipelock`
 digest from that release's verified bundle.
 
 Render the exact values before applying them:
 
 ```bash
-helm lint charts/pipelock -f values-pipelock-v3.5.0.yaml
-helm template pipelock charts/pipelock -f values-pipelock-v3.5.0.yaml > rendered-pipelock-v3.5.0.yaml
-grep 'image:' rendered-pipelock-v3.5.0.yaml
+helm lint charts/pipelock -f values-pipelock-v3.6.0.yaml
+helm template pipelock charts/pipelock -f values-pipelock-v3.6.0.yaml > rendered-pipelock-v3.6.0.yaml
+grep 'image:' rendered-pipelock-v3.6.0.yaml
 ```
 
 The output must contain `ghcr.io/luckypipewrench/pipelock@sha256:`. It must not
@@ -157,15 +157,15 @@ separate on purpose and are not configured by the Pipelock Helm chart.
 ```yaml
 initContainers:
   - name: pipelock-init
-    image: ghcr.io/luckypipewrench/pipelock-init@sha256:0d54825d0ddf820edd9627cc08253ed838aebd43f7a62938505f6eae7955d714
+    image: ghcr.io/luckypipewrench/pipelock-init@sha256:fe47d7105633c3d56d0f47ab8ed3ed347d9dbc7fa6421441288917985da0e757
     args: ["cp", "/pipelock", "/shared-bin/pipelock"]
 
 containers:
   - name: license-service
-    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:68553cea16b32bdaa4251b65531c2e2ad9502ad9b4a9e4fa8e616ed69deaf5e0
+    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:809246b5ee83d5cc9ec103c57abb42fe035b59f8d07b556e9ffef03afa5242ab
 ```
 
-Those are the v3.5.0 digests. For another release, replace each with its
+Those are the v3.6.0 digests. For another release, replace each with its
 matching entry from that release's verified bundle.
 
 ## Prove the cluster changed

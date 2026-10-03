@@ -9,7 +9,7 @@ deployment.
 
 ```bash
 # 1. Install pipelock
-git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
 # 2. Generate a config (or copy a preset)
@@ -215,7 +215,7 @@ Use `dockerfile_lines` in `langgraph.json` to install Pipelock into the image:
     "env": ".env",
     "dockerfile_lines": [
         "RUN apt-get update && apt-get install -y curl",
-        "RUN curl -fsSL -o /tmp/pipelock.tar.gz https://github.com/luckyPipewrench/pipelock/releases/download/v3.5.0/pipelock_3.5.0_linux_amd64.tar.gz && echo '0e9fe1461107e8fc6a7f7969c87e7810824b019eaabd6fa7318f642ca9e4b858  /tmp/pipelock.tar.gz' | sha256sum -c - && tar xzf /tmp/pipelock.tar.gz -C /usr/local/bin/ && rm /tmp/pipelock.tar.gz",
+        "RUN curl -fsSL -o /tmp/pipelock.tar.gz https://github.com/luckyPipewrench/pipelock/releases/download/v3.6.0/pipelock_3.6.0_linux_amd64.tar.gz && echo '2f5ed499ae715c33f38ef7794f71c7c2df9cc475475c54eee0bee67d783a67d4  /tmp/pipelock.tar.gz' | sha256sum -c - && tar xzf /tmp/pipelock.tar.gz -C /usr/local/bin/ && rm /tmp/pipelock.tar.gz",
         "COPY pipelock-config.yaml /etc/pipelock/config.yaml"
     ]
 }
@@ -267,7 +267,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock:3.5.0
+    image: ghcr.io/luckypipewrench/pipelock:3.6.0
     networks:
       - pipelock-internal
       - pipelock-external

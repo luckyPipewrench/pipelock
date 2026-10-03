@@ -108,7 +108,7 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
 # Discover local agent integrations and save a config
@@ -127,7 +127,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # See https://github.com/luckyPipewrench/pipelock/releases
 
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
+docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -139,8 +139,8 @@ brew install luckyPipewrench/tap/pipelock
 <summary>Verify release integrity</summary>
 
 ```bash
-gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.5.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify pipelock_3.6.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
 gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 ```
@@ -558,9 +558,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
+docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
 docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:3.5.0 \
+  ghcr.io/luckypipewrench/pipelock:3.6.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -568,7 +568,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (published chart, Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.5.0
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.6.0
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -579,7 +579,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@ca05ed06f360f5aac5518ab6ea2b11d729b70bee # v3.5.0
+- uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'

@@ -182,3 +182,39 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 		t.Fatalf("staging bundle SAS blocked: scanner=%s reason=%s", staged.Scanner, staged.Reason)
 	}
 }
+
+// The attestation allow releases only the SAS signature, and only to GitHub's
+// storage account. A sender cannot use the allowed URL to carry any other
+// credential: each one below is still blocked by its own pattern.
+func TestAttestationBundleSASReleasesOnlyTheSignature(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+
+	aws := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	gh := "ghp_" + strings.Repeat("a", 36)
+	host := "tmaproduction.blob.core.windows.net"
+	query := attestationBundleQuery("carrier", nil)
+	if r := s.Scan(context.Background(), attestationBundleURL(host, query)); !r.Allowed {
+		t.Fatalf("control bundle URL blocked: %s", r.Reason)
+	}
+	cases := []struct{ name, target, pattern string }{
+		{"aws key in path", "https://" + host + "/attestations/" + aws + "/x.json.sn?" + query, "AWS Access ID"},
+		{"github token in path", "https://" + host + "/attestations/" + gh + "/x.json.sn?" + query, "GitHub Token"},
+		{"github token in extra parameter", attestationBundleURL(host, query+"&x="+gh), "GitHub Token"},
+		{"github token in signed field", attestationBundleURL(host, attestationBundleQuery("carrier-skoid", func(v url.Values) {
+			v.Set("skoid", gh)
+		})), "GitHub Token"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := s.Scan(context.Background(), tc.target)
+			if r.Allowed || !strings.Contains(r.Reason, tc.pattern) {
+				t.Fatalf("allowed=%v reason=%q, want %s block", r.Allowed, r.Reason, tc.pattern)
+			}
+		})
+	}
+}

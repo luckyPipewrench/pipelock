@@ -543,6 +543,14 @@ var attestationBundleSASSignedParamSet = func() map[string]bool {
 // spr=https), every signed field once in its documented format including st,
 // and an se-st lifetime no longer than attestationBundleSASMaxLifetime.
 // Anything else keeps the match.
+//
+// Not proving issuance is a deliberate bound, not a gap. No proxy can verify
+// an Azure SAS signature, so the bound is the destination: the only value
+// this allow releases is the signature itself, and it can only reach
+// GitHub's own storage account, whose logs a sender cannot read. Every other
+// credential in the same URL (path, extra parameters, signed fields) is
+// still scanned and blocked; TestAttestationBundleSASReleasesOnlyTheSignature
+// pins that. The release-download grant rule rests on the same bound.
 func attestationBundleSASAllowed(host, target string) bool {
 	if !destination.MatchesDomainList(host, githubAttestationBundleHosts) {
 		return false

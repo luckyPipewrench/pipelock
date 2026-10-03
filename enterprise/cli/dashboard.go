@@ -209,7 +209,31 @@ func verifyDashboardLicenseWithOptions(in license.FleetVerifyInputs) (license.Li
 	)
 }
 
+// dashboardPreparedRuntime owns resources acquired before listener binding.
+// Stores and source adapters retain no open files; the emitter needs closing
+// even when a later optional source fails to initialize.
+type dashboardPreparedRuntime struct {
+	server  *http.Server
+	emitter *emit.Emitter
+}
+
+func (prepared *dashboardPreparedRuntime) close() {
+	if prepared.emitter != nil {
+		_ = prepared.emitter.Close()
+		prepared.emitter = nil
+	}
+}
+
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
+	prepared := &dashboardPreparedRuntime{}
+	defer prepared.close()
+	if err := prepared.prepare(cmd, opts, lic); err != nil {
+		return err
+	}
+	return prepared.serve(cmd, opts)
+}
+
+func (prepared *dashboardPreparedRuntime) prepare(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
 	if err := validateDashboardAuthenticatorConfig(opts); err != nil {
 		return err
 	}
@@ -302,7 +326,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 	}
 	dashboardEventEmitter := emit.NewEmitter(instanceID, dashboardEventSinks...)
-	defer func() { _ = dashboardEventEmitter.Close() }()
+	prepared.emitter = dashboardEventEmitter
 	runtimeSnapshotMaxAge := 3 * config.DefaultDashboardSnapshotInterval
 	if loadedConfig != nil {
 		runtimeSnapshotMaxAge = 3 * loadedConfig.DashboardSnapshot.IntervalDuration()
@@ -388,12 +412,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		inner,
 	)
 	handler = composedAuthorizers.wrap(handler)
-	baseCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	runCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	server := &http.Server{
+	prepared.server = &http.Server{
 		Addr:              opts.listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -403,6 +422,19 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		MaxHeaderBytes:    64 * 1024,
 		TLSConfig:         tlsConfig,
 	}
+	return nil
+}
+
+func (prepared *dashboardPreparedRuntime) serve(cmd *cobra.Command, opts dashboardServeOptions) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", opts.listen)
 	if err != nil {
 		return err
@@ -413,7 +445,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		<-runCtx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), dashboardShutdownPeriod)
 		defer cancelShutdown()
-		_ = server.Shutdown(shutdownCtx)
+		_ = prepared.server.Shutdown(shutdownCtx)
 	}()
 
 	useTLS := opts.tlsCert != ""
@@ -424,9 +456,9 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: dashboard listening on %s://%s\n", scheme, ln.Addr())
 
 	if useTLS {
-		err = server.ServeTLS(ln, "", "")
+		err = prepared.server.ServeTLS(ln, "", "")
 	} else {
-		err = server.Serve(ln)
+		err = prepared.server.Serve(ln)
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

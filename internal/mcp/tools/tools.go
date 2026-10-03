@@ -1831,18 +1831,24 @@ func schemaValueDepthTruncated(value interface{}, depth int) bool {
 	return false
 }
 
-// maxSchemaDepth bounds every schema walk: the inspectability gate and the
-// description, parameter-name and text walkers all stop at the same depth, so
-// nothing the gate admits lies beyond what the walkers read. The tools/list
-// envelope scan re-reads every schema through the general MCP JSON extractor
-// (jsonrpc maxExtractDepth, 64) counted from the tools array, two levels above
-// a schema root, so the gate sits two below that bound: a schema it admits is
-// never truncated, and the whole tools/list withheld, one stage later. Generated
-// schemas exceed the former 20 levels routinely: a list of records with
-// optional union fields costs five levels per record, and refusing one such
-// definition withholds the server's entire tools/list. Size and breadth are
-// bounded separately by maxToolDefinitionTextBytes and the key budget.
-const maxSchemaDepth = 62
+// maxSchemaDepth bounds every structured field of a tool definition: the
+// inspectability gate and the description, parameter-name and text walkers all
+// stop at the same depth, so nothing the gate admits lies beyond what the
+// walkers read. The tools/list envelope scan re-reads every field through the
+// general MCP JSON extractor counted from the tools array, which sits
+// toolFieldEnvelopeDepth levels above a field root, so the gate is derived from
+// that bound: a field it admits is never truncated, and the whole tools/list
+// withheld, one stage later. Generated schemas exceed the former 20 levels
+// routinely: a list of records with optional union fields costs five levels per
+// record, and refusing one such definition withholds the server's entire
+// tools/list. Size and breadth are bounded separately by
+// maxToolDefinitionTextBytes and the key budget.
+const maxSchemaDepth = jsonrpc.MaxExtractDepth - toolFieldEnvelopeDepth
+
+// toolFieldEnvelopeDepth is the number of JSON levels between the tools array
+// and the root of a definition field: the array element (the definition
+// object) and the field value itself.
+const toolFieldEnvelopeDepth = 2
 
 // schemaTextFields are JSON Schema fields whose string values should be
 // extracted for poisoning detection. CyberArk research showed attackers
@@ -2350,6 +2356,11 @@ func uninspectableToolDefinition(defs []ToolDef) string {
 // fieldUninspectableReason applies the extraction-bound and opaque-media
 // checks to one field, naming the bound that refused it.
 func fieldUninspectableReason(raw json.RawMessage, extractStrings bool) string {
+	if extractStrings && schemaTextExtractionTruncated(raw) {
+		// The field's own extractor reaches deeper than the envelope scan
+		// that re-reads it, so it is held to the same gate as a schema.
+		return fmt.Sprintf("nests deeper than %d levels", maxSchemaDepth)
+	}
 	if extractStrings && jsonrpc.ExtractStringsFromJSONResult(raw).Truncated {
 		return "exceeds the string extraction bound"
 	}

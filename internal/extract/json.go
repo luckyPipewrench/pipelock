@@ -8,6 +8,7 @@ package extract
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -137,12 +138,17 @@ func JSONLeafBucketLeaves(raw json.RawMessage, limits JSONLeafLimits, bucketCoun
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, false
+	}
 	state := jsonLeafBucketState{
-		leaves:      make(map[string][]jsonBucketLeaf),
-		pathUses:    make(map[string]int),
-		bucketCount: bucketCount,
-		key:         key,
-		raw:         raw,
+		leaves:            make(map[string][]jsonBucketLeaf),
+		pathUses:          make(map[string]int),
+		bucketCount:       bucketCount,
+		key:               key,
+		raw:               raw,
+		unattributedNonce: nonce,
 	}
 	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
 		return exportJSONBucketLeaves(state.leaves), false
@@ -196,6 +202,10 @@ type jsonLeafBucketState struct {
 	// raw is the whole input, so an over-depth fold the decoder refuses to
 	// finish can still bucket the bytes it could not tokenize.
 	raw []byte
+	// unattributedNonce makes leftover scalars from one document unable to
+	// join leftover scalars from the next. It is empty only when no document
+	// was walked.
+	unattributedNonce []byte
 }
 
 func appendJSONLeafBucketPayload(decoder *json.Decoder, state *jsonLeafBucketState, path []byte, depth int, limits JSONLeafLimits) bool {
@@ -289,10 +299,12 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 	defer func() {
 		if !complete && resume >= 0 && resume < int64(len(state.raw)) {
 			// The decoder stopped inside a token, so the unread remainder has
-			// no trustworthy key or index. Those leaves stay on the boundary
-			// path and are separated only by occurrence.
+			// no trustworthy key or index. Each leftover scalar is scanned,
+			// but its identity is local to this document. A stable occurrence
+			// number would let a newly inserted scalar change which halves
+			// join on the next request.
 			foldRemainingJSONScalars(state.raw[resume:], func(value string) {
-				appendJSONLeafBucketValue(state, path, depth, maxDepth, value)
+				appendUnattributedJSONLeaf(state, path, depth, maxDepth, value)
 			})
 		}
 	}()
@@ -452,6 +464,23 @@ func jsonStringEnd(raw []byte, start int) int {
 		}
 	}
 	return -1
+}
+
+func appendUnattributedJSONLeaf(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {
+	if state.leaves == nil {
+		state.leaves = make(map[string][]jsonBucketLeaf)
+	}
+	if state.pathUses == nil {
+		state.pathUses = make(map[string]int)
+	}
+	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount, state.key))
+	identity := make([]byte, 0, len(state.unattributedNonce)+len(path))
+	identity = append(identity, state.unattributedNonce...)
+	identity = append(identity, path...)
+	state.leaves[bucket] = append(state.leaves[bucket], jsonBucketLeaf{
+		continuity: bucketLeafContinuity(state, identity),
+		value:      []byte(value),
+	})
 }
 
 func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {

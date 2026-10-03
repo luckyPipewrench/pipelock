@@ -112,3 +112,26 @@ func TestJSONLeafBucketLeavesDisambiguateCollapsedPaths(t *testing.T) {
 		t.Fatalf("collapsed leaves share continuity %q", got[0].Continuity)
 	}
 }
+
+func TestUnattributedLeavesDoNotJoinAcrossDocuments(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 512}
+	firstBody := json.RawMessage(`{"w":["KEEP",1 2 "ONE","TWO"]}`)
+	secondBody := json.RawMessage(`{"w":["KEEP",1 2 "INSERTED","ONE","TWO"]}`)
+	first, valid := JSONLeafBucketLeaves(firstBody, limits, 1, testJSONLeafBucketKey)
+	if valid {
+		t.Fatal("malformed body reported complete")
+	}
+	second, _ := JSONLeafBucketLeaves(secondBody, limits, 1, testJSONLeafBucketKey)
+	one := continuityOfValue(t, first, "ONE")
+	two := continuityOfValue(t, first, "TWO")
+	if bytes.Equal(one, two) {
+		t.Fatal("unattributed scalars in one document share continuity")
+	}
+	if bytes.Equal(one, continuityOfValue(t, second, "ONE")) {
+		t.Fatal("an inserted scalar kept the next document on the same continuity")
+	}
+	again, _ := JSONLeafBucketLeaves(firstBody, limits, 1, testJSONLeafBucketKey)
+	if bytes.Equal(one, continuityOfValue(t, again, "ONE")) {
+		t.Fatal("the same malformed document reused continuity")
+	}
+}

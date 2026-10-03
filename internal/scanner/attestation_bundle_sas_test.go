@@ -85,11 +85,45 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 			})),
 		},
 		{
-			name: "missing sig",
-			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-sig", func(v url.Values) {
-				v.Del("sig")
-				v.Set("sigx", releaseGrantSASSig("bundle-sig"))
+			// sig stays present so the SAS is detected; a missing required
+			// signed field must fail the attestation predicate itself.
+			name: "missing signed field",
+			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-skoid", func(v url.Values) {
+				v.Del("skoid")
 			})),
+		},
+		{
+			name: "duplicate sig",
+			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-dup", func(v url.Values) {
+				v.Add("sig", releaseGrantSASSig("bundle-dup-2"))
+			})),
+		},
+		{
+			name: "expiry before start",
+			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-order", func(v url.Values) {
+				v.Set("se", "2026-10-03T21:29:54Z")
+			})),
+		},
+		{
+			name: "cleartext allowed by spr",
+			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-spr", func(v url.Values) {
+				v.Set("spr", "https,http")
+			})),
+		},
+		{
+			name: "container resource",
+			target: attestationBundleURL("tmaproduction.blob.core.windows.net", attestationBundleQuery("bundle-sr", func(v url.Values) {
+				v.Set("sr", "c")
+			})),
+		},
+		{
+			name:   "encoded path",
+			target: "https://tmaproduction.blob.core.windows.net/attestations/1152497359%2Fother.json.sn?" + query,
+		},
+
+		{
+			name:   "bare prefix",
+			target: "https://tmaproduction.blob.core.windows.net/attestations/?" + query,
 		},
 		{
 			name: "lifetime over cap",
@@ -109,10 +143,18 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 			if got.Allowed {
 				t.Fatalf("allowed %s", tc.target)
 			}
-			if !strings.Contains(got.Reason, "Azure SAS Token") && tc.name != "missing sig" && tc.name != "http scheme" {
+			if !strings.Contains(got.Reason, "Azure SAS Token") && tc.name != "http scheme" {
 				t.Fatalf("reason = %q, want Azure SAS Token", got.Reason)
 			}
 		})
+	}
+
+	// Traversal is refused earlier by the URL scanner; the predicate must
+	// refuse it on its own too, so a future scanner reorder cannot open it.
+	for _, p := range []string{"/attestations/../other/blob.json.sn", "/attestations/%2e%2e/other/blob.json.sn", "/attestations/./x.json.sn"} {
+		if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "https://tmaproduction.blob.core.windows.net"+p+"?"+query) {
+			t.Fatalf("predicate allowed path %q", p)
+		}
 	}
 
 	headerCandidate := credentialAudienceCandidate{

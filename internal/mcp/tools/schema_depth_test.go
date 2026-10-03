@@ -158,3 +158,19 @@ func schemaValueDepthTruncatedAt(value any, bound int) bool {
 	}
 	return walk(value, 0)
 }
+
+func TestScanTools_RefusesDeepAnnotationsWithDetail(t *testing.T) {
+	// annotations, _meta and extension fields are re-read by the tools/list
+	// envelope scan from the same root as schemas, so they share its gate.
+	for _, field := range []string{"annotations", "_meta"} {
+		value := nestSchema(`"x"`, maxSchemaDepth+1)
+		result := ScanTools(
+			makeToolsResponse(`[{"name":"catalog_search","`+field+`":`+value+`}]`),
+			testScanner(t),
+			&ToolScanConfig{Action: "block"},
+		)
+		if result.ResourceLimit != "tool_definition_uninspectable" || !strings.Contains(result.ResourceDetail, field+" nests deeper than") {
+			t.Errorf("%s: result = %+v, want uninspectable with a depth detail", field, result)
+		}
+	}
+}

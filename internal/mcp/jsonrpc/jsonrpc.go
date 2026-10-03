@@ -708,6 +708,11 @@ func SortedKeys(m map[string]interface{}) []string {
 // overflow from maliciously deeply-nested JSON.
 const maxExtractDepth = 64
 
+// MaxExtractDepth exports the extraction depth bound so callers that gate a
+// subtree before it is re-extracted from a higher root can derive their own
+// bound from it rather than restating the number.
+const MaxExtractDepth = maxExtractDepth
+
 // maxExtractKeys bounds how many object keys one extraction contributes to the
 // scanned text. Sized far above any real tool listing and far below what an
 // adversarial one can produce: a server publishing a hundred tools with fifty

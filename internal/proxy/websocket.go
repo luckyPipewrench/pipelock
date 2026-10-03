@@ -1336,8 +1336,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		result := sc.ScanTextForDLP(ctx, scanVal)
 		if !result.Clean {
-			surface := scanner.CredentialAudienceHeaderSurface(key, scanVal)
-			matches, allows := sc.FilterTextDLPMatchesForDestination(result.Matches, targetURL, surface)
+			matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
 			audienceAllows = append(audienceAllows, allows...)
 			matches = filterBodyDLPMatches(matches, targetURL, cfg.Suppress, disabled, func(match scanner.TextDLPMatch, dropReason string) {
 				if p.logger != nil {

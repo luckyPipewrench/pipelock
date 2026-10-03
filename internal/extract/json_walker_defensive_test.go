@@ -42,7 +42,7 @@ func TestJSONWalkersRefuseAnUnrecognizedDelimiter(t *testing.T) {
 
 	t.Run("bucket walker", func(t *testing.T) {
 		t.Parallel()
-		state := jsonLeafBucketState{payloads: make(map[string][]byte), bucketCount: 8, key: []byte("k")}
+		state := jsonLeafBucketState{bucketCount: 8, key: []byte("k")}
 		if appendJSONLeafBucketPayload(positioned(t), &state, []byte("$"), 0, limits) {
 			t.Fatal("bucket walker accepted a closing delimiter as a value")
 		}

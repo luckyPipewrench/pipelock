@@ -2695,6 +2695,7 @@ type ceeAdmitRequest struct {
 	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
+	BodyFragmentLeaves   map[string][]ceeJSONLeaf
 	PartitionReason      string
 	KeyPayload           []byte
 	PathPayload          *ceePathPayload
@@ -2731,7 +2732,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	}
 	return ceeAdmission{
 		Result: ceeAdmit(ctx, ceeAdmitOptions{
-			ActorAuth: req.ActorAuth, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
+			ActorAuth: req.ActorAuth, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, BodyFragmentLeaves: req.BodyFragmentLeaves, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
 			PathPayload: req.PathPayload, TargetURL: req.TargetURL, Agent: req.Agent,
 			ClientIP: req.ClientIP, RequestID: req.RequestID, Config: ceeCfg,
 			Entropy: p.entropyTrackerPtr.Load(), Fragments: fb, Scanner: p.scannerPtr.Load(),

@@ -27,7 +27,7 @@ const (
 // provider accepts only the schemes its clients document. Google's Bearer-only
 // rule predates the mask and stays on CredentialAudienceAuthorizationOnly.
 const (
-	CredentialAudienceCarrierAuthorizationBearer uint8 = 1 << iota
+	CredentialAudienceCarrierAuthorizationBearer uint16 = 1 << iota
 	CredentialAudienceCarrierAuthorizationToken
 	CredentialAudienceCarrierAuthorizationBasic
 	CredentialAudienceCarrierPrivateToken
@@ -54,12 +54,48 @@ const (
 	// by this proxy, so it is trusted purely because the co-located grant
 	// already proved GitHub issued this exact redirect.
 	CredentialAudienceCarrierReleaseGrantSAS
+	// CredentialAudienceCarrierRegistryBasic is the package-registry rule:
+	// Authorization Basic, https only, at a CredentialAudienceRegistryHosts
+	// host, and only when the decoded password is exactly the GitHub token
+	// and the username is an account-name shape. It does not accept Basic
+	// on the REST host list.
+	CredentialAudienceCarrierRegistryBasic
+	// CredentialAudienceCarrierRegistryBearer accepts the bearer token a
+	// container registry returns after that Basic exchange. It is https
+	// only, at a CredentialAudienceRegistryHosts host, and only when the
+	// bearer value is a registry JWT whose audience is that host.
+	CredentialAudienceCarrierRegistryBearer
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
-// Bearer or token scheme at the REST hosts, plus the git rule, which accepts
-// Basic at github.com only on a git transport path.
-const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken | CredentialAudienceCarrierGitBasic
+// Bearer or token scheme at the REST hosts, the git rule (Basic at
+// github.com only on a git transport path), and the registry rule (Basic
+// at the package-registry hosts, password exactly the token).
+const githubTokenAudienceMask = CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierAuthorizationToken | CredentialAudienceCarrierGitBasic | CredentialAudienceCarrierRegistryBasic
+
+// githubRegistryHosts are the package registries whose published login is
+// a GitHub username plus the token as the password (HTTP Basic). npm and
+// RubyGems publish different carriers and are not in this list.
+// Sources:
+//   - https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
+//   - https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry
+//   - https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-nuget-registry
+var githubRegistryHosts = []string{"ghcr.io", "maven.pkg.github.com", "nuget.pkg.github.com"}
+
+// githubRegistryBearerHosts are registries that answer the Docker Registry
+// token exchange with a bearer used on later requests to the same host.
+// The anonymous exchange returns an opaque token; an authenticated exchange
+// follows the registry JWT profile, whose aud is the registry service.
+// https://distribution.github.io/distribution/spec/auth/jwt/
+var githubRegistryBearerHosts = []string{"ghcr.io"}
+
+// RegistryBearerHosts returns the registries whose own token exchange issues
+// the bearer the registry-bearer carrier allows. The JWT pattern carries the
+// wider Basic host list, because GitHub's stateless installation token is a
+// ghs_-prefixed JWT that also matches it; the bearer rule narrows to these.
+func RegistryBearerHosts() []string {
+	return append([]string(nil), githubRegistryBearerHosts...)
+}
 
 // githubDownloadGrantAudienceHosts are the hosts GitHub's signed release
 // redirect points at. github.com/<owner>/<repo>/releases/download/... answers
@@ -131,8 +167,15 @@ var defaultDLPPatternSet = []DLPPattern{
 	// github.com itself is git, not the API host, and is not an audience.
 	// Sources: https://docs.github.com/en/rest/authentication/authenticating-to-the-rest-api
 	// https://docs.github.com/en/rest/releases/assets
-	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
-	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	// RubyGems publishes Authorization Bearer (":github: Bearer TOKEN").
+	// The install form also puts the token in the URL userinfo; that stays
+	// blocked because a credential in the URL is a different carrier.
+	// https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-rubygems-registry
+	// npm's documented line is "//npm.pkg.github.com/:_authToken=TOKEN".
+	// GitHub does not name the HTTP header that line becomes, so
+	// npm.pkg.github.com is not an audience host.
+	{Name: "GitHub Token", Regex: `(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: githubTokenAudienceMask},
+	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"}, CredentialAudienceGitHosts: []string{"github.com"}, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: githubTokenAudienceMask},
 	// GitLab personal, project, and group access tokens share glpat-.
 	// The API host is the instance host. gitlab.com is the public one.
 	// Source: https://docs.gitlab.com/api/rest/authentication/
@@ -340,7 +383,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
 	// JSON-object prefixes so the precision fix does not drop compact
 	// JWTs serialized with whitespace.
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery},
+	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceRegistryHosts: githubRegistryHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierURLQuery | CredentialAudienceCarrierRegistryBearer | CredentialAudienceCarrierRegistryBasic},
 
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or

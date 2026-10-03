@@ -328,8 +328,9 @@ type TextDLPMatch struct {
 	span                                MatchSpan
 	credentialAudienceHosts             []string
 	credentialAudienceAuthorizationOnly bool
-	credentialAudienceCarrierMask       uint8
+	credentialAudienceCarrierMask       uint16
 	credentialAudienceGitHosts          []string
+	credentialAudienceRegistryHosts     []string
 }
 
 func (m TextDLPMatch) credentialAudienceCarrierRestricted() bool {
@@ -600,6 +601,7 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				valueIdentity:                       sha256.Sum256([]byte(cleaned[start:end])),
 				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
@@ -773,6 +775,7 @@ func (s *Scanner) matchDLPPatternsNormalized(text, encoding, proseSource string)
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
 				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
@@ -807,6 +810,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				credentialAudienceAuthorizationOnly: p.credentialAudienceAuthorizationOnly,
 				credentialAudienceCarrierMask:       p.credentialAudienceCarrierMask,
 				credentialAudienceGitHosts:          p.credentialAudienceGitHosts,
+				credentialAudienceRegistryHosts:     p.credentialAudienceRegistryHosts,
 				valueIdentity:                       sha256.Sum256([]byte(text[start:end])),
 				hasValueIdentity:                    true,
 				span:                                newMatchSpan(start, end, dlpViewLabel("whitespace"), p.name, p.bundle, p.bundleVersion),
@@ -1018,11 +1022,13 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 			if !slices.Equal(result[i].credentialAudienceHosts, m.credentialAudienceHosts) ||
 				result[i].credentialAudienceAuthorizationOnly != m.credentialAudienceAuthorizationOnly ||
 				result[i].credentialAudienceCarrierMask != m.credentialAudienceCarrierMask ||
-				!slices.Equal(result[i].credentialAudienceGitHosts, m.credentialAudienceGitHosts) {
+				!slices.Equal(result[i].credentialAudienceGitHosts, m.credentialAudienceGitHosts) ||
+				!slices.Equal(result[i].credentialAudienceRegistryHosts, m.credentialAudienceRegistryHosts) {
 				result[i].credentialAudienceHosts = nil
 				result[i].credentialAudienceAuthorizationOnly = false
 				result[i].credentialAudienceCarrierMask = 0
 				result[i].credentialAudienceGitHosts = nil
+				result[i].credentialAudienceRegistryHosts = nil
 			}
 			continue
 		}

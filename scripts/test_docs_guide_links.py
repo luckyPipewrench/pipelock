@@ -36,7 +36,7 @@ class DocsGuideLinksTest(unittest.TestCase):
         for name in ("README.md", "CLAUDE.md", "CONTRIBUTING.md", "GOVERNANCE.md", "SECURITY.md"):
             (self.root / name).write_text("", encoding="utf-8")
         for name in (
-            "guides/deployment-recipes.md", "guides/conductor.md", "guides/conductor-operator-runbook.md",
+            "guides/deployment-recipes.md", "guides/health.md", "guides/conductor.md", "guides/conductor-operator-runbook.md",
             "guides/conductor-production-runbook.md", "guides/enterprise-license-issuance-runbook.md",
             "specs/pipelock-conductor-audit-sink.md",
         ):

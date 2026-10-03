@@ -128,6 +128,26 @@ class TestReleaseArtifacts(unittest.TestCase):
             "chart publication must stay in the tag release path; a manual workflow can run branch-selected code",
         )
 
+    def test_tap_preflight_is_not_manually_dispatched(self) -> None:
+        document = load_workflow(WORKFLOWS_DIR / "homebrew-tap-preflight.yaml")
+        events = workflow_events(document)
+        self.assertIn("schedule", events)
+        self.assertNotIn(
+            "workflow_dispatch",
+            events,
+            "a manual run would let the selected branch receive the tap credential",
+        )
+        self.assertNotIn(
+            "pull_request",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
+        self.assertNotIn(
+            "pull_request_target",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
+
     def test_no_workflow_pairs_a_manual_trigger_with_package_write(self) -> None:
         """The class behind the deleted chart publisher, not just that one file.
 
@@ -228,14 +248,23 @@ class TestReleaseArtifacts(unittest.TestCase):
         holders = []
         for job_name, job in parsed["jobs"].items():
             for step in job.get("steps", []):
-                blocks = (step.get("env") or {}, step.get("with") or {})
-                if any(
-                    "HOMEBREW_TAP_TOKEN" in str(value)
-                    for block in blocks
+                texts = [
+                    str(value)
+                    for block in (step.get("env") or {}, step.get("with") or {})
                     for value in block.values()
-                ):
+                ]
+                run = step.get("run")
+                if run is not None:
+                    texts.append(str(run))
+                if any("HOMEBREW_TAP_TOKEN" in text for text in texts):
                     holders.append((job_name, step.get("name", "")))
-        self.assertEqual(holders, [("release-publish", "Publish Homebrew formula")])
+        self.assertEqual(
+            holders,
+            [
+                ("release-publish", "Preflight Homebrew tap credential"),
+                ("release-publish", "Publish Homebrew formula"),
+            ],
+        )
 
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
@@ -547,6 +576,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             publish_names,
             [
                 "Verify Go version",
+                "Preflight Homebrew tap credential",
                 "Publish Homebrew formula",
                 "Reverify the release manifest signature and publish",
                 "Update floating major tag for GitHub Action",

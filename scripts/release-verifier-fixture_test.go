@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -648,7 +649,7 @@ func TestReleaseVerifierSourceDriftRejectsAPendingInventoryThatDoesNotBump(t *te
 func TestReleaseVerifierSourceDriftRejectsABumpThatIsNotPendingPublication(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	base := releaseVerifierFixtureHEAD(t, root)
-	bumpStagedVerifierPackages(t, root, "0.4.2", false)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, 1), false)
 	appendStagedVerifierSource(t, root, "\n// versioned edit\n")
 	commitReleaseVerifierFixture(t, root,
 		"sdk/verifiers/ts/src/types.ts",
@@ -667,7 +668,7 @@ func TestReleaseVerifierSourceDriftRejectsABumpThatIsNotPendingPublication(t *te
 func TestReleaseVerifierSourceDriftRejectsASharedDowngrade(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	base := releaseVerifierFixtureHEAD(t, root)
-	bumpStagedVerifierPackages(t, root, "0.4.0", true)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, -1), true)
 	appendStagedVerifierSource(t, root, "\n// downgraded edit\n")
 	commitReleaseVerifierFixture(t, root,
 		"sdk/verifiers/ts/src/types.ts",
@@ -686,7 +687,7 @@ func TestReleaseVerifierSourceDriftRejectsASharedDowngrade(t *testing.T) {
 func TestReleaseVerifierSourceDriftAcceptsAPendingSharedBump(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	base := releaseVerifierFixtureHEAD(t, root)
-	bumpStagedVerifierPackages(t, root, "0.4.2", true)
+	bumpStagedVerifierPackages(t, root, adjacentVerifierVersion(t, root, 1), true)
 	appendStagedVerifierSource(t, root, "\n// versioned edit\n")
 	commitReleaseVerifierFixture(t, root,
 		"sdk/verifiers/ts/src/types.ts",
@@ -714,6 +715,42 @@ func appendStagedVerifierSource(t *testing.T, root, suffix string) {
 	}
 }
 
+func stagedVerifierVersion(t *testing.T, root string) string {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml")) // #nosec G304 -- path is the staged fixture under t.TempDir.
+	if err != nil {
+		t.Fatalf("read staged rust manifest: %v", err)
+	}
+	for _, line := range strings.Split(string(manifest), "\n") {
+		if strings.HasPrefix(line, "version = \"") && strings.HasSuffix(line, "\"") {
+			return strings.TrimSuffix(strings.TrimPrefix(line, "version = \""), "\"")
+		}
+	}
+	t.Fatal("staged rust manifest has no version")
+	return ""
+}
+
+func adjacentVerifierVersion(t *testing.T, root string, delta int) string {
+	t.Helper()
+	parts := strings.Split(stagedVerifierVersion(t, root), ".")
+	if len(parts) != 3 {
+		t.Fatalf("staged version %q is not major.minor.patch", stagedVerifierVersion(t, root))
+	}
+	numbers := make([]int, 3)
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil {
+			t.Fatalf("staged version component %q: %v", part, err)
+		}
+		numbers[i] = number
+	}
+	numbers[2] += delta
+	if numbers[2] < 0 {
+		t.Fatal("staged patch version cannot move backward")
+	}
+	return strconv.Itoa(numbers[0]) + "." + strconv.Itoa(numbers[1]) + "." + strconv.Itoa(numbers[2])
+}
+
 func bumpStagedVerifierPackages(t *testing.T, root, version string, releaseBlocked bool) {
 	t.Helper()
 	rewriteJSONFile(t, filepath.Join(root, "sdk", "verifiers", "ts", "package.json"), func(document map[string]interface{}) {
@@ -731,8 +768,9 @@ func bumpStagedVerifierPackages(t *testing.T, root, version string, releaseBlock
 		}
 		rootPackage["version"] = version
 	})
-	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml"), "version = \"0.4.1\"", "version = \""+version+"\"")
-	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.lock"), "name = \"pipelock-verifier-rs\"\nversion = \"0.4.1\"", "name = \"pipelock-verifier-rs\"\nversion = \""+version+"\"")
+	current := stagedVerifierVersion(t, root)
+	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.toml"), "version = \""+current+"\"", "version = \""+version+"\"")
+	replaceOnce(t, filepath.Join(root, "sdk", "verifiers", "rust", "Cargo.lock"), "name = \"pipelock-verifier-rs\"\nversion = \""+current+"\"", "name = \"pipelock-verifier-rs\"\nversion = \""+version+"\"")
 	rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
 		inventory["release_blocked"] = releaseBlocked
 		entries, ok := inventory["verifiers"].([]interface{})

@@ -56,7 +56,10 @@ func homebrewPreflightCommand(t *testing.T, statusLine string, exitCode int) *ex
 	script := filepath.Join(filepath.Dir(sourceFile), "homebrew-tap-preflight.sh")
 	binDir := t.TempDir()
 	fake := filepath.Join(binDir, "gh")
-	body := "#!/usr/bin/env bash\nif [ \"${GH_TOKEN:-}\" != " + tapCredential() + " ]; then printf 'gh saw the wrong credential\\n' >&2; exit 9; fi\nprintf '%s' " + shellQuote(statusLine) + "\nexit " + itoa(exitCode) + "\n"
+	body := "#!/usr/bin/env bash\n" +
+		"if [ \"${GH_TOKEN:-}\" != " + tapCredential() + " ]; then printf 'gh saw the wrong credential\\n' >&2; exit 9; fi\n" +
+		"if [ \"$*\" != " + shellQuote(expectedTapRequest()) + " ]; then printf 'gh saw the wrong request\\n' >&2; exit 9; fi\n" +
+		"printf '%s' " + shellQuote(statusLine) + "\nexit " + itoa(exitCode) + "\n"
 	if err := os.WriteFile(fake, []byte(body), 0o700); err != nil { // #nosec G306 -- the fake gh must be executable.
 		t.Fatalf("write fake gh: %v", err)
 	}
@@ -67,6 +70,10 @@ func homebrewPreflightCommand(t *testing.T, statusLine string, exitCode int) *ex
 
 func tapCredential() string {
 	return "tap-" + "credential"
+}
+
+func expectedTapRequest() string {
+	return "api --include repos/luckyPipewrench/homebrew-tap/contents/Formula/pipelock.rb?ref=main"
 }
 
 func withoutCredentialEnv(env []string) []string {

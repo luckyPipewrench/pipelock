@@ -29,9 +29,22 @@ func TestJSONLeafBucketLeavesDoNotGlueSiblings(t *testing.T) {
 	if bytes.Equal(got[0].Continuity, got[1].Continuity) {
 		t.Fatalf("sibling leaves share continuity %q", got[0].Continuity)
 	}
-	joined := append(append([]byte(nil), got[0].Value...), got[1].Value...)
-	if bytes.Contains(joined, []byte("AKIAINTRUDER")) && bytes.Equal(got[0].Continuity, got[1].Continuity) {
-		t.Fatal("siblings were glued")
+	if string(got[0].Value) != "AKIA" || string(got[1].Value) != "INTRUDER" {
+		t.Fatalf("values = %q %q", got[0].Value, got[1].Value)
+	}
+}
+
+func TestOverDepthLeavesShareTheBoundaryBucket(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 0, MaxPathBytes: 256}
+	leaves, valid := JSONLeafBucketLeaves(json.RawMessage(`{"a":{"one":"alpha","two":"beta"}}`), limits, 8, testJSONLeafBucketKey)
+	if !valid {
+		t.Fatal("over-depth document was not valid")
+	}
+	if len(leaves) != 1 {
+		t.Fatalf("over-depth fields split across %d buckets", len(leaves))
+	}
+	if bytes.Equal(continuityOfValue(t, leaves, "alpha"), continuityOfValue(t, leaves, "beta")) {
+		t.Fatal("over-depth siblings share continuity")
 	}
 }
 

@@ -376,11 +376,11 @@ func bucketOverDepthValue(decoder *json.Decoder, state *jsonLeafBucketState, pat
 				stack = stack[:len(stack)-1]
 			}
 		case string:
-			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, value)
+			appendJSONLeafBucketValueAt(state, path, valuePath(), depth, maxDepth, value)
 		case json.Number:
-			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, value.String())
+			appendJSONLeafBucketValueAt(state, path, valuePath(), depth, maxDepth, value.String())
 		case bool:
-			appendJSONLeafBucketValue(state, valuePath(), depth, maxDepth, strconv.FormatBool(value))
+			appendJSONLeafBucketValueAt(state, path, valuePath(), depth, maxDepth, strconv.FormatBool(value))
 		case nil:
 			_ = valuePath()
 		}
@@ -485,15 +485,21 @@ func appendUnattributedJSONLeaf(state *jsonLeafBucketState, path []byte, depth, 
 }
 
 func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, maxDepth int, value string) {
+	appendJSONLeafBucketValueAt(state, path, path, depth, maxDepth, value)
+}
+
+func appendJSONLeafBucketValueAt(state *jsonLeafBucketState, bucketPath, leafPath []byte, depth, maxDepth int, value string) {
 	if state.leaves == nil {
 		state.leaves = make(map[string][]jsonBucketLeaf)
 	}
 	if state.pathUses == nil {
 		state.pathUses = make(map[string]int)
 	}
-	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount, state.key))
-	continuity := bucketLeafContinuity(state, path)
-	state.leaves[bucket] = append(state.leaves[bucket], jsonBucketLeaf{continuity: continuity, value: []byte(value)})
+	bucket := strconv.Itoa(jsonLeafBucketIndex(bucketPath, depth, maxDepth, state.bucketCount, state.key))
+	state.leaves[bucket] = append(state.leaves[bucket], jsonBucketLeaf{
+		continuity: bucketLeafContinuity(state, leafPath),
+		value:      []byte(value),
+	})
 }
 
 // keepLastDuplicateStable leaves the last value of a repeated path on the

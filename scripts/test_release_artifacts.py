@@ -235,7 +235,13 @@ class TestReleaseArtifacts(unittest.TestCase):
                     for value in block.values()
                 ):
                     holders.append((job_name, step.get("name", "")))
-        self.assertEqual(holders, [("release-publish", "Publish Homebrew formula")])
+        self.assertEqual(
+            holders,
+            [
+                ("release-publish", "Preflight Homebrew tap credential"),
+                ("release-publish", "Publish Homebrew formula"),
+            ],
+        )
 
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
@@ -547,6 +553,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             publish_names,
             [
                 "Verify Go version",
+                "Preflight Homebrew tap credential",
                 "Publish Homebrew formula",
                 "Reverify the release manifest signature and publish",
                 "Update floating major tag for GitHub Action",

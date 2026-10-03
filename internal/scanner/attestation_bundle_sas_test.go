@@ -156,6 +156,9 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 			t.Fatalf("predicate allowed path %q", p)
 		}
 	}
+	if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "http://tmaproduction.blob.core.windows.net/attestations/1152497359/2026/10/03/52325653.json.sn?"+query) {
+		t.Fatal("predicate allowed http scheme")
+	}
 
 	headerCandidate := credentialAudienceCandidate{
 		patternName: "Azure SAS Token",

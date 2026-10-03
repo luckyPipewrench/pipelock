@@ -294,7 +294,20 @@ check_source_drift_against_base() {
 		printf 'release verifier install gate: %s is missing a TypeScript or Rust package version\n' "$resolved" >&2
 		exit 2
 	fi
-	if [[ "$tree_ts_version" == "$base_ts" || "$tree_rust_version" == "$base_rust" || "$tree_ts_version" != "$tree_rust_version" ]]; then
+	if [[ "$tree_ts_version" != "$tree_rust_version" ]] || ! python3 - "$base_ts" "$tree_ts_version" "$base_rust" "$tree_rust_version" <<'PY'
+import sys
+
+def parse(version):
+    parts = version.split(".")
+    if len(parts) != 3 or any(not part.isdigit() for part in parts):
+        raise SystemExit(2)
+    return tuple(int(part) for part in parts)
+
+base_ts, tree_ts, base_rust, tree_rust = sys.argv[1:5]
+if not (parse(tree_ts) > parse(base_ts) and parse(tree_rust) > parse(base_rust)):
+    raise SystemExit(1)
+PY
+	then
 		printf 'release verifier install gate: verifier source changed relative to %s without one new shared package version (TypeScript %s -> %s, Rust %s -> %s)\n' \
 			"${resolved:0:12}" "$base_ts" "$tree_ts_version" "$base_rust" "$tree_rust_version" >&2
 		exit 2

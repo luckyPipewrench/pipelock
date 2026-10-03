@@ -664,6 +664,25 @@ func TestReleaseVerifierSourceDriftRejectsABumpThatIsNotPendingPublication(t *te
 	}
 }
 
+func TestReleaseVerifierSourceDriftRejectsASharedDowngrade(t *testing.T) {
+	root := stageReleaseVerifierInventoryTest(t)
+	base := releaseVerifierFixtureHEAD(t, root)
+	bumpStagedVerifierPackages(t, root, "0.4.0", true)
+	appendStagedVerifierSource(t, root, "\n// downgraded edit\n")
+	commitReleaseVerifierFixture(t, root,
+		"sdk/verifiers/ts/src/types.ts",
+		"sdk/verifiers/ts/package.json",
+		"sdk/verifiers/ts/package-lock.json",
+		"sdk/verifiers/rust/Cargo.toml",
+		"sdk/verifiers/rust/Cargo.lock",
+		"release/verifier-installers.json",
+	)
+	output, err := runReleaseVerifierSourceDrift(t, root, base)
+	if err == nil || !strings.Contains(output, "without one new shared package version") {
+		t.Fatalf("shared downgrade error = %v, output = %q", err, output)
+	}
+}
+
 func TestReleaseVerifierSourceDriftAcceptsAPendingSharedBump(t *testing.T) {
 	root := stageReleaseVerifierInventoryTest(t)
 	base := releaseVerifierFixtureHEAD(t, root)

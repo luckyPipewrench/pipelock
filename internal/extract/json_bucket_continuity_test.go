@@ -59,6 +59,28 @@ func TestJSONLeafBucketLeavesOrdinalCannotImpersonateAPath(t *testing.T) {
 	}
 }
 
+func TestInsertedDuplicateDoesNotMoveTheLastField(t *testing.T) {
+	limits := JSONLeafLimits{MaxDepth: 8, MaxPathBytes: 256}
+	first, valid := JSONLeafBucketLeaves(json.RawMessage(`{"x":"PRE"}`), limits, 1, testJSONLeafBucketKey)
+	if !valid {
+		t.Fatal("single field was not valid")
+	}
+	second, valid := JSONLeafBucketLeaves(json.RawMessage(`{"x":"decoy","x":"PRE"}`), limits, 1, testJSONLeafBucketKey)
+	if !valid {
+		t.Fatal("duplicate field was not valid")
+	}
+	if !bytes.Equal(continuityOfValue(t, first, "PRE"), continuityOfValue(t, second, "PRE")) {
+		t.Fatal("an earlier duplicate changed the last field identity")
+	}
+	if bytes.Equal(continuityOfValue(t, second, "decoy"), continuityOfValue(t, second, "PRE")) {
+		t.Fatal("duplicate values share continuity")
+	}
+	again, _ := JSONLeafBucketLeaves(json.RawMessage(`{"x":"decoy","x":"PRE"}`), limits, 1, testJSONLeafBucketKey)
+	if bytes.Equal(continuityOfValue(t, second, "decoy"), continuityOfValue(t, again, "decoy")) {
+		t.Fatal("an earlier duplicate reused continuity in the next document")
+	}
+}
+
 func TestJSONLeafBucketLeavesKeepFoldedFieldIdentityWhenReordered(t *testing.T) {
 	limits := JSONLeafLimits{MaxDepth: 1, MaxPathBytes: 256}
 	forward, valid := JSONLeafBucketLeaves(json.RawMessage(`{"a":{"one":"alpha","two":"beta"}}`), limits, 1, testJSONLeafBucketKey)

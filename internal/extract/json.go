@@ -150,13 +150,14 @@ func JSONLeafBucketLeaves(raw json.RawMessage, limits JSONLeafLimits, bucketCoun
 		raw:               raw,
 		unattributedNonce: nonce,
 	}
-	if !appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits) {
-		return exportJSONBucketLeaves(state.leaves), false
+	complete := appendJSONLeafBucketPayload(decoder, &state, []byte("$"), 0, limits)
+	if complete {
+		if _, err := decoder.Token(); err != io.EOF {
+			complete = false
+		}
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return exportJSONBucketLeaves(state.leaves), false
-	}
-	return exportJSONBucketLeaves(state.leaves), true
+	keepLastDuplicateStable(&state)
+	return exportJSONBucketLeaves(state.leaves), complete
 }
 
 func exportJSONBucketLeaves(in map[string][]jsonBucketLeaf) map[string][]JSONBucketLeaf {
@@ -493,6 +494,61 @@ func appendJSONLeafBucketValue(state *jsonLeafBucketState, path []byte, depth, m
 	bucket := strconv.Itoa(jsonLeafBucketIndex(path, depth, maxDepth, state.bucketCount, state.key))
 	continuity := bucketLeafContinuity(state, path)
 	state.leaves[bucket] = append(state.leaves[bucket], jsonBucketLeaf{continuity: continuity, value: []byte(value)})
+}
+
+// keepLastDuplicateStable leaves the last value of a repeated path on the
+// same identity a single value would have. Earlier repeats are local to this
+// document. A stable ordinal would let a newly inserted repeat move the
+// value that follows it onto a different identity.
+func keepLastDuplicateStable(state *jsonLeafBucketState) {
+	for bucket, leaves := range state.leaves {
+		last := make(map[string]int, len(leaves))
+		counts := make(map[string]int, len(leaves))
+		paths := make([][]byte, len(leaves))
+		for i, leaf := range leaves {
+			path := continuityPath(leaf.continuity)
+			paths[i] = path
+			counts[string(path)]++
+			last[string(path)] = i
+		}
+		for i := range leaves {
+			if counts[string(paths[i])] < 2 {
+				continue
+			}
+			if i == last[string(paths[i])] {
+				leaves[i].continuity = continuityWithOrdinal(0, paths[i])
+				continue
+			}
+			identity := make([]byte, 0, len(state.unattributedNonce)+len(paths[i]))
+			identity = append(identity, state.unattributedNonce...)
+			identity = append(identity, paths[i]...)
+			leaves[i].continuity = continuityWithOrdinal(i+1, identity)
+		}
+		state.leaves[bucket] = leaves
+	}
+}
+
+func continuityPath(continuity []byte) []byte {
+	seen := 0
+	for i, b := range continuity {
+		if b != 0 {
+			continue
+		}
+		seen++
+		if seen == 2 {
+			return continuity[i+1:]
+		}
+	}
+	return continuity
+}
+
+func continuityWithOrdinal(ordinal int, path []byte) []byte {
+	ord := strconv.Itoa(ordinal)
+	out := make([]byte, 0, 2+len(ord)+len(path))
+	out = append(out, 0)
+	out = append(out, ord...)
+	out = append(out, 0)
+	return append(out, path...)
 }
 
 // bucketLeafContinuity copies path so later walker mutations cannot rewrite a

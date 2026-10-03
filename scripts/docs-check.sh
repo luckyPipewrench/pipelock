@@ -61,7 +61,7 @@ check_pipelock_workflow_version() {
 		in_pipelock_step && in_with && /^[[:space:]]{8}[[:alnum:]_-]+:[[:space:]]*/ {
 			in_with = 0
 		}
-		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.5\.0'\''[[:space:]]*$/ {
+		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.6\.0'\''[[:space:]]*$/ {
 			has_expected_version = 1
 		}
 		END {
@@ -71,7 +71,7 @@ check_pipelock_workflow_version() {
 			}
 		}
 	' "$workflow"; then
-		echo "docs-check: failed: $workflow does not pin version 3.5.0 in the Pipelock action with block" >&2
+		echo "docs-check: failed: $workflow does not pin version 3.6.0 in the Pipelock action with block" >&2
 		exit 1
 	fi
 }
@@ -206,6 +206,10 @@ check_no_match 'pipelock_3\.4\.0_linux_amd64\.tar\.gz|pipelock:3\.4\.0' 'stale v
 check_no_match 'app\.kubernetes\.io/name=pipelock --timeout=5m' 'hard-coded Kubernetes pod selector'
 check_no_match '4c748ab986d611138ce202ab800b16eca6fb589f' 'v3.4 GitHub Action pin'
 check_no_match '"version": "v3\.1\.0"' 'v3.1 health-response example'
+check_no_match 'pipelock_3\.5\.0_linux_(amd64|arm64)\.tar\.gz|pipelock(-init|-license-service)?:3\.5\.0|--branch v3\.5\.0|charts/pipelock --version 3\.5\.0' 'v3.5 release reference'
+check_no_match 'ca05ed06f360f5aac5518ab6ea2b11d729b70bee' 'v3.5 GitHub Action pin'
+check_no_match '73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965|0d54825d0ddf820edd9627cc08253ed838aebd43f7a62938505f6eae7955d714|68553cea16b32bdaa4251b65531c2e2ad9502ad9b4a9e4fa8e616ed69deaf5e0' 'v3.5 image index digest'
+check_no_match '"version": "v[0-9]+\.[0-9]+\.[0-9]+"' 'v-prefixed health-response version' docs/guides/health.md
 
 for workflow in examples/ci-workflow.yaml examples/ci-workflow-advanced.yaml; do
 	check_pipelock_workflow_version "$workflow"

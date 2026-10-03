@@ -20,6 +20,7 @@ func TestDocsDeclareLiveStatsAndDefaults(t *testing.T) {
 	t.Parallel()
 
 	root := repoRootForDocsAccuracy(t)
+	t.Run("mediation-envelope-examples", checkGuideEnvelopeExamples)
 
 	t.Run("configuration.md", func(t *testing.T) {
 		configDoc := readDocAccuracyFile(t, root, "docs/configuration.md")

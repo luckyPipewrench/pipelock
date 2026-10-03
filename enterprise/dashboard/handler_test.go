@@ -2355,3 +2355,98 @@ func writeTrustedHandlerSession(t *testing.T) (string, map[string]TrustedKey) {
 		keyHex: {Source: trustedKeySource},
 	}
 }
+
+func TestHandler_NavigationMetadataContract(t *testing.T) {
+	t.Parallel()
+
+	// Literal operator-facing expectations stay independent of the route table.
+	want := []navRouteSpec{
+		{key: "overview", label: "Overview", pattern: "/overview"},
+		{key: "evidence", label: "Evidence", pattern: "/evidence"},
+		{key: "exemptions", label: "Exemptions", pattern: "/exemptions"},
+		{key: "agents", label: "Agents", pattern: "/agents"},
+		{key: "budgets", label: "Budgets", pattern: "/budgets"},
+		{key: "trust-keys", label: "Trust & Keys", pattern: "/trust-keys"},
+		{key: "fleet", label: "Fleet", pattern: "/fleet"},
+		{key: "workbench", label: "Workbench", pattern: "/workbench"},
+		{key: "incident", label: "Incident", pattern: "/incident"},
+	}
+	if len(dashboardNavRouteSpecs) != len(want) {
+		t.Fatalf("nav count = %d, want %d", len(dashboardNavRouteSpecs), len(want))
+	}
+	parents := make(map[string]bool)
+	for i, expected := range want {
+		if got := dashboardNavRouteSpecs[i]; got != expected {
+			t.Errorf("nav entry %d = %+v, want %+v", i, got, expected)
+		}
+		parents[expected.key] = true
+		if got := navLabel(expected.key); got != expected.label {
+			t.Errorf("label for %q = %q, want %q", expected.key, got, expected.label)
+		}
+	}
+	for _, spec := range dashboardRouteSpecs() {
+		if !parents[spec.navKey] {
+			t.Errorf("route %q has no navigation parent for %q", spec.pattern, spec.navKey)
+		}
+	}
+	if got := navLabel("unknown"); got != "Dashboard" {
+		t.Errorf("unknown label = %q, want Dashboard", got)
+	}
+
+	d := &dashboardHandler{hasFeature: allowAllDashboardFeatures, trustedOuterAuth: true}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/agents", nil)
+	assertNavContextMatchesSpecs(t, d.navContext(req, &routeAuthorizationCache{}, "test-nonce"), want, "agents")
+}
+
+func TestHandler_ActiveNavigationBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/", want: "overview"},
+		{path: "/overview", want: "overview"},
+		{path: "/evidence", want: "evidence"},
+		{path: "/session/", want: "evidence"},
+		{path: "/session/example", want: "evidence"},
+		{path: "/session/example/receipt/one", want: "evidence"},
+		{path: "/exemptions", want: "exemptions"},
+		{path: "/agents", want: "agents"},
+		{path: "/agent/", want: "agents"},
+		{path: "/agent/example", want: "agents"},
+		{path: "/budgets", want: "budgets"},
+		{path: "/trust-keys", want: "trust-keys"},
+		{path: "/fleet", want: "fleet"},
+		{path: "/fleet/", want: "fleet"},
+		{path: "/fleet/example", want: "fleet"},
+		{path: "/workbench", want: "workbench"},
+		{path: "/workbench/", want: "workbench"},
+		{path: "/workbench/example", want: "workbench"},
+		{path: "/incident", want: "incident"},
+		{path: "/incident/", want: "incident"},
+		{path: "/incident/example", want: "incident"},
+		{path: ""},
+		{path: "/unknown"},
+		{path: "/overview/"},
+		{path: "/evidence/"},
+		{path: "/exemptions/"},
+		{path: "/agents/"},
+		{path: "/agents-extra"},
+		{path: "/agent"},
+		{path: "/session"},
+		{path: "/session-extra/example"},
+		{path: "/budgets/"},
+		{path: "/trust-keys/"},
+		{path: "/fleet-extra/example"},
+		{path: "/workbench-extra/example"},
+		{path: "/incident-extra/example"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := activeNavKey(tc.path); got != tc.want {
+				t.Errorf("activeNavKey(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}

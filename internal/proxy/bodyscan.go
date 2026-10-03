@@ -2207,8 +2207,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 	}
 	matchedHeaders := map[string]struct{}{}
 	addMatches := func(headerName, value string, matches []scanner.TextDLPMatch) {
-		surface := scanner.CredentialAudienceHeaderSurface(headerName, value)
-		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, surface)
+		matches, allows := sc.FilterHeaderDLPMatches(matches, target, headerName, value)
 		audienceAllows = append(audienceAllows, allows...)
 		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 		if len(filtered) == 0 {

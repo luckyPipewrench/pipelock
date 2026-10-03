@@ -42,8 +42,10 @@ type credentialAudienceCandidate struct {
 	patternName       string
 	hosts             []string
 	authorizationOnly bool
-	carrierMask       uint8
+	carrierMask       uint16
 	gitHosts          []string
+	registryHosts     []string
+	headerValue       string
 }
 
 // CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
@@ -97,7 +99,7 @@ func CredentialAudienceHeaderSurface(headerName, value string) string {
 	}
 }
 
-func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint8) bool {
+func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint16) bool {
 	if !authorizationOnly && mask == 0 {
 		return true
 	}
@@ -149,7 +151,9 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
 			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts)
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
-			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) {
+			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) &&
+			!registryBasicAllowed(candidate, host, target, surface) &&
+			!registryBearerAllowed(candidate, host, target, surface) {
 			continue
 		}
 		keep[i] = false
@@ -226,6 +230,139 @@ func gitTransportAllowed(candidate credentialAudienceCandidate, host, target, su
 		return false
 	}
 	return isGitTransportPath(parsed)
+}
+
+// githubRegistryPasswordPattern is the whole Basic password: a classic
+// token, a server-to-server token, or a fine-grained PAT, and nothing else.
+// The DLP patterns are case-insensitive, so a password that only matches
+// after case folding stays blocked.
+var githubRegistryPasswordPattern = regexp.MustCompile(`^(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,}|github_pat_[a-zA-Z0-9_]{36,})$`)
+
+// githubRegistryUsernamePattern is an account-name shape. GitHub account
+// names are alphanumeric plus dashes, and Enterprise Managed Users also
+// carry an underscore before the enterprise shortcode. Dots, at-signs, and
+// a token in the username are not that shape.
+// https://docs.github.com/en/enterprise-cloud@latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication
+var githubRegistryUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
+
+// registryBasicAllowed is the package-registry audience rule. The credential
+// must be the Basic password, over https, at a compiled registry host. A
+// missing header value fails closed: the surface alone does not prove the
+// token is the password rather than the username.
+func registryBasicAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != credentialAudienceAuthorizationBasicSurface ||
+		candidate.carrierMask&config.CredentialAudienceCarrierRegistryBasic == 0 ||
+		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	user, password, ok := basicUserPassword(candidate.headerValue)
+	if !ok || !githubRegistryUsernamePattern.MatchString(user) || githubRegistryPasswordPattern.MatchString(user) {
+		return false
+	}
+	return githubRegistryPasswordPattern.MatchString(password)
+}
+
+// basicUserPassword decodes an Authorization Basic value, or a bare base64
+// field of one, into the user and password. The password is the text after
+// the first colon. StdEncoding is what container and package clients send.
+func basicUserPassword(value string) (string, string, bool) {
+	fields := strings.Fields(value)
+	var encoded string
+	switch len(fields) {
+	case 2:
+		if !strings.EqualFold(fields[0], "Basic") {
+			return "", "", false
+		}
+		encoded = fields[1]
+	case 1:
+		encoded = fields[0]
+	default:
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", "", false
+		}
+	}
+	if bytes.ContainsAny(raw, "\r\n") {
+		return "", "", false
+	}
+	user, password, ok := strings.Cut(string(raw), ":")
+	if !ok || user == "" || password == "" {
+		return "", "", false
+	}
+	return user, password, true
+}
+
+// registryBearerHosts narrows the bearer carrier to registries that issue
+// their own bearer; see config.RegistryBearerHosts.
+var registryBearerHosts = config.RegistryBearerHosts()
+
+// registryBearerAllowed accepts the bearer a container registry issues for
+// itself. The JWT audience must name this host. The signature is not
+// checked: the allow only delivers the token back to that registry host.
+func registryBearerAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != CredentialAudienceAuthorizationHeaderSurface ||
+		candidate.carrierMask&config.CredentialAudienceCarrierRegistryBearer == 0 ||
+		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) ||
+		!destination.MatchesDomainList(host, registryBearerHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	fields := strings.Fields(candidate.headerValue)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+		return false
+	}
+	return registryJWTAudienceMatches(fields[1], host)
+}
+
+// registryJWTAudienceMatches reports whether token is a registry JWT whose
+// aud is host. aud may be a string or an array of strings, which is the
+// registered JWT form. An access array is required so a token that only
+// copies the audience claim is not treated as a registry grant.
+func registryJWTAudienceMatches(token, host string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	var claims map[string]json.RawMessage
+	if !decodeJWTSegment(parts[1], &claims) {
+		return false
+	}
+	if !jwtAudienceNamesHost(claims["aud"], host) {
+		return false
+	}
+	var access []json.RawMessage
+	return jsonField(claims, "access", &access) && len(access) > 0
+}
+
+func jwtAudienceNamesHost(raw json.RawMessage, host string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return canonicalAudienceHost(one) == host
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) != nil || len(many) == 0 {
+		return false
+	}
+	for _, aud := range many {
+		if canonicalAudienceHost(aud) == host {
+			return true
+		}
+	}
+	return false
 }
 
 // Git transport endpoints, from the published protocol documents:
@@ -366,6 +503,10 @@ func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
 }
 
 func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, surface string) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithHeader(pattern, target, surface, "")
+}
+
+func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue string) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
 	}
@@ -375,6 +516,8 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 		authorizationOnly: pattern.credentialAudienceAuthorizationOnly,
 		carrierMask:       pattern.credentialAudienceCarrierMask,
 		gitHosts:          pattern.credentialAudienceGitHosts,
+		registryHosts:     pattern.credentialAudienceRegistryHosts,
+		headerValue:       headerValue,
 	}}, target, surface)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -403,6 +546,17 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 // destination-free surfaces (notably MCP stdio and MCP HTTP/SSE input) must not
 // call it and therefore remain fail-closed.
 func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, target, surface string) ([]TextDLPMatch, []CredentialAudienceAllow) {
+	return s.filterTextDLPMatchesForDestination(matches, target, surface, "")
+}
+
+// FilterHeaderDLPMatches applies the audience rule to one header value.
+// Registry Basic and registry bearer need that value; without it those
+// carriers fail closed. Other carriers ignore it.
+func (s *Scanner) FilterHeaderDLPMatches(matches []TextDLPMatch, target, headerName, value string) ([]TextDLPMatch, []CredentialAudienceAllow) {
+	return s.filterTextDLPMatchesForDestination(matches, target, CredentialAudienceHeaderSurface(headerName, value), value)
+}
+
+func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, target, surface, headerValue string) ([]TextDLPMatch, []CredentialAudienceAllow) {
 	if len(matches) == 0 {
 		return matches, nil
 	}
@@ -413,6 +567,8 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].authorizationOnly = match.credentialAudienceAuthorizationOnly
 		candidates[i].carrierMask = match.credentialAudienceCarrierMask
 		candidates[i].gitHosts = match.credentialAudienceGitHosts
+		candidates[i].registryHosts = match.credentialAudienceRegistryHosts
+		candidates[i].headerValue = headerValue
 	}
 	keep, allows := filterCredentialAudience(candidates, target, surface)
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -443,7 +599,7 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 		if !pattern.credentialAudienceCarrierRestricted() {
 			continue
 		}
-		if _, ok := s.credentialAudienceAllows(pattern, target, surface); !ok {
+		if _, ok := s.credentialAudienceAllowsWithHeader(pattern, target, surface, value); !ok {
 			continue
 		}
 		value = pattern.re.ReplaceAllString(value, authorizedCredentialPlaceholder)
@@ -487,7 +643,7 @@ func (s *Scanner) scrubAuthorizedEncodedFields(value, target, surface string) st
 		if len(restricted) == 0 {
 			continue
 		}
-		kept, allows := s.FilterTextDLPMatchesForDestination(restricted, target, surface)
+		kept, allows := s.filterTextDLPMatchesForDestination(restricted, target, surface, field)
 		if len(kept) == 0 && len(allows) > 0 {
 			value = strings.Replace(value, field, authorizedCredentialPlaceholder, 1)
 		}

@@ -86,8 +86,8 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		// pattern (its issuing authorities) while YAML still cannot reach the floor.
 		"Slack Token":             {"slack.com", "mcp.slack.com"},
 		"Slack App Token":         {"slack.com"},
-		"GitHub Token":            {"api.github.com", "uploads.github.com"},
-		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com"},
+		"GitHub Token":            {"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"},
+		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"},
 		"GitLab PAT":              {"gitlab.com"},
 		"GitLab CI Job Token":     {"gitlab.com"},
 		// GitHub release downloads redirect to this storage host with a signed

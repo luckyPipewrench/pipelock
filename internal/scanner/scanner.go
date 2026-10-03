@@ -402,8 +402,9 @@ type compiledPattern struct {
 	core                                bool     // name belongs to the immutable floor: exemptDomains is never honored
 	credentialAudienceHosts             []string // compiled built-ins only; empty means no audience exception
 	credentialAudienceAuthorizationOnly bool     // compiled built-ins only; limits the allow to Authorization headers
-	credentialAudienceCarrierMask       uint8    // compiled built-ins only; which headers may carry the credential
+	credentialAudienceCarrierMask       uint16   // compiled built-ins only; which headers may carry the credential
 	credentialAudienceGitHosts          []string // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
+	credentialAudienceRegistryHosts     []string // compiled built-ins only; hosts of the package-registry rule
 	bundle                              string   // empty for built-in/config patterns
 	bundleVersion                       string
 	warn                                bool // true when pattern action is "warn" - matches are informational only
@@ -556,6 +557,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		cp.credentialAudienceAuthorizationOnly = p.CredentialAudienceAuthorizationOnly
 		cp.credentialAudienceCarrierMask = p.CredentialAudienceCarrierMask
 		cp.credentialAudienceGitHosts = config.AppendDeclaredCredentialAudienceHosts(p.Name, p.CredentialAudienceGitHosts, cfg.DLP.GitHubEnterpriseHosts, cfg.DLP.GitLabHosts)
+		cp.credentialAudienceRegistryHosts = append([]string(nil), p.CredentialAudienceRegistryHosts...)
 		body, hasProviderBoundary := strings.CutPrefix(p.Regex, config.ProviderKeyLeftBoundaryRegex)
 		if hasProviderBoundary {
 			switch body {

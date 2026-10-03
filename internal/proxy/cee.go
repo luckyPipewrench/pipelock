@@ -211,7 +211,17 @@ type ceeOutboundPayloads struct {
 	// not replace it, so a residual unpartitioned path still has raw inspection.
 	outbound             []byte
 	bodyFragmentPayloads map[string][]byte
+	bodyFragmentLeaves   map[string][]ceeJSONLeaf
 	partitionReason      string
+}
+
+// ceeJSONLeaf is one scalar JSON value plus the path identity that must stay
+// contiguous across requests. Several leaves share a bucket. Scanning the
+// bucket's concatenated bytes lets a sibling value sit between two halves of
+// a secret, which is a missed detection.
+type ceeJSONLeaf struct {
+	Continuity []byte
+	Value      []byte
 }
 
 func (p ceeOutboundPayloads) inspectionMode() string {
@@ -432,7 +442,8 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 		if err == nil && len(bodyBytes) > 0 {
 			parts = append(parts, string(bodyBytes))
 			if partitionJSON {
-				result.bodyFragmentPayloads, result.partitionReason = jsonBodyFragmentPayloads(r.Header.Get("Content-Type"), bodyBytes, sessionKey, partitionKey)
+				result.bodyFragmentLeaves, result.partitionReason = jsonBodyFragmentLeaves(r.Header.Get("Content-Type"), bodyBytes, sessionKey, partitionKey)
+				result.bodyFragmentPayloads = concatCEEJSONLeaves(result.bodyFragmentLeaves)
 			}
 		}
 		// Concatenate read bytes with any remaining body data beyond the limit.
@@ -456,6 +467,11 @@ func extractOutboundPayloads(r *http.Request, partitionJSON bool, sessionKey str
 // alongside these buckets. reason is set when the partition is missing or
 // incomplete so callers can emit an operator-visible counter.
 func jsonBodyFragmentPayloads(contentType string, body []byte, sessionKey string, partitionKey []byte) (map[string][]byte, string) {
+	leaves, reason := jsonBodyFragmentLeaves(contentType, body, sessionKey, partitionKey)
+	return concatCEEJSONLeaves(leaves), reason
+}
+
+func jsonBodyFragmentLeaves(contentType string, body []byte, sessionKey string, partitionKey []byte) (map[string][]ceeJSONLeaf, string) {
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		// An unparseable content type is a shortfall, not an inapplicable media
@@ -470,16 +486,55 @@ func jsonBodyFragmentPayloads(contentType string, body []byte, sessionKey string
 	if len(partitionKey) == 0 {
 		return nil, ceeJSONPartitionReasonUnkeyed
 	}
-	payloads, valid := extract.JSONLeafBucketPayloads(body, extract.JSONLeafLimits{
+	leaves, valid := extract.JSONLeafBucketLeaves(body, extract.JSONLeafLimits{
 		MaxDepth: ceeJSONBodyMaxDepth, MaxPathBytes: ceeJSONBodyMaxPathBytes,
 	}, ceeJSONBodyBucketCount, ceeJSONBodyPartitionKey(partitionKey, sessionKey))
+	converted := ceeLeavesFromExtract(leaves)
 	if valid {
-		return payloads, ""
+		return converted, ""
 	}
-	if len(payloads) == 0 {
+	if len(converted) == 0 {
 		return nil, ceeJSONPartitionReasonMalformed
 	}
-	return payloads, ceeJSONPartitionReasonIncomplete
+	return converted, ceeJSONPartitionReasonIncomplete
+}
+
+func ceeLeavesFromExtract(leaves map[string][]extract.JSONBucketLeaf) map[string][]ceeJSONLeaf {
+	if len(leaves) == 0 {
+		return nil
+	}
+	out := make(map[string][]ceeJSONLeaf, len(leaves))
+	for bucket, items := range leaves {
+		converted := make([]ceeJSONLeaf, 0, len(items))
+		for _, item := range items {
+			if len(item.Value) == 0 {
+				continue
+			}
+			converted = append(converted, ceeJSONLeaf{Continuity: item.Continuity, Value: item.Value})
+		}
+		if len(converted) > 0 {
+			out[bucket] = converted
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func concatCEEJSONLeaves(leaves map[string][]ceeJSONLeaf) map[string][]byte {
+	if len(leaves) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(leaves))
+	for bucket, items := range leaves {
+		var buf []byte
+		for _, item := range items {
+			buf = append(buf, item.Value...)
+		}
+		out[bucket] = buf
+	}
+	return out
 }
 
 func ceeJSONBodyPartitionKey(partitionKey []byte, sessionKey string) []byte {
@@ -494,6 +549,23 @@ func ceeJSONBodyPartitioningEnabled(cfg *config.Config) bool {
 
 func ceeJSONBodyFragmentSessionKey(sessionKey, bucket string) string {
 	return sessionKey + ceeJSONBodyStreamPrefix + bucket
+}
+
+func sortedCEEBodyBuckets(payloads map[string][]byte, leaves map[string][]ceeJSONLeaf) []string {
+	seen := make(map[string]struct{}, len(payloads)+len(leaves))
+	paths := make([]string, 0, len(payloads)+len(leaves))
+	for path := range payloads {
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	for path := range leaves {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func sortedCEEJSONBodyPayloadPaths(payloads map[string][]byte) []string {
@@ -582,6 +654,7 @@ type ceeAdmitOptions struct {
 	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
+	BodyFragmentLeaves   map[string][]ceeJSONLeaf
 	PartitionReason      string
 	KeyPayload           []byte
 	PathPayload          *ceePathPayload
@@ -683,18 +756,33 @@ func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
 			}
 		}
 
-		// JSON body leaves are mapped into stable, fixed-cardinality buckets. No
-		// valid leaf is omitted for a per-request path or depth ceiling.
-		bodyAppends := make([]scanner.FragmentAppend, 0, len(bodyFragmentPayloads))
-		for _, path := range sortedCEEJSONBodyPayloadPaths(bodyFragmentPayloads) {
-			if len(bodyFragmentPayloads[path]) == 0 {
+		// JSON body leaves share a fixed number of buckets. Each leaf keeps its
+		// own path identity inside that bucket. Concatenating the bucket would
+		// let a sibling field land between two halves of a split secret.
+		bodyAppends := make([]scanner.FragmentAppend, 0, len(bodyFragmentPayloads)+len(opts.BodyFragmentLeaves))
+		for _, path := range sortedCEEBodyBuckets(bodyFragmentPayloads, opts.BodyFragmentLeaves) {
+			appendItem := scanner.FragmentAppend{
+				Group:  identity.Stream(ceeJSONBodyStreamPrefix),
+				Stream: identity.Stream(strings.TrimPrefix(ceeJSONBodyFragmentSessionKey(sessionKey, path), sessionKey)),
+			}
+			if leaves := opts.BodyFragmentLeaves[path]; len(leaves) > 0 {
+				pieces := make([]scanner.FragmentPiece, 0, len(leaves))
+				for _, leaf := range leaves {
+					if len(leaf.Value) == 0 {
+						continue
+					}
+					pieces = append(pieces, scanner.FragmentPiece{Continuity: leaf.Continuity, Data: leaf.Value})
+				}
+				if len(pieces) == 0 {
+					continue
+				}
+				appendItem.Pieces = pieces
+			} else if len(bodyFragmentPayloads[path]) > 0 {
+				appendItem.Payload = bodyFragmentPayloads[path]
+			} else {
 				continue
 			}
-			bodyAppends = append(bodyAppends, scanner.FragmentAppend{
-				Group:   identity.Stream(ceeJSONBodyStreamPrefix),
-				Stream:  identity.Stream(strings.TrimPrefix(ceeJSONBodyFragmentSessionKey(sessionKey, path), sessionKey)),
-				Payload: bodyFragmentPayloads[path],
-			})
+			bodyAppends = append(bodyAppends, appendItem)
 		}
 		appendResult, bodyMatches := fb.AppendAndScanOwnedBatch(ctx, identity, bodyAppends, sc)
 		if appendResult != (scanner.FragmentAppendResult{}) {

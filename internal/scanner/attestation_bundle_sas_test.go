@@ -42,7 +42,7 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
-	defer s.Close()
+	t.Cleanup(s.Close)
 
 	query := attestationBundleQuery("bundle-sas-fixture", nil)
 	target := attestationBundleURL("tmaproduction.blob.core.windows.net", query)
@@ -191,7 +191,7 @@ func TestAttestationBundleSASReleasesOnlyTheSignature(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
-	defer s.Close()
+	t.Cleanup(s.Close)
 
 	aws := "AKIA" + "IOSFODNN7" + "EXAMPLE"
 	gh := "ghp_" + strings.Repeat("a", 36)

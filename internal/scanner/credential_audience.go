@@ -877,9 +877,11 @@ func downloadGrantClaimsMatch(token, host string) bool {
 // download grant. A token carrying any other claim is not that grant.
 var downloadGrantClaimNames = map[string]bool{"aud": true, "exp": true, "iss": true, "key": true, "nbf": true, "path": true}
 
-// downloadGrantMaxLifetimeSeconds bounds exp minus nbf. GitHub's grant lives
-// five minutes.
-const downloadGrantMaxLifetimeSeconds = 300
+// downloadGrantMaxLifetimeSeconds bounds exp minus nbf. GitHub sizes the grant
+// to the asset: small files get five minutes, release archives get thirty
+// (observed on the v3.6.0 assets). A five-minute bound refused every archive
+// download while letting checksums through.
+const downloadGrantMaxLifetimeSeconds = 1800
 
 func decodeJWTSegment(segment string, v any) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(segment)

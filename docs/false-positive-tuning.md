@@ -86,7 +86,7 @@ See [docs/guides/suppression.md](guides/suppression.md) for the full suppression
 
 ### Using only your own patterns
 
-By default, pipelock merges your custom patterns with the 65 built-in defaults. To use only your own patterns (disabling all built-ins), set `include_defaults: false`:
+By default, pipelock merges your custom patterns with the 65 configurable built-in defaults. Set `include_defaults: false` to keep only your own patterns in that list. The independent immutable core DLP floor still detects core credentials, even with an empty configurable list. See the [DLP configuration reference](configuration.md#dlp-data-loss-prevention) for pattern merging and core restrictions.
 
 ```yaml
 dlp:
@@ -101,7 +101,7 @@ There is no top-level `dlp.action`. Prefer a correction scoped to the matched pa
 
 ### Per-pattern domain exemptions
 
-Each DLP pattern supports an `exempt_domains` field. To exempt a domain for a specific pattern, add it as a custom pattern entry with the exemption. When `include_defaults` is true, custom patterns with the same name override the built-in. The built-in provider key patterns that carry compiled audience hosts are the exception: an `exempt_domains` entry on one of those is refused unless it names only hosts already inside the compiled audience, in which case it loads with a warning and is ignored:
+Each configurable DLP pattern supports an `exempt_domains` field, subject to the core and compiled-audience restrictions below. To exempt a domain for a custom pattern, add the exemption to that pattern entry. With `include_defaults: true`, a custom pattern with the same name replaces the configurable default; it doesn't replace the independent core detector. Reusing a built-in name alone doesn't grant its compiled credential audience. An `exempt_domains` entry on a built-in provider-key pattern with a compiled audience is refused unless it names only hosts already inside that audience, in which case it loads with a warning and is ignored:
 
 ```yaml
 dlp:

@@ -70,15 +70,13 @@ Some `dlp_warn` events do not come from the hook. Pipelock also emits an informa
 
 ### Restrictions
 
-- **Built-in default patterns cannot be set to warn.** These are the
-  immutable safety floor and always enforce.
+- **The configurable defaults and immutable core floor are separate.** `include_defaults: false` removes the defaults from the configurable list. Core detection stays active and cannot be downgraded by a per-pattern warn action. See [pattern merging](../configuration.md#pattern-merging) and the [DLP reference](../configuration.md#dlp-data-loss-prevention).
+- **Per-pattern warn is for custom patterns.** Validation rejects it on compiled default entries. A YAML replacement that changes a default's regex or action is a custom pattern even if it keeps the same name; it does not inherit the built-in's compiled credential audience. An independent core match still enforces.
 - **Only `warn` is accepted as a per-pattern action.** Other actions
   (`block`, `strip`, `redirect`, `ask`) are not valid at the pattern level.
   Transport-level action configuration (`request_body_scanning.action`,
   `mcp_input_scanning.action`, etc.) controls enforcement for enforced matches.
-- **Warn mode applies to DLP patterns only.** Blocklist entries, response
-  scanning patterns, and chain detection rules. Per-rule warn for those
-  rule types may be added in a future release.
+- **`dlp.patterns[].action` controls DLP patterns only.** It doesn't configure blocklist entries, response scanning patterns, or chain detection rules. Those controls use their own configuration fields.
 
 ## Other false positive tuning techniques
 

@@ -31,6 +31,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Every blockEvery-th request (starting at index 0) carries a synthetic
+// credential and must be blocked; the rest must be allowed.
+const (
+	blockEvery        = 20
+	firstBlockedIndex = 0
+)
+
 const fakeToken = "ghp_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type result struct {
@@ -154,10 +161,25 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
-	cfg["fetch_proxy"].(map[string]any)["monitoring"].(map[string]any)["max_requests_per_minute"] = 10000000
-	cfg["forward_proxy"].(map[string]any)["enabled"] = true
-	cfg["ssrf"].(map[string]any)["ip_allowlist"] = []string{"127.0.0.1/32"}
-	fr := cfg["flight_recorder"].(map[string]any)
+	monitoring, err := configSection(cfg, "fetch_proxy", "monitoring")
+	if err != nil {
+		return err
+	}
+	monitoring["max_requests_per_minute"] = 10000000
+	forward, err := configSection(cfg, "forward_proxy")
+	if err != nil {
+		return err
+	}
+	forward["enabled"] = true
+	ssrf, err := configSection(cfg, "ssrf")
+	if err != nil {
+		return err
+	}
+	ssrf["ip_allowlist"] = []string{"127.0.0.1/32"}
+	fr, err := configSection(cfg, "flight_recorder")
+	if err != nil {
+		return err
+	}
 	fr["enabled"] = mode != "off"
 	fr["require_receipts"] = mode == "required"
 	data, err = yaml.Marshal(cfg)
@@ -251,7 +273,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 			defer wg.Done()
 			for i := range jobs {
 				target := fmt.Sprintf("http://%s/ok?id=%d", sinkAddr, i)
-				if i%20 == 0 {
+				if i%blockEvery == 0 {
 					target += "&token=" + fakeToken
 				}
 				req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -312,9 +334,9 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 		switch {
 		case code == -1:
 			r.Errors++
-		case i%20 == 0 && code == http.StatusForbidden:
+		case i%blockEvery == 0 && code == http.StatusForbidden:
 			r.Blocked++
-		case i%20 != 0 && code == http.StatusOK:
+		case i%blockEvery != 0 && code == http.StatusOK:
 			r.Allowed++
 		default:
 			r.Unexpected++
@@ -351,10 +373,24 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 		return err
 	}
 	log.Printf("%s: %.0f req/s, allow=%d block=%d unexpected=%d errors=%d receipt missing=%d verify=%d", mode, r.RequestsPerSecond, r.Allowed, r.Blocked, r.Unexpected, r.Errors, r.ReceiptMissing, r.VerifyExit)
-	if r.Unexpected != 0 || r.Errors != 0 || !strings.Contains(r.ResponseSamples[0], "GitHub Token") || (mode != "off" && (r.ReceiptMissing != 0 || r.VerifyExit != 0)) {
+	if r.Unexpected != 0 || r.Errors != 0 || !strings.Contains(r.ResponseSamples[firstBlockedIndex], "GitHub Token") || (mode != "off" && (r.ReceiptMissing != 0 || r.VerifyExit != 0)) {
 		return fmt.Errorf("finding: inspect %s", filepath.Join(dir, "result.json"))
 	}
 	return nil
+}
+
+// configSection walks nested YAML mappings and reports a clear error when the
+// generated config no longer has the expected shape.
+func configSection(cfg map[string]any, keys ...string) (map[string]any, error) {
+	current := cfg
+	for _, key := range keys {
+		next, ok := current[key].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("generated config has no %q mapping", strings.Join(keys, "."))
+		}
+		current = next
+	}
+	return current, nil
 }
 
 func freePort(ctx context.Context) (int, error) {
@@ -523,7 +559,7 @@ func scanReceipts(dir string, n int, r *result, end time.Time) error {
 		return err
 	}
 	for i, bits := range seen {
-		if i%20 == 0 {
+		if i%blockEvery == 0 {
 			if bits&2 != 0 {
 				r.ReceiptBlockRequests++
 			} else {

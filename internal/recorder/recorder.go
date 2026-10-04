@@ -849,10 +849,14 @@ func (r *Recorder) close() (retErr error) {
 
 	if r.sinceCheckpoint > 0 {
 		r.waitDurableForCurrentFileLocked()
-		if err := r.checkpointLocked(); err != nil {
-			// Release the file even if checkpointing failed, preserving both
-			// the incomplete-chain error and any independent cleanup failure.
-			return errors.Join(fmt.Errorf("final checkpoint: %w", err), r.closeFile())
+		// A pending durable caller can finish the checkpoint while Cond.Wait
+		// releases r.mu. Do not append an empty checkpoint at shutdown.
+		if r.sinceCheckpoint > 0 {
+			if err := r.checkpointLocked(); err != nil {
+				// Release the file even if checkpointing failed, preserving both
+				// the incomplete-chain error and any independent cleanup failure.
+				return errors.Join(fmt.Errorf("final checkpoint: %w", err), r.closeFile())
+			}
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 )
 
@@ -41,8 +42,9 @@ const (
 )
 
 const (
-	// maxWalkDepth bounds recursion depth to prevent stack overflow.
-	maxWalkDepth = 20
+	// maxWalkDepth shares the DLP extraction bound. Both passes count from
+	// the body root, so injection scanning covers every inspectable depth.
+	maxWalkDepth = extract.MaxExtractDepth
 	// maxWalkNodes bounds total leaves visited to prevent CPU exhaustion
 	// on wide payloads. When exceeded, walker emits FieldBudgetExceeded.
 	maxWalkNodes = 10000

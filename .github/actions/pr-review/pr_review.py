@@ -3467,11 +3467,43 @@ def publish_scan_failure(
     the finalize job to close and no second comment to reconcile. A `failed`
     marker never counts as a finished review, so it does not block a retry. A
     failure to post propagates: nothing was published, which is a setup failure.
+    A timeout or 5xx is the exception, checked the way a lost update reply is.
     """
     progress = ReviewProgress(fetch_failed=True, incomplete_reasons=[SCAN_FAILED_REASON])
     progress.base_sha = binding.base_sha
-    create_published_comment(repo, pr_number, token, render_scan_failure(binding, mode, review_identity), binding.correlation)
+    body = render_scan_failure(binding, mode, review_identity)
+    try:
+        create_published_comment(repo, pr_number, token, body, binding.correlation)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code < 500:
+            raise
+        confirm_listed_verdict(repo, pr_number, token, body, binding.correlation)
+    except requests.RequestException:
+        confirm_listed_verdict(repo, pr_number, token, body, binding.correlation)
     return progress
+
+
+def confirm_listed_verdict(repo: str, pr_number: str, token: str, body: str, correlation: str) -> None:
+    """Confirm a verdict comment whose create reply was lost, or raise.
+
+    GitHub can create the comment and lose the answer, and calling that a
+    failure turns a published verdict red. So the comments are listed once,
+    and the verdict counts as posted only when one carries a marker equal to
+    this one in every field. The fresh identity and the binding in it mean no
+    other run's verdict, and none for another head, can match.
+    """
+    expected = parse_status_marker(body)
+    listed, _, _ = scan_status_comments(repo, pr_number, token, correlation)
+    if expected is None or not any(
+        {key: value for key, value in marker.items() if key in STATUS_MARKER_FIELDS} == expected for marker in listed
+    ):
+        raise ReviewError("verdict comment creation could not be confirmed")
+    log_phase("comment-create", status="confirmed-by-read", correlation=correlation)
+    emit(
+        f"pr-review phase=comment-create attempt=1 status=confirmed-by-read correlation={correlation} "
+        "warning: the create reply was lost, and listing the comments shows the verdict was published",
+        stderr=True,
+    )
 
 
 def create_published_comment(repo: str, pr_number: str, token: str, body: str, correlation: str) -> None:

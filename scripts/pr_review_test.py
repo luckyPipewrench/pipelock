@@ -1065,6 +1065,7 @@ class HonestIncompleteVerdictTest(OfflineReviewTestCase):
             self.BASE_ENVIRONMENT,
             mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
             mock.patch.object(pr_review, "find_running_comment", return_value=(active, scanned)),
+            mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)),
             mock.patch.object(pr_review, "create_comment", create),
             mock.patch.object(pr_review, "provider_configuration", side_effect=AssertionError("no review may start")),
             mock.patch.object(pr_review, "update_comment", side_effect=AssertionError("nothing to update")),
@@ -1096,6 +1097,82 @@ class HonestIncompleteVerdictTest(OfflineReviewTestCase):
                 self.assertEqual(result["code"], 1)
                 self.assertNotIn("claimed=true", result["outputs"])
                 self.assertNotIn("state=", result["outputs"])
+
+    def scan_failure_with_lost_reply(self, path: str, error: Exception, listed: object) -> dict[str, object]:
+        """Fail the scan-failure create with `error`; the re-list returns listed(posted body)."""
+        create, relists, real_scan = mock.Mock(side_effect=error), [], pr_review.scan_status_comments
+
+        def scan(*args: object) -> object:
+            if not create.called:
+                return [], set(), True
+            relists.append(args)
+            return listed(create.call_args.args[3], real_scan, args)
+
+        result = self.run_main(
+            {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"} if path == "claim" else self.BASE_ENVIRONMENT,
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "find_running_comment", return_value=(None, False)),
+            mock.patch.object(pr_review, "scan_status_comments", side_effect=scan),
+            mock.patch.object(pr_review, "create_comment", create),
+            mock.patch.object(pr_review, "provider_configuration", side_effect=AssertionError("no review may start")),
+        )
+        result["relists"] = relists
+        return result
+
+    @staticmethod
+    def listed_with(**changes: str) -> object:
+        """A re-list holding the posted marker, with `changes` applied to its fields."""
+        return lambda body, _scan, _args: (
+            [{**pr_review.parse_status_marker(body), **changes, "html_url": "u", "created_at": "", "comment_id": 9}],
+            set(),
+            True,
+        )
+
+    def test_a_scan_failure_verdict_whose_create_reply_was_lost_is_confirmed_by_listing(self) -> None:
+        # GitHub created the failed verdict and lost the answer. It is on the
+        # pull request, so a red step would misreport it.
+        def two_pages(body: str, real_scan: object, args: tuple) -> object:
+            other = {"user": {"login": "someone"}, "body": "noise"}
+            mine = {"id": 9, "user": {"login": "github-actions[bot]"}, "body": body}
+            pages = [self.http_response(200, json.dumps(page).encode()) for page in ([other] * 100, [mine])]
+            with mock.patch.object(pr_review.requests, "get", side_effect=pages):
+                return real_scan(*args)
+
+        errors = (
+            ("502", pr_review.requests.HTTPError(response=self.http_response(502))),
+            ("timeout", pr_review.requests.ReadTimeout("lost")),
+            ("connection", pr_review.requests.ConnectionError("reset")),
+        )
+        for path in ("claim", "direct"):
+            for name, error in errors:
+                for listing, listed in (("fields", self.listed_with()), ("two real pages", two_pages)):
+                    with self.subTest(path=path, reply=name, listing=listing):
+                        result = self.scan_failure_with_lost_reply(path, error, listed)
+                        self.assertEqual(result.get("code"), 0, result.get("raised"))
+                        self.assertEqual(len(result["relists"]), 1)
+                        self.assertIn("status=confirmed-by-read", result["stderr"])
+                        self.assertIn("claimed=false" if path == "claim" else "state=failed", result["outputs"])
+
+    def test_a_scan_failure_verdict_that_cannot_be_confirmed_stays_a_setup_failure(self) -> None:
+        other_head = pr_review.PullBinding("a" * 40, "f" * 40, "c" * 40, pr_review.RUBRIC_VERSION).correlation
+        bad_gateway = pr_review.requests.HTTPError(response=self.http_response(502))
+        for path in ("claim", "direct"):
+            for name, listed in (
+                ("not listed", lambda _body, _scan, _args: ([], set(), True)),
+                ("re-list fails", lambda _body, _scan, _args: ([], set(), False)),
+                ("another run", self.listed_with(identity="e" * 32)),
+                ("another head", self.listed_with(binding=other_head)),
+            ):
+                with self.subTest(path=path, listing=name):
+                    result = self.scan_failure_with_lost_reply(path, bad_gateway, listed)
+                    self.assertEqual(result.get("code"), 1, result.get("raised"))
+                    self.assertEqual(len(result["relists"]), 1)
+                    self.assertNotIn("confirmed-by-read", result["stderr"])
+            with self.subTest(path=path, reply="422"):
+                refused = pr_review.requests.HTTPError(response=self.http_response(422))
+                result = self.scan_failure_with_lost_reply(path, refused, self.listed_with())
+                self.assertEqual(result.get("code"), 1, result.get("raised"))
+                self.assertEqual(result["relists"], [], "a refused create is not re-checked")
 
     def test_setup_failures_that_publish_nothing_keep_their_exit_codes(self) -> None:
         self.assertEqual(self.run_main({})["code"], 2)

@@ -69,6 +69,10 @@ ignore:
   # those code paths from the in-tree test process; integration testing
   # happens via `make bench-egress` instead.
   - "bench/egress/**"
+  # Signed-receipt load harness: starts a real pipelock process per mode,
+  # drives it over loopback, and verifies the recorder chain with the CLI.
+  # Exercised by running scripts/receipt-load/run.sh, not by unit tests.
+  - "scripts/receipt-load/**"
   # Playground/demo harnesses exercise full subprocess, VM, LLM, browser, and
   # live-proxy flows. They are validated through integration/demo tests and
   # published audit-packet verification rather than treated as core library

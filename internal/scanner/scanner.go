@@ -3475,8 +3475,38 @@ type knownValueWindow struct {
 // lifetime, so lookups are read-only and need no synchronization.
 type knownValueWindowIndex struct {
 	windows    []knownValueWindowCandidate
+	prefixes   *knownValueWindowPrefixes
 	valueIndex int
 	count      int
+}
+
+// knownValueWindowPrefixes is a one-hash membership filter over the first
+// knownValueWindowPrefixLen bytes of every retained window. A text position
+// whose prefix bit is clear cannot start any window, so the binary search over
+// every window is skipped there. The filter has no false negatives: every
+// stored window sets its bit, and a collision only causes a search. A nil
+// filter reports every prefix as present, so a missing filter only costs time.
+type knownValueWindowPrefixes [1 << 16 / 64]uint64
+
+const knownValueWindowPrefixLen = 4
+
+func knownValueWindowPrefixKey(window string) uint16 {
+	prefix := uint32(window[0]) | uint32(window[1])<<8 | uint32(window[2])<<16 | uint32(window[3])<<24
+	// Fibonacci hashing spreads the four bytes across the high bits.
+	return uint16((prefix * 2654435769) >> 16)
+}
+
+func (p *knownValueWindowPrefixes) add(window string) {
+	key := knownValueWindowPrefixKey(window)
+	p[key/64] |= uint64(1) << (key % 64)
+}
+
+func (p *knownValueWindowPrefixes) mayContain(window string) bool {
+	if p == nil {
+		return true
+	}
+	key := knownValueWindowPrefixKey(window)
+	return p[key/64]&(uint64(1)<<(key%64)) != 0
 }
 
 func (i knownValueWindowIndex) len() int {
@@ -3485,6 +3515,9 @@ func (i knownValueWindowIndex) len() int {
 
 func (i knownValueWindowIndex) offsets(window string) []knownValueWindowCandidate {
 	if len(window) != minKnownSecretSubstringLen || len(i.windows) == 0 {
+		return nil
+	}
+	if !i.prefixes.mayContain(window) {
 		return nil
 	}
 	var key [minKnownSecretSubstringLen]byte
@@ -3639,9 +3672,16 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 	}
 	candidates = candidates[:write]
 
+	var prefixes *knownValueWindowPrefixes
+	if len(candidates) > 0 {
+		prefixes = new(knownValueWindowPrefixes)
+		for _, candidate := range candidates {
+			prefixes.add(string(candidate.window.value[:knownValueWindowPrefixLen]))
+		}
+	}
 	set := make(knownValueWindowSet, len(values))
 	for valueIndex, value := range values {
-		set[value] = knownValueWindowIndex{windows: candidates, valueIndex: valueIndex, count: counts[valueIndex]}
+		set[value] = knownValueWindowIndex{windows: candidates, prefixes: prefixes, valueIndex: valueIndex, count: counts[valueIndex]}
 	}
 	return set, nil
 }

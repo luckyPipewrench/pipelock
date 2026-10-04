@@ -530,6 +530,9 @@ func publishRecoverySeal(req linkRequest, predecessor string) (*RecoverySeal, er
 	if s.SuccessorOpenHash == "" {
 		return nil, errors.New("recovery requires a successor session_open before sealing")
 	}
+	if err := verifyRecoveryPrefixWithOptions(req.self, entries, req.signerKeys, req.signerKeys == nil); err != nil {
+		return nil, err
+	}
 	s.SuccessorSession, s.ObservedAt = req.self, req.now.UTC().Format(time.RFC3339Nano)
 	s, err = SignRecoverySeal(s, req.privKey)
 	if err != nil {

@@ -60,7 +60,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
+    image: ghcr.io/luckypipewrench/pipelock@sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47
     command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
@@ -197,7 +197,7 @@ spec:
       # Init container: copy pipelock binary for MCP stdio wrapping
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/luckypipewrench/pipelock-init@sha256:0d54825d0ddf820edd9627cc08253ed838aebd43f7a62938505f6eae7955d714
+          image: ghcr.io/luckypipewrench/pipelock-init@sha256:fe47d7105633c3d56d0f47ab8ed3ed347d9dbc7fa6421441288917985da0e757
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
@@ -206,7 +206,7 @@ spec:
       containers:
         # Pipelock sidecar
         - name: pipelock
-          image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
+          image: ghcr.io/luckypipewrench/pipelock@sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47
           args:
             - run
             - --config
@@ -474,7 +474,7 @@ Topology assumption: service-routed Docker Compose, same as the earlier Compose 
 ```yaml
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
+    image: ghcr.io/luckypipewrench/pipelock@sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47
     command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
@@ -523,7 +523,7 @@ Mount both into the pipelock sidecar, and the CA (not the key) into the agent co
 ```yaml
 containers:
   - name: pipelock
-    image: ghcr.io/luckypipewrench/pipelock@sha256:73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965
+    image: ghcr.io/luckypipewrench/pipelock@sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47
     args: ["run", "--config", "/etc/pipelock/pipelock.yaml"]
     volumeMounts:
       - name: pipelock-config

@@ -1,0 +1,32 @@
+name: Homebrew tap preflight
+
+# Proves the release credential can read the tap before tag day. This
+# workflow has no pull_request trigger, so a fork cannot receive the secret.
+# It also has no manual trigger. A manual run selects a branch, and that
+# branch supplies the script that receives the tap credential. The scheduled
+# run uses the default branch. The GitHub token for this repository stays
+# read-only. The tap credential is used only for one contents read and is
+# not written to the log.
+
+on:
+  schedule:
+    - cron: '17 13 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  tap-read:
+    name: Read Homebrew formula
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout pipelock
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Read the tap formula with the release credential
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: scripts/homebrew-tap-preflight.sh

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
@@ -485,7 +486,11 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	// Validating before that restore checks the declaration against a port
 	// the process will never listen on, so a service colliding with the
 	// ACTUAL proxy port passes and is published.
-	if validationErr := newCfg.ValidateContainmentLoopbackServiceDeclarations(); validationErr != nil {
+	//
+	// An expired entry is a lapsed grant, not a malformed one: it is dropped
+	// from the candidate's effective set (never exposed or rendered) and
+	// reported after publication, while every other defect still rejects.
+	if _, validationErr := newCfg.LapseExpiredContainmentGrants(time.Now()); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
@@ -654,6 +659,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	if s.containmentManaged {
 		s.containmentMetricsDenied.Store(false)
 	}
+	s.reportLapsedContainmentGrants(newCfg, "reload")
 	// The candidate is live now, so this is true when it is said.
 	if loopbackServicesChanged {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.loopback_services changed — this reload updates policy only; "+

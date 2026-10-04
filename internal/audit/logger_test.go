@@ -2122,6 +2122,9 @@ func TestLogRedirect_JSONFormat(t *testing.T) {
 	if entry["event"] != "redirect" {
 		t.Errorf("expected event=redirect, got %v", entry["event"])
 	}
+	if entry["message"] != "redirect observed" {
+		t.Errorf("redirect observation must not claim the target was contacted: %v", entry["message"])
+	}
 	if entry["original_url"] != "https://example.com" {
 		t.Errorf("expected original_url, got %v", entry["original_url"])
 	}

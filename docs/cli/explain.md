@@ -150,6 +150,7 @@ Notes are emitted for each of these when the relevant control is enabled:
 | Cross-request detection | Accumulates across a session; `explain` holds no session history. |
 | Adaptive enforcement | Escalates from accumulated state, for the same reason. |
 | Kill switch | With `kill_switch.enabled` set, every request is refused at runtime except exempt endpoints and allowlisted IPs, whatever the verdict above says. |
+| Environment-variable leak matching (`--command`, `--tool`, `--file`) | `explain` runs in its own process and does not read the runtime's environment, so with `dlp.scan_env` enabled, input containing one of the runtime's environment values can still be blocked as an Environment Variable Leak. |
 
 The notes follow the loaded config rather than printing unconditionally. With
 `response_scanning.enabled: false` the response-scanning note does not appear,

@@ -6,9 +6,11 @@ package contain
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/user"
 	"strings"
 	"testing"
@@ -137,5 +139,83 @@ func TestDirectContainedProxyHealth(t *testing.T) {
 				t.Fatalf("directContainedProxyHealth() error = %v, want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRequireHostNetworkNamespace(t *testing.T) {
+	link := func(self, host string, selfErr, hostErr error) func(string) (string, error) {
+		return func(path string) (string, error) {
+			switch path {
+			case "/proc/self/ns/net":
+				return self, selfErr
+			case "/proc/1/ns/net":
+				return host, hostErr
+			case "/proc/self/ns/mnt", "/proc/1/ns/mnt":
+				return "mnt:[1]", nil
+			}
+			return "", os.ErrNotExist
+		}
+	}
+	// mountLink is a host network namespace with the given mount identities.
+	mountLink := func(self, host string, selfErr, hostErr error) func(string) (string, error) {
+		return func(path string) (string, error) {
+			switch path {
+			case "/proc/self/ns/net", "/proc/1/ns/net":
+				return "net:[1]", nil
+			case "/proc/self/ns/mnt":
+				return self, selfErr
+			case "/proc/1/ns/mnt":
+				return host, hostErr
+			}
+			return "", os.ErrNotExist
+		}
+	}
+	tests := []struct {
+		name     string
+		readLink func(string) (string, error)
+		wantErr  string
+	}{
+		{"host namespace passes", link("net:[1]", "net:[1]", nil, nil), ""},
+		{"agent namespace refused", link("net:[2]", "net:[1]", nil, nil), "not the host network namespace"},
+		{"empty identity refused", link("", "", nil, nil), "not the host network namespace"},
+		{"unreadable self refused", link("", "net:[1]", os.ErrPermission, nil), "read own network namespace"},
+		{"unreadable host refused", link("net:[1]", "", nil, os.ErrPermission), "read host network namespace"},
+		{"missing reader refused", nil, "unavailable"},
+		// A unit that joins the agent namespace shares its private /tmp: host
+		// network alone is not enough for host-side probes.
+		{"agent mount namespace refused", mountLink("mnt:[2]", "mnt:[1]", nil, nil), "not the host mount namespace"},
+		{"unreadable mount namespace refused", mountLink("", "mnt:[1]", os.ErrPermission, nil), "read own mount namespace"},
+		{"unreadable host mount namespace refused", mountLink("mnt:[1]", "", nil, os.ErrPermission), "read host mount namespace"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireHostNetworkNamespace(tc.readLink)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestHostNamespaceCommandArgs(t *testing.T) {
+	got := strings.Join(hostNamespaceCommandArgs("/usr/local/bin/pipelock", []string{"contain", "service-posture", "--", "tool"}), " ")
+	want := "--net=/proc/1/ns/net --mount=/proc/1/ns/mnt -- /usr/local/bin/pipelock contain service-posture -- tool"
+	if got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+func TestRunInHostNetworkNamespaceFailsForUnprivilegedCaller(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can join namespaces; the failure path needs an unprivileged caller")
+	}
+	if err := runInHostNetworkNamespace(context.Background(), io.Discard, io.Discard, []string{"version"}); err == nil {
+		t.Fatal("expected the host-namespace re-exec to fail for an unprivileged caller")
 	}
 }

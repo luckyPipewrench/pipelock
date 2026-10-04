@@ -10,6 +10,8 @@ The seal uses a new `recovery_seal` record in the existing exclusive predecessor
 
 New Go, TypeScript, and Rust directory verifiers recognize the seal and report `attested_discontinuity` separately from a continuous link. A valid seal doesn't make the evidence healthy because the retained shard remains damaged and verification exits unsuccessfully. Missing seals remain ordinary unlinked runs. Invalid, tampered, misplaced, or replayed seals don't attach. Older strict link readers reject the unfamiliar kind or fields and can't report the recovery as clean; operators should expect a link finding or an unlinked run. Mixed-version deployments can roll out writers and readers independently, but older directory readers will reject recovery artifacts until upgraded. Standalone receipt verification does not inspect directory continuity and cannot establish recovery across runs.
 
+If seal publication fails, Pipelock reports on stderr that recovery starts unlinked and continues recording durable successor receipts. The damaged predecessor stays untouched, and the pending seal is retried on the next reload in the same process. Recovery does not make the offline evidence report healthy, even after a seal is published.
+
 ## Wire format
 
 The signed projection serializes these fields in this exact order; input JSON field order is not significant. Every field is required and non-null, including `signature`.

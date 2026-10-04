@@ -444,6 +444,8 @@ fn recovery_seal_tamper_replay_and_removal_fail_closed() {
     bytes.push(0);
     fs::write(&shard_path, bytes).expect("tamper predecessor shard");
     let report = verify(&tampered);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
     assert!(report
         .chains
         .iter()
@@ -469,6 +471,8 @@ fn recovery_seal_tamper_replay_and_removal_fail_closed() {
     fs::rename(replayed_shard.join(shard), replayed_shard.join(replay_name))
         .expect("move damaged bytes to another shard identity");
     let report = verify(&replayed_shard);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
     assert!(report
         .chains
         .iter()
@@ -485,6 +489,8 @@ fn recovery_seal_tamper_replay_and_removal_fail_closed() {
     let replay_claim = replayed.join(format!("chain-link-{successor}.json"));
     fs::rename(&original_claim, &replay_claim).expect("replay claim into another slot");
     let report = verify(&replayed);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
     assert!(report
         .chains
         .iter()
@@ -499,6 +505,7 @@ fn recovery_seal_tamper_replay_and_removal_fail_closed() {
     copy_fixture_evidence(&fixture.join("evidence"), &missing);
     fs::remove_file(missing.join(format!("chain-link-{predecessor}.json"))).expect("remove claim");
     let report = verify(&missing);
+    assert!(!report.healthy());
     assert!(report
         .chains
         .iter()

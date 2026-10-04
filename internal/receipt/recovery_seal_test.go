@@ -208,8 +208,19 @@ func TestRecoverySealReloadPublicationRetry(t *testing.T) {
 	linkFile = func(string, string) error { return errors.New("publication fault") }
 	t.Cleanup(func() { linkFile = oldLink })
 	e := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next})
-	if err := e.EmitSessionOpen(); err == nil || e.HealthError() == nil {
-		t.Fatal("unsealed reload became healthy")
+	if err := e.EmitSessionOpen(); err != nil || e.HealthError() != nil {
+		t.Fatalf("seal publication failure blocked recovery: emit=%v health=%v", err, e.HealthError())
+	}
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{TrustedKeys: []string{e.SignerKeyHex()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Healthy() || !slices.Contains(report.Unlinked(), next) || e.recoverySeal != nil {
+		t.Fatal("unsealed recovery concealed the damaged predecessor or linked the successor")
+	}
+	retained, err := os.ReadFile(files[len(files)-1])
+	if err != nil || !bytes.Equal(retained, append(raw, 0)) {
+		t.Fatal("unsealed recovery changed damaged evidence")
 	}
 	linkFile = oldLink
 	retry := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next})

@@ -2,7 +2,7 @@
 
 Pipelock can intercept CONNECT tunnel traffic by performing a TLS MITM: it terminates TLS with the client using a forged certificate, scans the decrypted request and response, then forwards to the upstream server over a separate TLS connection. This closes the body-blindness gap that exists with opaque CONNECT tunnels.
 
-Without TLS interception, CONNECT tunnels only get hostname-level scanning (blocklist, SSRF, rate limiting). With it, you get full DLP on request bodies/headers and response injection detection.
+Without TLS interception, Pipelock can enforce controls on CONNECT metadata and tunnel accounting, including handshake-header DLP when header scanning is enabled. It cannot inspect the encrypted HTTPS content. Interception exposes the inner request and response to the configured DLP and response scanners; the controls available without it are listed below.
 
 ## What is enforced when interception is off
 

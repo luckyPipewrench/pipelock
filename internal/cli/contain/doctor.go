@@ -170,12 +170,121 @@ func doctorDoorwaySocketReader(base *probeEnv, env *doctorEnv) func(context.Cont
 		if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
 			return unknown("containment.loopback_services could not be determined: "+problem, "restore access to the managed containment configuration and rerun `pipelock contain doctor`")
 		}
-		status, detail := probeManagedDoorwaySockets(ctx, &probe, services)
-		if status != statusPass {
-			return fail(classInfra, detail, "reset and start the named managed doorway socket")
-		}
-		return pass(detail)
+		return doctorDoorwayState(ctx, &probe, services)
 	}
+}
+
+const (
+	systemctlMasked   = "masked"
+	systemctlNotFound = "not-found"
+	systemctlFailed   = "failed"
+	installRemedy     = "rerun `pipelock contain install`"
+)
+
+// doctorUnitState reads one unit's enablement and activity through the same
+// systemctl seam the other contain probes use. ok is false only when systemctl
+// itself could not be run, which is an inconclusive result and never a pass.
+func doctorUnitState(ctx context.Context, env *probeEnv, unit string) (enabled, active string, ok bool) {
+	enabledOut, _, err := env.runCmd(ctx, "systemctl", "is-enabled", unit)
+	if err != nil {
+		return "", "", false
+	}
+	activeOut, _, err := env.runCmd(ctx, "systemctl", "is-active", unit)
+	if err != nil {
+		return "", "", false
+	}
+	return strings.TrimSpace(enabledOut), strings.TrimSpace(activeOut), true
+}
+
+// doctorDoorwayState inspects every managed doorway socket and every
+// in-namespace forwarder service. Sockets are checked first so a stopped socket
+// keeps its established report; the forwarders are the other half of the path
+// the agent's proxy traffic takes, and a stopped one leaves every check green
+// while the agent launch is refused.
+func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) doctorResult {
+	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
+		enabled, active, ok := doctorUnitState(ctx, env, socket)
+		if !ok {
+			return unknown("managed doorway socket "+socket+" state could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+		}
+		if enabled == systemctlEnabled && active == systemctlActive {
+			continue
+		}
+		relay := strings.TrimSuffix(socket, ".socket") + ".service"
+		// A socket refuses to listen while its relay service is still running,
+		// so the relay state decides which commands can work.
+		relayActive := true
+		if _, relayState, relayOK := doctorUnitState(ctx, env, relay); relayOK {
+			relayActive = relayState == systemctlActive
+		}
+		detail := fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s)", socket, oneLine(enabled))
+		if enabled == systemctlEnabled {
+			detail = fmt.Sprintf("managed doorway socket %s is %s", socket, oneLine(active))
+		}
+		return fail(classInfra, detail, doorwaySocketRemedy(socket, relay, enabled, active, relayActive))
+	}
+	units := []string{containedNamespaceForwarderUnit}
+	for _, service := range services {
+		units = append(units, loopbackForwarderUnitBase(service.Host, service.Port)+"-netns.service")
+	}
+	for _, unit := range units {
+		enabled, active, ok := doctorUnitState(ctx, env, unit)
+		if !ok {
+			return unknown("namespace forwarder "+unit+" state could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+		}
+		if enabled == systemctlEnabled && active == systemctlActive {
+			continue
+		}
+		detail := fmt.Sprintf("namespace forwarder %s is %s (%s); the agent has no proxy listener inside its namespace and its launch is refused", unit, oneLine(active), oneLine(enabled))
+		return fail(classInfra, detail, namespaceForwarderRemedy(unit, enabled, active))
+	}
+	return pass("all managed doorway sockets and namespace forwarders are enabled and active")
+}
+
+// doorwaySocketRemedy names the ordered commands that restore a socket that is
+// not enabled and active. The relay is stopped first when it is still running,
+// because systemd refuses to start a socket whose service is already active.
+func doorwaySocketRemedy(socket, relay, enabled, active string, relayActive bool) string {
+	if enabled == systemctlNotFound {
+		return "the unit is missing; " + installRemedy
+	}
+	var steps []string
+	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
+		steps = append(steps, "systemctl unmask "+socket)
+	}
+	if relayActive {
+		steps = append(steps, "systemctl stop "+relay)
+	}
+	if active == systemctlFailed {
+		steps = append(steps, "systemctl reset-failed "+socket)
+	}
+	if enabled == systemctlEnabled {
+		steps = append(steps, "systemctl start "+socket)
+	} else {
+		steps = append(steps, "systemctl enable --now "+socket)
+	}
+	return strings.Join(steps, " && ")
+}
+
+// namespaceForwarderRemedy names the commands that restore an in-namespace
+// forwarder service for the state doctor observed.
+func namespaceForwarderRemedy(unit, enabled, active string) string {
+	if enabled == systemctlNotFound {
+		return "the unit is missing; " + installRemedy
+	}
+	var steps []string
+	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
+		steps = append(steps, "systemctl unmask "+unit)
+	}
+	if active == systemctlFailed {
+		steps = append(steps, "systemctl reset-failed "+unit)
+	}
+	if enabled == systemctlEnabled {
+		steps = append(steps, "systemctl restart "+unit)
+	} else {
+		steps = append(steps, "systemctl enable --now "+unit)
+	}
+	return strings.Join(steps, " && ")
 }
 
 // doctorResult is one check outcome. remediation is the operator's next step
@@ -230,7 +339,7 @@ func allDoctorChecks() []doctorCheck {
 		{5, "dns_failure_clean", "DNS failures surface as a clean proxy error, not a hang", checkDNSFailure},
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
-		{8, "managed_doorway_sockets", "managed containment doorway sockets are active", checkManagedDoorwaySockets},
+		{8, "managed_doorway_sockets", "managed containment doorway sockets and namespace forwarders are active", checkManagedDoorwaySockets},
 	}
 }
 

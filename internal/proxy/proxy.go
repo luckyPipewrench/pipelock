@@ -609,6 +609,7 @@ type Proxy struct {
 	redactMatcherPtr     atomic.Pointer[redact.Matcher]         // nil when redaction disabled
 	reqPolicyPtr         atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
 	contractLoaderPtr    atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
+	contractWatch        contractWatchState                     // active-manifest watcher for the published loader
 	authorityVerifier    authority.Verifier                     // nil preserves pre-authority forwarding behavior
 	logger               *audit.Logger
 	metrics              *metrics.Metrics
@@ -1077,7 +1078,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				redirectWarnCtx.Transport = TransportFetch
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
-			result := currentScanner.Scan(redirectScanCtx, redirectURL)
+			// Forward redirects are returned to the client, so this admission
+			// must not spend a slot for an unissued request. The client's next
+			// request calls Scan and atomically consumes its own slot. Fetch
+			// redirects dispatch here and keep consuming in this callback.
+			var result scanner.Result
+			if redirectTransport == TransportForward {
+				result = currentScanner.ScanPreflight(redirectScanCtx, redirectURL)
+			} else {
+				result = currentScanner.Scan(redirectScanCtx, redirectURL)
+			}
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
@@ -1214,6 +1224,24 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				actx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+reason)
 				return newRedirectBlockedRequest(blockLayerContract, reason)
+			}
+			// A forward proxy must deliver this origin's redirect to its
+			// client so Location and Set-Cookie retain their browser origin
+			// and navigation semantics. Admission above refuses unsafe targets
+			// when net/http constructs a redirect request; non-replayable
+			// 307/308 responses skip this callback. The original 3xx body/headers
+			// still pass through the normal response scanner.
+			// Any client-followed request is admitted and signed separately;
+			// do not sign an unissued hop or share cookie state in p.client.
+			// Fetch mode alone follows internally and refreshes its envelope.
+			if redirectTransport == TransportForward {
+				// net/http has already opened GetBody for a 307/308. Its
+				// ErrUseLastResponse path leaves that unissued body open.
+				// Close it here, not req.Response.Body, which is scanned next.
+				if req.Body != nil {
+					safeClose(req.Body, "unissued redirect body", p.logger)
+				}
+				return http.ErrUseLastResponse
 			}
 			// Mediation envelope refresh: on every allowed redirect,
 			// rebuild the envelope on req so ph, hop, and @target-uri
@@ -2518,6 +2546,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.cfgPtr.Store(cfg)
 		p.contractLoaderPtr.Store(contractLoader)
 	}
+	// Move the active-manifest watcher onto the loader just published and
+	// stop the replaced loader's watcher.
+	p.syncContractWatcher()
 	oldIssuer := p.issuerCookieRuntime.Load()
 	issuerStore := newIssuerBoundCookieStore()
 	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
@@ -2664,6 +2695,7 @@ type ceeAdmitRequest struct {
 	ActorAuth            envelope.ActorAuth
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
+	BodyFragmentLeaves   map[string][]ceeJSONLeaf
 	PartitionReason      string
 	KeyPayload           []byte
 	PathPayload          *ceePathPayload
@@ -2700,7 +2732,7 @@ func (p *Proxy) admitCurrentCEE(ctx context.Context, req ceeAdmitRequest) ceeAdm
 	}
 	return ceeAdmission{
 		Result: ceeAdmit(ctx, ceeAdmitOptions{
-			ActorAuth: req.ActorAuth, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
+			ActorAuth: req.ActorAuth, Outbound: req.Outbound, BodyFragmentPayloads: req.BodyFragmentPayloads, BodyFragmentLeaves: req.BodyFragmentLeaves, PartitionReason: req.PartitionReason, KeyPayload: req.KeyPayload,
 			PathPayload: req.PathPayload, TargetURL: req.TargetURL, Agent: req.Agent,
 			ClientIP: req.ClientIP, RequestID: req.RequestID, Config: ceeCfg,
 			Entropy: p.entropyTrackerPtr.Load(), Fragments: fb, Scanner: p.scannerPtr.Load(),
@@ -2945,6 +2977,7 @@ func (p *Proxy) updateCEEStats() {
 }
 
 func (p *Proxy) Close() {
+	p.stopContractWatcher()
 	if runtime := p.issuerCookieRuntime.Load(); runtime != nil {
 		runtime.store.flush(time.Now(), true)
 	}
@@ -4955,6 +4988,7 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		p.wd.Start(ctx)
 	}
 
+	p.startContractWatcher(ctx)
 	handler := p.buildHandler(p.buildMux())
 
 	// CONNECT tunnels and WebSocket connections need to live beyond any single

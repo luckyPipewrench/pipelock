@@ -18,7 +18,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | Receipt ID for fetching the matching receipt (via the receipt-transports endpoint) for additional context. Either a 26-character Crockford-base32 ULID (`0-9` plus `A-Z` minus `I`, `L`, `O`, `U`) **or** a canonical 36-character hyphenated UUIDv7 — the receipt subsystem's correlation handle (`action_id`) uses that UUIDv7 form. Both accepted forms are fixed-length and drawn from a bounded alphabet, so the slot stays opaque and attacker-controlled metadata cannot reach agent-visible response headers. |
 | `X-Pipelock-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | The proxy-minted `action_id` of a receipt successfully recorded before this response was written. It is a caller correlation handle, never proof by itself; verify the signed receipt before relying on it. Browser callers can read it when the proxy exposes it with `Access-Control-Expose-Headers: X-Pipelock-Receipt`. |
 
-"Every block" means every block that returns HTTP headers, with one exception: some reverse-proxy response-side blocks carry the reason only in the JSON body's `block_reason` field (see the transport table below). Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
+"Every block" means every block that returns HTTP headers, and that includes buffered reverse-proxy response-side blocks, which also put a prose reason in the JSON body's `block_reason` field. A block on a streaming response comes after the upstream headers are sent and can't add them. Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged, because the headers are purely additive.
 
 ## Layer-label vocabulary
 
@@ -88,7 +88,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | Code | When | Severity | Retry |
 |---|---|---|---|
 | `airlock_active` | Adaptive enforcement escalated this session into the airlock tier. | `critical` | `transient` |
-| `kill_switch_active` | One of the four kill-switch sources is active. | `critical` | `transient` |
+| `kill_switch_active` | A kill-switch activation source is active (config, API, Conductor remote kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, or sentinel file). | `critical` | `transient` |
 | `envelope_verify_failed` | Inbound mediation envelope did not verify (signature / replay / trust). | `critical` | `none` |
 | `outbound_envelope_failed` | Outbound envelope injection / refresh / signing failed before the request left pipelock. Distinct from `envelope_verify_failed` so agents can tell inbound verification from outbound emission. | `critical` | `transient` |
 | `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and Pipelock could not emit the allow-path receipt before forwarding. The action is denied so there is no unreceipted upstream traffic. | `critical` | `transient` |
@@ -179,7 +179,7 @@ HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP
 | Forward proxy (CONNECT + absolute-URI) | HTTP response headers on the 403/etc. |
 | TLS-intercept (MITM) | HTTP response headers on the synthetic block response. |
 | Fetch endpoint (`/fetch?url=...`) | HTTP response headers on the 403 JSON body. |
-| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on request-side blocks and on Browser Shield `browser_shield_uninspectable` response blocks. Other response-side blocks (prompt injection, media policy, a compressed or unscannable body, a scan error) return a JSON body whose `block_reason` field carries the reason, without the block-reason headers. |
+| Reverse proxy (`pipelock run --reverse-listen`) | HTTP response headers on request-side blocks and on buffered response-side blocks (prompt injection, media policy, a compressed or unscannable body, a scan error, Browser Shield `browser_shield_uninspectable`). The JSON body's `block_reason` field repeats the reason in prose. A streaming (SSE) response block happens after the upstream headers are sent, so it carries neither the headers nor the JSON body. |
 | MCP HTTP / SSE | HTTP response headers on the 403. |
 | WebSocket | Close-frame reason payload as a JSON document carrying the same fields (see below). |
 

@@ -1265,8 +1265,9 @@ type DLPPattern struct {
 	Compiled                            bool     `yaml:"-"`                   // true for patterns created in Defaults()
 	CredentialAudienceHosts             []string `yaml:"-"`                   // compiled built-ins only; strict YAML rejects attempts to configure it
 	CredentialAudienceAuthorizationOnly bool     `yaml:"-"`                   // compiled built-ins only; restricts audience allowance to Authorization headers
-	CredentialAudienceCarrierMask       uint8    `yaml:"-"`                   // compiled built-ins only; which surfaces may carry the credential
+	CredentialAudienceCarrierMask       uint16   `yaml:"-"`                   // compiled built-ins only; which surfaces may carry the credential
 	CredentialAudienceGitHosts          []string `yaml:"-"`                   // compiled built-ins only; hosts of the git-over-HTTPS Basic rule
+	CredentialAudienceRegistryHosts     []string `yaml:"-"`                   // compiled built-ins only; hosts of the package-registry Basic or bearer rule
 	// CredentialURLWhitespaceGrammar is set only by the built-in default
 	// registry. It is runtime provenance, not an operator-facing setting.
 	CredentialURLWhitespaceGrammar bool `yaml:"-"`
@@ -1558,9 +1559,10 @@ func (f CrossRequestFragments) ResolvedMaxSessions() int {
 
 // KillSwitch configures the emergency deny-all kill switch.
 // When active, all requests are rejected except health/metrics endpoints
-// and allowlisted IPs. Six activation sources (config, API, Conductor remote
-// kill, Conductor stale bundle, SIGUSR1, sentinel file) are OR-composed: any
-// one active means the kill switch is engaged.
+// and allowlisted IPs (IP allowlist exemptions do not apply during uncertain
+// Conductor apply). Seven activation sources (config, API, Conductor remote
+// kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, sentinel
+// file) are OR-composed: any one active means the kill switch is engaged.
 type KillSwitch struct {
 	Enabled       bool     `yaml:"enabled"`
 	SentinelFile  string   `yaml:"sentinel_file"`

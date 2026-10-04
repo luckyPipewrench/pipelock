@@ -30,11 +30,13 @@ import {
   recoverySealSigningBytes,
   verifyBase,
   verifyRecoveryOuterSequence,
+  withPinnedEvidenceDirectory,
   type RecoverySeal,
 } from "../src/chain-set.js";
 import { extractTypedFromEntries, parseEntryLinesText } from "../src/recorder.js";
 import { recorderEntryHash } from "../src/recorder-chain.js";
 import { decodeUTF8, sha256Hex } from "../src/util.js";
+import { readVerifierBytes } from "../src/util.js";
 import { findPackageRoot } from "./paths.js";
 
 const zeroKey = "00".repeat(32);
@@ -95,6 +97,174 @@ const fixtureSealFile = (): string => {
   const name = readdirSync(fixtureEvidenceDir).find((entry) => entry.startsWith("chain-link-"));
   return join(fixtureEvidenceDir, name ?? "chain-link-missing.json");
 };
+
+test("recovery binding rejects final-session, size, and competing-claim violations", async () => {
+  const original = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+  const seed = createHash("sha256").update("pipelock-recovery-seal-conformance-v1").digest();
+  const opts = { trustedKeys: [original.successor_signer_key], endorsements: [] };
+  const dir = mkdtempSync(join(tmpdir(), "recovery-binding-bounds-"));
+  const claimName = `chain-link-${original.predecessor_session}.json`;
+  const sign = async (seal: RecoverySeal): Promise<string> => {
+    const signature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(seal), seed),
+    ).toString("hex");
+    return JSON.stringify({ ...seal, signature: `ed25519:${signature}` });
+  };
+  try {
+    cpSync(fixtureEvidenceDir, dir, { recursive: true });
+    const positive = await verifyBase(dir, "proxy", opts);
+    assert.ok(positive.chains.some((chain) => chain.recovery_seal !== undefined));
+    const originalBytes = readFileSync(join(dir, original.shard));
+    const firstLine = originalBytes.toString("utf8").split("\n")[0] as string;
+    const prefix = Buffer.from(`${firstLine}\n`);
+    const first = JSON.parse(firstLine) as Record<string, unknown>;
+    const receipt = first["detail"] as Receipt;
+    const prefixSeal = {
+      ...original,
+      damage_offset: prefix.length,
+      last_good_seq: 0,
+      last_good_hash: first["hash"] as string,
+      predecessor_tail_seq: 0,
+      predecessor_tail_hash: receiptHash(receipt),
+      signature: "" as const,
+    };
+    // The existing recorder limit permits exactly 1 MiB of non-NUL tail.
+    for (const [length, attached] of [
+      [1 << 20, true],
+      [(1 << 20) + 1, false],
+    ] as const) {
+      const bytes = Buffer.concat([prefix, Buffer.alloc(length, 0x7b)]);
+      const seal = { ...prefixSeal, shard_size: bytes.length, shard_sha256: sha256Hex(bytes) };
+      writeFileSync(join(dir, original.shard), bytes);
+      writeFileSync(join(dir, claimName), await sign(seal));
+      const report = await verifyBase(dir, "proxy", opts);
+      assert.equal(
+        report.chains.some((chain) => chain.recovery_seal !== undefined),
+        attached,
+      );
+      assert.equal(baseHealthy(report), false);
+      if (!attached) {
+        assert.ok(report.findings.some((finding) => finding.kind === "invalid_recovery_seal"));
+        assert.ok(baseUnlinked(report).includes(original.successor_session));
+      }
+    }
+    // A correctly signed opening for another session cannot be relabeled by its outer entry.
+    const successor = readFileSync(
+      join(dir, `evidence-${original.successor_session}-0.jsonl`),
+      "utf8",
+    );
+    const foreign = JSON.parse(successor.split("\n")[0] as string) as Record<string, unknown>;
+    foreign["session_id"] = original.predecessor_session;
+    foreign["hash"] = recorderEntryHash(JSON.stringify(foreign));
+    const bytes = Buffer.from(JSON.stringify(foreign));
+    const emptySeal = {
+      ...original,
+      shard_size: bytes.length,
+      shard_sha256: sha256Hex(bytes),
+      damage_offset: 0,
+      last_good_seq: 0,
+      last_good_hash: "genesis",
+      predecessor_tail_seq: 0,
+      predecessor_tail_hash: "genesis",
+      predecessor_signer_key: original.successor_signer_key,
+      signature: "" as const,
+    };
+    writeFileSync(join(dir, original.shard), bytes);
+    writeFileSync(join(dir, claimName), await sign(emptySeal));
+    const foreignReport = await verifyBase(dir, "proxy", opts);
+    assert.ok(
+      foreignReport.findings.some(
+        (finding) =>
+          finding.kind === "invalid_recovery_seal" &&
+          finding.detail.includes("session_open binding"),
+      ),
+    );
+    assert.ok(baseUnlinked(foreignReport).includes(original.successor_session));
+    assert.equal(baseHealthy(foreignReport), false);
+
+    // An empty complete prefix uses the observing key by contract; supplied
+    // pins still govern the successor, while unpinned mode proves consistency.
+    const torn = Buffer.from('{"v":');
+    writeFileSync(join(dir, original.shard), torn);
+    writeFileSync(
+      join(dir, claimName),
+      await sign({
+        ...emptySeal,
+        shard_size: torn.length,
+        shard_sha256: sha256Hex(torn),
+      }),
+    );
+    for (const [pins, attached] of [
+      [[], true],
+      [[zeroKey], false],
+    ] as [string[], boolean][]) {
+      const report = await verifyBase(dir, "proxy", { trustedKeys: pins, endorsements: [] });
+      assert.equal(
+        report.chains.some((chain) => chain.recovery_seal !== undefined),
+        attached,
+      );
+      assert.equal(baseHealthy(report), false);
+    }
+
+    writeFileSync(join(dir, original.shard), originalBytes);
+    writeFileSync(join(dir, claimName), readFileSync(fixtureSealFile()));
+    const other = `${original.predecessor_session.slice(0, -32)}${"3".repeat(32)}`;
+    const otherShard = `evidence-${other}-0.jsonl`;
+    const partial = Buffer.from('{"v":');
+    writeFileSync(join(dir, otherShard), partial);
+    writeFileSync(
+      join(dir, `chain-link-${other}.json`),
+      await sign({
+        ...emptySeal,
+        predecessor_session: other,
+        shard: otherShard,
+        shard_size: partial.length,
+        shard_sha256: sha256Hex(partial),
+      }),
+    );
+    const competing = await verifyBase(dir, "proxy", opts);
+    assert.equal(
+      competing.findings.filter((finding) => finding.kind === "attested_discontinuity").length,
+      1,
+    );
+    assert.ok(
+      competing.findings.some(
+        (finding) =>
+          finding.kind === "invalid_recovery_seal" &&
+          finding.detail.includes("already has a predecessor claim"),
+      ),
+    );
+    assert.equal(baseHealthy(competing), false);
+
+    const oversized = join(dir, `chain-link-proxy.run.${"4".repeat(32)}.json`);
+    writeFileSync(oversized, `{"kind":"recovery_seal","extra":"${" ".repeat(7 << 20)}"}`);
+    const bounded = await verifyBase(dir, "proxy", opts);
+    assert.ok(
+      bounded.findings.some(
+        (finding) => finding.kind === "invalid_link" && finding.detail.includes("65536"),
+      ),
+    );
+    assert.throws(() => readVerifierBytes(oversized, false, 64 << 10), /exceeds 65536/u);
+    assert.throws(() => readVerifierBytes(oversized, false, -1), /invalid input byte limit/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("overlapping pinned directory reads reject re-entry without changing the first read", async () => {
+  const original = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+  const opts = { trustedKeys: [original.successor_signer_key], endorsements: [] };
+  const first = withPinnedEvidenceDirectory(fixtureEvidenceDir, () =>
+    verifyBase(".", "proxy", opts),
+  );
+  await assert.rejects(
+    withPinnedEvidenceDirectory(fixtureEvidenceDir, () => verifyBase(".", "proxy", opts)),
+    /concurrent evidence directory reads are unsupported/u,
+  );
+  const report = await first;
+  assert.ok(report.chains.some((chain) => chain.recovery_seal !== undefined));
+  assert.equal(baseHealthy(report), false);
+});
 
 test("recovery prefix enforces zero-based contiguous outer sequence", () => {
   const seal = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));

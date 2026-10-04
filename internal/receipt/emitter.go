@@ -286,13 +286,10 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if e.notices == nil {
 		e.notices = os.Stderr
 	}
-	// A failed reload may have persisted the fresh opening receipt before its
-	// recovery seal. Retrying must finish that claim before publishing evidence.
+	// Retry a pending seal for an opening already persisted by recovery.
+	// Missing cross-run attestation must not block durable successor evidence.
 	if e.hasPriorTail && cfg.Recorder.RecoveryPredecessor() != "" {
-		e.initErr = e.linkPredecessor()
-		if e.initErr != nil {
-			return e
-		}
+		e.linkPredecessor()
 	}
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
@@ -309,17 +306,16 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 // link naming a successor that never existed, which verification reports as
 // a dangling link.
 //
-// Fresh-start link failures leave the run unlinked. A recorder explicitly
-// recovering its current run must publish the pending recovery claim before
-// its replacement emitter becomes healthy.
-func (e *Emitter) linkPredecessor() error {
+// Link and recovery-seal failures leave the run unlinked without disabling
+// emission. Pending recovery claims remain available for a later retry.
+func (e *Emitter) linkPredecessor() {
 	predecessor := e.recorder.RecoveryPredecessor()
 	if (predecessor == "" && (e.hasPriorTail || e.chainSeq != 1)) || e.recorder.Dir() == "" {
-		return nil
+		return
 	}
 	base, ok := RunSessionBase(e.session)
 	if !ok {
-		return nil
+		return
 	}
 	req := linkRequest{
 		dir:        filepath.Clean(e.recorder.Dir()),
@@ -334,11 +330,12 @@ func (e *Emitter) linkPredecessor() error {
 	if predecessor != "" {
 		seal, err := publishRecoverySeal(req, predecessor)
 		if err != nil {
-			return fmt.Errorf("publishing recovery seal: %w", err)
+			_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: recovery seal unavailable for %s: %v\n", e.session, predecessor, err)
+			return
 		}
 		e.recoverySeal = seal
 		e.recorder.AcknowledgeRecovery(predecessor, e.session)
-		return nil
+		return
 	}
 	// Fresh starts can observe a predecessor signed by another operator key;
 	// its self-consistency is checked here, and offline readers decide trust.
@@ -346,10 +343,9 @@ func (e *Emitter) linkPredecessor() error {
 	link, err := publishPredecessorLink(req, e.observeTornTail)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
-		return nil
+		return
 	}
 	e.chainLink = link
-	return nil
 }
 
 // ChainLink returns the continuity link this emitter published at its first
@@ -909,10 +905,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 	if !e.linked {
 		e.linked = true
-		if err := e.linkPredecessor(); err != nil {
-			e.MarkUnhealthy(err)
-			return err
-		}
+		e.linkPredecessor()
 	}
 	if err := e.emitNativeAEL(ar, sessionControl, durable); err != nil {
 		e.recordFailure(FailReasonAEL)

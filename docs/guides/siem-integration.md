@@ -80,7 +80,7 @@ via a log collector (Promtail, Filebeat, Fluentd).
 | `ws_open` | WebSocket connection opened | `target`, `client_ip`, `request_id`, `agent` |
 | `ws_close` | WebSocket connection closed | `target`, `client_ip`, `request_id`, `agent`, `client_to_server_bytes`, `server_to_client_bytes`, `text_frames`, `binary_frames`, `duration_ms` |
 | `config_reload` | Config file reloaded (also emitted) | `status`, `detail` |
-| `redirect` | HTTP redirect followed | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
+| `redirect` | HTTP redirect observed before target admission; not proof the target was contacted | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
 | `forward_http` | Forward proxy request completed | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms` |
 
 > **Note:** Chain detection events (`chain_detection`) are tracked via

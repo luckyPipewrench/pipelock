@@ -329,21 +329,21 @@ func TestBuildSeccompFilter_NonEmpty(t *testing.T) {
 
 func TestBuildSeccompFilter_StrictBlocksClone3(t *testing.T) {
 	strict := buildSeccompFilter(true)
-	// In strict mode, clone3 should return EPERM.
-	// Scan filter for a JEQ matching SYS_CLONE3 followed by RET EPERM.
+	// In strict mode, clone3 should return ENOSYS.
+	// Scan filter for a JEQ matching SYS_CLONE3 followed by RET ENOSYS.
 	foundClone3Deny := false
 	for i := 0; i < len(strict)-1; i++ {
 		insn := strict[i]
 		next := strict[i+1]
 		isJEQ := insn.Code == (unix.BPF_JMP|0x10|unix.BPF_K) && insn.K == unix.SYS_CLONE3
-		isDeny := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == (unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM))
+		isDeny := next.Code == (unix.BPF_RET|unix.BPF_K) && next.K == (unix.SECCOMP_RET_ERRNO|uint32(unix.ENOSYS))
 		if isJEQ && isDeny {
 			foundClone3Deny = true
 			break
 		}
 	}
 	if !foundClone3Deny {
-		t.Error("strict filter should deny clone3 with EPERM")
+		t.Error("strict filter should deny clone3 with ENOSYS")
 	}
 
 	// Best-effort should allow clone3.
@@ -411,6 +411,52 @@ func TestCloneNewMask_IncludesAllNamespaceFlags(t *testing.T) {
 	for _, f := range nonNamespaceFlags {
 		if cloneNewMask&f.val != 0 {
 			t.Errorf("cloneNewMask includes non-namespace %s (0x%08x)", f.name, f.val)
+		}
+	}
+}
+
+// A legacy path-based syscall and its *at successor reach the same Landlock
+// hooks, so the filter must treat them alike. Allowing only one form breaks
+// runtimes whose libc picks the other (glibc on x86_64 issues mkdir, unlink,
+// rename and access directly) without making the sandbox any tighter.
+func TestAllowedSyscalls_LegacyFormsMatchAtSiblings(t *testing.T) {
+	allowed := allowedSyscalls()
+	set := make(map[uint32]bool, len(allowed))
+	for _, nr := range allowed {
+		set[nr] = true
+	}
+
+	pairs := []struct {
+		legacy, sibling string
+		legacyNR, atNR  uint32
+	}{
+		{"access", "faccessat", unix.SYS_ACCESS, unix.SYS_FACCESSAT},
+		{"open", "openat", unix.SYS_OPEN, unix.SYS_OPENAT},
+		{"creat", "openat", unix.SYS_CREAT, unix.SYS_OPENAT},
+		{"stat", "newfstatat", unix.SYS_STAT, unix.SYS_NEWFSTATAT},
+		{"lstat", "newfstatat", unix.SYS_LSTAT, unix.SYS_NEWFSTATAT},
+		{"getdents", "getdents64", unix.SYS_GETDENTS, unix.SYS_GETDENTS64},
+		{"mkdir", "mkdirat", unix.SYS_MKDIR, unix.SYS_MKDIRAT},
+		{"rmdir", "unlinkat", unix.SYS_RMDIR, unix.SYS_UNLINKAT},
+		{"unlink", "unlinkat", unix.SYS_UNLINK, unix.SYS_UNLINKAT},
+		{"rename", "renameat", unix.SYS_RENAME, unix.SYS_RENAMEAT},
+		{"chmod", "fchmodat", unix.SYS_CHMOD, unix.SYS_FCHMODAT},
+		{"chown", "fchownat", unix.SYS_CHOWN, unix.SYS_FCHOWNAT},
+		{"lchown", "fchownat", unix.SYS_LCHOWN, unix.SYS_FCHOWNAT},
+		{"link", "linkat", unix.SYS_LINK, unix.SYS_LINKAT},
+		{"symlink", "symlinkat", unix.SYS_SYMLINK, unix.SYS_SYMLINKAT},
+		{"readlink", "readlinkat", unix.SYS_READLINK, unix.SYS_READLINKAT},
+		{"epoll_create", "epoll_create1", unix.SYS_EPOLL_CREATE, unix.SYS_EPOLL_CREATE1},
+	}
+	for _, p := range pairs {
+		if set[p.legacyNR] != set[p.atNR] {
+			t.Errorf("%s allowed=%v but %s allowed=%v; legacy and *at forms must match",
+				p.legacy, set[p.legacyNR], p.sibling, set[p.atNR])
+		}
+		// Parity alone would pass if both forms were dropped, which
+		// reintroduces the EPERM failures for glibc programs.
+		if !set[p.legacyNR] {
+			t.Errorf("%s must be allowed", p.legacy)
 		}
 	}
 }

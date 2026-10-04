@@ -52,7 +52,7 @@ func TestCanonicalPolicyHash_Deterministic(t *testing.T) {
 func TestCanonicalPolicyHash_CredentialAudienceCarriers(t *testing.T) {
 	t.Parallel()
 	baseline := canonicalHashOf(t, nil)
-	for _, mask := range []uint8{0, CredentialAudienceCarrierAuthorizationBearer} {
+	for _, mask := range []uint16{0, CredentialAudienceCarrierAuthorizationBearer} {
 		changed := canonicalHashOf(t, func(cfg *Config) {
 			found := false
 			for i := range cfg.DLP.Patterns {

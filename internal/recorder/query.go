@@ -4,6 +4,8 @@
 package recorder
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -139,6 +141,135 @@ func QuerySessionResolved(location EvidenceLocation, sessionID string, filter *Q
 	}
 
 	return result, nil
+}
+
+// WalkSessionEntries securely reads one session's evidence shards in the same
+// order as QuerySessionResolved and calls consume once per parsed entry. It
+// keeps the bounded directory listing and one entry line in memory; callers
+// must treat any returned error as invalidating the entire walk, since an
+// error can occur after earlier entries were delivered.
+func WalkSessionEntries(dir, sessionID string, consume func(Entry) error) error {
+	if consume == nil {
+		return errors.New("session entry consumer is required")
+	}
+	location, err := ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	dirEntries, truncated, err := readEvidenceLocationDirectoryEntries(location, MaxEvidenceReadDirectoryEntries)
+	if err != nil {
+		return fmt.Errorf("reading evidence directory: %w", err)
+	}
+	if truncated {
+		return fmt.Errorf("%w: evidence directory exceeds %d entries", ErrEvidenceReadLimitExceeded, MaxEvidenceReadDirectoryEntries)
+	}
+
+	files := make([]string, 0, len(dirEntries))
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		fileSessionID, ok := evidenceFileSessionID(name)
+		if ok && fileSessionID == sessionID {
+			files = append(files, name)
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		si, sj := extractSeqStart(files[i]), extractSeqStart(files[j])
+		if si != sj {
+			return si < sj
+		}
+		return filepath.Base(files[i]) < filepath.Base(files[j])
+	})
+
+	for _, name := range files {
+		if err := walkEntriesAtEvidenceLocation(location, name, sessionID, consume); err != nil {
+			return fmt.Errorf("reading %s: %w", filepath.Base(name), err)
+		}
+	}
+	return nil
+}
+
+func walkEntriesAtEvidenceLocation(location EvidenceLocation, name, sessionID string, consume func(Entry) error) error {
+	file, before, err := openEvidenceLocationFile(location, name)
+	if err != nil {
+		return fmt.Errorf("opening evidence file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	if before.Size() > MaxEvidenceReadFileBytes {
+		return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(name), MaxEvidenceReadFileBytes)
+	}
+	if err := walkEntryReader(io.NewSectionReader(file, 0, before.Size()), filepath.Join(location.Dir, name), sessionID, consume); err != nil {
+		return fmt.Errorf("reading evidence file: %w", err)
+	}
+	if err := ensureEvidenceFileUnchanged(file, before); err != nil {
+		return err
+	}
+	return nil
+}
+
+func walkEntryReader(input io.Reader, path, sessionID string, consume func(Entry) error) error {
+	reader := bufio.NewReader(input)
+	line := make([]byte, 0, 4096)
+	var bytesRead int64
+	entriesRead := 0
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		bytesRead += int64(len(fragment))
+		if bytesRead > MaxEvidenceReadFileBytes {
+			return fmt.Errorf("%w: evidence file %s exceeds %d bytes", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadFileBytes)
+		}
+		if len(line)+len(fragment) > maxEntryWireLineBytes {
+			return fmt.Errorf("line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+		}
+		line = append(line, fragment...)
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return fmt.Errorf("scanning evidence entries: %w", readErr)
+		}
+		complete := len(line) > 0 && line[len(line)-1] == '\n'
+		if !complete && len(line) > 0 {
+			// Match file-backed QuerySession semantics: an unterminated final
+			// JSONL record is a torn write, even if it contains valid JSON.
+			return InspectEvidenceTailBytes(path, line, nil)
+		}
+		if len(line) > 0 {
+			payload := bytes.TrimSuffix(line, []byte{'\n'})
+			payload = bytes.TrimSuffix(payload, []byte{'\r'})
+			if len(payload) > MaxEntryLineBytes {
+				return fmt.Errorf("line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
+			}
+			if len(bytes.TrimSpace(payload)) > 0 {
+				if entriesRead >= MaxEvidenceReadEntries {
+					return fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadEntries)
+				}
+				entry, err := ParseEntryLine(payload)
+				if err != nil {
+					return fmt.Errorf("parsing entry: %w", err)
+				}
+				if !acceptedEntryVersions[entry.Version] {
+					return fmt.Errorf("unsupported entry version %d (accepted: 1, 2, 3)", entry.Version)
+				}
+				if err := ValidateEntrySchema(entry); err != nil {
+					return err
+				}
+				if entry.SessionID != sessionID {
+					return fmt.Errorf("%w: entry seq %d session_id %q does not match requested session %q", ErrEvidenceRefused, entry.Sequence, entry.SessionID, sessionID)
+				}
+				if err := consume(entry); err != nil {
+					return err
+				}
+				entriesRead++
+			}
+		}
+		line = line[:0]
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+	}
 }
 
 // ListSessions returns the unique session IDs found in evidence files.

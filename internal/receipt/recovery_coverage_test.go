@@ -285,9 +285,10 @@ func TestRecoveryClaimRejectsUnavailableAndUntrustedSuccessor(t *testing.T) {
 
 func TestPublishRecoverySealClaimOutcomes(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		prepare   func(*testing.T, string, RecoverySeal)
-		wantError string
+		name        string
+		prepare     func(*testing.T, string, RecoverySeal)
+		wantError   string
+		wantFailure bool
 	}{
 		{name: "same_claim_retry"},
 		{name: "different_claim", prepare: func(t *testing.T, dir string, s RecoverySeal) {
@@ -320,7 +321,7 @@ func TestPublishRecoverySealClaimOutcomes(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, ChainLinkFileName(s.PredecessorSession)), []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, wantError: "invalid character"},
+		}, wantFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, seal, key := recoveryFixture(t)
@@ -333,8 +334,8 @@ func TestPublishRecoverySealClaimOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := publishRecoverySeal(linkRequest{dir: dir, self: seal.SuccessorSession, privKey: priv, now: now}, seal.PredecessorSession)
-			if tc.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+			if tc.wantError != "" || tc.wantFailure {
+				if err == nil || (tc.wantError != "" && !strings.Contains(err.Error(), tc.wantError)) {
 					t.Fatalf("publishRecoverySeal error = %v, want %q", err, tc.wantError)
 				}
 				if got != nil {
@@ -467,7 +468,7 @@ func TestPublishPredecessorLinkReportsUnavailableSeal(t *testing.T) {
 	}
 }
 
-func TestEmitterConstructorKeepsPendingRecoveryUnhealthy(t *testing.T) {
+func TestEmitterConstructorReportsPendingRecoveryWithoutBlocking(t *testing.T) {
 	dir := t.TempDir()
 	_, key := generateTestKey(t)
 	first := startRun(t, dir, key)
@@ -488,15 +489,18 @@ func TestEmitterConstructorKeepsPendingRecoveryUnhealthy(t *testing.T) {
 	originalLink := linkFile
 	linkFile = func(string, string) error { return errors.New("publication fault") }
 	t.Cleanup(func() { linkFile = originalLink })
-	initial := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next})
-	if err := initial.EmitSessionOpen(); err == nil || initial.HealthError() == nil {
-		t.Fatal("failed seal publication did not leave the first emitter unhealthy")
+	var notices bytes.Buffer
+	initial := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next, Notices: &notices})
+	if err := initial.EmitSessionOpen(); err != nil || initial.HealthError() != nil {
+		t.Fatalf("failed seal publication blocked the first emitter: %v", err)
 	}
-	// The opening receipt is durable now. A replacement emitter must retry the
-	// pending seal during construction and refuse to appear initialized.
-	reloaded := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next})
-	if err := reloaded.InitError(); err == nil {
-		t.Fatal("replacement emitter initialized while recovery publication still failed")
+	// The durable opening remains usable while construction retries the seal.
+	reloaded := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next, Notices: &notices})
+	if err := reloaded.InitError(); err != nil {
+		t.Fatalf("pending seal publication blocked replacement emitter: %v", err)
+	}
+	if reloaded.recoverySeal != nil || first.rec.RecoveryPredecessor() == "" || !strings.Contains(notices.String(), "recovery seal unavailable") || !strings.Contains(notices.String(), "starts unlinked") {
+		t.Fatalf("pending unsealed recovery was not reported: %q", notices.String())
 	}
 	linkFile = originalLink
 	finished := NewEmitter(EmitterConfig{Recorder: first.rec, PrivKey: key, Session: next})

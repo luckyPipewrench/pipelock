@@ -10,14 +10,24 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
 	formatYAML = "yaml"
 	formatJSON = "json"
 )
+
+// JSON output uses the config loader's field names without changing shared schema types.
+type jsonCanaryTokens struct {
+	Enabled bool              `json:"enabled"`
+	Tokens  []jsonCanaryToken `json:"tokens"`
+}
+
+type jsonCanaryToken struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	EnvVar string `json:"env_var,omitempty"`
+}
 
 // Cmd returns the "canary" subcommand.
 func Cmd() *cobra.Command {
@@ -54,30 +64,24 @@ Examples:
 				_, _ = fmt.Fprintln(os.Stderr, "warning: --literal prints the canary token value to stdout; avoid capturing in shared logs")
 			}
 
-			payload := config.CanaryTokens{
-				Enabled: true,
-				Tokens: []config.CanaryToken{
-					{
-						Name:   name,
-						Value:  displayValue,
-						EnvVar: envVar,
-					},
-				},
-			}
-
 			if format == formatJSON {
+				payload := jsonCanaryTokens{
+					Enabled: true,
+					Tokens:  []jsonCanaryToken{{Name: name, Value: displayValue, EnvVar: envVar}},
+				}
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]config.CanaryTokens{"canary_tokens": payload})
+				return enc.Encode(map[string]jsonCanaryTokens{"canary_tokens": payload})
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "canary_tokens:\n")
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  enabled: true\n")
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  tokens:\n")
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "    - name: %q\n", name)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "      value: %q\n", displayValue)
+			w := cmd.OutOrStdout()
+			if _, err := fmt.Fprintf(w, "canary_tokens:\n  enabled: true\n  tokens:\n    - name: %q\n      value: %q\n", name, displayValue); err != nil {
+				return err
+			}
 			if envVar != "" {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "      env_var: %q\n", envVar)
+				if _, err := fmt.Fprintf(w, "      env_var: %q\n", envVar); err != nil {
+					return err
+				}
 			}
 			return nil
 		},

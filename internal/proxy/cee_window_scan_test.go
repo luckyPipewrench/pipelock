@@ -59,7 +59,7 @@ func TestCEERequestBatch_HTTPJSONFields(t *testing.T) {
 			}
 			admit := func(fields map[string]string) ceeResult {
 				payloads := extract(fields)
-				return ceeAdmit(t.Context(), ceeAdmitOptions{ClientIP: "203.0.113.10", Outbound: payloads.outbound, BodyFragmentPayloads: payloads.bodyFragmentPayloads, Config: cfg.CrossRequestDetection, Fragments: fb, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New()})
+				return ceeAdmit(t.Context(), ceeAdmitOptions{ClientIP: "203.0.113.10", Outbound: payloads.outbound, BodyFragmentPayloads: payloads.bodyFragmentPayloads, BodyFragmentLeaves: payloads.bodyFragmentLeaves, Config: cfg.CrossRequestDetection, Fragments: fb, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New()})
 			}
 			if result := admit(map[string]string{target: strings.Repeat("x", 40000) + "CTOKBBBB"}); result.Blocked || result.FragmentHit {
 				t.Fatalf("clean first body rejected: %+v", result)

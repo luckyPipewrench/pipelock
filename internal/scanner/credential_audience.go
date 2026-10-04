@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
@@ -42,8 +43,10 @@ type credentialAudienceCandidate struct {
 	patternName       string
 	hosts             []string
 	authorizationOnly bool
-	carrierMask       uint8
+	carrierMask       uint16
 	gitHosts          []string
+	registryHosts     []string
+	headerValue       string
 }
 
 // CredentialAudienceAuthorizationHeaderSurface distinguishes Authorization from other
@@ -97,7 +100,7 @@ func CredentialAudienceHeaderSurface(headerName, value string) string {
 	}
 }
 
-func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint8) bool {
+func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint16) bool {
 	if !authorizationOnly && mask == 0 {
 		return true
 	}
@@ -149,7 +152,10 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
 			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts)
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
-			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) {
+			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) &&
+			!registryBasicAllowed(candidate, host, target, surface) &&
+			!registryBearerAllowed(candidate, host, target, surface) &&
+			!attestationBundleSASCandidateAllowed(candidate, host, target, surface) {
 			continue
 		}
 		keep[i] = false
@@ -226,6 +232,139 @@ func gitTransportAllowed(candidate credentialAudienceCandidate, host, target, su
 		return false
 	}
 	return isGitTransportPath(parsed)
+}
+
+// githubRegistryPasswordPattern is the whole Basic password: a classic
+// token, a server-to-server token, or a fine-grained PAT, and nothing else.
+// The DLP patterns are case-insensitive, so a password that only matches
+// after case folding stays blocked.
+var githubRegistryPasswordPattern = regexp.MustCompile(`^(?:gh[pour]_[A-Za-z0-9_]{36,}|ghs_[A-Za-z0-9.\-_]{36,}|github_pat_[a-zA-Z0-9_]{36,})$`)
+
+// githubRegistryUsernamePattern is an account-name shape. GitHub account
+// names are alphanumeric plus dashes, and Enterprise Managed Users also
+// carry an underscore before the enterprise shortcode. Dots, at-signs, and
+// a token in the username are not that shape.
+// https://docs.github.com/en/enterprise-cloud@latest/admin/managing-iam/iam-configuration-reference/username-considerations-for-external-authentication
+var githubRegistryUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
+
+// registryBasicAllowed is the package-registry audience rule. The credential
+// must be the Basic password, over https, at a compiled registry host. A
+// missing header value fails closed: the surface alone does not prove the
+// token is the password rather than the username.
+func registryBasicAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != credentialAudienceAuthorizationBasicSurface ||
+		candidate.carrierMask&config.CredentialAudienceCarrierRegistryBasic == 0 ||
+		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	user, password, ok := basicUserPassword(candidate.headerValue)
+	if !ok || !githubRegistryUsernamePattern.MatchString(user) || githubRegistryPasswordPattern.MatchString(user) {
+		return false
+	}
+	return githubRegistryPasswordPattern.MatchString(password)
+}
+
+// basicUserPassword decodes an Authorization Basic value, or a bare base64
+// field of one, into the user and password. The password is the text after
+// the first colon. StdEncoding is what container and package clients send.
+func basicUserPassword(value string) (string, string, bool) {
+	fields := strings.Fields(value)
+	var encoded string
+	switch len(fields) {
+	case 2:
+		if !strings.EqualFold(fields[0], "Basic") {
+			return "", "", false
+		}
+		encoded = fields[1]
+	case 1:
+		encoded = fields[0]
+	default:
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", "", false
+		}
+	}
+	if bytes.ContainsAny(raw, "\r\n") {
+		return "", "", false
+	}
+	user, password, ok := strings.Cut(string(raw), ":")
+	if !ok || user == "" || password == "" {
+		return "", "", false
+	}
+	return user, password, true
+}
+
+// registryBearerHosts narrows the bearer carrier to registries that issue
+// their own bearer; see config.RegistryBearerHosts.
+var registryBearerHosts = config.RegistryBearerHosts()
+
+// registryBearerAllowed accepts the bearer a container registry issues for
+// itself. The JWT audience must name this host. The signature is not
+// checked: the allow only delivers the token back to that registry host.
+func registryBearerAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != CredentialAudienceAuthorizationHeaderSurface ||
+		candidate.carrierMask&config.CredentialAudienceCarrierRegistryBearer == 0 ||
+		len(candidate.registryHosts) == 0 || !destination.MatchesDomainList(host, candidate.registryHosts) ||
+		!destination.MatchesDomainList(host, registryBearerHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	fields := strings.Fields(candidate.headerValue)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+		return false
+	}
+	return registryJWTAudienceMatches(fields[1], host)
+}
+
+// registryJWTAudienceMatches reports whether token is a registry JWT whose
+// aud is host. aud may be a string or an array of strings, which is the
+// registered JWT form. An access array is required so a token that only
+// copies the audience claim is not treated as a registry grant.
+func registryJWTAudienceMatches(token, host string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	var claims map[string]json.RawMessage
+	if !decodeJWTSegment(parts[1], &claims) {
+		return false
+	}
+	if !jwtAudienceNamesHost(claims["aud"], host) {
+		return false
+	}
+	var access []json.RawMessage
+	return jsonField(claims, "access", &access) && len(access) > 0
+}
+
+func jwtAudienceNamesHost(raw json.RawMessage, host string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return canonicalAudienceHost(one) == host
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) != nil || len(many) == 0 {
+		return false
+	}
+	for _, aud := range many {
+		if canonicalAudienceHost(aud) == host {
+			return true
+		}
+	}
+	return false
 }
 
 // Git transport endpoints, from the published protocol documents:
@@ -361,11 +500,122 @@ func releaseGrantSASCandidateAllowed(candidate credentialAudienceCandidate, host
 	return releaseGrantSASAllowed(candidate.hosts, host, target)
 }
 
+// githubAttestationBundleHosts are the storage accounts GitHub names as the
+// bundle_url host for artifact attestations. Each entry is one account.
+// *.blob.core.windows.net is not an audience: any Azure customer can create
+// an account on that suffix.
+//
+//   - tmaproduction: bundle_url host returned by
+//     GET https://api.github.com/repos/luckyPipewrench/pipelock/attestations/sha256:<digest>
+//     on 2026-10-03 (the issuer of the URL gh attestation verify fetches).
+//   - tmastaging: bundle_url host in the published List attestations example.
+//     https://docs.github.com/en/rest/orgs/attestations
+var githubAttestationBundleHosts = []string{
+	"tmaproduction.blob.core.windows.net",
+	"tmastaging.blob.core.windows.net",
+}
+
+// attestationBundleSASMaxLifetime is the longest se-st window GitHub has
+// published for an attestation bundle SAS. The live production URL above is
+// one hour (st 2026-10-03T21:29:55Z, se 2026-10-03T22:29:55Z). The REST example
+// is twenty-four hours (st 2024-11-08T17:13:43Z, se 2024-11-09T17:13:43Z).
+// The cap is that published window. A longer SAS stays a standing credential
+// and keeps the DLP match.
+const attestationBundleSASMaxLifetime = 24 * time.Hour
+
+// attestationBundleSASSignedParams is the release-grant user-delegation set
+// plus st. GitHub's attestation bundle SAS signs the start time; the release
+// redirect does not send st, so it stays off releaseGrantSASSignedParams.
+var attestationBundleSASSignedParams = []string{"sp", "sv", "sr", "spr", "st", "se", "skoid", "sktid", "skt", "ske", "sks", "skv", "sig"}
+
+var attestationBundleSASSignedParamSet = func() map[string]bool {
+	set := make(map[string]bool, len(attestationBundleSASSignedParams))
+	for _, name := range attestationBundleSASSignedParams {
+		set[name] = true
+	}
+	return set
+}()
+
+// attestationBundleSASAllowed grants an Azure SAS that GitHub's attestations
+// API puts in bundle_url. There is no co-located JWT. The proxy cannot check
+// the HMAC, so the predicate is the whole trust decision: exact published
+// account, https, path under /attestations/, read-only blob SAS (sp=r, sr=b,
+// spr=https), every signed field once in its documented format including st,
+// and an se-st lifetime no longer than attestationBundleSASMaxLifetime.
+// Anything else keeps the match.
+//
+// Not proving issuance is a deliberate bound, not a gap. No proxy can verify
+// an Azure SAS signature, so the bound is the destination: the only value
+// this allow releases is the signature itself, and it can only reach
+// GitHub's own storage account, whose logs a sender cannot read. Every other
+// credential in the same URL (path, extra parameters, signed fields) is
+// still scanned and blocked; TestAttestationBundleSASReleasesOnlyTheSignature
+// pins that. The release-download grant rule rests on the same bound.
+func attestationBundleSASAllowed(host, target string) bool {
+	if !destination.MatchesDomainList(host, githubAttestationBundleHosts) {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	if !attestationBundlePath(parsed) {
+		return false
+	}
+	return attestationBundleSASQueryValid(parsed)
+}
+
+func attestationBundlePath(u *url.URL) bool {
+	p := u.EscapedPath()
+	if p == "" || strings.Contains(p, "%") || path.Clean(p) != p {
+		return false
+	}
+	rest, ok := strings.CutPrefix(p, "/attestations/")
+	return ok && rest != ""
+}
+
+func attestationBundleSASQueryValid(parsed *url.URL) bool {
+	query := parsed.Query()
+	for _, name := range attestationBundleSASSignedParams {
+		values := query[name]
+		format := releaseGrantSASFieldFormats[name]
+		if name == "st" {
+			format = releaseGrantSASFieldFormats["se"]
+		}
+		if len(values) != 1 || format == nil || !format.MatchString(values[0]) {
+			return false
+		}
+	}
+	if query.Get("sp") != "r" || query.Get("sr") != "b" || query.Get("spr") != "https" {
+		return false
+	}
+	start, err := time.Parse(time.RFC3339, query.Get("st"))
+	if err != nil {
+		return false
+	}
+	expiry, err := time.Parse(time.RFC3339, query.Get("se"))
+	if err != nil || !expiry.After(start) {
+		return false
+	}
+	return expiry.Sub(start) <= attestationBundleSASMaxLifetime
+}
+
+func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+		return false
+	}
+	return attestationBundleSASAllowed(host, target)
+}
+
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
 	return p != nil && (p.credentialAudienceAuthorizationOnly || p.credentialAudienceCarrierMask != 0)
 }
 
 func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, surface string) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithHeader(pattern, target, surface, "")
+}
+
+func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue string) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
 	}
@@ -375,6 +625,8 @@ func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, sur
 		authorizationOnly: pattern.credentialAudienceAuthorizationOnly,
 		carrierMask:       pattern.credentialAudienceCarrierMask,
 		gitHosts:          pattern.credentialAudienceGitHosts,
+		registryHosts:     pattern.credentialAudienceRegistryHosts,
+		headerValue:       headerValue,
 	}}, target, surface)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
@@ -403,6 +655,17 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 // destination-free surfaces (notably MCP stdio and MCP HTTP/SSE input) must not
 // call it and therefore remain fail-closed.
 func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, target, surface string) ([]TextDLPMatch, []CredentialAudienceAllow) {
+	return s.filterTextDLPMatchesForDestination(matches, target, surface, "")
+}
+
+// FilterHeaderDLPMatches applies the audience rule to one header value.
+// Registry Basic and registry bearer need that value; without it those
+// carriers fail closed. Other carriers ignore it.
+func (s *Scanner) FilterHeaderDLPMatches(matches []TextDLPMatch, target, headerName, value string) ([]TextDLPMatch, []CredentialAudienceAllow) {
+	return s.filterTextDLPMatchesForDestination(matches, target, CredentialAudienceHeaderSurface(headerName, value), value)
+}
+
+func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, target, surface, headerValue string) ([]TextDLPMatch, []CredentialAudienceAllow) {
 	if len(matches) == 0 {
 		return matches, nil
 	}
@@ -413,6 +676,8 @@ func (s *Scanner) FilterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].authorizationOnly = match.credentialAudienceAuthorizationOnly
 		candidates[i].carrierMask = match.credentialAudienceCarrierMask
 		candidates[i].gitHosts = match.credentialAudienceGitHosts
+		candidates[i].registryHosts = match.credentialAudienceRegistryHosts
+		candidates[i].headerValue = headerValue
 	}
 	keep, allows := filterCredentialAudience(candidates, target, surface)
 	filtered := make([]TextDLPMatch, 0, len(matches))
@@ -443,7 +708,7 @@ func (s *Scanner) ScrubAuthorizedCredentialFromJoinedHeaders(headerName, value, 
 		if !pattern.credentialAudienceCarrierRestricted() {
 			continue
 		}
-		if _, ok := s.credentialAudienceAllows(pattern, target, surface); !ok {
+		if _, ok := s.credentialAudienceAllowsWithHeader(pattern, target, surface, value); !ok {
 			continue
 		}
 		value = pattern.re.ReplaceAllString(value, authorizedCredentialPlaceholder)
@@ -487,7 +752,7 @@ func (s *Scanner) scrubAuthorizedEncodedFields(value, target, surface string) st
 		if len(restricted) == 0 {
 			continue
 		}
-		kept, allows := s.FilterTextDLPMatchesForDestination(restricted, target, surface)
+		kept, allows := s.filterTextDLPMatchesForDestination(restricted, target, surface, field)
 		if len(kept) == 0 && len(allows) > 0 {
 			value = strings.Replace(value, field, authorizedCredentialPlaceholder, 1)
 		}
@@ -567,7 +832,7 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
 	// The name is matched exactly, as the shape check matches it, so a case
 	// alias of a signed field cannot take an exemption meant for the field.
-	if parsed == nil || !releaseGrantSASSignedParamSet[key] {
+	if parsed == nil || (!releaseGrantSASSignedParamSet[key] && !attestationBundleSASSignedParamSet[key]) {
 		return false
 	}
 	host, ok := canonicalCredentialAudienceDestination(parsed.String())
@@ -582,7 +847,10 @@ func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) 
 		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 			continue
 		}
-		if releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+			return true
+		}
+		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String()) {
 			return true
 		}
 	}
@@ -678,7 +946,9 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// (not merely alongside a query that happens to look right) so a SAS
 	// planted in the path or elsewhere cannot ride a genuine grant's query.
 	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
-		if len(grants) == 0 || !releaseGrantSASShapeValid(parsed) {
+		host, hostOK := canonicalCredentialAudienceDestination(parsed.String())
+		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String())
+		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed)) {
 			return bareURLSurface
 		}
 		matchInView := func(view string) bool {
@@ -877,9 +1147,12 @@ func downloadGrantClaimsMatch(token, host string) bool {
 // download grant. A token carrying any other claim is not that grant.
 var downloadGrantClaimNames = map[string]bool{"aud": true, "exp": true, "iss": true, "key": true, "nbf": true, "path": true}
 
-// downloadGrantMaxLifetimeSeconds bounds exp minus nbf. GitHub's grant lives
-// five minutes.
-const downloadGrantMaxLifetimeSeconds = 300
+// downloadGrantMaxLifetimeSeconds is a local safety cap on exp minus nbf.
+// GitHub does not publish the grant lifetime. Measured grants were 300 or
+// 1800 seconds (assets from 1 KB to 29 MB), so a five-minute cap refused
+// some release archives while letting checksums through. Assets near
+// GitHub's 2 GiB file limit have not been measured.
+const downloadGrantMaxLifetimeSeconds = 1800
 
 func decodeJWTSegment(segment string, v any) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(segment)

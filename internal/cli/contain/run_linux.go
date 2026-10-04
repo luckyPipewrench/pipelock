@@ -31,6 +31,8 @@ var runContainedAgentCommand = func(cmd *exec.Cmd) error {
 	return cmd.Run()
 }
 
+var runContainedAgentLifecycleCommand = launchContainedAgentLifecycle
+
 var (
 	containedAgentSystemdStatus = func(ctx context.Context, unit string) (string, error) {
 		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl")
@@ -92,7 +94,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd, systemdUnit := containedAgentCommand(containedAgentCommandOptions{
+	commandOpts := containedAgentCommandOptions{
 		ctx:              ctx,
 		agentUserName:    env.agentUserName,
 		homeDir:          homeDir,
@@ -106,12 +108,20 @@ func launchContainedAgent(
 		stdin:            stdin,
 		stdout:           stdout,
 		stderr:           stderr,
-	})
-
-	runErr := runContainedAgentCommand(cmd)
-	defer containedAgentSystemdCleanup(context.WithoutCancel(ctx), systemdUnit)
+	}
+	var runErr error
+	var systemdUnit string
+	if env.lifecycle != nil {
+		runErr = runContainedAgentLifecycleCommand(commandOpts, env.lifecycle)
+		systemdUnit = env.lifecycle.record.Unit
+	} else {
+		var cmd *exec.Cmd
+		cmd, systemdUnit = containedAgentCommand(commandOpts)
+		runErr = runContainedAgentCommand(cmd)
+		defer containedAgentSystemdCleanup(context.WithoutCancel(ctx), systemdUnit)
+	}
 	var systemdExitErr *exec.ExitError
-	if errors.As(runErr, &systemdExitErr) && systemdExitErr.ExitCode() == 255 {
+	if env.lifecycle == nil && errors.As(runErr, &systemdExitErr) && systemdExitErr.ExitCode() == 255 {
 		status, statusErr := containedAgentSystemdStatus(context.WithoutCancel(ctx), systemdUnit)
 		if statusErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("inspect contained agent status: %w", statusErr))
@@ -125,11 +135,17 @@ func launchContainedAgent(
 		if errors.As(runErr, &exitErr) {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 				signal := status.Signal()
+				if env.lifecycle != nil {
+					return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s: %w", signal, runErr))
+				}
 				return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
 			}
 			exitCode := exitErr.ExitCode()
 			if exitCode < 0 {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", runErr))
+			}
+			if env.lifecycle != nil {
+				return cliutil.ExitCodeError(exitCode, fmt.Errorf("contained agent exited with status %d: %w", exitCode, runErr))
 			}
 			return cliutil.ExitCodeError(exitCode, fmt.Errorf("contained agent exited with status %d", exitCode))
 		}
@@ -152,6 +168,8 @@ type containedAgentCommandOptions struct {
 	stdin            io.Reader
 	stdout           io.Writer
 	stderr           io.Writer
+	lifecycleUnit    string
+	lifecycleRunID   string
 }
 
 func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {

@@ -914,7 +914,7 @@ async function readChainLinkFile(
   if (info.size > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }
-  const bytes = readVerifierBytes(file, evidenceDirectoryActive);
+  const bytes = readVerifierBytes(file, evidenceDirectoryActive, maxChainLinkFileBytes);
   if (bytes.length > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }
@@ -963,9 +963,14 @@ async function readChainLinkFiles(dir: string): Promise<ChainLinkRecord[]> {
       rec.recoverySeal = decoded.recoverySeal;
       rec.sealCandidate = decoded.sealCandidate;
     } catch (err) {
+      let rawText: string | undefined;
       try {
-        const rawText = decodeUTF8(
-          readVerifierBytes(path.join(dir, name), evidenceDirectoryActive),
+        rawText = decodeUTF8(
+          readVerifierBytes(
+            evidenceDirectoryActive ? name : path.join(dir, name),
+            evidenceDirectoryActive,
+            maxChainLinkFileBytes,
+          ),
           "chain link JSON",
         );
         const raw = parseJSONStrict(rawText);
@@ -976,9 +981,8 @@ async function readChainLinkFiles(dir: string): Promise<ChainLinkRecord[]> {
           Object.keys(raw as Record<string, unknown>).some((key) => goFoldKey(key) === "kind");
       } catch {
         try {
-          rec.sealCandidate = /"kind"\s*:\s*"recovery_seal"/u.test(
-            readVerifierBytes(path.join(dir, name), evidenceDirectoryActive).toString("utf8"),
-          );
+          rec.sealCandidate =
+            rawText !== undefined && /"kind"\s*:\s*"recovery_seal"/u.test(rawText);
         } catch {
           rec.sealCandidate = false;
         }
@@ -1271,15 +1275,15 @@ export async function verifyBase(
       const successor = data.get(seal.successor_session);
       if (successor === undefined)
         throw new Error(`successor "${seal.successor_session}" not found`);
-      if (successor.chain.link !== undefined)
-        throw new Error("recovery successor already has a continuous predecessor link");
+      if (successor.chain.link !== undefined || successor.chain.recovery_seal !== undefined)
+        throw new Error("recovery successor already has a predecessor claim");
       if (
         seal.successor_signer_key !== seal.predecessor_signer_key &&
         !opts.trustedKeys.includes(seal.successor_signer_key)
       ) {
         throw new Error("recovery successor key differs and is not explicitly trusted");
       }
-      await verifyRecoveryBinding(dir, ix, seal, data, opts.trustedKeys);
+      await verifyRecoveryBinding(ix, seal, data, opts.trustedKeys);
       successor.chain.recovery_seal = seal;
       add(
         FindingAttestedDiscontinuity,
@@ -1305,8 +1309,7 @@ export async function verifyBase(
 // independently verifies both receipt chains on the recoverable side of the
 // discontinuity. It intentionally does not make the damaged predecessor
 // healthy: callers retain the original corruption finding.
-export async function verifyRecoveryBinding(
-  dir: string,
+async function verifyRecoveryBinding(
   ix: EvidenceIndex,
   seal: RecoverySeal,
   data: Map<string, BaseChainData>,
@@ -1340,6 +1343,9 @@ export async function verifyRecoveryBinding(
   let tailContent = suffix;
   while (tailContent.length > 0 && tailContent[tailContent.length - 1] === 0) {
     tailContent = tailContent.subarray(0, tailContent.length - 1);
+  }
+  if (tailContent.length > 1 << 20) {
+    throw new Error("recovery torn tail exceeds 1048576-byte recorder entry limit");
   }
   if (tailContent.length === 0) {
     tailKind = "nul";
@@ -1442,16 +1448,6 @@ export async function verifyRecoveryBinding(
     const verified = await verifyChain(typed.action, keys, { allowUnpinned: true });
     if (!chainAcceptable(verified))
       throw new Error(`recovery predecessor action chain: ${verified.error ?? "invalid"}`);
-    for (const receipt of typed.action) {
-      const action = receipt.action_record?.session_control as Record<string, unknown> | undefined;
-      const open =
-        action?.["kind"] === "session_open"
-          ? (action["open"] as Record<string, unknown> | undefined)
-          : undefined;
-      if (open !== undefined && open["recorder_session"] !== seal.predecessor_session) {
-        throw new Error("recovery predecessor session_open binding mismatch");
-      }
-    }
   }
   if (typed.evidence.length > 0) {
     const verified = await verifyChain(typed.evidence, evidenceChainKey(keys, typed.evidence), {
@@ -1482,6 +1478,16 @@ export async function verifyRecoveryBinding(
         );
     }
     extracted = fullTyped;
+  }
+  for (const receipt of extracted.action) {
+    const action = receipt.action_record?.session_control as Record<string, unknown> | undefined;
+    const open =
+      action?.["kind"] === "session_open"
+        ? (action["open"] as Record<string, unknown> | undefined)
+        : undefined;
+    if (open !== undefined && open["recorder_session"] !== seal.predecessor_session) {
+      throw new Error("recovery predecessor session_open binding mismatch");
+    }
   }
   const successor = data.get(seal.successor_session);
   if (successor === undefined || !successor.chain.valid || successor.receipts.length === 0) {

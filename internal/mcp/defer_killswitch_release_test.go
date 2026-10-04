@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
@@ -405,6 +406,65 @@ func TestDeferredHTTPReleaseRerunsUpstreamGate(t *testing.T) {
 	data := decodeRPCError(t, run.stdout.String())
 	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
 		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
+	}
+	recs := run.receipts.snapshot()
+	if len(recs) != 1 || recs[0].Verdict != config.ActionBlock || recs[0].ResolutionSource != deferred.SourceUpstreamContract {
+		t.Fatalf("resolution receipts = %+v, want one upstream_contract block", recs)
+	}
+	assertTerminalJournal(t, run.manager, held.DeferID, deferred.StateResolvedBlock, deferred.SourceUpstreamContract)
+	run.stop(t)
+}
+
+// TestDeferredHTTPReleaseSeesPromotionThatDeniesUpstream holds a call with no
+// contract active, then promotes a manifest that denies the upstream while the
+// call is held. The live watcher applies the promotion, so the release-time
+// recheck resolves the call with upstream_contract and nothing reaches the
+// upstream. No restart and no manual Reload is involved.
+func TestDeferredHTTPReleaseSeesPromotionThatDeniesUpstream(t *testing.T) {
+	fixture := contractruntimetest.NewFixture(t)
+	storeDir := t.TempDir()
+	env := contractruntimetest.Env()
+	loader, err := contractruntime.NewLoader(contractruntime.LoaderOptions{
+		StoreDir:              storeDir,
+		RosterPath:            fixture.RosterPath(),
+		PinnedRootFingerprint: fixture.RootFingerprint(),
+		Environment:           env,
+		MinSignatures:         1,
+		Mode:                  contractruntime.ModeLive,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	if loader.Current() != nil {
+		t.Fatal("expected no active contract before promotion")
+	}
+	stopWatch, err := loader.StartWatch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("StartWatch: %v", err)
+	}
+	t.Cleanup(stopWatch)
+
+	run := startHTTPDeferRun(t, deferKillTestController(), func(o *MCPProxyOpts) {
+		o.ContractLoader = loader
+		o.ContractAgent = mcpLiveLockAgent
+		o.ContractServer = mcpLiveLockServer
+	})
+	held := run.manager.Snapshot()[0]
+
+	contractruntimetest.WriteSignedActiveStore(t, fixture, storeDir, contractruntimetest.ActiveStoreOptions{
+		Agent:       mcpLiveLockAgent,
+		Rules:       []contract.Rule{contractruntimetest.HTTPEnforceRule("r-other", "api.example.com", "/", http.MethodPost)},
+		Generation:  1,
+		PriorHash:   "sha256:genesis",
+		Environment: env,
+	})
+	testwait.For(t, 10*time.Second, func() bool { return loader.Current() != nil }, "promotion to apply live")
+
+	if err := run.manager.Resolve(held.DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got := run.calls.Load(); got != 0 {
+		t.Fatalf("upstream requests = %d, want 0", got)
 	}
 	recs := run.receipts.snapshot()
 	if len(recs) != 1 || recs[0].Verdict != config.ActionBlock || recs[0].ResolutionSource != deferred.SourceUpstreamContract {

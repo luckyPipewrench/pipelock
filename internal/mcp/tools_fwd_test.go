@@ -670,3 +670,56 @@ func TestForwardScanned_NewToolWithheldUnderBlock(t *testing.T) {
 		t.Error("withheld new tool must still be reported on the next identical response")
 	}
 }
+
+// TestForwardScanned_SchemaDepthGateMatchesEnvelopeExtraction pins the tool
+// schema depth gate to the tools/list envelope scan. Both read the same schema,
+// counted from different roots: a gate that admits a depth the envelope scan
+// truncates still withholds the whole tools/list, behind a generic error.
+func TestForwardScanned_SchemaDepthGateMatchesEnvelopeExtraction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+
+	// Every structured field of a definition is extracted twice: by the tool
+	// gate from the field root and by the envelope scan from the tools array.
+	fields := []string{"inputSchema", "outputSchema", "annotations", "_meta", "x-vendor-ext"}
+	leaves := map[string]string{
+		"object": `{"description":"benign"}`,
+		"array":  `["benign"]`,
+	}
+	for _, field := range fields {
+		for leafName, leaf := range leaves {
+			t.Run(field+"/"+leafName, func(t *testing.T) {
+				admitted, refused := 0, 0
+				for levels := 50; levels <= 70; levels++ {
+					value := leaf
+					for range levels {
+						value = `{"nested":` + value + `}`
+					}
+					resp := `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"catalog_search","description":"Search","` + field + `":` + value + `}]}}`
+
+					gate := tools.ScanTools([]byte(resp), sc, &tools.ToolScanConfig{Action: config.ActionBlock})
+
+					var out, logBuf bytes.Buffer
+					toolCfg := &tools.ToolScanConfig{Baseline: tools.NewToolBaseline(), Action: config.ActionBlock}
+					if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(resp+"\n")), transport.NewStdioWriter(&out), &logBuf, nil, buildTestOpts(sc, withToolCfg(toolCfg))); err != nil {
+						t.Fatalf("levels=%d: ForwardScanned error: %v", levels, err)
+					}
+					forwarded := strings.Contains(out.String(), `"catalog_search"`)
+					if gate.Clean != forwarded {
+						t.Errorf("levels=%d: tool gate clean=%v but proxy forwarded=%v (log: %s)", levels, gate.Clean, forwarded, strings.TrimSpace(logBuf.String()))
+					}
+					if gate.Clean {
+						admitted++
+					} else {
+						refused++
+					}
+				}
+				if admitted == 0 || refused == 0 {
+					t.Fatalf("range must straddle the bound: admitted=%d refused=%d", admitted, refused)
+				}
+			})
+		}
+	}
+}

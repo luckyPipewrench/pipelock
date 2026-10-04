@@ -657,13 +657,18 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // ALLOWED (with DeferClean so the allow does not fire a clean decay either) while
 // the caller still returns the DLP 403. The 403 is unconditional; only the
 // adaptive scoring differs by exemption.
-func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) {
+//
+// scannerName and reason carry the actual finding so the classified-denial dedup
+// fingerprints (scope + scanner + reason + policy) the same way the forward,
+// fetch and intercept paths do: identical retries score once, a different
+// finding on the same upstream scores in its own right.
+func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config, scannerName, reason string) {
 	if rp.owner == nil {
 		return
 	}
 	// Uses exempt_domains (adaptive trust), not api_allowlist (reachability),
 	// scoped to the upstream host the SignalBlock would be recorded against.
-	result := scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP, Score: 0.9}
+	result := scanner.Result{Allowed: false, Scanner: scannerName, Reason: reason, Score: 0.9}
 	if isAdaptiveExempt(rp.upstream.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		result = scanner.Result{Allowed: true}
 	}
@@ -687,11 +692,11 @@ func (rp *ReverseProxyHandler) recordRequestBlockSignal(r *http.Request, agent, 
 // receipt failure is an operational refusal, not evidence about the caller.
 // Without this a caller whose every request is refused on its body never
 // escalates, while the same secret in a URL or /fetch does.
-func (rp *ReverseProxyHandler) recordBodyBlockSignal(r *http.Request, cfg *config.Config, result BodyScanResult, in reverseBlockReceiptInput, clientIP, requestID string) {
+func (rp *ReverseProxyHandler) recordBodyBlockSignal(r *http.Request, cfg *config.Config, result BodyScanResult, in reverseBlockReceiptInput, clientIP, requestID, layer, reason string) {
 	if len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 		return
 	}
-	rp.recordRequestBlockSignal(r, in.Agent, clientIP, requestID, in.ActorAuth, cfg)
+	rp.recordRequestBlockSignal(r, in.Agent, clientIP, requestID, in.ActorAuth, cfg, layer, reason)
 }
 
 // recordRequestNearMissSignal feeds the same destination-scoped adaptive
@@ -1018,10 +1023,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				len(patternNames), patternNames, nil)
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
+				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
-				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
 				// Sign the denial so every reverse DLP block leaves a receipt,
 				// matching the intercept URL-scan block (intercept.go, Layer:
 				// urlResult.Scanner) and the reverse data-budget/inflight blocks
@@ -1087,10 +1092,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action, patternNames, nil)
 
 			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
+				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
-				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
 				// Sign the denial under the cross-transport header-DLP layer
 				// (forward.go and the fetch path both emit Layer "dlp_header"),
 				// so a reverse header-DLP 403 is attested the same way. Previously
@@ -1394,7 +1399,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(cfg), ceeSession, ceePartitionKey)
 		ceeAdmission := rp.owner.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-			ActorAuth: actorAuth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+			ActorAuth: actorAuth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads, BodyFragmentLeaves: ceePayloads.bodyFragmentLeaves,
 			PartitionReason: ceePayloads.partitionReason,
 			KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 			RequestID: requestID, IncludeFragments: true,
@@ -2027,15 +2032,23 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	} else if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 		bodyBlockReason = blockreason.BodyEntropy
 	}
+	var signalScanner string
 	if result.RedactionBlockReason == "" {
 		switch blockCause {
 		case bodyBlockCauseInjection:
 			layer, bodyBlockReason = scannerLabelBodyPromptInjection, blockreason.PromptInjection
 		case bodyBlockCauseDLP:
 			layer, bodyBlockReason = "dlp", blockreason.DLPMatch
+			// The receipt and metric layer stays "dlp"; the adaptive signal
+			// uses the shared body-DLP scanner identity so the classified-denial
+			// fingerprint matches the forward and intercept body paths.
+			signalScanner = scannerLabelBodyDLP
 		case bodyBlockCauseEntropy:
 			layer, bodyBlockReason = scannerLabelBodyEntropy, blockreason.BodyEntropy
 		}
+	}
+	if signalScanner == "" {
+		signalScanner = layer
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -2051,7 +2064,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer),
 			reason)
@@ -2072,7 +2085,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer),
 			reason)

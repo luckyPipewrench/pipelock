@@ -673,7 +673,7 @@ func looksLikeBrowseTool(name string) bool {
 }
 
 // Preserve conservative substring evidence, including concatenated verbs. Only
-// remove known object words behind an explicit read or bookkeeping operation.
+// remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
 	return containsAny(mcpOperationEvidenceName(name), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
 		hasMutatingNetworkMethod(argsJSON)
@@ -691,7 +691,7 @@ func mcpOperationEvidenceName(name string) string {
 		return strings.ToLower(name)
 	}
 	operation := splitArgumentKey(alias)
-	if len(operation) < 2 || !slices.Contains([]string{"read", "get", "list", "search", "find", "query", "fetch", "show", "describe", "check", "link", "watch"}, operation[0]) {
+	if len(operation) < 2 || !slices.Contains([]string{"read", "get", "list", "search", "find", "query", "fetch", "show", "describe", "check"}, operation[0]) {
 		return strings.ToLower(name)
 	}
 	object := operation[1:]

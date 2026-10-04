@@ -831,7 +831,8 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.recordFailure(FailReasonMarshal)
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
-	if err := e.recorder.ValidateSignedReceiptDetail(json.RawMessage(receiptJSON)); err != nil {
+	scan, err := e.recorder.PreflightSignedReceiptDetail(json.RawMessage(receiptJSON))
+	if err != nil {
 		e.recordFailure(FailReasonRecord)
 		return fmt.Errorf("validating signed receipt for recording: %w", err)
 	}
@@ -866,9 +867,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 	var recordErr error
 	if durable {
-		recordErr = e.recorder.RecordDurable(entry)
+		recordErr = e.recorder.RecordDurableWithReceiptScan(entry, &scan)
 	} else {
-		recordErr = e.recorder.Record(entry)
+		recordErr = e.recorder.RecordWithReceiptScan(entry, &scan)
 	}
 	if recordErr != nil {
 		// A failed first write may leave no successor chain at all. Never

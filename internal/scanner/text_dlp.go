@@ -497,8 +497,26 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 			encoded   string
 			viewLabel string
 		}
+		// Detection depends only on candidate text, and the first matching
+		// candidate wins. A repeated text was already judged at an earlier
+		// position, so it is listed once; repeated decodes of the same token
+		// otherwise rerun tokenization and normalization for no new verdict.
 		candidates := []seedCandidate{{seedText, "", ViewForMatching}}
+		listed := map[string]struct{}{seedText: {}}
+		addSeedCandidate := func(c seedCandidate) {
+			if _, ok := listed[c.text]; ok {
+				return
+			}
+			listed[c.text] = struct{}{}
+			candidates = append(candidates, c)
+		}
+		spacedFrom := make(map[string]struct{})
 		appendInvisibleSpacedSeedCandidate := func(candidateText, encoded, viewLabel string) {
+			// The spaced view is a function of candidateText alone.
+			if _, ok := spacedFrom[candidateText]; ok {
+				return
+			}
+			spacedFrom[candidateText] = struct{}{}
 			// Invisible-separator reassembly: ForMatching STRIPS zero-width chars, so
 			// a seed whose inter-word spaces are zero-width (U+200B, U+1160, U+3164)
 			// collapses to one merged token with no word boundaries and evades
@@ -506,16 +524,20 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 			// boundaries. Mirrors scanCoreResponse's spaced pass. (Space-LIKE
 			// separators such as NBSP/en-dash survive ForMatching already; this
 			// covers the zero-width class they do not.)
+			spacedInput := normalize.ReplaceInvisibleWithSpace(candidateText)
+			if spacedInput == candidateText {
+				return
+			}
 			matching := normalize.ForMatching(candidateText)
-			spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(candidateText))
+			spaced := normalize.ForMatching(spacedInput)
 			if spaced != matching {
-				candidates = append(candidates, seedCandidate{spaced, encoded, spanViewLabel("invisible_spaced", viewLabel)})
+				addSeedCandidate(seedCandidate{spaced, encoded, spanViewLabel("invisible_spaced", viewLabel)})
 			}
 		}
 		appendInvisibleSpacedSeedCandidate(text, "", ViewForMatching)
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
-			candidates = append(candidates, seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
+			addSeedCandidate(seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
 			appendInvisibleSpacedSeedCandidate(decoded, "url", spanViewLabel("url_decoded", ViewForMatching))
 		}
 		// Base64-decoded variant
@@ -525,20 +547,20 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 		} {
 			if decoded, err := enc.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
 				decodedText := string(decoded)
-				candidates = append(candidates, seedCandidate{decodedText, "base64", spanViewLabel("base64_decoded", ViewForMatching)})
+				addSeedCandidate(seedCandidate{decodedText, "base64", spanViewLabel("base64_decoded", ViewForMatching)})
 				appendInvisibleSpacedSeedCandidate(decodedText, "base64", spanViewLabel("base64_decoded", ViewForMatching))
 			}
 		}
 		// Hex-decoded variant
 		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
 			decodedText := string(decoded)
-			candidates = append(candidates, seedCandidate{decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching)})
+			addSeedCandidate(seedCandidate{decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching)})
 			appendInvisibleSpacedSeedCandidate(decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching))
 		}
 		// Base32-decoded variant. Same alphabets and case fold as decodeEncodings:
 		// RFC 4648 base32 and base32hex, padded or not, any ASCII case.
 		for _, decodedText := range decodeBase32Strings(seedText) {
-			candidates = append(candidates, seedCandidate{decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching)})
+			addSeedCandidate(seedCandidate{decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching)})
 			appendInvisibleSpacedSeedCandidate(decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching))
 		}
 		// Segment-level decoding: use the shared text-encoding delimiters
@@ -550,7 +572,7 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 				continue
 			}
 			for _, d := range decodeEncodings(seg) {
-				candidates = append(candidates, seedCandidate{d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment")})
+				addSeedCandidate(seedCandidate{d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment")})
 				appendInvisibleSpacedSeedCandidate(d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment"))
 			}
 		}

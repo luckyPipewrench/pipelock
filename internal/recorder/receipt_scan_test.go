@@ -5,6 +5,8 @@ package recorder_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -34,6 +37,49 @@ func newReceiptScanRecorder(t *testing.T, dir string, scans *atomic.Int64) *reco
 
 func receiptScanEntry(detail any) recorder.Entry {
 	return recorder.Entry{SessionID: "receipt-scan", Type: "action_receipt", Detail: detail}
+}
+
+func TestReceiptScanProductionDLPEncodingParity(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("D", 40)
+	sc := scanner.MustNew(config.Defaults())
+	t.Cleanup(sc.Close)
+	for _, tc := range []struct {
+		name       string
+		detail     map[string]string
+		wantReject bool
+	}{
+		{name: "literal", detail: map[string]string{"value": secret}, wantReject: true},
+		{name: "base64", detail: map[string]string{"value": base64.StdEncoding.EncodeToString([]byte(secret))}, wantReject: true},
+		{name: "hex", detail: map[string]string{"value": hex.EncodeToString([]byte(secret))}, wantReject: true},
+		{name: "URL encoded", detail: map[string]string{"value": strings.Replace(secret, "_", "%5F", 1)}, wantReject: true},
+		// JSON field names and punctuation separate these values. The full
+		// text scanner does not currently reassemble them into one token.
+		{name: "split across fields", detail: map[string]string{"left": secret[:12], "right": secret[12:]}, wantReject: false},
+		{name: "clean", detail: map[string]string{"value": "ordinary receipt detail"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sc.ScanTextForDLP(context.Background(), string(raw)).Clean; got == tc.wantReject {
+				t.Fatalf("production DLP clean = %t, want reject = %t", got, tc.wantReject)
+			}
+			rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, sc.ScanTextForDLP, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			_, err = rec.PreflightSignedReceiptDetail(tc.detail)
+			if got := err != nil; got != tc.wantReject {
+				t.Fatalf("recorder rejected = %t, want %t: %v", got, tc.wantReject, err)
+			}
+			err = rec.Record(receiptScanEntry(tc.detail))
+			if got := err != nil; got != tc.wantReject {
+				t.Fatalf("direct record rejected = %t, want %t: %v", got, tc.wantReject, err)
+			}
+		})
+	}
 }
 
 // The first marshal is the preflight and the second is the write-boundary

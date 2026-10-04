@@ -506,8 +506,12 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 			// boundaries. Mirrors scanCoreResponse's spaced pass. (Space-LIKE
 			// separators such as NBSP/en-dash survive ForMatching already; this
 			// covers the zero-width class they do not.)
+			spacedInput := normalize.ReplaceInvisibleWithSpace(candidateText)
+			if spacedInput == candidateText {
+				return
+			}
 			matching := normalize.ForMatching(candidateText)
-			spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(candidateText))
+			spaced := normalize.ForMatching(spacedInput)
 			if spaced != matching {
 				candidates = append(candidates, seedCandidate{spaced, encoded, spanViewLabel("invisible_spaced", viewLabel)})
 			}

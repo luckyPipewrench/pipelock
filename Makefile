@@ -135,25 +135,9 @@ bench-egress-long:
 bench-egress-release:
 	bash bench/egress/run-all.sh --release
 
-# The pinned linter version is read from the workflow rather than repeated here,
-# so the two cannot drift apart. A second copy of a version is a second thing to
-# forget.
-GOLANGCI_LINT_PIN := $(shell sed -n 's/[[:space:]]*version:[[:space:]]*v\([0-9][0-9.]*\).*/\1/p' .github/workflows/ci.yaml | head -1)
-
 .PHONY: check-lint-version
 check-lint-version:
-	@pin='$(GOLANGCI_LINT_PIN)'; \
-	if [ -z "$$pin" ]; then \
-	  printf 'warning: could not read the pinned golangci-lint version from the CI workflow, so local and CI formatting are unchecked.\n' >&2; \
-	  exit 0; \
-	fi; \
-	have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*version v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -1); \
-	if [ -z "$$have" ]; then \
-	  printf 'warning: could not read the local golangci-lint version; CI pins %s.\n' "$$pin" >&2; \
-	elif [ "$$have" != "$$pin" ]; then \
-	  printf 'warning: golangci-lint %s locally, CI pins %s. Formatting and lint results can differ from CI.\n' \
-	    "$$have" "$$pin" >&2; \
-	fi
+	@python3 scripts/check_lint_version.py .github/workflows/ci.yaml .github/workflows/hardening-report.yaml
 
 fmt: check-lint-version
 	# Format with the gofumpt that golangci-lint bundles, not whatever gofumpt
@@ -165,7 +149,7 @@ fmt: check-lint-version
 vet:
 	go vet ./...
 
-lint: vet
+lint: check-lint-version vet
 	golangci-lint run ./...
 	./scripts/check-test-stability.sh
 
@@ -178,14 +162,13 @@ release-audit:
 runtime-policy-audit:
 	./scripts/runtime-policy-audit.sh
 
-debt-check:
+debt-check: check-lint-version
 	golangci-lint run --enable-only dupl,gocyclo,gocognit,maintidx ./...
 
 release-check: test lint release-audit runtime-policy-audit
 
 tidy-check:
-	go mod tidy
-	git diff --exit-code go.mod go.sum
+	@go mod tidy -diff
 
 clean:
 	rm -f $(BINARY) $(VERIFIER_BINARY) coverage.out coverage.html

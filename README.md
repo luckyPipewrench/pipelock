@@ -108,15 +108,15 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
-# Set up local agent integrations and generate a config
-pipelock init
+# Discover local agent integrations and save a config
+pipelock init --output ./pipelock.yaml
 
 # Test the scanner
-pipelock check --url "https://evil.com/?k=AKIAIOSFODNN7EXAMPLE"  # blocked: AWS Access ID
-pipelock check --url "https://docs.python.org/3/"                # allowed
+pipelock check --config ./pipelock.yaml --url "https://api.vendor.example/?k=$(printf '%s%s' 'AKIA' 'IOSFODNN7EXAMPLE')"  # blocked: AWS Access ID
+pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"                # allowed
 ```
 
 <details>
@@ -127,7 +127,7 @@ pipelock check --url "https://docs.python.org/3/"                # allowed
 # See https://github.com/luckyPipewrench/pipelock/releases
 
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
+docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -139,8 +139,8 @@ brew install luckyPipewrench/tap/pipelock
 <summary>Verify release integrity</summary>
 
 ```bash
-gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.5.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify pipelock_3.6.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
 gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 ```
@@ -254,7 +254,7 @@ For agents running uncensored or abliterated models, the [`hostile-model` preset
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
 | WebSocket proxy (frame scanning) | Yes | No | No | No |
 | MCP HTTP transport (Streamable HTTP) | Yes | No | No | No |
-| Emergency kill switch (6 sources) | Yes | No | No | No |
+| Emergency kill switch (7 sources) | Yes | No | No | No |
 | Tool call chain detection | Yes | No | No | No |
 | Process sandbox (no Docker) | Yes | No | No | Yes (kernel-level) |
 | Single binary, no runtime deps | Yes | No (Python) | No (npm) | No (kernel) |
@@ -372,7 +372,7 @@ pipelock contain run -- claude-code
 
 ### Operability
 
-- **Kill switch:** six independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, and stale-bundle detection. Any one active source blocks traffic, with endpoint and IP exemptions in the controller.
+- **Kill switch:** seven independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic, with endpoint and IP exemptions in the controller; IP allowlist exemptions do not apply during uncertain Conductor apply.
 - **Scan API:** programmatic scanning for `url`, `dlp`, `prompt_injection`, and `tool_call` verdicts with bearer token auth, per-token rate limiting, structured findings, and Prometheus metrics. See [docs/scan-api.md](docs/scan-api.md).
 - **Filesystem sentinel:** watches agent working directories for secrets written to disk and attributes writes to the MCP subprocess lineage on Linux. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
 - **Event emission:** forwards audit events to SIEMs, webhook receivers, syslog, CEF, OTLP, and metrics outputs without blocking the proxy hot path. See [docs/guides/siem-integration.md](docs/guides/siem-integration.md).
@@ -434,7 +434,7 @@ All detection, enforcement, containment, receipt verification, and the free sing
 |---|:--:|:--:|:--:|
 | Scanning and detection (ordered URL pipeline, DLP, injection, SSRF, streaming SSE, redaction, address protection) | Yes | Yes | Yes |
 | MCP and A2A scanning (input, response, tool policy, tool chain, poisoning, integrity, authenticated listeners; configured upstreams allow local/private servers and still block cloud metadata) | Yes | Yes | Yes |
-| Containment, sandbox, host `contain`, 6-source kill switch | Yes | Yes | Yes |
+| Containment, sandbox, host `contain`, 7-source kill switch | Yes | Yes | Yes |
 | Action receipts, flight recorder, anchors, free evidence viewer, `verify-cert`, standalone verifier | Yes | Yes | Yes |
 | Canary tokens, skill-scan, `explain`, single-instance Prometheus and Grafana | Yes | Yes | Yes |
 | Per-agent profiles: identity, budgets, config and scanner isolation, per-agent sandbox | No | Yes | Yes |
@@ -558,9 +558,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.5.0
-docker run -p 8888:8888 -v ./pipelock.yaml:/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:3.5.0 \
+docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
+docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
+  ghcr.io/luckypipewrench/pipelock:3.6.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -568,7 +568,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (published chart, Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.5.0
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.6.0
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -579,7 +579,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@ca05ed06f360f5aac5518ab6ea2b11d729b70bee # v3.5.0
+- uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -720,7 +720,7 @@ internal/
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
     integrity/         MCP binary/script integrity manifests and trust workflow
   discover/            IDE/agent config discovery (Claude Code, Cursor, VS Code, JetBrains)
-  killswitch/          Emergency deny-all (6 sources) + port-isolated API
+  killswitch/          Emergency deny-all (7 sources) + port-isolated API
   envelope/            Mediation envelope (RFC 8941) for sideband metadata
   media/               Image metadata stripping (JPEG/PNG byte-level surgery)
   normalize/           Text-normalization transforms (NFKC, invisible chars, leetspeak, whitespace, vowel-fold) for the scanner cascade

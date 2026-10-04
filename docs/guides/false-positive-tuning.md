@@ -62,29 +62,21 @@ cross-request fragment detection.
 
 ### Warn hook
 
-The scanner provides a package-level hook (`scanner.DLPWarnHook`) that the
-runtime can set to route warn events to the audit logger. When the hook is
-wired, each warn-mode match emits a `dlp_warn` event with `pattern`,
-`severity`, and `transport` fields. The `LogDLPWarn` method on the audit
-logger provides the canonical event format.
+Each scanner can be given a callback with `Scanner.SetDLPWarnHook`. The runtime sets this callback at startup and after a configuration reload. For each custom DLP pattern configured with `action: warn`, the callback receives the request context, pattern name, and severity. The runtime uses it to write a `dlp_warn` audit event and a receipt when receipt output is enabled. The hook does not enforce its match, though another finding can still block the request.
 
-When the hook is not configured, warn matches still allow traffic through
-and are reported in the scan result's `InformationalMatches` / `WarnMatches`
-fields, but no audit event is emitted from the hook.
+Without a callback, warn-mode findings still allow traffic and appear in the scan result's `InformationalMatches` or `WarnMatches` fields. They do not emit an audit event through the hook.
 
-`dlp_warn` is also emitted independently of this hook, with `mode: informational`, when a DLP finding is deliberately not enforced (`reason` is `suppressed`, `disabled`, or `low_confidence`). Every `dlp_warn` event carries `mode`, `pattern`, `severity`, `transport` (the scanning surface), and `reason`.
+Some `dlp_warn` events do not come from the hook. Pipelock also emits an informational event when a finding is not enforced because it was suppressed, disabled, or low confidence. These events use `mode: informational`; the callback reports configured warn-mode matches. Both event forms include the pattern, severity, transport, and reason fields.
 
 ### Restrictions
 
-- **Built-in default patterns cannot be set to warn.** These are the
-  immutable safety floor and always enforce.
+- **The configurable defaults and immutable core floor are separate.** `include_defaults: false` removes the defaults from the configurable list. Core detection stays active and cannot be downgraded by a per-pattern warn action. See [pattern merging](../configuration.md#pattern-merging) and the [DLP reference](../configuration.md#dlp-data-loss-prevention).
+- **Per-pattern warn is for custom patterns.** Validation rejects it on compiled default entries. A YAML replacement that changes a default's regex or action is a custom pattern even if it keeps the same name; it does not inherit the built-in's compiled credential audience. An independent core match still enforces.
 - **Only `warn` is accepted as a per-pattern action.** Other actions
   (`block`, `strip`, `redirect`, `ask`) are not valid at the pattern level.
   Transport-level action configuration (`request_body_scanning.action`,
   `mcp_input_scanning.action`, etc.) controls enforcement for enforced matches.
-- **Warn mode applies to DLP patterns only.** Blocklist entries, response
-  scanning patterns, and chain detection rules. Per-rule warn for those
-  rule types may be added in a future release.
+- **`dlp.patterns[].action` controls DLP patterns only.** It doesn't configure blocklist entries, response scanning patterns, or chain detection rules. Those controls use their own configuration fields.
 
 ## Other false positive tuning techniques
 
@@ -107,7 +99,9 @@ dlp:
 Built-in GitHub, GitLab, Slack, and other provider-key patterns cannot use
 `exempt_domains`: they carry a compiled audience instead (see
 [Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md)) and are
-already allowed at their issuer on the documented header. A custom pattern
+already allowed at their issuer on the documented carrier. This also applies to
+the built-in `JWT Token` pattern: its audience accepts only HTTPS URL queries at
+`release-assets.githubusercontent.com`. A custom pattern
 whose regex also matches a core credential, such as `ghp_[A-Za-z0-9]{36}` for
 `GitHub Token`, is still blocked by the immutable core floor, which never
 reads exemptions.

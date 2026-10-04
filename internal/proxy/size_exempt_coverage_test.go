@@ -50,7 +50,7 @@ func TestResponseSizeReasonUsesUnknownHostFallback(t *testing.T) {
 func TestResponseSizeExemptObservedReasonMarksLowerBound(t *testing.T) {
 	t.Parallel()
 
-	got := responseSizeExemptObservedScanBlockReason("api.vendor.example", 11, 10, false)
+	got := responseSizeExemptObservedScanBlockReason("api.vendor.example", 11, 10, false, sizeRemedies{})
 	if !strings.Contains(got, "is at least 11 bytes") {
 		t.Fatalf("reason = %q, want bounded-read lower-bound wording", got)
 	}
@@ -89,7 +89,7 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("emptyHostReadErrorUsesDefaultsAndReleases", func(t *testing.T) {
 		var budget sizeExemptScanBudget
 
-		_, release, scanErr := budget.readBoundedSizeExemptResponse("", nil, errReader{}, 0, 0)
+		_, release, scanErr := budget.readBoundedSizeExemptResponse("", nil, errReader{}, 0, 0, sizeRemedies{})
 
 		if scanErr == nil {
 			t.Fatal("expected read error")
@@ -106,7 +106,7 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("defaultsAllowCleanRead", func(t *testing.T) {
 		var budget sizeExemptScanBudget
 
-		got, release, scanErr := budget.readBoundedSizeExemptResponse("", []byte("pre"), strings.NewReader("fix"), 0, 0)
+		got, release, scanErr := budget.readBoundedSizeExemptResponse("", []byte("pre"), strings.NewReader("fix"), 0, 0, sizeRemedies{})
 
 		if scanErr != nil {
 			t.Fatalf("readBoundedSizeExemptResponse() error = %v", scanErr)
@@ -126,7 +126,7 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("boundedOversizeReportsLowerBound", func(t *testing.T) {
 		var budget sizeExemptScanBudget
 
-		_, release, scanErr := budget.readBoundedSizeExemptResponse("api.vendor.example", nil, strings.NewReader("12345"), 3, 6)
+		_, release, scanErr := budget.readBoundedSizeExemptResponse("api.vendor.example", nil, strings.NewReader("12345"), 3, 6, sizeRemedies{})
 		release()
 		if scanErr == nil {
 			t.Fatal("expected bounded oversize error")

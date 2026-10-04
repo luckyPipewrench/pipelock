@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -172,6 +173,10 @@ type Verdict struct {
 	Rules            []string // names of matched rules
 	RedirectProfile  string   // redirect profile key (set when action=redirect)
 	ResolutionPolicy config.DeferResolutionPolicy
+	// Notes explain a cause the rule name does not show, such as a protected
+	// directory that could not be listed to rule out a hard link. They never
+	// change the action or the rule names.
+	Notes []string
 }
 
 // New compiles policy rules from config. Returns nil if disabled or no rules
@@ -277,10 +282,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	// With local path identity enabled, the resolved location of each submitted
 	// path joins the match set, so a link to a protected file matches the rule
 	// that protects it.
-	matchArgs := pc.localPaths.expand(argStrings)
+	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
 	tokens, joined := normalizeArgTokens(matchArgs, normalize.ForMatching, policyPreNormalize)
 	altTokens, altJoined := normalizeArgTokens(matchArgs, normalize.ForPolicy, policyPreNormalize)
 	baseTokens, baseJoined := normalizeArgTokens(matchArgs, normalize.ForMatching, nil)
+	// Literal view: each submitted string exactly as sent. Normalization strips
+	// shell quotes, which is right for command text but lets a file tool path
+	// such as `id_rsa.p'ub` read as `id_rsa.pub` while the tool opens the file
+	// with the quote in its name. Matching the literal string as well keeps a
+	// normalized spelling from narrowing what a pattern sees.
+	rawTokens, rawJoined := literalArgTokens(matchArgs)
 
 	var matchedRules []string
 	strictest := ""
@@ -301,6 +312,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
+		ruleRawTokens, ruleRawJoined := rawTokens, rawJoined
 		patchInspection := patchTargetsOrdinary
 		if rule.ArgKey != nil && len(rawArgs) == 0 {
 			if rule.hasStructuralValidators() {
@@ -313,26 +325,39 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings := pc.localPaths.expand(scoped.Strings)
+			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings)
+			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
+			ruleRawTokens, ruleRawJoined = literalArgTokens(scopedStrings)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				matchStrings := patchTargetMatchStrings(argStrings, pc.localPaths.expand(withPatchPrefixStripped(patchTargets)))
+				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets))
+				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
+				matchStrings := patchTargetMatchStrings(argStrings, expandedTargets)
 				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
 				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
 				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
+				ruleRawTokens, ruleRawJoined = literalArgTokens(matchStrings)
 			}
 		}
 
 		argPatternMatched := patchInspection == patchTargetsUninspectable || rule.ArgPattern == nil ||
 			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
-			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
+			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined) ||
+			matchArgPattern(rule.ArgPattern, ruleRawTokens, ruleRawJoined)
+		// The shipped credential exception describes one submitted value. JSON
+		// keys and local aliases are not additional arguments to that value.
+		// Keep the shared pairwise matcher unchanged for every other rule and
+		// for calls with more than one string value.
+		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
+			argPatternMatched = matched
+		}
 		if !argPatternMatched {
 			continue
 		}
@@ -384,7 +409,17 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		Rules:            matchedRules,
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
+		Notes:            linkNotes,
 	}
+}
+
+func appendUniqueNotes(notes, more []string) []string {
+	for _, n := range more {
+		if !slices.Contains(notes, n) {
+			notes = append(notes, n)
+		}
+	}
+	return notes
 }
 
 func appendUniqueRule(rules []string, rule string) []string {
@@ -450,6 +485,13 @@ const maxPairwiseTokens = 64
 //  2. Individual tokens (catches self-contained patterns like file paths)
 //  3. Pairwise token combinations (catches map-ordering evasion where command
 //     and flags end up in separate tokens with non-deterministic iteration order)
+//
+// literalArgTokens returns the submitted strings unmodified, each as one
+// token, and their space-joined form.
+func literalArgTokens(args []string) ([]string, string) {
+	return args, strings.Join(args, " ")
+}
+
 func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 	if pat.MatchString(joined) {
 		return true
@@ -1480,7 +1522,20 @@ const (
 	// separator is OPTIONAL because policy normalization strips a backslash that
 	// precedes a word character, so a Windows spelling reaches the matcher with
 	// no separator left between the directory and the file name.
-	sensitiveFilePathPattern = `\.ssh[\\/]?(id_|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
+	//
+	// An `id_` name whose extension is exactly `.pub` is the public half of a
+	// key pair, which setup and publishing workflows read routinely, so it does
+	// not match when NOTHING follows `.pub`: not a character, not whitespace,
+	// not another argument. That is the shape a file read tool sends, one
+	// argument holding the whole path. Any filename byte can follow `.pub` and
+	// arguments are split on whitespace and paired before matching, so the end
+	// of the match text is the only boundary that cannot be a longer name, a
+	// traversal (`id_rsa.pub/../id_rsa`) or a second path. Command text always
+	// has more after the name once split, so shell reads of any key stay
+	// matched, as they were before the exception. RE2 has no lookahead, so the
+	// `.pub` exception is spelled out one character at a time.
+	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)`
+	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {

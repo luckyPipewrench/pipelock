@@ -35,6 +35,8 @@ type claudeCodePayload struct {
 	ToolName      string          `json:"tool_name"`
 	ToolInput     json.RawMessage `json:"tool_input"`
 	ToolUseID     string          `json:"tool_use_id"`
+	// Cwd is the session's working directory, where a pathless Grep searches.
+	Cwd string `json:"cwd"`
 }
 
 // Tool-specific input structs parsed from tool_input.
@@ -57,6 +59,25 @@ type editToolInput struct {
 	FilePath  string `json:"file_path"`
 	OldString string `json:"old_string"`
 	NewString string `json:"new_string"`
+}
+
+// readToolInput is Claude Code's built-in Read tool schema.
+type readToolInput struct {
+	FilePath string `json:"file_path"`
+}
+
+// grepToolInput is Claude Code's built-in Grep tool schema. Only the fields
+// pipelock acts on are declared; Grep prints matching file contents, so a
+// populated path is a file (or directory) read, not just a name lookup.
+type grepToolInput struct {
+	Path string `json:"path"`
+}
+
+// notebookEditToolInput is Claude Code's built-in NotebookEdit tool schema.
+// Only the fields pipelock acts on are declared.
+type notebookEditToolInput struct {
+	NotebookPath string `json:"notebook_path"`
+	NewSource    string `json:"new_source"`
 }
 
 // claudeCodeHookOutput is the hook-specific output for Claude Code.
@@ -207,9 +228,20 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	// The agent's file tools act on this host, so a submitted path is also
 	// matched by the file it resolves to here.
 	pc.EnableLocalPathIdentity()
+	// A relative path in tool_input is relative to the session's directory,
+	// which is the payload's cwd and not necessarily this process's.
+	if filepath.IsAbs(payload.Cwd) {
+		pc.AddLocalPathBases(payload.Cwd)
+	}
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
+	// Path-routed built-in tools add file-path policy on top of the content
+	// scan every tool_input string gets on the generic path; they must not
+	// lose it. Deny from either wins.
+	if decision.Outcome != decide.Deny && claudePathRoutedTools[payload.ToolName] {
+		decision = decide.Decide(cmd.Context(), cfg, sc, pc, claudeGenericAction(payload))
+	}
 
 	// Map outcome.
 	perm := decisionAllow
@@ -243,11 +275,35 @@ func claudeResult(cmd *cobra.Command, exitCodeMode bool, hookEventName, permissi
 	return nil
 }
 
+// claudePathRoutedTools are built-in tools claudePayloadToAction routes to a
+// file-path event. runClaudeHook also runs the generic content scan for them.
+var claudePathRoutedTools = map[string]bool{"Read": true, "Grep": true, "NotebookEdit": true}
+
+// claudeGenericAction is the catch-all: DLP and injection over every string in
+// tool_input, for tools without a tool-aware pipeline.
+func claudeGenericAction(p claudeCodePayload) decide.Action {
+	return decide.Action{
+		Source: "claude-code",
+		Kind:   decide.EventToolUse,
+		ToolUse: &decide.ToolUsePayload{
+			ToolName:  p.ToolName,
+			ToolInput: string(p.ToolInput),
+		},
+	}
+}
+
 // claudePayloadToAction routes a Claude Code tool_name to a decide.Action.
-// Known built-in tools (Bash, WebFetch, Write, Edit) and MCP tools route to
-// their tool-aware scanning pipelines. Everything else falls through to a
-// generic catch-all that runs DLP + injection on every string in tool_input,
-// so unknown or future tools cannot silently exfiltrate secrets.
+// Known built-in tools (Bash, WebFetch, Write, Edit, Read, Grep, NotebookEdit)
+// and MCP tools route to their tool-aware scanning pipelines. Read's file_path
+// and Grep's populated path field carry the same credential-path policy as
+// other file reads (decide.EventReadFile), because both return file contents
+// to the agent. NotebookEdit's notebook_path is a write target, so it routes
+// like Write/Edit. Glob is deliberately left on the generic catch-all below:
+// it returns matching file NAMES only, never file content, so there is no
+// content-disclosure surface for the file-path policy to guard. Everything
+// else (Glob included) falls through to a generic catch-all that runs DLP +
+// injection on every string in tool_input, so unknown or future tools cannot
+// silently exfiltrate secrets.
 // Returns error for known tools with unparseable tool_input (fail-closed).
 func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 	if strings.TrimSpace(string(p.ToolInput)) == "null" {
@@ -300,6 +356,68 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		}
 		return &action, nil
 
+	case p.ToolName == "Read":
+		var input readToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing Read tool_input: %w", err)
+		}
+		action.Kind = decide.EventReadFile
+		action.File = &decide.FilePayload{FilePath: input.FilePath}
+		return &action, nil
+
+	case p.ToolName == "Grep":
+		var input grepToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing Grep tool_input: %w", err)
+		}
+		// A recursive search reads every file under its target, so a target
+		// that is, contains, or sits inside a credential directory is refused
+		// before any path is checked. A pathless search targets the session's
+		// working directory.
+		target := input.Path
+		if target == "" {
+			target = p.Cwd
+		}
+		if target == "" {
+			// No path and no cwd: the search runs in the hook's own
+			// working directory, so check that instead of skipping.
+			target = "."
+		}
+		if dir, ok := grepTargetCoversCredentialDir(target, p.Cwd); ok {
+			return nil, fmt.Errorf("refusing Grep over %s, which covers the credential directory %s; search a narrower path", target, dir)
+		}
+		if input.Path != "" {
+			// Grep prints matching file contents, so a populated path is a
+			// file-path read and gets the same credential-path policy as
+			// Read. An empty path searches the working directory tree with
+			// no single file identity to check, so it keeps the generic
+			// catch-all, which still scans the pattern/glob strings for DLP
+			// and injection.
+			action.Kind = decide.EventReadFile
+			action.File = &decide.FilePayload{FilePath: input.Path}
+			return &action, nil
+		}
+		generic := claudeGenericAction(p)
+		return &generic, nil
+
+	case p.ToolName == "NotebookEdit":
+		var input notebookEditToolInput
+		if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+			return nil, fmt.Errorf("parsing NotebookEdit tool_input: %w", err)
+		}
+		if input.NotebookPath != "" {
+			// NotebookEdit writes cell content into the notebook file, so it
+			// is a write, not a read: route it like Write/Edit.
+			action.Kind = decide.EventWriteFile
+			action.Write = &decide.WritePayload{
+				FilePath: input.NotebookPath,
+				Content:  input.NewSource,
+			}
+			return &action, nil
+		}
+		generic := claudeGenericAction(p)
+		return &generic, nil
+
 	case strings.HasPrefix(p.ToolName, "mcp__"):
 		// MCP tool name format: mcp__<server>__<tool>
 		parts := strings.SplitN(p.ToolName, "__", 3)
@@ -320,13 +438,9 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 	default:
 		// Generic catch-all: scan every string in tool_input for DLP +
 		// injection. Closes the fail-open path for tools we don't parse
-		// specifically (WebSearch, Task, NotebookEdit, future tools, etc.).
-		action.Kind = decide.EventToolUse
-		action.ToolUse = &decide.ToolUsePayload{
-			ToolName:  p.ToolName,
-			ToolInput: string(p.ToolInput),
-		}
-		return &action, nil
+		// specifically (WebSearch, Task, Glob, future tools, etc.).
+		generic := claudeGenericAction(p)
+		return &generic, nil
 	}
 }
 
@@ -370,8 +484,9 @@ type claudeHookEntry struct {
 const claudeHookTimeout = 10
 
 // claudeToolMatcher matches every tool call. Built-in tools (Bash, WebFetch,
-// Write, Edit) and MCP tools route to tool-aware scanning; all others fall
-// through to a generic DLP + injection catch-all in claudePayloadToAction.
+// Write, Edit, Read, Grep, NotebookEdit) and MCP tools route to tool-aware
+// scanning; all others fall through to a generic DLP + injection catch-all
+// in claudePayloadToAction.
 const claudeToolMatcher = ".*"
 
 // parseClaudeSettings parses the hooks section from settings.json data.
@@ -758,4 +873,143 @@ func writeClaudeSettingsFile(cmd *cobra.Command, targetPath, targetDir string, e
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrote pipelock hooks to %s\n", targetPath)
 	return nil
+}
+
+// claudeGrepCredentialDirs are locations the shipped Credential File Access
+// rule protects, each with one file the rule denies, so a parity test fails
+// if the rule and this list disagree. A relative dir is a home directory
+// whose every file is sensitive: a search of it, inside it, or above it is
+// refused. An absolute dir holds one sensitive file (probe): only a search
+// whose target contains that file is refused.
+var claudeGrepCredentialDirs = []struct{ dir, probe string }{
+	{".ssh", "id_ed25519"},
+	{".aws", "credentials"},
+	{"/etc", "shadow"},
+}
+
+// claudeGrepCredentialDirPath returns the absolute path of a listed dir.
+func claudeGrepCredentialDirPath(home, dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(home, dir)
+}
+
+// grepTargetCoversCredentialDir reports whether a recursive search of target
+// would read inside a credential directory: the target is one, sits inside
+// one, or is an ancestor of one. Paths are resolved against cwd, "~" expands
+// to the home directory, and symlinks are followed where they exist.
+func grepTargetCoversCredentialDir(target, cwd string) (string, bool) {
+	if target == "" {
+		return "", false
+	}
+	homes := grepCredentialHomes()
+	if len(homes) == 0 {
+		// Without the home directory the credential directories cannot be
+		// located, so refuse rather than let the search run unchecked.
+		return "an unresolvable home directory", true
+	}
+	for _, home := range homes {
+		if dir, ok := grepTargetCoversCredentialDirUnder(home, target, cwd); ok {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// accountHomeDir overrides the account-database home lookup in tests. Nil
+// uses the policy package's lookup, so the Grep check and the tool-policy
+// resolver protect the same homes.
+var accountHomeDir func() (string, error)
+
+// grepCredentialHomes returns every distinct absolute home directory whose
+// credential directories a search must not cover. The tool-policy resolver
+// builds its protected locations from the same set.
+func grepCredentialHomes() []string {
+	return policy.CredentialHomes(accountHomeDir)
+}
+
+// grepTargetCoversCredentialDirUnder is grepTargetCoversCredentialDir for one
+// home directory.
+func grepTargetCoversCredentialDirUnder(home, target, cwd string) (string, bool) {
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	// Build the absolute target by concatenation, not filepath.Join or Abs:
+	// both clean lexically, which turns "link/.." into the link's parent
+	// before the link is followed. EvalSymlinks then applies ".." to the
+	// resolved path, as the kernel does.
+	switch {
+	case target == "~":
+		target = home
+	case strings.HasPrefix(target, "~/"):
+		target = home + string(filepath.Separator) + target[2:]
+	case !filepath.IsAbs(target):
+		target = cwd + string(filepath.Separator) + target
+		if cwd == "" {
+			target = target[1:]
+		}
+	}
+	// A relative cwd, or none, is relative to this process's directory.
+	// Anchor it so every comparison below is between absolute paths.
+	if !filepath.IsAbs(target) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "an unresolvable working directory", true
+		}
+		target = wd + string(filepath.Separator) + target
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	switch {
+	case err == nil:
+		target = resolved
+	case hasDotDotSegment(target):
+		// A ".." that cannot be resolved against the real filesystem could
+		// land anywhere, so refuse rather than fall back to a lexical guess.
+		return "an unresolvable path containing ..", true
+	default:
+		target = filepath.Clean(target)
+	}
+	// A single regular file is not a recursive search: the file-path policy
+	// that follows decides it, including the SSH public-key exception.
+	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
+		return "", false
+	}
+	for _, c := range claudeGrepCredentialDirs {
+		listed := claudeGrepCredentialDirPath(home, c.dir)
+		if filepath.IsAbs(c.dir) {
+			file := filepath.Join(listed, c.probe)
+			for _, protected := range []string{file, resolve(file)} {
+				if pathWithin(protected, target) {
+					return file, true
+				}
+			}
+			continue
+		}
+		for _, dir := range []string{listed, resolve(listed)} {
+			if pathWithin(target, dir) || pathWithin(dir, target) {
+				return listed, true
+			}
+		}
+	}
+	return "", false
+}
+
+// pathWithin reports whether path is dir or lies below it.
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// hasDotDotSegment reports whether path contains a ".." element.
+func hasDotDotSegment(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }

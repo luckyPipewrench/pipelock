@@ -242,6 +242,11 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 	// The agent's file tools act on this host, so a submitted path is also
 	// matched by the file it resolves to here.
 	pc.EnableLocalPathIdentity()
+	// A relative path in the payload is relative to the session's directory,
+	// which is the payload's cwd and not necessarily this process's.
+	if filepath.IsAbs(payload.CWD) {
+		pc.AddLocalPathBases(payload.CWD)
+	}
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)

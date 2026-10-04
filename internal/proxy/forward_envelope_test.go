@@ -29,7 +29,7 @@ import (
 // + Content-Digest covering the body.
 //
 // Without this test, the forward.go body hoisting (forwardBodyBytes
-// → InjectAndSign → GetBody installation for 307 replay) has zero
+// → InjectAndSign → GetBody installation for 307 preflight) has zero
 // coverage from an integration-level perspective. The per-package
 // envelope unit tests cover the signing mechanics, but they don't
 // exercise the proxy-level wiring that actually calls them.

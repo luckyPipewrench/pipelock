@@ -586,7 +586,9 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 				if path != filepath.Join(dir, tool) {
 					continue
 				}
-				if enabledTools[tool] {
+				// A real tool lives in a directory that exists; only the
+				// system dir here, since agentCanExecute stats every ancestor.
+				if enabledTools[tool] && dir == "/usr/local/bin" {
 					return origStat(env.pipelockBinary)
 				}
 				return nil, os.ErrNotExist
@@ -857,6 +859,8 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			return origStat(path)
 		}
 		t.Setenv("PATH", binDir)
+		writeRunnableToolsList(t, env)
+		agentIsCurrentUser(t, env)
 		applied, err := s.apply(context.Background(), env)
 		if err != nil {
 			t.Fatalf("preflight: %v", err)
@@ -879,6 +883,414 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			t.Fatalf("err: %v", err)
 		}
 	})
+}
+
+// preflightReadyEnv returns an env whose required binaries, nft path and
+// agent allow-list all satisfy stepPreflight.
+func preflightReadyEnv(t *testing.T) *installEnv {
+	t.Helper()
+	env, _, _ := newFakeEnv(t)
+	binDir := installContainCommandFixtures(t)
+	env.nftPath = filepath.Join(binDir, "nft")
+	realStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		if path == env.nftPath {
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+		}
+		return realStat(path)
+	}
+	writeRunnableToolsList(t, env)
+	hideDefaultTools(env)
+	agentIsCurrentUser(t, env)
+	return env
+}
+
+// agentIsCurrentUser maps pipelock-agent to the test process's uid and gid, so
+// fixtures under t.TempDir (0700, owned by the test user) are reachable by the
+// agent identity that agentCanExecute judges.
+func agentIsCurrentUser(t *testing.T, env *installEnv) {
+	t.Helper()
+	me, err := user.Current()
+	if err != nil {
+		t.Fatalf("current user: %v", err)
+	}
+	orig := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.agentUserName {
+			return &user.User{Uid: me.Uid, Gid: me.Gid, Username: name, HomeDir: "/home/pipelock-agent"}, nil
+		}
+		return orig(name)
+	}
+}
+
+// runnableFixtureTarget returns a real executable regular file outside the
+// agent PATH: a copy of the running test binary in a fresh temp dir, so a test
+// can chmod it without touching the binary itself.
+func runnableFixtureTarget(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("test binary: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(self))
+	if err != nil {
+		t.Fatalf("read test binary: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatalf("write tool target: %v", err)
+	}
+	info, err := os.Stat(filepath.Clean(self))
+	if err != nil {
+		t.Fatalf("stat test binary: %v", err)
+	}
+	if err := os.Chmod(target, info.Mode().Perm()); err != nil {
+		t.Fatalf("chmod tool target: %v", err)
+	}
+	return target
+}
+
+// writeRunnableToolsList writes a tools.list whose only entry pins a real
+// executable outside the agent PATH, and returns that target.
+func writeRunnableToolsList(t *testing.T, env *installEnv) string {
+	t.Helper()
+	target := runnableFixtureTarget(t)
+	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
+		t.Fatalf("mkdir tools.list parent: %v", err)
+	}
+	if err := os.WriteFile(env.toolsListPath, []byte("custom\t"+target+"\n"), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	return target
+}
+
+// hideDefaultTools makes every default tool name unresolvable through env.stat,
+// so a test does not depend on which agent tools the test host has installed.
+func hideDefaultTools(env *installEnv) {
+	realStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		for _, name := range defaultToolNames() {
+			if filepath.Base(path) == name {
+				return nil, os.ErrNotExist
+			}
+		}
+		return realStat(path)
+	}
+}
+
+func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
+	t.Run("ready host passes", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err != nil || !applied {
+			t.Fatalf("applied=%v err=%v", applied, err)
+		}
+	})
+
+	t.Run("missing certutil", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		env.platformFamily = platformFamilyDebian
+		env.lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err == nil || applied {
+			t.Fatalf("preflight must refuse a host without certutil: applied=%v err=%v", applied, err)
+		}
+		if !strings.Contains(err.Error(), "certutil not found") || !strings.Contains(err.Error(), "libnss3-tools") {
+			t.Fatalf("err: %v", err)
+		}
+	})
+
+	t.Run("no agent tool and no allow-list", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.Remove(env.toolsListPath); err != nil {
+			t.Fatalf("remove tools.list: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == env.nftPath || path == env.toolsListPath {
+				return realStat(path)
+			}
+			for _, name := range defaultToolNames() {
+				if filepath.Base(path) == name {
+					return nil, os.ErrNotExist
+				}
+			}
+			return realStat(path)
+		}
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err == nil || applied || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("applied=%v err=%v", applied, err)
+		}
+	})
+
+	t.Run("only target not executable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		if err := os.Chmod(target, 0o600); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("a tools.list whose only target cannot run must be refused: err=%v", err)
+		}
+	})
+
+	t.Run("malformed allow-list refused even with a default tool", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.WriteFile(env.toolsListPath, []byte("not-a-valid-line\n"), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
+		hidden := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if filepath.Base(path) == "claude" && filepath.Dir(path) == "/usr/local/bin" {
+				return fakeFileInfo{mode: 0o755}, nil
+			}
+			return hidden(path)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "tools.list") {
+			t.Fatalf("malformed tools.list must fail preflight, not a later step: err=%v", err)
+		}
+	})
+
+	t.Run("empty allow-list and no agent tool", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		if err := os.WriteFile(env.toolsListPath, []byte("# only a comment\n"), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			for _, name := range defaultToolNames() {
+				if filepath.Base(path) == name {
+					return nil, os.ErrNotExist
+				}
+			}
+			return realStat(path)
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("err: %v", err)
+		}
+	})
+}
+
+func TestAgentCanExecuteJudgesAsPipelockAgent(t *testing.T) {
+	t.Run("owner-only target owned by another uid", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == target {
+				return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, target) {
+			t.Fatal("a 0700 target owned by root must not count as runnable by pipelock-agent")
+		}
+		if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+			t.Fatalf("preflight: %v", err)
+		}
+	})
+
+	t.Run("directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		target := writeRunnableToolsList(t, env)
+		orig := env.lookupUser
+		env.lookupUser = func(name string) (*user.User, error) {
+			if name == env.agentUserName {
+				return &user.User{Uid: "4000000001", Gid: "4000000001", Username: name}, nil
+			}
+			return orig(name)
+		}
+		if agentCanExecute(env, target) {
+			t.Fatalf("a target under a 0700 directory owned by another user must not be runnable: %s", target)
+		}
+	})
+
+	t.Run("symlink into a directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		hiddenDir := t.TempDir()
+		target := filepath.Join(hiddenDir, "tool")
+		if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		link := filepath.Join(t.TempDir(), "tool-link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			switch path {
+			case hiddenDir:
+				return fakeFileInfo{mode: os.ModeDir | 0o700, sys: fakeFileSysWithUID(0)}, nil
+			case link, target:
+				return fakeFileInfo{mode: 0o755}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, link) {
+			t.Fatal("a link into a root-only directory must not count as runnable by pipelock-agent")
+		}
+	})
+
+	t.Run("nested symlink through a directory the agent cannot search", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		openDir := t.TempDir()
+		tool := runnableFixtureTarget(t)
+		hiddenDir := t.TempDir()
+		inner := filepath.Join(hiddenDir, "inner")
+		if err := os.Symlink(tool, inner); err != nil {
+			t.Fatalf("inner symlink: %v", err)
+		}
+		outer := filepath.Join(openDir, "outer")
+		if err := os.Symlink(inner, outer); err != nil {
+			t.Fatalf("outer symlink: %v", err)
+		}
+		if !agentCanExecute(env, outer) {
+			t.Fatal("positive control: the chain is runnable while every directory is searchable")
+		}
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == hiddenDir {
+				return fakeFileInfo{mode: os.ModeDir | 0o700, sys: fakeFileSysWithUID(0)}, nil
+			}
+			return realStat(path)
+		}
+		if agentCanExecute(env, outer) {
+			t.Fatal("a link chain through a root-only directory must not count as runnable, even when it ends somewhere searchable")
+		}
+	})
+
+	t.Run("dot, trailing slash and dot-dot after a file are not runnable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		if !agentCanExecute(env, tool) {
+			t.Fatal("positive control: the plain target is runnable")
+		}
+		// The kernel refuses each of these with ENOTDIR; a lexical clean would
+		// have turned every one back into the runnable file.
+		for _, p := range []string{tool + "/.", tool + "/", tool + "/./", tool + "/../" + filepath.Base(tool)} {
+			if agentCanExecute(env, p) {
+				t.Errorf("%q must not count as runnable", p)
+			}
+		}
+	})
+
+	t.Run("symlink whose target ends in a dot component is not runnable", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		link := filepath.Join(t.TempDir(), "tool-link")
+		if err := os.Symlink(tool+"/.", link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if agentCanExecute(env, link) {
+			t.Fatal("a link to file/. must not count as runnable")
+		}
+	})
+
+	t.Run("dot-dot resolves after the symlink, not lexically", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		tool := runnableFixtureTarget(t)
+		realDir := filepath.Dir(tool)
+		sub := filepath.Join(realDir, "sub")
+		if err := os.Mkdir(sub, 0o750); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		linkDir := t.TempDir()
+		link := filepath.Join(linkDir, "link")
+		if err := os.Symlink(sub, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		// link/.. is the physical parent of sub (where the tool lives); read as
+		// text it would be linkDir, which holds no tool.
+		if !agentCanExecute(env, link+"/../"+filepath.Base(tool)) {
+			t.Fatal("link/../tool must resolve through the link's target")
+		}
+		if agentCanExecute(env, filepath.Join(linkDir, filepath.Base(tool))) {
+			t.Fatal("control: the tool is not in the link's own directory")
+		}
+	})
+
+	t.Run("symlink loop", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		dir := t.TempDir()
+		a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+		if err := os.Symlink(b, a); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if err := os.Symlink(a, b); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if agentCanExecute(env, a) {
+			t.Fatal("a symlink loop must not count as runnable")
+		}
+	})
+
+	t.Run("agent not created yet uses other bits", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		env.lookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
+		if !agentCanExecute(env, "/bin/sh") {
+			t.Fatal("/bin/sh is world-executable and must be runnable before the agent exists")
+		}
+	})
+}
+
+func TestStepPreflightChecksFirstEntryPerName(t *testing.T) {
+	env := preflightReadyEnv(t)
+	good := runnableFixtureTarget(t)
+	broken := filepath.Join(t.TempDir(), "custom")
+	if err := os.WriteFile(broken, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write broken target: %v", err)
+	}
+	list := "custom\t" + broken + "\ncustom\t" + good + "\n"
+	if err := os.WriteFile(env.toolsListPath, []byte(list), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	if _, err := stepPreflight(installOpts{}).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "no agent tools found") {
+		t.Fatalf("plk-launch uses the first matching line, so a broken first entry must be refused: err=%v", err)
+	}
+}
+
+func TestStepWriteToolsListRepairsModeWhenContentUnchanged(t *testing.T) {
+	env := preflightReadyEnv(t)
+	plan, err := plannedToolsList(env)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if err := os.WriteFile(env.toolsListPath, []byte(renderToolsList(plan.entries)), 0o600); err != nil {
+		t.Fatalf("write tools.list: %v", err)
+	}
+	if err := os.Chmod(env.toolsListPath, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if again, err := plannedToolsList(env); err != nil || again.changed {
+		t.Fatalf("fixture must have unchanged content: changed=%v err=%v", again.changed, err)
+	}
+	applied, err := stepWriteToolsList().apply(context.Background(), env)
+	if err != nil || !applied {
+		t.Fatalf("a root-only tools.list must be rewritten: applied=%v err=%v", applied, err)
+	}
+	info, err := os.Stat(env.toolsListPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != modeAllowListReadable {
+		t.Fatalf("tools.list mode = %v, want %v", info.Mode().Perm(), modeAllowListReadable)
+	}
+	applied, err = stepWriteToolsList().apply(context.Background(), env)
+	if err != nil || applied {
+		t.Fatalf("a correct tools.list must be left alone: applied=%v err=%v", applied, err)
+	}
+}
+
+func TestMergeDefaultToolEntriesKeepsUnresolvedPinnedDefault(t *testing.T) {
+	existing := []toolsListEntry{{name: "claude", target: "/opt/agent/bin/claude"}, {name: "custom", target: "/opt/agent/bin/custom"}}
+	merged, changed := mergeDefaultToolEntries(existing, nil)
+	if changed || len(merged) != 2 || merged[0].name != "claude" {
+		t.Fatalf("an unresolved default must not delete its pinned entry: merged=%v changed=%v", merged, changed)
+	}
+	merged, changed = mergeDefaultToolEntries(existing, []toolsListEntry{{name: "claude", target: "/usr/local/bin/claude"}})
+	if !changed || len(merged) != 2 || merged[0].target != "/usr/local/bin/claude" {
+		t.Fatalf("a resolved default replaces the same name: merged=%v changed=%v", merged, changed)
+	}
 }
 
 func TestStepPreflightRejectsUntrustedNFTPath(t *testing.T) {

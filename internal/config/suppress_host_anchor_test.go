@@ -86,10 +86,19 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		// pattern (its issuing authorities) while YAML still cannot reach the floor.
 		"Slack Token":             {"slack.com", "mcp.slack.com"},
 		"Slack App Token":         {"slack.com"},
-		"GitHub Token":            {"api.github.com", "uploads.github.com"},
-		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com"},
+		"GitHub Token":            {"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"},
+		"GitHub Fine-Grained PAT": {"api.github.com", "uploads.github.com", "rubygems.pkg.github.com"},
 		"GitLab PAT":              {"gitlab.com"},
 		"GitLab CI Job Token":     {"gitlab.com"},
+		// GitHub release downloads redirect to this storage host with a signed
+		// grant in the URL query; the exact host is the whole audience.
+		"JWT Token": {"release-assets.githubusercontent.com"},
+		// The release redirect's Azure SAS shares that exact host list and is
+		// granted only beside a validated JWT for that host. Attestation
+		// bundle SAS uses the same carrier with a scanner-side account list
+		// (attestationBundleSASAllowed); it is not a second pattern host, so
+		// this set does not grow.
+		"Azure SAS Token": {"release-assets.githubusercontent.com"},
 	}
 	for name, hosts := range expected {
 		t.Run(name, func(t *testing.T) {

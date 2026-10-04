@@ -56,6 +56,15 @@ func (r *Recorder) AcquireSession(sessionID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sessionID == sessionID {
+		candidates, err := r.sessionResumeCandidates(sessionID)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range candidates {
+			if err := InspectEvidenceTail(candidate.path, nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if r.sessionID != "" {
@@ -133,4 +142,71 @@ func NewRunSessionID(base string) (string, error) {
 		return "", fmt.Errorf("generating run session id: %w", err)
 	}
 	return base + evidencename.RunInfix + hex.EncodeToString(buf[:]), nil
+}
+
+// RecoverTornRunSession abandons a damaged run without flushing or modifying its
+// evidence and binds a fresh run. Writes naming the old session are refused.
+func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
+	if r.IsNop() {
+		return "", errors.New("recorder: recovery requires an active recorder")
+	}
+	next, err := NewRunSessionID(base)
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return "", errors.New("recorder is closed")
+	}
+	candidates, err := r.sessionResumeCandidates(r.sessionID)
+	if err != nil {
+		return "", err
+	}
+	torn := false
+	for _, candidate := range candidates {
+		err := InspectEvidenceTail(candidate.path, nil)
+		if errors.Is(err, ErrTornTail) {
+			torn = true
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	if !torn {
+		return "", errors.New("recorder: recovery requires a torn current run")
+	}
+	if r.file != nil {
+		r.waitDurableForCurrentFileLocked()
+		if r.writer != nil && r.writer.Buffered() != 0 {
+			return "", errors.New("recorder: refusing recovery with pending buffered evidence")
+		}
+		err := errors.Join(unlockEvidenceFile(r.file), r.file.Close())
+		r.file = nil
+		r.writer = nil
+		if err != nil {
+			return "", err
+		}
+	}
+	if r.runPresence != nil {
+		err := errors.Join(unlockEvidenceFile(r.runPresence), r.runPresence.Close())
+		r.runPresence = nil
+		if err != nil {
+			return "", err
+		}
+	}
+	presence, err := acquireRunPresence(r.cfg.Dir, next)
+	if err != nil {
+		return "", fmt.Errorf("recorder: acquire recovery run presence: %w", err)
+	}
+	if err := r.resumeSessionLocked(next); err != nil {
+		_ = unlockEvidenceFile(presence)
+		_ = presence.Close()
+		return "", err
+	}
+	r.runPresence = presence
+	r.fileEntryCount = 0
+	r.fileSeqStart = 0
+	return next, nil
 }

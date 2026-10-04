@@ -257,7 +257,15 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
-	p.recordCredentialAudienceAllows(targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent)
+	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent); err != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 	r = r.WithContext(withAllowedSSRFDialScanSnapshot(r.Context(), sc, host, targetPort, result))
 
 	// Capture observer: record CONNECT URL verdict for policy replay.
@@ -300,10 +308,19 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// can carry Proxy-Authorization, Authorization, or custom headers that
 	// may contain secrets. Tunneled HTTP headers are only visible with TLS
 	// interception; this covers the handshake itself.
-	connectHeaderBlocked, connectHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	connectHeaderBlocked, connectHeaderHadFinding, connectHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: headerCtx,
 		hostname: host, target: syntheticURL, metricAgent: agentLabel, start: start,
 	})
+	if connectHeaderReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(connectHeaderReceiptErr)
+		p.logger.LogBlocked(headerCtx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 	if connectHeaderHadFinding && !connectHeaderBlocked && cfg.AdaptiveEnforcement.Enabled {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
@@ -1065,7 +1082,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
-	p.recordCredentialAudienceAllows(actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent)
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent); err != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
+		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 
 	// A2A protocol detection: check path and Content-Type before deeper scanning.
 	isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))
@@ -1437,7 +1462,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return false
 	}
 	if !cfg.RequestBodyScanning.Enabled && isA2A && cfg.A2AScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, err := readForwardBodyForProtocolScan(r.Body, r.Header.Get("Content-Encoding"), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
+		buf, err := readForwardBodyForProtocolScan(r.Body, strings.Join(r.Header.Values("Content-Encoding"), ","), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)
 		if err != nil {
 			reason := "a2a: " + err.Error()
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1485,7 +1510,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Scheme:           r.URL.Scheme,
 			Method:           r.Method,
 			ContentType:      r.Header.Get("Content-Type"),
-			ContentEncoding:  r.Header.Get("Content-Encoding"),
+			ContentEncoding:  strings.Join(r.Header.Values("Content-Encoding"), ","),
 			MaxBytes:         cfg.RequestBodyScanning.MaxBodyBytes,
 			Scanner:          sc,
 			AgentID:          agent,
@@ -1504,8 +1529,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
-			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) {
-				p.recordCredentialAudienceAllow(actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
+			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
+				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -1515,6 +1540,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
+		if bodyResult.CredentialAudienceReceiptErr != nil {
+			blockedErr := newCredentialAudienceReceiptBlockedRequest(bodyResult.CredentialAudienceReceiptErr)
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
 		forwardEntropyWarnRoute = bodyResult.EntropyWarnRoute
 
 		// Capture observer: record forward body DLP verdict for policy replay.
@@ -1753,8 +1787,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-wrap body so the forwarded request gets the buffered bytes.
-		// GetBody is set so stdlib can replay on 307/308 redirects when
-		// the forward proxy's client follows a method-preserving hop.
+		// GetBody lets stdlib construct 307/308 redirect preflight requests
+		// so body-replay authority checks run before client-owned delivery.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
 		r.ContentLength = int64(len(buf))
 		bufCopy := buf
@@ -1766,10 +1800,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Request header DLP scanning.
 	// hadFinding is true even in audit/warn mode so near-miss signals are recorded.
-	forwardHeaderBlocked, forwardHeaderHadFinding := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	forwardHeaderBlocked, forwardHeaderHadFinding, forwardHeaderReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
+	if forwardHeaderReceiptErr != nil {
+		blockedErr := newCredentialAudienceReceiptBlockedRequest(forwardHeaderReceiptErr)
+		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			"blocked: "+blockedErr.reason, http.StatusForbidden)
+		return
+	}
 
 	// Capture observer: record forward header DLP verdict for policy replay.
 	{
@@ -1874,7 +1917,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ceePayloads := extractOutboundPayloads(r, ceeJSONBodyPartitioningEnabled(p.cfgPtr.Load()), ceeSession, ceePartitionKey)
 	ceeAdmission := p.admitCurrentCEE(r.Context(), ceeAdmitRequest{
-		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads,
+		ActorAuth: id.Auth, Outbound: ceePayloads.outbound, BodyFragmentPayloads: ceePayloads.bodyFragmentPayloads, BodyFragmentLeaves: ceePayloads.bodyFragmentLeaves,
 		PartitionReason: ceePayloads.partitionReason,
 		KeyPayload:      queryParamKeys(r.URL), PathPayload: pathSegments(r.URL), TargetURL: targetURL, Agent: agent, ClientIP: clientIP,
 		RequestID: requestID, IncludeFragments: true,
@@ -2280,7 +2323,24 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
-	stripUpstreamShieldRewriteMarker(resp)
+	stripUpstreamPipelockNamespace(resp)
+	// net/http preflights only the first Location value and skips the
+	// callback entirely for a missing first value or non-replayable body.
+	// Do not release an alternate or parser-ambiguous browser destination.
+	if ambiguousForwardRedirectLocation(resp) {
+		const reason = "ambiguous redirect location"
+		p.logger.LogBlocked(actx, responseScanLayer, reason)
+		p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID: actionID, RequestID: requestID, Agent: agent,
+			Method: r.Method, Target: targetURL, Layer: responseScanLayer,
+			Pattern: reason, Taint: forwardTaint,
+		})))
+		writeBlockedError(w, blockInfoFor(blockreason.ParseError, responseScanLayer), "blocked: "+reason, http.StatusForbidden)
+		outcomeStatus = strconv.Itoa(http.StatusForbidden)
+		outcomeReason = "ambiguous_redirect_location"
+		return
+	}
 	// An authenticated artifact is not a destination exemption. The proxy
 	// buffers and verifies this exact response before allowing only injection
 	// matching to be skipped; all other response controls remain below.
@@ -2539,7 +2599,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		written, _ := io.Copy(w, resp.Body)
+		written, copyErr := io.Copy(w, resp.Body)
 		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
 		// Account streamed bytes against both budgets so a trusted download
 		// still decrements the per-domain data budget and the per-agent byte
@@ -2573,7 +2633,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
-		outcomeReason = "complete"
+		outcomeReason = streamCloseReason(copyErr, written, configMaxBytes, "complete")
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(fwdRespHost), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{})
 		}
@@ -2717,7 +2777,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					var scanFailure *sizeExemptResponseReadError
 					var releaseSizeExemptScan sizeExemptScanRelease
-					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(cfg, resp.Header, false))
 					if scanFailure != nil {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)
@@ -2746,7 +2806,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					defer releaseSizeExemptScan()
 				} else {
-					reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", true)
+					rem := responseStreamingSizeRemedies(cfg, resp.Header, false)
+					rem.SizeExempt = true
+					reason := responseSizeRemedyBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb", false, rem)
 					p.logger.LogBlocked(actx, responseScanLayer, reason)
 					emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 						ActionID:  actionID,
@@ -3253,6 +3315,31 @@ func copyResponseHeaders(dst, src http.Header) {
 	blockreason.SetRecordedReceipt(dst, recordedReceipt)
 	removeHopByHopHeaders(dst)
 	dst.Del("Content-Length")
+}
+
+// ambiguousForwardRedirectLocation rejects response shapes for which a
+// browser could choose a different target from net/http's redirect preflight.
+// Empty/absent Location is non-followable and keeps its existing semantics.
+func ambiguousForwardRedirectLocation(resp *http.Response) bool {
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		return false
+	}
+	locations := resp.Header.Values("Location")
+	if len(locations) > 1 {
+		return true
+	}
+	if len(locations) == 0 {
+		return false
+	}
+	for _, c := range locations[0] {
+		if c <= ' ' || c == '\x7f' || c == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.

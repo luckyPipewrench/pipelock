@@ -210,24 +210,19 @@ Chain verification checks:
   the Go verifier; a file with only `evidence_receipt` entries is verified as
   an EvidenceReceipt v2 chain by the SDK verifiers.
 
-By default, this verifies the receipt subsequence only. To verify every present
-flight-recorder entry as well, use `--whole-recorder`; that mode rejects an unknown
-entry type or recorder hash-chain break, verifies the receipt-chain commitment in a
-`transcript_root`, and returns non-zero for an unsealed recorder. After a signing-key
-rotation, the root covers the final signing segment while verification checks every
-trusted segment and its rotation continuity. The seal does not cover the trailing
-checkpoint the recorder writes after it; any other entry after the seal is reported as
-INCOMPLETE, because the seal never committed to it. Entries that are not receipts
-(decisions, captures) are authenticated only through signed checkpoints: each one signs
-the chain hash of everything before it, and `--whole-recorder` verifies those signatures
-against the pinned keys and reports the anchor state. The seal itself must be covered
-by a signed checkpoint, which is the trailing checkpoint the recorder writes after the
-root; a recorder where no signed checkpoint follows the seal (checkpoints absent,
-unsigned, or the trailing one missing) is refused, because a rewrite could have
-stripped or removed it while an older checkpoint still verifies. If the recorder really
-runs with `flight_recorder.sign_checkpoints: false`, or its last entry filled a shard so
-no trailing checkpoint was written, pass `--allow-unanchored-seal` to accept it, and the
-output then states which entries are hash-linked but not authenticated.
+Without `--whole-recorder`, verification checks only the receipt subsequence. Add `--whole-recorder` to check every present recorder entry, reject unknown entry types and hash-chain breaks, and verify the commitment in a `transcript_root`.
+
+With `--chain DIR` and no `--session`, unsealed runs are listed under `INCOMPLETE RUNS` but don't cause a non-zero exit by themselves. Add `--require-seal` to fail if any run lacks a seal.
+
+After signing-key rotation, the root covers the final signing segment while verification checks every trusted segment and rotation continuity.
+
+The seal doesn't cover the trailing checkpoint written after it. Any other entry after the seal is reported as `INCOMPLETE` because the seal didn't commit to it.
+
+Signed checkpoints authenticate entries that aren't receipts, such as decisions and captures. Each checkpoint signs the chain hash of all earlier entries; `--whole-recorder` verifies these signatures against the pinned keys and reports the anchor state.
+
+The seal must be covered by the signed checkpoint written after the root. By default, verification refuses when no signed checkpoint follows the seal, since an older checkpoint doesn't prove the seal was included.
+
+If `flight_recorder.sign_checkpoints` is `false`, or the last entry filled a shard so no trailing checkpoint was written, pass `--allow-unanchored-seal` to accept the recorder. The output identifies entries that are hash-linked but not authenticated.
 
 As with a single receipt, an unpinned chain run (no `--key`) prints
 `CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
@@ -387,12 +382,16 @@ treat trust as unknown and require re-verification before accepting provenance.
 writes the verified chain head to an anchor backend, and emits an anchor bundle
 for later offline verification.
 
+The `--out` path must name a file inside the receipt directory. Relative paths are resolved from that directory; absolute paths outside it are rejected.
+
 With `--dir`, anchoring selects a lone run chain automatically. If the
 directory holds several runs, pass `--session` with the exact run ID; each
 anchor bundle covers one chain.
 
 The local backend is deterministic test/development plumbing, not an
 operator-independent witness:
+
+Local anchor appends require file sync before returning a proof. If the log has a torn final write, the next submission preserves that file and continues the verified complete prefix in a numbered `.segment-` file beside it. Keep those files together for local proof verification. Reading the damaged file directly still reports a torn tail; an invalid complete entry or hash link stops submissions.
 
 ```bash
 pipelock anchor receipts /var/lib/pipelock/evidence \
@@ -433,6 +432,42 @@ pipelock-verifier independent /var/lib/pipelock/evidence \
   --bundle /var/lib/pipelock/evidence/agent-a.rekor-anchor.json \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
   --rekor-log-key /etc/pipelock/keys/rekor-log.pub
+```
+
+An anchor bundle covers the receipts that existed when it was made. The live
+chain keeps growing, so `pipelock-verifier independent` recomputes the checkpoint
+over the first `receipt_count` receipts. A chain shorter than the bundle claims
+fails.
+
+Receipts after the anchored prefix are not ignored. The verifier checks them as
+a chain (hash linkage and signatures under the `--key` values you supplied) and
+exits non-zero if the tail is broken, for example a tampered or re-signed
+receipt. When the tail verifies, the verdict stays valid, the OK line names the
+split (`receipts 0..2 of 5 anchored, 3..4 chain-verified`), and stderr carries a
+note that the later receipts are chain-verified but not anchored.
+
+With `--json` the verdict adds three fields next to the existing ones:
+
+| Field | Meaning |
+|-------|---------|
+| `covered_receipts` | Leading receipts the anchor commits to. |
+| `chain_length` | Receipts supplied to the verifier. |
+| `tail_chain_verified` | `true` when receipts after the anchored prefix exist and verified as a chain. |
+
+The tail is only chain-verified: a holder of the signing key can forge it, and
+no anchor vouches for it. By default that still counts as valid. To treat it as
+a failure, the way the dashboard treats a stale anchor, add
+`--require-full-coverage`: verification then exits non-zero with `valid: false`
+whenever `covered_receipts` is less than `chain_length`. A fully anchored chain
+is unaffected.
+
+```bash
+pipelock-verifier independent /var/lib/pipelock/evidence \
+  --dir --session agent-a \
+  --bundle /var/lib/pipelock/evidence/agent-a.rekor-anchor.json \
+  --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
+  --rekor-log-key /etc/pipelock/keys/rekor-log.pub \
+  --require-full-coverage
 ```
 
 Honest limit: anchoring narrows post-anchor omission and tampering windows, but

@@ -154,7 +154,14 @@ func TestLoadContainmentPublishedServices(t *testing.T) {
 	if err := os.WriteFile(path, []byte(expired), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("expired publication must fail load, got %v", err)
+	lapsedCfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("an expired publication is a lapsed grant and must not fail load: %v", err)
+	}
+	if len(lapsedCfg.Containment.PublishedServices) != 0 {
+		t.Fatalf("expired publication stayed in the effective set: %+v", lapsedCfg.Containment.PublishedServices)
+	}
+	if got := lapsedCfg.LapsedContainmentGrants(); len(got) != 1 || got[0].Name != "viewer" {
+		t.Fatalf("lapsed grants = %+v, want the viewer publication", got)
 	}
 }

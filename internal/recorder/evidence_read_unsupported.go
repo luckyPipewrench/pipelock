@@ -35,6 +35,10 @@ func lockEvidenceFileForWrite(_ *os.File) error {
 	return errEvidenceFileAccessUnsupported
 }
 
+func lockEvidenceAppend(_ *os.File) error { return errEvidenceFileAccessUnsupported }
+
+func unlockEvidenceAppend(_ *os.File) error { return errEvidenceFileAccessUnsupported }
+
 // unlockEvidenceFile rejects the unsupported lock lifecycle.
 func unlockEvidenceFile(_ *os.File) error {
 	return errEvidenceFileAccessUnsupported

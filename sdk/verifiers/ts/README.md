@@ -85,7 +85,7 @@ npm run build
 npm test
 ```
 
-The canonical encoder intentionally mirrors Go `encoding/json` for the receipt structs: declaration-order fields, Go `omitempty`, sorted map keys, compact output, and Go's default HTML escaping. This byte-level behavior is part of the verifier contract.
+The ActionReceipt v1 canonical encoder intentionally mirrors Go `encoding/json` for the receipt structs: declaration-order fields, Go `omitempty`, sorted map keys, compact output, and Go's default HTML escaping. This byte-level behavior is part of the v1 verifier contract. EvidenceReceipt v2 signatures use their declared JCS profile instead.
 
 ### Schema-only Audit Packet checks
 
@@ -94,3 +94,25 @@ signer or verdict. The report uses `verdict: schema_checked_trust_unverified`,
 `trusted: false`, and `valid: false`; the CLI exits nonzero. JSON and CI
 consumers must require full chain verification before accepting a trusted
 verdict.
+
+## Fixture-only secret-egress receipts
+
+The `receipt` command also understands the candidate EvidenceReceipt v2 kind
+`secret_egress_decision_v1`, exercised by the shared signed corpus under
+`sdk/conformance/testdata/secret-egress-v1/`. It requires the matching critical
+feature, policy hash, registry commitment and strict typed decision fields.
+Ordinary JCS formatting semantics are preserved. Structural/signature success
+does not establish registry membership, policy compliance, producer coverage or
+durable append; no production transport emits this kind yet.
+
+Use `runReceipt` or recorder extraction for untrusted serialized input. These
+paths check the new-kind source profile before typed verification, including
+integer-token spelling. `normalizeEvidenceReceipt` and `verifyEvidenceReceipt`
+accept already-decoded objects: JavaScript represents parsed `1`, `1.0` and
+`1e0` as the same number, so those APIs cannot certify the discarded spelling.
+They still reject an unsupported version value such as `1.5`.
+
+The source profile permits JCS-equivalent whitespace, property order and escaped
+property names. It is not a byte-for-byte comparison with Go's emitted JSON;
+Go's separate `VerifyV2BytesWithKey` API supplies that stronger check. The
+new-kind integer, timestamp and signature-string restrictions still apply.

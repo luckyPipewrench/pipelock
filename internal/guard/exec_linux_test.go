@@ -21,6 +21,40 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestPrepareExecutionCAFilesCheckPhysicalFloor(t *testing.T) {
+	root := t.TempDir()
+	secretDir := filepath.Join(root, ".ssh")
+	if err := os.Mkdir(secretDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(secretDir, "id_ed25519")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "bundle.pem")
+	if err := os.Symlink(".ssh/id_ed25519", alias); err != nil {
+		t.Fatal(err)
+	}
+	original := executionCAPaths
+	executionCAPaths = []string{alias}
+	t.Cleanup(func() { executionCAPaths = original })
+	p, err := PrepareExecution(config.Defaults(), "", root, "", "", os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	for _, outcome := range p.Outcomes() {
+		if outcome.DeclaredPath != alias {
+			continue
+		}
+		if p.Complete() || outcome.State != StateRefused || outcome.ResolvedPath != target || !strings.Contains(outcome.Reason, "compiled floor") {
+			t.Fatalf("CA target floor: complete=%v outcome=%+v", p.Complete(), outcome)
+		}
+		return
+	}
+	t.Fatal("CA declaration absent from outcomes")
+}
+
 func TestReadExecEnvironmentOwnsInheritedDescriptor(t *testing.T) {
 	reader, writer, err := os.Pipe()
 	if err != nil {

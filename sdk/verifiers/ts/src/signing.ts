@@ -7,6 +7,11 @@ import type { ActionRecord, JSONObject, Receipt } from "./types.js";
 import { canonicalizeActionRecord } from "./canonical.js";
 import { canonicalizeBytes } from "./aarp/canonical.js";
 import { decodeHex } from "./util.js";
+import {
+  secretEgressDecisionKind,
+  validateSecretEgressEnvelope,
+  validateSecretEgressPayload,
+} from "./secret-egress.js";
 
 const signaturePrefix = "ed25519:";
 export const unpinnedReceiptBanner =
@@ -25,7 +30,11 @@ const v2RedactionRulesetHash =
 const critCanonicalization = "canonicalization";
 const critSourceSpans = "source_spans";
 
-const v2PayloadKinds = new Set(["proxy_decision", "proxy_decision_with_spans"]);
+const v2PayloadKinds = new Set([
+  "proxy_decision",
+  "proxy_decision_with_spans",
+  secretEgressDecisionKind,
+]);
 const reservedV2PayloadKinds = new Set(["defer_opened", "defer_resolved"]);
 
 const envelopeFields = new Set([
@@ -216,6 +225,7 @@ function validateCrit(value: unknown, payloadKind: string): void {
   const seen = new Set<string>();
   let hasCanonicalization = false;
   let hasSourceSpans = false;
+  let hasSecretEgress = false;
   for (const name of crit) {
     if (name === "") throw new Error("crit has an empty name");
     if (seen.has(name)) throw new Error(`crit has duplicate ${name}`);
@@ -224,11 +234,16 @@ function validateCrit(value: unknown, payloadKind: string): void {
       hasCanonicalization = true;
     } else if (name === critSourceSpans) {
       hasSourceSpans = true;
+    } else if (name === secretEgressDecisionKind) {
+      hasSecretEgress = true;
     } else {
       throw new Error(`crit has unknown field ${name}`);
     }
   }
   if (!hasCanonicalization) throw new Error("crit must include canonicalization");
+  if ((payloadKind === secretEgressDecisionKind) !== hasSecretEgress) {
+    throw new Error(`crit ${secretEgressDecisionKind} must appear exactly for its payload kind`);
+  }
   if (payloadKind === "proxy_decision_with_spans" && !hasSourceSpans) {
     throw new Error("crit must include source_spans");
   }
@@ -332,7 +347,11 @@ function validateProxyDecisionWithSpansPayload(payload: JSONObject): void {
   spans.forEach(validateSourceSpan);
 }
 
+// Validates already-decoded facts, not original JSON spelling. JavaScript has
+// the same numeric value for parsed 1, 1.0 and 1e0. Untrusted source must pass
+// the raw profile via runReceipt or recorder extraction before verification.
 export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
+  if (receipt.payload_kind === secretEgressDecisionKind) validateSecretEgressEnvelope(receipt);
   rejectUnknownFields(receipt as Record<string, unknown>, envelopeFields, "receipt");
   if (receipt.record_type !== v2RecordType)
     throw new Error(`unsupported record_type ${String(receipt.record_type)}`);
@@ -366,6 +385,8 @@ export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
     throw new Error("signature.signature must be ed25519:<128 hex>");
   }
   const payload = requireObject(receipt.payload, "payload");
+  if (payloadKind === secretEgressDecisionKind)
+    validateSecretEgressPayload(payload, receipt.event_id);
   if (payloadKind === "proxy_decision") validateProxyDecisionPayload(payload);
   if (payloadKind === "proxy_decision_with_spans") validateProxyDecisionWithSpansPayload(payload);
   return receipt;
@@ -450,6 +471,8 @@ export async function verifyReceipt(
   if (!ok) throw new Error("signature verification failed");
 }
 
+// Verifies typed facts and their JCS signature. This object-taking API cannot
+// recover duplicate keys or source tokens discarded before it was called.
 export async function verifyEvidenceReceipt(receipt: Receipt, expectedKeyHex = ""): Promise<void> {
   normalizeEvidenceReceipt(receipt);
   const signature = receipt.signature as JSONObject;

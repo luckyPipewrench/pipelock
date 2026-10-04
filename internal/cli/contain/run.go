@@ -43,12 +43,18 @@ const (
 )
 
 type containRunOptions struct {
-	configFile            string
-	port                  int
-	postureOutput         string
-	dryRun                bool
-	servicePrestart       bool
+	configFile      string
+	port            int
+	postureOutput   string
+	dryRun          bool
+	servicePrestart bool
+	// hostNamespace marks the re-executed host-side half of service-posture.
+	// The parent already attested the managed namespace; this half must itself
+	// run in the initial network namespace, where the managed nftables state
+	// and every host-loopback probe are meaningful.
+	hostNamespace         bool
 	workspaceDiffCapBytes int64
+	lifecycleOutput       string
 }
 
 type containRunEnv struct {
@@ -56,11 +62,17 @@ type containRunEnv struct {
 	launch                 func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
 	emitPosture            func(cfg *config.Config, privKey ed25519.PrivateKey, outputDir string, env *probeEnv, args []string) (postureEmission, error)
 	assertServiceNamespace func(context.Context, netnsAssertEnv) error
+	// runInHostNamespace re-executes service-posture in the initial network
+	// namespace. Nil means the platform cannot, and service-posture refuses.
+	runInHostNamespace func(ctx context.Context, stdout, stderr io.Writer, args []string) error
 	// loadConfig loads the ONE config snapshot reused for both posture
 	// capsule emission and workspace-statement signing key resolution (H2).
 	// Defaults to config.Load; overridable in tests that stub emitPosture
 	// and never intend to touch a real config file on disk.
 	loadConfig func(configFile string) (*config.Config, error)
+	// newLifecycle is an internal test seam, never populated from config or
+	// command arguments. A nil value retains the root-checked implementation.
+	newLifecycle func(string) (*containRunLifecycle, error)
 }
 
 type postureEmission struct {
@@ -74,7 +86,9 @@ func defaultContainRunEnv() containRunEnv {
 		launch:                 launchContainedAgent,
 		emitPosture:            emitContainRunPosture,
 		assertServiceNamespace: assertManagedNetworkNamespace,
+		runInHostNamespace:     runInHostNetworkNamespace,
 		loadConfig:             func(configFile string) (*config.Config, error) { return config.Load(filepath.Clean(configFile)) },
+		newLifecycle:           newContainRunLifecycle,
 	}
 }
 
@@ -126,6 +140,7 @@ Pipelock does not read or store agent secrets.`,
 	cmd.Flags().StringVar(&opts.postureOutput, "posture-output", opts.postureOutput, "directory for the signed contain-run posture capsule")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "run preflight and print the session contract, then exit without emitting a posture capsule or launching")
 	cmd.Flags().Int64Var(&opts.workspaceDiffCapBytes, "workspace-diff-cap-bytes", opts.workspaceDiffCapBytes, "per-file content-digest cap for the post-session workspace change statement; larger files are recorded oversize with no digest")
+	cmd.Flags().StringVar(&opts.lifecycleOutput, "lifecycle-output", "", "new root-private directory for invocation-bound transient-service lifecycle evidence (Linux only)")
 
 	return cmd
 }
@@ -138,7 +153,7 @@ func runContainRun(
 	env containRunEnv,
 	opts containRunOptions,
 	args []string,
-) error {
+) (resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -158,18 +173,46 @@ func runContainRun(
 	if !addToolNamePattern.MatchString(tool) {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("invalid tool name %q (must match %s)", tool, containToolNameRegex))
 	}
-	if opts.servicePrestart {
-		if env.assertServiceNamespace == nil {
-			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("service posture namespace assertion is unavailable"))
+	if opts.lifecycleOutput != "" {
+		if opts.dryRun || opts.servicePrestart {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--lifecycle-output requires an actual contain run launch"))
 		}
-		assertEnv := defaultNetnsAssertEnv()
-		assertEnv.agentUser = env.probe.agentUserName
-		assertEnv.proxyPort = env.probe.port
-		if err := env.assertServiceNamespace(ctx, assertEnv); err != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("service posture signer is outside the managed agent namespace: %w", err))
+		prepare := env.newLifecycle
+		if prepare == nil {
+			prepare = newContainRunLifecycle
 		}
-		env.probe.postureLauncher = servicePostureLauncher
+		lifecycle, err := prepare(opts.lifecycleOutput)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("prepare lifecycle output: %w", err))
+		}
+		env.probe.lifecycle = lifecycle
+		var stop context.CancelFunc
+		ctx, stop = containRunLifecycleContext(ctx)
+		defer stop()
+		defer func() {
+			if !lifecycle.record.Final {
+				lifecycle.record.Phase = "incomplete"
+				lifecycle.record.Final = true
+				lifecycle.record.Failure = boundedLifecycleError(resultErr)
+				resultErr = errors.Join(resultErr, lifecycle.write())
+			}
+			resultErr = errors.Join(resultErr, lifecycle.close())
+		}()
 	}
+	if opts.servicePrestart {
+		if opts.hostNamespace {
+			// Host-side half: the parent attested the managed namespace. This
+			// half signs and must observe the initial namespace, or the nft
+			// and loopback probes would read the agent namespace instead.
+			if err := requireHostNetworkNamespace(env.probe.readLink); err != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("service posture host-side preflight: %w", err))
+			}
+			env.probe.postureLauncher = servicePostureLauncher
+		} else {
+			return runServicePostureFromAgentNamespace(ctx, stdout, stderr, env, opts, args)
+		}
+	}
+	env.probe.prelaunch = true
 
 	// Read the workspace inventory ONCE, before preflight, so the workspace probe
 	// checks readability and expiry of every recorded grant in the same pass, and
@@ -272,6 +315,10 @@ func runContainRun(
 	if runCfgErr != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("loading config: %w", runCfgErr))
 	}
+	if env.probe.lifecycle != nil {
+		env.probe.lifecycle.record.ConfigSHA256 = runCfg.Hash()
+		env.probe.lifecycle.record.PolicySHA256 = runCfg.CanonicalPolicyHash()
+	}
 	xvfbPresent := false
 	if env.probe.stat != nil {
 		_, xvfbErr := env.probe.stat(env.probe.xvfbPath)
@@ -300,6 +347,9 @@ func runContainRun(
 	posture, err := env.emitPosture(runCfg, capsuleSigningKey, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s posture capsule: %w", commandLabel, err))
+	}
+	if env.probe.lifecycle != nil {
+		env.probe.lifecycle.record.PostureCapsuleSHA256 = posture.capsuleSHA256
 	}
 	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posture.path)
 	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)
@@ -886,4 +936,40 @@ func stringSliceSHA256(values []string) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// runServicePostureFromAgentNamespace is the half of service-posture that runs
+// inside the unit's namespace. systemd runs ExecStartPre in the agent network
+// namespace (JoinsNamespaceOf=), which is the only place the signer can observe
+// that namespace and its proxy doorway. The containment preflight, though, is
+// written against the host: it reads the managed nftables table, plants a
+// host-loopback canary, and checks host-visible sockets. Run inside the agent
+// namespace those probes see an empty ruleset and the wrong loopback, so the
+// preflight is re-executed in the initial namespace once the attestation here
+// has passed. Any failure on either side refuses the launch.
+func runServicePostureFromAgentNamespace(ctx context.Context, stdout, stderr io.Writer, env containRunEnv, opts containRunOptions, args []string) error {
+	if env.assertServiceNamespace == nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("service posture namespace assertion is unavailable"))
+	}
+	assertEnv := defaultNetnsAssertEnv()
+	assertEnv.agentUser = env.probe.agentUserName
+	assertEnv.proxyPort = env.probe.port
+	if err := env.assertServiceNamespace(ctx, assertEnv); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("service posture signer is outside the managed agent namespace: %w", err))
+	}
+	if env.runInHostNamespace == nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("service posture host-namespace preflight is unavailable"))
+	}
+	childArgs := []string{
+		"contain", "service-posture", "--host-namespace",
+		"--config", opts.configFile,
+		"--port", strconv.Itoa(opts.port),
+		"--posture-output", opts.postureOutput,
+		"--",
+	}
+	childArgs = append(childArgs, args...)
+	if err := env.runInHostNamespace(ctx, stdout, stderr, childArgs); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("service posture host-side preflight: %w", err))
+	}
+	return nil
 }

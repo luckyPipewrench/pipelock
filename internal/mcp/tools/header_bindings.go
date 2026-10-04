@@ -205,7 +205,10 @@ func containsHeaderAnnotation(value any) bool {
 }
 
 func containsHeaderAnnotationDepth(value any, depth int) bool {
-	if depth > maxToolHeaderSchemaDepth {
+	// Bounded by the schema gate's depth, not the property-path bound: a
+	// subtree the gate admits is read to its end, so a deep annotation-free
+	// sibling cannot void a valid contract elsewhere in the schema.
+	if depth > maxSchemaDepth {
 		return true
 	}
 	switch typed := value.(type) {

@@ -37,7 +37,7 @@ func canonicalDomainForMatch(value string) string {
 		prefix = "*."
 		base = value[2:]
 	}
-	if base == "" {
+	if base == "" || isDomainASCIIIdentity(base) {
 		return value
 	}
 	ascii, err := LookupASCII(base)
@@ -45,6 +45,25 @@ func canonicalDomainForMatch(value string) string {
 		return value
 	}
 	return prefix + ascii
+}
+
+// isDomainASCIIIdentity recognizes a conservative subset that lookup mapping
+// leaves unchanged. ACE labels still need decoding and validation, even though
+// their spelling is ASCII. All other inputs retain the full IDNA path and its
+// original-input fallback on error. This is not hostname validation: invalid
+// shapes in this subset also preserve their original spelling on that path.
+func isDomainASCIIIdentity(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == 'x' && strings.HasPrefix(value[i:], "xn--") {
+			return false
+		}
+		if c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // MatchDomain reports whether a hostname matches a configured domain pattern.
@@ -75,6 +94,20 @@ func canonicalDomainForMatch(value string) string {
 // fail-open; here it would be a silent policy change, so the behavior is held
 // exactly as it was.
 func MatchDomain(hostname, pattern string) bool {
+	// Equal inputs remain equal through normalization, including the original
+	// spelling fallback. A wildcard also matches its own literal suffix.
+	if hostname == pattern {
+		return true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		host := strings.TrimSuffix(hostname, ".")
+		suffix := strings.TrimSuffix(pattern[1:], ".")
+		// A literal suffix of an identity-mapped hostname is itself
+		// identity-mapped. IP literals still never wildcard-expand.
+		if len(suffix) > 1 && strings.HasSuffix(host, suffix) && isDomainASCIIIdentity(hostname) && net.ParseIP(host) == nil {
+			return true
+		}
+	}
 	// IDNA also maps DNS separator characters. Remove the single root dot
 	// after conversion so its equivalent spellings have identical semantics.
 	hostname = strings.ToLower(strings.TrimSuffix(canonicalDomainForMatch(hostname), "."))

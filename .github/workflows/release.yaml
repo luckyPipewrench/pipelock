@@ -1345,6 +1345,11 @@ jobs:
         with:
           name: release-promotion-inputs
 
+      - name: Preflight Homebrew tap credential
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: scripts/homebrew-tap-preflight.sh
+
       - name: Publish Homebrew formula
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

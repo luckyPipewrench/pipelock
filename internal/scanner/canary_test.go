@@ -33,6 +33,9 @@ func testCanaryValueSpecial() string {
 
 func testCanaryScanner() *Scanner {
 	cfg := testConfig()
+	// A canary is configured independently of ambient secret discovery. Tests
+	// must not accidentally enable its URL fallback through the test runner's env.
+	cfg.DLP.ScanEnv = false
 	cfg.CanaryTokens.Enabled = true
 	cfg.CanaryTokens.Tokens = []config.CanaryToken{
 		{
@@ -46,6 +49,87 @@ func testCanaryScanner() *Scanner {
 		},
 	}
 	return MustNew(cfg)
+}
+
+func TestScan_CanaryWithoutKnownSecrets(t *testing.T) {
+	const marker = "browser-fixture/marker=only"
+	for _, tt := range []struct {
+		name    string
+		enabled bool
+		tokens  bool
+		value   string
+		blocked bool
+	}{
+		{name: "plain", enabled: true, tokens: true, value: marker, blocked: true},
+		{name: "url_encoded", enabled: true, tokens: true, value: url.QueryEscape(marker), blocked: true},
+		{name: "disabled", tokens: true, value: marker},
+		{name: "empty_tokens", enabled: true, value: marker},
+		{name: "unrelated", enabled: true, tokens: true, value: "ordinary-fixture-value"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.SecretsFile = ""
+			cfg.CanaryTokens.Enabled = tt.enabled
+			if tt.tokens {
+				cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "browser-fixture", Value: marker}}
+			}
+			s := MustNew(cfg)
+			defer s.Close()
+			if len(s.envSecrets) != 0 || len(s.fileSecrets) != 0 {
+				t.Fatal("test requires no environment or file secrets")
+			}
+			target := "https://api.vendor.example/fixture?value=" + tt.value
+			result := s.Scan(context.Background(), target)
+			if result.Allowed == tt.blocked {
+				t.Fatalf("Allowed=%t, want %t: %s", result.Allowed, !tt.blocked, result.Reason)
+			}
+			if !tt.blocked {
+				return
+			}
+			if result.Scanner != ScannerDLP || !strings.Contains(result.Reason, "Canary Token (browser-fixture)") {
+				t.Fatalf("unexpected attribution: %+v", result)
+			}
+			matches := s.scanCanaryText(target)
+			if len(matches) == 0 || onlyResultSpan(t, result) != matches[0].Span() {
+				t.Fatalf("URL fallback must retain the shared canary span: %v", result.Spans())
+			}
+		})
+	}
+}
+
+func TestScan_CanaryKnownSecretPriorityUnchanged(t *testing.T) {
+	const marker = "browser-fixture-canary-marker"
+	const ordinary = "unrelated-fixture-secret"
+	for _, tt := range []struct {
+		name string
+		env  []string
+		file []string
+		want string
+	}{
+		{name: "env_match", env: []string{marker}, want: "environment variable leak detected"},
+		{name: "file_match", file: []string{marker}, want: "known secret leak detected"},
+		{name: "env_unrelated", env: []string{ordinary}, want: "Canary Token (browser-fixture)"},
+		{name: "file_unrelated", file: []string{ordinary}, want: "Canary Token (browser-fixture)"},
+		{name: "env_before_file", env: []string{marker}, file: []string{marker}, want: "environment variable leak detected"},
+		// The historical env helper's canary fallback precedes file matching.
+		{name: "existing_env_canary_before_file", env: []string{ordinary}, file: []string{marker}, want: "Canary Token (browser-fixture)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.DLP.ScanEnv = false
+			cfg.CanaryTokens.Enabled = true
+			cfg.CanaryTokens.Tokens = []config.CanaryToken{{Name: "browser-fixture", Value: marker}}
+			s := MustNew(cfg)
+			defer s.Close()
+			// Only generated literal test values; no real environment/file reads.
+			s.envSecrets, s.fileSecrets = tt.env, tt.file
+			result := s.Scan(context.Background(), "https://api.vendor.example/fixture?value="+marker)
+			if result.Allowed || result.Scanner != ScannerDLP || !strings.Contains(result.Reason, tt.want) {
+				t.Fatalf("want %q attribution, got %+v", tt.want, result)
+			}
+		})
+	}
 }
 
 func TestScanTextForDLP_CanaryBypassCoverage(t *testing.T) {

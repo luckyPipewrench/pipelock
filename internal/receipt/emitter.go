@@ -318,7 +318,7 @@ func (e *Emitter) linkPredecessor() {
 		privKey: e.privKey,
 		now:     e.now(),
 		notice:  e.notices,
-	})
+	}, e.observeTornTail)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
 		return
@@ -1426,6 +1426,10 @@ func (e *Emitter) resumeChain() error {
 			return entry.Type == recorderEntryType
 		})
 		if readErr != nil {
+			if errors.Is(readErr, recorder.ErrTornTail) {
+				keys := append(slices.Clone(e.priorSignerKeys), fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)))
+				readErr = CheckSessionTail(e.recorder, e.session, keys)
+			}
 			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
 		}
 		if found {

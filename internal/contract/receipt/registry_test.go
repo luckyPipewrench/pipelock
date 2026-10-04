@@ -16,6 +16,7 @@ import (
 var allPayloadKinds = []receipt.PayloadKind{
 	receipt.PayloadProxyDecision,
 	receipt.PayloadProxyDecisionWithSpans,
+	receipt.PayloadSecretEgressDecisionV1,
 	receipt.PayloadContractRatified,
 	receipt.PayloadContractPromoteIntent,
 	receipt.PayloadContractPromoteCommitted,
@@ -32,10 +33,11 @@ var allPayloadKinds = []receipt.PayloadKind{
 	receipt.PayloadDeferResolved,
 }
 
-func TestRegistry_HasAll16PayloadKinds(t *testing.T) {
+func TestRegistry_HasAllPayloadKinds(t *testing.T) {
 	expectedKinds := []receipt.PayloadKind{
 		receipt.PayloadProxyDecision,
 		receipt.PayloadProxyDecisionWithSpans,
+		receipt.PayloadSecretEgressDecisionV1,
 		receipt.PayloadContractRatified,
 		receipt.PayloadContractPromoteIntent,
 		receipt.PayloadContractPromoteCommitted,

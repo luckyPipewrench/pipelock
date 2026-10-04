@@ -128,6 +128,26 @@ class TestReleaseArtifacts(unittest.TestCase):
             "chart publication must stay in the tag release path; a manual workflow can run branch-selected code",
         )
 
+    def test_tap_preflight_is_not_manually_dispatched(self) -> None:
+        document = load_workflow(WORKFLOWS_DIR / "homebrew-tap-preflight.yaml")
+        events = workflow_events(document)
+        self.assertIn("schedule", events)
+        self.assertNotIn(
+            "workflow_dispatch",
+            events,
+            "a manual run would let the selected branch receive the tap credential",
+        )
+        self.assertNotIn(
+            "pull_request",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
+        self.assertNotIn(
+            "pull_request_target",
+            events,
+            "a pull request would let the head branch receive the tap credential",
+        )
+
     def test_no_workflow_pairs_a_manual_trigger_with_package_write(self) -> None:
         """The class behind the deleted chart publisher, not just that one file.
 
@@ -228,14 +248,23 @@ class TestReleaseArtifacts(unittest.TestCase):
         holders = []
         for job_name, job in parsed["jobs"].items():
             for step in job.get("steps", []):
-                blocks = (step.get("env") or {}, step.get("with") or {})
-                if any(
-                    "HOMEBREW_TAP_TOKEN" in str(value)
-                    for block in blocks
+                texts = [
+                    str(value)
+                    for block in (step.get("env") or {}, step.get("with") or {})
                     for value in block.values()
-                ):
+                ]
+                run = step.get("run")
+                if run is not None:
+                    texts.append(str(run))
+                if any("HOMEBREW_TAP_TOKEN" in text for text in texts):
                     holders.append((job_name, step.get("name", "")))
-        self.assertEqual(holders, [("release-publish", "Publish Homebrew formula")])
+        self.assertEqual(
+            holders,
+            [
+                ("release-publish", "Preflight Homebrew tap credential"),
+                ("release-publish", "Publish Homebrew formula"),
+            ],
+        )
 
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
@@ -370,6 +399,40 @@ class TestReleaseArtifacts(unittest.TestCase):
         ) + " )"
         self.assertIn(expected_condition, normalized_gate)
         self.assertNotIn("== 'failure'", normalized_gate)
+
+        release_build = yaml.safe_load(self.workflow)["jobs"]["release-build"]
+        self.assertIs(release_build.get("continue-on-error", False), False)
+        verify_steps = [
+            step for step in release_build["steps"]
+            if step.get("name") == "Verify attestation"
+        ]
+        self.assertEqual(len(verify_steps), 1, "expected exactly one main attestation gate")
+        self.assertIs(verify_steps[0].get("continue-on-error", False), False)
+
+        # The condition alone proves nothing if the step it guards succeeds:
+        # the gate's executable body must end the job with a nonzero exit.
+        gate_runs = [script for name, script in self._job_runs("release-build") if name == "Verify attestation"]
+        self.assertEqual(len(gate_runs), 1, "expected exactly one main attestation gate")
+        gate_lines = self._executable_lines(gate_runs[0])
+        self.assertEqual(gate_lines[-1], "exit 1")
+        # No path through the gate may leave successfully. Every `exit`
+        # anywhere in a line (after `&&`, `;`, inside `if ... fi`) must carry
+        # a literal nonzero status: `exit 0`, a bare `exit` and a computed
+        # status such as `exit "$?"` can all return success. Quotes and
+        # backslashes are dropped first so `'exit' 0` or `\exit 0` is still
+        # seen, and the status must be 1-255 because the shell takes it
+        # modulo 256 (`exit 256` succeeds). Backslash-continued lines are
+        # joined first, as the shell does, so `exi\` + `t 0` is one command.
+        # This guards against an accidental edit to the gate, not a
+        # determined attempt to hide a successful exit from a regex.
+        exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
+        commands = re.sub(r"\\\n", "", gate_runs[0]).splitlines()
+        not_failing = [
+            line for line in self._executable_lines("\n".join(commands))
+            for status in exit_command.findall(re.sub(r"['\"\\]", "", line))
+            if not (re.fullmatch(r"[1-9][0-9]{0,2}", status) and int(status) <= 255)
+        ]
+        self.assertFalse(not_failing)
 
     def test_verified_staging_indexes_promote_only_in_protected_job(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")
@@ -513,6 +576,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             publish_names,
             [
                 "Verify Go version",
+                "Preflight Homebrew tap credential",
                 "Publish Homebrew formula",
                 "Reverify the release manifest signature and publish",
                 "Update floating major tag for GitHub Action",

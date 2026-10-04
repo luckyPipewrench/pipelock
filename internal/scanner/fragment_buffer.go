@@ -38,16 +38,44 @@ const (
 )
 
 // fragment holds a single outbound payload chunk with its arrival time.
+// continuity is empty for a stream whose bytes are one secret. A non-empty
+// value joins only with fragments that carry the same identity, so unrelated
+// leaves that share a retention stream cannot sit between two halves.
 type fragment struct {
 	data            []byte
 	at              time.Time
 	sourceRequestID []byte
+	continuity      []byte
 }
 
 // sessionBuffer accumulates outbound fragments for a single session.
 type sessionBuffer struct {
-	fragments  []fragment
-	totalBytes int
+	streamID     string
+	groupMembers map[string]struct{}
+	fragments    []fragment
+	storage      []fragment
+	totalBytes   int
+}
+
+// appendFragmentReusingStorage keeps the active descriptors contiguous and in
+// their original order. Front eviction can leave reusable capacity before the
+// active slice; compact into that capacity only when the tail fills. Payload
+// and request-ID bytes are immutable, and scan snapshots own descriptor copies.
+// Callers hold the FragmentBuffer lock.
+func appendFragmentReusingStorage(active, storage []fragment, next fragment) ([]fragment, []fragment) {
+	if len(active) == cap(active) {
+		// After a large trim, let normal append replace the oversized backing
+		// array instead of retaining historical high-water capacity forever.
+		if len(storage) > len(active) && len(storage)-len(active) <= len(active) {
+			n := copy(storage, active)
+			clear(storage[n:])
+			active = storage[:n]
+		} else {
+			active = append(active, next)
+			return active, active[:cap(active)]
+		}
+	}
+	return append(active, next), storage
 }
 
 // MaxPathPositions is the largest URL path depth that CEE tracks. It bounds
@@ -67,6 +95,7 @@ type pathPositionBuffer struct {
 	initial    []byte
 	varied     bool
 	fragments  []fragment
+	storage    []fragment
 	totalBytes int
 }
 
@@ -227,17 +256,30 @@ func (fb *FragmentBuffer) AppendAndScanOwnedInGroup(ctx context.Context, owner i
 	var snapshot []fragment
 	fb.mu.Lock()
 	fb.maybeCleanupLocked(time.Now())
-	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), payload, nil, &snapshot)
+	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), FragmentPiece{Data: payload}, nil, &snapshot)
 	fb.mu.Unlock()
 	return result, scanFragmentsForSecrets(ctx, sc, snapshot)
 }
 
+// FragmentPiece is one leaf inside a stream. Continuity is the identity that
+// reassembly must keep contiguous. Empty Continuity means the piece joins
+// every other empty-continuity fragment in the stream, which is the legacy
+// single-payload behavior. Pieces with the same continuity in one append are
+// stored as one fragment, even when another leaf sits between them, so a
+// single request cannot look like a cross-request match.
+type FragmentPiece struct {
+	Continuity []byte
+	Data       []byte
+}
+
 // FragmentAppend identifies one stream carried by a request. Streams can share
 // a retention group without allowing one field to evict another before scanning.
+// When Pieces is non-empty it is the stream contents and Payload is ignored.
 type FragmentAppend struct {
 	Group   identitykey.CEEStream
 	Stream  identitykey.CEEStream
 	Payload []byte
+	Pieces  []FragmentPiece
 	// SourceRequestID is an optional opaque request identity. The ledger retains
 	// it only when it is non-empty and no larger than
 	// MaxFragmentSourceRequestIDBytes. Legacy or oversized identities do not
@@ -274,7 +316,11 @@ func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner ide
 	var result FragmentAppendResult
 	appended := 0
 	for i, item := range appends {
-		result = fb.appendSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), item.Payload, item.SourceRequestID, &snapshots[i])
+		if len(item.Pieces) > 0 {
+			result = fb.appendPiecesSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), item.Pieces, item.SourceRequestID, &snapshots[i])
+		} else {
+			result = fb.appendSnapshotLocked(owner.Key(), item.Group.Key(), item.Stream.Key(), FragmentPiece{Data: item.Payload}, item.SourceRequestID, &snapshots[i])
+		}
 		if result != (FragmentAppendResult{}) {
 			break
 		}
@@ -298,19 +344,64 @@ func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner ide
 // after any due cleanup, so callers that must decide something about existing
 // buffer contents can do so atomically with the append itself.
 func (fb *FragmentBuffer) appendLocked(owner, group, streamKey string, payload []byte) FragmentAppendResult {
-	return fb.appendWithSnapshotLocked(owner, group, streamKey, payload, nil, nil)
+	return fb.appendWithSnapshotLocked(owner, group, streamKey, FragmentPiece{Data: payload}, nil, nil)
 }
 
-func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, payload, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
-	result := fb.appendSnapshotLocked(owner, group, streamKey, payload, sourceRequestID, snapshot)
+func (fb *FragmentBuffer) appendWithSnapshotLocked(owner, group, streamKey string, piece FragmentPiece, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
+	result := fb.appendSnapshotLocked(owner, group, streamKey, piece, sourceRequestID, snapshot)
 	if result == (FragmentAppendResult{}) {
 		fb.retainStreamLocked(owner, streamKey)
 	}
 	return result
 }
 
-func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, payload, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
-	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
+func (fb *FragmentBuffer) appendPiecesSnapshotLocked(owner, group, streamKey string, pieces []FragmentPiece, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
+	merged := mergeFragmentPieces(pieces)
+	var result FragmentAppendResult
+	for _, piece := range merged {
+		result = fb.appendSnapshotLocked(owner, group, streamKey, piece, sourceRequestID, nil)
+		if result != (FragmentAppendResult{}) {
+			return result
+		}
+	}
+	if snapshot != nil {
+		if sb := fb.sessions[streamKey]; sb != nil {
+			*snapshot = fb.activeFragmentsLocked(sb.fragments)
+		}
+	}
+	return FragmentAppendResult{}
+}
+
+func mergeFragmentPieces(pieces []FragmentPiece) []FragmentPiece {
+	merged := make([]FragmentPiece, 0, len(pieces))
+	index := make(map[string]int, len(pieces))
+	for _, piece := range pieces {
+		if len(piece.Data) == 0 {
+			continue
+		}
+		key := string(piece.Continuity)
+		if at, ok := index[key]; ok {
+			merged[at].Data = append(merged[at].Data, piece.Data...)
+			continue
+		}
+		index[key] = len(merged)
+		merged = append(merged, FragmentPiece{
+			Continuity: append([]byte(nil), piece.Continuity...),
+			Data:       append([]byte(nil), piece.Data...),
+		})
+	}
+	return merged
+}
+
+func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, piece FragmentPiece, sourceRequestID []byte, snapshot *[]fragment) FragmentAppendResult {
+	sb, exists := fb.sessions[streamKey]
+	streamID := ""
+	if sb != nil {
+		streamID = sb.streamID
+	}
+	if streamID == "" {
+		streamID = fragmentStreamID(fragmentStreamKindData, streamKey)
+	}
 	// Normalized once here so everything below can assume a non-empty owner:
 	// a caller that keeps one stream per client passes no owner, and that
 	// stream is then its own identity.
@@ -320,31 +411,35 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 	if group == "" {
 		group = streamID
 	}
-	sb, exists := fb.sessions[streamKey]
 	if !exists {
 		if !fb.canAdmitOwnerLocked(owner) {
 			return FragmentAppendResult{CapacityExceeded: true}
 		}
-		sb = &sessionBuffer{}
+		sb = &sessionBuffer{streamID: streamID}
 		fb.sessions[streamKey] = sb
 		fb.trackOwnerStreamLocked(owner, group, streamID)
+		sb.groupMembers = fb.owners[owner].budgets[group]
 	} else if !fb.streamOwnedByLocked(streamID, owner) {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
 
 	// Copy payload to prevent caller mutation of buffered data.
-	copied := make([]byte, len(payload))
-	copy(copied, payload)
+	copied := append([]byte(nil), piece.Data...)
+	var continuity []byte
+	if len(piece.Continuity) > 0 {
+		continuity = append([]byte(nil), piece.Continuity...)
+	}
 	var requestID []byte
 	if len(copied) > 0 && len(sourceRequestID) > 0 && len(sourceRequestID) <= MaxFragmentSourceRequestIDBytes {
 		requestID = append([]byte(nil), sourceRequestID...)
 	}
 
 	now := time.Now()
-	sb.fragments = append(sb.fragments, fragment{
+	sb.fragments, sb.storage = appendFragmentReusingStorage(sb.fragments, sb.storage, fragment{
 		data:            copied,
 		at:              now,
 		sourceRequestID: requestID,
+		continuity:      continuity,
 	})
 	sb.totalBytes += len(copied)
 	if snapshot != nil {
@@ -356,13 +451,16 @@ func (fb *FragmentBuffer) appendSnapshotLocked(owner, group, streamKey string, p
 }
 
 func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
-	streamID := fragmentStreamID(fragmentStreamKindData, streamKey)
-	if owner == "" {
-		owner = streamID
-	}
 	sb := fb.sessions[streamKey]
 	if sb == nil {
 		return // another stream's shared budget already evicted this stream
+	}
+	streamID := sb.streamID
+	if streamID == "" {
+		streamID = fragmentStreamID(fragmentStreamKindData, streamKey)
+	}
+	if owner == "" {
+		owner = streamID
 	}
 	// Evict oldest fragments until within per-session byte cap.
 	// A single fragment larger than maxBytes is truncated to maxBytes.
@@ -376,8 +474,13 @@ func (fb *FragmentBuffer) retainStreamLocked(owner, streamKey string) {
 		sb.fragments[0].data = sb.fragments[0].data[len(sb.fragments[0].data)-fb.maxBytes:]
 		sb.totalBytes = fb.maxBytes
 	}
-	// The per-stream cap above bounds one stream; this bounds the identity that
-	// owns it, which is the unit the ledger admits.
+	// The per-stream cap also bounds a singleton budget group. Shared groups
+	// need the same group-budget enforcement as enforceOwnerBudgetLocked below.
+	// Keep the membership map, never its size: another request can add a
+	// sibling stream to the group while this stream remains live.
+	if sb.groupMembers != nil && len(sb.groupMembers) <= 1 {
+		return
+	}
 	fb.enforceOwnerBudgetLocked(owner, streamID)
 }
 
@@ -476,13 +579,10 @@ func (fb *FragmentBuffer) streamBytesLocked(streamID string) int {
 	return 0
 }
 
-// enforceOwnerBudgetLocked keeps one identity's retained bytes within the
-// configured cap by evicting its OWN oldest fragment until it fits. Evicting
-// within an identity is the same trade the per-stream cap already makes, and
-// the newest bytes are kept because they are the ones most likely to complete
-// a split secret. It never touches another identity's evidence: a fragment
-// dropped from a stranger's stream could let a later request complete a secret
-// in an emptied stream and pass uninspected.
+// enforceOwnerBudgetLocked keeps the stream's budget group within the configured
+// cap by evicting its oldest fragments. Independent groups retain their own caps.
+// The newest bytes are kept because they are the ones most likely to complete a
+// split secret. It never touches another group's evidence.
 func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	state := fb.owners[owner]
 	if state == nil {
@@ -505,9 +605,9 @@ func (fb *FragmentBuffer) enforceOwnerBudgetLocked(owner, streamID string) {
 	}
 }
 
-// evictOldestOwnerFragmentLocked drops the single oldest fragment held by one
-// identity and reports whether anything was removed. A false return means the
-// identity holds nothing further that can be released, which stops the caller
+// evictOldestOwnerFragmentLocked drops the single oldest fragment in the budget
+// group and reports whether anything was removed. A false return means the
+// group holds nothing further that can be released, which stops the caller
 // from spinning.
 func (fb *FragmentBuffer) evictOldestOwnerFragmentLocked(members map[string]struct{}) bool {
 	var (
@@ -678,7 +778,7 @@ func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEId
 
 func (fb *FragmentBuffer) appendPathFragmentLocked(ps *pathSessionBuffer, pb *pathPositionBuffer, payload []byte) {
 	copied := append([]byte(nil), payload...)
-	pb.fragments = append(pb.fragments, fragment{data: copied, at: time.Now()})
+	pb.fragments, pb.storage = appendFragmentReusingStorage(pb.fragments, pb.storage, fragment{data: copied, at: time.Now()})
 	pb.totalBytes += len(copied)
 	ps.totalBytes += len(copied)
 }
@@ -722,6 +822,53 @@ func (fb *FragmentBuffer) activeFragmentsLocked(fragments []fragment) []fragment
 }
 
 func scanFragmentsForSecrets(ctx context.Context, sc *Scanner, fragments []fragment) []DLPMatch {
+	groups := fragmentContinuityGroups(fragments)
+	if len(groups) <= 1 {
+		if len(groups) == 0 {
+			return nil
+		}
+		return scanOneFragmentContinuity(ctx, sc, groups[0])
+	}
+	var matches []DLPMatch
+	for _, group := range groups {
+		matches = append(matches, scanOneFragmentContinuity(ctx, sc, group)...)
+	}
+	return matches
+}
+
+// fragmentContinuityGroups keeps the legacy stream as one group. A stream
+// that carries path identity is scanned once per identity, in first-seen
+// order, so a sibling leaf cannot interrupt a split value.
+func fragmentContinuityGroups(fragments []fragment) [][]fragment {
+	if len(fragments) == 0 {
+		return nil
+	}
+	keyed := false
+	for _, item := range fragments {
+		if len(item.continuity) > 0 {
+			keyed = true
+			break
+		}
+	}
+	if !keyed {
+		return [][]fragment{fragments}
+	}
+	index := make(map[string]int)
+	groups := make([][]fragment, 0)
+	for _, item := range fragments {
+		key := string(item.continuity)
+		at, ok := index[key]
+		if !ok {
+			index[key] = len(groups)
+			groups = append(groups, nil)
+			at = len(groups) - 1
+		}
+		groups[at] = append(groups[at], item)
+	}
+	return groups
+}
+
+func scanOneFragmentContinuity(ctx context.Context, sc *Scanner, fragments []fragment) []DLPMatch {
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}

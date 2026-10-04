@@ -96,8 +96,19 @@ func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.C
 	command := append([]string{defaultLaunchScript}, opts.args...)
 	launchEnv := containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath, opts.display)
 	unit := fmt.Sprintf("pipelock-contain-%d-%d", os.Getpid(), privateTmpUnitSequence.Add(1))
+	if opts.lifecycleUnit != "" {
+		unit = opts.lifecycleUnit
+	}
 	cmd := exec.CommandContext(opts.ctx, systemdRunPath)
-	cmd.Args = append([]string{systemdRunPath}, privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, opts.display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)...)
+	args := privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, opts.display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)
+	if opts.lifecycleRunID != "" {
+		args = append([]string{
+			"--system", "--no-ask-password",
+			"--description=" + lifecycleDescriptionPrefix + opts.lifecycleRunID,
+			"--property=KillMode=control-group", "--property=SendSIGKILL=yes", "--property=TimeoutStopSec=5s", "--property=Restart=no",
+		}, args...)
+	}
+	cmd.Args = append([]string{systemdRunPath}, args...)
 	cmd.Stdin = opts.stdin
 	cmd.Stdout = opts.stdout
 	cmd.Stderr = opts.stderr

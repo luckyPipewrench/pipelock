@@ -649,11 +649,179 @@ func (e *Engine) stripTraps(s string, strictness string, xml bool) (string, int)
 
 	// Comment traps are stripped at standard and aggressive.
 	if strictness != config.ShieldStrictnessMinimal {
-		s, n = countReplace(e.commentTrapRe, s)
+		s, n = e.stripCommentTraps(s, xml)
 		total += n
 	}
 
 	return s, total
+}
+
+// stripCommentTraps bounds each match to one parsed comment so markup between
+// separate comments cannot become part of a removal. Raw token bytes preserve
+// the document's serialization, including malformed or incomplete input.
+func (e *Engine) stripCommentTraps(doc string, xml bool) (string, int) {
+	if !strings.Contains(doc, "<!--") {
+		return doc, 0
+	}
+	z := html.NewTokenizer(strings.NewReader(doc))
+	z.AllowCDATA(xml)
+	var out strings.Builder
+	out.Grow(len(doc))
+	hits := 0
+	offset := 0
+	missingPITerminator := false
+	// Track foreign-content and integration boundaries from the HTML standard.
+	// https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inforeign
+	var boundaries []commentBoundary
+	boundaryIndexes := make(map[string]int)
+	popBoundary := func() {
+		boundary := boundaries[len(boundaries)-1]
+		if boundary.previous < 0 {
+			delete(boundaryIndexes, boundary.tag)
+		} else {
+			boundaryIndexes[boundary.tag] = boundary.previous
+		}
+		boundaries = boundaries[:len(boundaries)-1]
+	}
+	for {
+		typ := z.Next()
+		raw := z.Raw()
+		if xml && bytes.HasPrefix(raw, []byte("<?")) {
+			// The HTML tokenizer ends bogus comments at >, but XML processing
+			// instructions end at ?> and their contents are not comment markup.
+			end := -1
+			if !missingPITerminator {
+				end = strings.Index(doc[offset:], "?>")
+				missingPITerminator = end < 0
+			}
+			if end >= 0 {
+				end += offset + 2
+				out.WriteString(doc[offset:end])
+				offset = end
+				z = html.NewTokenizer(strings.NewReader(doc[offset:]))
+				z.AllowCDATA(true)
+				continue
+			}
+			// Preserve this malformed PI span, but keep filtering subsequent
+			// tokens instead of granting the rest of the document a bypass.
+			typ = html.TextToken
+		}
+		offset += len(raw)
+		if xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken) {
+			// XML has no HTML raw-text elements; literal comments remain markup
+			// inside style/title/textarea as well as after self-closing tags.
+			z.NextIsNotRawText()
+		}
+		if !xml && (typ == html.StartTagToken || typ == html.SelfClosingTagToken || typ == html.EndTagToken) {
+			token := z.Token()
+			tag := token.Data
+			parent := commentBoundary{}
+			if len(boundaries) > 0 {
+				parent = boundaries[len(boundaries)-1]
+			}
+			foreign := parent.foreign || (parent.mathText && (tag == "mglyph" || tag == "malignmark"))
+			if foreign && commentForeignBreakout(token) {
+				for len(boundaries) > 0 && boundaries[len(boundaries)-1].foreign {
+					popBoundary()
+				}
+				foreign = false
+			}
+			if typ == html.EndTagToken {
+				// Unmatched closes must not repeatedly search a deep stack.
+				if index, ok := boundaryIndexes[tag]; ok {
+					for len(boundaries) > index {
+						popBoundary()
+					}
+				}
+			} else {
+				if foreign {
+					z.NextIsNotRawText()
+				}
+				ns := ""
+				if foreign {
+					ns = parent.namespace
+				} else if tag == "svg" || tag == "math" {
+					ns = tag
+				}
+				boundary := commentBoundary{tag: tag, namespace: ns, foreign: ns != ""}
+				if ns == "svg" && (tag == "title" || tag == "desc" || tag == "foreignobject") {
+					boundary.foreign = false
+				}
+				if ns == "math" {
+					switch tag {
+					case "mi", "mo", "mn", "ms", "mtext":
+						boundary.foreign, boundary.mathText = false, true
+					case "annotation-xml":
+						for _, attr := range token.Attr {
+							if attr.Key == "encoding" && (strings.EqualFold(attr.Val, "text/html") || strings.EqualFold(attr.Val, "application/xhtml+xml")) {
+								boundary.foreign = false
+							}
+						}
+					}
+				}
+				// HTML descendants mask integration-point state until their close.
+				// HTML ignores a trailing slash on non-void start tags.
+				trackHTML := ns == "" && !commentHTMLVoid(tag) && (len(boundaries) > 0 || rawTextElements[tag])
+				if (ns != "" && typ == html.StartTagToken) || trackHTML {
+					boundary.previous = -1
+					if index, ok := boundaryIndexes[tag]; ok {
+						boundary.previous = index
+					}
+					boundaryIndexes[tag] = len(boundaries)
+					boundaries = append(boundaries, boundary)
+				}
+			}
+		}
+		match := raw
+		if typ == html.CommentToken && bytes.HasSuffix(raw, []byte("--!>")) {
+			// HTML accepts this alternate closing delimiter. Normalize only the
+			// matching view, retaining raw serialization for ordinary comments.
+			match = append(append([]byte(nil), raw[:len(raw)-4]...), []byte("-->")...)
+		}
+		if typ == html.CommentToken && e.commentTrapRe.Match(match) {
+			hits++
+		} else {
+			out.Write(raw)
+		}
+		if typ == html.ErrorToken {
+			return out.String(), hits
+		}
+	}
+}
+
+type commentBoundary struct {
+	tag, namespace    string
+	foreign, mathText bool
+	previous          int
+}
+
+// commentHTMLVoid identifies HTML elements that do not enter the open-element
+// stack. Foreign elements with the same names are not HTML void elements.
+func commentHTMLVoid(tag string) bool {
+	switch tag {
+	case "area", "base", "basefont", "bgsound", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	}
+	return false
+}
+
+// commentForeignBreakout identifies the standard tokens that leave foreign
+// content, so later HTML title/style text is not filtered as XML markup.
+func commentForeignBreakout(token html.Token) bool {
+	if token.Type == html.EndTagToken {
+		return token.Data == "br" || token.Data == "p"
+	}
+	switch token.Data {
+	case "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var":
+		return true
+	case "font":
+		for _, attr := range token.Attr {
+			if attr.Key == "color" || attr.Key == "face" || attr.Key == "size" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildShimList assembles the ordered list of shim scripts to inject.

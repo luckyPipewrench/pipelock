@@ -562,14 +562,14 @@ func TestExtractSchemaDescriptions_Definitions(t *testing.T) {
 func TestExtractSchemaDescriptions_DepthLimit(t *testing.T) {
 	// Build a schema nested beyond maxSchemaDepth
 	inner := `{"description": "deep"}`
-	for i := 0; i < 25; i++ {
+	for range maxSchemaDepth + 5 {
 		inner = fmt.Sprintf(`{"nested": %s}`, inner)
 	}
 	descs := ExtractSchemaDescriptions(json.RawMessage(inner))
 	// The "deep" description should be unreachable due to depth limit
 	for _, d := range descs {
 		if d == "deep" {
-			t.Error("description at depth 25+ should be unreachable due to maxSchemaDepth")
+			t.Error("description beyond maxSchemaDepth should be unreachable")
 		}
 	}
 }
@@ -3094,13 +3094,13 @@ func TestExtractParamNames_Empty(t *testing.T) {
 func TestExtractParamNames_DepthLimit(t *testing.T) {
 	// Build schema nested beyond maxSchemaDepth.
 	inner := `{"properties": {"deep_param": {"type": "string"}}}`
-	for i := 0; i < 25; i++ {
+	for range maxSchemaDepth + 5 {
 		inner = fmt.Sprintf(`{"nested": %s}`, inner)
 	}
 	names := ExtractParamNames(json.RawMessage(inner))
 	for _, n := range names {
 		if n == "deep_param" {
-			t.Error("param at depth 25+ should be unreachable due to maxSchemaDepth")
+			t.Error("param beyond maxSchemaDepth should be unreachable")
 		}
 	}
 }

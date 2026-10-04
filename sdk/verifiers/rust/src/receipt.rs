@@ -5,7 +5,7 @@ use crate::signing::{verify_receipt_with_options, UNPINNED_RECEIPT_BANNER};
 use crate::types::ReceiptReport;
 use crate::util::{
     parse_json_text, read_verifier_text, reject_duplicate_keys, resolve_signer_key, string_at,
-    u64_at, Result,
+    u64_at, Result, VerifierError,
 };
 use serde_json::Value;
 use std::path::PathBuf;
@@ -39,7 +39,14 @@ pub fn run_receipt(
         report.error = Some(err.to_string());
         return Ok(report);
     }
-    let receipt: Value = parse_json_text(&text, "malformed JSON")?;
+    let receipt: Value = match parse_json_text(&text, "malformed JSON") {
+        Ok(receipt) => receipt,
+        Err(VerifierError::Invalid(err)) => {
+            report.error = Some(err);
+            return Ok(report);
+        }
+        Err(err) => return Err(err),
+    };
     // EV2-FU-1: reject unknown fields on a signed v1 receipt (the v2 evidence
     // receipt has its own schema). The only tolerated unknown surface is the
     // top-level ext bag.
@@ -50,9 +57,19 @@ pub fn run_receipt(
         }
     }
     if string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2") {
-        report.action_id = string_at(&receipt, &["event_id"]).map(str::to_string);
+        report.action_id =
+            if string_at(&receipt, &["payload_kind"]) == Some(crate::secret_egress::PAYLOAD_KIND) {
+                string_at(&receipt, &["payload", "decision", "action_id"]).map(str::to_string)
+            } else {
+                string_at(&receipt, &["event_id"]).map(str::to_string)
+            };
         report.verdict = string_at(&receipt, &["payload", "verdict"]).map(str::to_string);
-        report.transport = string_at(&receipt, &["payload", "transport"]).map(str::to_string);
+        report.transport =
+            if string_at(&receipt, &["payload_kind"]) == Some(crate::secret_egress::PAYLOAD_KIND) {
+                string_at(&receipt, &["payload", "decision", "transport"]).map(str::to_string)
+            } else {
+                string_at(&receipt, &["payload", "transport"]).map(str::to_string)
+            };
         report.signer_key = Some(key_hex.clone());
         report.policy_hash = string_at(&receipt, &["policy_hash"]).map(str::to_string);
         report.chain_seq = u64_at(&receipt, &["chain_seq"]);

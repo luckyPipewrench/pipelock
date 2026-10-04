@@ -797,13 +797,13 @@ func TestDeclaredContainmentLoopbackServicesForVerify(t *testing.T) {
 		if unusable != true {
 			t.Errorf("unusable = %v, want true: an expired entry is a declaration this host can no longer honor", unusable)
 		}
-		if declared != nil {
-			t.Fatalf("got %v, want nil", declared)
+		if len(declared) != 0 {
+			t.Fatalf("got %v, want the expired entry dropped from the effective set", declared)
 		}
-		if !strings.Contains(problem, "expired at") {
-			t.Fatalf("problem = %q, want it to name the expiry failure", problem)
+		if !strings.Contains(problem, "expired at") || !strings.Contains(problem, "127.0.0.1:9200") || !strings.Contains(problem, "owner=search-team") {
+			t.Fatalf("problem = %q, want it to name the expired entry, its owner, and the expiry", problem)
 		}
-		if !strings.Contains(problem, "remove or re-approve") {
+		if !strings.Contains(problem, "renew or remove") {
 			t.Fatalf("problem = %q, want it to name the operator remedy", problem)
 		}
 	})
@@ -985,7 +985,7 @@ func TestProbeNFTContainmentSurfacesLoopbackConfigProblemDetail(t *testing.T) {
 	if !strings.Contains(detail, "expired at") {
 		t.Fatalf("detail = %q, want the expiry failure named", detail)
 	}
-	if !strings.Contains(detail, "remove or re-approve") {
+	if !strings.Contains(detail, "renew or remove") {
 		t.Fatalf("detail = %q, want the operator remedy named", detail)
 	}
 }

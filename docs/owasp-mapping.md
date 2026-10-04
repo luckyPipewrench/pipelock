@@ -181,7 +181,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **Configurable enforcement modes:** strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
 - **Rate limiting:** per-domain sliding window prevents bulk data transfer even to allowed domains.
-- **Environment variable leak detection:** detects the proxy's own env var values in outbound traffic (raw, base64, hex, base32, decimal character codes, and contiguous partial disclosures).
+- **Environment variable leak detection:** detects the proxy's own env var values in outbound traffic, including base64, hex and base32 encodings. Contiguous partial disclosures of 16 bytes or more match in plain or decoded text when the value is long and random enough to be eligible (URL values match only in their credential-bearing parts); decimal character-code matching requires the whole value.
 - **Entropy analysis:** flags high-entropy strings that look like encoded secrets.
 - **URL length limits:** unusually long URLs (potential data exfiltration) are flagged.
 

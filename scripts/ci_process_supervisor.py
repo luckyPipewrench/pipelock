@@ -50,7 +50,8 @@ def reap_exited_children(process: subprocess.Popen[bytes]) -> bool:
             process.returncode = os.waitstatus_to_exitcode(status)
 
 
-def interrupt_command(process: subprocess.Popen[bytes], signum: int) -> None:
+def interrupt_command(process: subprocess.Popen[bytes], signum: int,
+                      grace_seconds: float = SIGNAL_GRACE_SECONDS) -> None:
     """Forward cancellation while the unreaped command still owns its group ID."""
     if process.returncode is not None:
         return
@@ -58,7 +59,7 @@ def interrupt_command(process: subprocess.Popen[bytes], signum: int) -> None:
         os.killpg(process.pid, signum)
     except ProcessLookupError:
         pass
-    deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+    deadline = time.monotonic() + grace_seconds
     while reap_exited_children(process) and time.monotonic() < deadline:
         time.sleep(0.01)
 
@@ -96,7 +97,8 @@ def cleanup_children(
         time.sleep(0.01)
 
 
-def supervise(command: list[str], status_file: Path) -> int:
+def supervise(command: list[str], status_file: Path,
+              signal_grace_seconds: float = SIGNAL_GRACE_SECONDS) -> int:
     """Preserve command status after cleanup, refusing an apparently clean leak."""
     received_signal = 0
 
@@ -135,7 +137,7 @@ def supervise(command: list[str], status_file: Path) -> int:
             time.sleep(0.01)
     finally:
         if received_signal:
-            interrupt_command(process, received_signal)
+            interrupt_command(process, received_signal, signal_grace_seconds)
         complete, had_live_descendants = cleanup_children(process, cleanup_processes)
         if received_signal:
             returncode = 128 + received_signal
@@ -163,6 +165,9 @@ def main() -> int:
     """Launch one command in a dedicated child-adoption process."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status-file", required=True, type=Path)
+    parser.add_argument("--signal-grace-seconds", type=int, default=int(SIGNAL_GRACE_SECONDS),
+                        choices=range(2, 21), metavar="2..20",
+                        help="bounded graceful cancellation budget; default 2 seconds")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
@@ -171,7 +176,7 @@ def main() -> int:
     if not command:
         parser.error("a command is required")
     try:
-        return supervise(command, args.status_file)
+        return supervise(command, args.status_file, args.signal_grace_seconds)
     except OSError as exc:
         print(f"ci-process-supervisor: {exc}", file=sys.stderr)
         return 125

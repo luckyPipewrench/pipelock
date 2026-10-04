@@ -787,25 +787,16 @@ func stepWriteToolsList() step {
 			if err := env.chmod(filepath.Dir(env.toolsListPath), modeDirTraversable); err != nil {
 				return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.toolsListPath), err)
 			}
-			defaults := resolvableDefaultToolEntries(env)
-			if len(defaults) == 0 {
-				return false, errors.New("no default agent tools found in pipelock-agent PATH (/home/pipelock-agent/.local/bin:/usr/local/bin:/usr/bin:/bin); install a tool such as claude into /usr/local/bin or use add-tool after install")
-			}
-			entries, err := readToolsList(env)
+			plan, err := plannedToolsList(env)
 			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
-					return false, fmt.Errorf("read tools.list: %w", err)
-				}
-				if err := writeToolsList(env, defaults); err != nil {
-					return false, err
-				}
-				return true, nil
+				return false, err
 			}
-			merged, changed := mergeDefaultToolEntries(entries, defaults)
-			if !changed {
+			if !plan.changed && toolsListModeCurrent(env) {
 				return false, nil
 			}
-			if err := writeToolsList(env, merged); err != nil {
+			// Content or mode differs: rewrite through the backed-up writer so
+			// pipelock-agent can read the list and rollback restores the old file.
+			if err := writeToolsList(env, plan.entries); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -814,6 +805,209 @@ func stepWriteToolsList() step {
 			return restoreBackup(env, env.toolsListPath)
 		},
 	}
+}
+
+type toolsListPlan struct {
+	entries []toolsListEntry
+	changed bool
+}
+
+// plannedToolsList computes the allow-list stepWriteToolsList writes: the
+// existing tools.list (parsed, so a malformed file fails here) merged with the
+// default tools pipelock-agent can execute. It fails unless at least one entry
+// is runnable. Preflight and the write step share it, so a host the write step
+// would refuse is refused before any step mutates it.
+func plannedToolsList(env *installEnv) (toolsListPlan, error) {
+	defaults := resolvableDefaultToolEntries(env)
+	existing, err := readToolsList(env)
+	existed := true
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return toolsListPlan{}, fmt.Errorf("read tools.list: %w", err)
+		}
+		existed = false
+	}
+	plan := toolsListPlan{entries: defaults, changed: true}
+	if existed {
+		plan.entries, plan.changed = mergeDefaultToolEntries(existing, defaults)
+	}
+	// plk-launch uses the first line whose name matches, so only the first
+	// entry for each name decides whether that tool can launch.
+	seen := make(map[string]bool, len(plan.entries))
+	for _, e := range plan.entries {
+		if seen[e.name] {
+			continue
+		}
+		seen[e.name] = true
+		if toolsListEntryRunnable(env, e) {
+			return plan, nil
+		}
+	}
+	return toolsListPlan{}, noAgentToolsError(env)
+}
+
+// toolsListModeCurrent reports whether an existing tools.list already has the
+// managed pipelock-agent-readable mode. Any stat failure reports false, so the
+// write step rewrites the file rather than trusting it.
+func toolsListModeCurrent(env *installEnv) bool {
+	info, err := env.stat(env.toolsListPath)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm() == modeAllowListReadable
+}
+
+// agentToolsPrereq is the preflight form of plannedToolsList.
+func agentToolsPrereq(env *installEnv) error {
+	_, err := plannedToolsList(env)
+	return err
+}
+
+// toolsListEntryRunnable reports whether plk-launch could start the entry as
+// pipelock-agent: a pinned target, or the path an unpinned name resolves to in
+// pipelock-agent PATH, must be a regular file pipelock-agent can execute and
+// reach through directories it can search.
+func toolsListEntryRunnable(env *installEnv, e toolsListEntry) bool {
+	target := e.target
+	if target == "" {
+		resolved, ok := resolveToolInAgentPath(env, e.name)
+		if !ok {
+			return false
+		}
+		target = resolved
+	}
+	return agentCanExecute(env, target)
+}
+
+// agentIdentity is the uid and group set execute permission is judged against.
+// known is false before install creates pipelock-agent; a new system user owns
+// no existing file and belongs to no existing group, so only "other" bits apply.
+type agentIdentity struct {
+	known  bool
+	uid    uint32
+	groups map[uint32]bool
+}
+
+func lookupAgentIdentity(env *installEnv) agentIdentity {
+	if env.lookupUser == nil {
+		return agentIdentity{}
+	}
+	u, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return agentIdentity{}
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return agentIdentity{}
+	}
+	id := agentIdentity{known: true, uid: uint32(uid), groups: map[uint32]bool{}}
+	if gid, err := strconv.ParseUint(u.Gid, 10, 32); err == nil {
+		id.groups[uint32(gid)] = true
+	}
+	if gids, err := u.GroupIds(); err == nil {
+		for _, g := range gids {
+			if gid, err := strconv.ParseUint(g, 10, 32); err == nil {
+				id.groups[uint32(gid)] = true
+			}
+		}
+	}
+	return id
+}
+
+// permits reports whether id holds the permission bit (0o1 execute/search)
+// that mode grants to owner, group or other, as the kernel picks one class.
+func (id agentIdentity) permits(info os.FileInfo, bit os.FileMode) bool {
+	perm := info.Mode().Perm()
+	if id.known {
+		if uid, ok := fileOwnerUID(info); ok && uid == id.uid {
+			return perm&(bit<<6) != 0
+		}
+		if gid, ok := fileOwnerGID(info); ok && id.groups[gid] {
+			return perm&(bit<<3) != 0
+		}
+	}
+	return perm&bit != 0
+}
+
+// agentCanExecute reports whether pipelock-agent can execute path: every
+// ancestor directory grants it search, and path is a regular file granting it
+// execute. A stat failure anywhere reports false.
+func agentCanExecute(env *installEnv, path string) bool {
+	// The raw path is walked, not a filepath.Clean copy: Clean drops a
+	// trailing "/." or "/" and folds "link/.." lexically, while the kernel
+	// requires a directory there and resolves ".." after the link.
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	id := lookupAgentIdentity(env)
+	final, ok := agentWalkPath(env, id, path)
+	if !ok {
+		return false
+	}
+	info, err := env.stat(final)
+	return err == nil && info.Mode().IsRegular() && id.permits(info, 0o1)
+}
+
+// maxSymlinkHops matches Linux's MAXSYMLINKS for one path resolution.
+const maxSymlinkHops = 40
+
+// agentWalkPath resolves an absolute path the way the kernel does, one
+// component at a time, expanding every symlink where it is met (nested links
+// included) and requiring search permission for id on each directory it looks
+// a component up in. It returns the final resolved path.
+func agentWalkPath(env *installEnv, id agentIdentity, p string) (string, bool) {
+	cur := string(filepath.Separator)
+	pending := strings.Split(strings.TrimPrefix(p, cur), cur)
+	hops := 0
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		// Every component, including "", "." and "..", is looked up in cur, so
+		// cur must be a directory id can search. An empty component comes from
+		// a trailing or doubled slash; the kernel refuses "file/", "file/." and
+		// "file/.." with ENOTDIR, and so must this walk.
+		dirInfo, err := env.stat(cur)
+		if err != nil || !dirInfo.IsDir() || !id.permits(dirInfo, 0o1) {
+			return "", false
+		}
+		switch name {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, name)
+		linkInfo, err := env.lstat(next)
+		if err != nil {
+			// No lstat answer: accept only a path stat also finds, as a plain
+			// entry. On a real filesystem both fail together.
+			if _, statErr := env.stat(next); statErr != nil {
+				return "", false
+			}
+			cur = next
+			continue
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		hops++
+		if hops > maxSymlinkHops {
+			return "", false
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", false
+		}
+		if filepath.IsAbs(target) {
+			cur = string(filepath.Separator)
+		}
+		pending = append(strings.Split(strings.TrimPrefix(target, string(filepath.Separator)), string(filepath.Separator)), pending...)
+	}
+	return cur, true
+}
+
+func noAgentToolsError(env *installEnv) error {
+	return fmt.Errorf("no agent tools found: none of %s is executable in pipelock-agent PATH (%s) and %s lists no runnable tool; install one into /usr/local/bin and rerun pipelock contain install",
+		strings.Join(defaultToolNames(), ", "), agentExecPath(env.agentUserName), env.toolsListPath)
 }
 
 // renderDefaultToolsList emits the v0.2 default allow-list. Format is
@@ -871,14 +1065,17 @@ func resolveToolInAgentPath(env *installEnv, name string) (string, bool) {
 }
 
 func mergeDefaultToolEntries(existing, defaults []toolsListEntry) ([]toolsListEntry, bool) {
-	defaultNames := make(map[string]bool, len(defaultToolWrappers))
-	for _, name := range defaultToolNames() {
-		defaultNames[name] = true
+	// A resolved default replaces an existing entry of the same name. An
+	// existing default-named entry with no resolved replacement (for example a
+	// pinned target outside the agent PATH) is kept rather than dropped.
+	replaced := make(map[string]bool, len(defaults))
+	for _, d := range defaults {
+		replaced[d.name] = true
 	}
 	merged := make([]toolsListEntry, 0, len(existing)+len(defaults))
 	merged = append(merged, defaults...)
 	for _, e := range existing {
-		if defaultNames[e.name] {
+		if replaced[e.name] {
 			continue
 		}
 		merged = append(merged, e)
@@ -1002,7 +1199,7 @@ func toolsListEntriesEqual(a, b []toolsListEntry) bool {
 func stepPreflight(opts installOpts) step {
 	return step{
 		name: "preflight",
-		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl)",
+		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl / certutil) and an agent tool to allow-list",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			for _, b := range []string{"useradd", "userdel", "systemctl", "visudo", "sudo", "setfacl", "find", "chmod"} {
 				if err := expectExec(b); err != nil {
@@ -1021,6 +1218,14 @@ func stepPreflight(opts installOpts) step {
 				}
 			}
 			if err := expectPrivilegedExecutablePath(env.stat, "nft", env.nftPath); err != nil {
+				return false, err
+			}
+			// Later steps need these unconditionally. Checking here refuses the
+			// host before any mutation instead of rolling back a partial install.
+			if err := resolveCertutil(env.lookPath); err != nil {
+				return false, missingCertutilError(env.platformFamily)
+			}
+			if err := agentToolsPrereq(env); err != nil {
 				return false, err
 			}
 			configPath := managedPipelockConfigPath(env)
@@ -1378,7 +1583,9 @@ func stepPreflightPipelockConfig(opts installOpts) step {
 			if err := preflightPipelockConfig(ctx, env, opts, false); err != nil {
 				return false, err
 			}
-			return false, nil
+			// The check ran and passed; report it like stepPreflight so the
+			// install log does not print a completed check as [SKIP].
+			return true, nil
 		},
 		undo: nil,
 	}
@@ -1502,18 +1709,28 @@ func managedPipelockConfigPath(env *installEnv) string {
 // service. Any other read/parse/validation failure fails install closed:
 // contain install must never load an nft ruleset it cannot account for.
 func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, error) {
+	declared, _, err := declaredContainmentLoopbackServicesWithLapsed(env, proxyPort)
+	return declared, err
+}
+
+// declaredContainmentLoopbackServicesWithLapsed is
+// declaredContainmentLoopbackServices plus the expired entries it dropped. An
+// expired entry is a lapsed grant: install proceeds without it, so the
+// operator can re-run install to retire its doorway, while a malformed,
+// duplicate, or proxy-port entry still fails install closed.
+func declaredContainmentLoopbackServicesWithLapsed(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, []config.LapsedContainmentGrant, error) {
 	data, err := env.readFile(managedPipelockConfigPath(env))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	declared, err := parseContainmentLoopbackServicesFromConfigBytes(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentLoopbackServicesWithLapsed(data, proxyPort, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
+		return nil, nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	return declared, nil
+	return declared, lapsed, nil
 }
 
 // bytesEqual compares two byte slices without dragging in the bytes

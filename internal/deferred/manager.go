@@ -50,6 +50,14 @@ const (
 	DefaultMaxCascadeDepth        = DefaultMaxPendingSession
 )
 
+// SourceUpstreamContract records a deferred release that the live upstream
+// contract gate denied at the irreversible send boundary.
+const SourceUpstreamContract = "upstream_contract"
+
+// ReasonReceiptNotWritten is the resolution reason for an allow that was closed
+// because its required receipt could not be written.
+const ReasonReceiptNotWritten = "required receipt could not be written"
+
 // Config controls held-action bounds and timers.
 type Config struct {
 	Enabled              bool
@@ -144,9 +152,24 @@ type HeldAction struct {
 	ArgDigest     string
 	Resolve       func(Resolution)
 	BeforeAllow   func() (release func(), ok bool)
-	timer         *time.Timer
-	state         string
-	createdAt     time.Time
+	// Prepare, when set, runs after BeforeAllow and before the terminal
+	// journal entry. It may downgrade the resolution (for example when a
+	// release-boundary check cancels an allow) so the journal records the
+	// outcome that actually happens. The returned finish func runs, via
+	// defer, after Resolve returns or panics.
+	Prepare func(Resolution) (Resolution, func())
+	// AfterJournal, when set, runs only for an allow the journal accepted, and
+	// before Resolve. It is where evidence that must not exist for a call that
+	// is never sent (the allow resolution receipt) belongs: Prepare runs ahead
+	// of the journal write and cannot know it will succeed. A non-nil error
+	// closes the allow: the manager records a corrective block entry after the
+	// allow entry, so the journal shows both what was accepted and that the
+	// release did not happen. Prepare's finish func is still pending, so the
+	// release claim and sink lock cover this call.
+	AfterJournal func(Resolution) error
+	timer        *time.Timer
+	state        string
+	createdAt    time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -365,8 +388,18 @@ func (m *Manager) journalRejectedHold(action HeldAction, source string) {
 
 // Resolve atomically transitions a held action and invokes its callback once.
 func (m *Manager) Resolve(deferID, finalDecision, source string) error {
+	_, err := m.resolveApplied(deferID, finalDecision, source)
+	return err
+}
+
+// resolveApplied is Resolve that also reports the terminal decision actually
+// applied. The requested decision is only a request: the release-time
+// kill-switch precheck, a Prepare hook (upstream contract gate, send claim) and
+// a journal failure can each close an allow, and callers that surface the
+// outcome to an operator must report that one, not the request.
+func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string, error) {
 	if m == nil {
-		return ErrDisabled
+		return "", ErrDisabled
 	}
 	if finalDecision == "" {
 		finalDecision = "block"
@@ -379,7 +412,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 	held := m.holds[deferID]
 	if held == nil || held.state != StateHeld {
 		m.mu.Unlock()
-		return ErrNotFound
+		return "", ErrNotFound
 	}
 	held.state = StateResolving
 	delete(m.holds, deferID)
@@ -399,17 +432,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		}
 	}
 
-	state := resolvedState(finalDecision)
-	if err := m.appendJournal(journalEntryFromHeld(*held, state, source)); err != nil {
-		finalDecision = "block"
-		source = SourceCancel
-		state = resolvedState(finalDecision)
-		_ = m.appendJournal(journalEntryFromHeld(*held, state, source))
-	}
-	if finalDecision != config.ActionAllow && source != SourceCascade {
-		m.cascadeBlockDescendants([]string{held.DeferID})
-	}
-	held.Resolve(Resolution{
+	res := Resolution{
 		DeferID:          held.DeferID,
 		ParentActionID:   held.ActionID,
 		FinalDecision:    finalDecision,
@@ -422,8 +445,44 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		Target:           held.Target,
 		Method:           held.Method,
 		Reason:           held.Reason,
-	})
-	return nil
+	}
+	if held.Prepare != nil {
+		prepared, finish := held.Prepare(res)
+		if finish != nil {
+			defer finish()
+		}
+		// Prepare may only keep or close the decision; it can never open one.
+		if prepared.FinalDecision == config.ActionAllow && res.FinalDecision != config.ActionAllow {
+			prepared.FinalDecision = config.ActionBlock
+		}
+		res = prepared
+	}
+
+	state := resolvedState(res.FinalDecision)
+	if err := m.appendJournal(journalEntryFromHeld(*held, state, res.ResolutionSource)); err != nil {
+		res.FinalDecision = config.ActionBlock
+		res.ResolutionSource = SourceCancel
+		state = resolvedState(res.FinalDecision)
+		_ = m.appendJournal(journalEntryFromHeld(*held, state, res.ResolutionSource))
+	}
+	// A journal failure above already closed the allow, so the hook only ever
+	// sees an allow the journal accepted.
+	if res.FinalDecision == config.ActionAllow && held.AfterJournal != nil {
+		if err := held.AfterJournal(res); err != nil {
+			res.FinalDecision = config.ActionBlock
+			res.ResolutionSource = SourceCancel
+			res.Reason = ReasonReceiptNotWritten
+			if appendErr := m.appendJournal(journalEntryFromHeld(*held, resolvedState(res.FinalDecision), res.ResolutionSource)); appendErr != nil {
+				m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
+					res.ResolutionSource, held.DeferID, appendErr)
+			}
+		}
+	}
+	if res.FinalDecision != config.ActionAllow && res.ResolutionSource != SourceCascade {
+		m.cascadeBlockDescendants([]string{held.DeferID})
+	}
+	held.Resolve(res)
+	return res.FinalDecision, nil
 }
 
 // ResolveAll resolves every currently held action with the same final decision.
@@ -474,6 +533,16 @@ func (m *Manager) Snapshot() []HeldAction {
 	return out
 }
 
+// HeldCount reports how many actions are currently held, without copying them.
+func (m *Manager) HeldCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.holds)
+}
+
 func (m *Manager) Held(deferID string) (HeldAction, bool) {
 	held, err := m.snapshotOne(deferID)
 	if err != nil {
@@ -520,10 +589,9 @@ func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (
 		return "", err
 	}
 	decision := approvalDecision(held.RulePolicy, finalDecision)
-	if err := m.Resolve(deferID, decision, source); err != nil {
-		return "", err
-	}
-	return decision, nil
+	// Report what was applied, not what was asked: a kill switch that activated
+	// before release, or a release gate that refused, closes an approved hold.
+	return m.resolveApplied(deferID, decision, source)
 }
 
 // approvalDecision maps an approval input onto the terminal decision, enforcing

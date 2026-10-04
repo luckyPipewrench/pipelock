@@ -247,8 +247,42 @@ func TestToolsListWriteFailuresPreservePolicyBoundary(t *testing.T) {
 		env, _, _ := newFakeEnv(t)
 		env.stat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
 		applied, err := stepWriteToolsList().apply(context.Background(), env)
-		if err == nil || applied || !strings.Contains(err.Error(), "no default agent tools") {
+		if err == nil || applied || !strings.Contains(err.Error(), "no agent tools found") {
 			t.Fatalf("applied = %v, error = %v", applied, err)
+		}
+		if strings.Contains(err.Error(), "add-tool") {
+			t.Fatalf("error names add-tool, which cannot run after a refused install: %v", err)
+		}
+	})
+
+	t.Run("step keeps an existing allow-list without defaults", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		agentIsCurrentUser(t, env)
+		target := runnableFixtureTarget(t)
+		custom := "custom\t" + target + "\n"
+		if err := os.WriteFile(env.toolsListPath, []byte(custom), 0o600); err != nil {
+			t.Fatalf("write tools.list: %v", err)
+		}
+		realStat := env.stat
+		env.stat = func(p string) (os.FileInfo, error) {
+			if p == env.toolsListPath || p == filepath.Dir(env.toolsListPath) || p == target || strings.HasPrefix(target, p+string(filepath.Separator)) || p == "/" {
+				return realStat(p)
+			}
+			return nil, os.ErrNotExist
+		}
+		applied, err := stepWriteToolsList().apply(context.Background(), env)
+		if err != nil {
+			t.Fatalf("existing add-tool allow-list must survive reinstall without defaults: applied=%v err=%v", applied, err)
+		}
+		got, err := os.ReadFile(env.toolsListPath)
+		if err != nil {
+			t.Fatalf("read tools.list: %v", err)
+		}
+		if !strings.Contains(string(got), strings.TrimSuffix(custom, "\n")) {
+			t.Fatalf("tools.list lost its add-tool entry: %q", got)
 		}
 	})
 }

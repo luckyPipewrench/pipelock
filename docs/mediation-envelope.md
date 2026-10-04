@@ -166,8 +166,8 @@ replaced in place before the new one is added.
 
 | Transport | Envelope header | Signing | Where signing runs | Redirect refresh |
 |-----------|-----------------|---------|--------------------|------------------|
-| Fetch proxy (`/fetch?url=…`) | yes | yes | pre-dispatch | yes (shared fetch+forward redirect client) |
-| Forward proxy (`HTTPS_PROXY`) | yes | yes | pre-dispatch | yes (shared fetch+forward redirect client) |
+| Fetch proxy (`/fetch?url=…`) | yes | yes | pre-dispatch | yes (internally followed redirects) |
+| Absolute-URI forward proxy (`HTTP_PROXY`) | yes | yes | pre-dispatch | no (client follows returned redirects as separate requests) |
 | Intercepted CONNECT / TLS tunnel | yes | yes | pre-dispatch | no (upstream RoundTrip is one-shot) |
 | Reverse proxy | yes | yes | `http.RoundTripper` wrapper (post-Director) | n/a (redirects disabled on reverse proxy upstream) |
 | WebSocket handshake | yes | yes | pre-dial (synthesised `*http.Request` with the dial URL) | n/a (no redirects on WS handshake) |
@@ -188,7 +188,7 @@ refresh helper must be wired into the new `CheckRedirect` closure.
 
 ## Redirect refresh
 
-On every allowed redirect through the fetch or forward proxy client,
+On every internally followed, allowed redirect through the fetch proxy client,
 `refreshEnvelopeForRedirect` rebuilds the Pipelock-Mediation header on
 the redirected request:
 
@@ -212,6 +212,17 @@ the redirected request:
 Errors from any step fail the redirect closed. In a `sign: true`
 deployment, continuing with a stale or unsigned redirected hop would
 break the integrity contract the verifier relies on.
+
+Absolute-URI forwarding retains existing target admission for redirects the
+outbound client could follow, then scans and returns the origin's redirect
+response. Responses already left unfollowed remain so. It does not sign
+or dispatch the hypothetical next hop. When the client follows `Location`, the
+new request receives full admission, a new action/receipt ID, and a fresh
+destination-bound envelope without an inherited redirect `hop`. Cookies remain
+browser-owned at the issuing origin/path; no shared proxy cookie jar is used.
+Client redirect limits and separate-request receipt accounting replace the
+internal fetch-chain counter for that mode. A prior preflight approval is not
+reused for the actual new request; confirmation policies can ask again.
 
 ## Capability separation
 

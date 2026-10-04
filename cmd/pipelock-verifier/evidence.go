@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
@@ -130,11 +129,7 @@ func decodeEvidenceReceipt(data []byte) (contractreceipt.EvidenceReceipt, error)
 	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
 		return contractreceipt.EvidenceReceipt{}, err
 	}
-	var r contractreceipt.EvidenceReceipt
-	if err := contract.DecodeStrictJSON(data, &r); err != nil {
-		return contractreceipt.EvidenceReceipt{}, err
-	}
-	return r, nil
+	return contractreceipt.ParseEvidenceReceipt(data)
 }
 
 func verifyEvidenceReceipt(r contractreceipt.EvidenceReceipt, keyHex string, opts evidenceBindingOptions) (bool, error) {

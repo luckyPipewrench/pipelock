@@ -19,6 +19,7 @@ if (!isMainThread) {
   const keyInfo = JSON.parse(readFileSync(path.join(testdata, "test-key.json"), "utf8"));
   const primaryKey = keyInfo.public_key_hex;
   const rotatedKey = keyInfo.rotated_public_key_hex;
+  const rotatedTwiceKey = keyInfo.rotated_twice_public_key_hex;
   const tempRoot = process.env.TMPDIR || tmpdir();
   let outDir;
   let worker;
@@ -80,6 +81,22 @@ if (!isMainThread) {
       valid: false,
       keys: [primaryKey, rotatedKey],
       reason: /session_close receipt_count mismatch/u,
+    },
+    {
+      name: "g1-rotated-twice-valid.jsonl",
+      valid: true,
+      keys: [primaryKey, rotatedKey, rotatedTwiceKey],
+    },
+    {
+      name: "g1-rotated-same-key-invalid.jsonl",
+      valid: false,
+      reason: /key_transition does not change signer key/u,
+    },
+    { name: "g1-ext-chain.jsonl", valid: true },
+    {
+      name: "g1-ext-tampered-invalid.jsonl",
+      valid: false,
+      reason: /chain_prev_hash mismatch/u,
     },
     {
       name: "g1-plain-after-close.jsonl",

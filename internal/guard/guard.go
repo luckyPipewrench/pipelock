@@ -77,10 +77,9 @@ var (
 	ErrManifestIncomplete = errors.New("guard manifest could not be fully prepared")
 
 	// ErrPolicyNarrowed is returned when the restriction applied but a declared
-	// path is unreachable under it, meaning something outside this ruleset --
-	// most often an ancestor landlock domain -- is narrowing the policy. The
-	// manifest is not in force as declared, so this is a refusal, not a caveat.
-	ErrPolicyNarrowed = errors.New("guard policy is narrowed by an outer restriction")
+	// path is unreachable under it. The access probe cannot identify the cause.
+	// The manifest is not in force as declared, so this is a refusal, not a caveat.
+	ErrPolicyNarrowed = errors.New("guard policy grants are not reachable after restriction")
 
 	// ErrAlreadyApplied is returned when a prepared manifest is applied twice.
 	// Landlock restrictions stack and cannot be lifted, so a second application

@@ -189,7 +189,7 @@ type sizeExemptScanRelease func()
 
 func noopSizeExemptScanRelease() {}
 
-func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
+func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int, rem sizeRemedies) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
 	ceiling := int64(scanMaxBytes)
 	if ceiling <= 0 {
 		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
@@ -221,7 +221,7 @@ func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix
 		release()
 		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureOversize,
-			Reason: responseSizeExemptObservedScanBlockReason(host, int64(len(fullBody)), ceiling, false),
+			Reason: responseSizeExemptObservedScanBlockReason(host, int64(len(fullBody)), ceiling, false, rem),
 		}
 	}
 	return fullBody, release, nil
@@ -605,6 +605,12 @@ type BodyScanResult struct {
 	// RedactionBlockReason carries a redact.BlockReason value when the
 	// fail-closed redaction path triggered a block. Empty otherwise.
 	RedactionBlockReason redact.BlockReason
+	// CredentialAudienceReceiptErr is set when a credential-audience-allow
+	// receipt could not be durably confirmed and
+	// flight_recorder.require_receipts is on. The body/header may otherwise
+	// be Clean; callers MUST check this field before forwarding and block
+	// the request (never send upstream bytes) when it is non-nil.
+	CredentialAudienceReceiptErr error
 }
 
 // ContentEntropyFinding describes an opaque high-entropy body/frame value.
@@ -689,8 +695,13 @@ type BodyScanRequest struct {
 	// AudienceSurface identifies this body-like carrier to the bounded audience
 	// allow metric. Empty means an HTTP request body. The callback is invoked
 	// once per distinct compiled credential audience allow after scanning.
-	AudienceSurface           string
-	OnCredentialAudienceAllow func(scanner.CredentialAudienceAllow)
+	AudienceSurface string
+	// OnCredentialAudienceAllow is invoked once per distinct compiled
+	// credential audience allow after scanning completes cleanly. A non-nil
+	// return means the allow's receipt could not be durably confirmed;
+	// scanRequestBody surfaces it on BodyScanResult.CredentialAudienceReceiptErr
+	// so the caller blocks before forwarding instead of losing the signal.
+	OnCredentialAudienceAllow func(scanner.CredentialAudienceAllow) error
 	// Content entropy checks catch opaque non-credential-shaped exfiltration.
 	// Destination trust/exclusions are supplied from the parsed upstream
 	// authority, not from user-controlled Host headers.
@@ -719,7 +730,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
-			req.OnCredentialAudienceAllow(allow)
+			if err := req.OnCredentialAudienceAllow(allow); err != nil && final.CredentialAudienceReceiptErr == nil {
+				final.CredentialAudienceReceiptErr = err
+			}
 		}
 	}()
 	audienceSurface := req.AudienceSurface
@@ -790,6 +803,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	allowEmbeddedSigV4 := matchBodySigV4CredentialRoute(req, time.Now().UTC())
+	// One dropped finding can be seen by the pre-redaction pass, the
+	// post-redaction pass, and both the plain and provider-opaque text sets.
+	// Record it once per request so the dropped-match metric and dlp_warn
+	// evidence count findings, not scan passes.
+	onDropped := onceBodyDLPDrops(req.OnDroppedDLP)
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
 		extracted := extractBodyTextForDLP(buf, req)
@@ -801,8 +819,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)
-			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, nil)...)
+			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
+			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 		}
 	}
 
@@ -884,8 +902,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)
-	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, req.OnDroppedDLP, audienceSurface, collectAudienceAllow)...)
+	matches := scanBodyTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
+	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
 		result.DLPMatches = matches
@@ -1407,13 +1425,42 @@ type droppedBodyDLPMatch struct {
 	reason string
 }
 
+func bodyDLPDropKey(m scanner.TextDLPMatch) string {
+	if identity, ok := m.ValueIdentity(); ok {
+		return m.PatternName + "\x00" + string(identity[:])
+	}
+	// Matches without a located value retain their existing representation key.
+	return bodyDLPMatchKey(m)
+}
+
+// onceBodyDLPDrops wraps a dropped-match callback so each distinct dropped
+// value reaches it once per request, however many scan passes or fields report
+// it. Fields are not part of the identity: the joined-body pass reports matches
+// that no single field owns, so counting per field would reintroduce the
+// overcount this collapses. The key matches
+// recordUniqueBodyDLPDrops, which collapses repeats within a single pass.
+func onceBodyDLPDrops(onDropped func(scanner.TextDLPMatch, string)) func(scanner.TextDLPMatch, string) {
+	if onDropped == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	return func(m scanner.TextDLPMatch, reason string) {
+		key := bodyDLPDropKey(m) + "\x00" + m.Bundle + "\x00" + m.BundleVersion + "\x00" + reason
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		onDropped(m, reason)
+	}
+}
+
 func recordUniqueBodyDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(scanner.TextDLPMatch, string)) {
 	if onDropped == nil {
 		return
 	}
 	seen := make(map[string]struct{}, len(dropped))
 	for _, drop := range dropped {
-		key := bodyDLPMatchKey(drop.match) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
+		key := bodyDLPDropKey(drop.match) + "\x00" + drop.match.Bundle + "\x00" + drop.match.BundleVersion + "\x00" + drop.reason
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -2114,7 +2161,7 @@ func scanRequestHeadersForTargetWithDropped(ctx context.Context, headers http.He
 	return scanRequestHeadersForTargetWithAudience(ctx, headers, cfg, sc, target, onDropped, nil)
 }
 
-func scanRequestHeadersForTargetWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow)) *BodyScanResult {
+func scanRequestHeadersForTargetWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow) error) *BodyScanResult {
 	return scanRequestHeadersWithAudience(ctx, headers, cfg, sc, target, cfg.Suppress, onDropped, onAudienceAllow)
 }
 
@@ -2125,7 +2172,7 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 // scanRequestHeadersWithAudience applies the same destination-aware compiled
 // credential exception as URL and body DLP. An empty or invalid target keeps
 // the match, preserving the original fail-closed header behavior.
-func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow)) *BodyScanResult {
+func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow) error) (result *BodyScanResult) {
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
 	var allMatches []scanner.TextDLPMatch
@@ -2138,17 +2185,29 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		if onAudienceAllow == nil || len(allMatches) > 0 {
 			return
 		}
+		var audienceErr error
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
-			onAudienceAllow(allow)
+			if err := onAudienceAllow(allow); err != nil && audienceErr == nil {
+				audienceErr = err
+			}
 		}
+		if audienceErr == nil {
+			return
+		}
+		// A required-receipt failure must reach the caller even though the
+		// header scan itself found nothing to block; scanRequestHeadersWithAudience
+		// otherwise returns nil for a clean scan.
+		if result == nil {
+			result = &BodyScanResult{Clean: true}
+		}
+		result.CredentialAudienceReceiptErr = audienceErr
 	}()
 	collectDropped := func(match scanner.TextDLPMatch, reason string) {
 		dropped = append(dropped, droppedBodyDLPMatch{match: match, reason: reason})
 	}
 	matchedHeaders := map[string]struct{}{}
 	addMatches := func(headerName, value string, matches []scanner.TextDLPMatch) {
-		surface := scanner.CredentialAudienceHeaderSurface(headerName, value)
-		matches, allows := sc.FilterTextDLPMatchesForDestination(matches, target, surface)
+		matches, allows := sc.FilterHeaderDLPMatches(matches, target, headerName, value)
 		audienceAllows = append(audienceAllows, allows...)
 		filtered := filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 		if len(filtered) == 0 {
@@ -2300,9 +2359,14 @@ type headerDLPParams struct {
 	start       time.Time
 }
 
-func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool) {
+// evalHeaderDLP's third return value is the require_receipts credential
+// audience receipt confirmation failure, if any. It takes priority over the
+// DLP block decision: the caller must block on it before evaluating
+// blocked/hadFinding, since a non-nil receiptErr means the allow could not be
+// durably confirmed and the request must never be forwarded.
+func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool, receiptErr error) {
 	if !e.cfg.RequestBodyScanning.Enabled || !e.cfg.RequestBodyScanning.ScanHeaders {
-		return false, false
+		return false, false, nil
 	}
 	metricAgent := e.metricAgent
 	if metricAgent == "" {
@@ -2313,11 +2377,17 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 			e.logger.LogDLPDropped(e.actx, match.PatternName, match.Severity, "header", reason)
 		}
 		p.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
-	}, func(allow scanner.CredentialAudienceAllow) {
-		p.recordCredentialAudienceAllow(e.actx, allow, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent())
+	}, func(allow scanner.CredentialAudienceAllow) error {
+		return p.recordCredentialAudienceAllow(e.cfg, e.actx, allow, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent())
 	})
 	if headerResult == nil {
-		return false, false
+		return false, false, nil
+	}
+	if headerResult.CredentialAudienceReceiptErr != nil {
+		return false, false, headerResult.CredentialAudienceReceiptErr
+	}
+	if headerResult.Clean {
+		return false, false, nil
 	}
 	action, headerHardBlock := headerDLPDecision(headerResult, e.cfg)
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
@@ -2328,7 +2398,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 
 	if headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
 		p.metrics.RecordBlocked(e.hostname, "header_dlp", time.Since(e.start), metricAgent)
-		return true, true
+		return true, true, nil
 	}
-	return false, true
+	return false, true, nil
 }

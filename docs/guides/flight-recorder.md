@@ -1,19 +1,22 @@
 # Flight Recorder Guide
 
-The flight recorder writes configured enforcement evidence to a per-writer
-hash-chained, tamper-evident log. Blocks produce receipts; allow receipts require
-`flight_recorder.require_receipts: true`, and clean stream frames are summarized
-rather than individually receipted. Each recorded entry is cryptographically
-linked to the one before it in that writer stream, so deletion or modification
-within an observed chain breaks verification. Signed checkpoints prove the chain
-state observed by one writer at specific points; they do not prove that traffic
-which bypassed Pipelock was recorded, or that several processes sharing one
-recorder directory formed one deployment-wide sequence. Use
-`pipelock evidence doctor DIR` to detect structural fork damage in a directory.
-The recorder is designed for post-incident investigation, compliance evidence,
-and forensic replay.
+The flight recorder writes configured enforcement evidence to a hash-chained log for each writer. It records allow receipts in best-effort mode when emission succeeds. Clean stream frames are summarized rather than receipted one by one.
+
+Set `flight_recorder.require_receipts: true` to require a successful allow-path receipt before traffic is forwarded. For allow decisions, the `X-Pipelock-Receipt` response header is returned only when `require_receipts` is enabled.
+
+Each recorded entry is cryptographically linked to the one before it. Deleting or modifying an entry inside the chain breaks verification of that writer's chain. Cutting entries off the end leaves a shorter chain that still passes chain-only verification. On a clean shutdown the recorder writes a `transcript_root` seal naming the final receipt, and `pipelock verify-receipt --whole-recorder --chain --key <signer-public-key>` checks it, so a missing tail is detected there. Without a trusted key, `--allow-unpinned` runs the same structural check but can't authenticate the signer. A run that ended without a seal, such as one killed by SIGKILL, needs another completeness check: a signed checkpoint or a copy held elsewhere. Entries written after the last checkpoint have no such anchor.
+
+Signed checkpoints prove the chain state one writer recorded at specific points. They can't prove that Pipelock recorded traffic that bypassed it or that several processes sharing one recorder directory formed one deployment-wide sequence. Use `pipelock evidence doctor DIR` to find structural fork damage. The recorder supports post-incident investigation, compliance evidence, and forensic replay.
 
 **On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` is configured, and because `sign_checkpoints` defaults to `true` a signing key is required alongside it unless you opt into an unsigned recorder with `sign_checkpoints: false`. Without a `dir` the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
+
+To create a receipt-signing key without running `pipelock init`, generate a deployment-level key file and set `flight_recorder.signing_key_path` to that file:
+
+```bash
+pipelock signing key generate \
+  --purpose receipt-signing \
+  --out /etc/pipelock/keys/receipt-signing.json
+```
 
 ## Whole-Corpus Auditor
 
@@ -145,6 +148,18 @@ TLS-intercepted CONNECT inner HTTP requests, WebSocket, reverse proxy, MCP
 stdio, and MCP HTTP. Block-path receipts stay best-effort because the action is
 already denied.
 
+The same rule covers DLP's credential-audience allow and the issuer-cookie and
+issuer-query allows on TLS-intercepted requests: when DLP or entropy scanning
+lets a value through because it matches its compiled issuer audience or a value
+the destination issued, that allow is itself an allow-path record. Under
+`require_receipts` its receipt must be durably confirmed before the request is
+forwarded. A confirmation failure blocks with reason `receipt_emission_failed`.
+The layer is `credential_audience_receipt` for the credential-audience allow and
+`issuer_allow_receipt` for the issuer-cookie and issuer-query allows, so either
+can be told apart from an admission-receipt failure, which uses layer
+`receipt_emission`. With `require_receipts` off, these allow records stay
+best-effort like every other receipt on this page.
+
 MCP startup requests (`initialize` and `tools/list`) receive correlated intent and outcome receipts. The `notifications/initialized` notification receives a durable forwarding receipt and does not claim a server response. Required recording still blocks forwarding when the recorder fails.
 
 Strict MCP recording currently supports startup, tool calls, and supported A2A methods. Other MCP methods, including resource and prompt operations, can be refused because their receipt identity is not defined. The error message distinguishes that limitation from a recorder failure; replacing the signing key does not add method support. Check the methods your client and server need before enabling strict recording.
@@ -232,6 +247,12 @@ Each Pipelock process run records its own receipt chain under a session named `<
 The TypeScript and Rust verifier CLIs default `--dir` to the legacy `proxy` session. For a full run chain, pass `--session-id proxy.run.<id>` with `--dir`. Passing `evidence-proxy.run.<id>-0.jsonl` directly checks only the first shard. Obtain the full session ID from the evidence filename.
 
 Evidence written by older binaries lives in the plain `proxy` session. It is still verified as before.
+
+An incomplete final write is reported as a torn tail: trailing NUL bytes, a truncated final line, or a final JSON record without its newline. Pipelock never appends to that shard or rewrites it. A reload that encounters a torn tail in its current run starts a fresh run session and publishes the configuration only after the new receipt emitter opens successfully. Malformed complete records, invalid signatures, and broken hash links still reject the reload. If the fresh run cannot open, inspect `flight_recorder.dir` storage and `flight_recorder.signing_key_path`; `flight_recorder.require_receipts` continues to enforce receipt availability.
+
+The unsigned `evidence_health.torn_tails` snapshot records the latest observed shard path, byte offset, and observation time. `pipelock_evidence_torn_tails_total` counts each observed shard boundary once per process. `pipelock evidence doctor DIR` reports retained torn shards as damaged. Recovery doesn't certify the damaged bytes or restore missing evidence; restart continuity uses the existing predecessor-link rules below.
+
+Alerting must watch `pipelock_evidence_torn_tail_present == 1`, also exposed as `evidence_health.torn_tail_present` in `/stats`. This damage signal remains set until process restart, including after a successful reload or recovery into a fresh run. `local_recorder_operational` and `run_state: OPEN` describe the current run and can remain healthy while an older shard is damaged. Restart clears process-local observations; use `pipelock evidence doctor DIR` and the whole-corpus integrity alert to inspect retained damage.
 
 **Restart continuity is an optional signed link file.** When a run writes its first receipt, it looks for the most recent chain of the same base whose writer has exited and that no run has continued yet. If it finds one, it publishes `chain-link-<predecessor>.json` beside the chains. The file is signed by the new run's key and names the predecessor's exact final receipt (sequence and hash). The name comes from the predecessor, and the file is created atomically and only if absent, so at most one run can continue a given chain. The link lives beside the chain, never inside it.
 

@@ -5,7 +5,8 @@ import type { Receipt, RecorderEntry } from "./types.js";
 import { validateV1Receipt } from "./strict.js";
 import { validateTimestamp } from "./aarp/numbers.js";
 import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
-import { bindRecorderLineExtSource } from "./rawjson.js";
+import { bindRecorderLineExtSource, objectMemberSpan } from "./rawjson.js";
+import { validateSecretEgressSource } from "./secret-egress.js";
 import { readSessionReceipts, withPinnedEvidenceDirectorySync } from "./chain-set.js";
 import type { RecorderLine } from "./recorder-chain.js";
 import {
@@ -63,6 +64,11 @@ export function readEntryLines(file: string, directoryChild = false): ParsedReco
     }
     validateProjectedStrings(entry, i + 1, entry.v);
     bindRecorderLineExtSource(entry.detail, line);
+    if (entry.type === evidenceReceiptType) {
+      const detailSpan = objectMemberSpan(line, 0, "detail");
+      if (detailSpan !== undefined)
+        validateSecretEgressSource(entry.detail, line, detailSpan.start);
+    }
     if (
       entry.v !== 3 &&
       (legacyNamespaceFieldIsSet(entry.chain_kind) ||

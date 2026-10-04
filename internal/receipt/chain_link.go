@@ -361,7 +361,7 @@ type linkRequest struct {
 //
 // The link file IS the claim: there is no separate marker, and the file that
 // wins the name is the signed statement verification reads.
-func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
+func publishPredecessorLink(req linkRequest, report ...func(error)) (*ChainLink, error) {
 	dir, base, self := req.dir, req.base, req.self
 	ix, err := indexRecorderFiles(dir)
 	if err != nil {
@@ -410,7 +410,7 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 		if probeErr != nil || !gone {
 			continue // a live writer, or its absence cannot be proven
 		}
-		pred, ok := claimableTail(c.files, c.session, req.notice)
+		pred, ok := claimableTail(c.files, c.session, req.notice, report...)
 		if !ok {
 			continue
 		}
@@ -442,9 +442,14 @@ func publishPredecessorLink(req linkRequest) (*ChainLink, error) {
 }
 
 // claimableTail reads session's tail and reports whether it can be linked.
-func claimableTail(files []string, session string, notice io.Writer) (predecessorTail, bool) {
+func claimableTail(files []string, session string, notice io.Writer, report ...func(error)) (predecessorTail, bool) {
 	tail, tailErr := sessionReceiptTail(files)
 	if tailErr != nil {
+		for _, observe := range report {
+			if observe != nil {
+				observe(tailErr)
+			}
+		}
 		_, _ = fmt.Fprintf(notice, "pipelock: receipt chain %s not linked: reading its tail: %v\n", session, tailErr)
 		return predecessorTail{}, false
 	}

@@ -63,9 +63,13 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/passwd", "/etc/group", "/usr/bin/env",
-		"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
 	}) {
 		add(path, AccessReadFile, true)
+	}
+	for _, path := range ExecutionCAFiles() {
+		// CA links may leave the runtime directories. Their physical targets
+		// still have to pass the compiled floor before being pinned.
+		add(path, AccessReadFile, false)
 	}
 	for _, path := range existingExecutionPaths([]string{
 		"/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/pki/ca-trust/extracted",
@@ -87,6 +91,17 @@ func PrepareExecution(cfg *config.Config, profileName, workspace, tempDir, execu
 }
 
 var runtimeDevices = []string{"/dev/null", "/dev/zero", "/dev/urandom"}
+
+// ExecutionCAFiles returns the existing CA bundle declarations shared by the
+// outer sandbox and final Guard policy. Both layers resolve these as exact
+// files, so a symlink does not grant its target's containing directory.
+func ExecutionCAFiles() []string {
+	return existingExecutionPaths(executionCAPaths)
+}
+
+var executionCAPaths = []string{
+	"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+}
 
 // ValidateExecutionPaths applies the compiled floor to the caller-selected
 // implicit grants. Fixed Pipelock runtime paths are code-owned, but the

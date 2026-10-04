@@ -337,6 +337,7 @@ func (h *evidenceHealthMonitor) stats() (metrics.EvidenceHealthStats, bool) {
 		DurabilityInvariantOK:      h.selfAuditOK.Load() && gatedFsync >= durabilityBlocks,
 		Anchor:                     anchor,
 		AutoAnchor:                 autoAnchor,
+		TornTails:                  h.metrics.EvidenceTornTailSnapshot(),
 		CPC:                        nil,
 		AnchoredFinalSeq:           anchoredFinalSeq(anchor),
 		AnchorLagReceipts:          anchorLag,

@@ -67,7 +67,7 @@ This is separate from the [OWASP Top 10 for Agentic Applications](owasp-mapping.
 - **Domain allowlisting:** agents can only reach explicitly allowed API endpoints.
 - **SSRF protection:** blocks requests to internal/private IP ranges with DNS rebinding prevention.
 - **DLP scanning:** 65 built-in patterns detect API keys, tokens, and credentials in outbound traffic.
-- **Environment variable leak detection:** detects the proxy's own env var values (raw, base64, hex, base32, decimal character codes, and contiguous partial disclosures) in URLs.
+- **Environment variable leak detection:** detects the proxy's own env var values in URLs, including base64, hex and base32 encodings. Contiguous partial disclosures of 16 bytes or more match in plain or decoded text when the value is long and random enough to be eligible (URL values match only in their credential-bearing parts); decimal character-code matching requires the whole value.
 
 **Coverage: Strong.** Multiple layers prevent credential leakage and limit agent network access.
 

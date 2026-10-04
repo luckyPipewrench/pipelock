@@ -213,7 +213,7 @@ func Remove(data []byte, rec Record) (out []byte, remove, changed bool, err erro
 		return nil, false, false, err
 	}
 	if !HasFlag(args) {
-		return nil, false, false, errors.New("browser defaults: recorded flag is absent; resolve manually")
+		return nil, false, false, nil
 	}
 	// An identical later addition makes ownership ambiguous. Keep the record
 	// so an operator can resolve it without losing either copy.
@@ -226,16 +226,6 @@ func Remove(data []byte, rec Record) (out []byte, remove, changed bool, err erro
 			}
 			match = i
 		}
-	}
-	if match != len(ArgParts(rec.OriginalArgs)) {
-		return nil, false, false, errors.New("browser defaults: flag position changed; resolve manually")
-	}
-	wantPrefix := rec.OriginalArgs
-	if wantPrefix != "" {
-		wantPrefix += ","
-	}
-	if !strings.HasPrefix(args, wantPrefix+Flag) {
-		return nil, false, false, errors.New("browser defaults: flag form changed; resolve manually")
 	}
 	kept := make([]string, 0, len(parts))
 	for i, part := range parts {

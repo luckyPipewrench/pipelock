@@ -287,6 +287,11 @@ func TestStepWriteToolsList_PreservesCustomEntries(t *testing.T) {
 	if err := os.WriteFile(env.toolsListPath, []byte(custom), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// Seed at the managed mode: a root-only list is rewritten (see
+	// TestStepWriteToolsListRepairsModeWhenContentUnchanged).
+	if err := os.Chmod(env.toolsListPath, modeAllowListReadable); err != nil {
+		t.Fatalf("chmod seed: %v", err)
+	}
 
 	s := stepWriteToolsList()
 	applied, err := s.apply(context.Background(), env)

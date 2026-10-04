@@ -126,7 +126,7 @@ inspect WebSocket frames for DLP and prompt injection.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_info` | gauge | `version` | Build information. Always 1. The `version` label identifies the running release (e.g. `2.2.0`). |
-| `pipelock_kill_switch_active` | gauge | `source` | Whether each kill switch source is active (1) or inactive (0). `source` is `config`, `api`, `signal`, or `sentinel`. Reported fresh on every scrape via a custom collector; the value is never stale. |
+| `pipelock_kill_switch_active` | gauge | `source` | Whether each kill switch source is active (1) or inactive (0). `source` is `config`, `api`, `conductor_remote`, `conductor_stale`, `conductor_apply_failure`, `signal`, or `sentinel`. Reported fresh on every scrape via a custom collector; the value is never stale. |
 
 ## Security Event Metrics
 
@@ -187,6 +187,21 @@ During a rolling upgrade, old instances may still emit numeric
 aggregate that legacy series across versions. Migrate alerts to
 `pipelock_evidence_local_recorder_operational` and keep the process-local scope
 in the alert text.
+
+## Audit Sink Metrics
+
+These metrics report delivery state for the built-in audit sinks. Every series uses only the bounded `sink` label: `webhook`, `syslog`, or `otlp`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_audit_sink_delivered_total` | counter | `sink` | Audit events delivered successfully, cumulative for the process lifetime and preserved across sink reloads. |
+| `pipelock_audit_sink_failed_total` | counter | `sink` | Audit event delivery failures, cumulative for the process lifetime and preserved across sink reloads. |
+| `pipelock_audit_sink_dropped_total` | counter | `sink` | Audit events dropped before delivery, cumulative for the process lifetime and preserved across sink reloads. |
+| `pipelock_audit_sink_abandoned_total` | counter | `sink` | Queued audit events abandoned during shutdown, cumulative for the process lifetime and preserved across sink reloads. |
+| `pipelock_audit_sink_queue_depth` | gauge | `sink` | Current number of queued audit events. |
+| `pipelock_audit_sink_queue_capacity` | gauge | `sink` | Configured capacity of the audit event delivery queue. |
+| `pipelock_audit_sink_degraded` | gauge | `sink` | One while the sink has an unresolved delivery failure or drop; otherwise zero. |
+| `pipelock_audit_sink_last_error_present` | gauge | `sink` | One while the sink has a current last error; otherwise zero. Error text is not exported. |
 
 ## Session Profiling Metrics
 

@@ -395,3 +395,31 @@ func TestApply_FullCoverageAtSocketMediationABI(t *testing.T) {
 		t.Errorf("Unmediated = %v, want empty at full coverage", record.Unmediated)
 	}
 }
+
+// A grant that cannot be reopened after the restriction is reported as not
+// reachable and refused, without claiming an outer domain caused it: the probe
+// can't tell an ancestor policy from permissions or a changed pathname.
+func TestApplyWithOperations_UnreachableGrantIsRefusedWithMeasuredReason(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	p := &PreparedManifest{complete: true, rules: []preparedRule{{
+		fd: -1, access: 1, declared: "/declared/path", kind: AccessReadFile, resolved: missing,
+	}}}
+	ops := rulesetOperations{
+		getABI:        func() (int, error) { return MinimumABI, nil },
+		createRuleset: func(*llsys.RulesetAttr, int) (int, error) { return 42, nil },
+		addPathRule:   func(int, *llsys.PathBeneathAttr, int) error { return nil },
+		restrictSelf:  func(int, uint32) error { return nil },
+		setNoNewPrivs: func() error { return nil },
+		closeFD:       func(int) error { return nil },
+	}
+	record, err := p.applyWithOperations(ops, false)
+	if !errors.Is(err, ErrPolicyNarrowed) || record.State != EnforcementAppliedNarrowed || record.Enforced() {
+		t.Fatalf("record = %+v err = %v, want an applied-but-narrowed refusal", record, err)
+	}
+	if !strings.Contains(record.Reason, "/declared/path") || !strings.Contains(record.Reason, "not reachable") {
+		t.Fatalf("reason %q does not name the unreachable declared path", record.Reason)
+	}
+	if strings.Contains(record.Reason, "ancestor") {
+		t.Fatalf("reason %q asserts a cause the probe did not measure", record.Reason)
+	}
+}

@@ -156,6 +156,10 @@ type Metrics struct {
 	requiredReceiptBlocks    map[string]int64
 
 	// Evidence health (evidence.go).
+	evidenceTornTails           prometheus.Counter
+	evidenceTornTailPresent     prometheus.Gauge
+	evidenceTornTailSeen        map[evidenceTornTailKey]struct{}
+	evidenceTornTailStats       EvidenceTornTailStats
 	evidenceSequenceGaps        *prometheus.CounterVec
 	evidenceHeartbeatInterval   prometheus.Gauge
 	evidenceLastAnchorTimestamp prometheus.Gauge

@@ -51,6 +51,15 @@ pub(crate) fn read_entry_lines(path: &Path) -> Result<Vec<RecorderLine>> {
         let entry = parse_json_line(line, &format!("line {}", index + 1))?;
         reject_duplicate_keys(line)
             .map_err(|err| VerifierError::Invalid(format!("line {}: {}", index + 1, err)))?;
+        if entry.get("type").and_then(serde_json::Value::as_str) == Some(EVIDENCE_RECEIPT_TYPE) {
+            if let Some(detail) = entry.get("detail") {
+                if let Some((start, end)) = crate::rawjson::object_member_span(line, 0, "detail") {
+                    crate::secret_egress::validate_raw_receipt(detail, &line[start..end]).map_err(
+                        |err| VerifierError::Invalid(format!("line {}: {err}", index + 1)),
+                    )?;
+                }
+            }
+        }
         let version = entry.get("v").and_then(serde_json::Value::as_u64);
         if version != Some(1) && version != Some(2) && version != Some(3) {
             errors_unsupported(index + 1, version)?;

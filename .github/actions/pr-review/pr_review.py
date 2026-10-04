@@ -29,7 +29,7 @@ import requests
 
 
 DEFAULT_MODEL_FAST = "gpt-6-luna"
-DEFAULT_MODEL_DEEP = "gpt-6-sol"
+DEFAULT_MODEL_DEEP = "gpt-6.1-sol"
 # Discovery recall bounds the entire review: the judge can only keep or drop a
 # candidate, never add one, so anything this phase misses is invisible and the
 # run still publishes as clean. That is the fail-open direction, which is why
@@ -142,6 +142,15 @@ MAX_JUDGE_CONTEXT_FETCHES = 20
 MAX_JUDGE_CONTEXT_TOKENS = 1_200
 MAX_JUDGE_EVIDENCE_REQUESTS = 8
 MAX_REQUESTS_PER_CANDIDATE = 3
+MAX_JUDGE_REASON_CHARS = 300
+# Validation feedback uses part of the existing prompt-structure reserve.
+MAX_JUDGE_FEEDBACK_TOKENS = 250
+JUDGE_VALIDATION_CODES = frozenset({
+    "payload-schema", "missing-fields", "invalid-index", "duplicate-index",
+    "invalid-verdict", "invalid-reason", "reason-too-long", "requests-not-allowed",
+    "missing-decision", "provider-timeout", "provider-connection-failed",
+    "provider-rate-limited", "provider-output-invalid",
+})
 MAX_REQUESTED_EVIDENCE_TOKENS = 2_000
 # Evidence retrieval shares one wall-clock allowance. Per-command timeouts alone
 # let several model-authored requests consume their full timeout serially.
@@ -259,6 +268,9 @@ class DiffUnit:
     representable: bool = True
     collapsed_deletions: int = 0
     omission_reason: str | None = None
+    # Planning a unit does not prove the provider read it. Keep execution
+    # status separate so failed or never-started chunks stay in the manifest.
+    review_status: str = "not-attempted"
 
     def manifest(self) -> dict[str, Any]:
         return {
@@ -268,7 +280,7 @@ class DiffUnit:
             "category": self.category,
             "estimated_tokens": self.estimated_tokens,
             "collapsed_deletions": self.collapsed_deletions,
-            "status": self.omission_reason or "reviewed",
+            "status": self.omission_reason or self.review_status,
         }
 
 
@@ -297,6 +309,26 @@ class JudgeDecision:
 
 
 @dataclass
+class JudgeValidation:
+    counts: dict[str, int] = field(default_factory=dict)
+    by_index: dict[int, set[str]] = field(default_factory=dict)
+
+    def reject(self, code: str, index: int | None = None) -> None:
+        # Diagnostics carry only code-owned categories, never provider text.
+        if code not in JUDGE_VALIDATION_CODES:
+            return
+        self.counts[code] = self.counts.get(code, 0) + 1
+        if index is not None:
+            self.by_index.setdefault(index, set()).add(code)
+
+
+@dataclass
+class JudgeOptions:
+    deadline: float | None = None
+    diagnostics: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+@dataclass
 class ReviewProgress:
     expected_units: int = 0
     reviewed_units: int = 0
@@ -315,6 +347,7 @@ class ReviewProgress:
     # tell the operator only that the model saw "something." That forced a
     # paid rerun without giving a human anything concrete to verify.
     unverified_candidates: list[Finding] = field(default_factory=list)
+    judge_diagnostics: dict[str, dict[str, int]] = field(default_factory=dict)
     scope: str = "full"
     # The commit this review's coverage reaches back to, counting the baseline
     # chain it was built on. A full review covers from the pull request base, so
@@ -390,7 +423,11 @@ def estimate_tokens(text: str) -> int:
 def category_for_path(path: str) -> str:
     lower = path.lower()
     name = lower.rsplit("/", 1)[-1]
-    if name.endswith(("_test.go", "_test.py", ".test.ts", ".test.js", ".spec.ts", ".spec.js")) or "/testdata/" in lower or lower.startswith("test/"):
+    if (
+        name.endswith(("_test.go", "_test.py", ".test.ts", ".test.js", ".spec.ts", ".spec.js"))
+        or (name.startswith("test_") and name.endswith(".py"))
+        or any(part in {"test", "tests", "testdata"} for part in lower.split("/")[:-1])
+    ):
         return "test"
     if lower.endswith(".go"):
         return "source:go"
@@ -661,17 +698,12 @@ def plan_chunks(units: list[DiffUnit], mode: str) -> tuple[list[list[DiffUnit]],
     chunks: list[list[DiffUnit]] = []
     chunk_tokens: list[int] = []
     omitted: list[DiffUnit] = []
-    priority_exhausted = False
     for unit in rank_units(units):
         if not unit.representable:
             omitted.append(unit)
             continue
         if unit.estimated_tokens > token_budget:
             unit.omission_reason = "hunk-exceeds-token-budget"
-            omitted.append(unit)
-            continue
-        if priority_exhausted:
-            unit.omission_reason = "priority-token-budget"
             omitted.append(unit)
             continue
         placed = False
@@ -689,10 +721,9 @@ def plan_chunks(units: list[DiffUnit], mode: str) -> tuple[list[list[DiffUnit]],
             continue
         unit.omission_reason = "priority-token-budget"
         omitted.append(unit)
-        # Do not fill spare space with lower-priority content once a reviewable
-        # higher-priority unit cannot be admitted.  That would recreate a
-        # position-biased truncation under a different name.
-        priority_exhausted = True
+        # A non-fitting unit does not exhaust every chunk's remaining space.
+        # Keep trying in priority order without evicting admitted work. The
+        # omitted unit remains a coverage gap even if smaller later units fit.
     return chunks, omitted
 
 
@@ -776,17 +807,32 @@ def build_synthesis_prompt(
     return system, user
 
 
+def bounded_judge_feedback(feedback: dict[int, set[str]], candidate_count: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, codes in feedback.items():
+        if type(index) is not int or not 0 <= index < candidate_count:
+            continue
+        safe_codes = sorted(codes & JUDGE_VALIDATION_CODES)
+        if not safe_codes:
+            continue
+        row = {"index": index, "rejections": safe_codes}
+        if estimate_tokens(json.dumps([*rows, row], separators=(",", ":"))) > MAX_JUDGE_FEEDBACK_TOKENS:
+            break
+        rows.append(row)
+    return rows
+
+
 def build_judge_prompt(
     candidates: list[Finding],
     contexts: dict[str, str],
     change_summaries: list[dict[str, str]],
     repository_evidence: str,
     *,
-    targeted_recheck: bool = False,
+    recheck_feedback: dict[int, set[str]] | None = None,
 ) -> tuple[str, str]:
     recheck = (
         "This is the one final targeted recheck of candidates the first pass did not settle. "
-        if targeted_recheck
+        if recheck_feedback is not None
         else ""
     )
     system = (
@@ -802,6 +848,10 @@ def build_judge_prompt(
         "On the final targeted recheck, requests must be empty: decide from the expanded evidence or name the genuinely external fact still required. "
         "An unresolved reason must name that missing external or omitted evidence. Unresolved candidates are withheld and require human verification rather than becoming actionable findings. "
         "Return JSON only: {\"findings\":[{\"index\":integer,\"verdict\":\"keep|drop|unresolved\",\"reason\":\"short\",\"requests\":[{\"path\":\"relative/path\",\"line\":integer|null}|{\"search\":\"literal\"}]}]}. "
+        f"The reason must be a nonblank string of at most {MAX_JUDGE_REASON_CHARS} characters. "
+        "Copy each candidate's integer index from this message (zero-based); indices may differ from an earlier pass. "
+        "For keep or drop, requests must be an empty array. "
+        "prior_response_validation contains code-generated rejection categories for the current candidate indices; correct those schema errors as well as deciding the premise. "
         "Return exactly one result for every candidate and no extra keys."
     )
     user = json.dumps(
@@ -821,6 +871,7 @@ def build_judge_prompt(
             "actual_head_context": contexts,
             "changed_path_summaries": change_summaries,
             "cross_file_repository_evidence": repository_evidence,
+            "prior_response_validation": bounded_judge_feedback(recheck_feedback or {}, len(candidates)),
         },
         separators=(",", ":"),
     )
@@ -857,31 +908,76 @@ def _parse_evidence_requests(value: object) -> tuple[EvidenceRequest, ...]:
 
 
 def _parse_judge_decisions(
-    payload: object, candidate_count: int, *, allow_requests: bool = True
+    payload: object, candidate_count: int, *, allow_requests: bool = True,
+    validation: JudgeValidation | None = None,
 ) -> dict[int, JudgeDecision]:
     """Return only schema-valid decisions; the caller owns bounded repair."""
+    validation = validation if validation is not None else JudgeValidation()
     if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
+        validation.reject("payload-schema")
         raise ModelOutputError("judge response violated its schema")
     decisions: dict[int, JudgeDecision] = {}
     for item in payload["findings"]:
         if not isinstance(item, dict) or not {"index", "verdict", "reason"} <= set(item):
+            index = item.get("index") if isinstance(item, dict) else None
+            validation.reject("missing-fields", index if type(index) is int and 0 <= index < candidate_count else None)
             continue
         index = item["index"]
         verdict = item["verdict"]
-        if type(index) is not int or index < 0 or index >= candidate_count or index in decisions:
+        if type(index) is not int or index < 0 or index >= candidate_count:
+            validation.reject("invalid-index")
+            continue
+        if index in decisions:
+            validation.reject("duplicate-index", index)
             continue
         if not isinstance(verdict, str) or verdict not in {"keep", "drop", "unresolved"}:
+            validation.reject("invalid-verdict", index)
             continue
         try:
-            _required_string(item["reason"], "judge reason", limit=300)
+            _required_string(item["reason"], "judge reason", limit=MAX_JUDGE_REASON_CHARS)
         except ModelOutputError:
+            reason = item["reason"]
+            code = "reason-too-long" if isinstance(reason, str) and len(reason) > MAX_JUDGE_REASON_CHARS else "invalid-reason"
+            validation.reject(code, index)
             continue
         raw_requests = item.get("requests")
         if raw_requests not in (None, []) and (not allow_requests or verdict != "unresolved"):
+            validation.reject("requests-not-allowed", index)
             continue
         requests = _parse_evidence_requests(raw_requests)
         decisions[index] = JudgeDecision(verdict, requests)
+    for index in range(candidate_count):
+        if index not in decisions and index not in validation.by_index:
+            validation.reject("missing-decision", index)
     return decisions
+
+
+def judge_validation_summary(counts: dict[str, int]) -> str:
+    """Bound output to known categories and integer counts, never raw content."""
+    return ", ".join(
+        f"{code}={counts[code]}" for code in sorted(JUDGE_VALIDATION_CODES)
+        if type(counts.get(code)) is int and counts[code] > 0
+    )
+
+
+def record_judge_validation(phase: str, validation: JudgeValidation, options: JudgeOptions, correlation: str) -> None:
+    if phase not in {"judge", "judge-repair"}:
+        return
+    counts = {code: count for code, count in validation.counts.items()
+              if code in JUDGE_VALIDATION_CODES and type(count) is int and count > 0}
+    if counts:
+        options.diagnostics[phase] = counts
+    log_phase(f"{phase}-validation", status=judge_validation_summary(counts) or "valid", correlation=correlation)
+
+
+def judge_error_code(error: ReviewError) -> str:
+    if isinstance(error, ModelTimeout):
+        return "provider-timeout"
+    if isinstance(error, ModelConnectionError):
+        return "provider-connection-failed"
+    if isinstance(error, ModelRateLimited):
+        return "provider-rate-limited"
+    return "provider-output-invalid"
 
 
 def model_supports_custom_temperature(model: str) -> bool:
@@ -2546,7 +2642,7 @@ def judge_findings(
     mode: str,
     candidates: list[Finding],
     change_summaries: list[dict[str, str]] | None = None,
-    deadline: float | None = None,
+    options: JudgeOptions | None = None,
 ) -> tuple[list[Finding], bool, list[Finding], list[Finding], list[Finding], list[Finding]]:
     """Judge candidate findings against the real file, within a bounded payload.
 
@@ -2556,6 +2652,8 @@ def judge_findings(
     payload is filled in order and the overflow is returned for the caller to
     record as incomplete coverage.
     """
+    options = options if options is not None else JudgeOptions()
+    deadline = options.deadline
     if not candidates:
         return [], True, [], [], [], []
     budget, _ = input_limits(mode)
@@ -2638,8 +2736,18 @@ def judge_findings(
     if evidence_unavailable:
         return [], False, over_budget, over_files, [], candidates
     system, user = build_judge_prompt(candidates, contexts, judge_summaries, evidence)
-    payload = call_model(system, user, mode, "judge", binding.correlation, deadline=deadline)
-    decisions = _parse_judge_decisions(payload, len(candidates))
+    validation = JudgeValidation()
+    try:
+        payload = call_model(system, user, mode, "judge", binding.correlation, deadline=deadline)
+        decisions = _parse_judge_decisions(payload, len(candidates), validation=validation)
+    except ReviewError as exc:
+        if not validation.counts:
+            validation.reject(judge_error_code(exc))
+        # Preserve existing behavior: an unusable primary response fails here;
+        # diagnostics do not authorize an additional recovery call.
+        raise
+    finally:
+        record_judge_validation("judge", validation, options, binding.correlation)
 
     # One narrow follow-up is cheaper and more useful than rerunning the whole
     # review. It gets only candidates the first pass omitted or explicitly
@@ -2670,10 +2778,15 @@ def judge_findings(
             {path: context for path, context in contexts.items() if path in {item.path for item in pending}},
             judge_summaries,
             expanded_evidence,
-            targeted_recheck=True,
+            recheck_feedback={
+                index: validation.by_index[original]
+                for index, original in enumerate(pending_indices)
+                if original in validation.by_index
+            },
         )
         repair_budget_available = deadline is None or budget_allows(deadline, mode, "judge-repair")
         if repair_budget_available:
+            repair_validation = JudgeValidation()
             try:
                 recheck_payload = call_model(
                     recheck_system,
@@ -2684,11 +2797,15 @@ def judge_findings(
                     deadline=deadline,
                 )
                 recheck = _parse_judge_decisions(
-                    recheck_payload, len(pending), allow_requests=False
+                    recheck_payload, len(pending), allow_requests=False, validation=repair_validation
                 )
-            except ReviewError:
+            except ReviewError as exc:
+                if not repair_validation.counts:
+                    repair_validation.reject(judge_error_code(exc))
                 recheck = {}
                 repair_failed = True
+            finally:
+                record_judge_validation("judge-repair", repair_validation, options, binding.correlation)
             for recheck_index, original_index in enumerate(pending_indices):
                 if recheck_index in recheck:
                     decisions[original_index] = recheck[recheck_index]
@@ -3063,6 +3180,17 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
                 "</details>",
             ]
         )
+    diagnostics = [
+        f"- {phase}: {summary}"
+        for phase in ("judge", "judge-repair")
+        if (summary := judge_validation_summary(progress.judge_diagnostics.get(phase, {})))
+    ]
+    if diagnostics:
+        lines.extend([
+            "", "<details>", "<summary>Judge response validation</summary>", "",
+            "Validation events, including any corrected by the bounded repair:",
+            *diagnostics, "", "</details>",
+        ])
     if omitted:
         shown = omitted[:MAX_RENDERED_MANIFEST_ENTRIES]
         lines.extend(
@@ -3433,6 +3561,8 @@ def run_review(
                 )
                 findings, changes = parse_findings(payload, {unit.path for unit in chunk}, require_changes={unit.path for unit in chunk})
             except ModelTimeout:
+                for unit in chunk:
+                    unit.review_status = "provider-timeout"
                 progress.timed_out = True
                 # Do not retry an ambiguous timeout: the provider may finish
                 # and bill the original request after this client stops
@@ -3444,6 +3574,8 @@ def run_review(
                 )
                 continue
             except ModelConnectionError:
+                for unit in chunk:
+                    unit.review_status = "provider-connection-failed"
                 # This distinct reason tells the reader that the runner made
                 # the one safe retry, then retained the missing chunk as
                 # incomplete rather than hiding it behind later success.
@@ -3452,6 +3584,8 @@ def run_review(
                 )
                 continue
             except ModelRateLimited as exc:
+                for unit in chunk:
+                    unit.review_status = "provider-rate-limited"
                 # Name the rate limit. The generic message below describes a
                 # malformed payload, and reporting a quota failure in those
                 # words sent readers looking for a parse bug in the diff
@@ -3461,6 +3595,8 @@ def run_review(
                 )
                 continue
             except ModelOutputError as exc:
+                for unit in chunk:
+                    unit.review_status = "provider-output-invalid"
                 # A provider 500 or malformed response is localized to this
                 # chunk. Later chunks remain independently reviewable; the
                 # missing unit and this reason make derive_state report partial
@@ -3474,6 +3610,8 @@ def run_review(
                     f"review chunk {chunk_index} failed: {exc}"
                 )
                 continue
+            for unit in chunk:
+                unit.review_status = "reviewed"
             progress.reviewed_units += len(chunk)
             candidates.extend(findings)
             reviewed_changes.extend(changes)
@@ -3546,7 +3684,8 @@ def run_review(
         if judge_ready:
             try:
                 progress.findings, judged, over_budget, over_files, unresolved, invalid = judge_findings(
-                    repo, token, binding, mode, candidates, reviewed_changes, deadline
+                    repo, token, binding, mode, candidates, reviewed_changes,
+                    JudgeOptions(deadline, progress.judge_diagnostics),
                 )
                 if not judged:
                     # No decision was made, so the original candidate list is

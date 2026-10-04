@@ -444,7 +444,18 @@ const (
 	// context, which changes a shipped response pattern.
 	// Re-bumped when issuer-bound session cookies became a request-body
 	// scanning default.
-	goldenHashDefaults = "c7ad6b0576d8d1c331898231fc69e85a423c9cd2855a3c310548b4e5551d4930"
+	// Re-bumped when GitLab's native Private-Token and Job-Token headers joined
+	// the default sensitive headers.
+	// Re-bumped when the built-in JWT Token pattern gained a compiled URL-query
+	// audience for GitHub's release download storage host.
+	// Re-bumped when the built-in Azure SAS Token pattern gained a compiled
+	// ReleaseGrantSAS audience for the same release-asset host, so the shipped
+	// GitHub release redirect's Azure SAS can be admitted alongside its JWT
+	// grant instead of blocking on its own.
+	// Re-bumped when GitHub package registries gained a compiled Basic
+	// audience, RubyGems gained Bearer, and the container-registry JWT
+	// gained a bearer audience for ghcr.io.
+	goldenHashDefaults = "57cf6ccb637f0070db5dd5f05ac563991a8758217d1107071b57ec0820dff92d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -678,7 +689,13 @@ const (
 	// patterns, so its policy identity moves the same way.
 	// Re-bumped for Slack's hosted MCP authority; see goldenHashDefaults above.
 	// Re-bumped for the Google OAuth Token compiled audience; see goldenHashDefaults above.
-	goldenHashRichConfig = "7ce7a9db3d2640683d0df963ed76f990786f80c1ee169a22d000fcb83aa353fb"
+	// Re-bumped for the GitLab native token headers in the default sensitive
+	// headers; see goldenHashDefaults above.
+	// Re-bumped for the JWT Token URL-query audience; see goldenHashDefaults above.
+	// Re-bumped for the Azure SAS Token ReleaseGrantSAS audience; see
+	// goldenHashDefaults above. The rich fixture inherits the default DLP
+	// pattern set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "3dfb5e4b36f15a3e20559aa5650e5a6f1695dfbf98af6935a2730d99c43483a4"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1248,9 +1265,12 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		wantHash  string
 	}{
 		// These YAML fixtures reflect both the inherited shipped blocklist and
-		// the compiled Authorization-only Google credential audience policy.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "7f2ef1fc259e75ecd1668dfd69d9cd50635ac71bf1e3f9e775b9f2a92a213b81"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "08738fab5c24c988f2f5676d67983a54af4f25956146177069672a80a1b21449"},
+		// the compiled Authorization-only Google credential audience policy, and
+		// the GitLab native token headers in the default sensitive headers.
+		// the compiled Authorization-only Google credential audience policy and the
+		// JWT Token URL-query audience.
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "e9b56ac324d2bfb7bfe7e7d642c206e2ee08e6a88646e09b57ef155960e9e4b3"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "568505b4feef4d0ab453316c46f31cf4848629dd536b9786d90ea8886e6d96f0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

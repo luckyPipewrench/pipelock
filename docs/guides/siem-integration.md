@@ -80,7 +80,7 @@ via a log collector (Promtail, Filebeat, Fluentd).
 | `ws_open` | WebSocket connection opened | `target`, `client_ip`, `request_id`, `agent` |
 | `ws_close` | WebSocket connection closed | `target`, `client_ip`, `request_id`, `agent`, `client_to_server_bytes`, `server_to_client_bytes`, `text_frames`, `binary_frames`, `duration_ms` |
 | `config_reload` | Config file reloaded (also emitted) | `status`, `detail` |
-| `redirect` | HTTP redirect followed | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
+| `redirect` | HTTP redirect observed before target admission; not proof the target was contacted | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
 | `forward_http` | Forward proxy request completed | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms` |
 
 > **Note:** Chain detection events (`chain_detection`) are tracked via
@@ -513,7 +513,9 @@ Agent violates policy
 
 The examples below use port 9090. Replace with whatever you set in
 `kill_switch.api_listen`. If `api_listen` is not set, the API lives on the
-main proxy port (default 8888).
+main proxy port (default 8888). This API belongs to `pipelock run`: a standalone
+`pipelock mcp proxy` listener serves only the deferred-action routes, so these
+paths return 404 there.
 
 **Toggle:**
 
@@ -545,17 +547,14 @@ curl http://pipelock:9090/api/v1/killswitch/status \
     "api": true,
     "conductor_remote": false,
     "conductor_stale": false,
+    "conductor_apply_failure": false,
     "signal": false,
     "sentinel": false
   }
 }
 ```
 
-The kill switch uses OR logic across six independent sources (config, API,
-Conductor remote kill, Conductor stale-bundle detection, SIGUSR1 signal, and
-sentinel file). If *any* source is active, all traffic is denied. Deactivating
-one doesn't affect the others. The Conductor sources remain false when the
-enterprise follower is not in use.
+The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, its three sources stay false.
 
 **Rate limiting:** `POST /api/v1/killswitch` is limited to 10 authenticated
 requests per 60-second window. Exceeding it returns `429` with a

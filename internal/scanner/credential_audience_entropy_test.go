@@ -47,7 +47,7 @@ func TestScan_QueryEntropyHonorsCredentialAudience(t *testing.T) {
 		if !r.Allowed {
 			t.Fatalf("Google API key to its audience blocked: %s (%s)", r.Reason, r.Scanner)
 		}
-		assertCredentialAudienceAllow(t, r, "Google API Key", "url", "maps.googleapis.com")
+		assertCredentialAudienceAllow(t, r, "Google API Key", "maps.googleapis.com")
 	})
 
 	t.Run("wrong destination still blocks", func(t *testing.T) {

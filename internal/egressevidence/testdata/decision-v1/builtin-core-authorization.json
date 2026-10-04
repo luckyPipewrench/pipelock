@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "action_id": "01990000-0000-7000-8000-000000000009",
+  "decision_id": "01990000-0000-7000-8000-00000000000a",
+  "site_id": "proxy.forward.header.authorization",
+  "plane": "proxy",
+  "transport": "forward",
+  "location": "header",
+  "view": "authorization",
+  "boundary": "upstream_request",
+  "phase": "intent",
+  "destination_kind": "network",
+  "destination_ref": "api.vendor.example",
+  "pattern_class": "core_floor",
+  "rule_id": "core_floor.sample_rule",
+  "finding_disposition": "authorize",
+  "planned_byte_form": "original",
+  "authorization": {
+    "kind": "authorization",
+    "ref": "builtin.credential_audience.sample",
+    "origin": "builtin"
+  },
+  "persistence_policy": "required_before_action"
+}

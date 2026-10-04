@@ -227,12 +227,10 @@ func validateCoreObserveExceptions(entries []CoreObserveException) error {
 		if entry.Expires == "" {
 			return fmt.Errorf("%s.expires is required", field)
 		}
-		parsed, err := time.Parse("2006-01-02", entry.Expires)
-		if err != nil {
-			return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
-		}
-		if parsed.Before(todayUTC()) {
-			return fmt.Errorf("%s.expires %q is already expired", field, entry.Expires)
+		// Startup reaches this through Validate, which does not run
+		// ValidateExpiryAuthorizations, so the horizon is enforced here as well.
+		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxCoreObserveExceptionHorizon); err != nil {
+			return err
 		}
 
 		key := identity{host: entry.Host, pattern: strings.ToLower(entry.Pattern)}
@@ -657,10 +655,10 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMetricsListen(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateContainmentLoopbackServices(); err != nil {
+	if err := c.validateContainmentLoopbackServices(&warnings); err != nil {
 		return warnings, err
 	}
-	if err := c.validateContainmentPublishedServices(); err != nil {
+	if err := c.validateContainmentPublishedServices(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.Containment.Display.Validate(); err != nil {
@@ -3936,20 +3934,89 @@ func (c *Config) ValidateSuppressions() error {
 	return c.validateSuppress(nil)
 }
 
-// ValidateContainmentLoopbackServiceDeclarations validates the declared
-// loopback-service surface independently of the full config, for the same
-// reason ValidateSuppressions exists: a caller handing Reload an in-memory
-// config never passes through Load, so the whole-config validator that
-// normally catches a malformed, expired, or proxy-port-colliding declaration
-// never runs on that path.
-func (c *Config) ValidateContainmentLoopbackServiceDeclarations() error {
-	if err := c.validateContainmentLoopbackServices(); err != nil {
-		return err
-	}
-	return c.validateContainmentPublishedServices()
+// LapsedContainmentGrants returns the declared loopback and published service
+// entries that LapseExpiredContainmentGrants removed from the effective set.
+func (c *Config) LapsedContainmentGrants() []LapsedContainmentGrant {
+	return append([]LapsedContainmentGrant(nil), c.Containment.lapsed...)
 }
 
-func (c *Config) validateContainmentPublishedServices() error {
+// LapseExpiredContainmentGrants treats an expired containment.loopback_services
+// or containment.published_services entry as a lapsed grant rather than a
+// broken file: it removes only the expired entries from the effective lists,
+// so they are never exposed or rendered, and records them for reporting. Every
+// other defect (malformed, duplicate, proxy-port or published-port collision)
+// still returns an error and leaves the config untouched. It is idempotent and
+// returns every grant recorded so far. Call it on a config no other goroutine
+// is reading: Load, NewServer, and Reload each hold the candidate privately.
+func (c *Config) LapseExpiredContainmentGrants(now time.Time) ([]LapsedContainmentGrant, error) {
+	if len(c.Containment.LoopbackServices) == 0 && len(c.Containment.PublishedServices) == 0 {
+		return c.LapsedContainmentGrants(), nil
+	}
+	proxyPort, err := c.containmentProxyPort()
+	if err != nil {
+		return nil, err
+	}
+	activeLoopback, lapsedLoopback, err := ResolveContainmentLoopbackServices(c.Containment.LoopbackServices, proxyPort, now)
+	if err != nil {
+		return nil, err
+	}
+	activePublished, lapsedPublished, err := ResolveContainmentPublishedServices(c.Containment.PublishedServices, c.Containment.LoopbackServices, proxyPort, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(lapsedLoopback) > 0 {
+		if activeLoopback == nil {
+			activeLoopback = []ContainmentLoopbackService{}
+		}
+		c.Containment.LoopbackServices = activeLoopback
+	}
+	if len(lapsedPublished) > 0 {
+		if activePublished == nil {
+			activePublished = []ContainmentPublishedService{}
+		}
+		c.Containment.PublishedServices = activePublished
+	}
+	// Build a fresh slice so a Config copy that shares the old one never sees
+	// it change.
+	merged := append([]LapsedContainmentGrant(nil), c.Containment.lapsed...)
+	merged = append(merged, lapsedLoopback...)
+	merged = append(merged, lapsedPublished...)
+	c.Containment.lapsed = merged
+	return c.LapsedContainmentGrants(), nil
+}
+
+// warnLapsedContainmentGrants appends one warning per lapsed grant of kind,
+// whether this call found it or an earlier LapseExpiredContainmentGrants
+// already dropped it, so the warning survives the second validation a
+// startup or reload performs after Load.
+func (c *Config) warnLapsedContainmentGrants(kind string, found []LapsedContainmentGrant, warnings *[]Warning) {
+	if warnings == nil {
+		return
+	}
+	for _, grant := range append(append([]LapsedContainmentGrant(nil), c.Containment.lapsed...), found...) {
+		if grant.Kind != kind {
+			continue
+		}
+		*warnings = append(*warnings, Warning{
+			Field:   ContainmentGrantField(kind),
+			Message: grant.Message + "; the entry is dropped from the effective set and grants nothing until it is renewed or removed",
+		})
+	}
+}
+
+func (c *Config) containmentProxyPort() (int, error) {
+	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	if err != nil {
+		return 0, fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+	}
+	port, err := strconv.Atoi(proxyPort)
+	if err != nil {
+		return 0, fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+	}
+	return port, nil
+}
+
+func (c *Config) validateContainmentPublishedServices(warnings *[]Warning) error {
 	if c.Containment.AgentListener != "" {
 		_, proxyPortText, err := net.SplitHostPort(c.FetchProxy.Listen)
 		if err != nil {
@@ -3964,17 +4031,19 @@ func (c *Config) validateContainmentPublishedServices() error {
 		}
 	}
 	if len(c.Containment.PublishedServices) == 0 {
+		c.warnLapsedContainmentGrants(ContainmentGrantPublishedService, nil, warnings)
 		return nil
 	}
-	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	port, err := c.containmentProxyPort()
 	if err != nil {
-		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+		return err
 	}
-	port, err := strconv.Atoi(proxyPort)
+	_, lapsed, err := ResolveContainmentPublishedServices(c.Containment.PublishedServices, c.Containment.LoopbackServices, port, time.Now())
 	if err != nil {
-		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+		return err
 	}
-	return ValidateContainmentPublishedServices(c.Containment.PublishedServices, c.Containment.LoopbackServices, port, time.Now())
+	c.warnLapsedContainmentGrants(ContainmentGrantPublishedService, lapsed, warnings)
+	return nil
 }
 
 // credentialAudienceDomainSubset reports whether every candidate domain is
@@ -4065,19 +4134,21 @@ func (c *Config) validateKillSwitch() error {
 	return nil
 }
 
-func (c *Config) validateContainmentLoopbackServices() error {
+func (c *Config) validateContainmentLoopbackServices(warnings *[]Warning) error {
 	if len(c.Containment.LoopbackServices) == 0 {
+		c.warnLapsedContainmentGrants(ContainmentGrantLoopbackService, nil, warnings)
 		return nil
 	}
-	_, proxyPort, err := net.SplitHostPort(c.FetchProxy.Listen)
+	port, err := c.containmentProxyPort()
 	if err != nil {
-		return fmt.Errorf("invalid fetch_proxy.listen %q: %w", c.FetchProxy.Listen, err)
+		return err
 	}
-	port, err := strconv.Atoi(proxyPort)
+	_, lapsed, err := ResolveContainmentLoopbackServices(c.Containment.LoopbackServices, port, time.Now())
 	if err != nil {
-		return fmt.Errorf("invalid fetch_proxy.listen port %q: %w", proxyPort, err)
+		return err
 	}
-	return ValidateContainmentLoopbackServices(c.Containment.LoopbackServices, port, time.Now())
+	c.warnLapsedContainmentGrants(ContainmentGrantLoopbackService, lapsed, warnings)
+	return nil
 }
 
 func (c *Config) validateMetricsListen() error {

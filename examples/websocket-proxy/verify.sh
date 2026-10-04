@@ -120,16 +120,25 @@ step "Test 2: start echo server and pipelock proxy"
 PROXY_PORT="$(pick_port)"
 write_config "$PROXY_PORT"
 
-# Warm Go module cache so ws_echo startup prints only the listen address.
-(
+# Build the helpers once and run the binaries directly. A backgrounded
+# `go run` keeps its compiled child alive when the wrapper is killed, so
+# ECHO_PID must be the echo server itself for cleanup to stop it.
+BIN_DIR="$WORK/bin"
+ECHO_BIN="$BIN_DIR/ws_echo"
+PROBE_BIN="$BIN_DIR/ws_probe"
+mkdir -p "$BIN_DIR"
+if ! (
   cd "$REPO_ROOT"
-  pipelock_host_tool go build -o /dev/null "$EXAMPLE_DIR/ws_echo.go" "$EXAMPLE_DIR/ws_probe.go" >/dev/null 2>&1
-) || true
+  pipelock_host_tool go build -o "$ECHO_BIN" "$EXAMPLE_DIR/ws_echo.go" &&
+    pipelock_host_tool go build -o "$PROBE_BIN" "$EXAMPLE_DIR/ws_probe.go"
+) >"$WORK/build.log" 2>&1; then
+  fail "could not build the echo and probe helpers"
+  tail -20 "$WORK/build.log" >&2 || true
+  printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
+  exit 1
+fi
 
-(
-  cd "$REPO_ROOT"
-  pipelock_host_tool go run "$EXAMPLE_DIR/ws_echo.go"
-) >"$ECHO_LOG" 2>&1 &
+WS_ECHO_PARENT_PID="$$" "$ECHO_BIN" >"$ECHO_LOG" 2>&1 &
 ECHO_PID=$!
 
 ECHO_ADDR=""
@@ -166,14 +175,11 @@ fi
 
 # -- Test 3: Clean text frame echoes ------------------------------------------
 step "Test 3: clean WebSocket text frame echoes through proxy"
-if (
-  cd "$REPO_ROOT"
-  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
+if "$PROBE_BIN" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -message "hello-from-verify" \
-    -expect echo
-); then
+    -expect echo; then
   pass "clean message echoed"
 else
   fail "clean message was not echoed"
@@ -186,14 +192,11 @@ import secrets
 print("sk-ant-api03-" + secrets.token_hex(18))
 PY
 )"
-if (
-  cd "$REPO_ROOT"
-  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
+if "$PROBE_BIN" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -message "$SECRET_MSG" \
-    -expect close
-); then
+    -expect close; then
   pass "secret frame closed connection (blocked)"
 else
   fail "secret frame was not blocked"
@@ -201,14 +204,11 @@ fi
 
 # -- Test 5: Binary frames rejected -------------------------------------------
 step "Test 5: binary WebSocket frames are rejected"
-if (
-  cd "$REPO_ROOT"
-  pipelock_host_tool go run "$EXAMPLE_DIR/ws_probe.go" \
+if "$PROBE_BIN" \
     -proxy "127.0.0.1:${PROXY_PORT}" \
     -backend "$ECHO_ADDR" \
     -frame binary \
-    -expect close
-); then
+    -expect close; then
   pass "binary frame rejected"
 else
   fail "binary frame was not rejected"

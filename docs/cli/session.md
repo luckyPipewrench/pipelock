@@ -127,7 +127,13 @@ pipelock session risk [<key>] [--json]
 
 Shows the compact adaptive-enforcement state for one session: threat
 score, escalation level, block-all state, auto-recover ETA, and the
-operator recovery hint. When `<key>` is omitted, the command calls the
+operator recovery hint. The score and level are the session-wide
+aggregate over every destination, and block-all and the airlock tier
+shown here are the session-wide ones. HTTP findings are enforced per
+destination, so a session whose aggregate reads `critical` can still
+show `block_all: false` and tier `none` when no single destination has
+reached critical; use `session explain` to see which destination scopes
+are elevated or quarantined. When `<key>` is omitted, the command calls the
 `adaptive whoami` endpoint and reports the risk state for the caller's
 own identity session.
 

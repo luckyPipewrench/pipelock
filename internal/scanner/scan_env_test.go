@@ -280,6 +280,40 @@ func TestIsPathShapedValue(t *testing.T) {
 		// Real PATH lists, including short single-component dirs, stay skipped.
 		{"path list short single-component dirs", "/bin:/sbin:/usr/bin", true},
 		{"path list multi-component only", "/usr/bin:/usr/local/bin", true},
+		// Windows drive and UNC paths in a conservative subset.
+		{"windows drive path", `C:\Users\sample\tools\dummy.exe`, true},
+		{"windows drive path lowercase letter with spaces", `d:\Program Files\App Name\bin`, true},
+		{"windows drive path non-ascii", `C:\Users\Zoë\AppData\Local`, true},
+		{"windows unc path", `\\fileserver\share\team\app.exe`, true},
+		{"windows shallow drive path", `C:\K7MDENGbPxRfiCYzQ`, false},
+		{"windows shallow unc share", `\\server\share`, false},
+		{"windows unc one component", `\\server\share\K7MDENGbPxRfiCYzQ`, false},
+		{"windows drive-relative", `C:dir\sub\file`, false},
+		{"windows root-relative", `\dir\sub\file`, false},
+		{"windows extended prefix", `\\?\C:\Users\sample\x`, false},
+		{"windows device prefix", `\\.\pipe\name\x`, false},
+		{"windows dot-dot component", `C:\Users\..\Windows\x`, false},
+		{"windows mixed separators", `C:\Users\sample/tools\x`, false},
+		{"windows extra colon", `C:\a\b:stream`, false},
+		{"windows semicolon list", `C:\a\b;C:\c\d`, false},
+		{"windows query-bearing", `C:\a\b?token=abc`, false},
+		{"windows percent-encoded", `C:\a\b%41c`, false},
+		{"windows ampersand", `C:\a\b&c`, false},
+		{"windows hash", `C:\a\b#c`, false},
+		{"windows control char", "C:\\a\\b\x01c", false},
+		{"windows leading tab", "\tC:\\Users\\sample\\tools", false},
+		{"windows trailing newline", "C:\\Users\\sample\\tools\n", false},
+		{"windows unc trailing carriage return", "\\\\server\\share\\team\\app.exe\r", false},
+		{"windows empty component", `C:\a\\b`, false},
+		{"windows trailing separator", `C:\a\b\`, false},
+		{"windows invalid utf8", "C:\\a\\\xffb", false},
+		{"non-letter drive", `1:\a\b`, false},
+		// Surrounding controls are rejected before trimming in every branch.
+		{"unix path trailing newline", "/opt/tools\n", false},
+		{"unix path leading tab", "\t/opt/tools", false},
+		{"unix path with DEL", "/opt/tools\x7f/bin", false},
+		{"path list trailing carriage return", "/usr/bin:/bin\r", false},
+		{"unix path surrounding spaces", "  /opt/tools  ", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -559,4 +593,122 @@ func TestScan_EnvLeakDetection_OversizedValueKeepsScannerAndPartialMatch(t *test
 	if clean := s.ScanTextForDLP(context.Background(), "payload=nothing secret here at all, only prose"); !clean.Clean {
 		t.Fatalf("unrelated text flagged: %+v", clean.Matches)
 	}
+}
+
+func TestExtractEnvSecrets_SkipsWindowsPathValues(t *testing.T) {
+	drivePath := `C:\Users\sample\tools\dummy.exe`
+	uncPath := `\\fileserver\share\team\app.exe`
+	t.Setenv("PIPELOCK_TEST_WIN_BINARY", drivePath)
+	t.Setenv("PIPELOCK_TEST_WIN_UNC", uncPath)
+
+	// Positive controls: a genuine secret, a secret in a variable named like a
+	// path, and a shallow drive-shaped token all stay in the matcher set.
+	realSecret := "sk-" + "ant-realkey-abcdefghij12345"
+	t.Setenv("PIPELOCK_TEST_REAL", realSecret)
+	pathNamedSecret := syntheticEnvSecret()
+	t.Setenv("PIPELOCK_TEST_SECRET_PATH", pathNamedSecret)
+	shallowToken := `C:\` + "K7MDENGbPxRfiCYzQ"
+	t.Setenv("PIPELOCK_TEST_WIN_SHALLOW", shallowToken)
+
+	got := map[string]bool{}
+	for _, s := range extractEnvSecrets(16) {
+		got[s] = true
+	}
+	for _, skipped := range []string{drivePath, uncPath} {
+		if got[skipped] {
+			t.Errorf("Windows path %q should be skipped (path-shaped, not a secret)", skipped)
+		}
+	}
+	for _, kept := range []string{realSecret, pathNamedSecret, shallowToken} {
+		if !got[kept] {
+			t.Errorf("value %q must stay in the env-leak matcher set", kept)
+		}
+	}
+}
+
+// The MCP input path scans tool arguments with ScanTextForDLP. A Windows path
+// held in the environment must not turn a mention of it into a leak finding,
+// while a genuine environment secret in the same text still does.
+func TestScanTextForDLP_WindowsPathEnvValueNotALeak(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil
+	t.Setenv("PIPELOCK_TEST_WIN_BINARY", `C:\Users\sample\tools\dummy.exe`)
+	secret := syntheticEnvSecret()
+	t.Setenv("PIPELOCK_TEST_SECRET", secret)
+	s := MustNew(cfg)
+	defer s.Close()
+
+	if result := s.ScanTextForDLP(context.Background(), `see Users\sample\tools\dummy.exe please`); !result.Clean {
+		t.Fatalf("mention of a Windows path env value must not be a leak, got %+v", result.Matches)
+	}
+	if result := s.ScanTextForDLP(context.Background(), "leak "+secret); result.Clean {
+		t.Fatal("genuine environment secret must still be detected")
+	}
+}
+
+func TestScanTextForDLP_WindowsPathWithControlStaysScanned(t *testing.T) {
+	for _, tt := range []struct {
+		name, value string
+	}{
+		{name: "drive leading tab", value: "\t" + `C:\Users\sample\tools\dummy.exe`},
+		{name: "drive trailing newline", value: `C:\Users\sample\tools\dummy.exe` + "\n"},
+		{name: "unc trailing carriage return", value: `\\fileserver\share\team\app.exe` + "\r"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PIPELOCK_TEST_CONTROL_VALUE", tt.value)
+			cfg := testConfig()
+			cfg.DLP.ScanEnv = true
+			cfg.DLP.Patterns = nil
+			s := MustNew(cfg)
+			defer s.Close()
+			if result := s.ScanTextForDLP(context.Background(), "disclose "+tt.value); result.Clean {
+				t.Fatal("control-bearing value must stay in the env matcher")
+			}
+			if result := s.ScanTextForDLP(context.Background(), "ordinary unrelated text"); !result.Clean {
+				t.Fatalf("unrelated text blocked: %+v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_PathShapedEnvSecretExplicitFileOverride(t *testing.T) {
+	secret := `C:\folder\` + syntheticEnvSecret()
+	t.Setenv("PIPELOCK_TEST_PATH_SHAPED_SECRET", secret)
+	path := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		name := "environment only"
+		if explicit {
+			name = "explicit secrets file"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.DLP.ScanEnv = true
+			cfg.DLP.Patterns = nil
+			if explicit {
+				cfg.DLP.SecretsFile = path
+			}
+			s := MustNew(cfg)
+			defer s.Close()
+			result := s.ScanTextForDLP(context.Background(), "disclose "+secret)
+			if result.Clean == explicit {
+				t.Fatalf("clean=%v with explicit file=%v, matches=%+v", result.Clean, explicit, result.Matches)
+			}
+		})
+	}
+}
+
+// syntheticEnvSecret returns a fake high-entropy value generated at runtime,
+// so no credential-shaped literal appears in the source for secret scanners.
+// A stride coprime to the alphabet length yields 31 distinct characters.
+func syntheticEnvSecret() string {
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, 31)
+	for i := range b {
+		b[i] = alphabet[(i*17+5)%len(alphabet)]
+	}
+	return string(b)
 }

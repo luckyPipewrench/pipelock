@@ -702,6 +702,8 @@ func (c *Config) ApplyDefaults() {
 				"X-Token",
 				"Proxy-Authorization",
 				"X-Goog-Api-Key",
+				"Private-Token",
+				"Job-Token",
 			}
 		}
 		if len(c.RequestBodyScanning.IgnoreHeaders) == 0 {
@@ -997,6 +999,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 		patterns[i].CredentialAudienceAuthorizationOnly = false
 		patterns[i].CredentialAudienceCarrierMask = 0
 		patterns[i].CredentialAudienceGitHosts = nil
+		patterns[i].CredentialAudienceRegistryHosts = nil
 	}
 	for _, builtIn := range defaultDLPPatternSet {
 		if len(builtIn.CredentialAudienceHosts) == 0 {
@@ -1014,6 +1017,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate.CredentialAudienceAuthorizationOnly = builtIn.CredentialAudienceAuthorizationOnly
 			candidate.CredentialAudienceCarrierMask = builtIn.CredentialAudienceCarrierMask
 			candidate.CredentialAudienceGitHosts = append([]string(nil), builtIn.CredentialAudienceGitHosts...)
+			candidate.CredentialAudienceRegistryHosts = append([]string(nil), builtIn.CredentialAudienceRegistryHosts...)
 		}
 	}
 }

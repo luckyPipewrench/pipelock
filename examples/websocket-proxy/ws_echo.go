@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -61,6 +62,28 @@ func main() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	// verify.sh can be killed outright, which runs no cleanup. Exit once
+	// reparented so the helper never outlives the script that started it.
+	// verify.sh passes its own PID so a parent that died before this line
+	// ran is still caught.
+	parent := os.Getppid()
+	if pid, parseErr := strconv.Atoi(os.Getenv("WS_ECHO_PARENT_PID")); parseErr == nil {
+		parent = pid
+	}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if os.Getppid() != parent {
+				select {
+				case sig <- syscall.SIGTERM:
+				default:
+				}
+				return
+			}
+		}
+	}()
 	<-sig
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

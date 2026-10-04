@@ -29,12 +29,12 @@ const maxInspectCRLSize = 256 * 1024
 // licenseCRLCmd returns the "license crl" subcommand group for inspecting and
 // verifying signed license revocation lists (CRLs).
 //
-// CRL *issuance* (signing) is deliberately NOT a CLI capability: a CRL is a
-// whole-list snapshot with no monotonic generation number, so an offline signer
-// that can mint subsets is a revocation-rollback footgun. Revocation issuance
-// stays in the cluster license-service, which owns the canonical list. The CLI
-// provides only the read-side operations operators need in the field: decode a
-// CRL and verify its signature/expiry.
+// CRL *issuance* (signing) is deliberately NOT a CLI capability: the cluster
+// license-service owns the canonical revocation list, so revocation issuance
+// stays there. A CRL generation number does not make it safe for an offline
+// signer to issue an arbitrary subset of that list. The CLI provides only the
+// read-side operations operators need in the field: decode a CRL and verify its
+// signature/expiry.
 func licenseCRLCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "crl",

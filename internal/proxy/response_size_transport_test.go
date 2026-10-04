@@ -49,6 +49,9 @@ func TestFetchOversizedResponseReasonNamesNoHostExemption(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		t.Fatalf("oversized response was not blocked: status %d, body %q", rec.Code, body)
 	}
+	if !strings.Contains(body, "is at least ") {
+		t.Errorf("limited read must report a lower bound: %q", body)
+	}
 	if !strings.Contains(body, "no per-host size exemption") {
 		t.Errorf("fetch block reason does not state the exemption is unavailable: %q", body)
 	}

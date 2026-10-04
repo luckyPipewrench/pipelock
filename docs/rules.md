@@ -219,6 +219,7 @@ author: vendor-security
 description: "Internal detection patterns for Vendor Corp"
 min_pipelock: "2.2.0"
 tier: community
+key_id: "d1517306bb5a0e596b5f5de996cec329e3980cc0f3dbc6a252c661d1c49f023a"
 monotonic_version: 1
 published_at: "2026-04-16T00:00:00Z"
 expires_at: "2027-04-16T00:00:00Z"
@@ -244,7 +245,7 @@ authors should declare `required_features: ["checksum"]` and set
 `min_pipelock` to the oldest Pipelock release whose rule-bundle loader supports
 the `pattern.validator` field.
 
-`format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `monotonic_version`, `published_at`, and `expires_at`.
+`format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `key_id`, `monotonic_version`, `published_at`, and `expires_at`. `key_id` is the signing public key as 64 lowercase hex characters, and an install fails with `key_id must not be empty for v2+ bundles` without it. The value in the example is a placeholder; [Signing your bundle](#signing-your-bundle) shows how to get yours.
 
 ### Rule types
 
@@ -278,13 +279,25 @@ release during ordinary pull-request checks.
 # Generate a keypair for your organization
 pipelock keygen my-org
 
-# Sign the bundle (uses the keystore at ~/.pipelock/)
+# Print the public key as 64-character hex
+tail -n 1 ~/.pipelock/agents/my-org/id_ed25519.pub | base64 -d | od -An -vtx1 | tr -d ' \n'; echo
+
+# Put that hex in the bundle's key_id, then sign the bundle (uses the keystore at ~/.pipelock/)
 pipelock sign bundle.yaml --agent my-org
 
 # Distribute: bundle.yaml + bundle.yaml.sig + your public key hex
 ```
 
-Users add your public key to their `trusted_keys` config to verify your bundles.
+`pipelock keygen` writes the public key file as two lines: a `pipelock-ed25519-public-v1` header and the key in base64. Both `key_id` and `trusted_keys[].public_key` take the hex form of the same key, and Pipelock doesn't convert the base64 for you: a base64 value in `trusted_keys` is rejected at config load with `public_key must be exactly 64 hex chars`. The `key_id` must match the key that signed the bundle, otherwise the install fails with a `key_id mismatch` error. Set `key_id` before you run `pipelock sign`, because the signature covers the whole file.
+
+Users add your public key to their `trusted_keys` config to verify your bundles:
+
+```yaml
+rules:
+  trusted_keys:
+    - name: "my-org"
+      public_key: "d1517306bb5a0e596b5f5de996cec329e3980cc0f3dbc6a252c661d1c49f023a"
+```
 
 ## Hosting
 

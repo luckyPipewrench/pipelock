@@ -1,0 +1,1294 @@
+{
+  "version": 1,
+  "status": "fixture_only",
+  "public_key_hex": "05542fbde1c3fbb9343ba415fa80f9f4bb3859fd78580a61ee61b5ff5cf522be",
+  "test_key_derivation": "Ed25519 seed = SHA-256(UTF-8(pipelock secret-egress-v1 conformance test key)); TEST ONLY",
+  "registry_hash": "sha256:ee8038300ce6a5d8e7d90d956101232049431ecf5faab70573f65f77ce0a894e",
+  "registry_manifest": "registry-manifest.json",
+  "cases": [
+    {
+      "name": "valid-intent-block",
+      "file": "valid-intent-block.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-outcome-mismatch",
+      "file": "valid-outcome-mismatch.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-local-mcp",
+      "file": "valid-local-mcp.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-raw-unrewritable-intent",
+      "file": "valid-raw-unrewritable-intent.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-raw-unrewritable-outcome",
+      "file": "valid-raw-unrewritable-outcome.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-blocked-fallback-intent",
+      "file": "valid-blocked-fallback-intent.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-blocked-fallback-outcome",
+      "file": "valid-blocked-fallback-outcome.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-builtin-core-authorization",
+      "file": "valid-builtin-core-authorization.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-redacted-network-intent",
+      "file": "valid-redacted-network-intent.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-redacted-network-outcome",
+      "file": "valid-redacted-network-outcome.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-redacted-local-intent",
+      "file": "valid-redacted-local-intent.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-redacted-local-outcome",
+      "file": "valid-redacted-local-outcome.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-mcp_http_upstream",
+      "file": "valid-mcp_http_upstream.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-mcp_ws",
+      "file": "valid-mcp_ws.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-mcp_http_listener",
+      "file": "valid-mcp_http_listener.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-canonical-destination-0",
+      "file": "valid-canonical-destination-0.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-canonical-destination-1",
+      "file": "valid-canonical-destination-1.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-canonical-destination-2",
+      "file": "valid-canonical-destination-2.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-canonical-destination-3",
+      "file": "valid-canonical-destination-3.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-canonical-destination-4",
+      "file": "valid-canonical-destination-4.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-transformed-intent",
+      "file": "valid-transformed-intent.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-transformed-outcome",
+      "file": "valid-transformed-outcome.json",
+      "valid": true,
+      "reason": "Typed recorded facts; no coverage, authority-resolution or durability claim"
+    },
+    {
+      "name": "valid-unbound-registry-hash",
+      "file": "valid-unbound-registry-hash.json",
+      "valid": true,
+      "reason": "Offline verification checks digest grammar, not registry binding"
+    },
+    {
+      "name": "invalid-missing-chain-prev-hash",
+      "file": "invalid-missing-chain-prev-hash.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-missing-policy",
+      "file": "invalid-missing-policy.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-uppercase-policy",
+      "file": "invalid-uppercase-policy.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-missing-critical-feature",
+      "file": "invalid-missing-critical-feature.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-duplicate-critical-feature",
+      "file": "invalid-duplicate-critical-feature.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-unknown-critical-feature",
+      "file": "invalid-unknown-critical-feature.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-unexpected-source-spans",
+      "file": "invalid-unexpected-source-spans.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-critical-feature-old-kind",
+      "file": "invalid-critical-feature-old-kind.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-event-action-alias",
+      "file": "invalid-event-action-alias.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-event-decision-alias",
+      "file": "invalid-event-decision-alias.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-null-payload",
+      "file": "invalid-null-payload.json",
+      "valid": false,
+      "reason": "Signed envelope or feature shape must reject"
+    },
+    {
+      "name": "invalid-missing-registry",
+      "file": "invalid-missing-registry.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-uppercase-registry",
+      "file": "invalid-uppercase-registry.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-registry",
+      "file": "invalid-null-registry.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-case-registry",
+      "file": "invalid-case-registry.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-case-decision",
+      "file": "invalid-case-decision.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-unknown-wrapper",
+      "file": "invalid-unknown-wrapper.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-decision",
+      "file": "invalid-null-decision.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-unknown-decision",
+      "file": "invalid-unknown-decision.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-case-decision-field",
+      "file": "invalid-case-decision-field.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-missing-decision-version",
+      "file": "invalid-missing-decision-version.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-unsupported-decision-version",
+      "file": "invalid-unsupported-decision-version.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-action-id",
+      "file": "invalid-null-action-id.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-authorization",
+      "file": "invalid-null-authorization.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-unknown-authorization",
+      "file": "invalid-unknown-authorization.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-case-authorization",
+      "file": "invalid-case-authorization.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-authorization-kind",
+      "file": "invalid-null-authorization-kind.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-none-authorization-ref",
+      "file": "invalid-none-authorization-ref.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-outcome",
+      "file": "invalid-null-outcome.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-null-fallback",
+      "file": "invalid-null-fallback.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-unknown-fallback",
+      "file": "invalid-unknown-fallback.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-invalid-phase",
+      "file": "invalid-invalid-phase.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-action-decision-alias",
+      "file": "invalid-action-decision-alias.json",
+      "valid": false,
+      "reason": "Signed payload shape must reject"
+    },
+    {
+      "name": "invalid-canonical-destination-0",
+      "file": "invalid-canonical-destination-0.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-1",
+      "file": "invalid-canonical-destination-1.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-2",
+      "file": "invalid-canonical-destination-2.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-3",
+      "file": "invalid-canonical-destination-3.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-4",
+      "file": "invalid-canonical-destination-4.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-5",
+      "file": "invalid-canonical-destination-5.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-6",
+      "file": "invalid-canonical-destination-6.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-7",
+      "file": "invalid-canonical-destination-7.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-8",
+      "file": "invalid-canonical-destination-8.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-9",
+      "file": "invalid-canonical-destination-9.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-10",
+      "file": "invalid-canonical-destination-10.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-11",
+      "file": "invalid-canonical-destination-11.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-12",
+      "file": "invalid-canonical-destination-12.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-13",
+      "file": "invalid-canonical-destination-13.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-14",
+      "file": "invalid-canonical-destination-14.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-15",
+      "file": "invalid-canonical-destination-15.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-16",
+      "file": "invalid-canonical-destination-16.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-17",
+      "file": "invalid-canonical-destination-17.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-18",
+      "file": "invalid-canonical-destination-18.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-19",
+      "file": "invalid-canonical-destination-19.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-canonical-destination-20",
+      "file": "invalid-canonical-destination-20.json",
+      "valid": false,
+      "reason": "Destination identity must use a canonical host spelling"
+    },
+    {
+      "name": "invalid-network-mcp_stdio",
+      "file": "invalid-network-mcp_stdio.json",
+      "valid": false,
+      "reason": "Network destination must use a supported network carrier"
+    },
+    {
+      "name": "invalid-network-mcp_http",
+      "file": "invalid-network-mcp_http.json",
+      "valid": false,
+      "reason": "Network destination must use a supported network carrier"
+    },
+    {
+      "name": "invalid-network-mcp_websocket",
+      "file": "invalid-network-mcp_websocket.json",
+      "valid": false,
+      "reason": "Network destination must use a supported network carrier"
+    },
+    {
+      "name": "invalid-local-mcp_http_upstream",
+      "file": "invalid-local-mcp_http_upstream.json",
+      "valid": false,
+      "reason": "Remote MCP carrier cannot name a local-process destination"
+    },
+    {
+      "name": "invalid-local-mcp_ws",
+      "file": "invalid-local-mcp_ws.json",
+      "valid": false,
+      "reason": "Remote MCP carrier cannot name a local-process destination"
+    },
+    {
+      "name": "invalid-local-mcp_http_listener",
+      "file": "invalid-local-mcp_http_listener.json",
+      "valid": false,
+      "reason": "Remote MCP carrier cannot name a local-process destination"
+    },
+    {
+      "name": "invalid-decimal-version",
+      "file": "invalid-decimal-version.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-exponent-version",
+      "file": "invalid-exponent-version.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-duplicate-registry",
+      "file": "invalid-duplicate-registry.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-duplicate-decision-field",
+      "file": "invalid-duplicate-decision-field.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-oversized-raw-decision",
+      "file": "invalid-oversized-raw-decision.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-wrong-key-purpose",
+      "file": "invalid-wrong-key-purpose.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-changed-policy",
+      "file": "invalid-changed-policy.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-changed-registry",
+      "file": "invalid-changed-registry.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-changed-view",
+      "file": "invalid-changed-view.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "invalid-wrong-signature",
+      "file": "invalid-wrong-signature.json",
+      "valid": false,
+      "reason": "Raw lexical, signed metadata or signature mismatch must reject"
+    },
+    {
+      "name": "valid-all-envelope-optionals",
+      "file": "valid-all-envelope-optionals.json",
+      "valid": true,
+      "reason": "Explicit optional values and maximum safe integers"
+    },
+    {
+      "name": "valid-timestamp-120000.000000001",
+      "file": "valid-timestamp-120000.000000001.json",
+      "valid": true,
+      "reason": "Canonical UTC fractional timestamp"
+    },
+    {
+      "name": "valid-timestamp-120000.1",
+      "file": "valid-timestamp-120000.1.json",
+      "valid": true,
+      "reason": "Canonical UTC fractional timestamp"
+    },
+    {
+      "name": "valid-timestamp-120000.123456789",
+      "file": "valid-timestamp-120000.123456789.json",
+      "valid": true,
+      "reason": "Canonical UTC fractional timestamp"
+    },
+    {
+      "name": "invalid-wire-missing-record_type",
+      "file": "invalid-wire-missing-record_type.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-record_type",
+      "file": "invalid-wire-null-record_type.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-record_type",
+      "file": "invalid-wire-case-record_type.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-receipt_version",
+      "file": "invalid-wire-missing-receipt_version.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-receipt_version",
+      "file": "invalid-wire-null-receipt_version.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-receipt_version",
+      "file": "invalid-wire-case-receipt_version.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-payload_kind",
+      "file": "invalid-wire-missing-payload_kind.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-payload_kind",
+      "file": "invalid-wire-null-payload_kind.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-payload_kind",
+      "file": "invalid-wire-case-payload_kind.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-canonicalization",
+      "file": "invalid-wire-missing-canonicalization.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-canonicalization",
+      "file": "invalid-wire-null-canonicalization.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-canonicalization",
+      "file": "invalid-wire-case-canonicalization.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-crit",
+      "file": "invalid-wire-missing-crit.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-crit",
+      "file": "invalid-wire-null-crit.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-crit",
+      "file": "invalid-wire-case-crit.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-event_id",
+      "file": "invalid-wire-missing-event_id.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-event_id",
+      "file": "invalid-wire-null-event_id.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-event_id",
+      "file": "invalid-wire-case-event_id.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-timestamp",
+      "file": "invalid-wire-missing-timestamp.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-timestamp",
+      "file": "invalid-wire-null-timestamp.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-timestamp",
+      "file": "invalid-wire-case-timestamp.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-chain_seq",
+      "file": "invalid-wire-missing-chain_seq.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-chain_seq",
+      "file": "invalid-wire-null-chain_seq.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-chain_seq",
+      "file": "invalid-wire-case-chain_seq.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-chain_prev_hash",
+      "file": "invalid-wire-missing-chain_prev_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-chain_prev_hash",
+      "file": "invalid-wire-null-chain_prev_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-chain_prev_hash",
+      "file": "invalid-wire-case-chain_prev_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-policy_hash",
+      "file": "invalid-wire-missing-policy_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-policy_hash",
+      "file": "invalid-wire-null-policy_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-policy_hash",
+      "file": "invalid-wire-case-policy_hash.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-missing-payload",
+      "file": "invalid-wire-missing-payload.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-payload",
+      "file": "invalid-wire-null-payload.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-payload",
+      "file": "invalid-wire-case-payload.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-principal-null",
+      "file": "invalid-wire-principal-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-principal-bool",
+      "file": "invalid-wire-principal-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-principal-object",
+      "file": "invalid-wire-principal-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-principal-empty-string",
+      "file": "invalid-wire-principal-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-actor-null",
+      "file": "invalid-wire-actor-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-actor-bool",
+      "file": "invalid-wire-actor-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-actor-object",
+      "file": "invalid-wire-actor-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-actor-empty-string",
+      "file": "invalid-wire-actor-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-active_manifest_hash-null",
+      "file": "invalid-wire-active_manifest_hash-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-active_manifest_hash-bool",
+      "file": "invalid-wire-active_manifest_hash-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-active_manifest_hash-object",
+      "file": "invalid-wire-active_manifest_hash-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-active_manifest_hash-empty-string",
+      "file": "invalid-wire-active_manifest_hash-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_hash-null",
+      "file": "invalid-wire-contract_hash-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_hash-bool",
+      "file": "invalid-wire-contract_hash-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_hash-object",
+      "file": "invalid-wire-contract_hash-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_hash-empty-string",
+      "file": "invalid-wire-contract_hash-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-selector_id-null",
+      "file": "invalid-wire-selector_id-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-selector_id-bool",
+      "file": "invalid-wire-selector_id-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-selector_id-object",
+      "file": "invalid-wire-selector_id-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-selector_id-empty-string",
+      "file": "invalid-wire-selector_id-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-null",
+      "file": "invalid-wire-contract_generation-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-bool",
+      "file": "invalid-wire-contract_generation-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-object",
+      "file": "invalid-wire-contract_generation-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-empty-string",
+      "file": "invalid-wire-contract_generation-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation_chain-null",
+      "file": "invalid-wire-delegation_chain-null.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation_chain-bool",
+      "file": "invalid-wire-delegation_chain-bool.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation_chain-object",
+      "file": "invalid-wire-delegation_chain-object.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation_chain-empty-string",
+      "file": "invalid-wire-delegation_chain-empty-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation-empty",
+      "file": "invalid-wire-delegation-empty.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation-null-entry",
+      "file": "invalid-wire-delegation-null-entry.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation-empty-entry",
+      "file": "invalid-wire-delegation-empty-entry.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-delegation-numeric-entry",
+      "file": "invalid-wire-delegation-numeric-entry.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-chain_seq-negative",
+      "file": "invalid-wire-chain_seq-negative.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-chain_seq-unsafe",
+      "file": "invalid-wire-chain_seq-unsafe.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-chain_seq-string",
+      "file": "invalid-wire-chain_seq-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-negative",
+      "file": "invalid-wire-contract_generation-negative.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-unsafe",
+      "file": "invalid-wire-contract_generation-unsafe.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-contract_generation-string",
+      "file": "invalid-wire-contract_generation-string.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-zero-contract-generation",
+      "file": "invalid-wire-zero-contract-generation.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-unknown-envelope",
+      "file": "invalid-wire-unknown-envelope.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-offset",
+      "file": "invalid-wire-timestamp-offset.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-zero-fraction",
+      "file": "invalid-wire-timestamp-zero-fraction.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-trailing-zero",
+      "file": "invalid-wire-timestamp-trailing-zero.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-calendar",
+      "file": "invalid-wire-timestamp-calendar.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-hour",
+      "file": "invalid-wire-timestamp-hour.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-timestamp-zero-time",
+      "file": "invalid-wire-timestamp-zero-time.json",
+      "valid": false,
+      "reason": "New-kind envelope wire shape must reject"
+    },
+    {
+      "name": "invalid-wire-uppercase-signature-hex",
+      "file": "invalid-wire-uppercase-signature-hex.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-leading-signature-hex-space",
+      "file": "invalid-wire-leading-signature-hex-space.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-trailing-signature-hex-space",
+      "file": "invalid-wire-trailing-signature-hex-space.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-uppercase-signature-prefix",
+      "file": "invalid-wire-uppercase-signature-prefix.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-short-signature-hex",
+      "file": "invalid-wire-short-signature-hex.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-long-signature-hex",
+      "file": "invalid-wire-long-signature-hex.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-nonhex-signature",
+      "file": "invalid-wire-nonhex-signature.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-escaped-timestamp-digit",
+      "file": "invalid-wire-escaped-timestamp-digit.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-decimal-envelope-version",
+      "file": "invalid-wire-decimal-envelope-version.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-exponent-envelope-version",
+      "file": "invalid-wire-exponent-envelope-version.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-decimal-sequence",
+      "file": "invalid-wire-decimal-sequence.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-exponent-sequence",
+      "file": "invalid-wire-exponent-sequence.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-negative-zero-sequence",
+      "file": "invalid-wire-negative-zero-sequence.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-signature-key",
+      "file": "invalid-wire-case-signature-key.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-signature-purpose",
+      "file": "invalid-wire-null-signature-purpose.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-unknown-signature",
+      "file": "invalid-wire-unknown-signature.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-case-canonicalization-key",
+      "file": "invalid-wire-case-canonicalization-key.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-null-canonicalization-key",
+      "file": "invalid-wire-null-canonicalization-key.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-wire-unknown-canonicalization",
+      "file": "invalid-wire-unknown-canonicalization.json",
+      "valid": false,
+      "reason": "Raw envelope token and nested field shape must reject"
+    },
+    {
+      "name": "invalid-destination-both",
+      "file": "invalid-destination-both.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-both-empty-ref",
+      "file": "invalid-destination-both-empty-ref.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-neither",
+      "file": "invalid-destination-neither.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-empty-ref",
+      "file": "invalid-destination-empty-ref.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-null-ref",
+      "file": "invalid-destination-null-ref.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-number-ref",
+      "file": "invalid-destination-number-ref.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-null-redaction",
+      "file": "invalid-destination-null-redaction.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-array-redaction",
+      "file": "invalid-destination-array-redaction.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-string-redaction",
+      "file": "invalid-destination-string-redaction.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-missing-reason",
+      "file": "invalid-destination-missing-reason.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-null-reason",
+      "file": "invalid-destination-null-reason.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-number-reason",
+      "file": "invalid-destination-number-reason.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-unknown-reason",
+      "file": "invalid-destination-unknown-reason.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-empty-reason",
+      "file": "invalid-destination-empty-reason.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-unknown-nested",
+      "file": "invalid-destination-unknown-nested.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-case-top",
+      "file": "invalid-destination-case-top.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-case-nested",
+      "file": "invalid-destination-case-nested.json",
+      "valid": false,
+      "reason": "Destination reference/redaction sum-type shape must reject"
+    },
+    {
+      "name": "invalid-destination-duplicate-redaction",
+      "file": "invalid-destination-duplicate-redaction.json",
+      "valid": false,
+      "reason": "Duplicate destination facts must reject before binding"
+    },
+    {
+      "name": "invalid-destination-duplicate-reason",
+      "file": "invalid-destination-duplicate-reason.json",
+      "valid": false,
+      "reason": "Duplicate destination facts must reject before binding"
+    }
+  ]
+}

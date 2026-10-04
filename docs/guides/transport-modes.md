@@ -7,7 +7,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | Mode | Endpoint | Protocol | Content Inspection | Response Scanning | Best For |
 |------|----------|----------|-------------------|-------------------|----------|
 | Fetch | `/fetch?url=...` | HTTP | Full body | Injection detection | AI agents that need extracted text |
-| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | Hostname only | None | Standard HTTPS clients (no interception) |
+| CONNECT | `HTTPS_PROXY` | HTTPS tunnel | CONNECT metadata and handshake headers; no encrypted content | None | Standard HTTPS clients (no interception) |
 | CONNECT + TLS interception | `HTTPS_PROXY` | HTTPS tunnel (MITM) | Full body + headers | Injection detection | Full DLP on HTTPS traffic |
 | Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | Injection detection (when enabled) | Plaintext HTTP clients |
 | WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
@@ -43,6 +43,8 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 
 **Scanning (without TLS interception):**
 - Ordered URL scan on the target hostname (before tunnel)
+- CONNECT handshake-header DLP when header scanning is enabled
+- Tunnel accounting and applicable metadata controls; see [TLS interception](tls-interception.md#what-is-enforced-when-interception-is-off)
 - No content inspection during the tunnel (encrypted bytes)
 - No response scanning
 
@@ -57,10 +59,10 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 
 **What the agent receives:** Without interception: raw HTTPS response from the origin server. With interception: response re-encrypted by pipelock after scanning.
 
-**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively. Enable TLS interception for full DLP and injection scanning. Without interception, only hostname-level protection applies.
+**Use when:** Your agent or SDK uses `HTTPS_PROXY` natively. Enable TLS interception for full DLP and injection scanning. Without interception, controls use CONNECT metadata and tunnel accounting; the inner HTTPS content stays opaque.
 
 ```bash
-# Without TLS interception (hostname scanning only)
+# Without TLS interception (CONNECT metadata and tunnel controls)
 HTTPS_PROXY=http://localhost:8888 curl https://example.com
 
 # With TLS interception (full body/header DLP + response scanning)
@@ -81,6 +83,37 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 - Data budget tracking on response size
 
 **What the agent receives:** Raw HTTP response from the origin server.
+
+**Redirects and browser sessions:** Absolute-URI forwarding returns an allowed
+origin redirect (`3xx`, `Location`, and separate `Set-Cookie` headers) to the
+client instead of following it inside Pipelock. For redirects the outbound
+client could follow, existing target admission still runs before the response
+is released, including destination, credential,
+request-policy, taint, airlock, contract and body-replay restrictions. The
+original redirect response then passes normal response scanning and header
+sanitization. Responses already left unfollowed, such as a `307`/`308` with a
+non-replayable body, keep that behavior. A denied target is not contacted.
+For client-followable redirect statuses, ambiguous `Location` values (duplicates,
+raw backslashes or literal ASCII whitespace) fail closed before any redirect or
+cookie header is released. Ordinary single relative or absolute locations remain
+supported.
+
+The browser owns navigation and cookie state, so cookies retain the issuing
+origin and path. Pipelock does not create a shared cookie jar or move cookies
+between origins. Each client-followed request must still use the configured
+proxy route and receives full admission for its actual URL, headers and body.
+Earlier redirect approval cannot authorize different credentials on that request.
+
+Client-followed hops are separate requests, with fresh action/receipt IDs and
+fresh mediation envelopes, not one internally followed signed chain. The client
+controls its redirect limit; Pipelock's internal `/fetch` redirect counter does
+not carry across these separate requests. Configured per-request and session limits
+still apply. Confirmation policies can prompt for redirect preflight and again
+for the actual subsequent request; approval is not shared between them.
+Forward redirect preflight checks remaining rate-limit capacity without consuming
+it; each actual request charges once, while `/fetch` keeps charging its internally
+followed hops.
+`/fetch` retains its existing bounded internal follow-and-rescan behavior.
 
 **Use when:** Your application makes plaintext HTTP requests through `HTTP_PROXY`. Note that most modern APIs use HTTPS, making this mode less common.
 
@@ -215,14 +248,14 @@ Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.
 
 ### CONNECT Tunnels: With and Without TLS Interception
 
-Without TLS interception (`tls_interception.enabled: false`, the default), CONNECT tunnels are opaque encrypted bytes after the hostname scan. DLP cannot detect secrets in bodies or headers, and response injection scanning does not apply.
+Without TLS interception (`tls_interception.enabled: false`, the default), CONNECT tunnels carry opaque encrypted bytes after the handshake. DLP can inspect CONNECT handshake headers when header scanning is enabled, but cannot inspect the inner HTTPS headers or bodies. Response injection scanning does not apply to encrypted responses.
 
 With TLS interception enabled, pipelock performs a TLS MITM: it terminates TLS with the client (forged certificate), scans the decrypted traffic, then forwards to the upstream server over a separate TLS connection. This closes the body-blindness gap.
 
 **Without interception:**
 - DLP cannot detect secrets in HTTPS request/response bodies
 - Response injection scanning does not apply
-- Only destination-visible URL scanning applies; encrypted request and response content remains opaque
+- Controls can use CONNECT metadata, handshake headers, and tunnel accounting; encrypted request and response content remains opaque
 
 **With interception:**
 - Full request body DLP (JSON, form, multipart)
@@ -247,12 +280,12 @@ If your agent handles secrets and you need content-level DLP on HTTPS traffic, e
 
 ## Signed Action Receipt Coverage
 
-Every configured enforcement event produces a signed action receipt: every block, and — under `flight_recorder.require_receipts: true` — every allow on the per-request proxy and MCP decision paths (including A2A method allows). Clean frames of a long-lived stream are summarized rather than individually receipted; the deliberate exceptions are listed in [Intentional no-receipt and summarized cases](#intentional-no-receipt-and-summarized-cases) below. The table below enumerates which deny paths are covered on each transport. Every row has been exercised by a test in the signed-receipt-coverage suite.
+The table below lists deny paths covered by signed action receipts. Under `flight_recorder.require_receipts: true`, per-request proxy and MCP allow paths require receipts before forwarding (including A2A method allows). Coverage is not universal: CONNECT handshake-header DLP blocks are logged and counted but currently do not emit a signed block receipt. Clean frames of a long-lived stream are summarized rather than individually receipted; see [Intentional no-receipt and summarized cases](#intentional-no-receipt-and-summarized-cases) below.
 
 | Transport | Pre-forward blocks | Post-forward blocks | Transport-specific blocks | Receipt path |
 |-----------|-------------------|---------------------|---------------------------|--------------|
 | Fetch (`/fetch`) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, cross-request exfiltration | — | Direct emit to flight recorder |
-| CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist | — | Redirect inside tunnel (not visible) | Hostname-only receipts |
+| CONNECT (no TLS intercept) | URL scan, URL DLP, SSRF, blocklist | — | Inner redirects are not visible | CONNECT decision receipts; excludes handshake-header DLP blocks and inner HTTPS content |
 | CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts; required inner-request allows are durable before upstream |
 | Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
 | WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame **block** receipts + session close (clean frames summarized, not individually receipted) |
@@ -264,7 +297,7 @@ Receipt emission is best-effort by default on the async flight-recorder channel 
 
 ### Intentional no-receipt and summarized cases
 
-The guarantee is "every configured enforcement event is provable," not "every frame produces a receipt." The matrix below is the canonical, single-source-of-truth list of when a signed action receipt is and is not emitted, including the deliberate no-receipt cases (clean streaming frames are summarized to avoid an O(n)-in-stream-length receipt flood that a chatty peer could weaponize as a denial-of-service vector). It is generated from and drift-checked against `TestReceiptCoverage_MatrixMatchesDocs` in `internal/proxy/receipt_coverage_matrix_test.go`; edit the matrix there and run `UPDATE_GOLDEN=1 go test ./internal/proxy/ -run TestReceiptCoverage_MatrixMatchesDocs` to regenerate this block.
+Receipt emission depends on the transport and enforcement path. CONNECT handshake-header DLP blocks are logged and counted without a signed receipt. The matrix below is the canonical, single-source-of-truth list of when a signed action receipt is and is not emitted, including summarized cases (clean streaming frames are summarized to avoid an O(n)-in-stream-length receipt flood that a chatty peer could weaponize as a denial-of-service vector). It is generated from and drift-checked against `TestReceiptCoverage_MatrixMatchesDocs` in `internal/proxy/receipt_coverage_matrix_test.go`; edit the matrix there and run `UPDATE_GOLDEN=1 go test ./internal/proxy/ -run TestReceiptCoverage_MatrixMatchesDocs` to regenerate this block.
 
 <!-- BEGIN receipt-coverage-matrix (generated; edit internal/proxy/receipt_coverage_matrix_test.go) -->
 
@@ -276,7 +309,7 @@ The guarantee is "every configured enforcement event is provable," not "every fr
 | A2A method block | yes | Block receipt with the A2A method name as `target`. |
 | A2A method allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
 | A2A method allow, default | no | Allow receipts are opt-in via `require_receipts`. |
-| Proxy block (fetch / CONNECT / forward / WS handshake) | yes | Pre- or post-forward block receipt. |
+| Proxy block (fetch / CONNECT / forward / WS handshake) | yes | Pre- or post-forward block receipt, except CONNECT handshake-header DLP blocks (logged and counted only). |
 | Proxy allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
 | Clean WebSocket frame | no (intentional) | Per-frame allow receipts are O(n) in stream length; summarized, not emitted, to avoid a receipt-flood denial-of-service vector. |
 | Clean SSE / streamed response chunk | no (intentional) | Streamed response chunks are summarized, not receipted per chunk. |

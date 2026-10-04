@@ -287,7 +287,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		result.Canary = runSidecarCanary(w, patchResult.Config, opts, opts.jsonOutput)
 		if !opts.jsonOutput {
 			if result.Canary.Detected {
-				_, _ = fmt.Fprintln(w, "  Canary secret detected in URL scan. DLP is working.")
+				_, _ = fmt.Fprintln(w, "  "+result.Canary.Detail)
 			}
 			_, _ = fmt.Fprintln(w)
 		}
@@ -297,7 +297,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		return &cliutil.ExitError{Err: errors.New(result.Verify.Detail), Code: initExitFailure}
 	}
 	if result.Canary != nil && !result.Canary.Skipped && !result.Canary.Detected {
-		return &cliutil.ExitError{Err: fmt.Errorf("canary secret was not detected by DLP"), Code: initExitFailure}
+		return &cliutil.ExitError{Err: fmt.Errorf("%s", result.Canary.Detail), Code: initExitFailure}
 	}
 
 	// Phase 7: Summary
@@ -590,7 +590,7 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 		if result.Canary.Skipped {
 			_, _ = fmt.Fprintln(w, "  Canary:          skipped")
 		} else if result.Canary.Detected {
-			_, _ = fmt.Fprintln(w, "  Canary:          detected (DLP working)")
+			_, _ = fmt.Fprintln(w, "  Canary:          detected (synthetic local URL scan only; client routing was not tested)")
 		} else {
 			_, _ = fmt.Fprintln(w, "  Canary:          not detected (check config)")
 		}

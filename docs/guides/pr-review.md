@@ -51,7 +51,13 @@ inspecting a subset.
 
 The runner uses deterministic token budgeting instead of character slicing. Go
 source and additions rank above tests, configuration, and documentation. The
-final comment includes an omission manifest. If the reviewer omits a unit, can't
+planner keeps that priority order while using spare chunk space for smaller
+units after a larger one doesn't fit. It never removes already-admitted work to
+make that space. Python `test_*.py` files and `test`, `tests`, and `testdata` path
+components are classified as tests; signed fixtures remain reviewable units.
+The final comment includes an omission manifest, including chunks that failed
+or never started. A planned unit is counted as reviewed only after a valid
+provider result is received. If the reviewer omits a unit, can't
 parse it, or gets unusable provider output, it reports `partial` instead of
 `clean`.
 
@@ -59,8 +65,8 @@ The judge gets one bounded follow-up with only the candidates it didn't settle. 
 When a candidate depends on external evidence or evidence the run couldn't
 include, the comment reports `inconclusive` and keeps the candidate in a
 collapsed unverified-candidates section. The candidate doesn't count as an actionable
-finding, and the completeness check stays red until the review reaches `clean`
-or `findings`.
+finding, and the action's `complete` output stays false until the review reaches
+`clean` or `findings` with coverage of the current pull request base.
 A finding the judge does keep can still show `(needs verification)` when the
 reviewer marked it.
 Default-mode deletion compression is disclosed separately; deep mode reads
@@ -71,9 +77,11 @@ uses strict JSON output, a cross-file synthesis pass, and a second actual-code
 judge pass before publishing findings. It strips mentions and command-shaped
 text from model-supplied fields.
 
-The coverage status is written against the pull request head that GitHub reports when the review finishes. If the head or base moved, it marks that current head as needing another review. A terminal writer publishes only when its admission is still the newest one, so an older job can't replace a newer verdict.
-
-The publisher makes three total status requests and waits only between attempts. If all three fail, it changes the review comment to `failed` and says the pull request can't show the coverage verdict. That result isn't green.
+The final comment names the captured base and head. If either moves during the
+review, the result cannot claim complete coverage of the current pull request.
+The workflow's green job means the verdict was published, including a `partial`
+or `inconclusive` verdict. Read the signed comment marker to decide coverage;
+the reviewer does not publish commit statuses or CI checks.
 
 ## Setup
 
@@ -95,7 +103,7 @@ when intentionally overriding the reviewed defaults:
 | Variable | Default | Used By |
 |----------|---------|---------|
 | `PR_REVIEW_MODEL_FAST` | `gpt-6-luna` | `/review` |
-| `PR_REVIEW_MODEL_DEEP` | `gpt-6-sol` | `/review deep` and candidate judging |
+| `PR_REVIEW_MODEL_DEEP` | `gpt-6.1-sol` | `/review deep` and candidate judging |
 
 The defaults live in `.github/actions/pr-review/pr_review.py`; the composite
 action passes optional repository variables through without maintaining another
@@ -111,7 +119,7 @@ Override the model via repository variables:
 
 ```text
 PR_REVIEW_MODEL_FAST=gpt-6-luna
-PR_REVIEW_MODEL_DEEP=gpt-6-sol
+PR_REVIEW_MODEL_DEEP=gpt-6.1-sol
 ```
 
 Values must name models available through the direct OpenAI API.
@@ -144,7 +152,10 @@ spend a full review,
 twenty minutes on a large diff, to reproduce what is already posted. Depth is
 part of that comparison, so `/review deep` still runs after `/review`. Only a
 review that covered the whole diff and settled its candidates counts. Retry a
-`partial` or `failed` review because the run may have stopped short. Retry an
+`partial` or `failed` review after a transient failure, because the run may have
+stopped short. A deterministic budget omission will recur on the same input;
+repeating the command does not continue from the units the prior run reviewed.
+Retry an
 `inconclusive` review after supplying the missing evidence or making the human
 decision it names. There is no way
 to force a second review of an unchanged head in the same mode. The manual
@@ -165,6 +176,43 @@ so the prior fix didn't close it or introduced the same failure elsewhere.
 A finding that simply does not appear in a later review is NOT reported as
 fixed. Its absence is not evidence: the model may not have surfaced it this
 time. Nothing here claims a finding was resolved.
+
+## Handling an incomplete review
+
+- Read the bound head, coverage count, omission reasons, and unverified
+  candidates before deciding what remains. A successful workflow is not a
+  clean review.
+- `priority-token-budget` means the unit did not fit the configured chunk or
+  unit limits. `hunk-exceeds-token-budget` means one whole unit was too large.
+  Ordinary mode allows six chunks of up to 30 units and 12,000 estimated diff
+  tokens each; deep mode allows eight chunks of up to 60 units and 48,000
+  estimated diff tokens each. Prompt structure is additional, and wall-clock
+  limits still apply. Better packing cannot make an arbitrarily large diff fit.
+- Review deterministic omissions independently, or deliberately choose
+  `/review deep` when its larger budget is appropriate. Neither an unchanged
+  ordinary rerun nor a deep run promises complete coverage. Fixtures and
+  security-sensitive tests are not exempt from this accounting.
+- Provider timeouts, exhausted connection retries, rate limits, and invalid or
+  truncated responses remain unreviewed in the manifest. A manual retry starts
+  a new bounded review; ambiguous timed-out provider calls are never retried
+  automatically.
+- `not-attempted` units were planned but never sent, for example because the
+  wall clock expired or the head moved. An unchanged-head rerun starts over;
+  partial results are never accepted as complete delta baselines.
+- Full diff coverage with unresolved candidates is still `inconclusive`.
+  Verify the named evidence rather than treating the lack of verified findings
+  as evidence of no defects.
+- Full diff coverage can also be `partial` when a judge response is unusable.
+  The validation section and workflow logs identify the phase and safe rejection
+  categories, such as `reason-too-long`, `invalid-index`, or `missing-decision`.
+  These are counts of validation events, including events corrected by repair;
+  they are not findings or raw provider responses. HTTP 200 alone does not prove
+  a usable decision.
+- Both judge prompts state the existing 300-character reason limit and index
+  and evidence-request rules. The single bounded repair receives validation
+  categories for its own candidate indices. It still must decide the candidate;
+  diagnostics do not relax validation, add calls, or make an incomplete result
+  clean. A malformed primary response still fails without an extra recovery call.
 
 ## Changing the reviewer
 

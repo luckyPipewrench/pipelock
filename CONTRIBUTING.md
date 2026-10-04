@@ -191,7 +191,7 @@ internal/
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   report/              HTML/JSON audit report generation from JSONL event logs
-  killswitch/          Emergency deny-all (6 sources) + port-isolated API
+  killswitch/          Emergency deny-all (7 sources) + port-isolated API
   emit/                Event emission (webhook + syslog + OTLP sinks)
   metrics/             Prometheus metrics + JSON stats endpoint
   normalize/           Unicode normalization (NFKC, confusables, combining marks)

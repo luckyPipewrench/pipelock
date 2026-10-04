@@ -23,7 +23,7 @@ func TestScan_CredentialAudienceHosts_AllBuiltInsURL(t *testing.T) {
 			if !result.Allowed {
 				t.Fatalf("audience URL blocked: %s", result.Reason)
 			}
-			assertCredentialAudienceAllow(t, result, test.pattern, "url", test.destination)
+			assertCredentialAudienceAllow(t, result, test.pattern, test.destination)
 
 			blocked := s.Scan(context.Background(), "https://api.vendor.example/v1?credential="+test.credential)
 			if blocked.Allowed {
@@ -573,8 +573,10 @@ func urlQueryEscape(value string) string {
 	return strings.NewReplacer(" ", "%20", ":", "%3A", "-", "-").Replace(value)
 }
 
-func assertCredentialAudienceAllow(t *testing.T, result Result, pattern, surface, destination string) {
+// assertCredentialAudienceAllow checks the single URL-surface allow record.
+func assertCredentialAudienceAllow(t *testing.T, result Result, pattern, destination string) {
 	t.Helper()
+	const surface = "url"
 	if len(result.CredentialAudienceAllows) != 1 {
 		t.Fatalf("audience allow records = %#v, want one", result.CredentialAudienceAllows)
 	}

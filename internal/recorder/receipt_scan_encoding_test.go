@@ -137,9 +137,8 @@ func TestReceiptScanEncodedSecretMatrix(t *testing.T) {
 		{name: "seed zero width separated", fields: map[string]string{"rule_id": "note " + strings.ReplaceAll(seed, " ", "\u200b") + " end"}, wantReject: true},
 		{name: "seed nested json string", fields: map[string]string{"rule_id": nestedJSONString(t, "note "+seed+" end")}, wantReject: true},
 		{name: "seed base64 in url path", fields: map[string]string{"target": "http://api.vendor.example/" + base64.RawURLEncoding.EncodeToString([]byte(seed)) + "/x"}, wantReject: true},
-		// Known gap: the JSON quote attaches to the first and last word, so a
-		// phrase that is the whole string value is one word short. Pinned so a
-		// fix flips this deliberately rather than silently.
+		// The JSON quotes around a whole-value phrase split and bound the
+		// words, so the phrase is still caught.
 		{name: "seed alone in json string", fields: map[string]string{"rule_id": seed}, wantReject: true},
 	}
 	for _, tc := range cases {

@@ -30,6 +30,7 @@ import {
   recoverySealSigningBytes,
   verifyBase,
   verifyRecoveryOuterSequence,
+  verifyRecoverySealSignature,
   withPinnedEvidenceDirectory,
   type RecoverySeal,
 } from "../src/chain-set.js";
@@ -273,6 +274,13 @@ test("recovery prefix enforces zero-based contiguous outer sequence", () => {
     decodeUTF8(shard.subarray(0, seal.damage_offset), "recovery-seal fixture prefix"),
   );
   assert.equal(verifyRecoveryOuterSequence(prefix), undefined);
+  for (const value of ['"0"', "null", "-1", "0.5"]) {
+    const malformed = prefix.map((line) => ({ ...line }));
+    const first = malformed[0];
+    assert.ok(first);
+    first.line = first.line.replace(/"seq":0/u, `"seq":${value}`);
+    assert.match(verifyRecoveryOuterSequence(malformed) ?? "", /unsigned integer/u);
+  }
   assert.equal(prefix.length, 3);
   assert.match(prefix[0]?.line ?? "", /"seq":0/u);
   const resequenced = [...prefix];
@@ -284,6 +292,24 @@ test("recovery prefix enforces zero-based contiguous outer sequence", () => {
     /expected zero-based contiguous sequence 0, got 1/u,
   );
   assert.equal(verifyRecoveryOuterSequence([]), undefined);
+});
+
+test("standalone recovery signature verification rejects cross-base sessions", async () => {
+  const original = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+  await verifyRecoverySealSignature(original);
+  const changed = {
+    ...original,
+    successor_session: original.successor_session.replace("proxy.run.", "other.run."),
+    signature: "" as const,
+  } satisfies RecoverySeal;
+  const seed = createHash("sha256").update("pipelock-recovery-seal-conformance-v1").digest();
+  const signature = Buffer.from(
+    await ed25519.signAsync(recoverySealSigningBytes(changed), seed),
+  ).toString("hex");
+  await assert.rejects(
+    verifyRecoverySealSignature({ ...changed, signature: `ed25519:${signature}` }),
+    /distinct sessions of one base/u,
+  );
 });
 
 test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity and fails closed on replay edits", async () => {
@@ -510,14 +536,20 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
     });
     assert.ok(checkpointReport.chains.some((chain) => chain.recovery_seal !== undefined));
 
+    const checkpointWithNote = JSON.stringify({
+      ...JSON.parse(receiptLines[2] as string),
+      note: "UTF8_SENTINEL",
+    });
+    const noteOffset = checkpointWithNote.indexOf("UTF8_SENTINEL");
+    assert.ok(noteOffset >= 0);
     const completeInvalidUTF8 = Buffer.concat([
-      prefixBytes,
-      Buffer.from('{"summary":"', "utf8"),
+      checkpointPrefix,
+      Buffer.from(checkpointWithNote.slice(0, noteOffset), "utf8"),
       Buffer.from([0xff]),
-      Buffer.from('"}', "utf8"),
+      Buffer.from(checkpointWithNote.slice(noteOffset + "UTF8_SENTINEL".length), "utf8"),
     ]);
     const invalidUTF8Seal = {
-      ...noNewlineSeal,
+      ...checkpointSeal,
       shard_size: completeInvalidUTF8.length,
       shard_sha256: sha256Hex(completeInvalidUTF8),
       signature: "" as const,
@@ -537,6 +569,12 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
     assert.equal(
       invalidUTF8Report.chains.some((chain) => chain.recovery_seal !== undefined),
       false,
+    );
+    assert.ok(
+      invalidUTF8Report.findings.some(
+        (finding) =>
+          finding.kind === "invalid_recovery_seal" && finding.detail.includes("invalid UTF-8"),
+      ),
     );
 
     // Go classifies a nonempty unterminated byte fragment as torn even when

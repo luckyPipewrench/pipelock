@@ -1254,7 +1254,9 @@ fn verify_recovery_recorder_sequence(lines: &[RecorderLine]) -> Result<(), Strin
     for (index, line) in lines.iter().enumerate() {
         let expected = u64::try_from(index)
             .map_err(|_| "recovery recorder sequence exceeds u64".to_string())?;
-        let actual = u64_at(&line.entry, &["seq"]).unwrap_or(0);
+        let actual = u64_at(&line.entry, &["seq"]).ok_or_else(|| {
+            format!("recovery recorder sequence is not an unsigned integer at entry {index}")
+        })?;
         if actual != expected {
             return Err(format!(
                 "recovery recorder sequence mismatch: entry {index} has seq {actual}, expected {expected}"
@@ -2099,6 +2101,29 @@ mod go_json_escape_tests {
     use serde_json::Value;
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
+
+    #[test]
+    fn recovery_sequence_requires_an_explicit_unsigned_integer() {
+        let line = |entry| super::RecorderLine {
+            entry,
+            ext: None,
+            line: String::new(),
+        };
+        assert!(super::verify_recovery_recorder_sequence(&[
+            line(serde_json::json!({"seq": 0})),
+            line(serde_json::json!({"seq": 1})),
+        ])
+        .is_ok());
+        for entry in [
+            serde_json::json!({}),
+            serde_json::json!({"seq": null}),
+            serde_json::json!({"seq": "0"}),
+            serde_json::json!({"seq": -1}),
+            serde_json::json!({"seq": 0.5}),
+        ] {
+            assert!(super::verify_recovery_recorder_sequence(&[line(entry)]).is_err());
+        }
+    }
 
     // Written by the Go conformance test from encoding/json itself, so this
     // holds the link encoder to Go's bytes rather than to a recollection.

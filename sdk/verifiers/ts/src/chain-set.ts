@@ -827,6 +827,10 @@ export async function verifyRecoverySealSignature(s: RecoverySeal): Promise<void
   }
   if (s.predecessor_session === s.successor_session)
     throw new Error("recovery seal sessions must differ");
+  const base = runSessionBase(s.successor_session);
+  if (base === undefined || !isBaseChain(s.predecessor_session, base)) {
+    throw new Error("recovery seal must bind distinct sessions of one base");
+  }
   if (path.basename(s.shard) !== s.shard || s.shard.includes("/") || s.shard.includes("\\")) {
     throw new Error("recovery seal shard must be a root-relative basename");
   }
@@ -1534,8 +1538,6 @@ export function verifyRecoveryOuterSequence(
     let value: bigint;
     if (seq instanceof RawNumber && /^(?:0|[1-9][0-9]*)$/u.test(seq.literal)) {
       value = BigInt(seq.literal);
-    } else if (typeof seq === "string" && /^(?:0|[1-9][0-9]*)$/u.test(seq)) {
-      value = BigInt(seq);
     } else {
       return `entry ${i}: recorder sequence is not an unsigned integer`;
     }

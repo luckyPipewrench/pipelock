@@ -289,7 +289,9 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	// Retry a pending seal for an opening already persisted by recovery.
 	// Missing cross-run attestation must not block durable successor evidence.
 	if e.hasPriorTail && cfg.Recorder.RecoveryPredecessor() != "" {
+		e.chainMu.Lock()
 		e.linkPredecessor()
+		e.chainMu.Unlock()
 	}
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
@@ -308,6 +310,8 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 //
 // Link and recovery-seal failures leave the run unlinked without disabling
 // emission. Pending recovery claims remain available for a later retry.
+// The caller holds chainMu, including during construction; callbacks update
+// chainLink and recoverySeal under that same lock.
 func (e *Emitter) linkPredecessor() {
 	predecessor := e.recorder.RecoveryPredecessor()
 	if (predecessor == "" && (e.hasPriorTail || e.chainSeq != 1)) || e.recorder.Dir() == "" {

@@ -379,6 +379,10 @@ fn recovery_seal_fixture_is_reported_as_an_unhealthy_attested_discontinuity() {
         .expect("successor chain");
     assert!(run.recovery_seal.is_some());
     assert!(!report.healthy(), "a valid seal still records damage");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| { finding.kind == "corrupt_chain" && finding.session == predecessor }));
     assert!(report.findings.iter().any(|finding| {
         finding.kind == "attested_discontinuity" && finding.session == successor
     }));

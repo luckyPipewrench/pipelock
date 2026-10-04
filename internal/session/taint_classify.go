@@ -419,6 +419,31 @@ func mcpArgumentRoleForKey(key string) mcpArgumentRole {
 	return mcpArgumentUnknown
 }
 
+// readOnlyOperationNames are complete tool names whose words merely CONTAIN a
+// publish or network needle ("put" in input/output, "post" in postgres,
+// "request" as a noun). Only the exact word sequence qualifies: any extra word,
+// a different order, or a concatenated spelling keeps the conservative
+// substring evidence, so get_and_set_input or mcp__input__get_status are
+// unaffected. The namespace prefix is kept by the caller.
+var readOnlyOperationNames = [][]string{
+	{"get", "input", "schema"},
+	{"read", "output"},
+	{"get", "output"},
+	{"get", "request", "log"},
+	{"list", "feature", "requests"},
+	{"list", "postgres", "tables"},
+	{"list", "pending", "requests"},
+}
+
+func readOnlyOperationName(operation []string) bool {
+	for _, known := range readOnlyOperationNames {
+		if slices.Equal(operation, known) {
+			return true
+		}
+	}
+	return false
+}
+
 func splitArgumentKey(key string) []string {
 	var words []string
 	var word []rune
@@ -697,6 +722,9 @@ func mcpOperationEvidenceName(name string) string {
 		return strings.ToLower(name)
 	}
 	operation := splitArgumentKey(alias)
+	if readOnlyOperationName(operation) {
+		return strings.ToLower(strings.TrimSuffix(name, alias)) + "read"
+	}
 	if len(operation) < 2 || !slices.Contains([]string{"read", "get", "list", "search", "find", "query", "fetch", "show", "describe", "check"}, operation[0]) {
 		return strings.ToLower(name)
 	}

@@ -113,6 +113,39 @@ func TestMCPReadOperationObjects(t *testing.T) {
 	}
 }
 
+// Complete read-only names whose words merely contain a publish or network
+// needle ("put" in input/output, "post" in postgres, "request" as a noun).
+// Spelling variants that produce the same word sequence also qualify; any extra
+// word, a namespace mutation, or a concatenated spelling keeps the conservative
+// classification asserted in TestMCPEmbeddedNeedleNamesStayConservative.
+func TestMCPReadOnlyNamesWithEmbeddedNeedles(t *testing.T) {
+	for _, name := range []string{
+		"get_input_schema", "getInputSchema", "read_output", "ReadOutput", "read-output", "get_output",
+		"get_request_log", "list_feature_requests", "list_postgres_tables", "listPostgresTables",
+		"list_pending_requests", "mcp__service__list_pending_requests",
+	} {
+		for _, failSafe := range []bool{false, true} {
+			got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{FailSafe: failSafe})
+			if got.Class != session.ActionClassRead {
+				t.Fatalf("%s (failSafe=%v): read-only name classified as %+v", name, failSafe, got)
+			}
+		}
+	}
+}
+
+func TestMCPEmbeddedNeedleNamesStayConservative(t *testing.T) {
+	for _, name := range []string{
+		"readoutput", "getinputschema", "read_output_and_send", "get_input_schema_and_post",
+		"list_pending_requests_extra", "send_list_pending_requests", "list_feature_requests_webhook",
+		"mcp__post__get_request_log", "get_request_log2", "list_postgres_tables_put",
+	} {
+		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
+		if got.Class == session.ActionClassRead {
+			t.Fatalf("%s: mutation evidence lost: %+v", name, got)
+		}
+	}
+}
+
 func TestMCPWatchMutationWithIdentifierArguments(t *testing.T) {
 	for _, name := range []string{"watch_pull_request", "link_pull_request", "mcp__service__watch_pull_request"} {
 		for _, failSafe := range []bool{false, true} {

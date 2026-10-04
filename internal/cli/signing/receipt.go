@@ -1079,6 +1079,9 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 	_, _ = fmt.Fprintf(out, "%s: base %q: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
 		label, report.Base, len(report.Chains), report.LinkCount(), len(unlinked), len(report.Findings))
 	for _, c := range report.Chains {
+		if s := c.RecoverySeal; s != nil {
+			_, _ = fmt.Fprintf(out, "  linked across attested discontinuity: %s continues %s; shard %s byte %d (damage remains)\n", c.Session, s.PredecessorSession, s.Shard, s.DamageOffset)
+		}
 		if c.Link != nil {
 			trust := c.LinkTrust
 			if trust == "" {

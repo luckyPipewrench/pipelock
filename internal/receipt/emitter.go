@@ -128,7 +128,8 @@ type Emitter struct {
 	priorSignerKeys []string
 	// chainLink is the signed continuity link published at the first
 	// receipt, or nil. Written once under chainMu.
-	chainLink *ChainLink
+	chainLink    *ChainLink
+	recoverySeal *RecoverySeal
 	// linked guards the one-time link attempt; see linkPredecessor.
 	linked bool
 	// notices receives operator-facing lines about cross-run linking.
@@ -285,6 +286,13 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if e.notices == nil {
 		e.notices = os.Stderr
 	}
+	// Retry a pending seal for an opening already persisted by recovery.
+	// Missing cross-run attestation must not block durable successor evidence.
+	if e.hasPriorTail && cfg.Recorder.RecoveryPredecessor() != "" {
+		e.chainMu.Lock()
+		e.linkPredecessor()
+		e.chainMu.Unlock()
+	}
 	e.nativeAEL = aelpkg.NewEmitter(cfg.Recorder, cfg.PrivKey, runNonce, cfg.HeartbeatSeconds)
 	return e
 }
@@ -300,25 +308,43 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 // link naming a successor that never existed, which verification reports as
 // a dangling link.
 //
-// Any failure leaves the run unlinked and never disables emission: a missing
-// link costs cross-run continuity, which a verifier reports as an unlinked
-// run, while bricking would cost all evidence for the run.
+// Link and recovery-seal failures leave the run unlinked without disabling
+// emission. Pending recovery claims remain available for a later retry.
+// The caller holds chainMu, including during construction; callbacks update
+// chainLink and recoverySeal under that same lock.
 func (e *Emitter) linkPredecessor() {
-	if e.hasPriorTail || e.chainSeq != 1 || e.recorder.Dir() == "" {
+	predecessor := e.recorder.RecoveryPredecessor()
+	if (predecessor == "" && (e.hasPriorTail || e.chainSeq != 1)) || e.recorder.Dir() == "" {
 		return
 	}
 	base, ok := RunSessionBase(e.session)
 	if !ok {
 		return
 	}
-	link, err := publishPredecessorLink(linkRequest{
-		dir:     filepath.Clean(e.recorder.Dir()),
-		base:    base,
-		self:    e.session,
-		privKey: e.privKey,
-		now:     e.now(),
-		notice:  e.notices,
-	}, e.observeTornTail)
+	req := linkRequest{
+		dir:        filepath.Clean(e.recorder.Dir()),
+		base:       base,
+		self:       e.session,
+		privKey:    e.privKey,
+		now:        e.now(),
+		notice:     e.notices,
+		signerKeys: append(slices.Clone(e.priorSignerKeys), hex.EncodeToString(e.privKey.Public().(ed25519.PublicKey))),
+		onRecovery: func(s *RecoverySeal) { e.recoverySeal = s },
+	}
+	if predecessor != "" {
+		seal, err := publishRecoverySeal(req, predecessor)
+		if err != nil {
+			_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: recovery seal unavailable for %s: %v\n", e.session, predecessor, err)
+			return
+		}
+		e.recoverySeal = seal
+		e.recorder.AcknowledgeRecovery(predecessor, e.session)
+		return
+	}
+	// Fresh starts can observe a predecessor signed by another operator key;
+	// its self-consistency is checked here, and offline readers decide trust.
+	req.signerKeys = nil
+	link, err := publishPredecessorLink(req, e.observeTornTail)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.notices, "pipelock: receipt chain %s starts unlinked: %v\n", e.session, err)
 		return

@@ -64,7 +64,14 @@ export function resolveOperatorFilePath(file: string): string {
   return current;
 }
 
-export function readVerifierBytes(file: string, directoryChild = false): Buffer {
+export function readVerifierBytes(
+  file: string,
+  directoryChild = false,
+  maxBytes = maxVerifierInputBytes,
+): Buffer {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > maxVerifierInputBytes) {
+    throw new RuntimeError("invalid input byte limit");
+  }
   // Directory children are opened relative to the pinned working directory.
   // Never resolve them by pathname: that would follow a replacement symlink.
   if (directoryChild && (path.basename(file) !== file || file === "." || file === "..")) {
@@ -86,18 +93,18 @@ export function readVerifierBytes(file: string, directoryChild = false): Buffer 
         throw new RuntimeError("evidence file changed while opening");
       }
     }
-    if (info.size > maxVerifierInputBytes) {
-      throw new RuntimeError(`input exceeds ${maxVerifierInputBytes} bytes`);
+    if (info.size > maxBytes) {
+      throw new RuntimeError(`input exceeds ${maxBytes} bytes`);
     }
-    const data = Buffer.allocUnsafe(maxVerifierInputBytes + 1);
+    const data = Buffer.allocUnsafe(maxBytes + 1);
     let length = 0;
-    while (length <= maxVerifierInputBytes) {
+    while (length <= maxBytes) {
       const n = readSync(fd, data, length, data.length - length, null);
       if (n === 0) break;
       length += n;
     }
-    if (length > maxVerifierInputBytes) {
-      throw new RuntimeError(`input exceeds ${maxVerifierInputBytes} bytes`);
+    if (length > maxBytes) {
+      throw new RuntimeError(`input exceeds ${maxBytes} bytes`);
     }
     return data.subarray(0, length);
   } finally {

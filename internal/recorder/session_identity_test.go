@@ -240,10 +240,18 @@ func TestAcquireSession_NilAndNopRecorderAreNoop(t *testing.T) {
 	if err := nilRec.AcquireSession("anything"); err != nil {
 		t.Fatalf("nil recorder AcquireSession: %v", err)
 	}
+	if got := nilRec.RecoveryPredecessor(); got != "" {
+		t.Fatalf("nil recorder RecoveryPredecessor = %q, want empty", got)
+	}
+	nilRec.AcknowledgeRecovery("old", "new")
 	nop := &Recorder{nop: true}
 	if err := nop.AcquireSession("anything"); err != nil {
 		t.Fatalf("nop recorder AcquireSession: %v", err)
 	}
+	if got := nop.RecoveryPredecessor(); got != "" {
+		t.Fatalf("nop recorder RecoveryPredecessor = %q, want empty", got)
+	}
+	nop.AcknowledgeRecovery("old", "new")
 }
 
 func TestAcquireRunSession_NilAndNopReturnBaseUnchanged(t *testing.T) {

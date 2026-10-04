@@ -46,6 +46,13 @@ export interface ParsedRecorderLine extends RecorderLine {
 
 export function readEntryLines(file: string, directoryChild = false): ParsedRecorderLine[] {
   const text = decodeUTF8(readVerifierBytes(file, directoryChild), "evidence jsonl");
+  return parseEntryLinesText(text);
+}
+
+// parseEntryLinesText parses an already-decoded recorder shard. Recovery
+// verification uses it only for the LF-terminated prefix whose raw bytes are
+// independently bound by a recovery seal.
+export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
   const entries: ParsedRecorderLine[] = [];
   const lines = text.split(/\r?\n/u);
   for (let i = 0; i < lines.length; i++) {

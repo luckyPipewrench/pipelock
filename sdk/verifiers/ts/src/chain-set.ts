@@ -22,6 +22,7 @@ import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { evidenceChainKey, receiptHash, verifyChain } from "./chain.js";
 import {
   extractTypedFromEntries,
+  parseEntryLinesText,
   readEntryLines,
   type ExtractedReceipts,
   type ParsedRecorderLine,
@@ -34,7 +35,7 @@ import {
   type RotationEndorsement,
 } from "./rotation.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { readVerifierBytes } from "./util.js";
+import { decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
 
 export const FindingCorruptChain = "corrupt_chain";
 export const FindingInvalidLink = "invalid_link";
@@ -46,6 +47,8 @@ export const FindingAppendedAfterLink = "appended_after_link";
 export const FindingDoubleSuccessor = "double_successor";
 export const FindingUntrustedSuccessorKey = "untrusted_successor_key";
 export const FindingDuplicateRunNonce = "duplicate_run_nonce";
+export const FindingInvalidRecoverySeal = "invalid_recovery_seal";
+export const FindingAttestedDiscontinuity = "attested_discontinuity";
 export { FindingOuterChainBroken };
 
 export const LinkTrustSameKey = "same_key";
@@ -59,6 +62,7 @@ const chainLinkFilePrefix = "chain-link-";
 const chainLinkFileSuffix = ".json";
 const chainLinkVersion = 1;
 const chainLinkDomain = "pipelock-chain-link-v1\u0000";
+const recoverySealDomain = "pipelock-recovery-seal-v1\u0000";
 const signaturePrefix = "ed25519:";
 const maxChainLinkFileBytes = 64 << 10;
 const maxUint64 = 18446744073709551615n;
@@ -77,6 +81,26 @@ export interface ChainLink {
   signature: string;
 }
 
+export interface RecoverySeal {
+  kind: "recovery_seal";
+  version: 1;
+  predecessor_session: string;
+  shard: string;
+  shard_size: number;
+  shard_sha256: string;
+  damage_offset: number;
+  last_good_seq: number;
+  last_good_hash: string;
+  predecessor_tail_seq: number;
+  predecessor_tail_hash: string;
+  predecessor_signer_key: string;
+  successor_session: string;
+  successor_signer_key: string;
+  successor_open_hash: string;
+  observed_at: string;
+  signature: string;
+}
+
 export interface BaseChain {
   session: string;
   legacy: boolean;
@@ -85,6 +109,7 @@ export interface BaseChain {
   tail_hash: string;
   signer_key: string;
   link?: ChainLink;
+  recovery_seal?: RecoverySeal;
   link_file?: string;
   link_trust: string;
   valid: boolean;
@@ -117,7 +142,9 @@ export function baseHealthy(report: BaseReport): boolean {
 // by older binaries are honestly unlinked, and so is a run whose link file
 // was deleted. A healthy report is therefore not proof of continuity.
 export function baseUnlinked(report: BaseReport): string[] {
-  return report.chains.filter((c) => c.link === undefined).map((c) => c.session);
+  return report.chains
+    .filter((c) => c.link === undefined && c.recovery_seal === undefined)
+    .map((c) => c.session);
 }
 
 export function runSessionBase(session: string): string | undefined {
@@ -681,6 +708,169 @@ export function decodeChainLink(text: string): ChainLink {
   };
 }
 
+const recoverySealFields = [
+  "kind",
+  "version",
+  "predecessor_session",
+  "shard",
+  "shard_size",
+  "shard_sha256",
+  "damage_offset",
+  "last_good_seq",
+  "last_good_hash",
+  "predecessor_tail_seq",
+  "predecessor_tail_hash",
+  "predecessor_signer_key",
+  "successor_session",
+  "successor_signer_key",
+  "successor_open_hash",
+  "observed_at",
+  "signature",
+] as const;
+
+function safeSealNumber(obj: Record<string, unknown>, field: string): number {
+  const value = obj[field];
+  if (!(value instanceof RawNumber) || !/^(?:0|[1-9][0-9]*)$/u.test(value.literal)) {
+    throw new Error(`recovery seal ${field} must be an unsigned integer`);
+  }
+  const n = BigInt(value.literal);
+  if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`recovery seal ${field} exceeds the cross-language safe integer limit`);
+  }
+  return Number(n);
+}
+
+// decodeRecoverySeal is strict by design: unlike ChainLink's legacy zero
+// values, every signed recovery field is required and has one exact spelling.
+export function decodeRecoverySeal(text: string): RecoverySeal {
+  const raw = parseJSONStrict(text);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || raw instanceof RawNumber) {
+    throw new Error("recovery seal is not a JSON object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const fields = new Set<string>(recoverySealFields);
+  for (const key of Object.keys(obj)) {
+    if (fields.has(key)) continue;
+    for (const name of recoverySealFields) {
+      if (goFoldKey(key) === name)
+        throw new Error(`recovery seal key alias: ${key} aliases ${name}`);
+    }
+    throw new Error(`recovery seal unknown field ${key}`);
+  }
+  for (const field of recoverySealFields) {
+    if (!(field in obj) || obj[field] === null) throw new Error(`recovery seal missing ${field}`);
+  }
+  const str = (field: string): string => {
+    const value = obj[field];
+    if (typeof value !== "string") throw new Error(`recovery seal ${field} must be a string`);
+    return value;
+  };
+  if (str("kind") !== "recovery_seal") throw new Error("unknown recovery seal kind");
+  const versionRaw = obj["version"];
+  if (!(versionRaw instanceof RawNumber) || !/^(?:0|[1-9][0-9]*)$/u.test(versionRaw.literal)) {
+    throw new Error("recovery seal version must be an unsigned integer");
+  }
+  if (versionRaw.literal !== "1")
+    throw new Error(`unsupported recovery seal version ${versionRaw.literal}`);
+  return {
+    kind: "recovery_seal",
+    version: 1,
+    predecessor_session: str("predecessor_session"),
+    shard: str("shard"),
+    shard_size: safeSealNumber(obj, "shard_size"),
+    shard_sha256: str("shard_sha256"),
+    damage_offset: safeSealNumber(obj, "damage_offset"),
+    last_good_seq: safeSealNumber(obj, "last_good_seq"),
+    last_good_hash: str("last_good_hash"),
+    predecessor_tail_seq: safeSealNumber(obj, "predecessor_tail_seq"),
+    predecessor_tail_hash: str("predecessor_tail_hash"),
+    predecessor_signer_key: str("predecessor_signer_key"),
+    successor_session: str("successor_session"),
+    successor_signer_key: str("successor_signer_key"),
+    successor_open_hash: str("successor_open_hash"),
+    observed_at: str("observed_at"),
+    signature: str("signature"),
+  };
+}
+
+function recoverySealDigest(s: RecoverySeal): Uint8Array {
+  const canonical =
+    `{"kind":${goJSONString(s.kind)},"version":${s.version}` +
+    `,"predecessor_session":${goJSONString(s.predecessor_session)}` +
+    `,"shard":${goJSONString(s.shard)},"shard_size":${s.shard_size}` +
+    `,"shard_sha256":${goJSONString(s.shard_sha256)},"damage_offset":${s.damage_offset}` +
+    `,"last_good_seq":${s.last_good_seq},"last_good_hash":${goJSONString(s.last_good_hash)}` +
+    `,"predecessor_tail_seq":${s.predecessor_tail_seq}` +
+    `,"predecessor_tail_hash":${goJSONString(s.predecessor_tail_hash)}` +
+    `,"predecessor_signer_key":${goJSONString(s.predecessor_signer_key)}` +
+    `,"successor_session":${goJSONString(s.successor_session)}` +
+    `,"successor_signer_key":${goJSONString(s.successor_signer_key)}` +
+    `,"successor_open_hash":${goJSONString(s.successor_open_hash)}` +
+    `,"observed_at":${goJSONString(s.observed_at)}}`;
+  return new Uint8Array(Buffer.from(recoverySealDomain + canonical, "utf8"));
+}
+
+export function recoverySealSigningBytes(s: RecoverySeal): Uint8Array {
+  return recoverySealDigest(s);
+}
+
+export async function verifyRecoverySealSignature(s: RecoverySeal): Promise<void> {
+  if (blankAfterGoTrim(s.predecessor_session) || blankAfterGoTrim(s.successor_session)) {
+    throw new Error("recovery seal sessions must be non-empty");
+  }
+  if (
+    [s.predecessor_session, s.successor_session].some(
+      (session) => session.includes("/") || session.includes("\\"),
+    )
+  ) {
+    throw new Error("recovery seal session identity is invalid");
+  }
+  if (s.predecessor_session === s.successor_session)
+    throw new Error("recovery seal sessions must differ");
+  const base = runSessionBase(s.successor_session);
+  if (base === undefined || !isBaseChain(s.predecessor_session, base)) {
+    throw new Error("recovery seal must bind distinct sessions of one base");
+  }
+  if (path.basename(s.shard) !== s.shard || s.shard.includes("/") || s.shard.includes("\\")) {
+    throw new Error("recovery seal shard must be a root-relative basename");
+  }
+  const parsed = parseEvidenceFilename(s.shard);
+  if (parsed?.session !== s.predecessor_session)
+    throw new Error("recovery seal shard name mismatch");
+  for (const [field, value] of [
+    ["shard_sha256", s.shard_sha256],
+    ["successor_open_hash", s.successor_open_hash],
+  ]) {
+    if (!validLowerHex(value, 32)) throw new Error(`recovery seal ${field} is invalid`);
+  }
+  for (const [field, value] of [
+    ["last_good_hash", s.last_good_hash],
+    ["predecessor_tail_hash", s.predecessor_tail_hash],
+  ]) {
+    if (value !== "genesis" && !validLowerHex(value, 32)) {
+      throw new Error(`recovery seal ${field} is invalid`);
+    }
+  }
+  if (!validLowerHex(s.predecessor_signer_key, 32) || !validLowerHex(s.successor_signer_key, 32)) {
+    throw new Error("recovery seal signer key is invalid");
+  }
+  if (s.shard_size === 0 || s.damage_offset >= s.shard_size) {
+    throw new Error("recovery seal damage_offset must be within a non-empty shard");
+  }
+  if (!isCanonicalUTCTimestamp(s.observed_at) || s.observed_at === "0001-01-01T00:00:00Z") {
+    throw new Error("recovery seal observed_at must be canonical UTC RFC3339Nano");
+  }
+  if (!/^ed25519:[0-9a-f]{128}$/u.test(s.signature))
+    throw new Error("invalid recovery seal signature");
+  const ok = await ed25519.verifyAsync(
+    new Uint8Array(Buffer.from(s.signature.slice(signaturePrefix.length), "hex")),
+    recoverySealDigest(s),
+    new Uint8Array(Buffer.from(s.successor_signer_key, "hex")),
+    { zip215: false },
+  );
+  if (!ok) throw new Error("recovery seal signature verification failed");
+}
+
 // verifyChainLink mirrors Go's VerifyChainLink: structure, then the
 // successor-key signature over the domain-separated canonical fields.
 export async function verifyChainLink(l: ChainLink): Promise<void> {
@@ -720,25 +910,47 @@ export async function verifyChainLink(l: ChainLink): Promise<void> {
   if (!valid) throw new Error("chain link signature verification failed");
 }
 
-async function readChainLinkFile(file: string): Promise<ChainLink> {
+async function readChainLinkFile(
+  file: string,
+): Promise<{ link?: ChainLink; recoverySeal?: RecoverySeal; sealCandidate: boolean }> {
   const info = lstatSync(file);
   if (!info.isFile()) throw new Error("chain link file is not a regular file");
   if (info.size > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }
-  const bytes = readVerifierBytes(file, evidenceDirectoryActive);
+  const bytes = readVerifierBytes(file, evidenceDirectoryActive, maxChainLinkFileBytes);
   if (bytes.length > maxChainLinkFileBytes) {
     throw new Error(`chain link file exceeds ${maxChainLinkFileBytes} bytes`);
   }
-  const link = decodeChainLink(bytes.toString("utf8"));
+  const text = decodeUTF8(bytes, "chain link JSON");
+  let rawKind: unknown;
+  try {
+    const raw = parseJSONStrict(text);
+    rawKind =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)["kind"]
+        : undefined;
+  } catch {
+    rawKind = undefined;
+  }
+  if (rawKind !== undefined) {
+    if (rawKind !== "recovery_seal")
+      throw new Error(`unknown predecessor claim kind ${String(rawKind)}`);
+    const recoverySeal = decodeRecoverySeal(text);
+    await verifyRecoverySealSignature(recoverySeal);
+    return { recoverySeal, sealCandidate: true };
+  }
+  const link = decodeChainLink(text);
   await verifyChainLink(link);
-  return link;
+  return { link, sealCandidate: false };
 }
 
 interface ChainLinkRecord {
   name: string;
   namePred: string;
   link?: ChainLink;
+  recoverySeal?: RecoverySeal;
+  sealCandidate?: boolean;
   err?: string;
 }
 
@@ -750,8 +962,35 @@ async function readChainLinkFiles(dir: string): Promise<ChainLinkRecord[]> {
   for (const name of names) {
     const rec: ChainLinkRecord = { name, namePred: chainLinkFilePredecessor(name) as string };
     try {
-      rec.link = await readChainLinkFile(path.join(dir, name));
+      const decoded = await readChainLinkFile(path.join(dir, name));
+      rec.link = decoded.link;
+      rec.recoverySeal = decoded.recoverySeal;
+      rec.sealCandidate = decoded.sealCandidate;
     } catch (err) {
+      let rawText: string | undefined;
+      try {
+        rawText = decodeUTF8(
+          readVerifierBytes(
+            evidenceDirectoryActive ? name : path.join(dir, name),
+            evidenceDirectoryActive,
+            maxChainLinkFileBytes,
+          ),
+          "chain link JSON",
+        );
+        const raw = parseJSONStrict(rawText);
+        rec.sealCandidate =
+          typeof raw === "object" &&
+          raw !== null &&
+          !Array.isArray(raw) &&
+          Object.keys(raw as Record<string, unknown>).some((key) => goFoldKey(key) === "kind");
+      } catch {
+        try {
+          rec.sealCandidate =
+            rawText !== undefined && /"kind"\s*:\s*"recovery_seal"/u.test(rawText);
+        } catch {
+          rec.sealCandidate = false;
+        }
+      }
       rec.err = (err as Error).message;
     }
     out.push(rec);
@@ -857,7 +1096,10 @@ export async function verifyBase(
       isBaseChain(lf.namePred, base) ||
       (lf.link !== undefined &&
         (isBaseChain(lf.link.predecessor_session, base) ||
-          isBaseChain(lf.link.successor_session, base))),
+          isBaseChain(lf.link.successor_session, base))) ||
+      (lf.recoverySeal !== undefined &&
+        (isBaseChain(lf.recoverySeal.predecessor_session, base) ||
+          isBaseChain(lf.recoverySeal.successor_session, base))),
   );
 
   const data = new Map<string, BaseChainData>();
@@ -882,7 +1124,46 @@ export async function verifyBase(
   }
 
   const successors = new Map<string, string[]>();
+  const recoveryRecords: ChainLinkRecord[] = [];
   for (const lf of scoped) {
+    if (lf.sealCandidate || lf.recoverySeal !== undefined) {
+      if (lf.recoverySeal === undefined) {
+        add(
+          FindingInvalidRecoverySeal,
+          lf.namePred,
+          `recovery seal file ${lf.name}: ${lf.err ?? "invalid recovery seal"}`,
+        );
+        continue;
+      }
+      const seal = lf.recoverySeal;
+      if (seal.predecessor_session !== lf.namePred) {
+        add(
+          FindingInvalidRecoverySeal,
+          lf.namePred,
+          `recovery seal file ${lf.name} names another predecessor`,
+        );
+        continue;
+      }
+      if (
+        !isBaseChain(seal.predecessor_session, base) ||
+        runSessionBase(seal.successor_session) !== base
+      ) {
+        add(
+          FindingInvalidRecoverySeal,
+          seal.successor_session,
+          "recovery seal sessions do not belong to this base",
+        );
+        continue;
+      }
+      successors.set(seal.predecessor_session, [
+        ...(successors.get(seal.predecessor_session) ?? []),
+        seal.successor_session,
+      ]);
+      // Queue for binding verification only after the placement checks pass,
+      // so a seal rejected above can never attach in the second pass.
+      recoveryRecords.push(lf);
+      continue;
+    }
     if (lf.link === undefined) {
       add(FindingInvalidLink, lf.namePred, `link file ${lf.name}: ${lf.err ?? "unreadable"}`);
       continue;
@@ -991,6 +1272,32 @@ export async function verifyBase(
   for (const s of pending) await verify(s);
 
   for (const s of sessions) checkBaseLink(data, s, opts, endorsed.get(s) === true, add);
+  for (const lf of recoveryRecords) {
+    const seal = lf.recoverySeal;
+    if (seal === undefined || lf.err !== undefined) continue;
+    try {
+      const successor = data.get(seal.successor_session);
+      if (successor === undefined)
+        throw new Error(`successor "${seal.successor_session}" not found`);
+      if (successor.chain.link !== undefined || successor.chain.recovery_seal !== undefined)
+        throw new Error("recovery successor already has a predecessor claim");
+      if (
+        seal.successor_signer_key !== seal.predecessor_signer_key &&
+        !opts.trustedKeys.includes(seal.successor_signer_key)
+      ) {
+        throw new Error("recovery successor key differs and is not explicitly trusted");
+      }
+      await verifyRecoveryBinding(ix, seal, data, opts.trustedKeys);
+      successor.chain.recovery_seal = seal;
+      add(
+        FindingAttestedDiscontinuity,
+        seal.successor_session,
+        `linked across attested discontinuity from ${seal.predecessor_session} at ${seal.shard}:${seal.damage_offset}`,
+      );
+    } catch (err) {
+      add(FindingInvalidRecoverySeal, seal.successor_session, (err as Error).message);
+    }
+  }
   for (const p of [...successors.keys()].sort(compareStrings)) {
     const succ = successors.get(p) as string[];
     if (succ.length > 1) {
@@ -1000,6 +1307,247 @@ export async function verifyBase(
   checkRunNonces(sessions, data, add);
   for (const s of sessions) report.chains.push((data.get(s) as BaseChainData).chain);
   return report;
+}
+
+// verifyRecoveryBinding checks the signed observation against the bytes and
+// independently verifies both receipt chains on the recoverable side of the
+// discontinuity. It intentionally does not make the damaged predecessor
+// healthy: callers retain the original corruption finding.
+async function verifyRecoveryBinding(
+  ix: EvidenceIndex,
+  seal: RecoverySeal,
+  data: Map<string, BaseChainData>,
+  trustedKeys: readonly string[] = [],
+): Promise<ExtractedReceipts> {
+  await verifyRecoverySealSignature(seal);
+  const keys = trustedKeys.join(",");
+  const files = indexFiles(ix, seal.predecessor_session);
+  const final = files.at(-1);
+  if (final === undefined || path.basename(final) !== seal.shard) {
+    throw new Error("recovery seal shard is not the predecessor's final shard");
+  }
+  const raw = readVerifierBytes(
+    evidenceDirectoryActive ? path.basename(final) : final,
+    evidenceDirectoryActive,
+  );
+  if (raw.length !== seal.shard_size || sha256Hex(raw) !== seal.shard_sha256) {
+    throw new Error("recovery seal shard size or digest mismatch");
+  }
+  if (
+    seal.damage_offset > raw.length ||
+    (seal.damage_offset > 0 && raw[seal.damage_offset - 1] !== 0x0a)
+  ) {
+    throw new Error("recovery seal damage_offset is not an LF-terminated prefix boundary");
+  }
+  const prefixBytes = raw.subarray(0, seal.damage_offset);
+  const suffix = raw.subarray(seal.damage_offset);
+  if (suffix.length === 0)
+    throw new Error("recovery seal does not identify damaged trailing bytes");
+  let tailKind: "nul" | "partial" | "missing_newline" = "partial";
+  let tailContent = suffix;
+  while (tailContent.length > 0 && tailContent[tailContent.length - 1] === 0) {
+    tailContent = tailContent.subarray(0, tailContent.length - 1);
+  }
+  if (tailContent.length > 1 << 20) {
+    throw new Error("recovery torn tail exceeds 1048576-byte recorder entry limit");
+  }
+  if (tailContent.length === 0) {
+    tailKind = "nul";
+  } else {
+    if (tailContent.includes(0) || tailContent.includes(0x0a))
+      throw new Error("recovery seal suffix is not a supported torn tail");
+    // Replacement decoding is only a JSON syntax probe, matching Go's tail
+    // classification. Complete values still pass fatal UTF-8 decoding below;
+    // incomplete byte fragments can remain torn without becoming evidence.
+    const suffixText = new TextDecoder("utf-8").decode(tailContent);
+    let validJSON = true;
+    try {
+      JSON.parse(suffixText);
+    } catch {
+      validJSON = false;
+    }
+    if (!validJSON) {
+      tailKind = "partial";
+    } else {
+      // A complete JSON value must be one known recorder entry, including
+      // checkpoints. Validate its schema, outer chain and any embedded receipt
+      // signature before the seal can attach.
+      const candidate = parseEntryLinesText(suffixText);
+      if (candidate.length !== 1) {
+        throw new Error("missing-newline tail is not one recorder entry");
+      }
+      tailKind = "missing_newline";
+    }
+  }
+
+  const prefixText = decodeUTF8(prefixBytes, "recovery seal complete prefix");
+  const lines: ParsedRecorderLine[] = [];
+  for (const file of files.slice(0, -1)) {
+    lines.push(
+      ...readEntryLines(
+        evidenceDirectoryActive ? path.basename(file) : file,
+        evidenceDirectoryActive,
+      ),
+    );
+  }
+  const prefixLines = parseEntryLinesText(prefixText);
+  for (const line of lines.concat(prefixLines)) {
+    if (line.entry.session_id !== seal.predecessor_session)
+      throw new Error("recovery prefix session mismatch");
+  }
+  lines.push(...prefixLines);
+  const sequenceErr = verifyRecoveryOuterSequence(lines);
+  if (sequenceErr !== undefined) throw new Error(`recovery prefix sequence: ${sequenceErr}`);
+  const fullLines = [...lines];
+  if (tailKind === "missing_newline") {
+    const candidate = parseEntryLinesText(decodeUTF8(tailContent, "recovery seal final record"))[0];
+    if (candidate === undefined || candidate.entry.session_id !== seal.predecessor_session) {
+      throw new Error("recovery final record session mismatch");
+    }
+    fullLines.push(candidate);
+    const fullSequenceErr = verifyRecoveryOuterSequence(fullLines);
+    if (fullSequenceErr !== undefined)
+      throw new Error(`missing-newline final record sequence: ${fullSequenceErr}`);
+  }
+  const outerErr = verifyRecorderChain(lines);
+  if (outerErr !== undefined) throw new Error(`recovery prefix recorder chain: ${outerErr}`);
+  if (fullLines.length !== lines.length) {
+    const candidateOuterErr = verifyRecorderChain(fullLines);
+    if (candidateOuterErr !== undefined)
+      throw new Error(`missing-newline final record is invalid: ${candidateOuterErr}`);
+  }
+  const lastLine = lines.at(-1);
+  let outerSeq = 0;
+  let outerHash = "genesis";
+  if (lastLine !== undefined) {
+    const rawEntry = parseJSONStrict(lastLine.line) as Record<string, unknown>;
+    const seq = rawEntry["seq"];
+    if (
+      !(seq instanceof RawNumber) ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(seq.literal) ||
+      BigInt(seq.literal) > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      throw new Error("recovery outer sequence exceeds the cross-language safe integer range");
+    }
+    outerSeq = Number(seq.literal);
+    if (typeof rawEntry["hash"] !== "string") throw new Error("recovery outer hash is missing");
+    outerHash = rawEntry["hash"];
+  }
+  if (seal.last_good_seq !== outerSeq || seal.last_good_hash !== outerHash) {
+    throw new Error("recovery seal outer prefix head mismatch");
+  }
+  const typed = extractTypedFromEntries(lines.map((line) => line.entry));
+  const lastReceipt = typed.action.at(-1);
+  const tailSeq = lastReceipt?.action_record?.chain_seq ?? 0;
+  const tailHash = lastReceipt === undefined ? "genesis" : receiptHash(lastReceipt);
+  const tailKey = lastReceipt?.signer_key ?? seal.successor_signer_key;
+  if (
+    tailSeq !== seal.predecessor_tail_seq ||
+    tailHash !== seal.predecessor_tail_hash ||
+    tailKey !== seal.predecessor_signer_key
+  ) {
+    throw new Error("recovery seal predecessor receipt tail mismatch");
+  }
+  if (typed.action.length > 0) {
+    const verified = await verifyChain(typed.action, keys, { allowUnpinned: true });
+    if (!chainAcceptable(verified))
+      throw new Error(`recovery predecessor action chain: ${verified.error ?? "invalid"}`);
+  }
+  if (typed.evidence.length > 0) {
+    const verified = await verifyChain(typed.evidence, evidenceChainKey(keys, typed.evidence), {
+      allowUnpinned: true,
+    });
+    if (!verified.valid)
+      throw new Error(`recovery predecessor evidence chain: ${verified.error ?? "invalid"}`);
+  }
+  let extracted = typed;
+  if (tailKind === "missing_newline") {
+    const fullTyped = extractTypedFromEntries(fullLines.map((line) => line.entry));
+    if (fullTyped.action.length > 0) {
+      const verified = await verifyChain(fullTyped.action, keys, { allowUnpinned: true });
+      if (!chainAcceptable(verified))
+        throw new Error(
+          `missing-newline final action receipt signature is invalid: ${verified.error ?? "invalid"}`,
+        );
+    }
+    if (fullTyped.evidence.length > 0) {
+      const verified = await verifyChain(
+        fullTyped.evidence,
+        evidenceChainKey(keys, fullTyped.evidence),
+        { allowUnpinned: true },
+      );
+      if (!verified.valid)
+        throw new Error(
+          `missing-newline final evidence receipt signature is invalid: ${verified.error ?? "invalid"}`,
+        );
+    }
+    extracted = fullTyped;
+  }
+  for (const receipt of extracted.action) {
+    const action = receipt.action_record?.session_control as Record<string, unknown> | undefined;
+    const open =
+      action?.["kind"] === "session_open"
+        ? (action["open"] as Record<string, unknown> | undefined)
+        : undefined;
+    if (open !== undefined && open["recorder_session"] !== seal.predecessor_session) {
+      throw new Error("recovery predecessor session_open binding mismatch");
+    }
+  }
+  const successor = data.get(seal.successor_session);
+  if (successor === undefined || !successor.chain.valid || successor.receipts.length === 0) {
+    throw new Error("recovery successor chain did not verify");
+  }
+  const first = successor.receipts[0] as Receipt;
+  const control = first.action_record?.session_control as Record<string, unknown> | undefined;
+  if (
+    first.signer_key !== seal.successor_signer_key ||
+    receiptHash(first) !== seal.successor_open_hash ||
+    control?.["kind"] !== "session_open" ||
+    first.action_record?.chain_seq !== 0
+  ) {
+    throw new Error("recovery seal successor opening receipt mismatch");
+  }
+  const open = control["open"] as Record<string, unknown> | undefined;
+  if (open?.["recorder_session"] !== seal.successor_session) {
+    throw new Error("recovery successor session_open recorder session mismatch");
+  }
+  // Identity trust is applied by verifyBase after this self-consistency and
+  // placement check. Empty pins retain the existing per-chain TOFU policy.
+  return extracted;
+}
+
+// Recovery seals bind a complete prefix, so every recorder entry in that
+// prefix must occupy its original zero-based position. Hash links alone do
+// not detect a consistently resequenced or omitted entry.
+export function verifyRecoveryOuterSequence(
+  lines: readonly ParsedRecorderLine[],
+): string | undefined {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    let raw: unknown;
+    try {
+      raw = parseJSONStrict(line.line);
+    } catch (err) {
+      return `entry ${i}: ${(err as Error).message}`;
+    }
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return `entry ${i}: recorder entry is not an object`;
+    }
+    const seq = (raw as Record<string, unknown>)["seq"];
+    let value: bigint;
+    if (seq instanceof RawNumber && /^(?:0|[1-9][0-9]*)$/u.test(seq.literal)) {
+      value = BigInt(seq.literal);
+    } else {
+      return `entry ${i}: recorder sequence is not an unsigned integer`;
+    }
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return `entry ${i}: recorder sequence exceeds the cross-language safe integer range`;
+    }
+    if (value !== BigInt(i))
+      return `entry ${i}: expected zero-based contiguous sequence ${i}, got ${value}`;
+  }
+  return undefined;
 }
 
 // checkRunNonces reports two chains of the base that carry the same run_nonce.

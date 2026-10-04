@@ -64,6 +64,10 @@ fn fixtures() -> PathBuf {
     common::repo_root().join("sdk/conformance/testdata/run-chains")
 }
 
+fn recovery_fixture() -> PathBuf {
+    common::repo_root().join("sdk/conformance/testdata/recovery-seals/valid")
+}
+
 fn read_trimmed(path: &Path) -> String {
     fs::read_to_string(path)
         .unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
@@ -344,10 +348,185 @@ fn run_chain_cli_human_output_lists_linked_and_unlinked_runs() {
     ]);
     assert_eq!(code, 0, "{stderr}");
     assert!(
-        stdout.contains("RESTART CONTINUITY OK: base \"proxy\": 2 chain(s), 1 linked, 1 unlinked")
+        stdout.contains("RESTART CONTINUITY OK: base \"proxy\": 2 chain(s), 1 linked, 0 attested discontinuity(s), 1 unlinked")
     );
     assert!(stdout.contains("(same_key)"));
     assert!(stdout.contains("  result:     VALID"));
+}
+
+#[test]
+fn recovery_seal_fixture_is_reported_as_an_unhealthy_attested_discontinuity() {
+    let fixture = recovery_fixture();
+    let evidence = fixture.join("evidence");
+    let seal: Value =
+        serde_json::from_str(&read_trimmed(&fixture.join("seal.json"))).expect("seal fixture JSON");
+    let predecessor = seal["predecessor_session"].as_str().expect("predecessor");
+    let successor = seal["successor_session"].as_str().expect("successor");
+    let pinned = read_trimmed(&fixture.join("signer.pub"));
+    let report = verify_base(
+        &evidence,
+        "proxy",
+        &BaseVerifyOptions {
+            trusted_keys: vec![pinned.clone()],
+            endorsements: Vec::new(),
+        },
+    )
+    .expect("verify recovery fixture");
+    let run = report
+        .chains
+        .iter()
+        .find(|chain| chain.session == successor)
+        .expect("successor chain");
+    assert!(run.recovery_seal.is_some());
+    assert!(!report.healthy(), "a valid seal still records damage");
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| { finding.kind == "corrupt_chain" && finding.session == predecessor }));
+    assert!(report.findings.iter().any(|finding| {
+        finding.kind == "attested_discontinuity" && finding.session == successor
+    }));
+
+    let (code, stdout, stderr) = run_cli(&[
+        "chain",
+        evidence.to_str().expect("evidence path"),
+        "--dir",
+        "--key",
+        &pinned,
+        "--json",
+    ]);
+    assert_eq!(code, 1, "{stderr}");
+    let output: Value = serde_json::from_str(&stdout).expect("JSON report");
+    assert_eq!(
+        output["continuity"]["discontinuities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!output["continuity"]["unlinked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|session| session.as_str() == Some(successor)));
+    assert!(output["continuity"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["kind"] == "attested_discontinuity"));
+    assert!(evidence
+        .join(format!("chain-link-{predecessor}.json"))
+        .is_file());
+}
+
+#[test]
+fn recovery_seal_tamper_replay_and_removal_fail_closed() {
+    let fixture = recovery_fixture();
+    let seal: Value =
+        serde_json::from_str(&read_trimmed(&fixture.join("seal.json"))).expect("seal fixture JSON");
+    let predecessor = seal["predecessor_session"].as_str().unwrap();
+    let successor = seal["successor_session"].as_str().unwrap();
+    let shard = seal["shard"].as_str().unwrap();
+    let pinned = read_trimmed(&fixture.join("signer.pub"));
+
+    let verify = |dir: &Path| {
+        verify_base(
+            dir,
+            "proxy",
+            &BaseVerifyOptions {
+                trusted_keys: vec![pinned.clone()],
+                endorsements: Vec::new(),
+            },
+        )
+        .expect("verify test evidence")
+    };
+
+    let tampered = tempdir("recovery-seal-tampered");
+    copy_fixture_evidence(&fixture.join("evidence"), &tampered);
+    let shard_path = tampered.join(shard);
+    let mut bytes = fs::read(&shard_path).expect("read predecessor shard");
+    bytes.push(0);
+    fs::write(&shard_path, bytes).expect("tamper predecessor shard");
+    let report = verify(&tampered);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
+    assert!(report
+        .chains
+        .iter()
+        .all(|chain| chain.recovery_seal.is_none()));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.kind == "invalid_recovery_seal"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.kind == "attested_discontinuity"));
+    fs::remove_dir_all(&tampered).expect("cleanup");
+
+    let replayed_shard = tempdir("recovery-seal-replayed-shard");
+    copy_fixture_evidence(&fixture.join("evidence"), &replayed_shard);
+    let (stem, number) = shard
+        .strip_suffix(".jsonl")
+        .expect("shard suffix")
+        .rsplit_once('-')
+        .expect("shard sequence");
+    let replay_name = format!("{stem}-{}.jsonl", number.parse::<u64>().unwrap() + 1);
+    fs::rename(replayed_shard.join(shard), replayed_shard.join(replay_name))
+        .expect("move damaged bytes to another shard identity");
+    let report = verify(&replayed_shard);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
+    assert!(report
+        .chains
+        .iter()
+        .all(|chain| chain.recovery_seal.is_none()));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.kind == "invalid_recovery_seal"));
+    fs::remove_dir_all(&replayed_shard).expect("cleanup");
+
+    let replayed = tempdir("recovery-seal-replayed");
+    copy_fixture_evidence(&fixture.join("evidence"), &replayed);
+    let original_claim = replayed.join(format!("chain-link-{predecessor}.json"));
+    let replay_claim = replayed.join(format!("chain-link-{successor}.json"));
+    fs::rename(&original_claim, &replay_claim).expect("replay claim into another slot");
+    let report = verify(&replayed);
+    assert!(!report.healthy());
+    assert!(report.unlinked().iter().any(|session| session == successor));
+    assert!(report
+        .chains
+        .iter()
+        .all(|chain| chain.recovery_seal.is_none()));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.kind == "invalid_recovery_seal"));
+    fs::remove_dir_all(&replayed).expect("cleanup");
+
+    let missing = tempdir("recovery-seal-missing");
+    copy_fixture_evidence(&fixture.join("evidence"), &missing);
+    fs::remove_file(missing.join(format!("chain-link-{predecessor}.json"))).expect("remove claim");
+    let report = verify(&missing);
+    assert!(!report.healthy());
+    assert!(report
+        .chains
+        .iter()
+        .all(|chain| chain.recovery_seal.is_none()));
+    assert!(report.unlinked().iter().any(|session| session == successor));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.kind == "attested_discontinuity"));
+    fs::remove_dir_all(&missing).expect("cleanup");
+}
+
+fn copy_fixture_evidence(source: &Path, destination: &Path) {
+    for entry in fs::read_dir(source).expect("read evidence fixture") {
+        let entry = entry.expect("fixture entry");
+        fs::copy(entry.path(), destination.join(entry.file_name())).expect("copy evidence file");
+    }
 }
 
 #[test]

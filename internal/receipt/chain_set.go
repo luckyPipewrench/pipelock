@@ -4,9 +4,9 @@
 package receipt
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +69,7 @@ type BaseChain struct {
 	TailHash         string
 	SignerKey        string
 	Link             *ChainLink
+	RecoverySeal     *RecoverySeal
 	LinkFile         string
 	LinkTrust        string
 	Valid            bool
@@ -119,7 +120,7 @@ func (r BaseReport) LinkCount() int {
 func (r BaseReport) Unlinked() []string {
 	var out []string
 	for _, c := range r.Chains {
-		if c.Link == nil {
+		if c.Link == nil && c.RecoverySeal == nil {
 			out = append(out, c.Session)
 		}
 	}
@@ -211,10 +212,12 @@ type baseChainData struct {
 
 // chainLinkRecord is one link file as read from disk.
 type chainLinkRecord struct {
-	name     string
-	namePred string
-	link     *ChainLink
-	err      error
+	name       string
+	namePred   string
+	link       *ChainLink
+	seal       *RecoverySeal
+	isRecovery bool
+	err        error
 }
 
 // chainLinkFileNames lists link file names in dir, sorted.
@@ -245,11 +248,28 @@ func readChainLinkFiles(dir string) ([]chainLinkRecord, error) {
 	for _, name := range names {
 		pred, _ := chainLinkFilePredecessor(name)
 		rec := chainLinkRecord{name: name, namePred: pred}
-		link, readErr := readChainLinkFile(filepath.Join(filepath.Clean(dir), name))
+		raw, readErr := readClaimBytes(filepath.Join(filepath.Clean(dir), name))
+		var fields map[string]json.RawMessage
+		if readErr == nil {
+			readErr = json.Unmarshal(raw, &fields)
+		}
+		_, rec.isRecovery = fields["kind"]
 		if readErr != nil {
 			rec.err = readErr
+		} else if rec.isRecovery {
+			seal, err := UnmarshalRecoverySeal(raw)
+			if err != nil {
+				rec.err = err
+			} else {
+				rec.seal = &seal
+			}
 		} else {
-			rec.link = &link
+			link, err := UnmarshalChainLink(raw)
+			if err != nil {
+				rec.err = err
+			} else {
+				rec.link = &link
+			}
 		}
 		out = append(out, rec)
 	}
@@ -257,26 +277,26 @@ func readChainLinkFiles(dir string) ([]chainLinkRecord, error) {
 }
 
 func readChainLinkFile(path string) (ChainLink, error) {
+	raw, err := readClaimBytes(path)
+	if err != nil {
+		return ChainLink{}, err
+	}
+	return UnmarshalChainLink(raw)
+}
+
+func readClaimBytes(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return ChainLink{}, fmt.Errorf("stat chain link file: %w", err)
+		return nil, fmt.Errorf("stat chain link file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return ChainLink{}, errors.New("chain link file is not a regular file")
+		return nil, errors.New("chain link file is not a regular file")
 	}
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return ChainLink{}, fmt.Errorf("open chain link file: %w", err)
+	raw, err := recorder.ReadEvidenceFileBounded(path, maxChainLinkFileBytes)
+	if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		return nil, fmt.Errorf("chain link file exceeds %d bytes: %w", maxChainLinkFileBytes, err)
 	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, maxChainLinkFileBytes+1))
-	if err != nil {
-		return ChainLink{}, fmt.Errorf("read chain link file: %w", err)
-	}
-	if len(data) > maxChainLinkFileBytes {
-		return ChainLink{}, fmt.Errorf("chain link file exceeds %d bytes", maxChainLinkFileBytes)
-	}
-	return UnmarshalChainLink(data)
+	return raw, err
 }
 
 // VerifyBase verifies every chain of base in dir and every link file that
@@ -309,6 +329,10 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 			need[lf.link.PredecessorSession] = true
 			need[lf.link.SuccessorSession] = true
 		}
+		if lf.seal != nil {
+			in = in || isBaseChain(lf.seal.PredecessorSession, base) || isBaseChain(lf.seal.SuccessorSession, base)
+			need[lf.seal.PredecessorSession], need[lf.seal.SuccessorSession] = true, true
+		}
 		if in {
 			scoped = append(scoped, lf)
 		}
@@ -329,7 +353,14 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	successors := make(map[string][]string)
 	for _, lf := range scoped {
 		if lf.err != nil {
-			add(FindingInvalidLink, lf.namePred, fmt.Sprintf("link file %s: %v", lf.name, lf.err))
+			kind := FindingInvalidLink
+			if lf.isRecovery {
+				kind = FindingInvalidRecoverySeal
+			}
+			add(kind, lf.namePred, fmt.Sprintf("link file %s: %v", lf.name, lf.err))
+			continue
+		}
+		if lf.seal != nil {
 			continue
 		}
 		link := lf.link
@@ -432,6 +463,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	for _, s := range sessions {
 		checkBaseLink(data, s, opts, endorsed[s], add)
 	}
+	checkRecoveryClaims(dir, base, scoped, data, opts, successors, add)
 	preds := make([]string, 0, len(successors))
 	for p := range successors {
 		preds = append(preds, p)

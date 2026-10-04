@@ -171,6 +171,8 @@ type Recorder struct {
 	fileSeqStart   uint64
 	fileGeneration uint64
 	sessionID      string
+	// recoveryPredecessor survives reload staging failures until publication.
+	recoveryPredecessor string
 
 	// Checkpoint tracking
 	checkpointThreshold uint64

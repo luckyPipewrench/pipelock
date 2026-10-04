@@ -9,7 +9,14 @@ forward-compatibility guarantee verifiers must honor.
 |--------|---------------|---------------|----------------------|
 | ActionReceipt | `receipt.ReceiptVersion` (`internal/receipt/receipt.go:17`) | `1` | `receipt.VerifyWithKey` (`internal/receipt/receipt.go:66`) |
 | EvidenceReceipt | `receipt_version` (`internal/contract/receipt`) | `2` | `VerifyWithKey`; `VerifyV2BytesWithKey` for exact emitted bytes |
+| Evidence recovery seal | `version` with `kind: "recovery_seal"` | `1` | Go, TypeScript, and Rust directory verifiers |
 | AARP assurance envelope | `aarp.Profile` (`internal/aarp/doc.go:50`) | `"aarp/v0.1"` | `aarp.Verify` (`internal/aarp/verify.go:67`) |
+
+### Evidence recovery seal v1
+
+A recovery seal is a separate signed artifact in the existing predecessor claim filename, `chain-link-<predecessor-session>.json`. It records an observed torn-shard boundary and binds the damaged shard, complete recorder prefix, receipt tail, and successor run's signed opening receipt. It doesn't extend ActionReceipt v1 or change the `ChainLink` v1 schema, so continuous links keep their existing meaning.
+
+The seal is strict and versioned. Go, TypeScript, and Rust directory verifiers reject unknown fields, missing or null fields, duplicate keys, unsupported versions, invalid signatures, and placement or content mismatches. Older strict chain-link readers reject the new artifact and can't silently report it as a continuous link. A new verifier reports a valid seal as `attested_discontinuity`; the directory remains damaged and verification exits nonzero. See the [recovery seal v1 specification](../specs/evidence-recovery-seal-v1.md) for canonical signing bytes, field order, binding rules, and compatibility behavior.
 
 ### ActionReceipt v1
 

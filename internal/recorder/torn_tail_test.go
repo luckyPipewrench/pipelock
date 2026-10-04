@@ -176,6 +176,21 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 	if next == session {
 		t.Fatal("reused torn session")
 	}
+	if got := rec.RecoveryPredecessor(); got != session {
+		t.Fatalf("recovery predecessor = %q, want abandoned session %q", got, session)
+	}
+	rec.AcknowledgeRecovery("stale-predecessor", next)
+	if got := rec.RecoveryPredecessor(); got != session {
+		t.Fatalf("stale predecessor acknowledgement cleared recovery: %q", got)
+	}
+	rec.AcknowledgeRecovery(session, "stale-successor")
+	if got := rec.RecoveryPredecessor(); got != session {
+		t.Fatalf("stale successor acknowledgement cleared recovery: %q", got)
+	}
+	rec.AcknowledgeRecovery(session, next)
+	if got := rec.RecoveryPredecessor(); got != "" {
+		t.Fatalf("matching acknowledgement left recovery predecessor %q", got)
+	}
 	if err := rec.Record(Entry{SessionID: session, Type: "request"}); err == nil {
 		t.Fatal("old emitter accepted")
 	}

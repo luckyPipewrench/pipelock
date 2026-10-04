@@ -34,6 +34,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
 /// receipt's ext bag when it has one, and the trimmed source line, which the
 /// recorder hash chain check needs byte for byte. The input file is bounded
 /// by the verifier's read limit, so keeping the lines is bounded too.
+#[derive(Clone)]
 pub(crate) struct RecorderLine {
     pub(crate) entry: serde_json::Value,
     pub(crate) ext: Option<String>,
@@ -42,6 +43,13 @@ pub(crate) struct RecorderLine {
 
 pub(crate) fn read_entry_lines(path: &Path) -> Result<Vec<RecorderLine>> {
     let text = read_verifier_text(path)?;
+    read_entry_lines_text(&text)
+}
+
+/// Parses recorder entries from already validated UTF-8 text. Recovery-seal
+/// verification uses this for the complete, newline-terminated prefix of a
+/// damaged final shard without copying or rewriting evidence on disk.
+pub(crate) fn read_entry_lines_text(text: &str) -> Result<Vec<RecorderLine>> {
     let mut entries = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {
         let line = raw_line.trim();

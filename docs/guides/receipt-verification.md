@@ -238,6 +238,12 @@ match their recorded hash. Those symptoms narrow the cause but do not by
 themselves establish it: a fork and a crafted edit can present the same
 structure.
 
+### Verifying a recovery seal
+
+When a run starts after recovering a torn predecessor shard, its signed `recovery_seal` claim uses the same `chain-link-<predecessor>.json` slot as a continuous `ChainLink` v1. Run `pipelock verify-receipt --chain DIR --key KEY` to verify the directory. The verifier checks the seal against the retained damaged bytes, the complete recorder prefix, and the successor's signed `session_open`. It reports `attested_discontinuity` separately from a continuous link and still exits nonzero because the evidence contains damage.
+
+`pipelock evidence doctor DIR` checks the seal's signature and placement but doesn't decide whether its signing key is trusted. A missing seal leaves the successor unlinked. A tampered seal, changed shard, or seal placed against a different run fails binding checks. Older strict verifiers reject the new claim format rather than treating it as a continuous link. See the [recovery seal v1 specification](../specs/evidence-recovery-seal-v1.md) for the wire format and limits of this attestation.
+
 ### Falsify a captured record
 
 The runnable [receipt verification example](../../examples/receipt-verify/README.md)

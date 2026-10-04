@@ -347,18 +347,18 @@ func TestStepWriteToolsList_AddsMissingDefaultWithoutDroppingCustom(t *testing.T
 
 func plantResolvableDefaultTools(t *testing.T, env *installEnv, names ...string) {
 	t.Helper()
-	targets := make(map[string]string, len(names))
+	targets := make(map[string]bool, len(names))
 	for _, name := range names {
-		target, err := os.Executable()
-		if err != nil {
-			t.Fatalf("locate test executable: %v", err)
-		}
-		targets["/usr/local/bin/"+name] = target
+		targets["/usr/local/bin/"+name] = true
+	}
+	env.toolCanExecute = func(path string) bool {
+		_, ok := targets[path]
+		return ok
 	}
 	origStat := env.stat
 	env.stat = func(path string) (os.FileInfo, error) {
-		if target, ok := targets[path]; ok {
-			return origStat(target)
+		if _, ok := targets[path]; ok {
+			return fakeFileInfo{mode: 0o755}, nil
 		}
 		if strings.HasPrefix(path, "/home/"+env.agentUserName+"/.local/bin/") ||
 			strings.HasPrefix(path, "/usr/local/bin/") ||

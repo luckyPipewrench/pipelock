@@ -4,7 +4,9 @@
 
 """Unit tests for the Pipelock composite PR-review action."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -525,6 +527,604 @@ class ExitSemanticsTest(OfflineReviewTestCase):
             self.assertIsNone(pr_review.main())
             output.seek(0)
             self.assertIn("complete=false", output.read().decode("utf-8"))
+
+
+class HonestIncompleteVerdictTest(OfflineReviewTestCase):
+    """A run that published a verdict exits 0, whatever the verdict says.
+
+    Verdicts are informational, so an incomplete one is reported in the comment
+    and never turns the step red. These cases used to publish nothing honest:
+    a late crash published `clean`, and a failed comment scan posted no verdict.
+    Only a run that could publish nothing fails the step.
+    """
+
+    BINDING = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+    BASE_ENVIRONMENT = {
+        "GITHUB_TOKEN": "token",
+        "REPO": "owner/repo",
+        "PR_NUMBER": "42",
+        "REVIEW_MODE": "default",
+        "REVIEWER_SHA": "c" * 40,
+        "REVIEW_OPERATION": "review",
+    }
+    # The reusable workflow's review step: admission data, provider key present.
+    ADMITTED_ENVIRONMENT = {
+        **BASE_ENVIRONMENT,
+        "BASE_SHA": "a" * 40,
+        "HEAD_SHA": "b" * 40,
+        "STATUS_COMMENT_ID": "7",
+        "REVIEW_IDENTITY": "d" * 32,
+        "OPENAI_API_KEY": "key",
+    }
+    DIFF = "\n".join(
+        [
+            "diff --git a/internal/a.go b/internal/a.go",
+            "--- a/internal/a.go",
+            "+++ b/internal/a.go",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ]
+    )
+    CHUNK = {
+        "findings": [
+            {
+                "severity": "medium",
+                "path": "internal/a.go",
+                "line": 1,
+                "title": "Guard removed",
+                "why": "the check no longer runs",
+                "fix": "restore it",
+                "needs_verification": False,
+            }
+        ],
+        "changes": [{"path": "internal/a.go", "summary": "changes enforcement"}],
+    }
+
+    UNWRITABLE_OUTPUT = "/nonexistent-pr-review-output-dir/github_output"
+
+    def run_main(
+        self,
+        environment: dict[str, str],
+        *patches: object,
+        output_path: str | None = None,
+        stderr_stream: io.TextIOBase | None = None,
+    ) -> dict[str, object]:
+        """Run the real entry point; return its exit code, outputs, and streams."""
+        stdout, stderr = io.StringIO(), stderr_stream or io.StringIO()
+        result: dict[str, object] = {}
+        with tempfile.NamedTemporaryFile() as output, mock.patch.dict(
+            pr_review.os.environ, {**environment, "GITHUB_OUTPUT": output_path or output.name}, clear=True
+        ), contextlib.ExitStack() as stack, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            for patch in patches:
+                stack.enter_context(patch)
+            try:
+                pr_review.main()
+                result["code"] = 0
+            except SystemExit as exc:
+                result["code"] = exc.code
+            except BaseException as exc:  # noqa: BLE001 - a propagated stop is part of the assertion
+                result["raised"] = exc
+            output.seek(0)
+            result["outputs"] = output.read().decode("utf-8")
+        result["stdout"] = stdout.getvalue()
+        result["stderr"] = stderr.getvalue() if isinstance(stderr, io.StringIO) else ""
+        return result
+
+    def review_patches(self, judge: mock.Mock, update: mock.Mock) -> tuple[object, ...]:
+        return (
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)),
+            mock.patch.object(pr_review, "fetch_bound_diff", return_value=self.DIFF),
+            mock.patch.object(pr_review, "compare_incompleteness", return_value=None),
+            mock.patch.object(pr_review, "call_model", side_effect=[self.CHUNK, {"findings": []}]),
+            mock.patch.object(pr_review, "judge_findings", judge),
+            mock.patch.object(pr_review, "update_comment", update),
+        )
+
+    def crash(
+        self, error: BaseException, update: mock.Mock | None = None, output_path: str | None = None
+    ) -> tuple[dict[str, object], mock.Mock]:
+        update = update or mock.Mock()
+        result = self.run_main(
+            self.ADMITTED_ENVIRONMENT, *self.review_patches(mock.Mock(side_effect=error), update), output_path=output_path
+        )
+        return result, update
+
+    def test_a_crash_lists_the_pending_candidates_and_caveats_the_count(self) -> None:
+        # The chunk produced a candidate and the judge crashed before ruling on
+        # it. A bare zero count with the candidate gone reads as a clean pass.
+        result, update = self.crash(RuntimeError("judge bug"))
+        self.assertEqual(result["code"], 0)
+        body = update.call_args.args[3]
+        self.assertIn("state=failed", body)
+        self.assertIn("Unverified candidates (1; not findings)", body)
+        self.assertIn("These candidates were found but not settled by the actual-code judge before the run stopped.", body)
+        self.assertNotIn("The actual-code judge couldn't settle these candidates", body, "the judge never ruled")
+        self.assertIn("**This is incomplete and must not be treated as a clean review.**", body)
+        self.assertIn("Guard removed", body)
+        self.assertIn("1 candidate finding(s) remained unverified", body)
+        self.assertIn("VERIFIED. The review did not finish, so this is not a count of what is in the diff.", body)
+        self.assertNotIn("**Findings:** high 0, medium 0, low 0.", body)
+
+    def test_a_crash_after_the_judge_ruled_does_not_relist_its_candidates(self) -> None:
+        # The judge rejected the candidate, then the final re-read crashed.
+        # A rejected candidate must not come back as unverified.
+        update = mock.Mock()
+        judge = mock.Mock(return_value=([], True, [], [], [], []))
+        patches = [
+            patch for patch in self.review_patches(judge, update)
+            if getattr(patch, "attribute", "") != "get_pull_binding"
+        ]
+        with mock.patch.object(pr_review, "head_has_moved", return_value=False):
+            result = self.run_main(
+                self.ADMITTED_ENVIRONMENT,
+                mock.patch.object(pr_review, "get_pull_binding", side_effect=RuntimeError("final re-read bug")),
+                *patches,
+            )
+        self.assertEqual(result["code"], 0)
+        judge.assert_called_once()
+        body = update.call_args.args[3]
+        self.assertIn("state=failed", body)
+        self.assertNotIn("Unverified candidates", body)
+
+    def test_a_published_verdict_survives_an_unwritable_output_file(self) -> None:
+        # No job reads the review step's outputs, and the comment already holds
+        # the verdict, so a write failure is only a warning.
+        result, update = self.crash(RuntimeError("bug"), output_path=self.UNWRITABLE_OUTPUT)
+        self.assertEqual(result["code"], 0)
+        self.assertIn("state=failed", update.call_args.args[3])
+        self.assertIn("status=unwritable", result["stderr"])
+        clean_update = mock.Mock()
+        result = self.run_main(
+            self.ADMITTED_ENVIRONMENT,
+            *self.review_patches(mock.Mock(return_value=([], True, [], [], [], [])), clean_update),
+            output_path=self.UNWRITABLE_OUTPUT,
+        )
+        self.assertEqual(result["code"], 0)
+        self.assertIn("state=clean", clean_update.call_args.args[3])
+
+    def test_an_admission_scan_failure_survives_an_unwritable_output_file(self) -> None:
+        create = mock.Mock(return_value={"id": 17})
+        result = self.claim(False, None, create, output_path=self.UNWRITABLE_OUTPUT)
+        self.assertEqual(result["code"], 0)
+        self.assertIn("state=failed", create.call_args.args[3])
+        self.assertIn("status=unwritable", result["stderr"])
+
+    def test_a_crash_with_an_unwritable_log_stream_still_publishes_and_exits_zero(self) -> None:
+        # The traceback write comes after the failure is recorded; a broken
+        # stderr must not escape and turn the published verdict red.
+        class BrokenStream(io.StringIO):
+            def write(self, _text: str) -> int:
+                raise BrokenPipeError("stderr is gone")
+
+        update = mock.Mock()
+        result = self.run_main(
+            self.ADMITTED_ENVIRONMENT,
+            *self.review_patches(mock.Mock(side_effect=RuntimeError("bug")), update),
+            stderr_stream=BrokenStream(),
+        )
+        self.assertEqual(result.get("code"), 0, result.get("raised"))
+        self.assertIn("state=failed", update.call_args.args[3])
+
+    def test_a_scan_failure_comment_accepted_with_an_unreadable_response_is_published(self) -> None:
+        # A 201 with an unreadable body means GitHub created the comment, so
+        # the failed verdict exists and the step must stay green.
+        accepted = mock.Mock(side_effect=pr_review.UnreadableCreatedComment("comment creation returned invalid JSON"))
+        for name, run in (("admission", self.claim), ("direct", self.direct)):
+            with self.subTest(path=name):
+                accepted.reset_mock()
+                result = run(False, None, accepted)
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertIn("state=failed", accepted.call_args.args[3])
+        result = self.direct(True, {"html_url": "https://example.invalid/c/1"}, accepted)
+        self.assertEqual(result.get("code"), 0)
+        self.assertIn("state=already-running", result["outputs"])
+
+    def run_with_create_reply(self, path: str, reply: object) -> dict[str, object]:
+        """Run a path that posts one terminal comment, with the real create_comment."""
+        done = {
+            "state": "clean",
+            "identity": self.BINDING.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "https://example.invalid/c/2",
+        }
+        running = {"html_url": "https://example.invalid/c/3"}
+        scan, active, scanned = {
+            "claim-scan-failure": (([], set(), True), None, False),
+            "claim-already-running": (([], set(), True), running, True),
+            "claim-already-reviewed": (([done], set(), True), None, True),
+            "direct-scan-failure": (([], set(), True), None, False),
+            "direct-already-running": (([], set(), True), running, True),
+        }[path]
+        environment = {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"} if path.startswith("claim") else self.BASE_ENVIRONMENT
+        post = mock.Mock(return_value=reply)
+        result = self.run_main(
+            environment,
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "scan_status_comments", return_value=scan),
+            mock.patch.object(pr_review, "find_running_comment", return_value=(active, scanned)),
+            mock.patch.object(pr_review.requests, "post", post),
+            mock.patch.object(pr_review, "provider_configuration", side_effect=AssertionError("no review may start")),
+            mock.patch.object(pr_review, "update_comment", side_effect=AssertionError("nothing to update")),
+        )
+        result["post"] = post
+        return result
+
+    def test_only_a_201_with_an_unreadable_body_counts_as_published(self) -> None:
+        # 204, 202, a proxy's 200 page or a redirect proves nothing was created,
+        # so treating them as published showed silence for a command that ran
+        # nothing. A real 201 Created means the comment exists.
+        replies = {
+            "201 bad json": (self.http_response(201, b"not json", "text/plain"), 0),
+            "204": (self.http_response(204), 1),
+            "202": (self.http_response(202), 1),
+            "200 html": (self.http_response(200, b"<html>portal</html>", "text/html"), 1),
+            "301": (self.http_response(301, b"", "text/html"), 1),
+        }
+        cases = [
+            (path, name)
+            for path in ("claim-scan-failure", "direct-scan-failure", "direct-already-running")
+            for name in replies
+            if path == "direct-already-running" or name != "301"
+        ]
+        for path, name in cases:
+            reply, expected = replies[name]
+            with self.subTest(path=path, reply=name):
+                result = self.run_with_create_reply(path, reply)
+                self.assertEqual(result.get("code"), expected, result.get("raised"))
+                self.assertEqual(result["post"].call_count, 1)
+                if expected == 0:
+                    self.assertIn("status=accepted-unreadable-response", result["stdout"])
+                else:
+                    self.assertNotIn("accepted-unreadable-response", result["stdout"])
+
+    def test_a_declining_notice_accepted_with_an_unreadable_response_is_posted(self) -> None:
+        # Notices go through the same 201-only rule as terminal verdicts.
+        for path, text in (("claim-already-running", "A review is already running"), ("claim-already-reviewed", "already reviewed")):
+            with self.subTest(path=path, reply="201 bad json"):
+                result = self.run_with_create_reply(path, self.http_response(201, b"not json", "text/plain"))
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertIn(text, result["post"].call_args.kwargs["json"]["body"])
+                self.assertIn("claimed=false", result["outputs"])
+            with self.subTest(path=path, reply="204"):
+                result = self.run_with_create_reply(path, self.http_response(204))
+                self.assertEqual(result.get("code"), 1, result.get("raised"))
+
+    def test_a_running_claim_with_an_unreadable_response_is_still_a_setup_failure(self) -> None:
+        # The claim needs the comment id; without it nothing can be reviewed.
+        result = self.claim(True, None, mock.Mock(side_effect=pr_review.ReviewError("comment creation returned no identifier")))
+        self.assertEqual(result.get("code"), 1)
+        self.assertNotIn("claimed=true", result["outputs"])
+
+    def test_a_published_verdict_survives_a_closed_stdout_in_a_real_process(self) -> None:
+        # The terminal log line is the last write after publication. With the
+        # reader gone, an unguarded print raised BrokenPipeError, and even a
+        # caught one left the interpreter's exit flush to fail the process.
+        program = "\n".join(
+            [
+                "import importlib.util, sys",
+                "from unittest import mock",
+                f"spec = importlib.util.spec_from_file_location('pr_review', {str(SCRIPT_PATH)!r})",
+                "module = importlib.util.module_from_spec(spec)",
+                "sys.modules['pr_review'] = module",
+                "spec.loader.exec_module(module)",
+                "with mock.patch.object(module, 'run_review', return_value=('failed', module.ReviewProgress())):",
+                "    module.main()",
+            ]
+        )
+        environment = {**self.BASE_ENVIRONMENT, "PATH": os.environ.get("PATH", "")}
+        process = subprocess.Popen(
+            [sys.executable, "-c", program], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        process.stdout.close()
+        _, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 0, stderr.decode("utf-8", "replace"))
+
+    def test_emit_survives_a_broken_pipe_and_later_writes_succeed(self) -> None:
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        stream = open(write_end, "w", encoding="utf-8")
+        self.addCleanup(stream.close)
+        with mock.patch.object(pr_review.sys, "stdout", stream):
+            pr_review.log_phase("probe", status="first")
+            pr_review.log_phase("probe", status="second")
+        stream.flush()
+
+    def test_a_claim_whose_output_cannot_be_written_is_still_a_setup_failure(self) -> None:
+        # Only a running claim was created, not a verdict, and without the
+        # claimed output the review job never runs to publish one.
+        create = mock.Mock(return_value={"id": 17})
+        result = self.claim(True, None, create, output_path=self.UNWRITABLE_OUTPUT)
+        # Uncaught, so the interpreter exits 1 with the traceback, as on main.
+        self.assertIsInstance(result.get("raised"), OSError)
+        self.assertIn("state=running", create.call_args.args[3])
+
+    def test_a_declining_notice_survives_an_unwritable_output_file(self) -> None:
+        # The notice is the command's answer and a missing `claimed` skips the
+        # later jobs as `false` does, so the write failure is only a warning.
+        # A notice suppressed as a repeat leaves the earlier one as the answer.
+        done = {
+            "state": "clean",
+            "identity": self.BINDING.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "https://example.invalid/c/2",
+        }
+        repeat = {pr_review.notice_marker("already-running", self.BINDING.correlation, "default")}
+        cases = (
+            ("already-reviewed", ([done], set(), True), (None, True), "already reviewed", 1),
+            ("already-running", ([], set(), True), ({"html_url": "https://example.invalid/c/3"}, True), "already running", 1),
+            ("already-running-repeat", ([], repeat, True), ({"html_url": "https://example.invalid/c/3"}, True), None, 0),
+        )
+        for name, scan, running, text, posts in cases:
+            with self.subTest(notice=name):
+                create = mock.Mock(return_value={"id": 17})
+                result = self.run_main(
+                    {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"},
+                    mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+                    mock.patch.object(pr_review, "scan_status_comments", return_value=scan),
+                    mock.patch.object(pr_review, "find_running_comment", return_value=running),
+                    mock.patch.object(pr_review, "create_comment", create),
+                    output_path=self.UNWRITABLE_OUTPUT,
+                )
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertEqual(create.call_count, posts)
+                if text:
+                    self.assertIn(text, create.call_args.args[3])
+                    self.assertNotIn("state=running", create.call_args.args[3])
+                self.assertIn("status=unwritable", result["stderr"])
+
+    def test_a_crash_after_every_chunk_publishes_failed_and_exits_zero(self) -> None:
+        # Every unit was reviewed and no finding kept yet, which derive_state
+        # alone reads as clean, and a clean marker blocks reruns of the head.
+        result, update = self.crash(TypeError("private detail 7f3a"))
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(update.call_count, 1)
+        body = update.call_args.args[3]
+        self.assertIn("**Verdict:** `failed`", body)
+        self.assertIn("state=failed", body)
+        self.assertNotIn("`clean`", body)
+        self.assertNotIn("state=clean", body)
+        self.assertIn("the review stopped on an unexpected TypeError", body)
+        self.assertNotIn("private detail 7f3a", body, "only the exception class may be published")
+        self.assertIn("Traceback", result["stderr"])
+        self.assertIn("TypeError: private detail 7f3a", result["stderr"])
+        self.assertIn("state=failed", result["outputs"])
+        self.assertIn("complete=false", result["outputs"])
+
+    def test_positive_control_the_same_run_without_a_crash_publishes_clean(self) -> None:
+        update = mock.Mock()
+        judge = mock.Mock(return_value=([], True, [], [], [], []))
+        result = self.run_main(self.ADMITTED_ENVIRONMENT, *self.review_patches(judge, update))
+        self.assertEqual(result["code"], 0)
+        judge.assert_called_once()
+        self.assertIn("state=clean", update.call_args.args[3])
+
+    def test_a_crashed_run_does_not_block_a_rerun_but_a_clean_run_does(self) -> None:
+        crashed, crash_update = self.crash(RuntimeError("boom"))
+        clean_update = mock.Mock()
+        self.run_main(
+            self.ADMITTED_ENVIRONMENT,
+            *self.review_patches(mock.Mock(return_value=([], True, [], [], [], [])), clean_update),
+        )
+        crashed_marker = pr_review.parse_status_marker(crash_update.call_args.args[3])
+        clean_marker = pr_review.parse_status_marker(clean_update.call_args.args[3])
+        self.assertIsNone(pr_review.completed_identical_review([crashed_marker], self.BINDING.correlation, "default"))
+        self.assertIsNotNone(pr_review.completed_identical_review([clean_marker], self.BINDING.correlation, "default"))
+
+    def test_a_crash_after_the_head_moved_still_reads_superseded(self) -> None:
+        moved = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, head_changed=True, runner_failed=True)
+        self.assertEqual(pr_review.derive_state(moved), "superseded")
+        self.assertEqual(
+            pr_review.derive_state(pr_review.ReviewProgress(expected_units=1, reviewed_units=1, runner_failed=True)),
+            "failed",
+        )
+
+    def test_an_interrupt_publishes_failed_and_still_propagates(self) -> None:
+        # Cancellation arrives as KeyboardInterrupt, which is not an Exception.
+        # Narrowing the handler to Exception published clean here.
+        result, update = self.crash(KeyboardInterrupt())
+        self.assertIsInstance(result.get("raised"), KeyboardInterrupt, "the interrupt must propagate")
+        self.assertEqual(update.call_count, 1)
+        body = update.call_args.args[3]
+        self.assertIn("state=failed", body)
+        self.assertNotIn("`clean`", body)
+        self.assertNotIn("state=clean", body)
+        self.assertIn("the review was interrupted (KeyboardInterrupt)", body)
+        self.assertNotIn("unexpected", body, "an interrupt is not described as an unexpected error")
+
+    def test_a_crash_whose_failed_verdict_cannot_be_published_exits_non_zero(self) -> None:
+        # Nothing was published, so this is a setup failure and must be red.
+        with mock.patch.object(pr_review, "fetch_comment_body", return_value=None) as read_back:
+            result, update = self.crash(TypeError("bug"), mock.Mock(side_effect=pr_review.requests.RequestException()))
+        self.assertEqual(result["code"], 1)
+        self.assertEqual(update.call_count, 1)
+        read_back.assert_called_once()
+
+    @staticmethod
+    def http_response(status: int, content: bytes = b"", content_type: str = "application/json") -> object:
+        response = pr_review.requests.Response()
+        response.status_code = status
+        response._content = content
+        response.headers["Content-Type"] = content_type
+        response.url = "https://api.github.com/repos/owner/repo/issues/42/comments"
+        response.reason = "test"
+        return response
+
+    def clean_run_with_update_failure(self, error: BaseException, read_back: object) -> dict[str, object]:
+        update = mock.Mock(side_effect=error)
+        judge = mock.Mock(return_value=([], True, [], [], [], []))
+        fetch = mock.Mock(side_effect=lambda *_args: read_back(update))
+        result = self.run_main(
+            self.ADMITTED_ENVIRONMENT,
+            *self.review_patches(judge, update),
+            mock.patch.object(pr_review, "fetch_comment_body", fetch),
+        )
+        result["update"], result["fetch"] = update, fetch
+        return result
+
+    def test_an_update_whose_reply_was_lost_is_confirmed_by_reading_it_back(self) -> None:
+        # GitHub applied the edit and the answer was lost. The verdict is on the
+        # pull request, so a red step would misreport it.
+        for name, error in (
+            ("502", pr_review.requests.HTTPError(response=self.http_response(502))),
+            ("read timeout", pr_review.requests.ReadTimeout("lost")),
+        ):
+            with self.subTest(reply=name):
+                result = self.clean_run_with_update_failure(error, lambda update: update.call_args.args[3])
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertIn("state=clean", result["update"].call_args.args[3])
+                self.assertIn("status=confirmed-by-read", result["stderr"])
+                self.assertIn("state=clean", result["outputs"])
+
+    def test_an_update_that_cannot_be_confirmed_stays_a_setup_failure(self) -> None:
+        running = pr_review._initial_status(self.BINDING, "default", self.ADMITTED_ENVIRONMENT["REVIEW_IDENTITY"])
+        bad_gateway = pr_review.requests.HTTPError(response=self.http_response(502))
+        for name, read_back in (
+            ("read-back fails", lambda _update: None),
+            ("still the running claim", lambda _update: running),
+            ("another body", lambda _update: "## AI PR Review\n\nsomething else"),
+        ):
+            with self.subTest(read_back=name):
+                result = self.clean_run_with_update_failure(bad_gateway, read_back)
+                self.assertEqual(result.get("code"), 1, result.get("raised"))
+                result["fetch"].assert_called_once()
+                self.assertNotIn("confirmed-by-read", result["stderr"])
+
+    def test_a_refused_update_is_not_read_back(self) -> None:
+        # A 4xx was rejected outright; there is nothing to confirm.
+        refused = pr_review.requests.HTTPError(response=self.http_response(422))
+        result = self.clean_run_with_update_failure(refused, lambda update: update.call_args.args[3])
+        self.assertEqual(result.get("code"), 1)
+        result["fetch"].assert_not_called()
+
+    def test_fetch_comment_body_reads_once_and_fails_closed(self) -> None:
+        cases = (
+            ("ok", self.http_response(200, b'{"body": "text"}'), "text"),
+            ("not found", self.http_response(404, b'{"message": "Not Found"}'), None),
+            ("bad json", self.http_response(200, b"<html>", "text/html"), None),
+            ("no body", self.http_response(200, b'{"id": 1}'), None),
+            ("network", pr_review.requests.ConnectionError("down"), None),
+        )
+        for name, reply, expected in cases:
+            with self.subTest(case=name), mock.patch.object(
+                pr_review.requests, "get", side_effect=[reply] if isinstance(reply, Exception) else None, return_value=reply
+            ) as get:
+                self.assertEqual(pr_review.fetch_comment_body("owner/repo", 7, "token", "corr"), expected)
+                self.assertEqual(get.call_count, 1)
+
+    def claim(
+        self, scanned: bool, active: dict | None, create: mock.Mock, output_path: str | None = None
+    ) -> dict[str, object]:
+        return self.run_main(
+            {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"},
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)),
+            mock.patch.object(pr_review, "find_running_comment", return_value=(active, scanned)),
+            mock.patch.object(pr_review, "create_comment", create),
+            mock.patch.object(pr_review, "create_notice_once"),
+            output_path=output_path,
+        )
+
+    def test_an_admission_scan_failure_posts_a_failed_verdict_and_exits_zero(self) -> None:
+        create = mock.Mock(return_value={"id": 17})
+        result = self.claim(False, None, create)
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(create.call_count, 1, "exactly one comment, and no running claim")
+        body = create.call_args.args[3]
+        self.assertIn("**Verdict:** `failed`", body)
+        self.assertIn("state=failed", body)
+        self.assertNotIn("state=running", body)
+        self.assertIn("could not confirm whether another review is already running", body)
+        # Not claimed, so the review and finalize jobs do not run against it.
+        self.assertIn("claimed=false", result["outputs"])
+        self.assertNotIn("status_comment_id", result["outputs"])
+        marker = pr_review.parse_status_marker(body)
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker["state"], "failed")
+        self.assertIsNone(pr_review.completed_identical_review([marker], self.BINDING.correlation, "default"))
+        # Nothing was reviewed, so the comment must not report a range, unit
+        # counts or a finding count as though a review had run.
+        self.assertIn("**No review ran.**", body)
+        for claim in ("Reviewed range", "Completeness:", "**Findings:**", "reviewed_head=", "coverage_base="):
+            self.assertNotIn(claim, body)
+
+    def test_positive_control_an_admission_with_a_complete_scan_claims(self) -> None:
+        create = mock.Mock(return_value={"id": 17})
+        result = self.claim(True, None, create)
+        self.assertEqual(result["code"], 0)
+        self.assertIn("state=running", create.call_args.args[3])
+        self.assertIn("claimed=true", result["outputs"])
+
+    def direct(self, scanned: bool, active: dict | None, create: mock.Mock) -> dict[str, object]:
+        return self.run_main(
+            self.BASE_ENVIRONMENT,
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "find_running_comment", return_value=(active, scanned)),
+            mock.patch.object(pr_review, "create_comment", create),
+            mock.patch.object(pr_review, "provider_configuration", side_effect=AssertionError("no review may start")),
+            mock.patch.object(pr_review, "update_comment", side_effect=AssertionError("nothing to update")),
+        )
+
+    def test_a_direct_scan_failure_posts_a_failed_verdict_not_already_running(self) -> None:
+        create = mock.Mock(return_value={"id": 7})
+        result = self.direct(False, None, create)
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(create.call_count, 1)
+        body = create.call_args.args[3]
+        self.assertIn("**Verdict:** `failed`", body)
+        self.assertIn("state=failed", body)
+        self.assertNotIn("A review is already running", body)
+        self.assertIn("could not confirm whether another review is already running", body)
+        self.assertIn("state=failed", result["outputs"])
+
+    def test_positive_control_a_direct_run_that_finds_one_running_says_so(self) -> None:
+        create = mock.Mock(return_value={"id": 7})
+        result = self.direct(True, {"html_url": "https://example.invalid/c/1"}, create)
+        self.assertEqual(result["code"], 0)
+        self.assertIn("A review is already running: https://example.invalid/c/1", create.call_args.args[3])
+        self.assertIn("state=already-running", result["outputs"])
+
+    def test_a_scan_failure_that_cannot_post_is_a_setup_failure(self) -> None:
+        for name, run in (("admission", self.claim), ("direct", self.direct)):
+            with self.subTest(path=name):
+                result = run(False, None, mock.Mock(side_effect=pr_review.requests.RequestException()))
+                self.assertEqual(result["code"], 1)
+                self.assertNotIn("claimed=true", result["outputs"])
+                self.assertNotIn("state=", result["outputs"])
+
+    def test_setup_failures_that_publish_nothing_keep_their_exit_codes(self) -> None:
+        self.assertEqual(self.run_main({})["code"], 2)
+        self.assertEqual(self.run_main({**self.BASE_ENVIRONMENT, "REVIEW_MODE": "shallow"})["code"], 2)
+        incomplete = {**self.ADMITTED_ENVIRONMENT}
+        del incomplete["REVIEW_IDENTITY"]
+        update = mock.Mock()
+        result = self.run_main(incomplete, mock.patch.object(pr_review, "update_comment", update))
+        self.assertEqual(result["code"], 1)
+        update.assert_not_called()
+        result = self.run_main(
+            self.BASE_ENVIRONMENT,
+            mock.patch.object(pr_review, "get_pull_binding", side_effect=pr_review.FetchError("unreadable")),
+        )
+        self.assertEqual(result["code"], 1)
+
+    def test_a_missing_provider_key_publishes_failed_and_exits_zero(self) -> None:
+        environment = {**self.ADMITTED_ENVIRONMENT}
+        del environment["OPENAI_API_KEY"]
+        update = mock.Mock()
+        result = self.run_main(
+            environment,
+            mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)),
+            mock.patch.object(pr_review, "update_comment", update),
+        )
+        self.assertEqual(result["code"], 0)
+        body = update.call_args.args[3]
+        self.assertIn("state=failed", body)
+        self.assertIn("no usable provider credential was configured", body)
 
 
 class CompressionAndClassificationTest(OfflineReviewTestCase):

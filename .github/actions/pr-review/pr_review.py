@@ -18,6 +18,7 @@ import selectors
 import subprocess
 import sys
 import time
+import traceback
 import unicodedata
 import urllib.parse
 import uuid
@@ -37,12 +38,14 @@ DEFAULT_MODEL_DEEP = "gpt-6.1-sol"
 #
 # Higher effort costs wall-clock, and a chunk that outruns DEFAULT_LLM_TIMEOUT_SECONDS
 # is the availability risk this trades against. It fails in the safe direction:
-# a timed-out chunk sets timed_out, derive_state turns that into `partial`, and
-# the workflow's completeness gate fails the run, so a slow discovery pass shows
-# up as a red review rather than a clean one. The timeout is sized from the
-# output cap below at the observed generation rate, and the per-call reserve
-# against REVIEW_WALL_CLOCK_SECONDS is the read timeout plus one connect attempt,
-# so raising the timeout keeps its chunks as long as the wall clock grows with it.
+# a timed-out chunk sets timed_out and derive_state turns that into `partial`,
+# so a slow discovery pass is published as an incomplete review rather than a
+# clean one. Verdicts are informational: the comment carries that result, and
+# only a setup failure that publishes nothing fails the step. The timeout is
+# sized from the output cap below at the observed generation rate, and the
+# per-call reserve against REVIEW_WALL_CLOCK_SECONDS is the read timeout plus
+# one connect attempt, so raising the timeout keeps its chunks as long as the
+# wall clock grows with it.
 FAST_REASONING_EFFORT = "high"
 DEEP_REASONING_EFFORT = "low"
 JUDGE_REASONING_EFFORT = "low"
@@ -199,7 +202,9 @@ PUBLISHED_REVIEW_STATES = frozenset(
 )
 # A review that reached a settled verdict over the whole diff. Inconclusive
 # covered the diff but deliberately remains outside this set: a candidate still
-# needs human judgment, so the completeness gate must fail closed.
+# needs human judgment, so the `complete` output must stay false. Verdicts are
+# informational, so an incomplete one is reported in the comment and does not
+# fail the step; only a setup failure that publishes nothing does.
 COMPLETE_REVIEW_STATES = frozenset({"clean", "findings"})
 
 
@@ -209,6 +214,10 @@ class ReviewError(RuntimeError):
 
 class FetchError(ReviewError):
     """The immutable diff could not be retrieved after retry."""
+
+
+class UnreadableCreatedComment(ReviewError):
+    """GitHub answered 201 Created, so the comment exists, but the reply was unreadable."""
 
 
 class ModelTimeout(ReviewError):
@@ -333,6 +342,10 @@ class ReviewProgress:
     expected_units: int = 0
     reviewed_units: int = 0
     fetch_failed: bool = False
+    # The review stopped on an exception nothing below handles. Whatever the
+    # other fields say at that moment describes a run cut short, so it must not
+    # be published as a verdict over the diff.
+    runner_failed: bool = False
     timed_out: bool = False
     aggregation_failed: bool = False
     head_changed: bool = False
@@ -342,6 +355,10 @@ class ReviewProgress:
     # That is not missing coverage, but it is not a clean result either.
     inconclusive_reasons: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    # Candidates gathered by discovery that the judge has not ruled on yet. A
+    # run that stops before the judge finishes lists these as unverified
+    # rather than dropping them from the comment.
+    pending_candidates: list[Finding] = field(default_factory=list)
     # Candidate findings the actual-code judge could not settle. They are not
     # published as findings, but hiding their substance made a partial review
     # tell the operator only that the model saw "something." That forced a
@@ -364,9 +381,29 @@ class ReviewProgress:
     base_sha: str = ""
 
 
+def emit(line: str, *, stderr: bool = False) -> None:
+    """Write one log line without letting a broken log stream fail the run.
+
+    A log line is written after the comment edit it reports, so a raise here
+    could turn a published verdict into a red step. A stream that cannot be
+    written is pointed at the null device instead, the remedy the Python
+    signal documentation gives for a broken pipe, so the interpreter's own
+    flush at exit does not fail the process either.
+    """
+    stream = sys.stderr if stderr else sys.stdout
+    try:
+        print(line, file=stream, flush=True)
+    except (OSError, ValueError):
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, stream.fileno())
+        except (OSError, ValueError):
+            pass
+
+
 def log_phase(phase: str, *, attempt: int = 1, status: int | str = "n/a", correlation: str = "pending") -> None:
     """Emit diagnosable but non-sensitive Actions logging."""
-    print(f"pr-review phase={phase} attempt={attempt} status={status} correlation={correlation}")
+    emit(f"pr-review phase={phase} attempt={attempt} status={status} correlation={correlation}")
 
 
 def model_for_mode(mode: str) -> str:
@@ -1353,6 +1390,26 @@ def write_action_outputs(**values: str) -> None:
             output.write(f"{key}={value}\n")
 
 
+def write_outputs_after_publish(**values: str) -> None:
+    """Record outputs for a run whose answer is already on the pull request.
+
+    The comment is the result: a verdict, or a notice declining the command.
+    No job reads the review outputs, and a missing `claimed` skips the later
+    jobs exactly as `false` does, so an output file that cannot be written
+    must not turn that answer into a red step. `claimed=true` never comes
+    here: a run that only created a running claim has published no verdict
+    yet, so a failed write there stays a setup failure.
+    """
+    try:
+        write_action_outputs(**values)
+    except OSError as exc:
+        emit(
+            f"pr-review phase=outputs attempt=1 status=unwritable correlation=published "
+            f"warning: the result is on the pull request but the step outputs could not be written ({type(exc).__name__})",
+            stderr=True,
+        )
+
+
 def fetch_bound_diff(repo: str, binding: PullBinding, token: str) -> str:
     """Fetch a diff that names the captured immutable commits, with one retry."""
     endpoint = f"https://api.github.com/repos/{repo}/compare/{binding.base_sha}...{binding.head_sha}"
@@ -1549,12 +1606,16 @@ def create_comment(repo: str, pr_number: str, token: str, body: str, correlation
     )
     log_phase("comment-create", status=response.status_code, correlation=correlation)
     response.raise_for_status()
+    # Only 201 Created proves the comment exists. Any other success or redirect
+    # status with an unreadable body, such as a proxy's 200 page, a 202 or a
+    # 204, is no evidence that anything was posted.
+    unreadable = UnreadableCreatedComment if response.status_code == 201 else ReviewError
     try:
         data = response.json()
     except ValueError as exc:
-        raise ReviewError("comment creation returned invalid JSON") from exc
+        raise unreadable("comment creation returned invalid JSON") from exc
     if not isinstance(data, dict) or not isinstance(data.get("id"), int):
-        raise ReviewError("comment creation returned no identifier")
+        raise unreadable("comment creation returned no identifier")
     return data
 
 
@@ -1567,6 +1628,59 @@ def update_comment(repo: str, comment_id: int, token: str, body: str, correlatio
     )
     log_phase("comment-update", status=response.status_code, correlation=correlation)
     response.raise_for_status()
+
+
+def fetch_comment_body(repo: str, comment_id: int, token: str, correlation: str) -> str | None:
+    """Read a comment's current body once, or None when it cannot be read."""
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}",
+            headers=github_headers(token),
+            timeout=30,
+        )
+    except requests.RequestException:
+        log_phase("comment-read-back", status="request-error", correlation=correlation)
+        return None
+    log_phase("comment-read-back", status=response.status_code, correlation=correlation)
+    if response.status_code != 200:
+        return None
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    body = data.get("body") if isinstance(data, dict) else None
+    return body if isinstance(body, str) else None
+
+
+def publish_status_update(repo: str, comment_id: int, token: str, body: str, correlation: str) -> None:
+    """Replace the status comment with a verdict, confirming an unanswered edit.
+
+    A timeout or a 5xx reply does not mean the edit was refused: GitHub can
+    apply it and lose the answer, and reporting that as a failure turns a
+    published verdict red. So the comment is read back once, and the verdict
+    counts as published only when the body carries this run's final marker. A
+    4xx was refused outright and is not read back. Anything unconfirmed raises.
+    """
+    try:
+        update_comment(repo, comment_id, token, body, correlation)
+        return
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code < 500:
+            raise
+    except requests.RequestException:
+        pass
+    # The status marker names this run's identity and final state, so finding
+    # it in the comment shows this edit landed and not an earlier one.
+    markers = [line for line in body.splitlines() if line.startswith(f"<!-- {STATUS_MARKER} ")]
+    current = fetch_comment_body(repo, comment_id, token, correlation)
+    if not markers or current is None or markers[-1] not in current.splitlines():
+        raise ReviewError("final status comment update could not be confirmed")
+    log_phase("comment-update", status="confirmed-by-read", correlation=correlation)
+    emit(
+        f"pr-review phase=comment-update attempt=1 status=confirmed-by-read correlation={correlation} "
+        "warning: the update reply was lost, and reading the comment back shows the verdict was published",
+        stderr=True,
+    )
 
 
 def _running_marker_is_stale(comment: dict[str, Any]) -> bool:
@@ -1637,7 +1751,7 @@ def create_notice_once(
     if marker in existing:
         log_phase("notice-suppressed", status=kind, correlation=binding.correlation)
         return
-    create_comment(repo, pr_number, token, f"{message}\n\n{marker}", binding.correlation)
+    create_published_comment(repo, pr_number, token, f"{message}\n\n{marker}", binding.correlation)
 
 
 def model_binding(mode: str) -> str:
@@ -2847,12 +2961,11 @@ def coverage_gaps(_units: list[DiffUnit], omitted: list[DiffUnit], parse_errors:
     A collapsed deletion hunk is deliberately NOT a gap. It is a disclosed
     compression that the default mode applies uniformly, reported under its own
     heading on the review, and deep mode does not apply it at all. Counting it
-    as incompleteness made the completeness check fail on any pull request
-    removing a block of more than MAX_DELETION_LINES_PER_HUNK lines, which is
-    most of them: an observed review read 321 of 321 units, omitted nothing,
-    and still reported partial behind a failing check. A signal that is red on
-    complete reviews is one an operator learns to ignore, and then it protects
-    nothing on the review that really is short.
+    as incompleteness made every pull request removing a block of more than
+    MAX_DELETION_LINES_PER_HUNK lines read partial, which is most of them: an
+    observed review read 321 of 321 units, omitted nothing, and still reported
+    partial. An incomplete label on complete reviews is one an operator learns
+    to ignore, and then it protects nothing on the review that really is short.
     """
     gaps = list(parse_errors)
     if omitted:
@@ -2878,11 +2991,27 @@ def unverified_candidates_reason(candidates: list[Finding]) -> str | None:
     return f"{len(candidates)} candidate finding(s) remained unverified, so this review reports no findings it could verify"
 
 
+def record_unfinished_run(progress: ReviewProgress, reason: str) -> None:
+    """Mark a run that stopped before finishing so it publishes `failed`.
+
+    Candidates the judge had not ruled on are listed as unverified, as every
+    other incomplete judge path does, so a stopped run cannot hide them behind
+    a bare zero count.
+    """
+    progress.runner_failed = True
+    progress.incomplete_reasons.append(reason)
+    pending = progress.pending_candidates
+    if pending:
+        progress.unverified_candidates.extend(pending)
+        if counted := unverified_candidates_reason(pending):
+            progress.incomplete_reasons.append(counted)
+
+
 def derive_state(progress: ReviewProgress) -> str:
     """Own status transitions in code; model prose never decides completeness."""
     if progress.head_changed:
         return "superseded"
-    if progress.fetch_failed:
+    if progress.fetch_failed or progress.runner_failed:
         return "failed"
     if progress.timed_out and progress.reviewed_units == 0:
         return "failed"
@@ -3054,7 +3183,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         lines.append("")
     lines.append(f"**Verdict:** `{state}`")
     lines.append(f"**Review profile:** {review_profile(mode)}")
-    if state == "partial":
+    if state in {"partial", "failed"}:
         lines.append("**This is incomplete and must not be treated as a clean review.**")
     elif state == "inconclusive":
         lines.append("**The whole diff was reviewed, but this is not clean: manual verification is required.**")
@@ -3063,8 +3192,9 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
     # Say what the count MEANS when the review did not finish. A bare
     # "Findings: high 0, medium 0, low 0" on a partial run reads as a clean
     # result to anyone who does not open the collapsed sections, and that is
-    # exactly how a timed-out review gets mistaken for a passing one.
-    if state == "partial":
+    # exactly how a timed-out review gets mistaken for a passing one. A failed
+    # run stopped short too, so it carries the same caveat.
+    if state in {"partial", "failed"}:
         lines.append(
             f"**Findings:** high {counts['high']}, medium {counts['medium']}, low {counts['low']} "
             "VERIFIED. The review did not finish, so this is not a count of what is in the diff."
@@ -3115,7 +3245,12 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
                 "<details>",
                 f"<summary>Unverified candidates ({len(all_candidates)}; not findings)</summary>",
                 "",
-                "The actual-code judge couldn't settle these candidates. They aren't verified findings.",
+                # A failed run may have stopped before the judge saw them, so
+                # it cannot say the judge tried.
+                "These candidates were found but not settled by the actual-code judge before the run stopped. "
+                "They aren't verified findings."
+                if state == "failed"
+                else "The actual-code judge couldn't settle these candidates. They aren't verified findings.",
             ]
         )
         for candidate in candidates:
@@ -3317,6 +3452,81 @@ def _initial_status(binding: PullBinding, mode: str, review_identity: str | None
     return "\n".join(lines)
 
 
+SCAN_FAILED_REASON = (
+    "could not confirm whether another review is already running, so this command did not start one; "
+    "comment the command again to retry"
+)
+
+
+def publish_scan_failure(
+    repo: str, pr_number: str, token: str, mode: str, binding: PullBinding, review_identity: str
+) -> ReviewProgress:
+    """Post a terminal `failed` verdict for a command whose admission scan failed.
+
+    Posted already terminal, never as a running claim, so there is nothing for
+    the finalize job to close and no second comment to reconcile. A `failed`
+    marker never counts as a finished review, so it does not block a retry. A
+    failure to post propagates: nothing was published, which is a setup failure.
+    """
+    progress = ReviewProgress(fetch_failed=True, incomplete_reasons=[SCAN_FAILED_REASON])
+    progress.base_sha = binding.base_sha
+    create_published_comment(repo, pr_number, token, render_scan_failure(binding, mode, review_identity), binding.correlation)
+    return progress
+
+
+def create_published_comment(repo: str, pr_number: str, token: str, body: str, correlation: str) -> None:
+    """Post a terminal comment or notice whose identifier nothing needs.
+
+    A 201 Created reply whose body cannot be read still means the comment
+    exists, so for a comment nothing refers to again that is published, not a
+    failure to publish. Any other unreadable reply, and any rejected or failed
+    request, still raises: nothing confirms a comment was posted.
+    """
+    try:
+        create_comment(repo, pr_number, token, body, correlation)
+    except UnreadableCreatedComment:
+        log_phase("comment-create", status="accepted-unreadable-response", correlation=correlation)
+
+
+def render_scan_failure(binding: PullBinding, mode: str, review_identity: str) -> str:
+    """Render the failed verdict for a command that never started a review.
+
+    Kept apart from render_status, which describes a review that ran: its
+    reviewed range, unit counts and finding counts would report work that was
+    never done. The marker carries no reviewed head or coverage for the same
+    reason; it parses as a failed verdict and never as a finished review.
+    """
+    marker = {
+        "state": "failed",
+        "identity": review_identity,
+        "binding": binding.correlation,
+        "mode": mode,
+        "model": model_binding(mode),
+        "findings": "",
+    }
+    return "\n".join(
+        [
+            "## AI PR Review",
+            "",
+            "**Verdict:** `failed`",
+            f"**Review profile:** {review_profile(mode)}",
+            "**No review ran.** This command could not confirm whether another review is already "
+            "running, so it did not start one. Comment the command again to retry.",
+            "",
+            "<details>",
+            "<summary>Review details: binding</summary>",
+            "",
+            f"**Command:** `{'/review deep' if mode == 'deep' else '/review'}`",
+            f"**Binding:** base `{binding.base_sha}` head `{binding.head_sha}`",
+            f"**Review identity:** `{review_identity}`",
+            "",
+            "</details>",
+            "",
+            f"<!-- {STATUS_MARKER} " + " ".join(f"{key}={value}" for key, value in marker.items()) + " -->",
+        ]
+    )
+
+
 def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha: str) -> None:
     """Atomically enough for one operator: persist a running marker before review work."""
     binding = get_pull_binding(repo, pr_number, token, reviewer_sha)
@@ -3347,7 +3557,7 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
                 "Push a change to request another review.",
                 notices,
             )
-            write_action_outputs(claimed="false")
+            write_outputs_after_publish(claimed="false")
             return
 
     active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
@@ -3373,15 +3583,14 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
             # to try again, and answering the first attempt then silently
             # ignoring the retry it asked for is worse than an extra comment.
             # It also only occurs when the API failed, so it cannot accumulate
-            # the way a stable answer to a repeated command does.
-            create_comment(
-                repo,
-                pr_number,
-                token,
-                "Could not confirm whether a review is already running, so this command did not start one. Try again.",
-                binding.correlation,
-            )
-        write_action_outputs(claimed="false")
+            # the way a stable answer to a repeated command does. Posted as a
+            # failed verdict so the pull request shows the command did not run.
+            publish_scan_failure(repo, pr_number, token, mode, binding, uuid.uuid4().hex)
+            # A missing `claimed` skips the review and finalize jobs exactly
+            # as `false` does, so the published verdict stands either way.
+            write_outputs_after_publish(claimed="false")
+            return
+        write_outputs_after_publish(claimed="false")
         return
     review_identity = uuid.uuid4().hex
     comment = create_comment(repo, pr_number, token, _initial_status(binding, mode, review_identity), binding.correlation)
@@ -3412,10 +3621,14 @@ def run_review(
     review_identity = review_identity or uuid.uuid4().hex
     if status_comment_id is None:
         active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
-        if active or not scanned:
-            link = active.get("html_url") if isinstance(active, dict) and isinstance(active.get("html_url"), str) else "the existing review status"
-            create_comment(repo, pr_number, token, f"A review is already running: {link}", binding.correlation)
+        if active:
+            link = active.get("html_url") if isinstance(active.get("html_url"), str) else "the existing review status"
+            create_published_comment(repo, pr_number, token, f"A review is already running: {link}", binding.correlation)
             return "already-running", ReviewProgress()
+        if not scanned:
+            # An unreadable comment page is an API failure, not evidence of
+            # another run, so it is not reported as already-running.
+            return "failed", publish_scan_failure(repo, pr_number, token, mode, binding, review_identity)
         comment = create_comment(repo, pr_number, token, _initial_status(binding, mode, review_identity), binding.correlation)
     else:
         comment = {"id": status_comment_id}
@@ -3541,7 +3754,9 @@ def run_review(
         chunks, omitted = plan_chunks(units, mode)
         progress.incomplete_reasons.extend(coverage_gaps(units, omitted, parse_errors))
         reviewed_changes: list[dict[str, str]] = []
-        candidates: list[Finding] = []
+        # The same list object as progress.pending_candidates, so a run that
+        # stops part way still has every candidate gathered so far.
+        candidates: list[Finding] = progress.pending_candidates
         for chunk_index, chunk in enumerate(chunks, 1):
             # Checked before each chunk rather than only at the end. A deep pass
             # runs for many minutes, and a head that moved early would otherwise
@@ -3744,6 +3959,9 @@ def run_review(
                 progress.incomplete_reasons.append("judge pass was incomplete or invalid")
                 if reason := unverified_candidates_reason(candidates):
                     progress.incomplete_reasons.append(reason)
+        # The judge stage is over and every branch above recorded what it left
+        # open, so nothing is pending any more.
+        progress.pending_candidates = []
         try:
             latest = get_pull_binding(repo, pr_number, token, reviewer_sha)
             progress.head_changed = latest.head_sha != binding.head_sha
@@ -3762,11 +3980,31 @@ def run_review(
         except FetchError:
             progress.incomplete_reasons.append("final head binding could not be re-read")
         return derive_state(progress), progress
+    except Exception as exc:  # noqa: BLE001
+        # Without this the finally below published whatever derive_state made
+        # of a half-finished run: an exception in the judge, after every chunk
+        # was reviewed, published `clean`, and a clean marker blocks reruns of
+        # the head. The class name only, because the message of an unexpected
+        # exception is not known to be safe to publish; the traceback goes to
+        # the log. A published failed verdict is the result, so the step stays
+        # green; if publishing it fails, the finally raises and the step fails.
+        record_unfinished_run(progress, f"the review stopped on an unexpected {type(exc).__name__}")
+        emit(traceback.format_exc().rstrip(), stderr=True)
+        return derive_state(progress), progress
+    except BaseException as exc:
+        # A local interrupt (Ctrl-C delivered to this process) and other
+        # non-Exception exits are recorded the same way, then re-raised so the
+        # stop still propagates. A GitHub cancel does not arrive here: the
+        # runner signals the step's shell, not this process, then kills the
+        # tree, so nothing is published and the finalize job closes the
+        # comment while the job shows as cancelled.
+        record_unfinished_run(progress, f"the review was interrupted ({type(exc).__name__})")
+        raise
     finally:
         manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
         try:
-            update_comment(
+            publish_status_update(
                 repo,
                 comment["id"],
                 token,
@@ -3850,7 +4088,7 @@ def main() -> None:
     except (FetchError, ReviewError, requests.RequestException):
         print("pr-review phase=terminal attempt=1 status=failed correlation=pending", file=sys.stderr)
         raise SystemExit(1) from None
-    print(f"pr-review phase=terminal attempt=1 status={state} correlation=published")
+    emit(f"pr-review phase=terminal attempt=1 status={state} correlation=published")
     # Published separately from the exit code because these answer different
     # questions. The exit code says whether the runner worked; this says
     # whether the review actually covered the diff. Collapsing them is what
@@ -3873,7 +4111,7 @@ def main() -> None:
         and bool(progress.base_sha)
         and progress.coverage_base == progress.base_sha
     )
-    write_action_outputs(state=state, complete="true" if complete else "false")
+    write_outputs_after_publish(state=state, complete="true" if complete else "false")
     if exit_code_for_state(state):
         raise SystemExit(1)
 

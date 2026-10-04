@@ -79,9 +79,23 @@ text from model-supplied fields.
 
 The final comment names the captured base and head. If either moves during the
 review, the result cannot claim complete coverage of the current pull request.
-The workflow's green job means the verdict was published, including a `partial`
-or `inconclusive` verdict. Read the signed comment marker to decide coverage;
-the reviewer does not publish commit statuses or CI checks.
+Verdicts are informational. A `partial`, `inconclusive`, or `failed` verdict
+appears in the comment and the job stays green, even if the step outputs cannot
+be written afterward. The job fails only when no verdict could be published,
+such as on a setup failure, or when the process is interrupted locally; a job
+cancelled on GitHub shows as cancelled. A review that stops on an unexpected
+error publishes `failed` (`superseded` if the run had already seen the head
+move) naming the error's type, not a verdict it never reached, and lists any
+candidates the judge had not ruled on as unverified. Before it starts, the
+command checks for a review already running; if that check fails it publishes
+`failed` and does not start one. An earlier check for a finished review of the
+same head does not stop the command when it fails: the command reviews anyway.
+A command declined with a notice (already reviewed, or already running) also
+stays green when its outputs cannot be written. When GitHub's reply to the final
+comment update is lost to a timeout or a server error, the reviewer reads the
+comment back once and stays green only if it shows this run's verdict. Read the
+signed comment marker to decide coverage; the reviewer does not publish commit
+statuses or CI checks.
 
 ## Setup
 
@@ -261,9 +275,12 @@ The `pr-review-tests` job in `ci.yaml` runs the same command. A suite that runs
 only inside a review cannot gate a change to the reviewer, because a review runs
 the default-branch copy.
 
-**The signed comment is the review signal.** The `review` job reports whether
-the runner published a verdict, so `partial` and `inconclusive` are successful
-runner outcomes. Automation reads the signed marker in the comment to decide
+**The signed comment is the review signal.** Verdicts are informational:
+`partial`, `inconclusive`, and `failed` appear in the comment and leave the
+`review` job green, including when the step outputs cannot be written after the
+verdict is posted; no job reads them. It fails only when no verdict could be
+published or the process is interrupted locally.
+Automation reads the signed marker in the comment to decide
 whether the reviewer settled the whole pull request; review verdicts do not
 publish commit statuses or CI checks.
 
@@ -275,9 +292,8 @@ deletion runs and discloses that it did. Do not make deep mode compress them.
 **A disclosed compression is not a coverage gap.** `coverage_gaps()` names only
 what the review should have read and did not: omitted units, parse errors, a
 truncated compare, a timeout, a moved head, a failed fetch. Counting a
-compression there makes the completeness check fail on reviews that covered
-everything, and a check that is red on complete work is one an operator learns
-to ignore.
+compression there makes reviews that covered everything read `partial`, and an
+incomplete label on complete work is one an operator learns to ignore.
 
 **Structural assertions parse; they do not match text.** A guard that greps a
 workflow can be satisfied by a comment naming the thing it guards, by a quoted

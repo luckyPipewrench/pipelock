@@ -75,6 +75,8 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
+
+	upstreamIncomplete bool // written only by upstreamToClient, read after it returns
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
 	// same escaped path and method-override headers as the handshake gate.
@@ -243,6 +245,7 @@ type wsRelayStats struct {
 	textFrames     int64
 	binaryFrames   int64
 	blocked        bool // true if relay terminated due to a policy/DLP/injection block
+	incomplete     bool // upstream ended without completing its WebSocket stream
 }
 
 // handleWebSocket handles /ws WebSocket proxy requests.
@@ -1210,6 +1213,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	outcomeCloseCode := ws.StatusNormalClosure
 	outcomeReason = "complete"
+	if stats.incomplete {
+		outcomeCloseCode = ws.StatusAbnormalClosure
+		outcomeReason = receiptReasonIncomplete
+	}
 	if stats.blocked {
 		outcomeCloseCode = ws.StatusPolicyViolation
 		outcomeReason = "policy_blocked"
@@ -1519,6 +1526,7 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 		textFrames:     c2sText + s2cText,
 		binaryFrames:   c2sBinary + s2cBinary,
 		blocked:        c2sBlocked || s2cBlocked,
+		incomplete:     r.upstreamIncomplete,
 	}
 }
 
@@ -2982,8 +2990,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) {
 				continue
 			}
-			if !plwsutil.IsExpectedCloseErr(err) {
+			// An idle or relay-ending deadline is the proxy closing an idle
+			// connection, not an upstream that broke off mid-stream.
+			if errors.As(err, &nerr) && nerr.Timeout() {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
+				return
+			}
+			if ctx.Err() == nil {
+				r.upstreamIncomplete = true
+				actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+				log.LogError(actx, fmt.Errorf("response stream incomplete: %w", err))
+				_ = r.clientConn.Close()
 			}
 			return
 		}
@@ -3019,6 +3036,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		payload := make([]byte, hdr.Length)
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(r.upstreamConn, payload); err != nil {
+				if ctx.Err() == nil {
+					r.upstreamIncomplete = true
+					actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+					log.LogError(actx, fmt.Errorf("response stream incomplete: %w", err))
+					_ = r.clientConn.Close()
+				}
 				return
 			}
 		}

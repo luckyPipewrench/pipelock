@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -1086,6 +1087,11 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream SSE response failed validation")))
 				return
 			}
+			if scanErr != nil {
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), scanErr)
+				_ = httpstream.Abort(r.Context(), scanErr)
+				return
+			}
 			if !streamWriter.Wrote() && !foundInjection {
 				w.WriteHeader(http.StatusOK)
 			}
@@ -1791,6 +1797,15 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream SSE response failed validation")))
 				return
 			}
+			if scanErr != nil {
+				streamOutcome := decision.Outcome.Receipt
+				if _, pending := responseTracker.Consume(frame.ID); !pending || streamOutcome.ActionID == "" {
+					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
+				}
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, scanErr)
+				_ = httpstream.Abort(r.Context(), scanErr)
+				return
+			}
 			if scanErr == nil && !foundInjection {
 				_ = clientState.commitIfActive(func() {
 					commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
@@ -1863,17 +1878,31 @@ func RunHTTPListenerProxy(
 	}
 
 	// Graceful shutdown on context cancellation.
+	serveDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
-		<-ctx.Done()
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+		case <-serveDone:
+			return
+		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		_ = srv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+		}
 	}()
 
 	_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reverse proxy listening on %s\n", ln.Addr())
 
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("HTTP listener: %w", err)
+	serveErr := srv.Serve(ln)
+	close(serveDone)
+	// Serve returns as soon as Shutdown closes the listener. Wait for the
+	// graceful shutdown to drain handlers and emit their final outcomes.
+	<-shutdownDone
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return fmt.Errorf("HTTP listener: %w", serveErr)
 	}
 	return nil
 }

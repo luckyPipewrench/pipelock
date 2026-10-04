@@ -204,7 +204,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// connection"), and a peer drop surfaces as reset/broken-pipe,
 			// from a blocked transport read. All mean "no more traffic to
 			// scan", not a fatal error. IsExpectedCloseErr covers io.EOF too.
-			if wsutil.IsExpectedCloseErr(err) {
+			if wsutil.IsExpectedCloseErr(err) && !errors.Is(err, transport.ErrIncompleteResponse) {
 				break
 			}
 			if opts.sessionExit.inProgress() && isSessionExitCloseErr(err) {

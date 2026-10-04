@@ -82,6 +82,11 @@ const watchdogPollInterval = 250 * time.Millisecond
 // the kill switch terminates the tunnel mid-stream. Returns the total bytes
 // transferred in both directions.
 func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
+	total, _ := bidirectionalCopyWithError(client, target, idleTimeout, deadline, ks)
+	return total
+}
+
+func bidirectionalCopyWithError(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) (int64, error) {
 	now := time.Now()
 	tr := &tunnelRelay{
 		client:      client,
@@ -91,7 +96,8 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadl
 		ks:          ks,
 		clockStart:  now,
 	}
-	return tr.run()
+	total := tr.run()
+	return total, tr.upstreamErr
 }
 
 // tunnelRelay carries the shared state for one bidirectional relay: the two
@@ -106,6 +112,7 @@ type tunnelRelay struct {
 	clockStart   time.Time
 	lastActivity atomic.Int64 // monotonic nanoseconds since clockStart of the last byte seen in either direction
 	closeOnce    sync.Once
+	upstreamErr  error // set by the first teardown, before connections are closed
 }
 
 // touch records activity on the shared clock. Called on every successful read
@@ -118,7 +125,12 @@ func (tr *tunnelRelay) touch() {
 // closeBoth tears the tunnel down exactly once, closing both connections. This
 // is what wakes a read blocked on the silent direction.
 func (tr *tunnelRelay) closeBoth() {
+	tr.closeBothWithError(nil)
+}
+
+func (tr *tunnelRelay) closeBothWithError(err error) {
 	tr.closeOnce.Do(func() {
+		tr.upstreamErr = err
 		_ = tr.client.Close()
 		_ = tr.target.Close()
 	})
@@ -221,7 +233,11 @@ func (tr *tunnelRelay) copyDir(dst, src net.Conn) int64 {
 				}
 			} else {
 				// Read error (watchdog/airlock close, reset, timeout): tear down.
-				tr.closeBoth()
+				if src == tr.target {
+					tr.closeBothWithError(err)
+				} else {
+					tr.closeBoth()
+				}
 			}
 			return total
 		}

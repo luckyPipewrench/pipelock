@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -176,7 +177,7 @@ func HijackResponseForSSE(
 		// nil flusher: httputil.ReverseProxy detects text/event-stream and
 		// flushes per write to the client, so the per-event flush behavior
 		// happens downstream of this pipe write.
-		scanErr := DispatchSSEScan(ctx, upstream, pw, nil, sc, opts)
+		scanErr := DispatchSSEScan(ctx, upstream, httpstream.Writer{Writer: pw}, nil, sc, opts)
 		_ = upstream.Close()
 		// Reverse-proxy outcomes are emitted after the body copier observes
 		// the pipe close. Publish the final scan state first so an incomplete

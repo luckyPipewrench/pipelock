@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
@@ -58,22 +59,25 @@ func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	if len(msg) > transport.MaxLineSize {
 		return fmt.Errorf("message too large: %d bytes", len(msg))
 	}
+	// The first write may commit headers even when it fails part way. Wrote
+	// must reflect that attempt so the handler aborts instead of appending a
+	// synthetic 502 response to a partially written event.
+	sw.wrote = true
 	lines := bytes.Split(msg, []byte("\n"))
 	for _, line := range lines {
-		if _, err := sw.w.Write([]byte("data: ")); err != nil {
+		if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("data: ")); err != nil {
 			return fmt.Errorf("writing sse data prefix: %w", err)
 		}
-		if _, err := sw.w.Write(line); err != nil {
+		if _, err := (httpstream.Writer{Writer: sw.w}).Write(line); err != nil {
 			return fmt.Errorf("writing sse data: %w", err)
 		}
-		if _, err := sw.w.Write([]byte("\n")); err != nil {
+		if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("\n")); err != nil {
 			return fmt.Errorf("writing sse line terminator: %w", err)
 		}
 	}
-	if _, err := sw.w.Write([]byte("\n")); err != nil {
+	if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("\n")); err != nil {
 		return fmt.Errorf("writing sse event terminator: %w", err)
 	}
-	sw.wrote = true
 	if sw.flusher != nil {
 		sw.flusher.Flush()
 	}
@@ -158,6 +162,13 @@ func startGETStream(
 			_, scanErr := ForwardScanned(reader, safeClientOut, safeLogW, tracker, opts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
+				if errors.Is(scanErr, transport.ErrIncompleteResponse) && ctx.Err() == nil {
+					// A subscription has no pending JSON-RPC request identity.
+					// Record its interrupted transport separately from outcomes
+					// for complete messages already delivered on the stream.
+					emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", -1, httpstream.Incomplete)
+				}
+				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}
 
 			// Stream ended - reconnect with backoff unless cancelled.

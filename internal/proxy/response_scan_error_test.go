@@ -514,13 +514,20 @@ func TestForwardSSEContextCancellationIsNotScanError(t *testing.T) {
 		t.Fatalf("status = %d, want upstream status %d", w.Code, http.StatusOK)
 	}
 	assertMetricsNotContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+	foundCancelled := false
 	for _, r := range rph.findReceipts(t) {
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && strings.Contains(r.ActionRecord.Pattern, "reason="+receiptReasonSSEStreamCancelled) {
+			foundCancelled = true
+		}
 		if r.ActionRecord.Layer == "response_scan_error" {
 			t.Fatalf("ordinary context cancellation emitted scan-error receipt: %+v", r.ActionRecord)
 		}
 		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome && strings.Contains(r.ActionRecord.Pattern, "reason=response_scan_error") {
 			t.Fatalf("ordinary context cancellation emitted scan-error outcome: %+v", r.ActionRecord)
 		}
+	}
+	if !foundCancelled {
+		t.Fatalf("missing %s outcome", receiptReasonSSEStreamCancelled)
 	}
 }
 

@@ -7,13 +7,16 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"image"
 	"image/png"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
@@ -89,7 +92,6 @@ func TestMCPImageFullDecode(t *testing.T) {
 		{name: "hidden plaintext key after old decode window", data: base64.StdEncoding.EncodeToString(wrapped)},
 		{name: "key in sibling text", data: clean, sibling: key},
 		{name: "malformed base64", data: clean + "!" + key},
-		{name: "oversized payload", data: clean + strings.Repeat("A", transport.MaxLineSize) + key},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,5 +112,16 @@ func TestMCPImageFullDecode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMCPImageOversizedPayloadRemainsVisible(t *testing.T) {
+	// Transports reject messages above MaxLineSize before response scanning.
+	// At the extractor boundary, an oversized media candidate must still fail
+	// closed instead of being classified as opaque.
+	data := strings.Repeat("A", transport.MaxLineSize+1)
+	result := jsonrpc.ExtractVisibleStringsFromJSONResult(json.RawMessage(fmt.Sprintf(`{"content":[{"type":"image","data":%q}]}`, data)))
+	if !slices.Contains(result.Strings, data) {
+		t.Fatal("oversized media candidate was hidden from text scanning")
 	}
 }

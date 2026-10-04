@@ -211,16 +211,10 @@ func TestResponseStripAroundImageDataURL(t *testing.T) {
 		if result.Clean {
 			t.Fatal("fixture was not detected")
 		}
-		if result.TransformedContent != "" && !strings.HasPrefix(result.TransformedContent, small) {
-			t.Fatalf("rewrite landed on the image bytes: %.120q", result.TransformedContent)
-		}
+		// A span that reaches past the excised image cannot be mapped back onto
+		// the original text, so the rewrite is withheld and the response blocks.
 		if result.TransformedContent != "" {
-			if strings.Contains(result.TransformedContent, "begin witness") || strings.Contains(result.TransformedContent, "end witness") {
-				t.Fatalf("released rewrite still contains the finding: %.120q", result.TransformedContent)
-			}
-			if rescan := s.ScanResponse(t.Context(), result.TransformedContent); !rescan.Clean {
-				t.Fatalf("released rewrite is not clean on rescan: %.120q", result.TransformedContent)
-			}
+			t.Fatalf("rewrite past an excised image was released: %.120q", result.TransformedContent)
 		}
 	})
 }

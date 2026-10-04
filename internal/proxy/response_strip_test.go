@@ -135,13 +135,11 @@ func TestResponseStripTransportInvariant(t *testing.T) {
 					if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
 						t.Fatal(err)
 					}
-					msg, _, err := wsutil.ReadServerData(conn)
 					if tc.status == http.StatusForbidden {
-						if err == nil {
-							t.Fatalf("unsafe message forwarded: %s", msg)
-						}
+						assertWebSocketBoundaryClose(t, conn, ws.StatusPolicyViolation)
 						return
 					}
+					msg, _, err := wsutil.ReadServerData(conn)
 					if err != nil {
 						t.Fatal(err)
 					}

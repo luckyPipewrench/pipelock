@@ -140,8 +140,13 @@ func TestMCPEmbeddedNeedleNamesStayConservative(t *testing.T) {
 		"mcp__post__get_request_log", "get_request_log2", "list_postgres_tables_put",
 	} {
 		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
-		if got.Class == session.ActionClassRead {
-			t.Fatalf("%s: mutation evidence lost: %+v", name, got)
+		// An exact trailing "put" word selects write before publish detection.
+		wantClass := session.ActionClassPublish
+		if name == "list_postgres_tables_put" {
+			wantClass = session.ActionClassWrite
+		}
+		if got.Class != wantClass {
+			t.Fatalf("%s: want %v, got %+v", name, wantClass, got)
 		}
 	}
 }

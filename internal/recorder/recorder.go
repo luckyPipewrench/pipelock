@@ -5,6 +5,7 @@ package recorder
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -193,6 +194,14 @@ type Recorder struct {
 	fsyncErrorsGated atomic.Uint64
 }
 
+// ReceiptScan binds a successful signed-receipt DLP scan to the exact JSON
+// detail bytes that may be written by this recorder. Its fields are private so
+// callers cannot manufacture a clean result.
+type ReceiptScan struct {
+	recorder *Recorder
+	detail   []byte
+}
+
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
 // privKey is used for checkpoint signing (nil = unsigned checkpoints).
 // When cfg.Enabled is false, returns a no-op recorder that discards all calls.
@@ -375,14 +384,30 @@ func (r *Recorder) SetObserver(observer EntryObserver) {
 // SessionID, Type, Transport, Summary, and Detail. Sequence, Timestamp,
 // PrevHash, Hash, and Version are set by the recorder.
 func (r *Recorder) Record(e Entry) error {
+	return r.record(e, nil)
+}
+
+// RecordWithReceiptScan writes a receipt after checking that its detail is
+// byte-identical to a successful preflight scan. A missing scan is performed
+// before taking the recorder lock.
+func (r *Recorder) RecordWithReceiptScan(e Entry, scan *ReceiptScan) error {
+	return r.record(e, scan)
+}
+
+func (r *Recorder) record(e Entry, scan *ReceiptScan) error {
 	if r.nop {
 		return nil
+	}
+	var err error
+	scan, err = r.prepareReceiptScan(e, scan)
+	if err != nil {
+		return err
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	written, err := r.prepareAndWriteEntryLocked(e, true)
+	written, err := r.prepareAndWriteEntryWithScanLocked(e, true, scan)
 	if err != nil {
 		return err
 	}
@@ -405,12 +430,27 @@ func (r *Recorder) Record(e Entry) error {
 // RecordDurable writes an entry and returns success only after File.Sync has
 // confirmed the file generation that contains the entry.
 func (r *Recorder) RecordDurable(e Entry) error {
+	return r.recordDurable(e, nil)
+}
+
+// RecordDurableWithReceiptScan is the durable counterpart of
+// RecordWithReceiptScan. It preserves the normal batching and sync path.
+func (r *Recorder) RecordDurableWithReceiptScan(e Entry, scan *ReceiptScan) error {
+	return r.recordDurable(e, scan)
+}
+
+func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan) error {
 	if r.nop {
 		return nil
 	}
+	var err error
+	scan, err = r.prepareReceiptScan(e, scan)
+	if err != nil {
+		return err
+	}
 
 	r.mu.Lock()
-	written, err := r.prepareAndWriteEntryLocked(e, false)
+	written, err := r.prepareAndWriteEntryWithScanLocked(e, false, scan)
 	if err != nil {
 		r.mu.Unlock()
 		return err
@@ -508,6 +548,10 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 // prepareAndWriteEntryLocked validates, stamps, redacts, hashes, opens the
 // target file, and writes one JSONL entry. The recorder mutex must be held.
 func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, error) {
+	return r.prepareAndWriteEntryWithScanLocked(e, notify, nil)
+}
+
+func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan *ReceiptScan) (Entry, error) {
 	if r.closed {
 		return Entry{}, fmt.Errorf("recorder is closed")
 	}
@@ -549,7 +593,9 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
 	if e.Type == recorderTypeReceipt || e.Type == recorderTypeEvidenceReceipt {
-		if err := r.ValidateSignedReceiptDetail(e.Detail); err != nil {
+		var err error
+		e.Detail, err = r.checkedReceiptDetail(e.Detail, scan)
+		if err != nil {
 			return Entry{}, err
 		}
 	}
@@ -588,31 +634,96 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 	return e, nil
 }
 
+// PreflightSignedReceiptDetail scans the serialized detail before an emitter
+// advances its receipt chain. The returned opaque scan is checked at the write
+// boundary so a changed detail cannot bypass DLP or invalidate its signature.
+func (r *Recorder) PreflightSignedReceiptDetail(detail any) (ReceiptScan, error) {
+	if r == nil {
+		return ReceiptScan{}, nil
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return ReceiptScan{}, fmt.Errorf("scan signed receipt detail before recording: marshal detail: %w", err)
+	}
+	if r.cfg.Redact && r.redactFn != nil {
+		if result := r.redactFn(context.Background(), string(raw)); !result.Clean {
+			return ReceiptScan{}, errors.New("signed receipt detail contains sensitive data; refusing to record unverifiable redaction")
+		}
+	}
+	return ReceiptScan{recorder: r, detail: raw}, nil
+}
+
 // ValidateSignedReceiptDetail checks whether a signed receipt can be persisted
-// without post-signature redaction. Emitters call this before advancing their
-// chain state; Record repeats it at the write boundary.
+// without post-signature redaction. Callers that will record should retain the
+// PreflightSignedReceiptDetail result instead of scanning twice.
 func (r *Recorder) ValidateSignedReceiptDetail(detail any) error {
 	if r == nil || !r.cfg.Redact || r.redactFn == nil {
 		return nil
 	}
-	return r.validateReceiptDetailClean(detail)
+	_, err := r.PreflightSignedReceiptDetail(detail)
+	return err
+}
+
+func (r *Recorder) prepareReceiptScan(e Entry, scan *ReceiptScan) (*ReceiptScan, error) {
+	if e.Type != recorderTypeReceipt && e.Type != recorderTypeEvidenceReceipt {
+		return nil, nil
+	}
+	if !r.cfg.Redact || r.redactFn == nil || scan != nil {
+		return scan, nil
+	}
+	prepared, err := r.PreflightSignedReceiptDetail(e.Detail)
+	if err != nil {
+		return nil, err
+	}
+	return &prepared, nil
+}
+
+func (r *Recorder) checkedReceiptDetail(detail any, scan *ReceiptScan) (any, error) {
+	if !r.cfg.Redact || r.redactFn == nil {
+		return detail, nil
+	}
+	if scan == nil {
+		// Internal recorder paths without a preflight still retain the
+		// fail-closed boundary scan.
+		prepared, err := r.PreflightSignedReceiptDetail(detail)
+		if err != nil {
+			return nil, err
+		}
+		scan = &prepared
+	}
+	if scan.recorder != r || scan.detail == nil {
+		return nil, errors.New("signed receipt detail scan attestation is invalid")
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return nil, fmt.Errorf("marshal signed receipt detail at write boundary: %w", err)
+	}
+	if !bytes.Equal(raw, scan.detail) {
+		return nil, errors.New("signed receipt detail changed after DLP scan")
+	}
+	// The boundary marshal is a fresh copy of the scanned bytes. Use it for
+	// the chain hash and JSONL write so callers (including entry observers)
+	// cannot mutate the private attestation for a later record attempt.
+	return json.RawMessage(raw), nil
 }
 
 // runPostRecordMaintenanceLocked applies checkpoint and rotation thresholds
 // after an entry has already advanced the chain state. The recorder mutex must
 // be held.
 func (r *Recorder) runPostRecordMaintenanceLocked() error {
-	needsCheckpoint := r.sinceCheckpoint >= r.checkpointThreshold
-	needsRotation := r.fileEntryCount >= r.cfg.MaxEntriesPerFile
-	if needsCheckpoint || needsRotation {
-		r.waitDurableForCurrentFileLocked()
+	if r.sinceCheckpoint < r.checkpointThreshold && r.fileEntryCount < r.cfg.MaxEntriesPerFile {
+		return nil
 	}
-	if needsCheckpoint {
+	// Cond.Wait releases r.mu. Another writer can complete the checkpoint or
+	// rotation while this caller waits, so every maintenance decision below
+	// must use the counters observed after the wait.
+	r.waitDurableForCurrentFileLocked()
+	if r.sinceCheckpoint >= r.checkpointThreshold {
 		if err := r.checkpointLocked(); err != nil {
 			return fmt.Errorf("writing checkpoint: %w", err)
 		}
 	}
-	if needsRotation {
+	if r.fileEntryCount >= r.cfg.MaxEntriesPerFile {
 		if err := r.rotateFile(); err != nil {
 			return fmt.Errorf("rotating file: %w", err)
 		}
@@ -828,24 +939,6 @@ func (r *Recorder) redactDetail(detail any) any {
 		"detected_patterns": markers,
 		"original_size":     len(raw),
 	}
-}
-
-// validateReceiptDetailClean prevents post-signature mutation. Receipt emitters
-// sanitize fields before signing; a hit here means the signed object is unsafe
-// to persist and cannot be redacted without invalidating its proof.
-func (r *Recorder) validateReceiptDetailClean(detail any) error {
-	if detail == nil {
-		return nil
-	}
-
-	raw, err := json.Marshal(detail)
-	if err != nil {
-		return fmt.Errorf("scan signed receipt detail before recording: marshal detail: %w", err)
-	}
-	if result := r.redactFn(context.Background(), string(raw)); !result.Clean {
-		return errors.New("signed receipt detail contains sensitive data; refusing to record unverifiable redaction")
-	}
-	return nil
 }
 
 // writeEscrow encrypts raw detail JSON with X25519 NaCl box and writes to sidecar.

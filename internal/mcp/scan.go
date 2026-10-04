@@ -188,6 +188,19 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
 
+	// Strip may only release a fully inspected message. Add envelope and
+	// extension strings that the typed result extractor does not consume. The
+	// typed text stays, and media payloads keep the typed extractor's rule:
+	// opaque media is skipped and text decoded from it is scanned.
+	if sc.ResponseAction() == config.ActionStrip || sc.ResponseAction() == config.ActionAsk {
+		values := jsonrpc.ExtractVisibleStringsFromJSONResult(trimmed)
+		keys := jsonrpc.ExtractKeysFromJSONResult(trimmed)
+		if values.Truncated || keys.Truncated {
+			return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
+		}
+		text = strings.Join([]string{text, strings.Join(values.Strings, "\n"), strings.Join(keys.Keys, "\n")}, "\n")
+	}
+
 	if text == "" && (!includeDLP || numeric == "") {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -201,15 +202,21 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
+	// Explicit network mutation intent must retain publication protection even
+	// when the tool name or other arguments also describe a generic write.
+	if hasMutatingNetworkMethod(argsJSON) {
+		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+	}
+
 	if looksLikeWriteTool(name) || category == "write" || hasWriteIntent(argsJSON) {
 		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: pathClass.ActionRef, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}
 
-	if looksLikePublishTool(name, argsJSON) || hasMutatingNetworkIntent(argsJSON) {
+	if looksLikePublishTool(toolName, argsJSON) || hasMutatingNetworkIntent(argsJSON) {
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
-	if looksLikeBrowseTool(name) || category == "network" {
+	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName)) {
 		if hasMutatingNetworkIntent(argsJSON) {
 			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 		}
@@ -671,9 +678,39 @@ func looksLikeBrowseTool(name string) bool {
 	return containsAny(name, "browse", "fetch", "scrape", "crawl")
 }
 
+// Preserve conservative substring evidence, including concatenated verbs. Only
+// remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
-	return containsAny(name, "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
+	return containsAny(mcpOperationEvidenceName(name), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
 		hasMutatingNetworkMethod(argsJSON)
+}
+
+func hasMCPNetworkNameEvidence(name string) bool {
+	return containsAny(mcpOperationEvidenceName(name), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
+}
+
+// Only a complete, known read-object shape can remove noun evidence. Any
+// additional token retains the original conservative substring classification.
+func mcpOperationEvidenceName(name string) string {
+	alias, ok := normalize.MCPToolNameAlias(name)
+	if !ok {
+		return strings.ToLower(name)
+	}
+	operation := splitArgumentKey(alias)
+	if len(operation) < 2 || !slices.Contains([]string{"read", "get", "list", "search", "find", "query", "fetch", "show", "describe", "check"}, operation[0]) {
+		return strings.ToLower(name)
+	}
+	object := operation[1:]
+	knownObject := len(object) == 1 && (object[0] == "posts" || object[0] == "input")
+	if len(object) == 3 && object[0] == "thread" {
+		object = object[1:]
+	}
+	knownObject = knownObject || (len(object) == 2 && object[0] == "pull" && (object[1] == "request" || object[1] == "requests"))
+	if !knownObject {
+		return strings.ToLower(name)
+	}
+	// Keep namespace bytes unchanged, including any mutation-bearing nouns.
+	return strings.ToLower(strings.TrimSuffix(name, alias)) + operation[0]
 }
 
 func looksLikePath(value string) bool {

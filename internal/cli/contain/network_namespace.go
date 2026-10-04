@@ -1168,6 +1168,13 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 						errs = append(errs, err)
 					}
 				}
+				// A revoke that failed before apply stopped the host relay
+				// leaves it running on the descriptor it was handed.
+				if !declared {
+					if err := runSystemctlCleanupUnit(ctx, env, "stop", strings.TrimSuffix(socket, ".socket")+".service"); err != nil {
+						errs = append(errs, err)
+					}
+				}
 			}
 			if !previousNamespace.active {
 				if err := runSystemctlCleanupUnit(ctx, env, "stop", namespaceUnit); err != nil {

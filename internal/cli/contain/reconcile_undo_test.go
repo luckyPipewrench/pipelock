@@ -16,8 +16,9 @@ import (
 )
 
 // trackReconcileUnits models systemd runtime separately from the saved files.
-// A failed enable can still start a socket before reporting a dependency error.
-func trackReconcileUnits(env *installEnv, runner *fakeRunner, live []string, failing string) map[string]unitRuntimeState {
+// A failed enable can still start a socket before reporting a dependency
+// error; a failed disable leaves the unit as it was.
+func trackReconcileUnits(env *installEnv, runner *fakeRunner, live []string, fails func(args []string) bool) map[string]unitRuntimeState {
 	states := make(map[string]unitRuntimeState)
 	for _, unit := range live {
 		// Socket-activated host relays are static units, not enabled services.
@@ -46,11 +47,16 @@ func trackReconcileUnits(env *installEnv, runner *fakeRunner, live []string, fai
 			state.enabled = true
 			if len(args) == 3 && args[1] == "--now" {
 				state.active = true
-				if unit == failing {
-					states[unit] = state
-					return "dependency failed", 1, errors.New("injected enable failure")
-				}
 			}
+			if fails(args) {
+				states[unit] = state
+				return "dependency failed", 1, errors.New("injected enable failure")
+			}
+		}
+		if fails(args) {
+			return "operation failed", 1, fmt.Errorf("injected %s failure", args[0])
+		}
+		switch args[0] {
 		case "disable":
 			state.enabled = false
 			if len(args) == 3 && args[1] == "--now" {
@@ -105,7 +111,7 @@ func TestPublishedReconcileUndoHonorsDeclarations(t *testing.T) {
 				oldUnits := publishedRecordUnitNames(desiredPublishedServices([]config.ContainmentPublishedService{old}).Services[0])
 				keepSocket := publishedServiceSockets(keep)[0]
 				freshSocket := publishedServiceSockets(fresh)[0]
-				states := trackReconcileUnits(env, runner, append(oldUnits, keepSocket), freshSocket)
+				states := trackReconcileUnits(env, runner, append(oldUnits, keepSocket), failsNow("enable", freshSocket))
 				runner.calls = nil
 				_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil)})
 				if err == nil || !strings.Contains(err.Error(), "injected enable failure") {
@@ -151,7 +157,7 @@ func TestLoopbackReconcileUndoHonorsDeclarations(t *testing.T) {
 				freshBase := loopbackForwarderUnitBase(fresh.Host, fresh.Port)
 				oldUnits := []string{oldBase + ".socket", oldBase + ".service", oldBase + "-netns.service"}
 				keptUnits := []string{keepBase + ".socket", keepBase + "-netns.service", containedProxyForwarderUnit + ".socket", containedNamespaceForwarderUnit, containedNetworkNamespaceUnit}
-				states := trackReconcileUnits(env, runner, append(oldUnits, keptUnits...), freshBase+".socket")
+				states := trackReconcileUnits(env, runner, append(oldUnits, keptUnits...), failsNow("enable", freshBase+".socket"))
 				runner.calls = nil
 				_, err := runSteps(context.Background(), env, out, []step{stepInstallNetworkNamespace()})
 				if err == nil || !strings.Contains(err.Error(), "injected enable failure") {
@@ -212,6 +218,82 @@ func TestDefaultToolFixtureDoesNotReadHostEligibility(t *testing.T) {
 			if !present && (err == nil || !strings.Contains(err.Error(), "no agent tools found")) {
 				t.Fatalf("synthetic missing tool error = %v", err)
 			}
+		})
+	}
+}
+
+func failsNow(verb, unit string) func([]string) bool {
+	return func(args []string) bool {
+		return len(args) == 3 && args[0] == verb && args[1] == "--now" && args[2] == unit
+	}
+}
+
+// A revoke that fails partway leaves the endpoint it was closing, and the relay
+// already serving it, running. Undo must close both rather than skip them.
+func TestPublishedReconcileUndoClosesFailedRevoke(t *testing.T) {
+	for _, removal := range []string{"expired", "removed"} {
+		t.Run(removal, func(t *testing.T) {
+			old := publishedTestService()
+			keep := publishedTestService()
+			keep.Name, keep.AgentPort = "console", 5901
+			env, runner := publishedInstallEnv(t, "mode: balanced\n")
+			initial := []config.ContainmentPublishedService{old, keep}
+			if _, err := stepInstallPublishedServices(&initial).apply(context.Background(), env); err != nil {
+				t.Fatalf("initial install: %v", err)
+			}
+			body := "containment:\n  published_services:\n"
+			if removal == "expired" {
+				old.ExpiresAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+				body += publishedReconcileConfigEntry(old)
+			}
+			body += publishedReconcileConfigEntry(keep)
+			if err := os.WriteFile(managedPipelockConfigPath(env), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldUnits := publishedRecordUnitNames(desiredPublishedServices([]config.ContainmentPublishedService{old}).Services[0])
+			keepSocket := publishedServiceSockets(keep)[0]
+			states := trackReconcileUnits(env, runner, append(oldUnits, keepSocket), failsNow("disable", oldUnits[0]))
+			runner.calls = nil
+			_, err := runSteps(context.Background(), env, env.out, []step{stepInstallPublishedServices(nil)})
+			if err == nil || !strings.Contains(err.Error(), "injected disable failure") {
+				t.Fatalf("reconcile error = %v, want injected disable failure", err)
+			}
+			assertReconcileUnitState(t, states, oldUnits, unitRuntimeState{})
+			assertReconcileUnitState(t, states, []string{keepSocket}, unitRuntimeState{enabled: true, active: true})
+		})
+	}
+}
+
+func TestLoopbackReconcileUndoClosesFailedRevoke(t *testing.T) {
+	for _, removal := range []string{"expired", "removed"} {
+		t.Run(removal, func(t *testing.T) {
+			env, runner, out := newFakeEnv(t)
+			old, keep := loopbackTestService(9200), loopbackTestService(9201)
+			initial := []config.ContainmentLoopbackService{old, keep}
+			if _, err := stepInstallNetworkNamespaceWithServices(&initial).apply(context.Background(), env); err != nil {
+				t.Fatalf("initial install: %v", err)
+			}
+			body := "containment:\n  loopback_services:\n"
+			if removal == "expired" {
+				old.ExpiresAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+				body += loopbackReconcileConfigEntry(old)
+			}
+			body += loopbackReconcileConfigEntry(keep)
+			if err := os.WriteFile(managedPipelockConfigPath(env), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldBase := loopbackForwarderUnitBase(old.Host, old.Port)
+			keepBase := loopbackForwarderUnitBase(keep.Host, keep.Port)
+			oldUnits := []string{oldBase + ".socket", oldBase + ".service", oldBase + "-netns.service"}
+			keptUnits := []string{keepBase + ".socket", keepBase + "-netns.service", containedProxyForwarderUnit + ".socket", containedNamespaceForwarderUnit, containedNetworkNamespaceUnit}
+			states := trackReconcileUnits(env, runner, append(oldUnits, keptUnits...), failsNow("disable", oldBase+".socket"))
+			runner.calls = nil
+			_, err := runSteps(context.Background(), env, out, []step{stepInstallNetworkNamespace()})
+			if err == nil || !strings.Contains(err.Error(), "injected disable failure") {
+				t.Fatalf("reconcile error = %v, want injected disable failure", err)
+			}
+			assertReconcileUnitState(t, states, oldUnits, unitRuntimeState{})
+			assertReconcileUnitState(t, states, keptUnits, unitRuntimeState{enabled: true, active: true})
 		})
 	}
 }

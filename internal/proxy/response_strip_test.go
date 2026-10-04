@@ -44,6 +44,9 @@ func TestResponseStripTransportInvariant(t *testing.T) {
 					if tc.status == http.StatusOK && (!strings.Contains(body, "Привет мир") || (tc.name == "safe" && !strings.Contains(body, "До свидания"))) {
 						t.Fatalf("untouched text changed: %s", body)
 					}
+					if tc.name == "safe" && strings.Contains(strings.ToLower(body), phrase) {
+						t.Fatalf("stripped response still contains the finding: %s", body)
+					}
 				}
 				cfg := config.Defaults()
 				cfg.Internal = nil

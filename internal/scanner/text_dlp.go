@@ -1007,8 +1007,9 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 
+	hits := newKnownValueWindowHits(texts)
 	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits); matched {
 			m := TextDLPMatch{PatternName: patternName, Severity: "critical", PartialLen: match.partialLen}
 			if encodedOverride != "" {
 				m.Encoded = encodedOverride

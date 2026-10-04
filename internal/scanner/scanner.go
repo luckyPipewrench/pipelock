@@ -3156,8 +3156,9 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
 	}
 
+	hits := newKnownValueWindowHits(texts)
 	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits); matched {
 			reason := reasonPrefix
 			if match.partialLen > 0 {
 				reason += fmt.Sprintf(" (partial %d)", match.partialLen)
@@ -3523,6 +3524,17 @@ func (i knownValueWindowIndex) len() int {
 }
 
 func (i knownValueWindowIndex) offsets(window string) []knownValueWindowCandidate {
+	candidates := i.lookup(window)
+	if len(candidates) == 0 || candidates[0].valueIndex != i.valueIndex {
+		return nil
+	}
+	return candidates
+}
+
+// lookup returns every stored window equal to window, whichever value owns
+// it. The shared slice keeps only windows unique to one value, so every
+// returned candidate has the same valueIndex.
+func (i knownValueWindowIndex) lookup(window string) []knownValueWindowCandidate {
 	if len(window) != minKnownSecretSubstringLen || len(i.windows) == 0 {
 		return nil
 	}
@@ -3534,7 +3546,7 @@ func (i knownValueWindowIndex) offsets(window string) []knownValueWindowCandidat
 	first := sort.Search(len(i.windows), func(n int) bool {
 		return bytes.Compare(i.windows[n].window.value[:], key[:]) >= 0
 	})
-	if first == len(i.windows) || i.windows[first].window.value != key || i.windows[first].valueIndex != i.valueIndex {
+	if first == len(i.windows) || i.windows[first].window.value != key {
 		return nil
 	}
 	last := first + 1
@@ -3699,37 +3711,125 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 // windows, then extends only matching windows. It avoids constructing every
 // possible substring needle while retaining the longest contiguous disclosure.
 func indexKnownValueSubstring(value string, windows knownValueWindowIndex, views []spanTextView) (int, int, int, string, bool) {
-	if windows.len() == 0 {
-		return 0, 0, 0, "", false
+	return indexKnownValueSubstringWithHits(value, windows, views, nil)
+}
+
+// knownValueWindowHits memoizes, for one list of views, every text position
+// whose window is in a shared knownValueWindowIndex. All values built by one
+// buildKnownValueWindows call share the sorted window slice and its prefix
+// filter, so these positions are the same for every value; only the owner of
+// each hit differs. Scanning the views once serves every value's partial
+// match instead of repeating the walk and its lookups per value.
+type knownValueWindowHits struct {
+	views    []spanTextView
+	windows  []knownValueWindowCandidate
+	prefixes *knownValueWindowPrefixes
+	built    bool
+	hits     []knownValueWindowHit
+}
+
+type knownValueWindowHit struct {
+	view       int
+	textStart  int
+	candidates []knownValueWindowCandidate
+}
+
+func newKnownValueWindowHits(views []spanTextView) *knownValueWindowHits {
+	return &knownValueWindowHits{views: views}
+}
+
+// forIndex returns the memoized hits when views and the shared index are the
+// ones this memo serves, building them on first use. ok is false otherwise,
+// and the caller scans directly.
+func (h *knownValueWindowHits) forIndex(index knownValueWindowIndex, views []spanTextView) ([]knownValueWindowHit, bool) {
+	if h == nil || len(index.windows) == 0 || !sameSpanTextViews(h.views, views) {
+		return nil, false
 	}
-	bestLen := 0
-	bestStart, bestEnd := 0, 0
-	bestView := ""
-	for _, view := range views {
+	if h.built {
+		if len(h.windows) != len(index.windows) || &h.windows[0] != &index.windows[0] || h.prefixes != index.prefixes {
+			return nil, false
+		}
+		return h.hits, true
+	}
+	h.built = true
+	h.windows = index.windows
+	h.prefixes = index.prefixes
+	for v, view := range views {
 		for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
-			for _, candidate := range windows.offsets(view.text[textStart : textStart+minKnownSecretSubstringLen]) {
-				valueStart := candidate.window.offset
-				leftText, leftValue := textStart, valueStart
-				for leftText > 0 && leftValue > 0 && view.text[leftText-1] == value[leftValue-1] {
-					leftText--
-					leftValue--
-				}
-				rightText := textStart + minKnownSecretSubstringLen
-				rightValue := valueStart + minKnownSecretSubstringLen
-				for rightText < len(view.text) && rightValue < len(value) && view.text[rightText] == value[rightValue] {
-					rightText++
-					rightValue++
-				}
-				if length := rightText - leftText; length > bestLen {
-					bestLen, bestStart, bestEnd, bestView = length, leftText, rightText, view.viewLabel
-				}
+			if candidates := index.lookup(view.text[textStart : textStart+minKnownSecretSubstringLen]); len(candidates) > 0 {
+				h.hits = append(h.hits, knownValueWindowHit{view: v, textStart: textStart, candidates: candidates})
 			}
 		}
 	}
-	if bestLen < minKnownSecretSubstringLen {
+	return h.hits, true
+}
+
+func sameSpanTextViews(a, b []spanTextView) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// indexKnownValueSubstringWithHits is indexKnownValueSubstring reading window
+// positions from memo when it applies. Hits arrive in the same view and
+// position order as the direct scan, and a position the memo omits is one
+// where offsets returns no candidate, so the longest match is identical.
+func indexKnownValueSubstringWithHits(value string, windows knownValueWindowIndex, views []spanTextView, memo *knownValueWindowHits) (int, int, int, string, bool) {
+	if windows.len() == 0 {
 		return 0, 0, 0, "", false
 	}
-	return bestStart, bestEnd, bestLen, bestView, true
+	var best knownValueSubstringBest
+	if hits, ok := memo.forIndex(windows, views); ok {
+		for _, hit := range hits {
+			if hit.candidates[0].valueIndex != windows.valueIndex {
+				continue
+			}
+			best.extend(value, views[hit.view], hit.textStart, hit.candidates)
+		}
+	} else {
+		for _, view := range views {
+			for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
+				best.extend(value, view, textStart, windows.offsets(view.text[textStart:textStart+minKnownSecretSubstringLen]))
+			}
+		}
+	}
+	if best.length < minKnownSecretSubstringLen {
+		return 0, 0, 0, "", false
+	}
+	return best.start, best.end, best.length, best.view, true
+}
+
+type knownValueSubstringBest struct {
+	length, start, end int
+	view               string
+}
+
+// extend grows each candidate window at textStart to the longest common run
+// of view.text and value, keeping the first longest run seen.
+func (b *knownValueSubstringBest) extend(value string, view spanTextView, textStart int, candidates []knownValueWindowCandidate) {
+	for _, candidate := range candidates {
+		valueStart := candidate.window.offset
+		leftText, leftValue := textStart, valueStart
+		for leftText > 0 && leftValue > 0 && view.text[leftText-1] == value[leftValue-1] {
+			leftText--
+			leftValue--
+		}
+		rightText := textStart + minKnownSecretSubstringLen
+		rightValue := valueStart + minKnownSecretSubstringLen
+		for rightText < len(view.text) && rightValue < len(value) && view.text[rightText] == value[rightValue] {
+			rightText++
+			rightValue++
+		}
+		if length := rightText - leftText; length > b.length {
+			b.length, b.start, b.end, b.view = length, leftText, rightText, view.viewLabel
+		}
+	}
 }
 
 func decimalCharacterCodes(value, separator string) string {
@@ -3842,11 +3942,18 @@ func indexHexTokenView(needle string, views []spanTextView) (int, int, string, b
 // windows (an empty index disables partial matching), or under a supported encoding.
 // encodings carries the secret's precomputed forms; nil builds them here.
 func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, encodings *knownSecretEncodings, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
+	return matchSecretEncodingSpanWithHits(secret, windows, encodings, texts, lowerTexts, nil)
+}
+
+// matchSecretEncodingSpanWithHits is matchSecretEncodingSpan with a window-hit
+// memo shared by every secret checked against the same views. A nil memo
+// scans directly.
+func matchSecretEncodingSpanWithHits(secret string, windows knownValueWindowIndex, encodings *knownSecretEncodings, texts, lowerTexts []spanTextView, hits *knownValueWindowHits) (knownSecretMatch, int, int, string, bool) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
 		return knownSecretMatch{}, start, end, viewLabel, true
 	}
-	if start, end, length, viewLabel, ok := indexKnownValueSubstring(secret, windows, texts); ok {
+	if start, end, length, viewLabel, ok := indexKnownValueSubstringWithHits(secret, windows, texts, hits); ok {
 		return knownSecretMatch{partialLen: length}, start, end, viewLabel, true
 	}
 

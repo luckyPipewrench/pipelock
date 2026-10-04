@@ -276,7 +276,10 @@ type Scanner struct {
 	// the lists are fixed for a scanner's lifetime (a reload builds a new
 	// scanner), and rebuilding it per scan cost more than the scan itself once
 	// a host had a realistic number of high-entropy environment values.
-	knownSecretWindows         knownValueWindowSet
+	knownSecretWindows knownValueWindowSet
+	// knownSecretEncodings holds each secret's encoded forms, built once for
+	// the same reason. A secret missing from it is encoded per scan.
+	knownSecretEncodings       map[string]*knownSecretEncodings
 	minEnvSecretLen            int // minimum env var length for leak detection
 	responsePatterns           []*compiledPattern
 	responseOptSpacePatterns   []*compiledPattern // \s+ → \s* variants for ZW-stripped pass
@@ -411,8 +414,9 @@ type compiledPattern struct {
 	warn                                bool // true when pattern action is "warn" - matches are informational only
 	credentialURLWhitespaceGrammar      bool // built-in-only runtime provenance; never configured by operators
 	requiredLiteralsAny                 []string
-	requiresEquals                      bool  // every effective regex branch requires a literal '='
-	minASCIIDigits                      uint8 // conservative digit floor shared by every effective regex branch
+	requiresEquals                      bool            // every effective regex branch requires a literal '='
+	minASCIIDigits                      uint8           // conservative digit floor shared by every effective regex branch
+	shapeGate                           *regexShapeGate // necessary byte-shape condition; nil runs the regex unconditionally
 	// responseMemoRegexp marks the original regexp.Compile response expression.
 	// Arbitrary/replaced regex objects (including CompilePOSIX) are not reusable.
 	responseMemoRegexp *regexp.Regexp
@@ -582,6 +586,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		requirements := analyzePatternMatchRequirements(cp.re, cp.withoutLeftBoundary)
 		cp.requiresEquals = requirements.requiresEquals
 		cp.minASCIIDigits = requirements.minASCIIDigits
+		cp.shapeGate = requirements.shape
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
 			if !ok {
@@ -679,6 +684,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		return nil, fmt.Errorf("build known-secret window index (reduce canary_tokens or dlp.secrets_file entries, or disable dlp.scan_env and remove oversized environment values): %w", err)
 	}
 	s.knownSecretWindows = knownSecretWindows
+	s.knownSecretEncodings = buildKnownSecretEncodings(knownSecretEncodingBudgetBytes, s.envSecrets, s.fileSecrets)
 
 	// Declared core-floor observe exceptions are read OUTSIDE the
 	// response_scanning.enabled branch on purpose: the core response floor runs
@@ -3151,7 +3157,7 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 	}
 
 	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], texts, lowerTexts); matched {
+		if match, start, end, viewLabel, matched := matchSecretEncodingSpan(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts); matched {
 			reason := reasonPrefix
 			if match.partialLen > 0 {
 				reason += fmt.Sprintf(" (partial %d)", match.partialLen)
@@ -3834,7 +3840,8 @@ func indexHexTokenView(needle string, views []spanTextView) (int, int, string, b
 // matchSecretEncodingSpan finds a known secret in the candidate views as a
 // whole value, as a contiguous partial disclosure using the caller-provided
 // windows (an empty index disables partial matching), or under a supported encoding.
-func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
+// encodings carries the secret's precomputed forms; nil builds them here.
+func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, encodings *knownSecretEncodings, texts, lowerTexts []spanTextView) (knownSecretMatch, int, int, string, bool) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
 		return knownSecretMatch{}, start, end, viewLabel, true
@@ -3852,10 +3859,13 @@ func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts
 	if len(secret) > longestSpanTextView(texts, lowerTexts) {
 		return knownSecretMatch{}, 0, 0, "", false
 	}
+	if encodings == nil {
+		encodings = newKnownSecretEncodings(secret)
+	}
 
 	// Base64 standard (padded + unpadded).
-	b64Std := base64.StdEncoding.EncodeToString([]byte(secret))
-	b64StdNoPad := strings.TrimRight(b64Std, "=")
+	b64Std := encodings.base64Std
+	b64StdNoPad := encodings.base64StdNoPad
 	if start, end, viewLabel, ok := indexAnyView(b64Std, texts); ok {
 		return knownSecretMatch{encoding: encodingBase64}, start, end, viewLabel, true
 	}
@@ -3874,8 +3884,8 @@ func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts
 	}
 
 	// Base64 URL-safe (padded + unpadded).
-	b64URL := base64.URLEncoding.EncodeToString([]byte(secret))
-	b64URLNoPad := strings.TrimRight(b64URL, "=")
+	b64URL := encodings.base64URL
+	b64URLNoPad := encodings.base64URLNoPad
 	if b64URL != b64Std {
 		if start, end, viewLabel, ok := indexAnyView(b64URL, texts); ok {
 			return knownSecretMatch{encoding: "base64url"}, start, end, viewLabel, true
@@ -3898,20 +3908,14 @@ func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts
 	}
 
 	// Hex (case-insensitive via pre-lowered texts).
-	hexEnc := hex.EncodeToString([]byte(secret))
+	hexEnc := encodings.hex
 	if start, end, viewLabel, ok := indexAnyView(hexEnc, lowerTexts); ok {
 		return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
 	}
 
 	// Delimiter-separated hex variants for env/file secret detection.
 	// Matches all formats that normalizeHex can strip.
-	colonHex := hexByteSep(hexEnc, ":")
-	spaceHex := hexByteSep(hexEnc, " ")
-	hyphenHex := hexByteSep(hexEnc, "-")
-	commaHex := hexByteSep(hexEnc, ",")
-	bsxHex := hexBytePrefix(hexEnc, `\x`)
-	zxHex := hexBytePrefix(hexEnc, "0x")
-	for _, candidate := range []string{colonHex, spaceHex, hyphenHex, commaHex, bsxHex, zxHex} {
+	for _, candidate := range encodings.hexDelimited {
 		if start, end, viewLabel, ok := indexAnyView(candidate, lowerTexts); ok {
 			return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
 		}
@@ -3920,15 +3924,15 @@ func matchSecretEncodingSpan(secret string, windows knownValueWindowIndex, texts
 		return knownSecretMatch{encoding: encodingHex}, start, end, viewLabel, true
 	}
 
-	for _, candidate := range []string{decimalCharacterCodes(secret, ","), decimalCharacterCodes(secret, " ")} {
+	for _, candidate := range encodings.decimal {
 		if start, end, viewLabel, ok := indexAnyView(candidate, texts); ok {
 			return knownSecretMatch{encoding: encodingDecimal}, start, end, viewLabel, true
 		}
 	}
 
 	// Base32 standard (padded + unpadded).
-	b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
-	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
+	b32Std := encodings.base32Std
+	b32NoPad := encodings.base32NoPad
 	if start, end, viewLabel, ok := indexAnyView(b32Std, texts); ok {
 		return knownSecretMatch{encoding: encodingBase32}, start, end, viewLabel, true
 	}

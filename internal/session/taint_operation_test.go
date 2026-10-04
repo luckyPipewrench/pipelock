@@ -107,7 +107,7 @@ func TestMCPConservativeMutationEvidence(t *testing.T) {
 func TestMCPReadOperationObjects(t *testing.T) {
 	for _, name := range []string{"get_comment", "get_merge_status", "get_merge_base", "check_push_status", "get_reply", "show_posts", "query_posts", "describe_pull_request", "check_pull_request"} {
 		got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{})
-		if got.Class == session.ActionClassPublish || got.Class == session.ActionClassWrite {
+		if got.Class != session.ActionClassRead {
 			t.Fatalf("%s: read object classified as mutation: %+v", name, got)
 		}
 	}
@@ -123,6 +123,24 @@ func TestMCPWatchMutationWithIdentifierArguments(t *testing.T) {
 			decision := (session.PolicyMatrix{}).EvaluateWithOptions(session.TaintExternalUntrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{FailSafeClassification: failSafe, ClassificationConfident: got.Confident})
 			if decision.Decision != session.PolicyAsk {
 				t.Fatalf("%s: mutation allowed: %+v", name, decision)
+			}
+		}
+	}
+}
+
+func TestMCPExplicitMutationMethodPrecedesWrite(t *testing.T) {
+	for _, name := range []string{"get_put", "get_pull_put", "write_file", "update_item"} {
+		for _, method := range []string{"POST", "PUT", "PATCH", "DELETE", "QUERY"} {
+			for _, failSafe := range []bool{false, true} {
+				args := `{"url":"https://api.vendor.example/resource","nested":{"method":" ` + method + ` "}}`
+				got := session.ClassifyMCPToolCallWithOptions(name, args, nil, nil, session.ClassificationOptions{FailSafe: failSafe})
+				if got.Class != session.ActionClassPublish {
+					t.Fatalf("%s/%s: want publish, got %+v", name, method, got)
+				}
+				decision := (session.PolicyMatrix{Profile: "strict"}).EvaluateWithOptions(session.TaintExternalUntrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{FailSafeClassification: failSafe, ClassificationConfident: got.Confident})
+				if decision.Decision != session.PolicyAsk {
+					t.Fatalf("%s/%s: mutation allowed: %+v", name, method, decision)
+				}
 			}
 		}
 	}

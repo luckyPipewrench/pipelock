@@ -202,6 +202,12 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
+	// Explicit network mutation intent must retain publication protection even
+	// when the tool name or other arguments also describe a generic write.
+	if hasMutatingNetworkMethod(argsJSON) {
+		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
+	}
+
 	if looksLikeWriteTool(name) || category == "write" || hasWriteIntent(argsJSON) {
 		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: pathClass.ActionRef, OverrideRefs: pathClass.OverrideRefs, Confident: pathClass.Confident}
 	}

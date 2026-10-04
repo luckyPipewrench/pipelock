@@ -86,6 +86,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if info, statErr := os.Stat(absBinary); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		log.Fatalf("binary %q is not an executable regular file", absBinary)
+	}
 	if err := os.MkdirAll(*out, 0o750); err != nil {
 		log.Fatal(err)
 	}
@@ -113,6 +116,17 @@ func main() {
 	}
 }
 
+// localCommand builds a command for the validated local test binary. The
+// context is attached through exec.CommandContext with a constant name; the
+// resolved path and arguments are then set explicitly.
+func localCommand(ctx context.Context, binary string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "pipelock")
+	cmd.Err = nil
+	cmd.Path = binary
+	cmd.Args = append([]string{binary}, args...)
+	return cmd
+}
+
 func run(ctx context.Context, binary, out, mode string, n, concurrency int, sinkAddr string, sinkCount *atomic.Int64) error {
 	dir := filepath.Join(out, mode)
 	if err := os.Mkdir(dir, 0o750); err != nil {
@@ -125,14 +139,14 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 	}
 	configPath := filepath.Join(dir, "pipelock.yaml")
 	args := []string{"init", "--output", configPath, "--home", filepath.Join(dir, "home"), "--scan-home", filepath.Join(dir, "scan-home"), "--no-auditor", "--skip-canary", "--json"}
-	initOut, err := exec.CommandContext(ctx, binary, args...).CombinedOutput() //nolint:gosec // Binary is the explicit local test target.
+	initOut, err := localCommand(ctx, binary, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("pipelock init: %w: %s", err, initOut)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "init.json"), initOut, 0o600); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(configPath) //nolint:gosec // Init created this config in the run directory.
+	data, err := os.ReadFile(filepath.Clean(configPath))
 	if err != nil {
 		return err
 	}
@@ -153,7 +167,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return err
 	}
-	checkOut, err := exec.CommandContext(ctx, binary, "check", "--config", configPath).CombinedOutput() //nolint:gosec // Binary is the explicit local test target.
+	checkOut, err := localCommand(ctx, binary, "check", "--config", configPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("pipelock check: %w: %s", err, checkOut)
 	}
@@ -165,12 +179,14 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 		return err
 	}
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
-	proxyLog, err := os.OpenFile(filepath.Join(dir, "proxy.log"), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) //nolint:gosec // dir is a new local run directory.
+	proxyLog, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "proxy.log")), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = proxyLog.Close() }()
-	cmd := exec.Command(binary, "run", "--config", configPath, "--home", filepath.Join(dir, "home"), "--listen", proxyAddr) //nolint:gosec,noctx // The proxy must receive SIGTERM to seal the recorder.
+	cmd := localCommand(context.WithoutCancel(ctx), binary, "run", "--config", configPath, "--home", filepath.Join(dir, "home"), "--listen", proxyAddr)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 30 * time.Second
 	cmd.Stdout, cmd.Stderr = proxyLog, proxyLog
 	if err := cmd.Start(); err != nil {
 		return err
@@ -186,7 +202,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 		return err
 	}
 	log.Printf("%s: proxy ready; %d requests at concurrency %d", mode, n, concurrency)
-	samplesFile, err := os.OpenFile(filepath.Join(dir, "samples.csv"), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) //nolint:gosec // dir is a new local run directory.
+	samplesFile, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "samples.csv")), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -315,7 +331,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 			return err
 		}
 		pubKey := filepath.Join(dir, "keys", "flight-recorder-signing.key.pub")
-		verify, verifyErr := exec.CommandContext(ctx, binary, "verify-receipt", "--chain", filepath.Join(dir, "recorder"), "--whole-recorder", "--require-seal", "--key", pubKey).CombinedOutput() //nolint:gosec // Binary and evidence dir are this local test's explicit inputs.
+		verify, verifyErr := localCommand(ctx, binary, "verify-receipt", "--chain", filepath.Join(dir, "recorder"), "--whole-recorder", "--require-seal", "--key", pubKey).CombinedOutput()
 		r.VerifyOutput = string(verify)
 		if verifyErr != nil {
 			var exitErr *exec.ExitError
@@ -429,12 +445,21 @@ func scanReceipts(dir string, n int, r *result, end time.Time) error {
 	seen := make([]uint8, n)
 	var latest time.Time
 	var lastReceipt time.Time
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() || !strings.HasPrefix(filepath.Base(path), "evidence-") || !strings.HasSuffix(path, ".jsonl") {
 			return walkErr
 		}
 		r.RecorderFiles++
-		f, err := os.Open(path) //nolint:gosec // WalkDir limits paths to this run's recorder directory.
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		f, err := root.Open(rel)
 		if err != nil {
 			return err
 		}

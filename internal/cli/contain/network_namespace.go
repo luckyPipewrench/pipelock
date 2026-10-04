@@ -876,6 +876,7 @@ func stepInstallNetworkNamespace() step {
 
 func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.ContainmentLoopbackService) step {
 	var previousSockets map[string]unitRuntimeState
+	var desiredUnits map[string]bool
 	var previousNamespace unitRuntimeState
 	var previousNamespaceForwarders map[string]unitRuntimeState
 	var previousLegacyAnchor unitRuntimeState
@@ -934,7 +935,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
 			unitDir := filepath.Dir(env.proxyForwarderSocketPath)
-			desiredUnits := make(map[string]bool, len(services))
+			desiredUnits = make(map[string]bool, len(services))
 			for _, service := range services {
 				unit := loopbackForwarderUnitBase(service.Host, service.Port)
 				desiredUnits[unit] = true
@@ -1156,12 +1157,13 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 			for socket, state := range previousSockets {
-				if !state.active {
+				declared := socket == filepath.Base(env.proxyForwarderSocketPath) || desiredUnits[strings.TrimSuffix(socket, ".socket")]
+				if !state.active || !declared {
 					if err := runSystemctlCleanupUnit(ctx, env, "stop", socket); err != nil {
 						errs = append(errs, err)
 					}
 				}
-				if !state.enabled {
+				if !state.enabled || !declared {
 					if err := runSystemctlCleanupUnit(ctx, env, "disable", socket); err != nil {
 						errs = append(errs, err)
 					}
@@ -1186,6 +1188,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				errs = append(errs, err)
 			}
 			for socket, state := range previousSockets {
+				if socket != filepath.Base(env.proxyForwarderSocketPath) && !desiredUnits[strings.TrimSuffix(socket, ".socket")] {
+					continue
+				}
 				if state.enabled {
 					if err := runOrErr(ctx, env, "systemctl", "enable", socket); err != nil {
 						errs = append(errs, err)
@@ -1198,6 +1203,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 			}
 			for unit, state := range previousNamespaceForwarders {
+				if unit != containedNamespaceForwarderUnit && !desiredUnits[strings.TrimSuffix(unit, "-netns.service")] {
+					continue
+				}
 				if state.enabled {
 					if err := runOrErr(ctx, env, "systemctl", "enable", unit); err != nil {
 						errs = append(errs, err)

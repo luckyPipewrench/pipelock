@@ -65,8 +65,9 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 		{"audience list naming the host", "jwt=" + claimJWT(`{"aud":["other.example","release-assets.githubusercontent.com"],"iss":"github.com","nbf":1000,"exp":1300}`), false},
 		{"extra claim beside a valid grant shape", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":1300,"x":"data"}`), false},
 		{"archive grant lifetime", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":2800,"path":"releaseassetproduction.blob.core.windows.net"}`), true},
-		{"lifetime one second past an archive grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":2801,"path":"releaseassetproduction.blob.core.windows.net"}`), false},
-		{"lifetime longer than a grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":4600}`), false},
+		{"large archive grant lifetime", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":4600,"path":"releaseassetproduction.blob.core.windows.net"}`), true},
+		{"lifetime one second past a large archive grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","key":"key1","nbf":1000,"exp":4601,"path":"releaseassetproduction.blob.core.windows.net"}`), false},
+		{"lifetime longer than a grant", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":8200}`), false},
 		{"expiry before not-before", "jwt=" + claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1300,"exp":1000}`), false},
 		{"header with an extra field", "jwt=" + oddHeaderJWT(), false},
 		{"signature longer than an HS256 MAC", "jwt=" + fakeAudienceJWT() + "AAAAAAAAAAAAAAAAAAAAAA", false},
@@ -227,6 +228,8 @@ func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
 		wantAllow bool
 	}{
 		{"allow: real redirect shape", "https://" + githubReleaseAssetsHost + "/asset/1?" + fullQuery, true},
+		{"allow: one hour grant with SAS", "https://" + githubReleaseAssetsHost + "/asset/1?" + releaseGrantSASQuery(claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":4600}`), "sas-hour-fixture"), true},
+		{"deny: grant one second past cap with SAS", "https://" + githubReleaseAssetsHost + "/asset/1?" + releaseGrantSASQuery(claimJWT(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","nbf":1000,"exp":4601}`), "sas-over-cap-fixture"), false},
 		{"deny: SAS without any jwt", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, "&jwt="+jwt, "", 1), false},
 		{"deny: jwt issued for a different host", "https://" + githubReleaseAssetsHost + "/asset/1?" + strings.Replace(fullQuery, jwt, wrongHostJWT, 1), false},
 		{"deny: SAS on a lookalike host", "https://" + githubReleaseAssetsHost + ".evil.example/asset/1?" + fullQuery, false},

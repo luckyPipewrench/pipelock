@@ -133,6 +133,31 @@ func TestForMatching_Parity(t *testing.T) {
 	}
 }
 
+func TestMatchingNormalizePrintableASCIIReferenceParity(t *testing.T) {
+	inputs := []string{"", "plain receipt JSON {\"action_record\":\"allow\"}", "https://api.vendor.example/ok?id=1", "a\u200bb", "\ufffd", "a\u00a0b", "e\u0301", "\xff"}
+	for value := byte(0); ; value++ {
+		inputs = append(inputs, string([]byte{value}), "left"+string([]byte{value})+"right")
+		if value == 255 {
+			break
+		}
+	}
+	for _, recompose := range []bool{false, true} {
+		for _, input := range inputs {
+			want := StripZeroWidth(input)
+			want = norm.NFKC.String(want)
+			want = ConfusableToASCII(want)
+			want = StripCombiningMarks(want)
+			if recompose {
+				want = norm.NFC.String(want)
+			}
+			want = Whitespace(want)
+			if got := matchingNormalize(input, recompose); got != want {
+				t.Fatalf("matchingNormalize(%q, %t) = %q, want %q", input, recompose, got, want)
+			}
+		}
+	}
+}
+
 // TestForPolicy_Parity verifies ForPolicy matches the old NormalizeForPolicy.
 func TestForPolicy_Parity(t *testing.T) {
 	tests := []struct {

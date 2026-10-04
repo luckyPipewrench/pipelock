@@ -316,13 +316,17 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_SYMLINKAT, unix.SYS_LINKAT,
 		unix.SYS_UMASK, unix.SYS_GETCWD, unix.SYS_CHDIR, unix.SYS_FCHDIR,
 
-		// Legacy path-based forms of the *at syscalls allowed above. glibc on
-		// x86_64 still issues several of these (access, mkdir, rmdir, rename,
-		// unlink, chmod, link, symlink) instead of their *at variants, so
-		// without them ordinary Python and Node file operations fail with
-		// EPERM. Landlock mediates the same path operations whichever syscall
-		// form requests them, so allowing a legacy form grants nothing its
-		// *at sibling does not already grant.
+		// Legacy forms of syscalls whose modern siblings are allowed above.
+		// glibc on x86_64 still issues several of these (access, mkdir, rmdir,
+		// rename, unlink, chmod, link, symlink) instead of their *at variants,
+		// so without them ordinary Python and Node file operations fail with
+		// EPERM. open, creat, stat, lstat, getdents, chown and lchown are
+		// added for the same parity, since other libcs and static binaries
+		// can issue them. Each is a path operation that Landlock mediates the
+		// same way whichever form requests it, so it grants nothing its *at
+		// sibling does not. epoll_create is not a path operation and Landlock
+		// does not mediate it; it is equivalent to epoll_create1 with no
+		// flags, which is already allowed.
 		unix.SYS_ACCESS, unix.SYS_OPEN, unix.SYS_CREAT,
 		unix.SYS_STAT, unix.SYS_LSTAT, unix.SYS_GETDENTS,
 		unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_RENAME,

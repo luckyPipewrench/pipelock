@@ -453,6 +453,11 @@ func TestAllowedSyscalls_LegacyFormsMatchAtSiblings(t *testing.T) {
 			t.Errorf("%s allowed=%v but %s allowed=%v; legacy and *at forms must match",
 				p.legacy, set[p.legacyNR], p.sibling, set[p.atNR])
 		}
+		// Parity alone would pass if both forms were dropped, which
+		// reintroduces the EPERM failures for glibc programs.
+		if !set[p.legacyNR] {
+			t.Errorf("%s must be allowed", p.legacy)
+		}
 	}
 }
 

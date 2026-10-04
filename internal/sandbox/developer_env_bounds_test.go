@@ -55,6 +55,28 @@ func sizedEntry(key string, n int) string {
 	return key + "=" + strings.Repeat("x", n-len(key)-1)
 }
 
+// minimalEntries returns n distinct KEY= entries using the shortest keys
+// available from [A-Za-z0-9_], in order of key length.
+func minimalEntries(n int) []string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+	out := make([]string, 0, n)
+	keys := []string{""}
+	for len(out) < n {
+		next := make([]string, 0, len(keys)*len(alphabet))
+		for _, prefix := range keys {
+			for _, c := range alphabet {
+				key := prefix + string(c)
+				next = append(next, key)
+				if len(out) < n {
+					out = append(out, key+"=")
+				}
+			}
+		}
+		keys = next
+	}
+	return out
+}
+
 // TestEncodeDeveloperEnvironmentBounds pins the encoder's limits at their
 // exact edges: a payload of exactly developerEnvironmentMaxPayload bytes is
 // accepted and round-trips, one byte more is refused.
@@ -66,6 +88,11 @@ func TestEncodeDeveloperEnvironmentBounds(t *testing.T) {
 	first := pair / 2
 
 	tooMany := make([]string, maxPayload/4+1)
+	// The count cap (maxPayload/4) cannot be reached by an accepted
+	// environment: every entry costs at least six bytes. Pin instead that the
+	// cap never refuses a count the size bound would accept.
+	fitsCount := maxPayload/8 + 1
+	fits := minimalEntries(fitsCount)
 	many := make([]string, 0, 1000)
 	for i := range 1000 {
 		many = append(many, fmt.Sprintf("VENDOR_%d=v", i))
@@ -82,6 +109,7 @@ func TestEncodeDeveloperEnvironmentBounds(t *testing.T) {
 		{name: "two entries one byte over", env: []string{sizedEntry("ONE", first), sizedEntry("TWO", pair-first+1)}, wantErr: "payload exceeds 1 MiB"},
 		{name: "many small entries", env: many},
 		{name: "entry count over the bound", env: tooMany, wantErr: "too many entries"},
+		{name: "large entry count that fits the payload", env: fits},
 		{name: "entry without equals", env: []string{"PATH=/bin", "NOEQUALS"}, wantErr: "malformed developer environment entry"},
 		{name: "entry containing NUL", env: []string{"VENDOR_FLAG=a\x00b"}, wantErr: "contains NUL"},
 		{name: "duplicate key", env: []string{"PATH=/bin", "PATH=/usr/bin"}, wantErr: `duplicate developer environment key "PATH"`},

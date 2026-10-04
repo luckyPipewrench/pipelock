@@ -175,37 +175,45 @@ func TestValidatePolicyRejectsAllowDirsCoveringProtectedDirs(t *testing.T) {
 	workspace := t.TempDir()
 
 	tests := []struct {
-		name      string
-		apply     func(t *testing.T, p *Policy)
-		wantLabel string
+		name  string
+		apply func(t *testing.T, p *Policy)
+		// wantLabel and wantProtected name the rejected list and the
+		// protected directory the error must report; both empty means the
+		// policy must be accepted.
+		wantLabel     string
+		wantProtected string
 	}{
 		{
 			name: "read dir equal to home",
 			apply: func(_ *testing.T, p *Policy) {
 				p.AllowReadDirs = append(p.AllowReadDirs, home)
 			},
-			wantLabel: "allow_read",
+			wantLabel:     "allow_read",
+			wantProtected: filepath.Join(home, ".ssh"),
 		},
 		{
 			name: "write dir equal to gnupg",
 			apply: func(_ *testing.T, p *Policy) {
 				p.AllowRWDirs = append(p.AllowRWDirs, filepath.Join(home, ".gnupg"))
 			},
-			wantLabel: "allow_write",
+			wantLabel:     "allow_write",
+			wantProtected: filepath.Join(home, ".gnupg"),
 		},
 		{
 			name: "read dir that is a parent of pipelock config",
 			apply: func(_ *testing.T, p *Policy) {
 				p.AllowReadDirs = append(p.AllowReadDirs, filepath.Join(home, ".config"))
 			},
-			wantLabel: "allow_read",
+			wantLabel:     "allow_read",
+			wantProtected: filepath.Join(home, ".config", "pipelock"),
 		},
 		{
 			name: "read dir through symlink to ssh",
 			apply: func(t *testing.T, p *Policy) {
 				p.AllowReadDirs = append(p.AllowReadDirs, mustSymlink(t, filepath.Join(home, ".ssh"), filepath.Join(outside, "ssh-link")))
 			},
-			wantLabel: "allow_read",
+			wantLabel:     "allow_read",
+			wantProtected: filepath.Join(home, ".ssh"),
 		},
 		{
 			name: "read dir in sibling sharing the protected prefix",
@@ -239,10 +247,96 @@ func TestValidatePolicyRejectsAllowDirsCoveringProtectedDirs(t *testing.T) {
 				return
 			}
 			if err == nil {
-				t.Fatalf("ValidatePolicy() = nil, want %s rejected", tt.wantLabel)
+				t.Fatalf("ValidatePolicy() = nil, want %s rejected for covering %s", tt.wantLabel, tt.wantProtected)
 			}
-			if !strings.Contains(err.Error(), "sandbox "+tt.wantLabel+" ") || !strings.Contains(err.Error(), "covers protected directory") {
-				t.Fatalf("ValidatePolicy() = %v, want %s covers-protected error", err, tt.wantLabel)
+			want := fmt.Sprintf("covers protected directory %q", tt.wantProtected)
+			if !strings.Contains(err.Error(), "sandbox "+tt.wantLabel+" ") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ValidatePolicy() = %v, want %s error containing %s", err, tt.wantLabel, want)
+			}
+		})
+	}
+}
+
+// TestValidatePolicyResolvesProtectedDirsThroughSymlinkedHome points HOME at
+// a symlink, so the protected directories are only recognizable after they
+// are resolved the same way the allow entries are.
+func TestValidatePolicyResolvesProtectedDirsThroughSymlinkedHome(t *testing.T) {
+	realHome := t.TempDir()
+	for _, name := range protectedHomeNames {
+		mustMkdirAll(t, filepath.Join(realHome, name))
+	}
+	resolvedHome, err := filepath.EvalSymlinks(realHome)
+	if err != nil {
+		t.Fatalf("resolve test HOME: %v", err)
+	}
+	homeLink := mustSymlink(t, realHome, filepath.Join(t.TempDir(), "home-link"))
+	t.Setenv("HOME", homeLink)
+	workspace := t.TempDir()
+
+	tests := []struct {
+		name string
+		// what names the entry in the failure message.
+		what  string
+		apply func(t *testing.T, p *Policy)
+		// want is the error text required; empty means the policy must pass.
+		want string
+	}{
+		{
+			name: "write dir equal to gnupg through symlinked home",
+			what: ".gnupg",
+			apply: func(_ *testing.T, p *Policy) {
+				p.AllowRWDirs = append(p.AllowRWDirs, filepath.Join(homeLink, ".gnupg"))
+			},
+			want: fmt.Sprintf("sandbox allow_write %q covers protected directory %q", filepath.Join(resolvedHome, ".gnupg"), filepath.Join(resolvedHome, ".gnupg")),
+		},
+		{
+			name: "read dir equal to aws by its real path",
+			what: ".aws",
+			apply: func(_ *testing.T, p *Policy) {
+				p.AllowReadDirs = append(p.AllowReadDirs, filepath.Join(resolvedHome, ".aws"))
+			},
+			want: fmt.Sprintf("covers protected directory %q", filepath.Join(resolvedHome, ".aws")),
+		},
+		{
+			name: "read file inside ssh through symlinked home",
+			what: ".ssh/id_vendor",
+			apply: func(t *testing.T, p *Policy) {
+				p.AllowReadFiles = append(p.AllowReadFiles, mustWriteFile(t, filepath.Join(homeLink, ".ssh", "id_vendor")))
+			},
+			want: fmt.Sprintf("is inside protected directory %q", filepath.Join(resolvedHome, ".ssh")),
+		},
+		{
+			name: "write dir under symlinked home outside protected dirs",
+			what: "src/project",
+			apply: func(t *testing.T, p *Policy) {
+				p.AllowRWDirs = append(p.AllowRWDirs, mustMkdirAll(t, filepath.Join(homeLink, "src", "project")))
+			},
+		},
+		{
+			name: "read file directly in symlinked home",
+			what: ".vendorrc",
+			apply: func(t *testing.T, p *Policy) {
+				p.AllowReadFiles = append(p.AllowReadFiles, mustWriteFile(t, filepath.Join(homeLink, ".vendorrc")))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := Policy{Workspace: workspace, AllowRWDirs: []string{workspace}}
+			tt.apply(t, &p)
+			err := ValidatePolicy(p)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("ValidatePolicy() = %v: rejected %s reached through symlinked HOME, want nil", err, tt.what)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidatePolicy() = nil: accepted %s reached through symlinked HOME", tt.what)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ValidatePolicy() = %v, want error containing %s", err, tt.want)
 			}
 		})
 	}
@@ -337,7 +431,9 @@ func TestResolvePolicyPathsCanonicalizes(t *testing.T) {
 		t.Fatalf("resolve fixture dir: %v", err)
 	}
 	link := mustSymlink(t, realDir, filepath.Join(base, "link"))
-	missingDeny := filepath.Join(base, "gone", "..", "deny-missing")
+	// Built by concatenation, not filepath.Join, so the input really carries
+	// a ".." element and the cleaning is done by ResolvePolicyPaths.
+	missingDeny := base + "/gone/../deny-missing"
 
 	got, err := ResolvePolicyPaths(Policy{
 		Workspace:     link,

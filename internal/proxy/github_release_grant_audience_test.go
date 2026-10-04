@@ -29,20 +29,16 @@ const releaseGrantHost = "release-assets.githubusercontent.com"
 
 // releaseGrantJWT builds a structurally valid JWT at runtime.
 func releaseGrantJWT() string {
-	enc := base64.RawURLEncoding
-	sum := sha256.Sum256([]byte("release-grant-fixture"))
-	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." +
-		enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","nbf":1000,"exp":1300}`)) + "." +
-		enc.EncodeToString(sum[:])
+	return releaseGrantJWTForHost(releaseGrantHost, 300)
 }
 
-// releaseGrantJWTForHost builds a structurally valid JWT whose aud is host,
-// for the wrong-audience deny case.
-func releaseGrantJWTForHost(host string) string {
+// releaseGrantJWTForHost builds a structurally valid JWT with the given
+// audience and lifetime.
+func releaseGrantJWTForHost(host string, lifetimeSeconds int64) string {
 	enc := base64.RawURLEncoding
 	sum := sha256.Sum256([]byte("release-grant-fixture-" + host))
 	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." +
-		enc.EncodeToString([]byte(`{"aud":"`+host+`","iss":"github.com","path":"/asset","nbf":1000,"exp":1300}`)) + "." +
+		enc.EncodeToString([]byte(fmt.Sprintf(`{"aud":%q,"iss":"github.com","path":"/asset","nbf":1000,"exp":%d}`, host, 1000+lifetimeSeconds))) + "." +
 		enc.EncodeToString(sum[:])
 }
 
@@ -73,6 +69,8 @@ func TestInterceptTunnel_GitHubReleaseGrantJWT(t *testing.T) {
 		wantAllow bool
 	}{
 		{name: "query at release host", host: releaseGrantHost, path: "/asset/1?jwt=" + jwt, wantAllow: true},
+		{name: "one hour grant", host: releaseGrantHost, path: "/asset/1?jwt=" + releaseGrantJWTForHost(releaseGrantHost, 3600), wantAllow: true},
+		{name: "grant one second past cap", host: releaseGrantHost, path: "/asset/1?jwt=" + releaseGrantJWTForHost(releaseGrantHost, 3601)},
 		{name: "query at other host", host: "download.vendor.example", path: "/asset/1?jwt=" + jwt},
 		{name: "query at lookalike host", host: releaseGrantHost + ".evil.example", path: "/asset/1?jwt=" + jwt},
 		{name: "path at release host", host: releaseGrantHost, path: "/asset/" + jwt},
@@ -130,7 +128,7 @@ func TestInterceptTunnel_GitHubReleaseGrantJWT(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 
 			if !tc.wantAllow {
-				if resp.StatusCode == http.StatusOK || upstreamHits.Load() != 0 {
+				if resp.StatusCode != http.StatusForbidden || upstreamHits.Load() != 0 {
 					t.Fatalf("grant JWT reached the upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
 				}
 				return
@@ -218,7 +216,7 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect(t *testing.T) {
 // audience allow, so it blocks even at the release host; https reaches the
 // forward proxy as CONNECT, covered by the interception test above.
 func TestGitHubReleaseGrantJWT_RefusedBeforeDial(t *testing.T) {
-	jwt := releaseGrantJWT()
+	jwt := releaseGrantJWTForHost(releaseGrantHost, 3600)
 
 	t.Run("fetch", func(t *testing.T) {
 		cfg := config.Defaults()
@@ -313,6 +311,17 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 			wantAllow: true,
 		},
 		{
+			name:      "allow: one hour grant with SAS",
+			host:      releaseGrantHost,
+			query:     releaseGrantSASQuery(releaseGrantJWTForHost(releaseGrantHost, 3600), "intercept-hour-fixture"),
+			wantAllow: true,
+		},
+		{
+			name:  "deny: grant one second past cap with SAS",
+			host:  releaseGrantHost,
+			query: releaseGrantSASQuery(releaseGrantJWTForHost(releaseGrantHost, 3601), "intercept-over-cap-fixture"),
+		},
+		{
 			name: "deny: SAS without any jwt",
 			host: releaseGrantHost,
 			query: strings.Replace(
@@ -322,7 +331,7 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 			name: "deny: jwt issued for a different host",
 			host: releaseGrantHost,
 			query: strings.Replace(
-				releaseGrantSASQuery(jwt, "intercept-wrong-aud-fixture"), jwt, releaseGrantJWTForHost(otherHost), 1),
+				releaseGrantSASQuery(jwt, "intercept-wrong-aud-fixture"), jwt, releaseGrantJWTForHost(otherHost, 300), 1),
 		},
 		{
 			name:  "deny: SAS on a lookalike host",
@@ -380,7 +389,7 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 
 			if !tc.wantAllow {
-				if resp.StatusCode == http.StatusOK || upstreamHits.Load() != 0 {
+				if resp.StatusCode != http.StatusForbidden || upstreamHits.Load() != 0 {
 					t.Fatalf("SAS reached the upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
 				}
 				return
@@ -416,7 +425,7 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS_RequestBodyStaysBlocked(t *testin
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 
-	jwt := releaseGrantJWT()
+	jwt := releaseGrantJWTForHost(releaseGrantHost, 3600)
 	query := releaseGrantSASQuery(jwt, "body-sas-fixture")
 	body := `{"redirect":"https://` + releaseGrantHost + `/asset/1?` + query + `"}`
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
@@ -447,7 +456,7 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS_RequestBodyStaysBlocked(t *testin
 	})
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusOK || upstreamHits.Load() != 0 {
+	if resp.StatusCode != http.StatusForbidden || upstreamHits.Load() != 0 {
 		t.Fatalf("SAS in a request body reached the upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
 	}
 }
@@ -468,6 +477,21 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 			redirectHost: releaseGrantHost,
 			query:        func() string { return releaseGrantSASQuery(jwt, "fetch-allow-fixture") },
 			wantOK:       true,
+		},
+		{
+			name:         "release storage host, one hour grant with SAS",
+			redirectHost: releaseGrantHost,
+			query: func() string {
+				return releaseGrantSASQuery(releaseGrantJWTForHost(releaseGrantHost, 3600), "fetch-hour-fixture")
+			},
+			wantOK: true,
+		},
+		{
+			name:         "release storage host, grant one second past cap with SAS",
+			redirectHost: releaseGrantHost,
+			query: func() string {
+				return releaseGrantSASQuery(releaseGrantJWTForHost(releaseGrantHost, 3601), "fetch-over-cap-fixture")
+			},
 		},
 		{
 			name:         "other host, real SAS shape",

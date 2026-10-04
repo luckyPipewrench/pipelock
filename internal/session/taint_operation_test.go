@@ -60,11 +60,19 @@ func TestMCPMutationEvidencePrecedesReads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.tool+tt.args, func(t *testing.T) {
 			got := session.ClassifyMCPToolCallWithOptions(tt.tool, tt.args, nil, nil, session.ClassificationOptions{})
-			if got.Class != session.ActionClassPublish && got.Class != session.ActionClassWrite {
+			wantClass := session.ActionClassPublish
+			if tt.tool == "get_put" {
+				wantClass = session.ActionClassWrite
+			}
+			if got.Class != wantClass {
 				t.Fatalf("mutation lost: %+v", got)
 			}
 			decision := (session.PolicyMatrix{Profile: "strict"}).EvaluateWithOptions(session.TaintExternalUntrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{ClassificationConfident: got.Confident})
-			if got.Class == session.ActionClassPublish && decision.Decision != session.PolicyAsk {
+			wantDecision := session.PolicyAsk
+			if tt.tool == "get_put" {
+				wantDecision = session.PolicyAllow
+			}
+			if decision.Decision != wantDecision {
 				t.Fatalf("publication allowed: %+v", decision)
 			}
 		})
@@ -76,11 +84,19 @@ func TestMCPConservativeMutationEvidence(t *testing.T) {
 		for _, failSafe := range []bool{false, true} {
 			t.Run(name+map[bool]string{false: "/off", true: "/on"}[failSafe], func(t *testing.T) {
 				got := session.ClassifyMCPToolCallWithOptions(name, `{}`, nil, nil, session.ClassificationOptions{FailSafe: failSafe})
-				if got.Class != session.ActionClassPublish && got.Class != session.ActionClassWrite {
+				wantClass := session.ActionClassPublish
+				if name == "get_pull_put" {
+					wantClass = session.ActionClassWrite
+				}
+				if got.Class != wantClass {
 					t.Fatalf("mutation lost: %+v", got)
 				}
 				decision := (session.PolicyMatrix{Profile: "strict"}).EvaluateWithOptions(session.TaintExternalUntrusted, got.Class, got.Sensitivity, session.AuthorityUserBroad, session.PolicyEvaluateOptions{FailSafeClassification: failSafe, ClassificationConfident: got.Confident})
-				if got.Class == session.ActionClassPublish && decision.Decision != session.PolicyAsk {
+				wantDecision := session.PolicyAsk
+				if name == "get_pull_put" && !failSafe {
+					wantDecision = session.PolicyAllow
+				}
+				if decision.Decision != wantDecision {
 					t.Fatalf("publication allowed after taint: %+v", decision)
 				}
 			})

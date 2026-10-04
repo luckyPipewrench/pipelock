@@ -6,6 +6,7 @@ package recorder_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,6 +44,16 @@ func (d *changingReceiptDetail) MarshalJSON() ([]byte, error) {
 	d.calls++
 	if d.calls > 2 {
 		return []byte(`{"value":"test-sensitive-value"}`), nil
+	}
+	return []byte(`{"value":"safe"}`), nil
+}
+
+type failingReceiptDetail struct{ calls int }
+
+func (d *failingReceiptDetail) MarshalJSON() ([]byte, error) {
+	d.calls++
+	if d.calls > 1 {
+		return nil, errors.New("injected second marshal failure")
 	}
 	return []byte(`{"value":"safe"}`), nil
 }
@@ -256,6 +267,42 @@ func TestReceiptScanObserverCannotMutateAttestation(t *testing.T) {
 	}
 	if string(raw) != `{"value":"safe"}` {
 		t.Fatalf("recorded detail = %s, want scanned JSON", raw)
+	}
+}
+
+func TestReceiptScanRejectsBoundaryMarshalFailure(t *testing.T) {
+	var scans atomic.Int64
+	dir := t.TempDir()
+	r := newReceiptScanRecorder(t, dir, &scans)
+	detail := &failingReceiptDetail{}
+	scan, err := r.PreflightSignedReceiptDetail(detail)
+	if err != nil {
+		t.Fatalf("PreflightSignedReceiptDetail: %v", err)
+	}
+	err = r.RecordWithReceiptScan(receiptScanEntry(detail), &scan)
+	if err == nil || !strings.Contains(err.Error(), "marshal signed receipt detail at write boundary") {
+		t.Fatalf("boundary marshal error = %v", err)
+	}
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("DLP scans = %d, want one clean preflight", got)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	for _, path := range matches {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatalf("ReadEntries: %v", err)
+		}
+		for _, written := range entries {
+			if written.Type == "action_receipt" {
+				t.Fatal("receipt with unmarshalable final detail was persisted")
+			}
+		}
 	}
 }
 

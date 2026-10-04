@@ -88,7 +88,7 @@ func SetNoNewPrivs() error {
 // - Validates architecture is x86_64 (KILL on mismatch - prevents 32-bit ABI bypass)
 // - Kills the process on critical violations (kexec, kernel modules, io_uring)
 // - Applies argument-level filtering for clone, personality, and socket
-// - Allows a curated set of ~130 syscalls (Go + Python + Node.js compatible)
+// - Allows a curated syscall set (Go + Python + Node.js compatible)
 // - Returns EPERM for other blocked syscalls.
 func buildSeccompFilter(strict bool) []unix.SockFilter {
 	allow := allowedSyscalls()
@@ -315,6 +315,20 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_RENAMEAT, unix.SYS_RENAMEAT2,
 		unix.SYS_SYMLINKAT, unix.SYS_LINKAT,
 		unix.SYS_UMASK, unix.SYS_GETCWD, unix.SYS_CHDIR, unix.SYS_FCHDIR,
+
+		// Legacy path-based forms of the *at syscalls allowed above. glibc on
+		// x86_64 still issues several of these (access, mkdir, rmdir, rename,
+		// unlink, chmod, link, symlink) instead of their *at variants, so
+		// without them ordinary Python and Node file operations fail with
+		// EPERM. Landlock mediates the same path operations whichever syscall
+		// form requests them, so allowing a legacy form grants nothing its
+		// *at sibling does not already grant.
+		unix.SYS_ACCESS, unix.SYS_OPEN, unix.SYS_CREAT,
+		unix.SYS_STAT, unix.SYS_LSTAT, unix.SYS_GETDENTS,
+		unix.SYS_MKDIR, unix.SYS_RMDIR, unix.SYS_UNLINK, unix.SYS_RENAME,
+		unix.SYS_CHMOD, unix.SYS_CHOWN, unix.SYS_LCHOWN,
+		unix.SYS_LINK, unix.SYS_SYMLINK,
+		unix.SYS_EPOLL_CREATE,
 
 		// Network (SYS_SOCKET handled by socketConditional - AF_VSOCK blocked)
 		unix.SYS_SOCKETPAIR,

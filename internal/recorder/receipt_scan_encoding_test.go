@@ -129,7 +129,7 @@ func TestReceiptScanEncodedSecretMatrix(t *testing.T) {
 		{name: "env short fragment", fields: map[string]string{"rule_id": envSecret[4:15]}, wantReject: false},
 
 		// Seed phrase. The phrase sits inside prose, as it would in a free-form
-		// field. A phrase that alone fills a JSON string is the known gap below.
+		// field. A phrase that alone fills a JSON string is caught too.
 		{name: "seed literal", fields: map[string]string{"rule_id": "note " + seed + " end"}, wantReject: true},
 		{name: "seed base64", fields: map[string]string{"pattern": base64.StdEncoding.EncodeToString([]byte(seed))}, wantReject: true},
 		{name: "seed hex", fields: map[string]string{"pattern": hex.EncodeToString([]byte(seed))}, wantReject: true},
@@ -140,7 +140,7 @@ func TestReceiptScanEncodedSecretMatrix(t *testing.T) {
 		// Known gap: the JSON quote attaches to the first and last word, so a
 		// phrase that is the whole string value is one word short. Pinned so a
 		// fix flips this deliberately rather than silently.
-		{name: "seed alone in json string known gap", fields: map[string]string{"rule_id": seed}, wantReject: false},
+		{name: "seed alone in json string", fields: map[string]string{"rule_id": seed}, wantReject: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

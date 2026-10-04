@@ -76,7 +76,7 @@ jobs:
         id: pipelock
         # Keep wrapper behavior aligned with the installed release. In particular,
         # scan-diff exit code 2 means no verified result was produced.
-        uses: luckyPipewrench/pipelock@4c748ab986d611138ce202ab800b16eca6fb589f # v3.4.0
+        uses: luckyPipewrench/pipelock@ca05ed06f360f5aac5518ab6ea2b11d729b70bee # v3.5.0
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}

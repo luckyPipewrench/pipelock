@@ -215,7 +215,7 @@ jobs:
         # existing OSS tests too so those exercised paths reach the same report.
         # Upload failures remain telemetry failures; codecov/* gates coverage.
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: ./coverage-oss-${{ matrix.shard }}.out
           fail_ci_if_error: false
@@ -342,7 +342,7 @@ jobs:
         # fail_ci_if_error. Coverage is gated by the separate codecov/* status
         # checks, so a transient uploader hiccup must never red a green test job.
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: ./coverage-${{ matrix.shard }}.out
           fail_ci_if_error: false
@@ -438,7 +438,7 @@ jobs:
         # uploader-integrity hiccup must not red this job when coverage collection
         # itself succeeded.
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: ./coverage-subprocess.out
           fail_ci_if_error: false

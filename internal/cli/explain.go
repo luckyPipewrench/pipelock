@@ -205,6 +205,10 @@ var errExplainBlocked = errors.New("url blocked")
 
 var errExplainActionBlocked = errors.New("action blocked")
 
+// explainEnvScanSkippedNote is reported by the command, tool and file modes when
+// the config enables `dlp.scan_env`.
+const explainEnvScanSkippedNote = "environment-variable leak matching (`dlp.scan_env`) did not run: explain does not read the runtime's environment, so input containing one of its values can still be blocked at runtime as an Environment Variable Leak"
+
 func explainLoadConfig(path string) (*config.Config, string, error) {
 	if path == "" {
 		return config.Defaults(), explainConfigLabelDefaults, nil
@@ -230,7 +234,6 @@ func explainLoadSurfaceConfig(path string) (*config.Config, string, error) {
 			return nil, "", fmt.Errorf("config load error: %w", err)
 		}
 		cfg.ApplyDefaults()
-		cfg.DLP.ScanEnv = false
 		return cfg, path, nil
 	}
 
@@ -245,7 +248,6 @@ func explainLoadSurfaceConfig(path string) (*config.Config, string, error) {
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
-	cfg.DLP.ScanEnv = false
 
 	return cfg, explainConfigLabelDefaults, nil
 }
@@ -623,6 +625,9 @@ func explainResponseScanExemptNotes(cfg *config.Config, host string) []string {
 }
 
 func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, surface, blockedAction string, action decide.Action) (explainReport, error) {
+	// Bundle merging and offline-only overrides must not alter the caller's
+	// config or hide skipped checks on subsequent reports.
+	cfg = cfg.Clone()
 	report := explainReport{
 		Surface:       surface,
 		BlockedAction: blockedAction,
@@ -638,6 +643,15 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 	}
 	for _, w := range bundleResult.Warnings {
 		report.Notes = append(report.Notes, "rule bundle warning: "+w)
+	}
+
+	// Explain runs in its own process, not the hooked agent's, so the values
+	// env-leak matching would compare against are not the ones the runtime
+	// sees. The check is switched off here, and said so: otherwise ALLOWED
+	// reads as covering a check that never ran.
+	if cfg.DLP.ScanEnv {
+		cfg.DLP.ScanEnv = false
+		report.Notes = append(report.Notes, explainEnvScanSkippedNote)
 	}
 
 	sc, err := scanner.New(cfg)

@@ -27,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
@@ -4010,18 +4011,32 @@ func looksLikeOpaqueToken(seg string) bool {
 // incomplete — it misses HERMES_HOME, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, and
 // any other path-valued variable a deployment introduces.
 //
-// Unix-path-shaped only: a multi-component value beginning with "/" or "~/", or
-// a "/"-prefixed colon list (PATH, LD_LIBRARY_PATH). Windows drive paths are
-// not recognised; pipelock's agent-containment target is Linux. Slash-prefixed
-// opaque tokens are left in the matcher set, as are values containing '+' or '='
-// because those are common in encoded secrets.
+// Recognised shapes: a multi-component value beginning with "/" or "~/", a
+// "/"-prefixed colon list (PATH, LD_LIBRARY_PATH), or a conservative Windows
+// drive or UNC path (see isWindowsPathShapedValue). Slash-prefixed opaque tokens
+// are left in the matcher set, as are values containing '+' or '=' because those
+// are common in encoded secrets. Skipping a value is fail-open for a secret
+// shaped exactly like a qualifying path; the shapes stay narrow for that reason.
 func isPathShapedValue(value string) bool {
+	// Reject control bytes in the raw value before trimming, for every branch:
+	// trimming a leading tab or trailing newline must not turn a value that is
+	// not a clean path into an exempt one.
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
 	v := strings.TrimSpace(value)
 	if v == "" {
 		return false
 	}
 	if strings.ContainsAny(v, "+=") {
 		return false
+	}
+
+	// Checked before the colon-list branch, which rejects the drive colon.
+	if isWindowsPathShapedValue(value) {
+		return true
 	}
 
 	// Colon-separated list where every element is an absolute path
@@ -4052,6 +4067,64 @@ func isPathShapedValue(value string) bool {
 		return strings.Contains(strings.TrimPrefix(v, "/"), "/")
 	}
 	return false
+}
+
+// windowsPathRejectChars are rejected anywhere in a Windows path component:
+// the characters Microsoft's file-naming rules reserve (< > : " / | ? *; the
+// backslash is the separator) plus characters common in query strings and
+// encoded values but rare in an ordinary path (% & # ; + =).
+const windowsPathRejectChars = `<>:"/|?*%&#;+=`
+
+// Minimum component counts after the prefix. A shallow path ("C:\token" or
+// "\\host\share") stays scannable, matching the Unix branch's rule that a
+// single component after the root is treated as a possible token.
+const (
+	minWindowsDriveComponents = 2 // C:\dir\file
+	minWindowsUNCComponents   = 4 // \\server\share\dir\file
+)
+
+// isWindowsPathShapedValue reports whether v is an absolute Windows drive path
+// (C:\dir\file) or UNC path (\\server\share\dir\file) in a conservative
+// subset of what Windows accepts: backslash separators only, every component
+// non-empty, no "." or ".." component, no control characters, and none of
+// windowsPathRejectChars. That subset excludes drive-relative ("C:dir") and
+// root-relative ("\dir") forms, device and extended prefixes ("\\?\",
+// "\\.\"), mixed separators, extra colons, and lists. Spaces and non-ASCII
+// letters are allowed. Nothing is decoded or checked against the filesystem.
+func isWindowsPathShapedValue(v string) bool {
+	if !utf8.ValidString(v) {
+		return false
+	}
+	// Check the original value before trimming: whitespace controls must not
+	// turn a non-path secret into an exempt path.
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	v = strings.TrimSpace(v)
+	var rest string
+	minComponents := minWindowsDriveComponents
+	switch {
+	case len(v) >= 3 && v[1] == ':' && v[2] == '\\' &&
+		((v[0] >= 'A' && v[0] <= 'Z') || (v[0] >= 'a' && v[0] <= 'z')):
+		rest = v[3:]
+	case strings.HasPrefix(v, `\\`):
+		rest = v[2:]
+		minComponents = minWindowsUNCComponents
+	default:
+		return false
+	}
+	components := strings.Split(rest, `\`)
+	if len(components) < minComponents {
+		return false
+	}
+	for _, c := range components {
+		if c == "" || c == "." || c == ".." || strings.ContainsAny(c, windowsPathRejectChars) {
+			return false
+		}
+	}
+	return true
 }
 
 // extractEnvSecrets filters environment variables for likely secrets.

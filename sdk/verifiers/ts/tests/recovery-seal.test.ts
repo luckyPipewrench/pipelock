@@ -183,6 +183,37 @@ test("recovery binding rejects final-session, size, and competing-claim violatio
     assert.ok(baseUnlinked(foreignReport).includes(original.successor_session));
     assert.equal(baseHealthy(foreignReport), false);
 
+    // A valid signature cannot make a session_open with no payload acceptable.
+    const malformed = JSON.parse(firstLine) as Record<string, unknown>;
+    const malformedReceipt = malformed["detail"] as Receipt;
+    assert.ok(malformedReceipt.action_record?.session_control);
+    delete malformedReceipt.action_record.session_control.open;
+    const malformedDigest = createHash("sha256")
+      .update(canonicalizeActionRecord(malformedReceipt.action_record))
+      .digest();
+    malformedReceipt.signature = `ed25519:${Buffer.from(
+      await ed25519.signAsync(malformedDigest, seed),
+    ).toString("hex")}`;
+    malformed["hash"] = recorderEntryHash(JSON.stringify(malformed));
+    const malformedBytes = Buffer.from(JSON.stringify(malformed));
+    writeFileSync(join(dir, original.shard), malformedBytes);
+    writeFileSync(
+      join(dir, claimName),
+      await sign({
+        ...emptySeal,
+        shard_size: malformedBytes.length,
+        shard_sha256: sha256Hex(malformedBytes),
+      }),
+    );
+    const malformedReport = await verifyBase(dir, "proxy", opts);
+    assert.ok(malformedReport.findings.some((finding) => finding.kind === "invalid_recovery_seal"));
+    assert.equal(
+      malformedReport.chains.some((chain) => chain.recovery_seal !== undefined),
+      false,
+    );
+    assert.ok(baseUnlinked(malformedReport).includes(original.successor_session));
+    assert.equal(baseHealthy(malformedReport), false);
+
     // An empty complete prefix uses the observing key by contract; supplied
     // pins still govern the successor, while unpinned mode proves consistency.
     const torn = Buffer.from('{"v":');
@@ -312,6 +343,22 @@ test("standalone recovery signature verification rejects cross-base sessions", a
   );
 });
 
+test("standalone recovery signature verification rejects unknown protocol identifiers", async () => {
+  const original = decodeRecoverySeal(readFileSync(fixtureSealFile(), "utf8"));
+  const seed = createHash("sha256").update("pipelock-recovery-seal-conformance-v1").digest();
+  await verifyRecoverySealSignature(original);
+  for (const fields of [{ kind: "other" }, { version: 2 }]) {
+    const changed = { ...original, ...fields, signature: "" } as unknown as RecoverySeal;
+    const signature = Buffer.from(
+      await ed25519.signAsync(recoverySealSigningBytes(changed), seed),
+    ).toString("hex");
+    await assert.rejects(
+      verifyRecoverySealSignature({ ...changed, signature: `ed25519:${signature}` }),
+      /unsupported recovery seal kind or version/u,
+    );
+  }
+});
+
 test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity and fails closed on replay edits", async () => {
   const originalText = readFileSync(fixtureSealFile(), "utf8");
   const original = decodeRecoverySeal(originalText);
@@ -327,6 +374,7 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
   );
   const successor = report.chains.find((chain) => chain.session === original.successor_session);
   assert.ok(successor?.recovery_seal, "verified seal attaches to the bound successor");
+  assert.equal(successor.link_file, `chain-link-${original.predecessor_session}.json`);
   assert.ok(report.findings.some((finding) => finding.kind === "attested_discontinuity"));
   assert.equal(baseHealthy(report), false, "an attested discontinuity remains unhealthy");
   assert.equal(baseUnlinked(report).includes(original.successor_session), false);

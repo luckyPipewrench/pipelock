@@ -815,6 +815,9 @@ export function recoverySealSigningBytes(s: RecoverySeal): Uint8Array {
 }
 
 export async function verifyRecoverySealSignature(s: RecoverySeal): Promise<void> {
+  if (s.kind !== "recovery_seal" || s.version !== 1) {
+    throw new Error("unsupported recovery seal kind or version");
+  }
   if (blankAfterGoTrim(s.predecessor_session) || blankAfterGoTrim(s.successor_session)) {
     throw new Error("recovery seal sessions must be non-empty");
   }
@@ -1289,6 +1292,7 @@ export async function verifyBase(
       }
       await verifyRecoveryBinding(ix, seal, data, opts.trustedKeys);
       successor.chain.recovery_seal = seal;
+      successor.chain.link_file = lf.name;
       add(
         FindingAttestedDiscontinuity,
         seal.successor_session,

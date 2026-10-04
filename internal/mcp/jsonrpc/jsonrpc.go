@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -343,10 +344,11 @@ func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResu
 		}
 		switch val := v.(type) {
 		case string:
-			if mediaCandidate && isOpaqueMediaPayload(val) {
-				return
+			if mediaCandidate {
+				result = appendVisibleMediaField(result, val)
+			} else {
+				result = append(result, val)
 			}
-			result = append(result, val)
 		case []interface{}:
 			// An array under a media key is a list of payloads; each element
 			// decides for itself by shape.
@@ -378,25 +380,26 @@ func isOpaqueMCPMediaField(key string) bool {
 	}
 }
 
-// appendVisibleMediaField appends field when it is agent-visible text. Encoded
-// media payloads stay out of prompt and inbound DLP scanning.
+// appendVisibleMediaField appends visible text from a media candidate. Clean
+// encoded media stays out of text scans; suspicious decoded runs are scanned.
 func appendVisibleMediaField(texts []string, field string) []string {
-	if field != "" && !isOpaqueMediaPayload(field) {
-		return append(texts, field)
+	if field == "" {
+		return texts
 	}
-	return texts
+	opaque, printable := classifyMediaPayload(field)
+	if opaque {
+		return texts
+	}
+	if printable != "" {
+		return append(texts, printable)
+	}
+	return append(texts, field)
 }
 
 // minOpaqueMediaPayloadLen is the shortest candidate considered at all. It only
 // needs to cover the longest signature below, so it bounds work rather than
 // standing in for a judgement about what media looks like.
 const minOpaqueMediaPayloadLen = 16
-
-// maxOpaqueMediaDecodeChars caps how much of a candidate payload is decoded to
-// classify it. A container signature sits in the first bytes, so a prefix is
-// enough and the work stays bounded on a large attachment. The value is a
-// multiple of four so the prefix is a whole number of base64 quanta.
-const maxOpaqueMediaDecodeChars = 64
 
 // mediaSignatures are leading byte sequences published by binary container
 // formats an MCP image, audio or resource-blob field can carry. PNG and JPEG
@@ -423,13 +426,12 @@ var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 const pngIHDREnd = 33
 
 // minSmuggledTextRun is the shortest ASCII run after a media header that
-// means the payload is text wrapped in a forged container, not media. It
-// must fit in the bounded decode window after a PNG IHDR (48-33=15 bytes).
+// warrants text scanning. It is inspected across the whole bounded payload.
 const minSmuggledTextRun = 12
 
 // maxFtypBoxSize rejects an ISO-BMFF size field that cannot be a real ftyp
 // box. Brands plus the 8-byte header fit in tens of bytes; 256 is well above
-// any legitimate ftyp and still inside the decode prefix.
+// any legitimate ftyp.
 const maxFtypBoxSize = 256
 
 // riffForms are the RIFF container forms carried as media. The four-character
@@ -451,47 +453,69 @@ var riffForms = [][]byte{
 // and resource-blob fields as base64 strings, so a declared-base64 payload
 // carrying a real container is the form the exclusion was written for.
 //
-// Failure direction: everything this rejects is scanned as text, so the cost of
-// a wrong answer is extra scanning rather than skipped content. A
-// base64-encoded credential carries no container signature and is therefore
-// scanned. An unlisted or proprietary media format is also scanned, which can
-// produce scanner work or a false positive on binary noise; that is the
-// deliberate trade, because the opposite default is a silent bypass.
+// Failure direction: malformed, oversized, or unrecognized values are scanned
+// as raw text. A recognized container with printable runs scans those decoded
+// runs directly. A base64-encoded credential has no container signature and
+// is scanned. Unlisted media may still produce false positives on binary noise.
 func isOpaqueMediaPayload(s string) bool {
+	opaque, _ := classifyMediaPayload(s)
+	return opaque
+}
+
+// classifyMediaPayload returns decoded printable runs for suspicious media.
+// Callers scan those runs as plain text, so encoded text past the old prefix
+// window cannot be hidden without reintroducing false hits on binary base64.
+func classifyMediaPayload(s string) (bool, string) {
 	payload := s
 	if strings.HasPrefix(s, "data:") {
 		declared, ok := base64DataURLPayload(s)
 		if !ok {
 			// A data URL that does not declare base64, or is not a data URL at
 			// all beyond its prefix, carries visible text.
-			return false
+			return false, ""
 		}
 		payload = declared
 	}
+	if len(payload) > transport.MaxLineSize {
+		return false, ""
+	}
 	if !isBase64MediaRun(payload) {
-		return false
+		return false, ""
 	}
-	decoded, capped, ok := decodeMediaPrefix(payload)
+	decoded, ok := decodeMediaPayload(payload)
 	if !ok {
-		return false
-	}
-	return hasMediaSignature(decoded, capped)
-}
-
-// hasMediaSignature reports whether decoded leading bytes are a recognized
-// media container, not a magic prefix wrapping agent-visible text.
-func hasMediaSignature(decoded []byte, capped bool) bool {
-	// A truncated prefix cannot prove the unread tail is media. PNG/JPEG/GIF
-	// headers plus non-printable padding filled the window and hid a
-	// credential in the remaining base64. Fail closed and scan.
-	if capped {
-		return false
+		return false, ""
 	}
 	rest, ok := mediaPayloadAfterHeader(decoded)
 	if !ok {
-		return false
+		return false, ""
 	}
-	return !hasPrintableASCIIRun(rest, minSmuggledTextRun)
+	if hasPrintableASCIIRun(rest, minSmuggledTextRun) {
+		return false, printableASCIIRuns(rest, minSmuggledTextRun)
+	}
+	return true, ""
+}
+
+func printableASCIIRuns(b []byte, n int) string {
+	var out strings.Builder
+	start := -1
+	for i, c := range b {
+		if c >= 0x20 && c <= 0x7e {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 && i-start >= n {
+			out.Write(b[start:i])
+			out.WriteByte('\n')
+		}
+		start = -1
+	}
+	if start >= 0 && len(b)-start >= n {
+		out.Write(b[start:])
+	}
+	return out.String()
 }
 
 // mediaPayloadAfterHeader reports the bytes after a validated media header.
@@ -615,47 +639,33 @@ func isBase64MediaRun(s string) bool {
 	return chars >= minOpaqueMediaPayloadLen
 }
 
-// decodeMediaPrefix decodes a bounded leading portion of a base64 candidate.
-// It reports false when the candidate cannot be decoded, so an unreadable value
-// is scanned as text instead of being skipped.
-func decodeMediaPrefix(payload string) ([]byte, bool, bool) {
-	compact, capped := compactBase64Prefix(payload)
+// decodeMediaPayload decodes the complete candidate within the existing MCP
+// message limit. Oversized or malformed values remain visible for text scans.
+func decodeMediaPayload(payload string) ([]byte, bool) {
+	if len(payload) > transport.MaxLineSize {
+		return nil, false
+	}
+	compact := payload
+	if strings.ContainsAny(compact, "\r\n") {
+		var b strings.Builder
+		b.Grow(len(payload))
+		for i := 0; i < len(payload); i++ {
+			if payload[i] != '\r' && payload[i] != '\n' {
+				b.WriteByte(payload[i])
+			}
+		}
+		compact = b.String()
+	}
+	compact = strings.TrimRight(compact, "=")
 	enc := base64.RawStdEncoding
 	if strings.ContainsAny(compact, "-_") {
 		enc = base64.RawURLEncoding
 	}
 	decoded, err := enc.DecodeString(compact)
 	if err != nil || len(decoded) == 0 {
-		return nil, false, false
+		return nil, false
 	}
-	return decoded, capped, true
-}
-
-// compactBase64Prefix copies at most maxOpaqueMediaDecodeChars payload bits,
-// dropping MIME line wrapping as it goes, so a multi-megabyte attachment
-// never allocates a second full copy just to classify its first bytes.
-func compactBase64Prefix(payload string) (string, bool) {
-	var b strings.Builder
-	b.Grow(maxOpaqueMediaDecodeChars)
-	i := 0
-	for ; i < len(payload) && b.Len() < maxOpaqueMediaDecodeChars; i++ {
-		c := payload[i]
-		if c == '\r' || c == '\n' {
-			continue
-		}
-		b.WriteByte(c)
-	}
-	compact := strings.TrimRight(b.String(), "=")
-	capped := false
-	for ; i < len(payload); i++ {
-		c := payload[i]
-		if c == '\r' || c == '\n' || c == '=' {
-			continue
-		}
-		capped = true
-		break
-	}
-	return compact, capped
+	return decoded, true
 }
 
 // jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction

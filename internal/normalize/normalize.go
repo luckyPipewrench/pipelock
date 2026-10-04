@@ -571,6 +571,11 @@ func ForMatching(s string) string {
 // this function; the fragment buffer's concatenation invariant depends on
 // ForDLP staying in NFD.
 func matchingNormalize(s string, recompose bool) string {
+	// Printable ASCII survives every matching transform unchanged. Whitespace
+	// only maps Unicode characters, so both versioned profiles can use it.
+	if isPrintableASCII(s) {
+		return s
+	}
 	s = StripZeroWidth(s)
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)

@@ -93,9 +93,11 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		// GitHub release downloads redirect to this storage host with a signed
 		// grant in the URL query; the exact host is the whole audience.
 		"JWT Token": {"release-assets.githubusercontent.com"},
-		// The same redirect's Azure user-delegation SAS shares that exact host
-		// list; it is granted only beside a validated JWT Token grant for that
-		// host (see ReleaseGrantSAS in internal/scanner/credential_audience.go).
+		// The release redirect's Azure SAS shares that exact host list and is
+		// granted only beside a validated JWT for that host. Attestation
+		// bundle SAS uses the same carrier with a scanner-side account list
+		// (attestationBundleSASAllowed); it is not a second pattern host, so
+		// this set does not grow.
 		"Azure SAS Token": {"release-assets.githubusercontent.com"},
 	}
 	for name, hosts := range expected {

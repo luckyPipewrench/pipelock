@@ -245,9 +245,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// GitHub's release-asset redirect (github.com/.../releases/download/...)
 	// answers with a 302 to release-assets.githubusercontent.com carrying an
 	// Azure user-delegation SAS beside the release download grant JWT (see
-	// the "JWT Token" pattern below). The SAS audience reuses that exact host
-	// list and is granted only alongside a validated grant for that host; see
-	// releaseGrantSASAllowed in internal/scanner/credential_audience.go.
+	// the "JWT Token" pattern below). That SAS is granted only alongside a
+	// validated grant for that host (releaseGrantSASAllowed). GitHub's
+	// attestations API bundle_url is a different SAS with no JWT, on the
+	// exact storage accounts named in credential_audience.go
+	// (attestationBundleSASAllowed). The pattern host list stays the release
+	// host; the bundle accounts are not a second config audience.
 	// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-account-sas
 	{Name: "Azure SAS Token", Regex: `\bsig=(?:[A-Za-z0-9%]{43,}%3d\b|[A-Za-z0-9+/]{43}=)`, Severity: SeverityHigh, CredentialAudienceHosts: githubDownloadGrantAudienceHosts, CredentialAudienceCarrierMask: CredentialAudienceCarrierReleaseGrantSAS},
 

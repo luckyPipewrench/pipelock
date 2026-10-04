@@ -2841,7 +2841,6 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (r
 	if s.seedEnabled {
 		seedTargets := []dlpTarget{
 			{parsed.Path, "url_path", ""},
-			{decodedQuery, spanViewLabel("url_decoded", "url_query"), ""},
 		}
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, values := range parsed.Query() {
@@ -2853,6 +2852,10 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (r
 				}
 			}
 		}
+		// The whole decoded query follows the per-value targets. "=" and "&"
+		// are seed separators, so a phrase inside one value also matches here;
+		// trying values first reports the narrower value-level span.
+		seedTargets = append(seedTargets, dlpTarget{decodedQuery, spanViewLabel("url_decoded", "url_query"), ""})
 		// Ordered query-value concatenation with spaces: catches seed phrases
 		// split across params (e.g., ?w1=abandon&w2=abandon&...&w12=about).
 		// orderedQueryConcat joins without separators (for regex DLP), so we

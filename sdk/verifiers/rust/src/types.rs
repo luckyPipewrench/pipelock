@@ -211,6 +211,7 @@ pub struct ChainSetContinuity {
     /// the one chain it verifies.
     pub chain_count: usize,
     pub linked: Vec<ChainSetLink>,
+    pub discontinuities: Vec<ChainSetDiscontinuity>,
     pub unlinked: Vec<String>,
     pub findings: Vec<crate::chain_set::BaseFinding>,
 }
@@ -221,4 +222,12 @@ pub struct ChainSetLink {
     pub predecessor_session: String,
     pub predecessor_tail_seq: u64,
     pub trust: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChainSetDiscontinuity {
+    pub session: String,
+    pub predecessor_session: String,
+    pub shard: String,
+    pub damage_offset: u64,
 }

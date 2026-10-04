@@ -954,14 +954,13 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		{name: "character outside the alphabet", in: unpadded[:len(unpadded)-1] + "!", want: false},
 		// Shape passes but the length is not a whole number of base64 quanta,
 		// so the decode fails and the value is scanned rather than skipped.
-		// It must be inside the decode cap, since a longer payload is cut to a
-		// quanta boundary before decoding and would decode cleanly.
+		// An invalid final quantum remains unreadable after full decoding.
 		{name: "undecodable base64 length", in: unpadded[:61], want: false},
-		// Longer than the decode cap: the signature still sits in the prefix.
-		{name: "large media beyond the decode cap", in: base64.StdEncoding.EncodeToString(append(
+		// Clean media beyond the former prefix window is now fully inspected.
+		{name: "large media beyond the old prefix window", in: base64.StdEncoding.EncodeToString(append(
 			pngIHDRPrefix(),
-			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: false},
-		{name: "capped png prefix wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
+			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: true},
+		{name: "png header wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
 			append(pngIHDRPrefix(), bytes.Repeat([]byte{0x01}, 16)...),
 			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},
 	}
@@ -971,6 +970,18 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 				t.Fatalf("isOpaqueMediaPayload(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStructuredMediaScansDecodedPrintableTail(t *testing.T) {
+	key := "AKIA" + "Z7P6R5T4V3X2Y1W0"
+	media := append(append([]byte{}, pngIHDRPrefix()...), bytes.Repeat([]byte{0}, 128)...)
+	media = append(media, []byte(key)...)
+	encoded := base64.StdEncoding.EncodeToString(media)
+	result := ExtractVisibleStringsFromJSONResult(json.RawMessage(fmt.Sprintf(`{"data":%q}`, encoded)))
+	visible := strings.Join(result.Strings, " ")
+	if !strings.Contains(visible, key) || strings.Contains(visible, encoded) {
+		t.Fatalf("structured media visible text did not isolate decoded key: %q", visible)
 	}
 }
 

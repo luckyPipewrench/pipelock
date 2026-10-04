@@ -406,3 +406,36 @@ func TestPublishRecoverySealRequiresSuccessorOpen(t *testing.T) {
 		t.Fatal("sealed a recovery with no successor session_open")
 	}
 }
+
+func TestPublishRecoverySealRequiresValidSuccessorPrefix(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("corrupt_%t", corrupt), func(t *testing.T) {
+			dir, original, key := recoveryFixture(t)
+			claim := filepath.Join(dir, ChainLinkFileName(original.PredecessorSession))
+			if err := os.Remove(claim); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				entries, err := readSessionEntries(dir, original.SuccessorSession)
+				if err != nil {
+					t.Fatal(err)
+				}
+				entries[1].Hash = strings.Repeat("0", 64)
+				writeRecoveryStreamEntries(t, filepath.Join(dir, "evidence-"+original.SuccessorSession+"-0.jsonl"), entries, nil)
+			}
+			seal, err := publishRecoverySeal(linkRequest{dir: dir, self: original.SuccessorSession, privKey: key, now: time.Now().UTC()}, original.PredecessorSession)
+			if !corrupt {
+				if err != nil || seal == nil {
+					t.Fatalf("valid successor rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || seal != nil {
+				t.Fatalf("published invalid successor prefix: seal=%v err=%v", seal, err)
+			}
+			if _, err := os.Stat(claim); !os.IsNotExist(err) {
+				t.Fatalf("invalid successor consumed the claim slot: %v", err)
+			}
+		})
+	}
+}

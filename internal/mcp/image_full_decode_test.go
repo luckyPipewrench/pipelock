@@ -90,6 +90,7 @@ func TestMCPImageFullDecode(t *testing.T) {
 	}{
 		{name: "valid large PNG with encoded access ID shape", data: clean, wantClean: true},
 		{name: "hidden plaintext key after old decode window", data: base64.StdEncoding.EncodeToString(wrapped)},
+		{name: "hidden plaintext key in data URL", data: "data:image/png;base64," + base64.StdEncoding.EncodeToString(wrapped)},
 		{name: "key in sibling text", data: clean, sibling: key},
 		{name: "malformed base64", data: clean + "!" + key},
 	}
@@ -98,9 +99,6 @@ func TestMCPImageFullDecode(t *testing.T) {
 			verdict := ScanResponse(imageResponse(tc.data, tc.sibling), sc)
 			if verdict.Clean != tc.wantClean {
 				t.Fatalf("Clean = %v, want %v; DLP matches = %+v; error = %q", verdict.Clean, tc.wantClean, verdict.DLPMatches, verdict.Error)
-			}
-			if !tc.wantClean && len(verdict.DLPMatches) == 0 {
-				t.Fatalf("missing DLP finding: %+v", verdict)
 			}
 			if !tc.wantClean {
 				found := false

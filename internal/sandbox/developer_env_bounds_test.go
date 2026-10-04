@@ -121,6 +121,9 @@ func TestEncodeDeveloperEnvironmentBounds(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("encodeDeveloperEnvironment() = %v, want error containing %q", err, tt.wantErr)
 				}
+				if payload != nil {
+					t.Fatalf("encodeDeveloperEnvironment() returned a payload alongside an error")
+				}
 				return
 			}
 			if err != nil {
@@ -190,6 +193,9 @@ func TestDecodeDeveloperEnvironmentRejectsBadFraming(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("decodeDeveloperEnvironment() = %q, %v; want error containing %q", got, err, tt.wantErr)
+			}
+			if got != nil {
+				t.Fatalf("decodeDeveloperEnvironment() returned %q alongside an error", got)
 			}
 		})
 	}

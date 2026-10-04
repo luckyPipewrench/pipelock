@@ -923,10 +923,21 @@ var responseMatchSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
 // is configured, falls back to running all patterns. On clean 10KB content,
 // the pre-filter finds no candidates and zero regex patterns execute.
 func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
+	return matchPatternsPreFilteredFolded(pf, patterns, content, nil)
+}
+
+// matchPatternsPreFilteredFolded takes the per-view fold from fold when it is
+// non-nil, so passes that share a view fold it once.
+func matchPatternsPreFilteredFolded(pf *responsePreFilter, patterns []*compiledPattern, content string, fold func(string) string) []ResponseMatch {
 	if pf == nil {
 		return matchPatternsAgainst(patterns, content)
 	}
-	indices := pf.patternsToCheck(content)
+	var indices []int
+	if fold != nil {
+		indices = pf.patternsToCheckFolded(content, fold(content))
+	} else {
+		indices = pf.patternsToCheck(content)
+	}
 	if len(indices) == 0 {
 		return nil
 	}

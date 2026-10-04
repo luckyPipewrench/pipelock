@@ -55,7 +55,12 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 // be evaluated: keyword-matched candidates plus alwaysRun patterns.
 // Returns nil when no patterns need to run.
 func (pf *responsePreFilter) patternsToCheck(content string) []int {
-	folded := responseSimpleFold(content)
+	return pf.patternsToCheckFolded(content, responseSimpleFold(content))
+}
+
+// patternsToCheckFolded is patternsToCheck with folded already equal to
+// responseSimpleFold(content).
+func (pf *responsePreFilter) patternsToCheckFolded(content, folded string) []int {
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
 		if gate == nil || gate.matches(content, folded) {

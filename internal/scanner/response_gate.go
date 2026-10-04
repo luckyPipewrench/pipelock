@@ -229,10 +229,25 @@ func isASCII(value string) bool {
 
 // Canonicalize each Unicode simple-fold orbit. Go's regexp (?i) uses these
 // orbits, including Kelvin sign and long s; ToLower alone is insufficient.
+//
+// An ASCII byte's orbit minimum is its uppercase letter (the K and S orbits
+// add only larger, non-ASCII runes), and every other ASCII byte is alone in
+// its orbit, so ASCII bytes skip the orbit walk. Every other rune, including
+// invalid UTF-8 decoded as U+FFFD, takes the walk unchanged.
 func responseSimpleFold(value string) string {
 	var out strings.Builder
 	out.Grow(len(value))
-	for _, r := range value {
+	for i := 0; i < len(value); {
+		if c := value[i]; c < utf8.RuneSelf {
+			if 'a' <= c && c <= 'z' {
+				c -= 'a' - 'A'
+			}
+			out.WriteByte(c)
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		i += size
 		canonical := r
 		for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
 			if folded < canonical {

@@ -15,6 +15,11 @@ type responseMatchMemo struct {
 	views   map[string]map[responseNegativeKey]struct{}
 	bytes   int
 	entries int
+	// folds keeps responseSimpleFold of each view. The core and configured
+	// prefilters fold the same normalized views; the fold depends only on
+	// the view's bytes.
+	folds     map[string]string
+	foldBytes int
 }
 
 type responseNegativeKey struct {
@@ -75,7 +80,7 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 	if len(remaining) == 0 {
 		return nil
 	}
-	result := matchPatternsPreFiltered(remainingFilter, remaining, content)
+	result := matchPatternsPreFilteredFolded(remainingFilter, remaining, content, m.fold)
 	if len(result) != 0 {
 		return result
 	}
@@ -105,4 +110,22 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 		m.entries++
 	}
 	return nil
+}
+
+// fold returns responseSimpleFold(content), computing it once per view. Past
+// the view or byte bound it computes without retaining.
+func (m *responseMatchMemo) fold(content string) string {
+	if folded, ok := m.folds[content]; ok {
+		return folded
+	}
+	folded := responseSimpleFold(content)
+	if len(m.folds) >= responseMemoMaxViews || m.foldBytes+len(folded) > responseMemoMaxBytes {
+		return folded
+	}
+	if m.folds == nil {
+		m.folds = make(map[string]string)
+	}
+	m.folds[content] = folded
+	m.foldBytes += len(folded)
+	return folded
 }

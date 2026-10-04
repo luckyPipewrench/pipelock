@@ -230,13 +230,39 @@ jobs:
           HEAD_SHA: ${{ needs.admit.outputs.head_sha }}
           IDENTITY: ${{ needs.admit.outputs.correlation }}
           REVIEW_MODE: ${{ inputs.review_mode }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          REVIEW_STATE: ${{ needs.review.outputs.state }}
         run: |
           set -euo pipefail
           if [ -z "${COMMENT_ID}" ] || [ -z "${IDENTITY}" ]; then
             echo "pr-review phase=finalize status=no-claim"
             exit 0
           fi
-          body="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" --jq '.body')"
+          # Only known values reach the workflow commands below, so a stray
+          # newline cannot start a command of its own.
+          case "${REVIEW_RESULT:-}" in success|failure|cancelled|skipped) ;; *) REVIEW_RESULT=unreported ;; esac
+          case "${REVIEW_STATE:-}" in clean|findings|partial|inconclusive|failed|superseded) ;; *) REVIEW_STATE=unreported ;; esac
+          read_ok=false
+          for attempt in 1 2 3; do
+            if body="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" --jq '.body')"; then
+              read_ok=true
+              break
+            fi
+            if [ "${attempt}" -lt 3 ]; then sleep 5; fi
+          done
+          # A review job that succeeded has already published its verdict, so an
+          # unreadable comment is only a warning there. Any other review result
+          # may have left the comment reading running, which blocks reruns, so
+          # that stays a failure. The edit below stays fatal either way: it runs
+          # only while the comment still reads running, when nothing was published.
+          if [ "${read_ok}" != true ]; then
+            if [ "${REVIEW_RESULT}" = success ]; then
+              echo "::warning title=pr-review finalize::could not read the status comment; the review job succeeded, so its verdict stands and the comment was left unchanged (state ${REVIEW_STATE})"
+              exit 0
+            fi
+            echo "::error title=pr-review finalize::could not read the status comment, so it may still read running (review job ${REVIEW_RESULT}). Reruns stay blocked until the claim is 105 minutes old (the stale-claim timeout) or the comment is deleted."
+            exit 1
+          fi
           # Both conditions matter. The state check leaves a completed review
           # alone, and the identity check makes this edit only ever land on the
           # comment this run claimed, never on a newer review's.

@@ -1808,7 +1808,8 @@ class JudgeContextAddressingTest(OfflineReviewTestCase):
 
 
 class FinalizerIndependenceTest(OfflineReviewTestCase):
-    def _run_finalizer(self, body: str, mode: str) -> str:
+    def _finalize(self, body: str, mode: str, **settings: str) -> tuple[subprocess.CompletedProcess, str, int, list[str]]:
+        """Run the workflow's finalize script; return the process, its posted edit, read count and sleeps."""
         workflow = load_yaml(REUSABLE_WORKFLOW)
         script = workflow["jobs"]["finalize"]["steps"][0]["run"]
         identity = "a" * 12 + ":" + "b" * 12 + ":" + "c" * 12 + ":" + pr_review.RUBRIC_VERSION
@@ -1828,13 +1829,18 @@ if [[ " $* " == *" --method PATCH "* ]]; then
   done
   exit 0
 fi
+echo x >> "$FAKE_GETS"
+if [ "$(wc -l < "$FAKE_GETS")" -le "${FAKE_GET_FAILURES:-0}" ]; then exit 1; fi
 printf '%s' "$FAKE_BODY"
 """,
                 encoding="utf-8",
             )
-            fake_gh.chmod(0o700)
+            # Logged, not slept: the retry's pacing is checked without the wait.
+            (root / "sleep").write_text('#!/bin/sh\necho "$*" >> "$FAKE_SLEEPS"\n', encoding="utf-8")
+            for tool in (fake_gh, root / "sleep"):
+                tool.chmod(0o700)
             environment = {
-                **os.environ,
+                **{key: value for key, value in os.environ.items() if key not in {"REVIEW_RESULT", "REVIEW_STATE"}},
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "GH_TOKEN": "fake",
                 "REPO": "owner/repo",
@@ -1845,9 +1851,61 @@ printf '%s' "$FAKE_BODY"
                 "REVIEW_MODE": mode,
                 "FAKE_BODY": running,
                 "FAKE_CAPTURE": str(capture),
+                "FAKE_GETS": str(root / "gets"),
+                "FAKE_SLEEPS": str(root / "sleeps"),
+                **settings,
             }
-            subprocess.run(["bash", "-c", script], check=True, env=environment, capture_output=True, text=True)
-            return capture.read_text(encoding="utf-8")
+            run = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+            gets, sleeps = (
+                (root / name).read_text().splitlines() if (root / name).exists() else [] for name in ("gets", "sleeps")
+            )
+            return run, capture.read_text(encoding="utf-8") if capture.exists() else "", len(gets), sleeps
+
+    def _run_finalizer(self, body: str, mode: str) -> str:
+        run, posted, _, _ = self._finalize(body, mode)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return posted
+
+    def test_an_unreadable_comment_fails_finalize_only_when_the_review_did_not_succeed(self) -> None:
+        # A successful review job already published its verdict. Any other
+        # result may have left the claim reading running, which blocks reruns.
+        warning = "::warning title=pr-review finalize::could not read the status comment; the review job succeeded"
+        error = "::error title=pr-review finalize::could not read the status comment, so it may still read running"
+        for result in ("success", "failure", "cancelled", "skipped"):
+            with self.subTest(review=result):
+                run, posted, gets, sleeps = self._finalize(
+                    "body", "default", FAKE_GET_FAILURES="3", REVIEW_RESULT=result, REVIEW_STATE="clean"
+                )
+                self.assertEqual(run.returncode, 0 if result == "success" else 1, run.stdout + run.stderr)
+                self.assertIn(f"{warning}, so its verdict stands" if result == "success" else f"{error} (review job {result})", run.stdout)
+                self.assertNotIn("::error" if result == "success" else "::warning", run.stdout)
+                self.assertEqual((gets, sleeps, posted), (3, ["5", "5"], ""), "three paced reads, and no edit")
+                if result != "success":
+                    self.assertIn(f"the claim is {pr_review.STALE_RUNNING_MINUTES} minutes old", run.stdout)
+
+    def test_a_transient_read_failure_is_retried_and_the_claim_closed(self) -> None:
+        run, posted, gets, sleeps = self._finalize("body", "default", FAKE_GET_FAILURES="1", REVIEW_RESULT="cancelled")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        # A read that succeeded ends the loop; another try could fail and blank the body.
+        self.assertEqual((gets, sleeps), (2, ["5"]))
+        self.assertEqual(pr_review.parse_status_marker(posted)["state"], "failed")
+
+    def test_unknown_review_values_are_reported_as_unreported(self) -> None:
+        # Values reach workflow commands, so a newline must not start one.
+        known = ("clean", "findings", "partial", "inconclusive", "failed", "superseded")
+        for result, state, code, text in (
+            *(("success", state, 0, f"(state {state})") for state in known),
+            ("success", "clean\n::error::injected", 0, "(state unreported)"),
+            ("success", "already-running", 0, "(state unreported)"),
+            ("success\n::error::injected", "clean", 1, "(review job unreported)"),
+            (None, None, 1, "(review job unreported)"),
+        ):
+            values = {"REVIEW_RESULT": result, "REVIEW_STATE": state} if result else {}
+            with self.subTest(result=result, state=state):
+                run, _, _, _ = self._finalize("body", "default", FAKE_GET_FAILURES="3", **values)
+                self.assertEqual(run.returncode, code, run.stdout + run.stderr)
+                self.assertIn(text, run.stdout)
+                self.assertNotIn("::error::injected", run.stdout + run.stderr)
 
     def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
         # A failed checkout is one of the cases the finalizer exists to survive,

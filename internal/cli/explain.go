@@ -434,6 +434,9 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 	report.Scanner = result.Scanner
 	report.Layer = result.Scanner
 	report.Reason = result.Reason
+	if strings.Contains(result.Reason, "outside its validity window") {
+		report.Notes = append(report.Notes, "The grant allowance is withheld because its validity window does not include the current host clock. URL explanations use the current clock, so a URL from an earlier log may have expired; check the host clock or obtain a current URL.")
+	}
 	report.Score = result.Score
 	report.Host = explainHost(rawURL)
 	report.TargetView = explainTargetView(result, rawURL)

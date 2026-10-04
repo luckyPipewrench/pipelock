@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -26,6 +27,13 @@ import (
 )
 
 const releaseGrantHost = "release-assets.githubusercontent.com"
+
+// The default release grant fixture is valid from 1000 to 1300. These clock
+// values are an hour outside that window, well past the scanner's leeway.
+const (
+	releaseGrantExpiredNow = 1300 + 3600
+	releaseGrantFutureNow  = 1000 - 3600
+)
 
 // releaseGrantJWT builds a structurally valid JWT at runtime.
 func releaseGrantJWT() string {
@@ -38,7 +46,7 @@ func releaseGrantJWTForHost(host string, lifetimeSeconds int64) string {
 	enc := base64.RawURLEncoding
 	sum := sha256.Sum256([]byte("release-grant-fixture-" + host))
 	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." +
-		enc.EncodeToString([]byte(fmt.Sprintf(`{"aud":%q,"iss":"github.com","path":"/asset","nbf":1000,"exp":%d}`, host, 1000+lifetimeSeconds))) + "." +
+		enc.EncodeToString([]byte(fmt.Sprintf(`{"aud":%q,"iss":"github.com","path":"releaseassetproduction.blob.core.windows.net","nbf":1000,"exp":%d}`, host, 1000+lifetimeSeconds))) + "." +
 		enc.EncodeToString(sum[:])
 }
 
@@ -62,12 +70,15 @@ func releaseGrantSASQuery(jwt, sigSeed string) string {
 func TestInterceptTunnel_GitHubReleaseGrantJWT(t *testing.T) {
 	jwt := releaseGrantJWT()
 	for _, tc := range []struct {
+		now       int64
 		name      string
 		host      string
 		path      string
 		header    string
 		wantAllow bool
 	}{
+		{name: "expired validity window", host: releaseGrantHost, path: "/asset/1?jwt=" + jwt, now: releaseGrantExpiredNow},
+		{name: "future validity window", host: releaseGrantHost, path: "/asset/1?jwt=" + jwt, now: releaseGrantFutureNow},
 		{name: "query at release host", host: releaseGrantHost, path: "/asset/1?jwt=" + jwt, wantAllow: true},
 		{name: "one hour grant", host: releaseGrantHost, path: "/asset/1?jwt=" + releaseGrantJWTForHost(releaseGrantHost, 3600), wantAllow: true},
 		{name: "grant one second past cap", host: releaseGrantHost, path: "/asset/1?jwt=" + releaseGrantJWTForHost(releaseGrantHost, 3601)},
@@ -95,8 +106,11 @@ func TestInterceptTunnel_GitHubReleaseGrantJWT(t *testing.T) {
 			cfg.RequestBodyScanning.Action = config.ActionBlock
 			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 			cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
-			sc := scanner.MustNew(cfg)
-			t.Cleanup(sc.Close)
+			now := int64(1100)
+			if tc.now != 0 {
+				now = tc.now
+			}
+			sc := releaseGrantScanner(t, cfg, time.Unix(now, 0))
 
 			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+tc.host+":"+port+tc.path, nil)
 			if tc.header != "" {
@@ -174,7 +188,7 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect(t *testing.T) {
 			cfg.Internal = nil
 			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
-			sc := scanner.MustNew(cfg)
+			sc := releaseGrantScanner(t, cfg, time.Unix(1100, 0))
 			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
@@ -222,7 +236,7 @@ func TestGitHubReleaseGrantJWT_RefusedBeforeDial(t *testing.T) {
 		cfg := config.Defaults()
 		cfg.FetchProxy.TimeoutSeconds = 5
 		cfg.Internal = nil
-		sc := scanner.MustNew(cfg)
+		sc := releaseGrantScanner(t, cfg, time.Unix(1100, 0))
 		p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 		if err != nil {
 			t.Fatalf("proxy.New: %v", err)
@@ -299,11 +313,15 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 	jwt := releaseGrantJWT()
 	otherHost := "download.vendor.example"
 	for _, tc := range []struct {
+		now       int64
 		name      string
 		host      string
 		query     string
 		wantAllow bool
 	}{
+		{name: "expired grant validity window", host: releaseGrantHost, query: releaseGrantSASQuery(jwt, "expired-window"), now: releaseGrantExpiredNow},
+		{name: "future grant validity window", host: releaseGrantHost, query: releaseGrantSASQuery(jwt, "future-window"), now: releaseGrantFutureNow},
+		{name: "expired SAS validity window", host: releaseGrantHost, query: strings.Replace(releaseGrantSASQuery(jwt, "sas-expiry-window"), "se=2026-09-30T00%3A37%3A09Z", "se=1970-01-01T00%3A00%3A00Z", 1)},
 		{
 			name:      "allow: real redirect shape",
 			host:      releaseGrantHost,
@@ -358,8 +376,11 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SplitHostPort: %v", err)
 			}
-			sc := scanner.MustNew(cfg)
-			t.Cleanup(sc.Close)
+			now := int64(1100)
+			if tc.now != 0 {
+				now = tc.now
+			}
+			sc := releaseGrantScanner(t, cfg, time.Unix(now, 0))
 
 			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				"https://"+tc.host+":"+port+"/asset/1?"+tc.query, nil)
@@ -422,8 +443,7 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS_RequestBodyStaysBlocked(t *testin
 	}
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
-	sc := scanner.MustNew(cfg)
-	t.Cleanup(sc.Close)
+	sc := releaseGrantScanner(t, cfg, time.Unix(1100, 0))
 
 	jwt := releaseGrantJWTForHost(releaseGrantHost, 3600)
 	query := releaseGrantSASQuery(jwt, "body-sas-fixture")
@@ -467,11 +487,17 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS_RequestBodyStaysBlocked(t *testin
 func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 	jwt := releaseGrantJWT()
 	for _, tc := range []struct {
+		now          int64
 		name         string
 		redirectHost string
 		query        func() string
 		wantOK       bool
 	}{
+		{name: "expired grant validity window", redirectHost: releaseGrantHost, query: func() string { return releaseGrantSASQuery(jwt, "expired-window") }, now: releaseGrantExpiredNow},
+		{name: "future grant validity window", redirectHost: releaseGrantHost, query: func() string { return releaseGrantSASQuery(jwt, "future-window") }, now: releaseGrantFutureNow},
+		{name: "expired SAS validity window", redirectHost: releaseGrantHost, query: func() string {
+			return strings.Replace(releaseGrantSASQuery(jwt, "sas-expiry-window"), "se=2026-09-30T00%3A37%3A09Z", "se=1970-01-01T00%3A00%3A00Z", 1)
+		}},
 		{
 			name:         "release storage host, real SAS shape",
 			redirectHost: releaseGrantHost,
@@ -524,7 +550,11 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 			cfg.Internal = nil
 			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
-			sc := scanner.MustNew(cfg)
+			now := int64(1100)
+			if tc.now != 0 {
+				now = tc.now
+			}
+			sc := releaseGrantScanner(t, cfg, time.Unix(now, 0))
 			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
 			if err != nil {
 				t.Fatalf("proxy.New: %v", err)
@@ -559,4 +589,14 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 			}
 		})
 	}
+}
+
+func releaseGrantScanner(t *testing.T, cfg *config.Config, now time.Time) *scanner.Scanner {
+	t.Helper()
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sc.Close)
+	return sc
 }

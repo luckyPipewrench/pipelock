@@ -412,6 +412,13 @@ func isQueryEntropyReason(reason string) bool {
 }
 
 func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
+	if label == ScannerDLP && strings.Contains(reason, "; GitHub ") && strings.Contains(reason, "outside its validity window") {
+		return RemediationGuidance{
+			OperatorKnob: "Check the host clock and obtain a current GitHub URL. The grant validity window is required and is not extended by a DLP pattern exemption.",
+			Immutable:    true,
+			AgentReason:  "Request blocked: the GitHub grant is outside its validity window.",
+		}, true
+	}
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
 	defer func() {

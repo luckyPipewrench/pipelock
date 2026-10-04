@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -37,10 +38,10 @@ func seccompFilterSupportedByBuild() bool {
 // process to a safe set of syscalls. Dangerous syscalls (ptrace, mount,
 // io_uring, kernel module loading, etc.) are blocked.
 //
-// MUST be called after PR_SET_NO_NEW_PRIVS. The filter is permanent and
-// inherited by all children (fork + exec).
-// ApplySeccomp installs the seccomp BPF filter. In strict mode, clone3 is
-// blocked entirely (ENOSYS) since BPF cannot inspect its pointer argument
+// Sets PR_SET_NO_NEW_PRIVS on the installing OS thread before installing the
+// filter. The filter is permanent and inherited by all children (fork + exec).
+// In strict mode, clone3 is blocked entirely (ENOSYS) since BPF cannot inspect
+// its pointer argument
 // for CLONE_NEW* flags. ENOSYS lets libc retry with the argument-filtered clone
 // syscall; EPERM prevents that compatibility fallback and breaks pthreads.
 func ApplySeccomp(strict ...bool) (LayerStatus, error) {
@@ -52,6 +53,16 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	prog := unix.SockFprog{
 		Len:    uint16(len(filter)), //nolint:gosec // G115: filter length is always < 4096 instructions
 		Filter: &filter[0],
+	}
+
+	// no_new_privs is per-thread. A caller's earlier SetNoNewPrivs can belong
+	// to a different runtime thread after goroutine migration; TSYNC only
+	// synchronizes the filter after the installing thread passes this check.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := SetNoNewPrivs(); err != nil {
+		status.Reason = fmt.Sprintf("no_new_privs failed: %v", err)
+		return status, fmt.Errorf("setting no_new_privs before seccomp filter: %w", err)
 	}
 
 	// Install the BPF filter. Requires no_new_privs already set.
@@ -77,9 +88,10 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	return status, nil
 }
 
-// SetNoNewPrivs sets the PR_SET_NO_NEW_PRIVS flag, which is required
-// before installing a seccomp filter without CAP_SYS_ADMIN. This is
-// permanent and prevents privilege escalation via suid/sgid binaries.
+// SetNoNewPrivs sets PR_SET_NO_NEW_PRIVS on the calling OS thread. The flag is
+// permanent and prevents privilege escalation via suid/sgid binaries. Callers
+// that need it for a later syscall must stay pinned to that thread; ApplySeccomp
+// sets its own prerequisite while pinned rather than relying on an earlier call.
 func SetNoNewPrivs() error {
 	return unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
 }

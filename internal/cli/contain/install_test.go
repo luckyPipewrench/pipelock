@@ -576,6 +576,9 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	}
 
 	enabledTools := map[string]bool{"claude": true}
+	env.toolCanExecute = func(path string) bool {
+		return filepath.Dir(path) == "/usr/local/bin" && enabledTools[filepath.Base(path)]
+	}
 	origStat := env.stat
 	env.stat = func(path string) (os.FileInfo, error) {
 		if path == env.nftPath {
@@ -586,10 +589,8 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 				if path != filepath.Join(dir, tool) {
 					continue
 				}
-				// A real tool lives in a directory that exists; only the
-				// system dir here, since agentCanExecute stats every ancestor.
 				if enabledTools[tool] && dir == "/usr/local/bin" {
-					return origStat(env.pipelockBinary)
+					return fakeFileInfo{mode: 0o755}, nil
 				}
 				return nil, os.ErrNotExist
 			}

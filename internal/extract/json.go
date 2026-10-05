@@ -22,7 +22,12 @@ import (
 // maxExtractDepth bounds recursion depth when extracting strings from JSON.
 // Matches the limit used by jsonrpc.ExtractStringsFromJSON. Prevents stack
 // overflow from deeply-nested payloads crafted by malicious agents.
-const maxExtractDepth = 64
+const maxExtractDepth = MaxExtractDepth
+
+// MaxExtractDepth is the nesting bound used by JSON string extraction.
+// Field-aware scanners counted from the same root use this bound so they
+// inspect every depth admitted by the fail-closed extraction pass.
+const MaxExtractDepth = 64
 
 // DefaultJSONLeaf limits are the shared CEE bounds for JSON value partitioning.
 // Transport-specific stream names may add tighter limits, but they must not

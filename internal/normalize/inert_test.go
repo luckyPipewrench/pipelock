@@ -115,9 +115,6 @@ func TestInertPairsMatchFullPipeline(t *testing.T) {
 	t.Logf("compared %d inert pairs", pairs)
 }
 
-// TestInertEveryScalarMatchesFullPipeline puts every Unicode scalar next to
-// inert neighbours, combining marks and invalid bytes, so a misclassified or
-// fallback scalar is exercised in context.
 // TestInertNextToEveryScalarBelowLimit surrounds every scalar below the
 // table limit, and a set of composing scalars above it, with each inert
 // scalar on both sides. The neighbour set is independent of the table under
@@ -155,6 +152,9 @@ func TestInertNextToEveryScalarBelowLimit(t *testing.T) {
 	t.Logf("compared %d inert scalars against %d neighbours", len(inerts), len(others))
 }
 
+// TestInertEveryScalarMatchesFullPipeline puts every Unicode scalar next to
+// inert neighbours, combining marks and invalid bytes, so a misclassified or
+// fallback scalar is exercised in context.
 func TestInertEveryScalarMatchesFullPipeline(t *testing.T) {
 	if testing.Short() {
 		t.Skip("exhaustive scalar sweep")

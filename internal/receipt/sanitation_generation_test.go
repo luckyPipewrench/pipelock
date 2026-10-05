@@ -148,8 +148,22 @@ func TestEmitterSanitationSignedParity(t *testing.T) {
 		if err := em.EmitDurable(EmitOpts{ActionID: "parity-open", Verdict: config.ActionAllow, Transport: sessionControlTransport, Target: sessionOpenTarget, SessionControl: &SessionControl{Kind: SessionControlOpen, Open: &SessionOpen{OpenNonce: strings.Repeat("b", 32)}}}); err != nil {
 			t.Fatal(err)
 		}
-		for i, target := range []string{"https://api.vendor.example/clean?q=ordinary", "https://api.vendor.example/query?token=" + "ghp_" + strings.Repeat("A", 36), "https://api.vendor.example/encoded?q=%67%68%70%5f" + strings.Repeat("A", 36), "opaque-target"} {
-			opts := EmitOpts{ActionID: fmt.Sprintf("parity-%d", i), Target: target, Pattern: "ghp_" + strings.Repeat("B", 36), Method: "GET", Transport: "intercept", Verdict: config.ActionAllow}
+		targetToken := "ghp_" + strings.Repeat("A", 36)
+		encodedTargetToken := "%67%68%70%5f" + strings.Repeat("A", 36)
+		patternToken := "ghp_" + strings.Repeat("B", 36)
+		targets := []string{
+			"https://api.vendor.example/clean?q=ordinary",
+			"https://api.vendor.example/query?token=" + targetToken,
+			"https://api.vendor.example/encoded?q=" + encodedTargetToken,
+			"opaque-target",
+		}
+		for _, fixture := range []string{targets[1], targets[2], patternToken} {
+			if sc.ScanTextForDLP(context.Background(), fixture).Clean {
+				t.Fatalf("DLP did not match fixture %q", fixture)
+			}
+		}
+		for i, target := range targets {
+			opts := EmitOpts{ActionID: fmt.Sprintf("parity-%d", i), Target: target, Pattern: patternToken, Method: "GET", Transport: "intercept", Verdict: config.ActionAllow}
 			if err := em.EmitDurable(opts); err != nil {
 				t.Fatal(err)
 			}
@@ -158,6 +172,13 @@ func TestEmitterSanitationSignedParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		rs := readAllReceiptsFromDir(t, dir, pub)
+		for _, r := range rs {
+			for _, secret := range []string{targetToken, encodedTargetToken, patternToken} {
+				if strings.Contains(r.ActionRecord.Target, secret) || strings.Contains(r.ActionRecord.Pattern, secret) {
+					t.Fatalf("signed receipt %q retains DLP fixture %q", r.ActionRecord.ActionID, secret)
+				}
+			}
+		}
 		if v := VerifyChain(rs, hex.EncodeToString(pub)); !v.Valid {
 			t.Fatal(v)
 		}

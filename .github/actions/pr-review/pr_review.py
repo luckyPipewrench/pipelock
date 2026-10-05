@@ -1718,13 +1718,21 @@ def finding_fingerprint(finding: Finding) -> str:
     return hashlib.sha256(f"{path}\x00{finding.severity}\x00{title.lower()}".encode()).hexdigest()[:12]
 
 
-def notice_marker(kind: str, correlation: str, mode: str) -> str:
+def notice_marker(kind: str, correlation: str, mode: str, run: str = "") -> str:
     """Identify a notice so the same one is never posted twice.
 
     Deliberately a different marker from the terminal status marker, so a
-    notice can never be mistaken for a review result.
+    notice can never be mistaken for a review result. Without `run` this is the
+    key a repeat is recognized by; a posted notice also names the run that
+    posted it, so confirming a lost reply cannot mistake another run's notice
+    for this one.
     """
-    return f"<!-- {NOTICE_MARKER} kind={kind} identity={correlation} mode={mode} -->"
+    return f"<!-- {NOTICE_MARKER} kind={kind} identity={correlation} mode={mode}{f' run={run}' if run else ''} -->"
+
+
+def notice_key(marker: str) -> str:
+    """A notice marker without the run that posted it, for repeat suppression."""
+    return re.sub(r" run=[0-9a-f]{32} -->$", " -->", marker)
 
 
 def create_notice_once(
@@ -1748,10 +1756,11 @@ def create_notice_once(
     the silence of not repeating an answer the pull request already carries.
     """
     marker = notice_marker(kind, binding.correlation, mode)
-    if marker in existing:
+    if any(notice_key(notice) == marker for notice in existing):
         log_phase("notice-suppressed", status=kind, correlation=binding.correlation)
         return
-    create_published_comment(repo, pr_number, token, f"{message}\n\n{marker}", binding.correlation)
+    posted = notice_marker(kind, binding.correlation, mode, uuid.uuid4().hex)
+    create_published_comment(repo, pr_number, token, f"{message}\n\n{posted}", binding.correlation)
 
 
 def model_binding(mode: str) -> str:
@@ -3467,41 +3476,42 @@ def publish_scan_failure(
     the finalize job to close and no second comment to reconcile. A `failed`
     marker never counts as a finished review, so it does not block a retry. A
     failure to post propagates: nothing was published, which is a setup failure.
-    A timeout or 5xx is the exception, checked the way a lost update reply is.
+    A lost reply is confirmed the way create_published_comment confirms one.
     """
     progress = ReviewProgress(fetch_failed=True, incomplete_reasons=[SCAN_FAILED_REASON])
     progress.base_sha = binding.base_sha
     body = render_scan_failure(binding, mode, review_identity)
-    try:
-        create_published_comment(repo, pr_number, token, body, binding.correlation)
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code < 500:
-            raise
-        confirm_listed_verdict(repo, pr_number, token, body, binding.correlation)
-    except requests.RequestException:
-        confirm_listed_verdict(repo, pr_number, token, body, binding.correlation)
+    create_published_comment(repo, pr_number, token, body, binding.correlation)
     return progress
 
 
-def confirm_listed_verdict(repo: str, pr_number: str, token: str, body: str, correlation: str) -> None:
-    """Confirm a verdict comment whose create reply was lost, or raise.
+def confirm_listed_comment(repo: str, pr_number: str, token: str, body: str, correlation: str) -> None:
+    """Confirm a verdict or notice whose create reply was lost, or raise.
 
     GitHub can create the comment and lose the answer, and calling that a
-    failure turns a published verdict red. So the comments are listed once,
-    and the verdict counts as posted only when one carries a marker equal to
-    this one in every field. The fresh identity and the binding in it mean no
-    other run's verdict, and none for another head, can match.
+    failure turns a published comment red. So the comments are listed once,
+    and the comment counts as posted only when one written by this bot carries
+    its marker exactly: a verdict marker equal in every field, or the identical
+    notice marker. Both name this run's fresh identity, and the binding names
+    the head, so no other run's comment, and none for another head, can match.
+    A marker read from a page counts even when a later page fails, because a
+    page that was read shows the comment exists.
     """
     expected = parse_status_marker(body)
-    listed, _, _ = scan_status_comments(repo, pr_number, token, correlation)
-    if expected is None or not any(
-        {key: value for key, value in marker.items() if key in STATUS_MARKER_FIELDS} == expected for marker in listed
-    ):
-        raise ReviewError("verdict comment creation could not be confirmed")
+    notice = re.findall(rf"<!-- {re.escape(NOTICE_MARKER)} [^>\r\n]* run=[0-9a-f]{{32}} -->", body)
+    listed, notices, _ = scan_status_comments(repo, pr_number, token, correlation)
+    if expected is not None:
+        found = any(
+            {key: value for key, value in marker.items() if key in STATUS_MARKER_FIELDS} == expected for marker in listed
+        )
+    else:
+        found = len(notice) == 1 and notice[0] in notices
+    if not found:
+        raise ReviewError("comment creation could not be confirmed")
     log_phase("comment-create", status="confirmed-by-read", correlation=correlation)
     emit(
         f"pr-review phase=comment-create attempt=1 status=confirmed-by-read correlation={correlation} "
-        "warning: the create reply was lost, and listing the comments shows the verdict was published",
+        "warning: the create reply was lost, and listing the comments shows the comment was published",
         stderr=True,
     )
 
@@ -3511,13 +3521,20 @@ def create_published_comment(repo: str, pr_number: str, token: str, body: str, c
 
     A 201 Created reply whose body cannot be read still means the comment
     exists, so for a comment nothing refers to again that is published, not a
-    failure to publish. Any other unreadable reply, and any rejected or failed
-    request, still raises: nothing confirms a comment was posted.
+    failure to publish. A timeout, connection error or 5xx may also have
+    created it, so those are confirmed by listing the comments once. Any other
+    unreadable reply, a 4xx, and an unconfirmed failure still raise.
     """
     try:
         create_comment(repo, pr_number, token, body, correlation)
     except UnreadableCreatedComment:
         log_phase("comment-create", status="accepted-unreadable-response", correlation=correlation)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code < 500:
+            raise
+        confirm_listed_comment(repo, pr_number, token, body, correlation)
+    except requests.RequestException:
+        confirm_listed_comment(repo, pr_number, token, body, correlation)
 
 
 def render_scan_failure(binding: PullBinding, mode: str, review_identity: str) -> str:
@@ -3655,7 +3672,10 @@ def run_review(
         active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
         if active:
             link = active.get("html_url") if isinstance(active.get("html_url"), str) else "the existing review status"
-            create_published_comment(repo, pr_number, token, f"A review is already running: {link}", binding.correlation)
+            marker = notice_marker("direct-already-running", binding.correlation, mode, review_identity)
+            create_published_comment(
+                repo, pr_number, token, f"A review is already running: {link}\n\n{marker}", binding.correlation
+            )
             return "already-running", ReviewProgress()
         if not scanned:
             # An unreadable comment page is an API failure, not evidence of
@@ -4024,14 +4044,19 @@ def run_review(
         emit(traceback.format_exc().rstrip(), stderr=True)
         return derive_state(progress), progress
     except BaseException as exc:
-        # A local interrupt (Ctrl-C delivered to this process) and other
-        # non-Exception exits are recorded the same way, then re-raised so the
-        # stop still propagates. A GitHub cancel does not arrive here: the
-        # runner signals the step's shell, not this process, then kills the
-        # tree, so nothing is published and the finalize job closes the
-        # comment while the job shows as cancelled.
+        # A local interrupt (Ctrl-C delivered to this process), a SystemExit of
+        # any code and other non-Exception exits stop the review the same way.
+        # The finally publishes `failed`, and once that is confirmed the result
+        # is on the pull request, so the run returns it and the step stays
+        # green. If it cannot be confirmed, the finally raises and the step
+        # fails. A GitHub cancel does not arrive here: the runner signals the
+        # step's bash by its process id only, bash dies on the SIGTERM, and this
+        # process is killed by the end-of-job cleanup with no signal it can
+        # catch. Nothing is published, the job shows as cancelled, and the
+        # finalize job closes the comment.
         record_unfinished_run(progress, f"the review was interrupted ({type(exc).__name__})")
-        raise
+        emit(f"pr-review phase=interrupt attempt=1 status={type(exc).__name__} correlation={binding.correlation}", stderr=True)
+        return derive_state(progress), progress
     finally:
         manifest = [unit.manifest() for unit in units]
         state = derive_state(progress)
@@ -4120,6 +4145,26 @@ def main() -> None:
     except (FetchError, ReviewError, requests.RequestException):
         print("pr-review phase=terminal attempt=1 status=failed correlation=pending", file=sys.stderr)
         raise SystemExit(1) from None
+    except SystemExit as exc:
+        # A stop that got here was never turned into a confirmed verdict. A
+        # non-zero code stands; a zero would report success for a run that
+        # published nothing, so it fails instead.
+        if exc.code:
+            raise
+        print("pr-review phase=terminal attempt=1 status=interrupted correlation=pending", file=sys.stderr)
+        raise SystemExit(1) from None
+    try:
+        _report_published(state, progress)
+    except KeyboardInterrupt:
+        # The verdict is already on the pull request, and these log and output
+        # writes only describe it, so an interrupt now must not turn it red.
+        emit(f"pr-review phase=terminal attempt=1 status=interrupted-after-publish correlation={state}", stderr=True)
+    if exit_code_for_state(state):
+        raise SystemExit(1)
+
+
+def _report_published(state: str, progress: ReviewProgress) -> None:
+    """Log the published verdict and write the step outputs that describe it."""
     emit(f"pr-review phase=terminal attempt=1 status={state} correlation=published")
     # Published separately from the exit code because these answer different
     # questions. The exit code says whether the runner worked; this says
@@ -4144,8 +4189,6 @@ def main() -> None:
         and progress.coverage_base == progress.base_sha
     )
     write_outputs_after_publish(state=state, complete="true" if complete else "false")
-    if exit_code_for_state(state):
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

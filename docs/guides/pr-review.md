@@ -82,8 +82,8 @@ review, the result cannot claim complete coverage of the current pull request.
 Verdicts are informational. A `partial`, `inconclusive`, or `failed` verdict
 appears in the comment and the job stays green, even if the step outputs cannot
 be written afterward. The job fails only when no verdict could be published,
-such as on a setup failure, or when the process is interrupted locally; a job
-cancelled on GitHub shows as cancelled. A review that stops on an unexpected
+such as on a setup failure or a local interrupt that stops the run before its
+`failed` verdict is posted; a job cancelled on GitHub shows as cancelled. A review that stops on an unexpected
 error publishes `failed` (`superseded` if the run had already seen the head
 move) naming the error's type, not a verdict it never reached, and lists any
 candidates the judge had not ruled on as unverified. Before it starts, the
@@ -279,7 +279,7 @@ the default-branch copy.
 `partial`, `inconclusive`, and `failed` appear in the comment and leave the
 `review` job green, including when the step outputs cannot be written after the
 verdict is posted; no job reads them. It fails only when no verdict could be
-published or the process is interrupted locally.
+published, including when a local interrupt stops the run before it posts `failed`.
 Automation reads the signed marker in the comment to decide
 whether the reviewer settled the whole pull request; review verdicts do not
 publish commit statuses or CI checks.

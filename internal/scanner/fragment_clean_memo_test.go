@@ -218,3 +218,28 @@ func TestFragmentCleanMemoBoundsAndIdentity(t *testing.T) {
 		t.Fatal("disabled memo admitted entry")
 	}
 }
+
+func TestFragmentCleanMemoIdentityCostAndShrinkingBudget(t *testing.T) {
+	sc := newFragmentMemoScanner(t)
+	key := fragmentCleanKey{scanner: sc, stream: "long-stream", continuity: "long-continuity"}
+	m := fragmentCleanMemo{limit: 10}
+	m.store(key, "safe")
+	if m.bytes != 0 || len(m.entries) != 0 || m.lookup(key, "safe") {
+		t.Fatal("identity cost exceeded budget but was admitted")
+	}
+	fb := NewFragmentBuffer(128, 10, 300)
+	defer fb.Close()
+	fs := []fragment{{data: []byte("ordinary ")}, {data: []byte("text")}}
+	if got := fb.scanBatchWithCleanMemo(t.Context(), sc, fs, "stream"); len(got) != 0 || fb.cleanMemo.bytes == 0 {
+		t.Fatal("clean control did not populate memo", got)
+	}
+	fb.mu.Lock()
+	fb.maxBytes = 0
+	fb.mu.Unlock()
+	if got := fb.scanBatchWithCleanMemo(t.Context(), sc, fs, "stream"); len(got) != 0 {
+		t.Fatal("disabled memo changed clean verdict", got)
+	}
+	if fb.cleanMemo.bytes != 0 || len(fb.cleanMemo.entries) != 0 {
+		t.Fatal("shrinking budget retained entries")
+	}
+}

@@ -244,3 +244,63 @@ func TestResponseVerdictFlightSaturationFallsBack(t *testing.T) {
 		sc.responseVerdicts.endFlight(key, flight)
 	}
 }
+
+type responseCancelOnRecheck struct {
+	context.Context
+	checks int
+}
+
+func (c *responseCancelOnRecheck) Err() error {
+	c.checks++
+	if c.checks > 1 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestResponseVerdictRecheckAndNilFollower(t *testing.T) {
+	sc := MustNew(testResponseConfig())
+	defer sc.Close()
+	body := []byte("ordinary cached response")
+	key, ok := sc.responseVerdicts.key(body, "", nil)
+	if !ok {
+		t.Fatal("control body not cache eligible")
+	}
+	sc.responseVerdicts.put(key, len(body), ResponseScanResult{Clean: true})
+	neverScan := func(context.Context, []byte, string, []config.SuppressEntry) ResponseScanResult {
+		t.Fatal("unexpected independent scan")
+		return ResponseScanResult{}
+	}
+	ctx := &responseCancelOnRecheck{Context: context.Background()}
+	if got := sc.scanResponseBodyWithSuppress(ctx, body, "", nil, neverScan); got.Clean || !got.Failed() {
+		t.Fatalf("cached verdict ignored cancellation: %+v", got)
+	}
+	body = []byte("ordinary flight response")
+	key, _ = sc.responseVerdicts.key(body, "", nil)
+	flight, leader := sc.responseVerdicts.beginFlight(key)
+	if !leader {
+		t.Fatal("control flight was not leader")
+	}
+	sc.responseVerdicts.put(key, len(body), ResponseScanResult{Clean: true})
+	// Remove the resident until the follower has entered its wait path.
+	sc.responseVerdicts.mu.Lock()
+	delete(sc.responseVerdicts.entries, key)
+	sc.responseVerdicts.mu.Unlock()
+	close(flight.done)
+	calls := 0
+	scan := func(context.Context, []byte, string, []config.SuppressEntry) ResponseScanResult {
+		calls++
+		return ResponseScanResult{Clean: true}
+	}
+	//nolint:staticcheck // Exercise the explicit nil-context follower fallback.
+	if got := sc.scanResponseBodyWithSuppress(nil, body, "", nil, scan); !got.Clean || got.Failed() || calls != 1 {
+		t.Fatalf("nil-context follower fallback: %+v calls=%d", got, calls)
+	}
+	ctx = &responseCancelOnRecheck{Context: context.Background()}
+	sc.responseVerdicts.mu.Lock()
+	delete(sc.responseVerdicts.entries, key)
+	sc.responseVerdicts.mu.Unlock()
+	if got := sc.scanResponseBodyWithSuppress(ctx, body, "", nil, neverScan); got.Clean || !got.Failed() {
+		t.Fatalf("completed flight ignored cancellation: %+v", got)
+	}
+}

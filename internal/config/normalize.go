@@ -558,6 +558,7 @@ func (c *Config) ApplyDefaults() {
 	}
 
 	// Emit defaults
+	c.normalizeEmitCorrelationHeader()
 	if c.Emit.Webhook.TimeoutSecs <= 0 {
 		c.Emit.Webhook.TimeoutSecs = 5
 	}

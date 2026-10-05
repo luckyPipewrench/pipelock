@@ -1058,6 +1058,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				KillSwitch:               s.killswitch,
 				ChainMatcherFn:           s.currentMCPChainMatcher,
 				AuditLogger:              s.logger,
+				CorrelationHeader:        cfg.Emit.CorrelationHeader,
 				CEEFn:                    s.currentMCPCEE,
 				Store:                    mcpStore,
 				BaselineFn:               s.proxy.SessionBaselineChecker,

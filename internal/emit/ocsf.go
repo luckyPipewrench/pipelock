@@ -61,6 +61,8 @@ type ocsfDetectionFinding struct {
 type ocsfMetadata struct {
 	Version string      `json:"version"`
 	Product ocsfProduct `json:"product"`
+	// CorrelationUID carries the client correlation tag (FieldCorrelationID).
+	CorrelationUID string `json:"correlation_uid,omitempty"`
 }
 
 type ocsfProduct struct {
@@ -140,8 +142,9 @@ func FormatOCSFEvent(event Event, deviceVersion string) string {
 		Time:         millis,
 		Message:      cefName(event),
 		Metadata: ocsfMetadata{
-			Version: ocsfSchemaVersion,
-			Product: product,
+			Version:        ocsfSchemaVersion,
+			Product:        product,
+			CorrelationUID: ocsfStringField(event.Fields, FieldCorrelationID),
 		},
 		StatusID: ocsfStatusIDNew,
 		Status:   ocsfStatusNew,

@@ -2329,16 +2329,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {
-		p.logger.LogBlocked(actx, "browser_cache", "unbound not-modified response")
+		reason, pattern := fullResponseRefusal(resp)
+		p.logger.LogBlocked(actx, "browser_cache", reason)
 		p.metrics.RecordBlocked(r.URL.Hostname(), "browser_cache", time.Since(start), agentLabel)
 		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 			ActionID: actionID, RequestID: requestID, Agent: agent,
 			Method: r.Method, Target: targetURL, Layer: "browser_cache",
-			Pattern: "unbound_not_modified", Taint: forwardTaint,
+			Pattern: pattern, Taint: forwardTaint,
 		})))
-		http.Error(w, "unbound not-modified response", http.StatusBadGateway)
-		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
-		outcomeReason = "unbound_not_modified"
+		writeFullResponseBlock(w, reason)
+		outcomeStatus = strconv.Itoa(http.StatusForbidden)
+		outcomeReason = pattern
 		return
 	}
 	// net/http preflights only the first Location value and skips the

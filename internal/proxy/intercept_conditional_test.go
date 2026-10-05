@@ -120,8 +120,8 @@ func TestInterceptUnexpectedNotModified(t *testing.T) {
 			resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusBadGateway {
-				t.Fatalf("status=%d want502", resp.StatusCode)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status=%d want403", resp.StatusCode)
 			}
 			if resp.Header.Get("ETag") != "" {
 				t.Fatal("unapproved validator released")

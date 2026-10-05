@@ -1971,14 +1971,15 @@ func newInterceptHandler(
 		defer resp.Body.Close() //nolint:errcheck // response body
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
-			ic.Logger.LogBlocked(actx, "browser_cache", "unbound not-modified response")
+			reason, pattern := fullResponseRefusal(resp)
+			ic.Logger.LogBlocked(actx, "browser_cache", reason)
 			ic.Metrics.RecordTLSResponseBlocked("browser_cache")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: "unbound_not_modified",
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
 				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 			}))
-			http.Error(w, "unbound not-modified response", http.StatusBadGateway)
-			emitBlockedPostRoundTripOutcome(http.StatusBadGateway, "unbound_not_modified")
+			writeFullResponseBlock(w, reason)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, pattern)
 			return
 		}
 		// The authenticated-artifact exception is verified at the proxy before

@@ -146,6 +146,8 @@ func TestBuildMCPExplainReport_A2ASignedAgentCardMatchesRuntimePolicy(t *testing
 	t.Run("warn action describes A2A forwarding", func(t *testing.T) {
 		warnCfg := explainA2ASignatureConfig(t, pub)
 		warnCfg.A2AScanning.Action = config.ActionWarn
+		// The server's response action is also warn, so A2A sets the outcome.
+		warnCfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{Server: "vendor", Trust: config.ResponseTrustReasoning}}
 		report, err := buildMCPExplainReportWithA2AContext(warnCfg, "(test)", "vendor", explainSignedAgentCardRPC(t, priv, make([]byte, ed25519.SignatureSize)), context)
 		if err != nil {
 			t.Fatalf("build report: %v", err)
@@ -153,8 +155,20 @@ func TestBuildMCPExplainReport_A2ASignedAgentCardMatchesRuntimePolicy(t *testing
 		if !report.Allowed || report.Action != config.ActionWarn || report.Remediation != nil {
 			t.Fatalf("A2A warn = %+v, want allowed A2A warning without remediation", report)
 		}
-		if !strings.Contains(strings.Join(report.Notes, " "), "a2a_scanning.action is warn") {
+		if !strings.Contains(strings.Join(report.Notes, " "), "effective action is warn") {
 			t.Fatalf("A2A warn report lacks runtime direction: %+v", report.Notes)
+		}
+	})
+
+	t.Run("stricter server response action applies to A2A findings", func(t *testing.T) {
+		warnCfg := explainA2ASignatureConfig(t, pub)
+		warnCfg.A2AScanning.Action = config.ActionWarn
+		report, err := buildMCPExplainReportWithA2AContext(warnCfg, "(test)", "vendor", explainSignedAgentCardRPC(t, priv, make([]byte, ed25519.SignatureSize)), context)
+		if err != nil {
+			t.Fatalf("build report: %v", err)
+		}
+		if report.Allowed || report.Action != config.ActionBlock || !strings.Contains(strings.Join(report.Notes, " "), "stricter of a2a_scanning.action") {
+			t.Fatalf("untrusted server = %+v, want the server's block action", report)
 		}
 	})
 }

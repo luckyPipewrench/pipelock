@@ -309,12 +309,11 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	report.Allowed = report.Action == config.ActionWarn
 	if a2aActive {
 		if len(report.Patterns) == 0 {
-			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust; response_scanning suppress entries are not consulted.")
-		} else {
-			report.Notes = append(report.Notes, "A2A findings are controlled by a2a_scanning, not response_scanning; response_scanning suppress entries are not consulted.")
+			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust.")
 		}
+		report.Notes = append(report.Notes, "A2A findings take the stricter of a2a_scanning.action and this server's response action (with response_scanning disabled, only core response pattern findings take its block); response_scanning suppress entries are not consulted.")
 		if report.Allowed {
-			report.Notes = append(report.Notes, "a2a_scanning.action is warn, so runtime forwards this response and logs the A2A finding.")
+			report.Notes = append(report.Notes, "The effective action is warn, so runtime forwards this response and logs the A2A finding.")
 		}
 	} else if !report.Allowed && len(verdict.DLPMatches) == 0 {
 		report.Remediation = mcpExplainRemediationFor(report.Patterns, serverName)

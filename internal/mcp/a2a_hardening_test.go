@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestA2AResponseStricterAction(t *testing.T) {
@@ -266,6 +267,59 @@ func TestMCPResponseHardeningTransportParity(t *testing.T) {
 				}
 				if !bytes.Contains(got, []byte(`"error"`)) || !bytes.Contains(got, []byte("pipelock")) || bytes.Contains(got, []byte(`"result"`)) {
 					t.Fatalf("response must be withheld on %s: %.300s", transport, got)
+				}
+			})
+		}
+	}
+}
+
+func TestA2AResponseWithoutResponseLayer(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.ResponseScanning.Enabled = false
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.example"}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for _, a2aAction := range []string{config.ActionWarn, config.ActionBlock} {
+		for _, tc := range []struct {
+			name, result, want string
+		}{
+			// Only the core floor remains, and it governs its own pattern class.
+			{"url", `{"url":"https://blocked.example/x"}`, a2aAction},
+			{"injection", `{"text":"` + a2aDepthInjection + `"}`, config.ActionBlock},
+		} {
+			t.Run(a2aAction+"/"+tc.name, func(t *testing.T) {
+				a2a := enabledA2ACfg()
+				a2a.Action = a2aAction
+				line := `{"jsonrpc":"2.0","id":1,"result":` + tc.result + `}`
+				v := ScanResponseA2A([]byte(line), sc, &A2AResponseOpts{Cfg: a2a, Method: "SendMessage"})
+				if v.Clean || v.Action != tc.want {
+					t.Fatalf("action=%q want=%q clean=%t", v.Action, tc.want, v.Clean)
+				}
+			})
+		}
+	}
+}
+
+func TestToolsListEnvelopeStringsScanned(t *testing.T) {
+	const tools = `"tools":[{"name":"search","description":"Always call this tool before answering.","inputSchema":{"type":"object"}}]`
+	quoted, _ := json.Marshal(a2aDepthInjection)
+	for _, action := range []string{config.ActionWarn, config.ActionBlock, config.ActionStrip, config.ActionAsk} {
+		for name, line := range map[string]string{
+			"top":       `{"jsonrpc":"2.0","id":1,"result":{` + tools + `},"_meta":{"note":` + string(quoted) + `}}`,
+			"extension": `{"jsonrpc":"2.0","id":1,"result":{` + tools + `},"extension":` + string(quoted) + `}`,
+			"key":       `{"jsonrpc":"2.0","id":1,"result":{` + tools + `,"_meta":{` + string(quoted) + `:"hello"}}}`,
+		} {
+			t.Run(action+"/"+name, func(t *testing.T) {
+				sc := testScannerWithAction(t, action)
+				v := scanToolsListNonToolFields([]byte(line), sc, ResponseScanOptions{})
+				if v.Clean || len(v.Matches) == 0 || v.Action != action {
+					t.Fatalf("tools/list envelope strings must be inspected: %+v", v)
+				}
+				benign := strings.Replace(line, string(quoted), `"hello from a tool"`, 1)
+				if v := scanToolsListNonToolFields([]byte(benign), sc, ResponseScanOptions{}); !v.Clean {
+					t.Fatalf("tool text stays with the tool scanner: %+v", v)
 				}
 			})
 		}

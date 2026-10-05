@@ -80,6 +80,47 @@ func TestProxyA2AResponseStricterAction(t *testing.T) {
 	}
 }
 
+// A2A stream scanning replaces the generic event-stream scanner, which blocks
+// by default. The stream is cut on any finding, so the record must say block.
+func TestProxyA2AStreamFollowsEventStreamAction(t *testing.T) {
+	for _, transport := range []string{"forward", "intercept"} {
+		t.Run(transport, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.A2AScanning.Enabled = true
+			cfg.RequestBodyScanning.Enabled = false
+			cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.example"}
+			if cfg.A2AScanning.Action != config.ActionWarn || cfg.ResponseScanning.Action != config.ActionWarn || cfg.ResponseScanning.SSEStreaming.Action != config.ActionBlock {
+				t.Fatal("fixture assumes default actions")
+			}
+			stream := "data: " + `{"url":"https://blocked.example/message"}` + "\n\n"
+			w, _, met := driveProxyA2AHardening(t, transport, `{"text":"hello"}`, stream, "text/event-stream", cfg)
+			if w.Body.Len() != 0 {
+				t.Fatalf("event with a finding must be withheld: %.300s", w.Body.String())
+			}
+			families, err := met.Registry().Gather()
+			if err != nil {
+				t.Fatal(err)
+			}
+			metricName := "pipelock_scanner_hits_total"
+			if transport == "intercept" {
+				metricName = "pipelock_tls_response_blocked_total"
+			}
+			var blocks float64
+			for _, family := range families {
+				if family.GetName() == metricName {
+					for _, metric := range family.GetMetric() {
+						blocks += metric.GetCounter().GetValue()
+					}
+				}
+			}
+			if blocks != 1 {
+				t.Fatalf("withheld stream must be recorded as blocked: blocks=%g", blocks)
+			}
+		})
+	}
+}
+
 func TestProxyA2ADepthIndependentOfNodeBudget(t *testing.T) {
 	for _, transport := range []string{"forward", "intercept"} {
 		for _, direction := range []string{"request", "response", "stream"} {

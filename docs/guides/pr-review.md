@@ -91,7 +91,9 @@ command checks for a review already running; if that check fails it publishes
 `failed` and does not start one. An earlier check for a finished review of the
 same head does not stop the command when it fails: the command reviews anyway.
 A command declined with a notice (already reviewed, or already running) also
-stays green when its outputs cannot be written. When GitHub's reply to the final
+stays green when its outputs cannot be written, and a run whose verdict or notice
+is posted stays green if a local interrupt arrives while it writes those outputs.
+When GitHub's reply to the final
 comment update is lost to a timeout or a server error, the reviewer reads the
 comment back once and stays green only if it shows this run's verdict. Read the
 signed comment marker to decide coverage; the reviewer does not publish commit

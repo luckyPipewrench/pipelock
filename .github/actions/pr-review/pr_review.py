@@ -22,6 +22,7 @@ import traceback
 import unicodedata
 import urllib.parse
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1408,6 +1409,20 @@ def write_outputs_after_publish(**values: str) -> None:
             f"warning: the result is on the pull request but the step outputs could not be written ({type(exc).__name__})",
             stderr=True,
         )
+
+
+def report_after_publish(report: Callable[[], None], correlation: str) -> None:
+    """Run the log and output writes that describe a comment already published.
+
+    The comment is the result, and these writes only describe it, so a local
+    interrupt or a SystemExit of any code arriving now stops the run without
+    turning that result red: the step exits 0. A stop before the comment is
+    confirmed never gets here and keeps its non-zero exit.
+    """
+    try:
+        report()
+    except (KeyboardInterrupt, SystemExit):
+        emit(f"pr-review phase=terminal attempt=1 status=interrupted-after-publish correlation={correlation}", stderr=True)
 
 
 def fetch_bound_diff(repo: str, binding: PullBinding, token: str) -> str:
@@ -3606,7 +3621,7 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
                 "Push a change to request another review.",
                 notices,
             )
-            write_outputs_after_publish(claimed="false")
+            report_after_publish(lambda: write_outputs_after_publish(claimed="false"), binding.correlation)
             return
 
     active, scanned = find_running_comment(repo, pr_number, token, binding.correlation)
@@ -3637,9 +3652,9 @@ def claim_review(repo: str, pr_number: str, token: str, mode: str, reviewer_sha:
             publish_scan_failure(repo, pr_number, token, mode, binding, uuid.uuid4().hex)
             # A missing `claimed` skips the review and finalize jobs exactly
             # as `false` does, so the published verdict stands either way.
-            write_outputs_after_publish(claimed="false")
+            report_after_publish(lambda: write_outputs_after_publish(claimed="false"), binding.correlation)
             return
-        write_outputs_after_publish(claimed="false")
+        report_after_publish(lambda: write_outputs_after_publish(claimed="false"), binding.correlation)
         return
     review_identity = uuid.uuid4().hex
     comment = create_comment(repo, pr_number, token, _initial_status(binding, mode, review_identity), binding.correlation)
@@ -4056,6 +4071,11 @@ def run_review(
         # finalize job closes the comment.
         record_unfinished_run(progress, f"the review was interrupted ({type(exc).__name__})")
         emit(f"pr-review phase=interrupt attempt=1 status={type(exc).__name__} correlation={binding.correlation}", stderr=True)
+        if not isinstance(exc, KeyboardInterrupt):
+            # Ctrl-C needs no locating. Any other stop, such as a SystemExit
+            # raised inside a library, gets its traceback in the log so it can
+            # be found; only the type name reaches the comment.
+            emit(traceback.format_exc().rstrip(), stderr=True)
         return derive_state(progress), progress
     finally:
         manifest = [unit.manifest() for unit in units]
@@ -4153,12 +4173,9 @@ def main() -> None:
             raise
         print("pr-review phase=terminal attempt=1 status=interrupted correlation=pending", file=sys.stderr)
         raise SystemExit(1) from None
-    try:
-        _report_published(state, progress)
-    except KeyboardInterrupt:
-        # The verdict is already on the pull request, and these log and output
-        # writes only describe it, so an interrupt now must not turn it red.
-        emit(f"pr-review phase=terminal attempt=1 status=interrupted-after-publish correlation={state}", stderr=True)
+    # The verdict is already on the pull request, so a stop while describing it
+    # must not turn it red.
+    report_after_publish(lambda: _report_published(state, progress), state)
     if exit_code_for_state(state):
         raise SystemExit(1)
 

@@ -978,12 +978,107 @@ class HonestIncompleteVerdictTest(OfflineReviewTestCase):
                 create.assert_not_called()
                 self.assertNotIn("state=", result["outputs"])
 
-    def test_an_interrupt_while_reporting_a_published_verdict_exits_zero(self) -> None:
-        with mock.patch.object(pr_review, "write_outputs_after_publish", side_effect=KeyboardInterrupt()):
-            result, update = self.crash(RuntimeError("bug"))
+    POST_PUBLISH_STOPS = (KeyboardInterrupt(), SystemExit(0), SystemExit(None), SystemExit(5), SystemExit("stop"))
+
+    def test_a_stop_while_reporting_a_published_verdict_exits_zero(self) -> None:
+        for stop in self.POST_PUBLISH_STOPS:
+            with self.subTest(stop=repr(stop)):
+                with mock.patch.object(pr_review, "write_outputs_after_publish", side_effect=stop):
+                    result, update = self.crash(RuntimeError("bug"))
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertIn("state=failed", update.call_args.args[3])
+                self.assertIn("status=interrupted-after-publish", result["stderr"])
+
+    def claim_answer(self, path: str, create: mock.Mock, *patches: object) -> dict[str, object]:
+        """Run a claim whose answer is `path`: a scan-failure verdict, a notice, a repeat, or a running claim."""
+        done = {
+            "state": "clean",
+            "identity": self.BINDING.correlation,
+            "mode": "default",
+            "model": pr_review.model_binding("default"),
+            "findings": "",
+            "html_url": "https://example.invalid/c/2",
+        }
+        running = {"html_url": "https://example.invalid/c/3"}
+        repeat = {pr_review.notice_marker("already-running", self.BINDING.correlation, "default")}
+        scan, active = {
+            "scan-failure": (([], set(), True), (None, False)),
+            "already-reviewed": (([done], set(), True), (None, True)),
+            "already-running": (([], set(), True), (running, True)),
+            "already-running-repeat": (([], repeat, True), (running, True)),
+            "running-claim": (([], set(), True), (None, True)),
+        }[path]
+        return self.run_main(
+            {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"},
+            mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+            mock.patch.object(pr_review, "scan_status_comments", return_value=scan),
+            mock.patch.object(pr_review, "find_running_comment", return_value=active),
+            mock.patch.object(pr_review, "create_comment", create),
+            *patches,
+        )
+
+    def test_a_stop_after_a_claim_posts_its_answer_exits_zero(self) -> None:
+        # The failed verdict or the notice is on the pull request, and the
+        # output write only describes it, so a Ctrl-C or a SystemExit of any
+        # code there must not turn it red. A repeat leaves the earlier notice
+        # as the answer.
+        for path, posts in (("scan-failure", 1), ("already-reviewed", 1), ("already-running", 1), ("already-running-repeat", 0)):
+            for stop in self.POST_PUBLISH_STOPS:
+                with self.subTest(path=path, stop=repr(stop)):
+                    create = mock.Mock(return_value={"id": 17})
+                    result = self.claim_answer(
+                        path, create, mock.patch.object(pr_review, "write_action_outputs", side_effect=stop)
+                    )
+                    self.assertEqual(result.get("code"), 0, result.get("raised"))
+                    self.assertEqual(create.call_count, posts)
+                    self.assertIn("status=interrupted-after-publish", result["stderr"])
+
+    def test_a_stop_before_a_claim_posts_anything_keeps_its_exit_code(self) -> None:
+        # Nothing is on the pull request yet, so the stop stays red, and a
+        # non-zero SystemExit keeps its code.
+        for path in ("scan-failure", "already-reviewed", "already-running"):
+            for stop, expected in ((KeyboardInterrupt(), None), (SystemExit(0), 1), (SystemExit(None), 1), (SystemExit(5), 5)):
+                with self.subTest(path=path, stop=repr(stop)):
+                    result = self.claim_answer(path, mock.Mock(side_effect=stop))
+                    if expected is None:
+                        self.assertIsInstance(result.get("raised"), KeyboardInterrupt)
+                    else:
+                        self.assertEqual(result.get("code"), expected, result.get("raised"))
+                    self.assertNotIn("interrupted-after-publish", result["stderr"])
+                    self.assertEqual(result["outputs"], "")
+        # A running claim is not an answer: without claimed=true no job reviews
+        # it, so a stop while writing that output stays red too.
+        for stop, expected in ((KeyboardInterrupt(), None), (SystemExit(0), 1), (SystemExit(5), 5)):
+            with self.subTest(path="running-claim", stop=repr(stop)):
+                create = mock.Mock(return_value={"id": 17})
+                result = self.claim_answer(
+                    "running-claim", create, mock.patch.object(pr_review, "write_action_outputs", side_effect=stop)
+                )
+                if expected is None:
+                    self.assertIsInstance(result.get("raised"), KeyboardInterrupt)
+                else:
+                    self.assertEqual(result.get("code"), expected, result.get("raised"))
+                self.assertIn("state=running", create.call_args.args[3])
+                self.assertNotIn("interrupted-after-publish", result["stderr"])
+
+    def test_a_stop_other_than_ctrl_c_logs_its_traceback_but_never_publishes_it(self) -> None:
+        # A SystemExit raised inside a library is hard to find from its type
+        # alone, so its traceback goes to the log. The comment names the type
+        # only, and a Ctrl-C stays a one-line log entry.
+        result, update = self.crash(SystemExit("library stop 4b1d"))
         self.assertEqual(result.get("code"), 0, result.get("raised"))
-        self.assertIn("state=failed", update.call_args.args[3])
-        self.assertIn("status=interrupted-after-publish", result["stderr"])
+        body = update.call_args.args[3]
+        self.assertIn("the review was interrupted (SystemExit)", body)
+        self.assertIn("Traceback", result["stderr"])
+        self.assertIn("SystemExit: library stop 4b1d", result["stderr"])
+        self.assertNotIn("Traceback", body)
+        self.assertNotIn("library stop 4b1d", body)
+        result, update = self.crash(KeyboardInterrupt("ctrl-c 9e2a"))
+        self.assertEqual(result.get("code"), 0, result.get("raised"))
+        self.assertIn("phase=interrupt attempt=1 status=KeyboardInterrupt", result["stderr"])
+        self.assertNotIn("Traceback", result["stderr"])
+        self.assertNotIn("ctrl-c 9e2a", result["stderr"])
+        self.assertNotIn("ctrl-c 9e2a", update.call_args.args[3])
 
     SIGNAL_PROGRAM = """
 import importlib.util, os, pathlib, sys, time
@@ -995,7 +1090,7 @@ spec.loader.exec_module(module)
 
 def block(*_args, **_kwargs):
     pathlib.Path(os.environ["READY"]).write_text("ready")
-    time.sleep(60)
+    time.sleep(600)
 
 def post(*args, **_kwargs):
     pathlib.Path(os.environ["POSTED"]).write_text(args[3])
@@ -1018,6 +1113,13 @@ with mock.patch.object(module.requests.sessions.Session, "request", side_effect=
         module.main()
 """
 
+    # A loaded machine can take tens of seconds just to start the interpreter
+    # and import the module, so both limits are generous. The signal is sent
+    # only once the process reports it is blocked: sent earlier, it can land
+    # during start-up and test nothing.
+    SIGNAL_READY_SECONDS = 120
+    SIGNAL_EXIT_SECONDS = 300
+
     def run_until_signalled(self, environment: dict[str, str]) -> tuple[int, str, str]:
         """Run the entry point, send a real SIGINT once it blocks, return its exit code, posted body, stderr."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -1030,11 +1132,24 @@ with mock.patch.object(module.requests.sessions.Session, "request", side_effect=
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            deadline = time.monotonic() + 30
-            while not os.path.exists(ready) and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-            process.send_signal(signal.SIGINT)
-            _, stderr = process.communicate(timeout=60)
+            try:
+                deadline = time.monotonic() + self.SIGNAL_READY_SECONDS
+                while not os.path.exists(ready):
+                    if process.poll() is not None:
+                        _, stderr = process.communicate()
+                        self.fail(f"the process exited ({process.returncode}) before it blocked:\n{stderr}")
+                    if time.monotonic() > deadline:
+                        self.fail(f"the process did not block within {self.SIGNAL_READY_SECONDS}s, so no SIGINT was sent")
+                    time.sleep(0.05)
+                process.send_signal(signal.SIGINT)
+                try:
+                    _, stderr = process.communicate(timeout=self.SIGNAL_EXIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"the process did not exit within {self.SIGNAL_EXIT_SECONDS}s of its SIGINT")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
             body = pathlib.Path(posted).read_text() if os.path.exists(posted) else ""
             return process.returncode, body, stderr
 
@@ -1045,6 +1160,7 @@ with mock.patch.object(module.requests.sessions.Session, "request", side_effect=
         self.assertEqual(code, 0, stderr)
         self.assertIn("state=failed", body)
         self.assertIn("the review was interrupted (KeyboardInterrupt)", body)
+        self.assertNotIn("Traceback", stderr)
         code, body, stderr = self.run_until_signalled(self.BASE_ENVIRONMENT)
         self.assertNotEqual(code, 0, stderr)
         self.assertEqual(body, "", "nothing was posted")
@@ -1101,6 +1217,11 @@ with mock.patch.object(module.requests.sessions.Session, "request", side_effect=
             ("read-back fails", lambda _update: None),
             ("still the running claim", lambda _update: running),
             ("another body", lambda _update: "## AI PR Review\n\nsomething else"),
+            (
+                "another run's final verdict",
+                lambda update: update.call_args.args[3].replace(self.ADMITTED_ENVIRONMENT["REVIEW_IDENTITY"], "e" * 32),
+            ),
+            ("this run, another verdict", lambda update: update.call_args.args[3].replace("state=clean", "state=failed")),
         ):
             with self.subTest(read_back=name):
                 result = self.clean_run_with_update_failure(bad_gateway, read_back)
@@ -1327,6 +1448,39 @@ with mock.patch.object(module.requests.sessions.Session, "request", side_effect=
         )
         self.assertEqual(result.get("code"), 0, result.get("raised"))
         create.assert_not_called()
+
+    def test_only_one_well_formed_trailing_run_is_ignored_by_the_repeat_check(self) -> None:
+        # The repeat key drops exactly one ` run=<32 lowercase hex>` right before
+        # the marker's end. A malformed or doubled run is a different marker, so
+        # it is neither stripped nor taken as an earlier copy of this notice.
+        key = pr_review.notice_marker("already-running", self.BINDING.correlation, "default")
+        run = "0123456789abcdef" * 2
+        self.assertEqual(pr_review.notice_key(key), key)
+        self.assertEqual(pr_review.notice_key(key.replace(" -->", f" run={run} -->")), key)
+        malformed = {
+            "run=xyz": key.replace(" -->", " run=xyz -->"),
+            "31 hex": key.replace(" -->", f" run={run[:-1]} -->"),
+            "33 hex": key.replace(" -->", f" run={run}0 -->"),
+            "upper-case hex": key.replace(" -->", f" run={run.upper()} -->"),
+            "doubled run": key.replace(" -->", f" run={run} run={run} -->"),
+            "run not last": key.replace(" mode=default -->", f" run={run} mode=default -->"),
+        }
+        for name, marker in malformed.items():
+            with self.subTest(marker=name):
+                self.assertNotEqual(pr_review.notice_key(marker), key)
+        for name in ("run=xyz", "doubled run"):
+            with self.subTest(existing=name):
+                create = mock.Mock(return_value={"id": 17})
+                result = self.run_main(
+                    {**self.BASE_ENVIRONMENT, "REVIEW_OPERATION": "claim"},
+                    mock.patch.object(pr_review, "get_pull_binding", return_value=self.BINDING),
+                    mock.patch.object(pr_review, "scan_status_comments", return_value=([], {malformed[name]}, True)),
+                    mock.patch.object(pr_review, "find_running_comment", return_value=({"html_url": "u"}, True)),
+                    mock.patch.object(pr_review, "create_comment", create),
+                )
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                create.assert_called_once()
+                self.assertIn("A review is already running", create.call_args.args[3])
 
     @staticmethod
     def listed_with(**changes: str) -> object:

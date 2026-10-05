@@ -166,7 +166,8 @@ func ScanGenericSSEStreamWithOptions(
 
 		event, err := reader.ReadMessage()
 		if errors.Is(err, io.EOF) {
-			return nil
+			// EOF can race with cancellation while the read is in flight.
+			return ctx.Err()
 		}
 		if err != nil {
 			return fmt.Errorf("sse stream read: %w", err)
@@ -724,7 +725,7 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 			}
 		}
 		if errors.Is(err, io.EOF) {
-			return nil
+			return ctx.Err()
 		}
 		if err != nil {
 			return err

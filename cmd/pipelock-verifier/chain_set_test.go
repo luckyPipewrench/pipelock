@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -152,5 +153,34 @@ func TestChainDir_RunChainHumanOutput(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("output lacks %q:\n%s", want, stdout)
 		}
+	}
+}
+
+func TestChainSetReportsRecorderChangedDistinctly(t *testing.T) {
+	t.Parallel()
+	var r chainSetReport
+	r.Base = "proxy"
+	r.Continuity.Findings = []chainSetFinding{{Kind: "corrupt_chain", Session: "proxy.run.a", Detail: "shard size changed", EvidenceChanged: true}}
+	reason := chainSetFailureReason(r)
+	if !strings.Contains(reason, "changed while it was being verified") || strings.Contains(reason, "rejected") {
+		t.Fatalf("changed recorder reported as a rejection: %s", reason)
+	}
+	var out bytes.Buffer
+	emitContinuity(&out, r)
+	if !strings.Contains(out.String(), "RECORDER CHANGED DURING VERIFICATION") {
+		t.Fatalf("summary does not mark the change:\n%s", out.String())
+	}
+	data, err := json.Marshal(r.Continuity.Findings[0])
+	if err != nil || !strings.Contains(string(data), `"evidence_changed":true`) {
+		t.Fatalf("JSON drops the flag: %s %v", data, err)
+	}
+	// Positive control: an ordinary finding keeps the old JSON and wording.
+	plain, _ := json.Marshal(chainSetFinding{Kind: "corrupt_chain", Session: "s", Detail: "d"})
+	if strings.Contains(string(plain), "evidence_changed") {
+		t.Fatalf("ordinary finding gained a field: %s", plain)
+	}
+	r.Continuity.Findings[0].EvidenceChanged = false
+	if !strings.Contains(chainSetFailureReason(r), "rejected") {
+		t.Fatal("ordinary finding no longer reads as a rejection")
 	}
 }

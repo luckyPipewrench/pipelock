@@ -1288,7 +1288,7 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 // say what the evidence holds, only that it did not hold still.
 func recorderChangedError(dir string) error {
 	return fmt.Errorf("the recorder in %s changed while it was being verified, so no verdict on its evidence was reached; "+
-		"stop the process writing to it, or copy the recorder directory and verify the copy; "+
+		"stop the process writing to it and verify again, or verify an atomic snapshot of the recorder directory; "+
 		"for a check of a live recorder, run `pipelock evidence doctor %s`", dir, dir)
 }
 

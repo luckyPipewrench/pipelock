@@ -345,7 +345,7 @@ func TestRecorderChangedDuringVerificationMessage(t *testing.T) {
 		"the recorder in " + dir + " changed while it was being verified",
 		"no verdict on its evidence was reached",
 		"stop the process writing to it",
-		"copy the recorder directory and verify the copy",
+		"verify an atomic snapshot of the recorder directory",
 		"pipelock evidence doctor " + dir,
 	} {
 		if !strings.Contains(msg, want) {

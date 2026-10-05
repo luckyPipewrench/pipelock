@@ -292,8 +292,8 @@ func TestResponseVerdictRecheckAndNilFollower(t *testing.T) {
 		calls++
 		return ResponseScanResult{Clean: true}
 	}
-	//nolint:staticcheck // Exercise the explicit nil-context follower fallback.
-	if got := sc.scanResponseBodyWithSuppress(nil, body, "", nil, scan); !got.Clean || got.Failed() || calls != 1 {
+	var nilContext context.Context // Exercise the explicit nil-context follower fallback.
+	if got := sc.scanResponseBodyWithSuppress(nilContext, body, "", nil, scan); !got.Clean || got.Failed() || calls != 1 {
 		t.Fatalf("nil-context follower fallback: %+v calls=%d", got, calls)
 	}
 	ctx = &responseCancelOnRecheck{Context: context.Background()}

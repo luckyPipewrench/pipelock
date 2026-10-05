@@ -107,6 +107,9 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 	if p.minASCIIDigits > 0 && !hasMinimumASCIIDigits(text, p.minASCIIDigits) {
 		return 0, 0, false
 	}
+	if !p.shapeGate.admits(text) {
+		return 0, 0, false
+	}
 	if p.withoutLeftBoundary == nil {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
 			if p.accepts(text, loc[0], loc[1]) {
@@ -158,6 +161,9 @@ func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []i
 		return 0, 0, false
 	}
 	if p.minASCIIDigits > 0 && !hasMinimumASCIIDigits(text, p.minASCIIDigits) {
+		return 0, 0, false
+	}
+	if !p.shapeGate.admits(text) {
 		return 0, 0, false
 	}
 	for _, loc := range p.re.FindAllStringIndex(text, -1) {

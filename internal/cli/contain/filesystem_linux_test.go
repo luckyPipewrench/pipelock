@@ -7,6 +7,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"os/user"
@@ -110,6 +111,38 @@ func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
 	}
 	if !sawSecretHide {
 		t.Fatal("confined unit did not hide the probe-owned secret directory")
+	}
+}
+
+func TestOmittedFilesystemCanaryRejectsBaselineFailure(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	calls := 0
+	env := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		calls++
+		return "", -1, errors.New("baseline service unavailable")
+	})
+	env.filesystemCanaryOmitProperties = true
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusFail || calls != 1 || filesystemUnconfinedCanaryFailure(detail) {
+		t.Fatalf("status=%s calls=%d detail=%s", status, calls, detail)
+	}
+
+	calls = 0
+	env = filesystemCanaryEnv(func(_ context.Context, _ string, args ...string) (string, int, error) {
+		calls++
+		if strings.Contains(strings.Join(args, "\n"), "ProtectSystem=strict") {
+			t.Fatal("omitted properties still applied the filesystem profile")
+		}
+		if calls == 1 {
+			return "", 0, nil
+		}
+		return "", 11, nil
+	})
+	env.filesystemCanaryOmitProperties = true
+	status, detail = probeFilesystemConfinement(context.Background(), env)
+	if status != statusFail || calls != 2 || !filesystemUnconfinedCanaryFailure(detail) {
+		t.Fatalf("status=%s calls=%d detail=%s", status, calls, detail)
 	}
 }
 

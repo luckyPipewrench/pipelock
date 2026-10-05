@@ -3735,7 +3735,9 @@ type knownValueWindowHit struct {
 }
 
 func newKnownValueWindowHits(views []spanTextView) *knownValueWindowHits {
-	return &knownValueWindowHits{views: views}
+	// Keep a private copy so a caller editing its slice after the first
+	// lookup cannot make sameSpanTextViews match a stale memo.
+	return &knownValueWindowHits{views: append([]spanTextView(nil), views...)}
 }
 
 // forIndex returns the memoized hits when views and the shared index are the

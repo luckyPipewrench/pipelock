@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -56,24 +58,23 @@ func TestFilesystemPropertyParity(t *testing.T) {
 	}
 }
 
-func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
-	root := t.TempDir()
-	secret := filepath.Join(root, "secret")
-	if err := os.Mkdir(secret, 0o750); err != nil {
-		t.Fatal(err)
-	}
+func withFilesystemCanaryRoot(t *testing.T, root string) {
+	t.Helper()
 	prevRoot := filesystemCanaryRoot
 	prevOp := filesystemOperatorCanaryParent
-	prevWrite := filesystemWriteCanaryParent
+	prevState := filesystemStateCanaryParent
 	filesystemCanaryRoot = func() bool { return true }
 	filesystemOperatorCanaryParent = root
-	filesystemWriteCanaryParent = root
+	filesystemStateCanaryParent = root
 	t.Cleanup(func() {
 		filesystemCanaryRoot = prevRoot
 		filesystemOperatorCanaryParent = prevOp
-		filesystemWriteCanaryParent = prevWrite
+		filesystemStateCanaryParent = prevState
 	})
-	env := &probeEnv{
+}
+
+func filesystemCanaryEnv(run func(context.Context, string, ...string) (string, int, error)) *probeEnv {
+	return &probeEnv{
 		agentUserName: "pipelock-agent",
 		agentHome:     "/srv/agent-home",
 		lookupUser: func(name string) (*user.User, error) {
@@ -81,20 +82,145 @@ func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
 		},
 		groupIDs: func(*user.User) ([]string, error) { return []string{"966"}, nil },
 		filesystem: filesystemProfile{
-			Mode: config.ContainmentFilesystemModeEnforce,
-			Properties: []string{
-				"ProtectSystem=strict",
-				"InaccessiblePaths=" + secret,
-			},
-			BindPaths: []string{"/srv/agent-home:/srv/agent-home:norbind"},
+			Mode:       config.ContainmentFilesystemModeEnforce,
+			Properties: []string{"ProtectSystem=strict", "InaccessiblePaths=/etc/pipelock/tls"},
+			BindPaths:  []string{"/srv/agent-home:/srv/agent-home:norbind"},
 		},
-		runCmd: func(context.Context, string, ...string) (string, int, error) {
-			return "", 11, nil
-		},
+		runCmd: run,
 	}
+}
+
+func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	sawSecretHide := false
+	env := filesystemCanaryEnv(func(_ context.Context, _ string, args ...string) (string, int, error) {
+		joined := strings.Join(args, "\n")
+		if !strings.Contains(joined, "ProtectSystem=strict") {
+			return "", 0, nil
+		}
+		if strings.Contains(joined, "InaccessiblePaths=") && strings.Contains(joined, ".pipelock-fs-secret-") {
+			sawSecretHide = true
+		}
+		return "", 11, nil
+	})
 	status, detail := probeFilesystemConfinement(context.Background(), env)
 	if status != statusFail || !strings.Contains(detail, "operator home canary was visible") {
 		t.Fatalf("status=%s detail=%s", status, detail)
+	}
+	if !sawSecretHide {
+		t.Fatal("confined unit did not hide the probe-owned secret directory")
+	}
+}
+
+func TestProbeFilesystemConfinement_BaselineMustSeeCanaries(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	env := filesystemCanaryEnv(func(_ context.Context, _ string, args ...string) (string, int, error) {
+		if !strings.Contains(strings.Join(args, "\n"), "ProtectSystem=strict") {
+			return "", 21, nil
+		}
+		return "", 0, nil
+	})
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, "not a valid proof") {
+		t.Fatalf("status=%s detail=%s", status, detail)
+	}
+}
+
+func TestProbeFilesystemConfinement_WorkspaceSymlinkIsNotFollowed(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	victim := filepath.Join(root, "victim")
+	if err := os.Mkdir(victim, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	grant := filepath.Join(root, "grant")
+	if err := os.Symlink(victim, grant); err != nil {
+		t.Fatal(err)
+	}
+	env := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		t.Fatal("canary ran after a symlink workspace")
+		return "", 0, nil
+	})
+	env.filesystem.BindPaths = append(env.filesystem.BindPaths, grant+":"+grant+":norbind")
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	entries, err := os.ReadDir(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("canary followed the workspace symlink: %v", entries)
+	}
+	if status != statusFail {
+		t.Fatalf("status=%s detail=%s", status, detail)
+	}
+}
+
+func TestProbeFilesystemConfinement_CanaryModeIgnoresUmask(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	old := unix.Umask(0o077)
+	t.Cleanup(func() { unix.Umask(old) })
+	var sawDir, sawFile bool
+	env := filesystemCanaryEnv(func(_ context.Context, _ string, args ...string) (string, int, error) {
+		if sawDir && sawFile {
+			return "", 0, nil
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			info, err := entry.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := entry.Name()
+			switch {
+			case strings.HasPrefix(name, ".pipelock-fs-canary-"), strings.HasPrefix(name, ".pipelock-fs-secret-"):
+				if info.Mode().Perm() != 0o755 {
+					t.Fatalf("%s mode = %o", name, info.Mode().Perm())
+				}
+				sawDir = true
+				file, err := os.ReadDir(filepath.Join(root, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(file) != 1 {
+					t.Fatalf("%s entries = %v", name, file)
+				}
+				finfo, err := file[0].Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if finfo.Mode().Perm() != 0o644 {
+					t.Fatalf("%s mode = %o", file[0].Name(), finfo.Mode().Perm())
+				}
+				sawFile = true
+			case strings.HasPrefix(name, ".pipelock-fs-write-"):
+				if info.Mode().Perm() != 0o777 || info.Mode()&os.ModeSticky == 0 {
+					t.Fatalf("write canary mode = %o", info.Mode())
+				}
+			}
+		}
+		if !strings.Contains(strings.Join(args, "\n"), "ProtectSystem=strict") {
+			return "", 0, nil
+		}
+		return "", 0, nil
+	})
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if !sawDir || !sawFile {
+		t.Fatalf("canary modes were not observed, status=%s detail=%s", status, detail)
+	}
+	if status != statusPass {
+		t.Fatalf("status=%s detail=%s", status, detail)
+	}
+}
+
+func TestFilesystemStateCanaryParentIsVarLib(t *testing.T) {
+	if filesystemStateCanaryParent != "/var/lib" {
+		t.Fatalf("write canary parent = %s", filesystemStateCanaryParent)
 	}
 }
 

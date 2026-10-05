@@ -318,6 +318,51 @@ func TestFilesystemProfileProperties_RefusesInaccessibleParentOfProof(t *testing
 	}
 }
 
+func TestConfiguredSecretPathsAreInaccessible(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.FlightRecorder.Dir = "/srv/secrets/recorder"
+	cfg.FlightRecorder.SigningKeyPath = "/srv/secrets/flight.key"
+	cfg.MediationEnvelope.SigningKeyPath = "/srv/secrets/envelope.key"
+	cfg.Learn.CaptureDir = "/srv/secrets/captures"
+	cfg.Learn.Privacy.SaltSource = "file:/srv/secrets/salt"
+	cfg.BehavioralBaseline.ProfileDir = "/srv/secrets/baselines"
+	cfg.LearnLock.StoreDir = "/srv/secrets/contracts"
+	cfg.Rules.RulesDir = "/srv/secrets/rules"
+	cfg.Logging.File = "/srv/secrets/logs/pipelock.log"
+	cfg.MCPToolPolicy.QuarantineDir = "/srv/secrets/quarantine"
+	required, optional := configuredSecretPaths(cfg)
+	wantRequired := []string{"/srv/secrets/flight.key", "/srv/secrets/envelope.key"}
+	wantOptional := []string{
+		"/srv/secrets/recorder",
+		"/srv/secrets/captures",
+		"/srv/secrets/baselines",
+		"/srv/secrets/contracts",
+		"/srv/secrets/rules",
+		"/srv/secrets/salt",
+		"/srv/secrets/logs",
+		"/srv/secrets/quarantine",
+	}
+	if strings.Join(required, "\n") != strings.Join(wantRequired, "\n") || strings.Join(optional, "\n") != strings.Join(wantOptional, "\n") {
+		t.Fatalf("required=%v optional=%v", required, optional)
+	}
+	in := enforceInput()
+	in.ConfigDir = "/etc/pipelock-absent"
+	in.DataDir = "/var/lib/pipelock-absent"
+	in.RequiredSecretPaths = required
+	in.OptionalSecretPaths = optional
+	in.Exists = existsAll(append(append([]string{}, required...), optional...)...)
+	got, err := filesystemProfileProperties(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden := filesystemInaccessiblePaths(got.Properties)
+	for _, secret := range append(append([]string{}, required...), optional...) {
+		if !sliceContains(hidden, secret) {
+			t.Fatalf("missing %s in %v", secret, hidden)
+		}
+	}
+}
+
 func TestFilesystemProfileProperties_RefusesOptionalSecretOverReadablePath(t *testing.T) {
 	in := enforceInput()
 	in.OptionalSecretPaths = []string{"/srv/agent-home"}

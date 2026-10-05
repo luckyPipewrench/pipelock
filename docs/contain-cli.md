@@ -231,7 +231,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 18 fixed probes (numbered 1-14, 16, 19, 20, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. When `containment.display` is enabled, or a prior display install is detected, verify adds `22 agent_display`. The Xvnc backend adds `23 agent_display_rfb`, `24 viewer_service`, and `25 viewer_rfb_access`; an agent home directory always adds `26 legacy_viewer_acl` to catch stale pre-namespace ACLs, whatever the current backend. It prints pass, fail, skip, or unknown for each probe.
+Verify normally makes no host changes. It walks 19 fixed probes (numbered 1-14, 16, 19, 20, 21, and 27) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. When `containment.display` is enabled, or a prior display install is detected, verify adds `22 agent_display`. The Xvnc backend adds `23 agent_display_rfb`, `24 viewer_service`, and `25 viewer_rfb_access`; an agent home directory always adds `26 legacy_viewer_acl` to catch stale pre-namespace ACLs, whatever the current backend. It prints pass, fail, skip, unknown, or off for each probe. Probe 27 reports off when `containment.filesystem.mode` is omitted or `off`; that result is not a pass and does not fail the command.
 
 ```bash
 pipelock contain verify
@@ -263,6 +263,23 @@ pipelock contain verify
 | 24 | `viewer_service` (conditional) | Present with the Xvnc display backend. The contained display viewer socket is restricted to its operator. |
 | 25 | `viewer_rfb_access` (conditional) | Present with the Xvnc display backend. RFB socket mode and group match the viewer setting. |
 | 26 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete pre-namespace agent-home viewer access is absent. |
+| 27 | `filesystem_confinement` | When `containment.filesystem.mode` is `enforce`, a transient service with the same filesystem properties cannot read an operator-home canary or a hidden secret, cannot create a file on the protected filesystem, and can write a read-write workspace grant when one exists. Omitted or `off` reports `filesystem profile: off`. |
+
+## Filesystem confinement
+
+`containment.filesystem.mode` is `off` or `enforce`. A config that omits the key, or an existing install that never had it, stays off. A fresh `contain install` writes `enforce`. Upgrading an existing config does not turn the profile on.
+
+`off` leaves the mount namespace the way `contain` left it before this setting: private `/tmp` and `/var/tmp`, and the configured display socket when a display is enabled. It does not claim the host filesystem is hidden.
+
+`enforce` launches the agent with `ProtectSystem=strict`, `ProtectHome=tmpfs`, and `NoNewPrivileges=true`. The agent home is bind-mounted read-write. Each unexpired workspace grant for that agent is bind-mounted at the same path: `read-write` becomes `BindPaths`, `read-only` becomes `BindReadOnlyPaths`, both with `norbind`. Expired grants are not mounted. The display socket, when one is configured, stays a read-only bind. `/dev/shm` is a fresh temporary filesystem. Kernel tunables, kernel modules, and control groups are protected.
+
+The profile hides secret subpaths the agent must not read: the integrity directory, the TLS private directory, signing keys, and the recorder, capture, baseline, contract, quarantine, log, and rules directories under the Pipelock data directory when those paths exist. It does not hide `/etc/pipelock/ca.pem`, the combined CA bundle, `tools.list`, or the posture proof the child reads. `ProtectSystem=strict` already makes `/usr`, `/boot`, `/efi`, and `/etc` read-only, which covers those files. `/var` is not one of those read-only mounts. A secret directory that contains a path the agent must read is left visible, because an inaccessible parent cannot be reopened for one file inside it.
+
+A path is refused before launch when it is empty, not an existing directory, contains a character systemd cannot put in a bind path, or resolves to `/`, `/home`, `/root`, `/run/user`, or a path equal to or above the operator's home. An agent home that is the operator's home, or that contains it, is refused.
+
+`contain verify`, `contain doctor`, and `contain run` all report the same profile. Enforce runs the canary inside a transient unit that has the agent's properties and refuses the launch when any check fails. The canary requires a world-readable file under `/home` to be missing or a different inode, a world-writable directory on `/usr` to reject creates because that filesystem is read-only, a read-write workspace grant to stay writable, and a world-readable file inside a hidden directory to be unreadable. The installed `plk-*` wrappers ask the pinned `pipelock` binary for the property list at launch, so a later config change applies without reinstalling the wrapper. A helper failure stops the wrapper.
+
+These limits remain. A process that can create a user namespace can remount filesystems inside it. The agent can still see its own `/proc`. Private `/tmp` is shared with the network-namespace anchor and its forwarders. Units the operator wrote by hand, including a service installed outside `contain install`, are not changed.
 
 ### Managed metrics invariant
 

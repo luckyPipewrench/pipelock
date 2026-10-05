@@ -122,8 +122,14 @@ func TestWriteBundle(t *testing.T) {
 	if _, err := WriteBundle(path, data); err == nil {
 		t.Fatal("cache underneath a regular file accepted")
 	}
-	if err := os.WriteFile(filepath.Join(dir, "pipelock", "exec-ca", "block"), data, 0o600); err != nil {
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteBundle(dir, data); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("non-regular bundle path err=%v", err)
 	}
 }
 

@@ -317,6 +317,15 @@ func TestConfigDefaultsAndOverrides(t *testing.T) {
 	if err != nil || got.proxyURL != "http://127.0.0.1:9876" || got.caFile != ca {
 		t.Fatalf("resolved=%+v err=%v", got, err)
 	}
+	for _, listen := range []string{"':9876'", "'[::]:9876'", "'[::0]:9876'", "'[0:0:0:0:0:0:0:0]:9876'"} {
+		alt := filepath.Join(filepath.Dir(ca), "unspecified.yaml")
+		if err := os.WriteFile(alt, []byte("fetch_proxy:\n  listen: "+listen+"\ntls_interception:\n  ca_cert: ca.pem\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := resolveOptions(options{configFile: alt}, false, false); err != nil || got.proxyURL != "http://127.0.0.1:9876" {
+			t.Fatalf("listen %s resolved=%+v err=%v", listen, got, err)
+		}
+	}
 	got, err = resolveOptions(options{configFile: file, proxyURL: "http://localhost:4321/", caFile: "override"}, true, true)
 	if err != nil || got.proxyURL != "http://localhost:4321" || got.caFile != "override" {
 		t.Fatalf("overrides=%+v err=%v", got, err)

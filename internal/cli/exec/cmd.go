@@ -119,7 +119,7 @@ func resolveOptions(opts options, proxyOverride, caOverride bool) (options, erro
 			if err != nil {
 				return opts, fmt.Errorf("resolve config listener; set --proxy-url: %w", err)
 			}
-			if host == "" || host == "0.0.0.0" || host == "::" {
+			if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 				host = "127.0.0.1"
 			}
 			opts.proxyURL = "http://" + net.JoinHostPort(host, port)

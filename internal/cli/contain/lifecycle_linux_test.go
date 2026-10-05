@@ -32,6 +32,7 @@ func lifecycleFixture() (*containRunLifecycle, map[string]string) {
 }
 
 func bindLifecycleFixture(l *containRunLifecycle, fields map[string]string) {
+	l.record.OwnershipObserved = true
 	l.record.AdmissionObserved = true
 	l.record.InvocationID, l.record.ControlGroup = fields["InvocationID"], fields["ControlGroup"]
 }
@@ -527,6 +528,9 @@ func TestTransientTypedBindReadStillStopsOwnedService(t *testing.T) {
 		waits := 0
 		b.wait = func(context.Context, time.Duration) error {
 			waits++
+			if fields["ActiveState"] == "inactive" {
+				return nil
+			}
 			if stage == "admission-persistent" || (stage == "cleanup-persistent" && waits <= 2) || stage == "identity" {
 				return errors.New("no further poll")
 			}
@@ -578,10 +582,10 @@ func TestTransientTypedBindReadStillStopsOwnedService(t *testing.T) {
 			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
 		}
 	})
-	t.Run("unobserved admission is not stopped", func(t *testing.T) {
+	t.Run("persistent bind outage still stops witnessed ownership", func(t *testing.T) {
 		reads, actions, active, l, err := supervise(t, "admission-persistent")
-		if err == nil || actions != 0 || active != "active" || l.record.AdmissionObserved || l.record.CleanupComplete || reads != 1 {
-			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		if err == nil || actions != 1 || active != "inactive" || l.record.AdmissionObserved || !l.record.OwnershipObserved || !l.record.CleanupComplete || l.record.Phase != "incomplete" || reads < 1 {
+			t.Fatalf("reads=%d actions=%d active=%s owned=%v admitted=%v cleanup=%v phase=%s err=%v", reads, actions, active, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, l.record.Phase, err)
 		}
 	})
 	t.Run("owned service stops when the typed read keeps failing", func(t *testing.T) {
@@ -622,6 +626,84 @@ func lifecycleTestOwner(t *testing.T) uint32 {
 		t.Fatal(err)
 	}
 	return uint32(uid)
+}
+
+func TestLifecycleOwnershipWitnessSeparateFromAdmission(t *testing.T) {
+	entries := func(t *testing.T, l *containRunLifecycle) []systemdBindEntry {
+		t.Helper()
+		got, err := entriesFromCanonicalBinds(l.record.FilesystemBindPaths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	supervise := func(t *testing.T, mutate func(reads int, fields map[string]string) ([]systemdBindEntry, []systemdBindEntry, error)) (actions int, active string, l *containRunLifecycle, err error) {
+		t.Helper()
+		l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+		valid := entries(t, l)
+		b := lifecycleTestBackend(fields)
+		b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
+		b.action = func(context.Context, string, ...string) error {
+			actions++
+			fields["ActiveState"], fields["MainPID"] = "inactive", "0"
+			return nil
+		}
+		b.wait = func(context.Context, time.Duration) error {
+			if fields["ActiveState"] == "inactive" {
+				return nil
+			}
+			return errors.New("no further poll")
+		}
+		b.show = func(context.Context, string) (map[string]string, error) {
+			observed := make(map[string]string, len(fields))
+			for key, value := range fields {
+				observed[key] = value
+			}
+			return observed, nil
+		}
+		reads := 0
+		b.binds = func(context.Context, string) ([]systemdBindEntry, []systemdBindEntry, error) {
+			reads++
+			if mutate != nil {
+				return mutate(reads, fields)
+			}
+			return valid, nil, nil
+		}
+		done := make(chan error, 1)
+		done <- nil
+		err = superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
+		return actions, fields["ActiveState"], l, err
+	}
+
+	t.Run("bind outage stops witnessed ownership without admission", func(t *testing.T) {
+		actions, active, l, err := supervise(t, func(int, map[string]string) ([]systemdBindEntry, []systemdBindEntry, error) {
+			return nil, nil, errors.New("typed bind reader unavailable throughout admission")
+		})
+		if err == nil || actions != 1 || active != "inactive" || !l.record.OwnershipObserved || l.record.AdmissionObserved || !l.record.CleanupComplete || l.record.Phase != "incomplete" {
+			t.Fatalf("actions=%d active=%s owned=%v admitted=%v cleanup=%v phase=%s err=%v", actions, active, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, l.record.Phase, err)
+		}
+	})
+	t.Run("ownership never witnessed is not stopped", func(t *testing.T) {
+		actions, active, l, err := supervise(t, func(_ int, fields map[string]string) ([]systemdBindEntry, []systemdBindEntry, error) {
+			fields["Description"] = "unrelated"
+			return nil, nil, errors.New("typed bind reader unavailable")
+		})
+		if err == nil || actions != 0 || active != "active" || l.record.OwnershipObserved || l.record.AdmissionObserved || l.record.CleanupComplete || !strings.Contains(err.Error(), "cannot clean up an unobserved") {
+			t.Fatalf("actions=%d active=%s owned=%v admitted=%v cleanup=%v err=%v", actions, active, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("invocation replaced during bind retry is not stopped", func(t *testing.T) {
+		actions, active, l, err := supervise(t, func(reads int, fields map[string]string) ([]systemdBindEntry, []systemdBindEntry, error) {
+			if reads == 1 {
+				fields["InvocationID"] = strings.Repeat("c", 32)
+				return nil, nil, errors.New("transport blip at replacement")
+			}
+			return nil, nil, errors.New("typed bind reader unavailable")
+		})
+		if err == nil || actions != 0 || active != "active" || l.record.OwnershipObserved || l.record.AdmissionObserved || l.record.CleanupComplete {
+			t.Fatalf("actions=%d active=%s owned=%v admitted=%v cleanup=%v err=%v", actions, active, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
 }
 
 func TestLifecyclePendingAdmissionDoesNotGrantOwnership(t *testing.T) {

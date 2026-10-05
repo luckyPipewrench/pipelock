@@ -32,12 +32,25 @@ import (
 )
 
 const (
-	lifecycleCleanupTimeout    = 12 * time.Second
-	lifecycleClientTimeout     = 2 * time.Second
-	lifecycleAdmissionTimeout  = 3 * time.Second
-	lifecyclePollInterval      = 50 * time.Millisecond
-	lifecycleFilename          = "lifecycle.json"
-	lifecycleDescriptionPrefix = "pipelock-contain-lifecycle:"
+	lifecycleCleanupTimeout   = 12 * time.Second
+	lifecycleClientTimeout    = 2 * time.Second
+	lifecycleAdmissionTimeout = 3 * time.Second
+	lifecyclePollInterval     = 50 * time.Millisecond
+	// lifecycleCommandBudget is the deadline lifecycleSystemCommand gives each
+	// systemd helper. Cleanup reserves a multiple of it so an optional bind
+	// retry cannot spend the commands that still have to run.
+	lifecycleCommandBudget = 2 * time.Second
+	// Optional bind retries get one helper budget. They stop earlier when the
+	// parent deadline no longer holds the reserve below.
+	lifecycleBindRetryBudget = lifecycleCommandBudget
+	// After the first cleanup bind check returns, these helpers still have to
+	// finish before stop: argv, the invocation recheck, the confirming bind
+	// read, and the stop action.
+	lifecycleCommandsAfterFirstBindCheck = 4
+	// After the confirming bind check returns, only stop remains.
+	lifecycleCommandsAfterConfirmingBindCheck = 1
+	lifecycleFilename                         = "lifecycle.json"
+	lifecycleDescriptionPrefix                = "pipelock-contain-lifecycle:"
 )
 
 func containRunLifecycleContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -174,6 +187,11 @@ type lifecycleBackend struct {
 // and it is not permission to treat display text as a typed tuple.
 var errLifecycleTypedObservation = errors.New("typed lifecycle bind observation failed")
 
+// errLifecycleInvocationChanged means the invocation id moved while it was
+// being checked. That unit is not the reserved one, so it is not admitted
+// and cleanup does not stop it.
+var errLifecycleInvocationChanged = errors.New("invocation changed during typed command observation")
+
 // Immediate test doubles return without sleeping. Cap those polls so a
 // persistent error cannot busy-loop inside a deadline that is still open.
 const lifecycleTypedRetryInstantCap = 8
@@ -237,7 +255,7 @@ func lifecycleSystemctl(ctx context.Context, args ...string) (string, int, error
 }
 
 func lifecycleSystemCommand(ctx context.Context, binary string, args ...string) (string, int, error) {
-	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+	bounded, cancel := context.WithTimeout(ctx, lifecycleCommandBudget)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, binary, args...) //nolint:gosec // G204: binary is one of the two fixed systemd helper paths, never user input.
 	cmd.Env = lifecycleManagerEnvironment()
@@ -447,11 +465,29 @@ func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid
 // text is used only when that reader is unavailable, and then a missing
 // option is a failure rather than norbind.
 func confirmLifecycleOwned(ctx context.Context, b lifecycleBackend, fields map[string]string, record containLifecycleRecord, uid uint32) error {
-	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
-		return lifecycleOwned(fields, record, uid)
-	}
 	if err := lifecycleServiceIdentity(fields, record, uid); err != nil {
 		return err
+	}
+	if err := confirmLifecycleFilesystem(ctx, b, fields, record); err != nil {
+		return err
+	}
+	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	// The bind read is its own manager observation. A unit whose user or
+	// invocation changed during that read is not the one just identified.
+	current, err := b.show(ctx, record.Unit)
+	if err != nil {
+		return err
+	}
+	return lifecycleServiceIdentity(current, record, uid)
+}
+
+// confirmLifecycleFilesystem checks the bind and profile properties. It does
+// not decide whether the unit is the reserved invocation.
+func confirmLifecycleFilesystem(ctx context.Context, b lifecycleBackend, fields map[string]string, record containLifecycleRecord) error {
+	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
 	}
 	observed, err := observeLifecycleBinds(ctx, b, record.Unit, fields)
 	if err != nil {
@@ -696,38 +732,114 @@ func retryLifecycleTypedObservation(ctx context.Context, b lifecycleBackend, res
 	}
 }
 
-// lifecycleOwnershipForAdmission retries a transient typed read inside the
-// admission deadline. Failure leaves the invocation unobserved. Cleanup must
-// not stop a unit whose ownership was never established.
-func lifecycleOwnershipForAdmission(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32) error {
+// lifecycleFilesystemAdmission retries a transient typed bind read inside the
+// admission deadline. Identity is the caller's job. A bind failure is not an
+// ownership failure: the caller records that separately.
+func lifecycleFilesystemAdmission(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32) error {
+	if l.record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return confirmLifecycleFilesystem(ctx, b, fields, l.record)
+	}
+	witnessedID := fields["InvocationID"]
 	return retryLifecycleTypedObservation(ctx, b, 0, func() error {
-		return confirmLifecycleOwned(ctx, b, fields, l.record, uid)
+		current, err := b.show(ctx, l.record.Unit)
+		if err != nil {
+			return err
+		}
+		if current["InvocationID"] != witnessedID {
+			return errLifecycleInvocationChanged
+		}
+		if err := lifecycleServiceIdentity(current, l.record, uid); err != nil {
+			return err
+		}
+		return confirmLifecycleFilesystem(ctx, b, current, l.record)
 	})
 }
 
-// lifecycleOwnershipAllowsAction retries a transient typed read inside the
-// cleanup deadline, leaving one command budget so stop can still be issued.
-// When the read still fails, stop is permitted only if this invocation was
-// already admitted and its identity still matches. A mismatched unit is not
-// stopped. An unobserved invocation is not stopped.
-func lifecycleOwnershipAllowsAction(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32) error {
-	err := retryLifecycleTypedObservation(ctx, b, lifecycleClientTimeout, func() error {
-		return confirmLifecycleOwned(ctx, b, fields, l.record, uid)
-	})
+// lifecycleOwnershipAllowsAction reads filesystem binds before a destructive
+// cleanup action. The optional retry is capped so the remaining helper
+// commands still fit in the parent deadline. A bind outage does not block
+// stop when ownership was already witnessed; a unit whose identity does not
+// match is not stopped.
+func lifecycleOwnershipAllowsAction(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32, commandsAfter int) error {
+	reserve := time.Duration(commandsAfter) * lifecycleCommandBudget
+	err := confirmLifecycleOwned(ctx, b, fields, l.record, uid)
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, errLifecycleTypedObservation) && l.record.AdmissionObserved {
+	if errors.Is(err, errLifecycleTypedObservation) && lifecycleObservationRetryable(ctx, reserve) {
+		allowance := lifecycleBindRetryAllowance(ctx, reserve)
+		if allowance > 0 {
+			retryCtx, cancel := context.WithTimeout(ctx, allowance)
+			retried := retryLifecycleTypedObservation(retryCtx, b, 0, func() error {
+				return confirmLifecycleOwned(retryCtx, b, fields, l.record, uid)
+			})
+			cancel()
+			switch {
+			case retried == nil:
+				return nil
+			case errors.Is(retried, context.DeadlineExceeded) && ctx.Err() == nil:
+				err = fmt.Errorf("%w: optional bind retry exhausted its budget", errLifecycleTypedObservation)
+			default:
+				err = retried
+			}
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, errLifecycleTypedObservation) && l.record.OwnershipObserved {
 		return lifecycleServiceIdentity(fields, l.record, uid)
 	}
 	return err
 }
 
-// stopLifecycleService acts only after admission has been observed and bound.
-// Every destructive operation rechecks the invocation. A vanished service is
-// evidence only when its previously observed cgroup is also empty/absent.
+// lifecycleOwnershipStillWitnessed rechecks identity and argv after a filesystem
+// admission failure. A replacement invocation or a failed argv read is not a
+// cleanup witness. The bind error stays with the caller.
+func lifecycleOwnershipStillWitnessed(ctx context.Context, b lifecycleBackend, l *containRunLifecycle, uid uint32, witnessedID string) (bool, error) {
+	if err := verifyLifecycleArgv(ctx, b, l); err != nil {
+		return false, err
+	}
+	current, err := b.show(ctx, l.record.Unit)
+	if err != nil {
+		return false, err
+	}
+	if current["InvocationID"] != witnessedID {
+		return false, errLifecycleInvocationChanged
+	}
+	if err := lifecycleServiceIdentity(current, l.record, uid); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// lifecycleBindRetryAllowance is the optional retry window. It is one helper
+// budget, or less when that budget would enter the reserve kept for the
+// commands that still have to run.
+func lifecycleBindRetryAllowance(ctx context.Context, reserve time.Duration) time.Duration {
+	allowance := lifecycleBindRetryBudget
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return allowance
+	}
+	room := time.Until(deadline) - reserve
+	if room < allowance {
+		allowance = room
+	}
+	if allowance < 0 {
+		return 0
+	}
+	return allowance
+}
+
+// stopLifecycleService acts only after ownership has been witnessed. Filesystem
+// admission is not that witness: a bind outage still stops the invocation
+// whose identity, cgroup, user, and argv were verified, and it leaves
+// admission false. Every destructive operation rechecks the invocation. A
+// vanished service is evidence only when its previously observed cgroup is
+// also empty/absent.
 func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint32, b lifecycleBackend) error {
-	if !l.record.AdmissionObserved {
+	if !l.record.OwnershipObserved {
 		return errors.New("cannot clean up an unobserved lifecycle invocation")
 	}
 	start := b.now()
@@ -763,7 +875,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		if fields["LoadState"] == "not-found" {
 			return errors.New("lifecycle unit vanished while its cgroup remained populated")
 		}
-		if err := lifecycleOwnershipAllowsAction(ctx, b, fields, l, uid); err != nil {
+		if err := lifecycleOwnershipAllowsAction(ctx, b, fields, l, uid, lifecycleCommandsAfterFirstBindCheck); err != nil {
 			return err
 		}
 		if err := verifyLifecycleArgv(ctx, b, l); err != nil {
@@ -775,7 +887,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		if err != nil {
 			return err
 		}
-		if err := lifecycleOwnershipAllowsAction(ctx, b, confirmed, l, uid); err != nil {
+		if err := lifecycleOwnershipAllowsAction(ctx, b, confirmed, l, uid, lifecycleCommandsAfterConfirmingBindCheck); err != nil {
 			return err
 		}
 		if !l.record.StopRequested {
@@ -874,7 +986,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 			break
 		}
 		if !lifecycleAdmissionPending(fields, l.record) {
-			if err := lifecycleOwnershipForAdmission(admission, b, fields, l, uid); err != nil {
+			if err := lifecycleServiceIdentity(fields, l.record, uid); err != nil {
 				primaryErr = err
 				break
 			}
@@ -887,14 +999,33 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 				primaryErr = err
 				break
 			}
-			if err := lifecycleOwnershipForAdmission(admission, b, confirmed, l, uid); err != nil {
+			if err := lifecycleServiceIdentity(confirmed, l.record, uid); err != nil {
 				primaryErr = err
 				break
 			}
 			if confirmed["InvocationID"] != fields["InvocationID"] {
-				primaryErr = errors.New("invocation changed during typed command observation")
+				primaryErr = errLifecycleInvocationChanged
 				break
 			}
+			fsErr := lifecycleFilesystemAdmission(admission, b, confirmed, l, uid)
+			if fsErr != nil {
+				witnessed, witnessErr := lifecycleOwnershipStillWitnessed(admission, b, l, uid, confirmed["InvocationID"])
+				if !witnessed {
+					primaryErr = witnessErr
+					break
+				}
+				// Identity and argv matched. The bind or profile read did not.
+				// Record the cleanup witness and leave admission false.
+				l.record.OwnershipObserved = true
+				l.record.ArgvObserved = true
+				l.record.InvocationID, l.record.ControlGroup = confirmed["InvocationID"], confirmed["ControlGroup"]
+				primaryErr = fsErr
+				if writeErr := l.write(); writeErr != nil {
+					primaryErr = errors.Join(fsErr, writeErr)
+				}
+				break
+			}
+			l.record.OwnershipObserved = true
 			l.record.AdmissionObserved = true
 			l.record.ArgvObserved = true
 			l.record.InvocationID, l.record.ControlGroup = fields["InvocationID"], fields["ControlGroup"]

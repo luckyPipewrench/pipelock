@@ -7,11 +7,17 @@ package contain
 // incomplete/missing record cannot establish cleanup. The hashes describe the
 // candidate and loaded signing config, not an independent live-proxy attestation.
 type containLifecycleRecord struct {
-	Schema                          int               `json:"schema"`
-	RunID                           string            `json:"run_id"`
-	Unit                            string            `json:"unit"`
-	Phase                           string            `json:"phase"`
-	Final                           bool              `json:"final"`
+	Schema int    `json:"schema"`
+	RunID  string `json:"run_id"`
+	Unit   string `json:"unit"`
+	Phase  string `json:"phase"`
+	Final  bool   `json:"final"`
+	// OwnershipObserved is the cleanup witness: reserved identity, invocation,
+	// cgroup, user, and argv all matched. It is not filesystem admission.
+	OwnershipObserved bool `json:"ownership_observed"`
+	// AdmissionObserved is filesystem admission only. A failed bind or profile
+	// read leaves it false even when OwnershipObserved is true, and cleanup
+	// must not report that failure as a successful admission.
 	AdmissionObserved               bool              `json:"admission_observed"`
 	ArgvObserved                    bool              `json:"argv_observed"`
 	InvocationID                    string            `json:"invocation_id,omitempty"`

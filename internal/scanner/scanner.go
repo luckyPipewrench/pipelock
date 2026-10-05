@@ -3484,6 +3484,7 @@ type knownValueWindow struct {
 // knownValueWindowIndex is sorted by window bytes. A scanner owns it for its
 // lifetime, so lookups are read-only and need no synchronization.
 type knownValueWindowIndex struct {
+	byteRanges *[257]int // exact ranges into the shared sorted window slice
 	windows    []knownValueWindowCandidate
 	prefixes   *knownValueWindowPrefixes
 	valueIndex int
@@ -3543,8 +3544,12 @@ func (i knownValueWindowIndex) lookup(window string) []knownValueWindowCandidate
 	}
 	var key [minKnownSecretSubstringLen]byte
 	copy(key[:], window)
-	first := sort.Search(len(i.windows), func(n int) bool {
-		return bytes.Compare(i.windows[n].window.value[:], key[:]) >= 0
+	lo, hi := 0, len(i.windows)
+	if i.byteRanges != nil {
+		lo, hi = i.byteRanges[int(key[0])], i.byteRanges[int(key[0])+1]
+	}
+	first := lo + sort.Search(hi-lo, func(n int) bool {
+		return bytes.Compare(i.windows[lo+n].window.value[:], key[:]) >= 0
 	})
 	if first == len(i.windows) || i.windows[first].window.value != key {
 		return nil
@@ -3700,9 +3705,17 @@ func buildKnownValueWindows(budget *knownValueWindowBudget, lists ...[]string) (
 			prefixes.add(string(candidate.window.value[:knownValueWindowPrefixLen]))
 		}
 	}
+	ranges := new([257]int)
+	pos := 0
+	for firstByte := 0; firstByte <= 256; firstByte++ {
+		for pos < len(candidates) && int(candidates[pos].window.value[0]) < firstByte {
+			pos++
+		}
+		ranges[firstByte] = pos
+	}
 	set := make(knownValueWindowSet, len(values))
 	for valueIndex, value := range values {
-		set[value] = knownValueWindowIndex{windows: candidates, prefixes: prefixes, valueIndex: valueIndex, count: counts[valueIndex]}
+		set[value] = knownValueWindowIndex{windows: candidates, prefixes: prefixes, byteRanges: ranges, valueIndex: valueIndex, count: counts[valueIndex]}
 	}
 	return set, nil
 }

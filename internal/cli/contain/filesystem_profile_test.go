@@ -303,21 +303,23 @@ func TestFilesystemProfileProperties_Refusals(t *testing.T) {
 	}
 }
 
-func TestFilesystemProfileProperties_SkipsInaccessibleParentOfProof(t *testing.T) {
+func TestFilesystemProfileProperties_RefusesInaccessibleParentOfProof(t *testing.T) {
 	in := enforceInput()
 	in.PostureProofPath = "/var/lib/pipelock/recorder/proof.json"
 	in.Exists = existsAll("/var/lib/pipelock/recorder", "/etc/pipelock/tls")
-	got, err := filesystemProfileProperties(in)
-	if err != nil {
-		t.Fatal(err)
+	_, err := filesystemProfileProperties(in)
+	if err == nil || !strings.Contains(err.Error(), "/var/lib/pipelock/recorder") || !strings.Contains(err.Error(), "/var/lib/pipelock/recorder/proof.json") {
+		t.Fatalf("err = %v", err)
 	}
-	for _, prop := range got.Properties {
-		if strings.Contains(prop, "InaccessiblePaths=/var/lib/pipelock/recorder") {
-			t.Fatalf("hid the posture proof parent: %v", got.Properties)
-		}
-	}
-	if !sliceContains(got.Properties, "InaccessiblePaths=/etc/pipelock/tls") {
-		t.Fatalf("missing tls hide: %v", got.Properties)
+}
+
+func TestFilesystemProfileProperties_RefusesOptionalSecretOverReadablePath(t *testing.T) {
+	in := enforceInput()
+	in.OptionalSecretPaths = []string{"/srv/agent-home"}
+	in.Exists = existsAll("/srv/agent-home")
+	_, err := filesystemProfileProperties(in)
+	if err == nil || !strings.Contains(err.Error(), "secret path /srv/agent-home") || !strings.Contains(err.Error(), "readable path /srv/agent-home") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -345,8 +347,8 @@ func TestFilesystemProfileProperties_RequiredKeyCannotParentReadablePath(t *test
 	in.RequiredSecretPaths = []string{"/etc/pipelock"}
 	in.Exists = existsAll("/etc/pipelock", "/srv/agent-home")
 	_, err := filesystemProfileProperties(in)
-	if err == nil || !strings.Contains(err.Error(), "signing key") {
-		t.Fatalf("error = %v, want a signing-key refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "/etc/pipelock") || !strings.Contains(err.Error(), "/etc/pipelock/ca.pem") {
+		t.Fatalf("error = %v, want both paths named", err)
 	}
 }
 

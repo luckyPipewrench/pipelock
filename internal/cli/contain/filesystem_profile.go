@@ -51,10 +51,10 @@ type filesystemProfileInput struct {
 	RequiredSecretPaths []string
 	// OptionalSecretPaths are configured secret locations. A missing path is
 	// skipped. A path that is or contains something the agent must read is
-	// skipped, because InaccessiblePaths on a parent cannot be punched through.
+	// refused, because InaccessiblePaths on a parent cannot be punched through.
 	OptionalSecretPaths []string
 	// ReadablePaths are files the agent must still be able to read. A secret
-	// path that is equal to or a parent of one of these is not hidden.
+	// path that is equal to or a parent of one of these cannot be hidden.
 	ReadablePaths []string
 	Exists        func(string) (bool, error)
 	Eval          func(string) (resolved string, isDir bool, err error)
@@ -318,10 +318,11 @@ func (in filesystemProfileInput) inaccessiblePaths() ([]string, error) {
 	out := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		if blocked, ok := filesystemPathBlocks(candidate, readable); ok {
+			label := candidate
 			if original, must := required[candidate]; must {
-				return nil, fmt.Errorf("signing key %s cannot be hidden because it contains %s", original, blocked)
+				label = original
 			}
-			continue
+			return nil, fmt.Errorf("secret path %s cannot be hidden because it contains readable path %s", label, blocked)
 		}
 		ok, statErr := in.exists(candidate)
 		if statErr != nil {

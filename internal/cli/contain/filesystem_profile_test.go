@@ -431,7 +431,8 @@ func TestFilesystemProfileProperties_GrantPathWithSpace(t *testing.T) {
 	if !sameBindList(parsed, got.BindPaths) {
 		t.Fatalf("parsed = %v, binds = %v", parsed, got.BindPaths)
 	}
-	if filesystemBindsDigest(got) == "" || filesystemBindsDigest(got) != filesystemBindsDigest(got) {
+	digest := filesystemBindsDigest(got)
+	if digest == "" || digest != filesystemBindsDigest(got) {
 		t.Fatal("digest was empty")
 	}
 }

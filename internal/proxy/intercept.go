@@ -1855,11 +1855,7 @@ func newInterceptHandler(
 		// policy decision already bound the actor.
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
-		// Client validators do not establish approval of a complete response.
-		// Fetch the full representation while preserving its upstream cache policy.
-		r.Header.Del("If-None-Match")
-		r.Header.Del("If-Modified-Since")
-		r.Header.Del("If-Range")
+		applyFullResponsePolicy(r.Header, nil)
 
 		// Inject mediation envelope (and attach RFC 9421 signature when
 		// the envelope emitter has a signer) before forwarding on the
@@ -1974,7 +1970,7 @@ func newInterceptHandler(
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
 		stripUpstreamPipelockNamespace(resp)
-		if resp.StatusCode == http.StatusNotModified {
+		if !applyFullResponsePolicy(nil, resp) {
 			ic.Logger.LogBlocked(actx, "browser_cache", "unbound not-modified response")
 			ic.Metrics.RecordTLSResponseBlocked("browser_cache")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

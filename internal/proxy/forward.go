@@ -2141,6 +2141,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// attacker-supplied identity hint to the destination service.
 	stripInternalIdentity(outReq)
 	removeHopByHopHeaders(outReq.Header)
+	applyFullResponsePolicy(outReq.Header, nil)
 	responseencoding.RequestIdentity(outReq.Header)
 
 	// Inject mediation envelope (and attach RFC 9421 signature when the
@@ -2327,6 +2328,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
+	if !applyFullResponsePolicy(nil, resp) {
+		p.logger.LogBlocked(actx, "browser_cache", "unbound not-modified response")
+		p.metrics.RecordBlocked(r.URL.Hostname(), "browser_cache", time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID: actionID, RequestID: requestID, Agent: agent,
+			Method: r.Method, Target: targetURL, Layer: "browser_cache",
+			Pattern: "unbound_not_modified", Taint: forwardTaint,
+		})))
+		http.Error(w, "unbound not-modified response", http.StatusBadGateway)
+		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
+		outcomeReason = "unbound_not_modified"
+		return
+	}
 	// net/http preflights only the first Location value and skips the
 	// callback entirely for a missing first value or non-replayable body.
 	// Do not release an alternate or parser-ambiguous browser destination.

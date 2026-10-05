@@ -1820,6 +1820,7 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
 func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	applyFullResponsePolicy(req.Header, nil)
 	// Use the emitter snapshot from admission time, not the current
 	// global atomic. A reload between ServeHTTP and RoundTrip must
 	// not flip the signing decision for an in-flight request.
@@ -2206,6 +2207,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		requestActionID = actionID
 	}
 	targetURL := resp.Request.URL.String()
+	if !applyFullResponsePolicy(nil, resp) {
+		if responseReceiptState != nil {
+			responseReceiptState.responseBlocked = true
+		}
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "browser_cache")
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: "unbound_not_modified",
+			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		return fmt.Errorf("unbound not-modified response")
+	}
 	// Response taint: observe this response against the SAME transport-independent
 	// taint key the request path evaluated, so a prompt-injection hit or an
 	// untrusted-origin response introduces taint that a later request on any

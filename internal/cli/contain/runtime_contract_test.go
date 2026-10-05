@@ -13,8 +13,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/launchcontract"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
+
+func TestRuntimeContractSharedParity(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	got := contractEnvMap(env)
+	want := launchcontract.Vars(launchcontract.Contain, proxyURLFor(env.proxyPort), contractNoProxy, env.caBundlePath, "")
+	if len(got) != len(want)+3 {
+		t.Fatalf("contain has %d variables, want shared %d plus three containment-specific assignments", len(got), len(want))
+	}
+	for _, v := range want {
+		if got[v.Name] != v.Value {
+			t.Errorf("%s=%q want %q", v.Name, got[v.Name], v.Value)
+		}
+	}
+	for _, key := range []string{"npm_config_ignore_scripts", "NODE_OPTIONS", "XAUTHORITY"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing containment-specific assignment %s", key)
+		}
+	}
+}
 
 // contractEnvMap collapses the ordered contract into name->value for lookup.
 func contractEnvMap(env *installEnv) map[string]string {

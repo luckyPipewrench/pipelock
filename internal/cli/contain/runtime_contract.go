@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/launchcontract"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
@@ -23,7 +24,8 @@ import (
 // HTTPS_PROXY (notably node/undici) or read its own config file looked
 // "broken" with a generic network error.
 //
-// This file is the single source of truth for the contract. plk-launch, the
+// The proxy/CA names come from internal/launchcontract. This file adds the
+// containment-specific policy and identity assignments. plk-launch, the
 // /etc/profile.d login-shell script, the pipelock-* utility wrappers, and the
 // `contain doctor` self-test all derive from runtimeContractVars so the
 // surfaces never drift.
@@ -127,39 +129,19 @@ func runtimeContractVars(env *installEnv) []contractVar {
 	caBundle := env.caBundlePath
 	shim := undiciShimPathOrDefault(env)
 
-	return []contractVar{
-		// Proxy (upper + lower; clients disagree on which they read).
-		{"HTTP_PROXY", proxy},
-		{"http_proxy", proxy},
-		{"HTTPS_PROXY", proxy},
-		{"https_proxy", proxy},
-		{"ALL_PROXY", proxy},
-		{"all_proxy", proxy},
-		{"NO_PROXY", contractNoProxy},
-		{"no_proxy", contractNoProxy},
-		// CA trust for the Pipelock MITM CA across tool ecosystems.
-		{"SSL_CERT_FILE", caBundle},
-		{"REQUESTS_CA_BUNDLE", caBundle},
-		{"CURL_CA_BUNDLE", caBundle},
-		{"GIT_SSL_CAINFO", caBundle},
-		{"CARGO_HTTP_CAINFO", caBundle},
-		{"PIP_CERT", caBundle},
-		// Environment config outranks an untrusted project .npmrc. A deliberate
-		// command-line --ignore-scripts=false still provides the operator escape hatch.
-		{"npm_config_ignore_scripts", "1"},
-		// Node appends this bundle to its built-in trust store. Use the same
-		// current, combined bundle as every sibling client so Node cannot trust
-		// a stale single-CA export after a CA rotation.
-		{"NODE_EXTRA_CA_CERTS", caBundle},
-		// Older node fetch()/undici ignores *_PROXY unless a global dispatcher
-		// is installed; the shim does that at startup when undici is available.
-		{"NODE_OPTIONS", "--require " + shim},
-		// Newer node fetch()/undici honors *_PROXY natively when this flag exists.
-		{"NODE_USE_ENV_PROXY", "1"},
-		// Xvfb requires its managed cookie from process startup. Keep the
-		// operator's ambient XAUTHORITY out; this path is owned by the agent.
-		{"XAUTHORITY", displayAuthorityPath(env)},
+	vars := launchcontract.Vars(launchcontract.Contain, proxy, contractNoProxy, caBundle, "")
+	result := make([]contractVar, 0, len(vars)+3)
+	for _, v := range vars {
+		switch v.Name {
+		case "NODE_EXTRA_CA_CERTS":
+			// Preserve containment's npm policy and the original assignment order.
+			result = append(result, contractVar{"npm_config_ignore_scripts", "1"})
+		case "NODE_USE_ENV_PROXY":
+			result = append(result, contractVar{"NODE_OPTIONS", "--require " + shim})
+		}
+		result = append(result, contractVar{v.Name, v.Value})
 	}
+	return append(result, contractVar{"XAUTHORITY", displayAuthorityPath(env)})
 }
 
 // containedLaunchIdentityVars returns the identity block that LEADS the

@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/cli/evidence"
+	cliexec "github.com/luckyPipewrench/pipelock/internal/cli/exec"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
 	cliguard "github.com/luckyPipewrench/pipelock/internal/cli/guard"
@@ -96,6 +97,7 @@ Quick start:
 		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
 
 	cmd.AddCommand(
+		cliexec.Cmd(),
 		// External receipt anchoring
 		anchor.Cmd(),
 		// Assess

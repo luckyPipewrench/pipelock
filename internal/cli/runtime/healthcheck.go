@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/proxyhealth"
 )
 
 // HealthcheckCmd returns the healthcheck cobra command.
@@ -31,14 +33,9 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s/health", addr), nil)
+			resp, err := proxyhealth.Get(ctx, http.DefaultClient, "http://"+addr)
 			if err != nil {
-				return fmt.Errorf("health check failed: %w", err)
-			}
-
-			resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: URL from user flag, intentional
-			if err != nil {
-				return fmt.Errorf("health check failed: %w", err)
+				return err
 			}
 			defer func() { _ = resp.Body.Close() }()
 

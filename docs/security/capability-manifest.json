@@ -506,6 +506,32 @@
       }
     },
     {
+      "id": "cooperative-command-launch",
+      "name": "Cooperative command launch",
+      "summary": "Checks a running proxy before launching a command with proxy and CA environment settings.",
+      "tier": "Free",
+      "visibility": "operator",
+      "gate": {
+        "kind": "free"
+      },
+      "implementation": {
+        "file": "internal/cli/exec/cmd.go",
+        "symbol": "newCmd"
+      },
+      "operator_entry_point": {
+        "kind": "command",
+        "value": "pipelock exec",
+        "source": {
+          "file": "internal/cli/exec/cmd.go",
+          "symbol": "newCmd"
+        }
+      },
+      "availability": {
+        "scope": "platform_dependent",
+        "qualifier": "Steers cooperative Unix and Windows clients through a running proxy; programs can ignore environment settings. Use contain or sandbox for operating-system enforcement."
+      }
+    },
+    {
       "id": "global-canary-tokens",
       "name": "Global canary tokens",
       "summary": "Detects configured synthetic secrets without a license gate.",

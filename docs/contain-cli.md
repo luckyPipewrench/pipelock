@@ -423,18 +423,36 @@ probe-specific rule.
 
 The containment boundary is security-correct, but a tool that ignores the proxy environment looks *broken*, it dies with a generic network error and no hint that the firewall is the cause. To close that gap, `install` provisions a complete, proxy-correct runtime contract for the contained agent so common tooling works out of the box and stays routed through Pipelock.
 
-The contract has four parts:
+The contract includes:
 
 `plk-launch` builds this environment with `env -i`, it starts from an empty environment and rebuilds only the identity block, the matrix below, the posture-proof binding, and the agent PATH. This is deliberate: `plk-launch` runs after `sudo`, which leaves operator variables standing (`DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`, `SUDO_*`), and plain `env` would pass every one of them through to the contained agent. `env -i` closes that leak, and it uses the same environment set as the `contain run` Go launcher so the two launch paths cannot drift (verify probe 14 fails if the launcher reverts to plain `env`). The tradeoff is that ambient niceties like `TERM`/`LANG` are not forwarded either; this already matched the `contain run` path, so it is not a new regression there.
 
 1. **Full environment matrix.** `plk-launch` (and the login-shell script below) export the complete proxy + CA set, because different ecosystems read different variables:
 
-   - Proxy (upper- and lower-case): `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lowercase forms, all pointing at `http://127.0.0.1:<proxy-port>`.
-   - `NO_PROXY` / `no_proxy` = `127.0.0.1,localhost,::1` (IPv6 loopback included so IPv6-first clients don't proxy a local dial).
-   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT`, and `NODE_EXTRA_CA_CERTS` → the combined bundle. Node appends it to its built-in store; using the shared bundle keeps all clients on the same rotated CA.
-   - `NODE_OPTIONS=--require <undici-shim>` (see below).
+<!-- BEGIN launchcontract:contain -->
+| Variable | Value |
+|---|---|
+| `HTTP_PROXY` | proxy URL |
+| `http_proxy` | proxy URL |
+| `HTTPS_PROXY` | proxy URL |
+| `https_proxy` | proxy URL |
+| `ALL_PROXY` | proxy URL |
+| `all_proxy` | proxy URL |
+| `NO_PROXY` | explicit bypass list |
+| `no_proxy` | explicit bypass list |
+| `SSL_CERT_FILE` | combined CA bundle |
+| `REQUESTS_CA_BUNDLE` | combined CA bundle |
+| `CURL_CA_BUNDLE` | combined CA bundle |
+| `GIT_SSL_CAINFO` | combined CA bundle |
+| `CARGO_HTTP_CAINFO` | combined CA bundle |
+| `PIP_CERT` | combined CA bundle |
+| `NODE_EXTRA_CA_CERTS` | combined CA bundle |
+| `NODE_USE_ENV_PROXY` | 1 |
+<!-- END launchcontract:contain -->
 
-2. **node undici shim** (`/etc/pipelock/contain/undici-shim.cjs`). Node's built-in `fetch()` and undici-based clients ignore `HTTPS_PROXY` unless a global dispatcher is installed. The shim installs an undici `ProxyAgent` at startup. It is best-effort: if undici cannot be required, `http`/`https`-module traffic still honors the proxy env, so the shim degrades silently rather than breaking node.
+   Containment also sets `npm_config_ignore_scripts=1`, its managed `XAUTHORITY`, and `NODE_OPTIONS=--require <undici-shim>`. Its bypass list remains `127.0.0.1,localhost,::1`. `NODE_USE_ENV_PROXY=1` enables native Node proxy support on supported versions.
+
+2. **node undici shim** (`/etc/pipelock/contain/undici-shim.cjs`). Older Node fetch and undici clients need a global dispatcher to honor proxy settings. The shim installs an undici `ProxyAgent` at startup when the module is available. If it isn't available, the shim leaves those clients unchanged. Native proxy support for both HTTP/HTTPS modules and built-in fetch requires Node 22.21+ or 24.5+ with `NODE_USE_ENV_PROXY=1`; older HTTP/HTTPS clients can ignore these settings and hit the containment network boundary instead. See the [Node runtime requirements](cli/exec.md#environment-contract).
 
 3. **Known-good wrappers** on the agent PATH: `pipelock-curl`, `pipelock-python`, `pipelock-node`. Each forces the full contract before exec'ing the real tool, so it is proxy- and CA-correct even when the caller's environment is incomplete (for example, a bare `sudo -u pipelock-agent <cmd>` that inherits no proxy env).
 

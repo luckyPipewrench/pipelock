@@ -35,6 +35,9 @@ type tokenSpan struct {
 	word  string
 	start int
 	end   int
+	// segment counts the seed boundaries (isSeedBoundary) before this token.
+	// A phrase window must start and end in the same segment.
+	segment int
 }
 
 // Detect scans text for BIP-39 seed phrases. Returns all matches found.
@@ -72,6 +75,9 @@ func DetectSpans(text string, minWords int, verifyChecksum bool) []SeedSpan {
 			if !IsWord(tokens[start].word) {
 				continue // early bail: first word not BIP-39
 			}
+			if tokens[start].segment != tokens[start+wantLen-1].segment {
+				continue // window crosses a quote or bracket boundary
+			}
 			if !allBIP39(tokens[start : start+wantLen]) {
 				continue
 			}
@@ -103,6 +109,13 @@ func DetectSpans(text string, minWords int, verifyChecksum bool) []SeedSpan {
 // numbered or bulleted backups. Broadening this closes the "split words with a
 // glyph the tokenizer ignores" evasion class.
 //
+// The query delimiters ? & = and the escape character \ also separate, and so
+// does every seed boundary rune (see isSeedBoundary). BIP-39 English words are
+// lowercase a-z only, so splitting on punctuation can never cut a real word.
+// The separator set is a superset of the scanner's text-segment delimiters
+// (scanner.isTextDLPEncodingDelimiter); a parity test in the scanner package
+// fails if the two drift.
+//
 // "." is deliberately NOT a separator: the request-body scanner joins distinct
 // JSON field values with "." (proxy.bodyDLPJoinSeparator) so cross-field DLP
 // works without merging tokens. Treating "." as intra-phrase here would let the
@@ -113,10 +126,33 @@ func isSeedSeparator(r rune) bool {
 		return true
 	}
 	switch r {
-	case ',', '_', '/', '|', ';', ':', '•', '·':
+	case ',', '_', '/', '|', ';', ':', '•', '·', '?', '&', '=', '\\':
 		return true
 	default:
-		return false
+		return isSeedBoundary(r)
+	}
+}
+
+// isSeedBoundary reports quoting and enclosing punctuation. A boundary splits
+// tokens like a separator, so a quote glued to the first or last word no
+// longer hides a phrase serialized as a JSON string (MCP arguments, request
+// bodies, receipts). It also ends the phrase: no match window spans a
+// boundary. Before these runes split tokens, the glued quote kept adjacent
+// JSON fields apart; without the boundary rule, raw JSON such as
+// `...ten words"},"name":"write_file"` lets a structural key and value
+// complete a checksum-valid mnemonic.
+//
+// The Unicode open/close (Ps, Pe) and initial/final quote (Pi, Pf) categories
+// cover curly quotes, guillemets, CJK corner brackets, and fullwidth brackets.
+// Fullwidth quote, apostrophe, and grave accent are listed explicitly: they
+// are not in those categories, and NFKC folding to ASCII happens per token,
+// after splitting.
+func isSeedBoundary(r rune) bool {
+	switch r {
+	case '"', '\'', '`', '<', '>', '＂', '＇', '｀':
+		return true
+	default:
+		return unicode.In(r, unicode.Ps, unicode.Pe, unicode.Pi, unicode.Pf)
 	}
 }
 
@@ -124,19 +160,23 @@ func isSeedSeparator(r rune) bool {
 func tokenizeWithSpans(text string) []tokenSpan {
 	tokens := make([]tokenSpan, 0, 16)
 	start := 0
+	segment := 0
 	for i := 0; i < len(text); {
 		r, size := utf8.DecodeRuneInString(text[i:])
 		if isSeedSeparator(r) {
-			appendTokenSpan(&tokens, text, start, i)
+			appendTokenSpan(&tokens, text, start, i, segment)
 			start = i + size
+			if isSeedBoundary(r) {
+				segment++
+			}
 		}
 		i += size
 	}
-	appendTokenSpan(&tokens, text, start, len(text))
+	appendTokenSpan(&tokens, text, start, len(text), segment)
 	return tokens
 }
 
-func appendTokenSpan(tokens *[]tokenSpan, text string, start, end int) {
+func appendTokenSpan(tokens *[]tokenSpan, text string, start, end, segment int) {
 	if start >= end {
 		return
 	}
@@ -152,9 +192,10 @@ func appendTokenSpan(tokens *[]tokenSpan, text string, start, end int) {
 		return
 	}
 	*tokens = append(*tokens, tokenSpan{
-		word:  word,
-		start: start,
-		end:   end,
+		word:    word,
+		start:   start,
+		end:     end,
+		segment: segment,
 	})
 }
 

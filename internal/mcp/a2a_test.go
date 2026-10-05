@@ -154,9 +154,9 @@ func TestWalkA2AJSON_NodeBudgetExceeded(t *testing.T) {
 }
 
 func TestWalkA2AJSON_DepthLimit(t *testing.T) {
-	// 25 levels deep (exceeds maxWalkDepth=20).
+	// The walker stops beyond the shared inspection bound.
 	nested := `"leaf"`
-	for range 25 {
+	for range maxWalkDepth + 1 {
 		nested = `{"a":` + nested + `}`
 	}
 	var count int
@@ -165,10 +165,9 @@ func TestWalkA2AJSON_DepthLimit(t *testing.T) {
 			count++
 		}
 	})
-	// The leaf string sits at depth 25 which exceeds maxWalkDepth=20, so the
-	// emit callback should never fire (keys named "a" are not classified).
+	// Structural keys are excluded from the classified leaf count.
 	if count != 0 {
-		t.Errorf("walker emitted %d nodes, want 0 (leaf should be unreachable at depth 25)", count)
+		t.Errorf("walker emitted %d nodes, want 0 past the inspection bound", count)
 	}
 }
 

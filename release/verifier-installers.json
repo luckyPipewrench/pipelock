@@ -19,29 +19,29 @@
     {
       "language": "TypeScript",
       "package": "@pipelock/verifier-ts",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "install_source": "npm",
       "artifact_digest": "REPLACE_WITH_NPM_DIST_INTEGRITY",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.5.1",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_5_1_TAG_COMMIT"
+        "source_ref": "verifier-v0.5.2",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_5_2_TAG_COMMIT"
       }
     },
     {
       "language": "Rust",
       "package": "pipelock-verifier-rs",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "install_source": "crates.io",
       "artifact_digest": "REPLACE_WITH_CRATES_IO_SHA256",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.5.1",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_5_1_TAG_COMMIT"
+        "source_ref": "verifier-v0.5.2",
+        "source_commit": "REPLACE_WITH_VERIFIER_V0_5_2_TAG_COMMIT"
       }
     },
     {

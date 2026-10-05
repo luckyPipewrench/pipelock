@@ -172,7 +172,10 @@ type installEnv struct {
 	curlPath               string
 	proxyPort              int
 	lookPath               func(string) (string, error)
-	platformFamily         string
+	// toolCanExecute overrides agent-context tool eligibility in isolated tests.
+	// Nil uses the full filesystem and identity check in agentCanExecute.
+	toolCanExecute func(string) bool
+	platformFamily string
 
 	prevNFTTableDump string
 	// nftTableMutatedByInstall records that this install attempt successfully

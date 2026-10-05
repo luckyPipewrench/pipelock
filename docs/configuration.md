@@ -1067,7 +1067,7 @@ seed_phrase_detection:
 | `min_words` | int | `12` | Minimum consecutive BIP-39 words to trigger. Must be 12, 15, 18, 21, or 24. |
 | `verify_checksum` | bool | `true` | Validate the BIP-39 SHA-256 checksum. Reduces false positives by 16x for 12-word phrases, 256x for 24-word. |
 
-The detector uses a dedicated scanner (not regex). It tokenizes text, runs a sliding window over the 2048-word BIP-39 English dictionary, and validates the checksum. Detection covers varied separators (spaces, commas, newlines, dashes, tabs, pipes).
+The detector uses a dedicated scanner (not regex). It tokenizes text, runs a sliding window over the 2048-word BIP-39 English dictionary, and validates the checksum. Detection covers varied separators (spaces, commas, newlines, dashes, tabs, pipes, `?`, `&`, `=`, and backslashes). Quotes, brackets, and markup angle brackets also split words, but a phrase must sit between the same pair, so words are never joined across JSON or markup structure.
 
 Action follows the transport-level DLP action: URL scan always blocks, MCP input uses `mcp_input_scanning.action`, body/header uses `request_body_scanning.action`.
 

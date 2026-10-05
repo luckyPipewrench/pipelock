@@ -224,8 +224,12 @@ type baseChainData struct {
 	// predecessor, how often a receipt with that sequence and hash occurs and
 	// where the last one sits.
 	tailMatches map[linkTail]tailMatch
-	// digest binds a later verification read to the entries this read saw.
+	// digest binds a later verification read to the exact bytes this read
+	// verified, shard by shard, and shards holds each shard's identity at
+	// that read, so a second read of a replaced file fails even when its
+	// bytes are the same.
 	digest [sha256.Size]byte
+	shards []os.FileInfo
 
 	verified    bool
 	actionRes   ChainResult
@@ -473,6 +477,8 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	// rather than vouching for each other.
 	endorsed := make(map[string]bool)
 	if !opts.LinksOnly {
+		betweenVerificationReads(dir)
+		reread := &evidenceReread{dir: dir}
 		endorsable := make(map[string]bool)
 		crossUsed := make(map[int]bool)
 		for _, s := range sessions {
@@ -502,7 +508,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 					own = append(own, e)
 				}
 			}
-			verifyBaseChain(ix, data[s], opts.TrustedKeys, own, endorsed[s], add)
+			verifyBaseChain(reread, ix, data[s], opts.TrustedKeys, own, endorsed[s], add)
 		}
 		resolved := make(map[string]bool)
 		pending := sessions
@@ -607,7 +613,6 @@ type baseChainRead struct {
 func (r *baseChainRead) add(e recorder.Entry) {
 	i := r.index
 	r.index++
-	writeEntryDigest(r.digest, e)
 	if r.sessionErr == nil && e.SessionID != r.session {
 		r.sessionErr = recorder.EntrySessionError(e, r.session)
 	}
@@ -670,44 +675,38 @@ func (r *baseChainRead) addReceipt(rcpt Receipt) {
 	}
 }
 
-// writeEntryDigest folds one entry's identity and receipt bytes into h. A
-// second read of a chain must produce the same digest, so the receipts it
-// verifies are the receipts the first read summarized.
-func writeEntryDigest(h hash.Hash, e recorder.Entry) {
-	var n [8]byte
-	field := func(b []byte) {
-		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
-		_, _ = h.Write(n[:])
-		_, _ = h.Write(b)
-	}
-	binary.BigEndian.PutUint64(n[:], e.Sequence)
-	_, _ = h.Write(n[:])
-	field([]byte(e.Type))
-	field([]byte(e.SessionID))
-	field([]byte(e.Hash))
-	detail := []byte(e.RawDetail)
-	if len(detail) == 0 {
-		detail, _ = json.Marshal(e.Detail)
-	}
-	field(detail)
-}
-
 // walkIndexedEntries reads every recorder entry of session, in shard order,
-// with the same per-shard limits and errors as readIndexedEntries.
-func walkIndexedEntries(ix evidenceIndex, session string, consume func(recorder.Entry)) error {
+// with the same per-shard limits and errors as readIndexedEntries. Each shard
+// is opened the way the evidence readers open it, refusing a symlinked or
+// non-regular file, and is read only as far as it was long when opened.
+// Every byte read is hashed per shard and folded, with the shard's name, into raw,
+// so two reads that produce the same digest verified the same bytes. It
+// returns each shard's identity at open.
+func walkIndexedEntries(ix evidenceIndex, session string, raw hash.Hash, consume func(recorder.Entry)) ([]os.FileInfo, error) {
 	files, err := ix.files(session)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	infos := make([]os.FileInfo, 0, len(files))
+	shard := sha256.New()
+	var n [8]byte
 	for _, f := range files {
-		if err := recorder.WalkEntries(f, func(e recorder.Entry) error {
+		shard.Reset()
+		info, err := recorder.WalkEvidenceFile(f, shard, func(e recorder.Entry) error {
 			consume(e)
 			return nil
-		}); err != nil {
-			return fmt.Errorf("reading %s: %w", filepath.Base(f), err)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
+		infos = append(infos, info)
+		name := filepath.Base(f)
+		binary.BigEndian.PutUint64(n[:], uint64(len(name)))
+		_, _ = raw.Write(n[:])
+		_, _ = raw.Write([]byte(name))
+		_, _ = raw.Write(shard.Sum(nil))
 	}
-	return nil
+	return infos, nil
 }
 
 // loadBaseChain reads one chain once and records its tail. In links-only
@@ -721,7 +720,7 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, opts baseLoadOptions, tai
 		read.actions = NewChainWalker(opts.trustedKeys)
 		read.evWalk = NewEvidenceChainWalker(opts.trustedKeys, contractreceipt.ChainVerifyOptions{})
 	}
-	readErr := walkIndexedEntries(ix, s, read.add)
+	shards, readErr := walkIndexedEntries(ix, s, read.digest, read.add)
 	if readErr == nil {
 		readErr = read.sessionErr
 	}
@@ -734,6 +733,7 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, opts baseLoadOptions, tai
 		return
 	}
 	read.digest.Sum(d.digest[:0])
+	d.shards = shards
 	if !opts.linksOnly {
 		if chainErr := read.outer.Err(); chainErr != nil {
 			add(FindingOuterChainBroken, s, chainErr.Error())
@@ -780,13 +780,70 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, opts baseLoadOptions, tai
 	}
 }
 
+// errEvidenceChanged is the failure of a second verification read that did
+// not see exactly what the first read verified.
+var errEvidenceChanged = errors.New("evidence changed between verification reads")
+
+// betweenVerificationReads runs after every chain's first read and before any
+// second read. Tests replace it to change the evidence directory there.
+var betweenVerificationReads = func(_ string) {}
+
+// evidenceReread lists the evidence directory again, once, for the second
+// verification reads, so a shard added or removed after the first reads is
+// seen.
+type evidenceReread struct {
+	dir  string
+	done bool
+	ix   evidenceIndex
+	err  error
+}
+
+func (r *evidenceReread) index() (evidenceIndex, error) {
+	if !r.done {
+		r.done = true
+		r.ix, r.err = indexRecorderFiles(r.dir)
+	}
+	return r.ix, r.err
+}
+
+// sameShards reports whether the second read opened the same files, of the
+// same size, that the first read verified.
+func sameShards(first, second []os.FileInfo) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for i := range first {
+		if !os.SameFile(first[i], second[i]) || first[i].Size() != second[i].Size() {
+			return false
+		}
+	}
+	return true
+}
+
 // reverifyBaseChain reads a loaded chain again and verifies both receipt
 // chains under the trust its predecessor decided. The read must see exactly
-// the entries the load saw; anything else fails the chain.
-func reverifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement) error {
+// the bytes the load verified, from the same shard files, and the directory
+// must still list the same shards for the chain; anything else fails it.
+func reverifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement) error {
+	s := d.chain.Session
+	current, err := reread.index()
+	if err != nil {
+		return fmt.Errorf("re-reading chain for verification: %w", err)
+	}
+	firstFiles, err := ix.files(s)
+	if err != nil {
+		return fmt.Errorf("re-reading chain for verification: %w", err)
+	}
+	nowFiles, err := current.files(s)
+	if err != nil {
+		return fmt.Errorf("re-reading chain for verification: %w", err)
+	}
+	if !slices.Equal(firstFiles, nowFiles) {
+		return fmt.Errorf("re-reading chain for verification: %w: shard set differs", errEvidenceChanged)
+	}
 	var actions ChainAccumulator
 	if len(own) > 0 {
-		actions = NewEndorsedChainWalker(d.chain.Session, own, trusted)
+		actions = NewEndorsedChainWalker(s, own, trusted)
 	} else {
 		actions = NewChainWalker(trusted)
 	}
@@ -794,10 +851,9 @@ func reverifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own
 	digest := sha256.New()
 	index := 0
 	var stepErr error
-	err := walkIndexedEntries(ix, d.chain.Session, func(e recorder.Entry) {
+	shards, err := walkIndexedEntries(ix, s, digest, func(e recorder.Entry) {
 		i := index
 		index++
-		writeEntryDigest(digest, e)
 		if stepErr != nil {
 			return
 		}
@@ -821,8 +877,15 @@ func reverifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own
 	}
 	var sum [sha256.Size]byte
 	digest.Sum(sum[:0])
-	if err == nil && sum != d.digest {
-		err = errors.New("evidence changed between verification reads")
+	// Equal bytes mean this read verified exactly what the first read
+	// checked, outer hash chain included; the same files mean neither read
+	// was served by a replacement.
+	switch {
+	case err != nil:
+	case sum != d.digest:
+		err = fmt.Errorf("%w: shard bytes differ", errEvidenceChanged)
+	case !sameShards(d.shards, shards):
+		err = fmt.Errorf("%w: shard file replaced", errEvidenceChanged)
 	}
 	if err != nil {
 		return fmt.Errorf("re-reading chain for verification: %w", err)
@@ -836,7 +899,7 @@ func reverifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own
 // verifyBaseChain runs full signature and key-trust verification on one
 // chain: its ActionReceipt v1 chain and its EvidenceReceipt v2 chain, each
 // when present. The chain is valid only when every chain present verifies.
-func verifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
+func verifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
 	if d.chain.Error != "" || (d.receiptCount == 0 && d.evidenceCount == 0) {
 		return
 	}
@@ -844,7 +907,7 @@ func verifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own [
 		trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
 	}
 	if !d.verified {
-		if err := reverifyBaseChain(ix, d, trusted, own); err != nil {
+		if err := reverifyBaseChain(reread, ix, d, trusted, own); err != nil {
 			d.chain.Valid = false
 			d.chain.Error = err.Error()
 			add(FindingCorruptChain, d.chain.Session, d.chain.Error)

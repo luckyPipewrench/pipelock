@@ -931,8 +931,24 @@ func (a *anchorWalker) addEntry(i int, e recorder.Entry) {
 		a.signedAt(i, e.Sequence)
 		return
 	}
+	if len(a.pending) >= maxPendingCheckpoints {
+		// Every waiting checkpoint must still be verified, and holding more
+		// would let one receipt gap grow memory with the recorder's length.
+		// Refuse rather than skip: the verdict is a failure, never a pass.
+		stop(fmt.Errorf("checkpoint at seq %d: %w", e.Sequence, errTooManyPendingCheckpoints))
+		return
+	}
 	a.pending = append(a.pending, pendingCheckpoint{index: i, seq: e.Sequence, prevHash: e.PrevHash, sig: sig, triedKey: a.lastReceiptKey})
 }
+
+// maxPendingCheckpoints bounds the signed checkpoints one receipt gap may
+// hold while they wait for the next receipt's signer. An honest recorder
+// reaches it only with a new writer that signs thousands of checkpoints
+// before its first receipt; at the default checkpoint interval that is
+// millions of entries with no receipt, past the session read ceiling.
+const maxPendingCheckpoints = 4096
+
+var errTooManyPendingCheckpoints = fmt.Errorf("more than %d signed checkpoints wait for the next receipt's signer; refusing to verify unbounded pending state", maxPendingCheckpoints)
 
 // finish settles the checkpoints still waiting: with no receipt after them
 // the only candidate signer already failed, and with no receipt at all there

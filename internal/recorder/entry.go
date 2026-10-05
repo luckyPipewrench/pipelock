@@ -542,6 +542,51 @@ func WalkEntries(path string, consume func(Entry) error) error {
 	return nil
 }
 
+// WalkEvidenceFile is WalkEntries through the evidence readers' secured open:
+// it refuses a symlinked or non-regular file, reads only the bytes present
+// when the file was opened, and fails if the file changed during the walk.
+// When raw is non-nil, every byte the walk reads is written to it, so a
+// caller can bind a later read of the same file to the exact bytes this one
+// verified. It returns the file identity observed at open.
+func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os.FileInfo, error) {
+	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
+	if err != nil {
+		return nil, fmt.Errorf("opening evidence file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	limits := defaultEntryReadLimits()
+	if err := inspectWalkTail(file, info, limits); err != nil {
+		return nil, fmt.Errorf("reading evidence file: %w", err)
+	}
+	var src io.Reader = io.NewSectionReader(file, 0, info.Size())
+	if raw != nil {
+		src = io.TeeReader(src, raw)
+	}
+	truncated, bytesRead, err := walkEntriesFromReader(src, limits, consume)
+	if err != nil {
+		return nil, fmt.Errorf("reading evidence file: %w", err)
+	}
+	if truncated {
+		return nil, readLimitExceededError(path, limits, bytesRead)
+	}
+	if bytesRead != info.Size() {
+		return nil, fmt.Errorf("reading evidence file: read %d of %d bytes", bytesRead, info.Size())
+	}
+	if err := ensureEvidenceFileUnchanged(file, info); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// inspectWalkTail applies the walk's torn-final-write check to a regular file
+// within the byte limit; larger files fail the walk's own byte limit instead.
+func inspectWalkTail(file *os.File, info os.FileInfo, limits entryReadLimits) error {
+	if info.Mode().IsRegular() && (limits.MaxBytes <= 0 || info.Size() <= limits.MaxBytes) {
+		return inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil))
+	}
+	return nil
+}
+
 // WalkEntriesFromReader is ReadEntriesFromReader without retaining the
 // entries, with the same limits and errors.
 func WalkEntriesFromReader(r io.Reader, consume func(Entry) error) error {
@@ -569,10 +614,8 @@ func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Ent
 		if err != nil {
 			return false, 0, fmt.Errorf("stat evidence file: %w", err)
 		}
-		if info.Mode().IsRegular() && (limits.MaxBytes <= 0 || info.Size() <= limits.MaxBytes) {
-			if err := inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil)); err != nil {
-				return false, 0, err
-			}
+		if err := inspectWalkTail(file, info, limits); err != nil {
+			return false, 0, err
 		}
 	}
 	reader := bufio.NewReader(r)

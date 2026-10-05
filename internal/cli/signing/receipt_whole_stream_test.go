@@ -770,6 +770,70 @@ func TestAnchorWalkerHoldsOnlyOneReceiptGap(t *testing.T) {
 	}
 }
 
+// TestAnchorWalkerCapsPendingCheckpoints pins that one receipt gap cannot
+// grow the waiting checkpoints without bound, and that reaching the cap fails
+// verification rather than skipping the checkpoints past it.
+func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
+	t.Parallel()
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, privB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA, keyB := hex.EncodeToString(pubA), hex.EncodeToString(pubB)
+	run := func(waiting int) (checkpointAnchor, int, error) {
+		a := &anchorWalker{anchor: checkpointAnchor{lastSignedIndex: -1}}
+		seq := uint64(0)
+		i := 0
+		peak := 0
+		add := func(e recorder.Entry, r *receipt.Receipt) {
+			if r != nil {
+				a.addReceipt(*r)
+			}
+			a.addEntry(i, e)
+			i++
+			peak = max(peak, len(a.pending))
+		}
+		add(recorder.Entry{Sequence: seq, Type: "action_receipt"}, &receipt.Receipt{SignerKey: keyA})
+		seq++
+		for n := 0; n < waiting; n++ {
+			add(recorder.Entry{Sequence: seq, Type: "decision"}, nil)
+			seq++
+			prevHash := fmt.Sprintf("h%d", n)
+			sig := hex.EncodeToString(ed25519.Sign(privB, []byte(prevHash)))
+			add(recorder.Entry{Sequence: seq, Type: "checkpoint", PrevHash: prevHash, Detail: map[string]any{
+				"first_seq": float64(seq - 1), "last_seq": float64(seq - 1), "entry_count": float64(1), "signature": sig,
+			}}, nil)
+			seq++
+		}
+		add(recorder.Entry{Sequence: seq, Type: "action_receipt"}, &receipt.Receipt{SignerKey: keyB})
+		anchor, err := a.finish()
+		return anchor, peak, err
+	}
+
+	// Positive control: a gap exactly at the cap still verifies every
+	// checkpoint once the next signer is known.
+	anchor, peak, err := run(maxPendingCheckpoints)
+	if err != nil {
+		t.Fatalf("gap at the cap: %v", err)
+	}
+	if anchor.signed != maxPendingCheckpoints || peak != maxPendingCheckpoints {
+		t.Fatalf("gap at the cap: signed %d peak %d, want %d", anchor.signed, peak, maxPendingCheckpoints)
+	}
+
+	// One past the cap fails closed and holds no more than the cap.
+	_, peak, err = run(maxPendingCheckpoints + 50)
+	if !errors.Is(err, errTooManyPendingCheckpoints) {
+		t.Fatalf("flooded gap: err = %v, want errTooManyPendingCheckpoints", err)
+	}
+	if peak > maxPendingCheckpoints {
+		t.Fatalf("flooded gap held %d pending checkpoints, cap %d", peak, maxPendingCheckpoints)
+	}
+}
+
 // TestReceiptWindowMatchesInMemory pins the containment summary the stream
 // builds against the slice helpers it replaced.
 func TestReceiptWindowMatchesInMemory(t *testing.T) {

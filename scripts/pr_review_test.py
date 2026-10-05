@@ -945,6 +945,22 @@ class HonestIncompleteVerdictTest(OfflineReviewTestCase):
                 self.assertIn(f"phase=interrupt attempt=1 status={type(stop).__name__}", result["stderr"])
                 self.assertIn("state=failed", result["outputs"])
 
+    def test_an_interrupt_during_the_prior_comment_scan_still_publishes_failed(self) -> None:
+        # The prior-comment scan runs after the status comment was claimed. An
+        # interrupt there skipped every handler, so a direct caller without the
+        # workflow finalizer was left with a comment reading running.
+        for stop in self.STOPS:
+            with self.subTest(stop=repr(stop)):
+                update = mock.Mock()
+                patches = list(self.review_patches(mock.Mock(return_value=([], True, [], [], [], [])), update))
+                patches[1] = mock.patch.object(pr_review, "scan_status_comments", side_effect=stop)
+                result = self.run_main(self.ADMITTED_ENVIRONMENT, *patches)
+                self.assertEqual(result.get("code"), 0, result.get("raised"))
+                self.assertEqual(update.call_count, 1)
+                body = update.call_args.args[3]
+                self.assertIn("state=failed", body)
+                self.assertIn(f"the review was interrupted ({type(stop).__name__})", body)
+
     def test_an_interrupt_without_a_confirmed_verdict_is_not_swallowed(self) -> None:
         # Nothing confirms the failed verdict landed, so the run stays red: the
         # update fails unconfirmed, or the interrupt arrives during the update.

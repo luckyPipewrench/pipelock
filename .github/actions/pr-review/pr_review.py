@@ -3722,61 +3722,64 @@ def run_review(
     # that honestly covers from the current base.
     coverage_base = binding.base_sha
     carried: list[Finding] = []
+    # The scan runs after the status comment was claimed, so it sits inside
+    # the block whose handlers and finally publish a verdict. Outside it, an
+    # interrupt here left the claimed comment reading running.
     try:
-        prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
-        seen_before = previously_reported(prior)
-        # Reviewing the whole pull request again after a two-line fix costs the
-        # same as the first review and answers the same question. When a
-        # completed review of this mode already covered an earlier head, review
-        # the change since it instead, and re-check what it left open.
-        #
-        # Every condition here falls back to a full review, because a full
-        # review is only expensive while a wrongly-scoped one is wrong.
-        previous = previous_review_for_mode(prior, mode, binding.head_sha)
-        ledger = usable_ledger(previous, repo, pr_number) if previous else None
-        # A baseline is only usable when its record of open findings is whole.
-        # Missing, malformed, or clipped by the cap all mean the same thing
-        # here: this run cannot know what it would be carrying forward.
-        if previous and ledger and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
-            # Re-adjudicate every authenticated open finding even when a base
-            # advance forces a full current-diff review. The full diff replaces
-            # the old coverage range; it does not prove an old defect vanished.
-            carried = ledger_findings(ledger)
-            # The baseline covered its own coverage_base up to reviewed_head,
-            # and this run covers reviewed_head up to the current head, so the
-            # two together account for the baseline's coverage_base up to here.
-            # Inherit it rather than recomputing: it is the signed record of what
-            # was actually reviewed, and it is only trusted after usable_ledger
-            # has authenticated it above.
-            inherited = str(previous.get("coverage_base", ""))
-            if re.fullmatch(r"[0-9a-f]{40}", inherited) and inherited == binding.base_sha:
-                scope = "delta"
-                scope_base = str(previous["reviewed_head"])
-                coverage_base = inherited
-                log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
+        try:
+            prior, _, _ = scan_status_comments(repo, pr_number, token, binding.correlation)
+            seen_before = previously_reported(prior)
+            # Reviewing the whole pull request again after a two-line fix costs the
+            # same as the first review and answers the same question. When a
+            # completed review of this mode already covered an earlier head, review
+            # the change since it instead, and re-check what it left open.
+            #
+            # Every condition here falls back to a full review, because a full
+            # review is only expensive while a wrongly-scoped one is wrong.
+            previous = previous_review_for_mode(prior, mode, binding.head_sha)
+            ledger = usable_ledger(previous, repo, pr_number) if previous else None
+            # A baseline is only usable when its record of open findings is whole.
+            # Missing, malformed, or clipped by the cap all mean the same thing
+            # here: this run cannot know what it would be carrying forward.
+            if previous and ledger and is_ancestor(repo, str(previous["reviewed_head"]), binding.head_sha, token, binding.correlation):
+                # Re-adjudicate every authenticated open finding even when a base
+                # advance forces a full current-diff review. The full diff replaces
+                # the old coverage range; it does not prove an old defect vanished.
+                carried = ledger_findings(ledger)
+                # The baseline covered its own coverage_base up to reviewed_head,
+                # and this run covers reviewed_head up to the current head, so the
+                # two together account for the baseline's coverage_base up to here.
+                # Inherit it rather than recomputing: it is the signed record of what
+                # was actually reviewed, and it is only trusted after usable_ledger
+                # has authenticated it above.
+                inherited = str(previous.get("coverage_base", ""))
+                if re.fullmatch(r"[0-9a-f]{40}", inherited) and inherited == binding.base_sha:
+                    scope = "delta"
+                    scope_base = str(previous["reviewed_head"])
+                    coverage_base = inherited
+                    log_phase("scope", status=f"delta-from-{scope_base[:12]}", correlation=binding.correlation)
+                else:
+                    # A merge or rebase can advance the PR base while leaving the
+                    # old reviewed head reachable. Reviewing old-head..new-head in
+                    # that state reads the newly merged upstream changes and misses
+                    # the effective current-base..head PR shape. Review the current
+                    # effective diff whole instead. It is both smaller and the only
+                    # range whose clean verdict answers whether this PR can merge.
+                    status = "full-base-changed" if inherited else "full-unknown-coverage"
+                    log_phase("scope", status=status, correlation=binding.correlation)
             else:
-                # A merge or rebase can advance the PR base while leaving the
-                # old reviewed head reachable. Reviewing old-head..new-head in
-                # that state reads the newly merged upstream changes and misses
-                # the effective current-base..head PR shape. Review the current
-                # effective diff whole instead. It is both smaller and the only
-                # range whose clean verdict answers whether this PR can merge.
-                status = "full-base-changed" if inherited else "full-unknown-coverage"
-                log_phase("scope", status=status, correlation=binding.correlation)
-        else:
-            log_phase("scope", status="full", correlation=binding.correlation)
-    except Exception:  # noqa: BLE001
-        # Deliberately broad. The narrow version was nearly unreachable, because
-        # the scan converts request failures into a returned tuple, so anything
-        # that did raise here escaped BEFORE the try/finally that publishes the
-        # status comment. The claimed comment would then sit on running until
-        # its stale timeout and block every later review of the same head. A
-        # label is not worth that.
-        log_phase("prior-findings", status="unavailable", correlation=binding.correlation)
-    progress.scope = scope
-    progress.coverage_base = coverage_base
-    progress.base_sha = binding.base_sha
-    try:
+                log_phase("scope", status="full", correlation=binding.correlation)
+        except Exception:  # noqa: BLE001
+            # Deliberately broad. The narrow version was nearly unreachable, because
+            # the scan converts request failures into a returned tuple, so anything
+            # that did raise here escaped BEFORE the try/finally that publishes the
+            # status comment. The claimed comment would then sit on running until
+            # its stale timeout and block every later review of the same head. A
+            # label is not worth that.
+            log_phase("prior-findings", status="unavailable", correlation=binding.correlation)
+        progress.scope = scope
+        progress.coverage_base = coverage_base
+        progress.base_sha = binding.base_sha
         # Checked before any provider work so a missing credential ends the run
         # as a configuration failure rather than a partial review, and checked
         # INSIDE this block so the failure still reaches finalization. Raising

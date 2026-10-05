@@ -404,27 +404,37 @@ func (g *regexShapeGate) admits(text string) bool {
 
 func (g *regexShapeGate) admitsRun(text string) bool {
 	start, digits := 0, 0
-	for i := 0; i <= len(text); i++ {
-		if i < len(text) && g.class.has(text[i]) {
-			if text[i] >= '0' && text[i] <= '9' {
+	runAdmits := func(end int) bool {
+		return end-start >= g.minLen && digits >= int(g.minDigits) && g.hasLeadingStart(text[start:end]) && g.containsLiteral(text[start:end])
+	}
+	for i := range len(text) {
+		c := text[i]
+		if g.class.has(c) {
+			if c >= '0' && c <= '9' {
 				digits++
 			}
 			continue
 		}
-		if i-start >= g.minLen && digits >= int(g.minDigits) && g.hasLeadingStart(text[start:i]) && g.containsLiteral(text[start:i]) {
+		if runAdmits(i) {
 			return true
 		}
 		start, digits = i+1, 0
 	}
-	return false
+	return runAdmits(len(text))
 }
 
 func (g *regexShapeGate) admitsWord(text string) bool {
 	start, digits, inClass := 0, 0, true
-	for i := 0; i <= len(text); i++ {
-		if i < len(text) && asciiWordBytes.has(text[i]) {
-			c := text[i]
-			if !g.class.has(c) || (i-start < len(g.positions) && !g.positions[i-start].has(c)) {
+	wordAdmits := func(end int) bool {
+		length := end - start
+		return inClass && length >= g.minLen && (g.maxLen < 0 || length <= g.maxLen) &&
+			digits >= int(g.minDigits) && g.containsLiteral(text[start:end])
+	}
+	for i := range len(text) {
+		c := text[i]
+		if asciiWordBytes.has(c) {
+			offset := i - start
+			if !g.class.has(c) || (offset < len(g.positions) && !g.positions[offset].has(c)) {
 				inClass = false
 			}
 			if c >= '0' && c <= '9' {
@@ -432,14 +442,12 @@ func (g *regexShapeGate) admitsWord(text string) bool {
 			}
 			continue
 		}
-		length := i - start
-		if inClass && length >= g.minLen && (g.maxLen < 0 || length <= g.maxLen) &&
-			digits >= int(g.minDigits) && g.containsLiteral(text[start:i]) {
+		if wordAdmits(i) {
 			return true
 		}
 		start, digits, inClass = i+1, 0, true
 	}
-	return false
+	return wordAdmits(len(text))
 }
 
 // hasLeadingStart reports whether some offset in run leaves room for minLen

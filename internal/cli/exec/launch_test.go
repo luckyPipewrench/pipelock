@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/launchcontract"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // A separate test process is required: Unix launch replaces the process.
@@ -74,7 +75,7 @@ func TestLaunchExitCodeAndEnvironment(t *testing.T) {
 	for _, code := range []int{0, 7, 42} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
 			t.Parallel()
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(15*time.Second))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, "-test.run=^TestLaunchProcessHelper$")
 			cmd.Env = append(os.Environ(), "PIPELOCK_EXEC_HELPER=launch", "PIPELOCK_EXEC_EXIT="+strconv.Itoa(code), "CUSTOM_PROXY=http://old.invalid", "NO_PROXY=*")

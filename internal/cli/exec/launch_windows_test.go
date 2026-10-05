@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/launchcontract"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func jobHelperEnv(mode string) []string {
@@ -77,7 +78,7 @@ func TestWindowsJobKillsDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(15*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestWindowsJobHelper$")
 	cmd.Env = jobHelperEnv("launcher")

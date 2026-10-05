@@ -466,14 +466,13 @@ func filesystemProfileInputForProbe(env *probeEnv, agentHome string) (filesystem
 	if strings.TrimSpace(configDir) == "" {
 		configDir = defaultConfigDir
 	}
-	display := env.display
 	if cfg != nil {
 		mode = cfg.Containment.Filesystem.Mode
 		required, optional = configuredSecretPaths(cfg)
-		if strings.TrimSpace(display) == "" && cfg.Containment.Display.IsEnabled(true) {
-			display = displayName(cfg.Containment.Display.EffectiveNumber())
-		}
 	}
+	// The same resolver contain run uses. IsEnabled(true) would require an
+	// X socket on a headless host that launch correctly leaves unset.
+	display := resolveLaunchDisplay(cfg, env.display, probeXvfbPresent(env))
 	if env.workspaceGrants == nil && env.workspaceInvPath != "" && env.readFile != nil {
 		inv, invErr := loadWorkspaceInventoryFrom(env.readFile, env.workspaceInvPath)
 		if invErr != nil {

@@ -319,12 +319,7 @@ func runContainRun(
 		env.probe.lifecycle.record.ConfigSHA256 = runCfg.Hash()
 		env.probe.lifecycle.record.PolicySHA256 = runCfg.CanonicalPolicyHash()
 	}
-	xvfbPresent := false
-	if env.probe.stat != nil {
-		_, xvfbErr := env.probe.stat(env.probe.xvfbPath)
-		xvfbPresent = xvfbErr == nil
-	}
-	env.probe.display = resolveLaunchDisplay(runCfg, env.probe.display, xvfbPresent)
+	env.probe.display = resolveLaunchDisplay(runCfg, env.probe.display, probeXvfbPresent(env.probe))
 	workspaceSigningKey, workspaceSigningKeyErr := resolveWorkspaceStatementSigningKey(runCfg)
 	if len(grants) > 0 && workspaceSigningKeyErr != nil {
 		_, _ = fmt.Fprintf(stdout, "  [WARN] workspace change statement will be unavailable: %v\n", workspaceSigningKeyErr)

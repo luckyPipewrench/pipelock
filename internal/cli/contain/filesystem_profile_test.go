@@ -547,6 +547,72 @@ func TestEnforceOperatorIdentityNamesSudo(t *testing.T) {
 	}
 }
 
+func TestFilesystemDisplayBindMatchesLaunchResolver(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		operator string
+		xvfb     bool
+	}{
+		{name: "omitted without xvfb", yaml: "containment:\n  filesystem:\n    mode: enforce\n", xvfb: false},
+		{name: "omitted with xvfb", yaml: "containment:\n  filesystem:\n    mode: enforce\n", xvfb: true},
+		{name: "explicit false", yaml: "containment:\n  filesystem:\n    mode: enforce\n  display:\n    enabled: false\n", xvfb: true},
+		{name: "explicit true", yaml: "containment:\n  filesystem:\n    mode: enforce\n  display:\n    enabled: true\n", xvfb: false},
+		{name: "operator override", yaml: "containment:\n  filesystem:\n    mode: enforce\n  display:\n    enabled: false\n", operator: ":1", xvfb: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := defaultProbeEnv()
+			env.configPath = "/fixture/pipelock.yaml"
+			env.configDir = "/tmp/plk-display-fixture"
+			env.workspaceInvPath = ""
+			env.display = tc.operator
+			env.operatorUser = "operator"
+			env.xvfbPath = "/usr/bin/Xvfb"
+			env.readFile = func(string) ([]byte, error) { return []byte(tc.yaml), nil }
+			env.lookupUser = func(string) (*user.User, error) {
+				return &user.User{Username: "operator", HomeDir: "/home/operator"}, nil
+			}
+			env.stat = func(string) (os.FileInfo, error) {
+				if tc.xvfb {
+					return nil, nil
+				}
+				return nil, os.ErrNotExist
+			}
+			in, err := filesystemProfileInputForProbe(env, "/srv/agent-home")
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.Eval = allowEval("/srv/agent-home")
+			in.Exists = func(string) (bool, error) { return false, nil }
+			profile, err := filesystemProfileProperties(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadProbeConfig(env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			effective := resolveLaunchDisplay(cfg, tc.operator, tc.xvfb)
+			socket := ""
+			if resolved, ok := localDisplaySocket(effective); ok {
+				socket = resolved
+			}
+			if in.DisplaySocket != socket {
+				t.Fatalf("builder socket %q, launch resolver %q (display %q)", in.DisplaySocket, socket, effective)
+			}
+			for _, bind := range profile.BindReadOnlyPaths {
+				if strings.Contains(bind, ".X11-unix") && (socket == "" || !strings.Contains(bind, socket)) {
+					t.Fatalf("display bind %s does not match launch socket %q", bind, socket)
+				}
+			}
+			if socket != "" && !sliceContains(profile.BindReadOnlyPaths, canonicalBind(socket, socket, "rbind")) {
+				t.Fatalf("binds %v missing %s", profile.BindReadOnlyPaths, socket)
+			}
+		})
+	}
+}
+
 func TestContainLaunchPropertyLines_OffKeepsDisplaySocketOnly(t *testing.T) {
 	in := enforceInput()
 	in.Mode = config.ContainmentFilesystemModeOff

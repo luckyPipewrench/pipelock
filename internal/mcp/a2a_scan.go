@@ -115,6 +115,15 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 	}
 
+	// The depth bound is independent of the classified walk's node budget.
+	// JSON has already been validated, so this pass needs no decoded values.
+	if a2aJSONExceedsDepth(trimmed) {
+		return A2AScanResult{
+			Action: config.ActionBlock,
+			Reason: "a2a: input exceeds maximum inspectable nesting depth",
+		}
+	}
+
 	// Pass 1: field-aware walker - classifies and routes each leaf.
 	WalkA2AJSON(json.RawMessage(body), func(path, value string, class FieldClass) {
 		if class == FieldBudgetExceeded {
@@ -628,6 +637,16 @@ type AgentCardScanResult struct {
 // ScanAgentCard parses and scans an Agent Card response for skill poisoning
 // and drift detection. Reuses the field walker for URL and injection scanning.
 func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, cfg *config.A2AScanning) AgentCardScanResult {
+	return scanAgentCard(ctx, body, sc, baseline, key, agentCardScanOptions{cfg: cfg, commitBaseline: true})
+}
+
+type agentCardScanOptions struct {
+	cfg            *config.A2AScanning
+	commitBaseline bool
+}
+
+func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, opts agentCardScanOptions) AgentCardScanResult {
+	cfg := opts.cfg
 	if cfg == nil || !cfg.Enabled {
 		return AgentCardScanResult{Clean: true}
 	}
@@ -734,7 +753,7 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// otherwise the baseline keeps what it already trusted, and the result must
 	// not claim an adoption that never happened (the audit event and the
 	// OnCardDriftAdopted callback both read DriftAdopted).
-	if result.Clean {
+	if result.Clean && opts.commitBaseline {
 		driftCommit(true)
 	} else if driftOutcome.adopted || driftOutcome.firstSeen {
 		result.DriftAdopted = false

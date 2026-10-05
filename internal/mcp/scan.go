@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -188,28 +189,49 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
 
-	// Strip may only release a fully inspected message. Add envelope and
+	// Every action inspects the same visible strings. Add envelope and
 	// extension strings that the typed result extractor does not consume. The
-	// typed text stays, and media payloads keep the typed extractor's rule:
+	// Typed text keeps its own context, and media payloads keep its rule:
 	// opaque media is skipped and text decoded from it is scanned.
-	if sc.ResponseAction() == config.ActionStrip || sc.ResponseAction() == config.ActionAsk {
-		values := jsonrpc.ExtractVisibleStringsFromJSONResult(trimmed)
-		keys := jsonrpc.ExtractKeysFromJSONResult(trimmed)
-		if values.Truncated || keys.Truncated {
-			return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
-		}
-		text = strings.Join([]string{text, strings.Join(values.Strings, "\n"), strings.Join(keys.Keys, "\n")}, "\n")
+	values := jsonrpc.ExtractVisibleStringsFromJSONResult(trimmed)
+	keys := jsonrpc.ExtractKeysFromJSONResult(trimmed)
+	if values.Truncated || keys.Truncated {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
+	envelopeText := strings.Join(append(values.Strings, keys.Keys...), "\n")
 
-	if text == "" && (!includeDLP || numeric == "") {
+	if text == "" && envelopeText == "" && (!includeDLP || numeric == "") {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	// An all-numeric response has nothing for the injection scanner; it is
 	// treated as a clean response scan and only the numeric channel runs.
 	result := scanner.ResponseScanResult{Clean: true}
-	if text != "" {
-		result = sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
+	var dlpMatches []scanner.TextDLPMatch
+	var droppedDLP []scanner.TextDLPMatch
+	for _, view := range []string{text, envelopeText} {
+		if view == "" {
+			continue
+		}
+		viewResult := sc.ScanResponseWithSuppress(context.Background(), view, opts.Target, opts.Suppress)
+		if viewResult.Failed() {
+			return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + viewResult.ScanError}
+		}
+		result.Clean = result.Clean && viewResult.Clean
+		result.Matches = appendUniqueResponseViewMatches(result.Matches, viewResult.Matches)
+		result.SuppressedMatches = appendUniqueResponseViewMatches(result.SuppressedMatches, viewResult.SuppressedMatches)
+		for _, observed := range viewResult.ObservedCoreMatches {
+			if !slices.ContainsFunc(result.ObservedCoreMatches, func(prior scanner.ObservedCoreMatch) bool {
+				return sameResponseViewMatch(prior.Match, observed.Match) && prior.Reason == observed.Reason
+			}) {
+				result.ObservedCoreMatches = append(result.ObservedCoreMatches, observed)
+			}
+		}
+		if includeDLP {
+			matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view, sc.ScanTextForDLPInbound(context.Background(), view).Matches)
+			dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, matches)
+			droppedDLP = appendUniqueA2ADLPFindings(droppedDLP, lowConfidence)
+		}
 	}
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
@@ -221,21 +243,13 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			opts.OnObservedCoreResponse(observed)
 		}
 	}
-	var dlpMatches []scanner.TextDLPMatch
-	if includeDLP {
-		if text != "" {
-			var lowConfidence []scanner.TextDLPMatch
-			dlpMatches, lowConfidence = scanner.PartitionInboundTextDLPMatches(text, sc.ScanTextForDLPInbound(context.Background(), text).Matches)
-			for _, match := range lowConfidence {
-				if opts.OnDroppedDLP != nil {
-					opts.OnDroppedDLP(match, "low_confidence")
-				}
-			}
+	for _, match := range droppedDLP {
+		if opts.OnDroppedDLP != nil {
+			opts.OnDroppedDLP(match, "low_confidence")
 		}
-		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 	}
-	if result.Failed() {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
+	if includeDLP {
+		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
@@ -248,6 +262,24 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
 	}
+}
+
+// appendUniqueResponseViewMatches keeps the primary view's coordinates when
+// the same finding appears in another view. Repetition within a view remains.
+func appendUniqueResponseViewMatches(existing, incoming []scanner.ResponseMatch) []scanner.ResponseMatch {
+	prior := existing
+	for _, match := range incoming {
+		if !slices.ContainsFunc(prior, func(old scanner.ResponseMatch) bool {
+			return sameResponseViewMatch(old, match)
+		}) {
+			existing = append(existing, match)
+		}
+	}
+	return existing
+}
+
+func sameResponseViewMatch(a, b scanner.ResponseMatch) bool {
+	return a.PatternName == b.PatternName && a.MatchText == b.MatchText && a.Bundle == b.Bundle && a.BundleVersion == b.BundleVersion
 }
 
 // responseScanAction resolves the effective response-scan action. A per-server
@@ -983,7 +1015,11 @@ func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts)
 		} else if !verdict.Clean {
 			return verdict
 		}
-		return scanA2AResponseDispatch(line, sc, a2aOpts)
+		verdict := scanA2AResponseDispatch(line, sc, a2aOpts)
+		if !verdict.Clean {
+			verdict.Action = config.StricterAction(responseScanAction(sc, a2aOpts.ScanOpts), config.StricterAction(a2aDefaultAction(a2aOpts.Cfg), verdict.Action))
+		}
+		return verdict
 	}
 
 	return a2aFallbackScan(line, sc, a2aOpts)
@@ -1054,17 +1090,40 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 		errResult := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
 		return a2aScanToVerdict(rpcID, errResult)
 	}
-	if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
-		return jsonrpc.ScanVerdict{ID: rpcID, Clean: true}
+	// The card scanner owns result fields; the generic response scanner owns
+	// the remaining visible envelope, with the same media and suppression rules.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(line, &envelope); err != nil {
+		return jsonrpc.ScanVerdict{ID: rpcID, Action: config.ActionBlock, Error: "invalid Agent Card envelope"}
 	}
-	cardResult := ScanAgentCard(
+	delete(envelope, "result")
+	envelopeJSON, err := json.Marshal(envelope)
+	if err != nil {
+		return jsonrpc.ScanVerdict{ID: rpcID, Action: config.ActionBlock, Error: "invalid Agent Card envelope"}
+	}
+	envelopeVerdict := a2aFallbackScan(envelopeJSON, sc, a2aOpts)
+	if envelopeVerdict.Error != "" {
+		return envelopeVerdict
+	}
+	if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
+		return envelopeVerdict
+	}
+	cardResult := scanAgentCard(
 		context.Background(), rpc.Result, sc,
-		a2aOpts.Baseline, a2aOpts.CardKey, a2aOpts.Cfg,
+		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: envelopeVerdict.Clean},
 	)
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
 		a2aOpts.OnCardDriftAdopted()
 	}
-	return agentCardToVerdict(rpcID, cardResult, a2aOpts.Cfg)
+	verdict := agentCardToVerdict(rpcID, cardResult, a2aOpts.Cfg)
+	if verdict.Error != "" || envelopeVerdict.Clean {
+		return verdict
+	}
+	verdict.Clean = false
+	verdict.Action = config.StricterAction(a2aDefaultAction(a2aOpts.Cfg), config.StricterAction(verdict.Action, envelopeVerdict.Action))
+	verdict.Matches = appendUniqueResponseViewMatches(verdict.Matches, envelopeVerdict.Matches)
+	verdict.DLPMatches = appendUniqueA2ADLPFindings(verdict.DLPMatches, envelopeVerdict.DLPMatches)
+	return verdict
 }
 
 // isA2AResponseShape returns true if the JSON-RPC result object has fields

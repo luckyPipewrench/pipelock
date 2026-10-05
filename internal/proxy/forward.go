@@ -2461,6 +2461,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		sseAction := cfg.ResponseScanning.SSEStreaming.Action
 		if isA2A {
 			sseAction = cfg.A2AScanning.Action
+			if cfg.ResponseScanning.Enabled {
+				sseAction = config.StricterAction(cfg.ResponseScanning.Action, sseAction)
+			}
+			if cfg.ResponseScanning.SSEStreaming.Enabled {
+				sseAction = config.StricterAction(cfg.ResponseScanning.SSEStreaming.Action, sseAction)
+			}
 		}
 
 		// Fail-closed: compressed SSE streams cannot be scanned.
@@ -3011,6 +3017,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
 					a2aAction = cfg.A2AScanning.Action
+				}
+				if cfg.ResponseScanning.Enabled {
+					a2aAction = config.StricterAction(cfg.ResponseScanning.Action, a2aAction)
 				}
 				a2aReason := a2aResult.Reason
 				if a2aReason == "" {

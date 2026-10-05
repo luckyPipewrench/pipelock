@@ -2077,6 +2077,13 @@ func newInterceptHandler(
 			if !isA2A {
 				sseLayer = LayerSSEStream
 				sseAction = ic.Config.ResponseScanning.SSEStreaming.Action
+			} else {
+				if ic.Config.ResponseScanning.Enabled {
+					sseAction = config.StricterAction(ic.Config.ResponseScanning.Action, sseAction)
+				}
+				if ic.Config.ResponseScanning.SSEStreaming.Enabled {
+					sseAction = config.StricterAction(ic.Config.ResponseScanning.SSEStreaming.Action, sseAction)
+				}
 			}
 
 			if IsSSECompressed(resp.Header) {
@@ -2587,6 +2594,9 @@ func newInterceptHandler(
 				action := a2aRespResult.Action
 				if action == "" {
 					action = ic.Config.A2AScanning.Action
+				}
+				if ic.Config.ResponseScanning.Enabled {
+					action = config.StricterAction(ic.Config.ResponseScanning.Action, action)
 				}
 				reason := a2aRespResult.Reason
 				if reason == "" {

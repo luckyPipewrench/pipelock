@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +67,8 @@ func TestSanitizeCorrelationValue(t *testing.T) {
 		want string
 	}{
 		{name: "simple", raw: testCorrValue, want: testCorrValue},
-		{name: "internal space kept", raw: "case 42", want: "case 42"},
+		{name: "internal space omitted", raw: "case 42", want: ""},
+		{name: "space then forged cef key omitted", raw: "case-42 act=allowed", want: ""},
 		{name: "surrounding space trimmed", raw: "  case-42\t", want: "case-42"},
 		{name: "full printable range", raw: " !~azAZ09{}|\\\"'", want: "!~azAZ09{}|\\\"'"},
 		{name: "exact cap", raw: exact, want: exact},
@@ -115,6 +118,7 @@ func TestCorrelationIDFromHeader(t *testing.T) {
 		{name: "no scanner fails closed", header: corrHeader(testCorrValue), hname: testCorrHeader, sc: nil, want: ""},
 		{name: "oversized", header: corrHeader(strings.Repeat("z", CorrelationIDMaxBytes+1)), hname: testCorrHeader, sc: sc, want: ""},
 		{name: "control char", header: corrHeader("case\x01"), hname: testCorrHeader, sc: sc, want: ""},
+		{name: "interior space", header: corrHeader("case 42"), hname: testCorrHeader, sc: sc, want: ""},
 		{name: "aws key redacted", header: corrHeader(awsKey), hname: testCorrHeader, sc: sc, want: ""},
 		{name: "github token redacted", header: corrHeader("run-" + ghToken), hname: testCorrHeader, sc: sc, want: ""},
 	}
@@ -273,4 +277,51 @@ func TestCorrelation_FieldNameMatchesEmit(t *testing.T) {
 	if got := FieldCorrelationID; got != "correlation_id" {
 		t.Fatalf("FieldCorrelationID = %q, want correlation_id", got)
 	}
+}
+
+// WithCorrelation must not read the parent's file sink fields, which Close
+// writes. Request handlers derive correlation sub-loggers while shutdown may be
+// closing the parent, so the two run concurrently in production. Run under
+// -race; copying *l in WithCorrelation is reported as a data race here.
+func TestWithCorrelation_ConcurrentWithClose(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	id := CorrelationIDFromHeader(context.Background(), corrHeader(testCorrValue), testCorrHeader, corrTestScanner(t))
+	if id.IsZero() {
+		t.Fatal("expected a vetted correlation id")
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 200 {
+				sub := logger.WithCorrelation(id)
+				if sub == nil || sub.correlation != id {
+					t.Error("WithCorrelation returned a sub-logger without the tag")
+					return
+				}
+				if sub.fileHandle != nil || sub.filePath != "" || sub.fileCreated {
+					t.Error("sub-logger must not own the parent's file sink")
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		logger.Close()
+	}()
+	close(start)
+	wg.Wait()
 }

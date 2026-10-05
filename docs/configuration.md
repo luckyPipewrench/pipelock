@@ -2186,9 +2186,11 @@ The value appears in each format as follows:
 | OCSF | `metadata.correlation_uid` |
 | OTLP | `correlation_id` log record attribute |
 
-The header value comes from the client, so Pipelock treats it as untrusted. The value is used only when the header appears exactly once, is at most 128 bytes after trimming surrounding spaces, and contains only printable ASCII (space through `~`). It is also run through text DLP, including environment and file secret matching. A value that fails any check is left out of the event. The request itself is never blocked or changed because of this setting, and the header is still forwarded and scanned like any other header.
+The header value comes from the client, so Pipelock treats it as untrusted. The value is used only when the header appears exactly once, is at most 128 bytes after trimming surrounding spaces and tabs, and contains only visible printable ASCII (`!` through `~`, bytes 0x21 to 0x7E). A value with an interior space, a control character, or any non-ASCII byte is dropped, because an unescaped space ends a CEF extension value for many parsers and would cut off the field. A value that fails any check is left out of the event. The request itself is never blocked or changed because of this setting, and the header is still forwarded and scanned like any other header.
 
-The header name must be a valid HTTP token. Hop-by-hop headers (`Connection`, `Upgrade`, `Proxy-Authorization`, and similar), `Host`, `Content-Length`, credential headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, and similar), any name listed in `request_body_scanning.sensitive_headers`, and names containing `auth`, `token`, `secret`, `password`, `cookie`, `credential`, `api-key`, `apikey`, `access-key`, or `signature` are rejected at config load.
+A value that passes these checks is copied verbatim into every sink the operator configured under `emit`. The client chooses only the value; it cannot choose or add a destination. Before copying, Pipelock runs a quiet text DLP scan over the value, including environment and file secret matching, and drops the value on any match. That scan reduces the chance of a secret landing in a SIEM but is not a guarantee: an encoded, split, or partial secret that matches no pattern passes. Don't send anything in this header that you wouldn't want stored in your SIEM.
+
+The header name must be a valid HTTP token. Hop-by-hop headers (`Connection`, `Upgrade`, `Proxy-Authorization`, and similar), `Host`, `Content-Length`, credential headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, and similar), and any name listed in `request_body_scanning.sensitive_headers` are rejected at config load. Names that look credential-bearing are rejected too. The check lowercases the name, splits it into words on `-`, `_`, and `.`, and rejects the name when any word or run of adjacent words joined together is a credential word such as `auth`, `token`, `secret`, `password`, `pass`, `pwd`, `cookie`, `credential`, `apikey`, `accesskey`, `signature`, `sig`, `session`, `sessionid`, `jwt`, `bearer`, `assertion`, `csrf`, `xsrf`, `otp`, `totp`, or `private`. So `X-Session-Id`, `X-Api_Key`, and `Cf-Access-Jwt-Assertion` are rejected, while `X-Author` and `X-Authority` are allowed. A single word that starts with a credential word such as `token` or `secret`, or ends with one such as `token`, `session`, or `auth`, is rejected as well, so `X-Sessiontoken` and `X-Oauth` fail.
 
 The value is added to emitted events only. It does not appear in the local audit log, signed action receipts, evidence receipts, mediation envelopes, or flight recorder entries. Like the rest of the `emit` block, changing `correlation_header` requires a restart; a hot reload that changes it is ignored with a warning.
 
@@ -2206,6 +2208,13 @@ Coverage by transport:
 | MCP stdio, MCP to an HTTP or WebSocket upstream from stdio | No. There are no inbound request headers, so the field is absent. |
 
 Allow and block decisions carry the field on every transport listed above. On fetch, WebSocket, TLS-intercepted requests, and the MCP HTTP listener, the request's session-level events (such as `session_anomaly` and adaptive escalation) carry it too; on the forward proxy, CONNECT, and reverse proxy paths those session-level events do not. Warn-mode DLP findings (`dlp_warn`) do not carry it on any transport. Events not tied to a request, such as startup and config reload, never carry it.
+
+Known gaps, where an event for a tagged request has no `correlation_id`:
+
+- MCP stdio, and stdio to an HTTP or WebSocket upstream: no inbound request headers exist.
+- CONNECT passthrough: headers inside the encrypted tunnel are not visible.
+- Session-level events (`session_anomaly`, adaptive escalation) on the forward proxy, CONNECT, and reverse proxy paths.
+- Warn-mode DLP findings (`dlp_warn`) on every transport.
 
 ## Tool Chain Detection
 

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -411,6 +413,51 @@ func TestEmitCorrelation_WebSocketWithoutTag(t *testing.T) {
 	}
 	requireCorrelation(t, waitForEvent(t, sink, emit.EventWSOpen), "")
 	_ = conn.Close()
+}
+
+// The CEE adaptive-escalation logger in enforceClientCEE is built from the
+// relay's captured tag, separately from the frame logger. Text-frame DLP is off
+// so only CEE fragment reassembly sees the key split across two frames, and the
+// action is warn so the escalation event is the only emission from that path.
+func TestEmitCorrelation_WebSocketCEEAdaptiveEscalation(t *testing.T) {
+	t.Parallel()
+	backendAddr, backendCleanup := wsEchoServer(t)
+	t.Cleanup(backendCleanup)
+
+	logger, sink := newCorrelationAuditLogger(t)
+	proxyAddr, _, cleanup := setupWSProxyWithLogger(t, logger, func(cfg *config.Config) {
+		withCorrelationHeader(cfg)
+		scanText := false
+		cfg.WebSocketProxy.ScanTextFrames = &scanText
+		cfg.CrossRequestDetection.Enabled = true
+		cfg.CrossRequestDetection.Action = config.ActionWarn
+		cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+		cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+		cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
+		cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 5
+		cfg.SessionProfiling.Enabled = true
+		cfg.SessionProfiling.MaxSessions = 100
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 3
+	}, nil, nil)
+	t.Cleanup(cleanup)
+
+	conn, err := dialWSConnWithHeader(proxyAddr, backendAddr, http.Header{corrTestHeader: []string{corrTestTag}})
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	half1, half2 := pathSecretHalves()
+	for _, part := range []string{half1, half2} {
+		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part)); err != nil {
+			t.Fatalf("write frame: %v", err)
+		}
+		if _, _, err := wsutil.ReadServerData(conn); err != nil {
+			t.Fatalf("read echo: %v", err)
+		}
+	}
+	requireCorrelation(t, waitForEvent(t, sink, emit.EventAdaptiveEscalation), corrTestTag)
 }
 
 func TestEmitCorrelation_ReverseProxy(t *testing.T) {

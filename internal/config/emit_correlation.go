@@ -43,21 +43,92 @@ var forbiddenCorrelationHeaders = map[string]struct{}{
 	"content-length": {},
 }
 
-// forbiddenCorrelationHeaderParts rejects header names that look
-// credential-bearing even when they are not on the explicit list, such as
-// X-Session-Token or X-Amz-Security-Token. Matched against the lowercase name.
-var forbiddenCorrelationHeaderParts = []string{
-	"auth",
-	"token",
-	"secret",
-	"password",
-	"passwd",
-	"cookie",
-	"credential",
-	"api-key",
-	"apikey",
-	"access-key",
-	"signature",
+// credentialHeaderWords rejects header names that look credential-bearing
+// even when they are not on the explicit list, such as X-Session-Id or
+// Cf-Access-Jwt-Assertion. The name is lowercased and split into words on
+// '-', '_', and '.'; every contiguous run of words is joined and matched
+// exactly against this set. Joining runs catches split spellings such as
+// X-Api_Key ("api"+"key") and Pass-Word, while exact word matching keeps
+// harmless names such as X-Author and X-Authority from tripping on "auth".
+var credentialHeaderWords = map[string]struct{}{
+	"auth":          {},
+	"authorization": {},
+	"authn":         {},
+	"authz":         {},
+	"token":         {},
+	"secret":        {},
+	"password":      {},
+	"passwd":        {},
+	"pwd":           {},
+	"pass":          {},
+	"cookie":        {},
+	"credential":    {},
+	"credentials":   {},
+	"apikey":        {},
+	"accesskey":     {},
+	"secretkey":     {},
+	"privatekey":    {},
+	"signature":     {},
+	"sig":           {},
+	"session":       {},
+	"sessionid":     {},
+	"jwt":           {},
+	"bearer":        {},
+	"assertion":     {},
+	"csrf":          {},
+	"xsrf":          {},
+	"otp":           {},
+	"totp":          {},
+	"private":       {},
+}
+
+// credentialHeaderWordAffixes catches a credential word fused into a longer
+// word, as in X-Sessiontoken or X-Apitoken. Config normalization canonicalizes
+// the header name before validation, so camelCase boundaries are gone by the
+// time this runs. Prefixes and suffixes are separate lists because short
+// stems that are harmless at the start of a word (auth in author, pass in
+// passthrough, sig in signal) are still credential-shaped at the end.
+var (
+	credentialHeaderWordPrefixes = []string{
+		"token", "secret", "password", "passwd", "cookie", "credential",
+		"apikey", "accesskey", "signature", "bearer", "assertion", "jwt",
+	}
+	credentialHeaderWordSuffixes = []string{
+		"token", "secret", "password", "passwd", "cookie", "credential",
+		"credentials", "apikey", "accesskey", "secretkey", "privatekey",
+		"signature", "bearer", "assertion", "sessionid", "session", "jwt",
+		"auth", "csrf", "xsrf",
+	}
+)
+
+// credentialHeaderWord returns the credential-shaped word or word run found in
+// a header name, or "" when the name looks harmless.
+func credentialHeaderWord(name string) string {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	for i := range words {
+		joined := ""
+		for j := i; j < len(words); j++ {
+			joined += words[j]
+			if _, ok := credentialHeaderWords[joined]; ok {
+				return joined
+			}
+		}
+	}
+	for _, w := range words {
+		for _, p := range credentialHeaderWordPrefixes {
+			if strings.HasPrefix(w, p) {
+				return w
+			}
+		}
+		for _, s := range credentialHeaderWordSuffixes {
+			if strings.HasSuffix(w, s) {
+				return w
+			}
+		}
+	}
+	return ""
 }
 
 // validateEmitCorrelationHeader checks emit.correlation_header. Empty means
@@ -74,10 +145,8 @@ func (c *Config) validateEmitCorrelationHeader() error {
 	if _, ok := forbiddenCorrelationHeaders[lower]; ok {
 		return fmt.Errorf("invalid emit.correlation_header %q: hop-by-hop, framing, and credential-bearing headers cannot be copied into emitted events", name)
 	}
-	for _, part := range forbiddenCorrelationHeaderParts {
-		if strings.Contains(lower, part) {
-			return fmt.Errorf("invalid emit.correlation_header %q: header names containing %q look credential-bearing and cannot be copied into emitted events", name, part)
-		}
+	if word := credentialHeaderWord(name); word != "" {
+		return fmt.Errorf("invalid emit.correlation_header %q: header name word %q looks credential-bearing and cannot be copied into emitted events", name, word)
 	}
 	for _, sensitive := range c.RequestBodyScanning.SensitiveHeaders {
 		if strings.EqualFold(strings.TrimSpace(sensitive), name) {

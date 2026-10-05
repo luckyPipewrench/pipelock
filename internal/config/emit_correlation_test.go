@@ -45,11 +45,11 @@ func TestValidateEmitCorrelationHeader(t *testing.T) {
 		{name: "te", header: "TE", wantErr: "hop-by-hop"},
 		{name: "proxy-connection", header: "Proxy-Connection", wantErr: "hop-by-hop"},
 		{name: "host", header: "Host", wantErr: "hop-by-hop"},
-		{name: "session token heuristic", header: "X-Session-Token", wantErr: `containing "token"`},
-		{name: "amz security token heuristic", header: "X-Amz-Security-Token", wantErr: `containing "token"`},
-		{name: "custom auth heuristic", header: "X-Custom-Auth", wantErr: `containing "auth"`},
-		{name: "client secret heuristic", header: "X-Client-Secret", wantErr: `containing "secret"`},
-		{name: "signature heuristic", header: "X-Hub-Signature", wantErr: `containing "signature"`},
+		{name: "session token heuristic", header: "X-Session-Token", wantErr: `word "session"`},
+		{name: "amz security token heuristic", header: "X-Amz-Security-Token", wantErr: `word "token"`},
+		{name: "custom auth heuristic", header: "X-Custom-Auth", wantErr: `word "auth"`},
+		{name: "client secret heuristic", header: "X-Client-Secret", wantErr: `word "secret"`},
+		{name: "signature heuristic", header: "X-Hub-Signature", wantErr: `word "signature"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -185,5 +185,84 @@ func TestEmitCorrelationHeader_ExcludedFromPolicyHash(t *testing.T) {
 	}
 	if a.Emit.Fingerprint() == b.Emit.Fingerprint() {
 		t.Fatal("correlation_header did not change the emit fingerprint; reload would not detect the change")
+	}
+}
+
+// The credential-name heuristic works on words, not substrings: it must reject
+// credential-bearing names a substring list misses and must accept harmless
+// names that merely contain a credential stem. Every name is checked as
+// written, lowercase, and uppercase.
+func TestValidateEmitCorrelationHeader_CredentialWords(t *testing.T) {
+	t.Parallel()
+
+	rejected := []string{
+		"X-Session-Id",
+		"X-AccessKey",
+		"X-Api_Key",
+		"X-Api.Key",
+		"X-Bearer",
+		"X-Jwt",
+		"X-Pwd",
+		"X-Pass",
+		"Cf-Access-Jwt-Assertion",
+		"X-Goog-Iap-Jwt-Assertion",
+		"X-Access-Key",
+		"X-Secret-Key",
+		"X-Private-Key",
+		"X-Authn",
+		"X-Authz",
+		"X-Csrf-Token",
+		"X-Xsrf",
+		"X-Otp",
+		"X-Totp-Code",
+		"X-Sig",
+		"X-Credentials",
+		"X-Pass-Word",
+		"X-Sessionid",
+		"X-Sessiontoken",
+		"X-Apitoken",
+		"X-Oauth",
+		"X-Tokenid",
+	}
+	accepted := []string{
+		"X-Author",
+		"X-Author-Id",
+		"X-Authority",
+		"X-Request-Id",
+		"X-Correlation-Id",
+		"X-Test-Case",
+		"X-Signal",
+		"X-Passthrough-Ref",
+		"X-Key-Ref",
+		"X-Monkey",
+		"Traceparent",
+	}
+	variants := func(name string) []string {
+		return []string{name, strings.ToLower(name), strings.ToUpper(name)}
+	}
+	for _, base := range rejected {
+		for _, name := range variants(base) {
+			t.Run("reject/"+name, func(t *testing.T) {
+				t.Parallel()
+				cfg := Defaults()
+				cfg.Emit.CorrelationHeader = name
+				err := cfg.validateEmitCorrelationHeader()
+				if err == nil || !strings.Contains(err.Error(), "credential-bearing") {
+					t.Fatalf("validate(%q) = %v, want credential-bearing rejection", name, err)
+				}
+			})
+		}
+	}
+	for _, base := range accepted {
+		for _, name := range variants(base) {
+			t.Run("accept/"+name, func(t *testing.T) {
+				t.Parallel()
+				cfg := Defaults()
+				cfg.Emit.CorrelationHeader = name
+				if err := cfg.validateEmitCorrelationHeader(); err != nil {
+					t.Fatalf("validate(%q) = %v, want nil", name, err)
+				}
+			})
+		}
 	}
 }

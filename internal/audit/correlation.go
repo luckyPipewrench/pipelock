@@ -37,17 +37,20 @@ func (c CorrelationID) String() string { return c.value }
 func (c CorrelationID) IsZero() bool { return c.value == "" }
 
 // sanitizeCorrelationValue applies the charset and length policy. Leading and
-// trailing spaces are trimmed (HTTP optional whitespace). The remainder must be
-// 1..CorrelationIDMaxBytes bytes of printable ASCII (0x20-0x7E). Anything else,
-// including control characters, DEL, and non-ASCII bytes, rejects the whole
-// value: it returns "".
+// trailing spaces and tabs are trimmed (HTTP optional whitespace). The
+// remainder must be 1..CorrelationIDMaxBytes bytes of visible ASCII
+// (0x21-0x7E). Anything else, including an interior space, control
+// characters, DEL, and non-ASCII bytes, rejects the whole value: it returns "".
+// Space is excluded because CEF extension values end at the next space for
+// many parsers, so an unescaped space would truncate the field or let the
+// tail read as a forged extension key.
 func sanitizeCorrelationValue(raw string) string {
 	v := strings.Trim(raw, " \t")
 	if v == "" || len(v) > CorrelationIDMaxBytes {
 		return ""
 	}
 	for i := 0; i < len(v); i++ {
-		if b := v[i]; b < 0x20 || b > 0x7e {
+		if b := v[i]; b <= 0x20 || b > 0x7e {
 			return ""
 		}
 	}
@@ -104,12 +107,18 @@ func (l *Logger) WithCorrelation(id CorrelationID) *Logger {
 	if l == nil || id.IsZero() {
 		return l
 	}
-	sub := *l
-	sub.fileHandle = nil
-	sub.filePath = ""
-	sub.fileCreated = false
-	sub.correlation = id
-	return &sub
+	// Build the child field by field, as With does. Copying *l would read
+	// fileHandle, which Close writes, so a request-scoped sub-logger created
+	// during shutdown would race the parent's Close. The child never owns
+	// the file sink.
+	return &Logger{
+		zl:                 l.zl,
+		includeAllowed:     l.includeAllowed,
+		includeBlocked:     l.includeBlocked,
+		emitter:            l.emitter,
+		identifierRedactor: l.identifierRedactor,
+		correlation:        id,
+	}
 }
 
 // correlationField adds the correlation tag to the emitted fields only. The

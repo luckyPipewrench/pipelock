@@ -284,9 +284,11 @@ jobs:
           if [[ ! "${profile}" =~ ${profile_pattern} ]]; then
             profile="**Review profile:** \`${REVIEW_MODE}\`; the review job did not publish its effective model."
           fi
+          # A per-run file, so two finalize runs on one host cannot post each other's body.
+          body_file="$(mktemp "${RUNNER_TEMP:-/tmp}/pr-review-finalize.XXXXXX")"
           printf '## AI PR Review\n\n**Verdict:** `failed`\n%s\n**Findings:** unavailable because the review job did not publish a final result.\n\n<details>\n<summary>Review details: binding and identity</summary>\n\n**Binding:** base `%s` head `%s`\n**Review identity:** `%s`\n\n</details>\n\n<!-- pr-review-status:v1 state=failed identity=%s mode=%s findings= reviewed_head=%s scope=full coverage_base=%s -->\n' \
-            "${profile}" "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" "${REVIEW_MODE}" "${HEAD_SHA}" "${BASE_SHA}" > /tmp/pr-review-finalize.md
-          if ! gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null; then
+            "${profile}" "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" "${REVIEW_MODE}" "${HEAD_SHA}" "${BASE_SHA}" > "${body_file}"
+          if ! gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@"${body_file}" >/dev/null; then
             # The edit can land with its reply lost. Read the comment back once:
             # if it now carries this run's failed marker, the verdict is published.
             sleep 5

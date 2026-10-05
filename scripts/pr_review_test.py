@@ -2317,6 +2317,13 @@ if [ -f "$FAKE_CAPTURE" ]; then cat "$FAKE_CAPTURE"; else printf '%s' "$FAKE_BOD
                 self.assertIn(text, run.stdout)
                 self.assertNotIn("::error::injected", run.stdout + run.stderr)
 
+    def test_finalizer_writes_its_edit_to_a_per_run_file(self) -> None:
+        # A fixed path lets two finalize runs on one host post each other's body.
+        script = load_yaml(REUSABLE_WORKFLOW)["jobs"]["finalize"]["steps"][0]["run"]
+        self.assertNotIn("/tmp/pr-review-finalize.md", script)
+        self.assertIn('mktemp "${RUNNER_TEMP:-/tmp}/pr-review-finalize.XXXXXX"', script)
+        self.assertIn('body=@"${body_file}"', script)
+
     def test_finalizer_does_not_depend_on_the_review_checkout(self) -> None:
         # A failed checkout is one of the cases the finalizer exists to survive,
         # so it must not resolve the locally checked-out action.

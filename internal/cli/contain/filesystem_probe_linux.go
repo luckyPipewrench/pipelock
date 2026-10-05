@@ -165,6 +165,9 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 
 	props := append([]string{}, profile.Properties...)
 	props = append(props, "InaccessiblePaths="+systemdPathToken(secretDir.path))
+	if env.filesystemCanaryOmitProperties {
+		props = nil
+	}
 	command := []string{"/bin/bash", "-c", filesystemCanaryScript, "bash", opPath, inode, writePath, workspace, secretPath}
 	args, err := privateTmpSystemdRunArgsForAgentProperties(env, command, props)
 	if err != nil {

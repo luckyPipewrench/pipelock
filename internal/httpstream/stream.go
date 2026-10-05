@@ -42,9 +42,11 @@ func Copy(w io.Writer, r io.Reader) (int64, error) {
 
 // Reason distinguishes a client that went away from an incomplete upstream
 // response. Consult the downstream context, not an upstream timeout's error.
+// A deadline the proxy placed on that context still ends the response early,
+// so only cancellation counts as the client going away.
 func Reason(ctx context.Context, err error) string {
 	var writeErr clientWriteError
-	if ctx.Err() != nil || errors.As(err, &writeErr) {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.As(err, &writeErr) {
 		return Cancelled
 	}
 	return Incomplete

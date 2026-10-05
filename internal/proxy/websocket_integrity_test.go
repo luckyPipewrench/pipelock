@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 )
 
 func TestWebSocketStreamIntegrity(t *testing.T) {
@@ -83,8 +84,14 @@ func TestWebSocketStreamIntegrity(t *testing.T) {
 				releaseUpstream()
 				_, _, err = wsutil.ReadServerData(conn)
 				var closeErr wsutil.ClosedError
-				gotNormal := errors.As(err, &closeErr) && closeErr.Code == ws.StatusNormalClosure
-				if err == nil || gotNormal != (ending == "complete") {
+				gotClose := errors.As(err, &closeErr)
+				if ending == "complete" {
+					if !gotClose || closeErr.Code != ws.StatusNormalClosure {
+						t.Fatalf("stream ending=%s read error=%v", ending, err)
+					}
+				} else if err == nil || gotClose {
+					// A truncated stream must be aborted, never closed with a
+					// WebSocket close handshake of any code.
 					t.Fatalf("stream ending=%s read error=%v", ending, err)
 				}
 				_ = conn.Close()
@@ -92,13 +99,19 @@ func TestWebSocketStreamIntegrity(t *testing.T) {
 			integrityWait(t, handlerDone)
 			integrityWait(t, upstreamDone)
 			wantIncomplete := ending != "cancel" && ending != "complete"
+			wantReason := "reason=" + receiptReasonIncomplete
+			switch ending {
+			case "complete":
+				wantReason = "reason=complete"
+			case "cancel":
+				wantReason = "reason=" + httpstream.Cancelled
+			}
 			foundOutcome := false
 			for _, rec := range rph.findReceipts(t) {
 				if rec.ActionRecord.Layer == "outcome" {
 					foundOutcome = true
-					got := strings.Contains(rec.ActionRecord.Pattern, "reason=incomplete")
-					if got != wantIncomplete {
-						t.Fatalf("outcome=%s", rec.ActionRecord.Pattern)
+					if !strings.Contains(rec.ActionRecord.Pattern, wantReason) {
+						t.Fatalf("ending=%s outcome=%s, want %s", ending, rec.ActionRecord.Pattern, wantReason)
 					}
 				}
 			}

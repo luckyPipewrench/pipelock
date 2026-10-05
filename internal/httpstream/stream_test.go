@@ -38,6 +38,8 @@ func TestStreamErrors(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+	expired, cancelExpired := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancelExpired()
 	for _, tt := range []struct {
 		name string
 		ctx  context.Context
@@ -47,6 +49,7 @@ func TestStreamErrors(t *testing.T) {
 		{"upstream_short", t.Context(), io.ErrUnexpectedEOF, Incomplete},
 		{"upstream_timeout", t.Context(), context.DeadlineExceeded, Incomplete},
 		{"client_cancel", ctx, io.ErrUnexpectedEOF, Cancelled},
+		{"proxy_deadline", expired, io.ErrUnexpectedEOF, Incomplete},
 		{"upstream_pipe_closed", t.Context(), io.ErrClosedPipe, Incomplete},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

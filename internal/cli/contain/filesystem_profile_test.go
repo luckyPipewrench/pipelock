@@ -6,6 +6,8 @@ package contain
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +371,47 @@ func TestFilesystemCanaryOutcome_OperatorVisibleFails(t *testing.T) {
 	}
 	if status, _ := filesystemCanaryOutcome(0, ""); status != statusPass {
 		t.Fatalf("exit 0 status = %s", status)
+	}
+}
+
+func TestProbeFilesystemConfinement_MissingConfigIsError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "pipelock.yaml")
+	env := &probeEnv{
+		configPath:    missing,
+		agentUserName: "pipelock-agent",
+		agentHome:     "/srv/agent-home",
+		readFile: func(string) ([]byte, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, missing) {
+		t.Fatalf("status=%s detail=%s", status, detail)
+	}
+	if status == statusFilesystemOff {
+		t.Fatal("missing config reported off")
+	}
+	env.readFile = func(string) ([]byte, error) {
+		return nil, os.ErrPermission
+	}
+	status, detail = probeFilesystemConfinement(context.Background(), env)
+	if status != statusFail || !strings.Contains(detail, missing) {
+		t.Fatalf("unreadable status=%s detail=%s", status, detail)
+	}
+}
+
+func TestProbeFilesystemConfinement_OmittedModeIsOff(t *testing.T) {
+	env := &probeEnv{
+		configPath:    filepath.Join(t.TempDir(), "pipelock.yaml"),
+		agentUserName: "pipelock-agent",
+		agentHome:     "/srv/agent-home",
+		readFile: func(string) ([]byte, error) {
+			return []byte("containment: {}\n"), nil
+		},
+	}
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusFilesystemOff || detail != "filesystem profile: off" {
+		t.Fatalf("status=%s detail=%s", status, detail)
 	}
 }
 

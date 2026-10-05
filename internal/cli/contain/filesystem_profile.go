@@ -551,9 +551,10 @@ func loadProbeConfig(env *probeEnv) (*config.Config, error) {
 	}
 	data, err := read(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
+		// A missing or unreadable file is not mode off. Off is only a
+		// successfully parsed config that says off or omits the key.
+		// Empty configPath still names the default file; there is no test
+		// seam that turns a missing file into off.
 		return nil, fmt.Errorf("read containment config %s: %w", path, err)
 	}
 	cfg := &config.Config{}

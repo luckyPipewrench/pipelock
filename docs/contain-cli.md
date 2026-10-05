@@ -267,7 +267,7 @@ pipelock contain verify
 
 ## Filesystem confinement
 
-`containment.filesystem.mode` is `off` or `enforce`. A config that omits the key, or an existing install that never had it, stays off. A fresh `contain install` writes `enforce`. Upgrading an existing config does not turn the profile on.
+`containment.filesystem.mode` is `off` or `enforce`. A config that parses and omits the key stays off. A fresh `contain install` writes `enforce`. Upgrading an existing config does not turn the profile on. A missing or unreadable config file is an error: `contain run` refuses the launch, and the installed wrapper stops because its property helper exits non-zero.
 
 `off` leaves the mount namespace the way `contain` left it before this setting: private `/tmp` and `/var/tmp`, and the configured display socket when a display is enabled. It does not claim the host filesystem is hidden.
 

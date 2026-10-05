@@ -670,6 +670,15 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		sideEffect = sideEffectFromMCPAction(actionType)
 		reversibility = ReversibilityUnknown
 	}
+	// Only a recorder-bound immutable detector can prepare value-owned fields
+	// before the chain lock. Unknown callbacks retain locked sanitation.
+	target, pattern := opts.Target, opts.Pattern
+	rf, sanitationPrepared := e.recorder.ImmutableReceiptRedactor()
+	if sanitationPrepared && rf != nil {
+		clean := func(text string) bool { return rf(context.Background(), text).Clean }
+		target = sanitizeTarget(target, clean)
+		pattern = cleanOrRedacted(pattern, clean)
+	}
 	if e.beforeChainLockForTest != nil {
 		e.beforeChainLockForTest()
 	}
@@ -727,21 +736,14 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		policyHash = normalizedPolicyHash
 	}
 
-	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
-	// the recorder would otherwise redact target/pattern AFTER signing,
-	// desyncing the on-disk canonical bytes from both the signature and the
-	// recorded receipt-hash binding. Sanitizing pre-sign with the same
-	// DLP function makes the recorder's redaction a no-op, so the receipt
-	// verifies from the evidence file alone. The redactor is read from the
-	// recorder at emit time (not cached at construction) so it is always the
-	// exact function the recorder will apply, with no drift surface; it is nil
-	// when flight-recorder redaction is off, leaving targets unchanged.
-	target := opts.Target
-	pattern := opts.Pattern
-	if rf := e.recorder.ReceiptRedactor(); rf != nil {
-		clean := func(text string) bool { return rf(context.Background(), text).Clean }
-		target = sanitizeTarget(target, clean)
-		pattern = cleanOrRedacted(pattern, clean)
+	// A callback can close over mutable detector state, so it must be read and
+	// used under the original chain lock unless its generation is bound.
+	if !sanitationPrepared {
+		if rf := e.recorder.ReceiptRedactor(); rf != nil {
+			clean := func(text string) bool { return rf(context.Background(), text).Clean }
+			target = sanitizeTarget(target, clean)
+			pattern = cleanOrRedacted(pattern, clean)
+		}
 	}
 
 	ar := ActionRecord{

@@ -152,12 +152,13 @@ type durableReservation struct {
 
 // Recorder writes hash-chained evidence entries to JSONL files.
 type Recorder struct {
-	cfg       Config
-	redactFn  RedactFunc
-	privKey   ed25519.PrivateKey
-	escrowPub *[x25519KeySize]byte
-	observer  EntryObserver
-	metrics   MetricsSink
+	receiptScanner *scanner.Scanner // immutable generation bound by NewWithScanner
+	cfg            Config
+	redactFn       RedactFunc
+	privKey        ed25519.PrivateKey
+	escrowPub      *[x25519KeySize]byte
+	observer       EntryObserver
+	metrics        MetricsSink
 
 	mu             sync.Mutex
 	seq            uint64
@@ -1713,4 +1714,37 @@ func sanitizeEntryText(e *Entry) {
 	for _, field := range []*string{&e.TraceID, &e.Type, &e.EventKind, &e.Transport, &e.Summary, &e.RawRef} {
 		*field = jsonscan.ReplaceInvalidUTF8(*field)
 	}
+}
+
+// NewWithScanner binds receipt redaction to one immutable detector generation.
+// Arbitrary callbacks passed to New do not make this lifetime guarantee.
+func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*Recorder, error) {
+	if cfg.Redact && sc == nil {
+		return nil, errors.New("receipt redaction requires a scanner")
+	}
+	var rf RedactFunc
+	if cfg.Redact {
+		rf = sc.ScanTextForDLP
+	}
+	r, err := New(cfg, rf, key)
+	if err != nil {
+		return nil, err
+	}
+	r.receiptScanner = sc
+	return r, nil
+}
+
+// ImmutableReceiptRedactor returns the recorder's redactor only when its
+// detector lifetime is established, or when redaction is disabled.
+func (r *Recorder) ImmutableReceiptRedactor() (RedactFunc, bool) {
+	if r == nil {
+		return nil, false
+	}
+	if !r.cfg.Redact {
+		return nil, true
+	}
+	if r.receiptScanner == nil {
+		return nil, false
+	}
+	return r.redactFn, true
 }

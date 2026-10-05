@@ -51,6 +51,14 @@ func ParseSeverity(s string) Severity {
 	}
 }
 
+// FieldCorrelationID is the event field carrying the vetted value of the
+// operator-configured emit.correlation_header for the originating request.
+// JSON sinks emit it as fields.correlation_id, OTLP as the correlation_id log
+// attribute, CEF as cs3 with cs3Label=correlationId, and OCSF as
+// metadata.correlation_uid. It is absent when the feature is off or the value
+// failed hygiene checks.
+const FieldCorrelationID = "correlation_id"
+
 // Event represents a structured audit event for external emission.
 type Event struct {
 	Severity   Severity

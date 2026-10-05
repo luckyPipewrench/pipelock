@@ -4,8 +4,6 @@
 package audit
 
 import (
-	"context"
-
 	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -37,10 +35,11 @@ func (l *Logger) LogIssuerQueryAllow(ctx LogContext, destination string) {
 		str("method", ctx.Method()).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg("query value allowed for observed issuer")
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventIssuerQueryAllow), e.fields)
+		l.emitEvent(string(EventIssuerQueryAllow), e.fields)
 	}
 }
 
@@ -86,11 +85,12 @@ func (l *Logger) logDLPAllowanceWithCookie(ctx LogContext, event EventType, patt
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg(message)
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(event), e.fields)
+		l.emitEvent(string(event), e.fields)
 	}
 }
 
@@ -112,10 +112,11 @@ func (l *Logger) logDLPInformational(ctx LogContext, patternName, severity, surf
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg("DLP informational match")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventDLPWarn), e.fields)
+		l.emitEvent(string(EventDLPWarn), e.fields)
 	}
 }

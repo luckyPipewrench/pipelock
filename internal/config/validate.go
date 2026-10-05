@@ -4203,6 +4203,9 @@ func (c *Config) AllowEphemeralListenersForTesting() {
 
 func (c *Config) validateEmit() error {
 	// Validate emit config
+	if err := c.validateEmitCorrelationHeader(); err != nil {
+		return err
+	}
 	if err := validateEmitFilterValues("emit.filter.actions", c.Emit.Filter.Actions); err != nil {
 		return err
 	}

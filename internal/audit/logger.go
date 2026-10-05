@@ -5,7 +5,6 @@
 package audit
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -470,6 +469,7 @@ type LogContext struct {
 	agentAuth       string
 	dowSubjectKey   string
 	dowSubjectTrust string
+	correlation     CorrelationID // emitted events only; see correlation.go
 }
 
 func (c LogContext) Method() string    { return c.method }
@@ -634,6 +634,7 @@ type Logger struct {
 	fileCreated        bool          // true when this logger created filePath
 	emitter            *emit.Emitter // optional external event emitter
 	identifierRedactor *lazyIdentifierRedactor
+	correlation        CorrelationID // per-request tag for emitted events; see WithCorrelation
 }
 
 // New creates a new audit logger. The caller should call Close when done.
@@ -1035,6 +1036,7 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
 		durMS(duration).
@@ -1042,7 +1044,7 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	e.msg("request allowed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAllowed), e.fields)
+		l.emitEvent(string(EventAllowed), e.fields)
 	}
 }
 
@@ -1134,6 +1136,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("header", detail.Header).
@@ -1156,7 +1159,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		e.msg("request blocked")
 	}
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventBlocked), e.fields)
+		l.emitEvent(string(EventBlocked), e.fields)
 	}
 }
 
@@ -1169,12 +1172,13 @@ func (l *Logger) LogError(ctx LogContext, err error) {
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		errField(err)
 	e.msg("request error")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventError), e.fields)
+		l.emitEvent(string(EventError), e.fields)
 	}
 }
 
@@ -1199,6 +1203,7 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
@@ -1210,7 +1215,7 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 	e.msg("anomaly detected")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
+		l.emitEvent(string(EventAnomaly), e.fields)
 	}
 }
 
@@ -1227,7 +1232,7 @@ func (l *Logger) LogContainmentMetricsDeny(endpoint, sourceIP, configuredListene
 	e.msg("containment metrics access denied")
 
 	if l.emitter != nil {
-		l.emitter.EmitWithSeverity(context.Background(), emit.SeverityWarn, string(EventContainmentMetricsDeny), e.fields)
+		l.emitEventWithSeverity(emit.SeverityWarn, string(EventContainmentMetricsDeny), e.fields)
 	}
 }
 
@@ -1244,6 +1249,7 @@ func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string)
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		str("scanner", scanner).
 		optStr("mitre_technique", technique).
@@ -1254,7 +1260,7 @@ func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string)
 	e.msg("agent identity collision")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAnomaly), e.fields)
+		l.emitEvent(string(EventAnomaly), e.fields)
 	}
 }
 
@@ -1338,11 +1344,14 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 		if ctx.requestID != "" {
 			fields["request_id"] = ctx.requestID
 		}
+		if !ctx.correlation.IsZero() {
+			fields[FieldCorrelationID] = ctx.correlation.value
+		}
 		if ctx.agent != "" {
 			fields["agent"] = sanitizeString(ctx.agent)
 			fields["agent_auth"] = ctx.agentAuthOrUnknown()
 		}
-		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
+		l.emitEvent(string(EventResponseScanExempt), fields)
 	}
 }
 
@@ -1408,11 +1417,14 @@ func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname,
 		if ctx.requestID != "" {
 			fields["request_id"] = ctx.requestID
 		}
+		if !ctx.correlation.IsZero() {
+			fields[FieldCorrelationID] = ctx.correlation.value
+		}
 		if ctx.agent != "" {
 			fields["agent"] = sanitizeString(ctx.agent)
 			fields["agent_auth"] = ctx.agentAuthOrUnknown()
 		}
-		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
+		l.emitEvent(string(EventResponseScanExempt), fields)
 	}
 }
 
@@ -1452,6 +1464,7 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 		str("url", ctx.url).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		str("transport", info.Transport).
 		str("content_type", info.ContentType).
@@ -1478,7 +1491,7 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	}
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventMediaExposure), e.fields)
+		l.emitEvent(string(EventMediaExposure), e.fields)
 	}
 }
 
@@ -1497,6 +1510,7 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		str("scanner", scanner).
 		str("action", action).
 		intField("match_count", matchCount).
@@ -1510,7 +1524,7 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 	e.msg("response scan detected prompt injection")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventResponseScan), e.fields)
+		l.emitEvent(string(EventResponseScan), e.fields)
 	}
 }
 
@@ -1528,6 +1542,7 @@ func (l *Logger) LogResponseScanSuppressed(ctx LogContext, patternName, surface,
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		str("scanner", scanner).
 		str("mode", "informational").
 		str("pattern", patternName).
@@ -1538,7 +1553,7 @@ func (l *Logger) LogResponseScanSuppressed(ctx LogContext, patternName, surface,
 	e.msg("response scan finding suppressed by policy")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventResponseScanSuppressed), e.fields)
+		l.emitEvent(string(EventResponseScanSuppressed), e.fields)
 	}
 }
 
@@ -1573,6 +1588,7 @@ func (l *Logger) LogCoreResponseObserved(ctx LogContext, patternName, surface st
 		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		str("scanner", scanner).
 		str("mode", "informational").
 		str("pattern", patternName).
@@ -1587,7 +1603,7 @@ func (l *Logger) LogCoreResponseObserved(ctx LogContext, patternName, surface st
 	e.msg("core response finding observed under a declared operator exception")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventResponseScanSuppressed), e.fields)
+		l.emitEvent(string(EventResponseScanSuppressed), e.fields)
 	}
 }
 
@@ -1612,6 +1628,7 @@ func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 		str("url", ctx.url).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		str("session_taint_level", d.TaintLevel).
 		str("action_class", d.ActionClass).
@@ -1625,7 +1642,7 @@ func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 	e.msg("taint policy decision")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventTaintDecision), e.fields)
+		l.emitEvent(string(EventTaintDecision), e.fields)
 	}
 }
 
@@ -1638,11 +1655,12 @@ func (l *Logger) LogTunnelOpen(ctx LogContext) {
 		optStr("target", ctx.target).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth)
 	e.msg("tunnel opened")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventTunnelOpen), e.fields)
+		l.emitEvent(string(EventTunnelOpen), e.fields)
 	}
 }
 
@@ -1655,13 +1673,14 @@ func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.
 		optStr("target", ctx.target).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		int64Field("total_bytes", totalBytes).
 		durMS(duration)
 	e.msg("tunnel closed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventTunnelClose), e.fields)
+		l.emitEvent(string(EventTunnelClose), e.fields)
 	}
 }
 
@@ -1677,6 +1696,7 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		intField("status_code", statusCode).
 		intField("size_bytes", sizeBytes).
@@ -1684,7 +1704,7 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 	e.msg("forward proxy request")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventForwardHTTP), e.fields)
+		l.emitEvent(string(EventForwardHTTP), e.fields)
 	}
 }
 
@@ -1701,7 +1721,7 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 	e.msg("redirect observed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventRedirect), e.fields)
+		l.emitEvent(string(EventRedirect), e.fields)
 	}
 }
 
@@ -1738,7 +1758,7 @@ func (l *Logger) LogToolRedirect(ev ToolRedirectEvent) {
 	e.msg("tool call redirected")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventToolRedirect), e.fields)
+		l.emitEvent(string(EventToolRedirect), e.fields)
 	}
 }
 
@@ -1751,7 +1771,7 @@ func (l *Logger) LogConfigReload(status, detail, configHash string) {
 	e.msg("configuration reloaded")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventConfigReload), e.fields)
+		l.emitEvent(string(EventConfigReload), e.fields)
 	}
 }
 
@@ -1790,7 +1810,7 @@ func (l *Logger) LogRuleBundleDegraded(ev RuleBundleDegradedEvent) {
 	e.msg("rule bundle coverage degraded")
 
 	if l.emitter != nil {
-		l.emitter.EmitWithSeverity(context.Background(), emitSeverity, string(EventRuleBundleDegraded), e.fields)
+		l.emitEventWithSeverity(emitSeverity, string(EventRuleBundleDegraded), e.fields)
 	}
 }
 
@@ -1829,7 +1849,7 @@ func (l *Logger) LogLicenseExpiry(warning LicenseExpiryWarning) {
 	e.msg(warning.Message)
 
 	if l.emitter != nil {
-		l.emitter.EmitWithSeverity(context.Background(), emitSeverity, string(EventLicenseExpiry), e.fields)
+		l.emitEventWithSeverity(emitSeverity, string(EventLicenseExpiry), e.fields)
 	}
 }
 
@@ -1843,7 +1863,7 @@ func (l *Logger) LogStartup(listenAddr, mode, version, configHash string) {
 	e.msg("pipelock started")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventStartup), e.fields)
+		l.emitEvent(string(EventStartup), e.fields)
 	}
 }
 
@@ -1854,7 +1874,7 @@ func (l *Logger) LogShutdown(reason string) {
 	e.msg("pipelock stopping")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventShutdown), e.fields)
+		l.emitEvent(string(EventShutdown), e.fields)
 	}
 }
 
@@ -1866,7 +1886,7 @@ func (l *Logger) LogAgentListener(addr, agent string) {
 	e.msg("agent listener started")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAgentListener), e.fields)
+		l.emitEvent(string(EventAgentListener), e.fields)
 	}
 }
 
@@ -1883,7 +1903,7 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 	e.msg("websocket opened")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSOpen), e.fields)
+		l.emitEvent(string(EventWSOpen), e.fields)
 	}
 }
 
@@ -1922,7 +1942,7 @@ func (l *Logger) LogWSClose(ev WSCloseEvent) {
 	e.msg("websocket closed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSClose), e.fields)
+		l.emitEvent(string(EventWSClose), e.fields)
 	}
 }
 
@@ -1968,7 +1988,7 @@ func (l *Logger) LogWSBlocked(ev WSBlockedEvent) {
 		e.msg("websocket blocked")
 	}
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSBlocked), e.fields)
+		l.emitEvent(string(EventWSBlocked), e.fields)
 	}
 }
 
@@ -2025,7 +2045,7 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 	e.msg("websocket scan hit")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventWSScan), e.fields)
+		l.emitEvent(string(EventWSScan), e.fields)
 	}
 }
 
@@ -2069,7 +2089,7 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		if requestID != "" {
 			fields["request_id"] = requestID
 		}
-		l.emitter.Emit(context.Background(), string(EventSessionAnomaly), fields)
+		l.emitEvent(string(EventSessionAnomaly), fields)
 	}
 }
 
@@ -2100,7 +2120,7 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 		if requestID != "" {
 			fields["request_id"] = requestID
 		}
-		l.emitter.EmitWithSeverity(context.Background(), emit.EscalationSeverity(to), string(EventAdaptiveEscalation), fields)
+		l.emitEventWithSeverity(emit.EscalationSeverity(to), string(EventAdaptiveEscalation), fields)
 	}
 }
 
@@ -2128,7 +2148,7 @@ func (l *Logger) LogAdaptiveRecovery(opts LogAdaptiveRecoveryOptions) {
 	e.msg("adaptive enforcement recovered")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAdaptiveRecovery), e.fields)
+		l.emitEvent(string(EventAdaptiveRecovery), e.fields)
 	}
 }
 
@@ -2177,7 +2197,7 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 		if requestID != "" {
 			fields["request_id"] = requestID
 		}
-		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventAdaptiveUpgrade), fields)
+		l.emitEventWithSeverity(sev, string(EventAdaptiveUpgrade), fields)
 	}
 }
 
@@ -2193,7 +2213,7 @@ func (l *Logger) LogMCPUnknownTool(toolName, action string) {
 	e.msg("tool not in session baseline")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventMCPUnknownTool), e.fields)
+		l.emitEvent(string(EventMCPUnknownTool), e.fields)
 	}
 }
 
@@ -2215,7 +2235,7 @@ func (l *Logger) LogSNIMismatch(connectHost, sniHost, clientIP, requestID, agent
 	e.msg("SNI verification failed")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventSNIMismatch), e.fields)
+		l.emitEvent(string(EventSNIMismatch), e.fields)
 	}
 }
 
@@ -2231,7 +2251,7 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 	e.msg("kill switch denied request")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventKillSwitchDeny), e.fields)
+		l.emitEvent(string(EventKillSwitchDeny), e.fields)
 	}
 }
 
@@ -2249,6 +2269,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
@@ -2260,7 +2281,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 	e.msg("request body DLP scan hit")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventBodyDLP), e.fields)
+		l.emitEvent(string(EventBodyDLP), e.fields)
 	}
 }
 
@@ -2277,6 +2298,7 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		intField("match_count", matchCount).
 		strs("findings", findingNames).
@@ -2285,7 +2307,7 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 	e.msg("request body " + string(eventType) + " scan hit")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(eventType), e.fields)
+		l.emitEvent(string(eventType), e.fields)
 	}
 }
 
@@ -2303,6 +2325,7 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		strs("patterns", patternNames).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditHeaderDLP, strings.Join(patternNames, ", "))).
@@ -2313,7 +2336,7 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 	e.msg("request header DLP scan hit")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventHeaderDLP), e.fields)
+		l.emitEvent(string(EventHeaderDLP), e.fields)
 	}
 }
 
@@ -2347,7 +2370,7 @@ func (l *Logger) LogChainDetection(pattern, patternSeverity, action, toolName, s
 		if action == actionBlock {
 			sev = emit.SeverityCritical
 		}
-		l.emitter.EmitWithSeverity(context.Background(), sev, string(EventChainDetection), e.fields)
+		l.emitEventWithSeverity(sev, string(EventChainDetection), e.fields)
 	}
 }
 
@@ -2362,7 +2385,7 @@ func (l *Logger) LogSessionAdmin(action, clientIP, sessionKey, result string, st
 	e.msg("session admin API")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventSessionAdmin), e.fields)
+		l.emitEvent(string(EventSessionAdmin), e.fields)
 	}
 }
 
@@ -2385,7 +2408,7 @@ func (l *Logger) LogAirlockEnterForScope(sessionKey, scope, tier, trigger, clien
 	e.msg("session entered airlock")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAirlockEnter), e.fields)
+		l.emitEvent(string(EventAirlockEnter), e.fields)
 	}
 }
 
@@ -2434,7 +2457,7 @@ func (l *Logger) LogAirlockDenyReason(opts AirlockDenyOptions) {
 	e.msg("airlock denied request")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAirlockDeny), e.fields)
+		l.emitEvent(string(EventAirlockDeny), e.fields)
 	}
 }
 
@@ -2449,7 +2472,7 @@ func (l *Logger) LogAirlockDeescalate(sessionKey, from, to, clientIP, requestID 
 	e.msg("airlock de-escalated")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventAirlockDeescalate), e.fields)
+		l.emitEvent(string(EventAirlockDeescalate), e.fields)
 	}
 }
 
@@ -2465,7 +2488,7 @@ func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetUR
 	e.msg("browser shield rewrote content")
 
 	if l.emitter != nil {
-		l.emitter.Emit(context.Background(), string(EventShieldRewrite), e.fields)
+		l.emitEvent(string(EventShieldRewrite), e.fields)
 	}
 }
 
@@ -2479,6 +2502,7 @@ func (l *Logger) With(key, value string) *Logger {
 		includeBlocked:     l.includeBlocked,
 		emitter:            l.emitter,
 		identifierRedactor: l.identifierRedactor,
+		correlation:        l.correlation,
 	}
 }
 

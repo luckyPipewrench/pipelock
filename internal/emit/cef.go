@@ -113,6 +113,10 @@ func cefExtension(event Event) string {
 		values[cefKey] = rendered
 	}
 
+	if _, ok := values[cefCorrelationKey]; ok {
+		values[cefCorrelationLabelKey] = cefCorrelationLabel
+	}
+
 	keys := sortedKeys(values)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
@@ -133,6 +137,14 @@ func sortedKeys[V any](values map[string]V) []string {
 const (
 	cefUntrustedAgentLabelKey = "pipelockAgentLabel"
 	cefUntrustedAgentAuthKey  = "pipelockAgentAuth"
+
+	// cefCorrelationKey carries the client correlation tag in the CEF
+	// custom-string slot after cs1 (scanner) and cs2 (pattern). Unlike those
+	// two, its meaning is not inferable from the value, so it is paired with
+	// the standard csNLabel key.
+	cefCorrelationKey      = "cs3"
+	cefCorrelationLabelKey = "cs3Label"
+	cefCorrelationLabel    = "correlationId"
 )
 
 func cefFieldKey(key string) (string, bool) {
@@ -147,6 +159,8 @@ func cefFieldKey(key string) (string, bool) {
 		return "requestMethod", true
 	case "request_id":
 		return "externalId", true
+	case FieldCorrelationID:
+		return cefCorrelationKey, true
 	case "url":
 		return "request", true
 	case "target", "resource":

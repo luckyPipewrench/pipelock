@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -83,10 +84,15 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 		return statusFail, "filesystem confinement canary requires root to start a transient systemd service"
 	}
 	var cleanups []func()
+	var cleanupErr error
+	recordCleanup := func(err error) {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
 	defer func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
+		status, detail = filesystemCleanupResult(status, detail, cleanupErr)
 	}()
 
 	opParent, err := openNoFollowDir(filesystemOperatorCanaryParent)
@@ -98,7 +104,7 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 	if err != nil {
 		return statusFail, fmt.Sprintf("create operator home canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { opParent.removeDir(opName) }, opDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(opParent.removeBounded(ctx, opName)) }, opDir.close)
 	opFile, inode, err := opDir.createExclusiveFile("canary-", 0o644, []byte("canary\n"))
 	if err != nil {
 		return statusFail, fmt.Sprintf("write operator home canary: %v", err)
@@ -114,12 +120,12 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 	if err != nil {
 		return statusFail, fmt.Sprintf("create write canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { stateParent.removeDir(writeName) }, writeDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(ctx, writeName)) }, writeDir.close)
 	secretName, secretDir, err := stateParent.mkdirExclusive(".pipelock-fs-secret-", 0o755)
 	if err != nil {
 		return statusFail, fmt.Sprintf("create secret canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { stateParent.removeDir(secretName) }, secretDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(ctx, secretName)) }, secretDir.close)
 	secretFile, _, err := secretDir.createExclusiveFile("secret-", 0o644, []byte("secret\n"))
 	if err != nil {
 		return statusFail, fmt.Sprintf("write secret canary: %v", err)
@@ -312,33 +318,114 @@ func (d *noFollowDir) unlink(name string) {
 	_ = unix.Unlinkat(int(d.file.Fd()), name, 0)
 }
 
-func (d *noFollowDir) removeDir(name string) {
-	if d == nil || d.file == nil {
-		return
-	}
-	fd, err := unix.Openat(int(d.file.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+const (
+	filesystemCleanupMaxEntries = 64
+	filesystemCleanupMaxDepth   = 8
+	filesystemCleanupBatch      = 16
+)
+
+func filesystemCleanupResult(status, detail string, err error) (string, string) {
 	if err == nil {
-		child := &noFollowDir{file: os.NewFile(uintptr(fd), name)}
-		child.removeEntries()
-		child.close()
+		return status, detail
 	}
-	_ = unix.Unlinkat(int(d.file.Fd()), name, unix.AT_REMOVEDIR)
+	if status == statusPass || detail == "" {
+		return statusFail, err.Error()
+	}
+	return statusFail, detail + "; " + err.Error()
 }
 
-func (d *noFollowDir) removeEntries() {
+// removeDir deletes one canary directory without following symlinks. Callers
+// that must fail the probe use removeBounded so a huge tree cannot hang cleanup.
+func (d *noFollowDir) removeDir(name string) {
+	if d == nil {
+		return
+	}
+	_ = d.removeBounded(context.Background(), name)
+}
+
+func (d *noFollowDir) removeBounded(ctx context.Context, name string) error {
 	if d == nil || d.file == nil {
-		return
+		return errors.New("filesystem canary cleanup directory is closed")
 	}
-	names, err := d.file.Readdirnames(-1)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	seen := 0
+	return d.removeTree(ctx, name, 0, &seen)
+}
+
+func (d *noFollowDir) removeTree(ctx context.Context, name string, depth int, seen *int) error {
+	leftover := d.path
+	if leftover == "" {
+		leftover = name
+	} else {
+		leftover = filepath.Join(d.path, name)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", leftover, err)
+	}
+	if depth > filesystemCleanupMaxDepth {
+		return fmt.Errorf("filesystem canary cleanup exceeded its depth at %s", leftover)
+	}
+	fd, err := unix.Openat(int(d.file.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return
-	}
-	for _, name := range names {
-		if err := unix.Unlinkat(int(d.file.Fd()), name, 0); err == nil {
-			continue
+		if unlinkErr := unix.Unlinkat(int(d.file.Fd()), name, 0); unlinkErr != nil {
+			return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", leftover, unlinkErr)
 		}
-		d.removeDir(name)
+		*seen++
+		return nil
 	}
+	child := &noFollowDir{file: os.NewFile(uintptr(fd), leftover), path: leftover}
+	defer child.close()
+	if err := child.removeChildren(ctx, depth, seen); err != nil {
+		return err
+	}
+	child.close()
+	if err := unix.Unlinkat(int(d.file.Fd()), name, unix.AT_REMOVEDIR); err != nil {
+		return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", leftover, err)
+	}
+	return nil
+}
+
+func (d *noFollowDir) removeChildren(ctx context.Context, depth int, seen *int) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", d.path, err)
+		}
+		names, err := d.file.Readdirnames(filesystemCleanupBatch)
+		if err != nil && !errors.Is(err, io.EOF) && len(names) == 0 {
+			return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", d.path, err)
+		}
+		if len(names) == 0 {
+			return nil
+		}
+		for _, name := range names {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", d.path, err)
+			}
+			if *seen >= filesystemCleanupMaxEntries {
+				return fmt.Errorf("filesystem canary cleanup exceeded its entry limit at %s", d.path)
+			}
+			if err := d.removeOne(ctx, name, depth, seen); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (d *noFollowDir) removeOne(ctx context.Context, name string, depth int, seen *int) error {
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(d.file.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", filepath.Join(d.path, name), err)
+	}
+	*seen++
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		if err := unix.Unlinkat(int(d.file.Fd()), name, 0); err != nil {
+			return fmt.Errorf("filesystem canary cleanup stopped at %s: %w", filepath.Join(d.path, name), err)
+		}
+		return nil
+	}
+	return d.removeTree(ctx, name, depth+1, seen)
 }
 
 func randomCanaryComponent(prefix string) (string, error) {

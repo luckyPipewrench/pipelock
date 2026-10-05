@@ -105,6 +105,10 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // semantics. Declared Content-Type is not consulted, so mislabeled textual
 // content still takes the ordinary scan path.
 func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	return s.scanResponseBodyWithSuppress(ctx, body, suppressTarget, suppress, s.scanResponseBodyUncached)
+}
+
+func (s *Scanner) scanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry, scan func(context.Context, []byte, string, []config.SuppressEntry) ResponseScanResult) ResponseScanResult {
 	if ctx != nil && ctx.Err() != nil {
 		return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
 	}
@@ -117,11 +121,42 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 			return result
 		}
 	}
-	result := s.scanResponseBodyUncached(ctx, body, suppressTarget, suppress)
+	if eligible {
+		flight, leader := s.responseVerdicts.beginFlight(key)
+		if leader {
+			defer s.responseVerdicts.endFlight(key, flight)
+			// An earlier flight may have published between lookup and admission.
+			if result, ok := s.responseVerdicts.get(key); ok {
+				if ctx != nil && ctx.Err() != nil {
+					return s.ScanResponseWithSuppress(ctx, "", suppressTarget, suppress)
+				}
+				return result
+			}
+		} else if flight != nil {
+			waitCtx := ctx
+			if waitCtx == nil {
+				waitCtx = context.Background()
+			}
+			select {
+			case <-waitCtx.Done():
+				return s.ScanResponseWithSuppress(waitCtx, "", suppressTarget, suppress)
+			case <-flight.done:
+			}
+			if waitCtx.Err() != nil {
+				return s.ScanResponseWithSuppress(waitCtx, "", suppressTarget, suppress)
+			}
+			if result, ok := s.responseVerdicts.get(key); ok {
+				return result
+			}
+			// Findings, transformations, failures and timed exceptions need this
+			// request's own scan and evidence rather than the leader's result.
+		}
+	}
+	result := scan(ctx, body, suppressTarget, suppress)
 	if result.TransformedContent != "" {
 		// A candidate rewritten from one body view must be clean in every view
 		// the body scan uses, not only in the view that produced the rewrite.
-		checked := s.scanResponseBodyUncached(ctx, []byte(result.TransformedContent), suppressTarget, suppress)
+		checked := scan(ctx, []byte(result.TransformedContent), suppressTarget, suppress)
 		if !checked.Clean || checked.Failed() {
 			result.TransformedContent = ""
 		}

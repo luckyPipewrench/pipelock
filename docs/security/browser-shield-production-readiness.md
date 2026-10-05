@@ -42,8 +42,7 @@ This avoids treating large legitimate media responses as shield failures.
   `scan_head` is the default: it rewrites only the configured prefix and records
   the intervention as partial. `block` fails closed. `warn` returns the body
   unchanged and should stay limited to short diagnostics.
-- Common developer documentation and browser IDE hosts are exempt by default to
-  reduce false positives on large rendered reference pages.
+- Common developer documentation and browser IDE hosts skip Shield rewriting by default to reduce false positives on large rendered reference pages. The exemption does not bypass the full-response policy: forward, TLS-intercepted, and reverse traffic still refuses every `206` and `304`.
 - Signed action receipts include a `shield` summary whenever Browser Shield
   rewrites a response and receipt emission is enabled.
 - Rewritten responses carry `X-Pipelock-Shield-Rewrite`, so a client can tell

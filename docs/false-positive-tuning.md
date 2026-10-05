@@ -178,7 +178,7 @@ suppress:
 
 Suppressions apply per normalization pass to configurable patterns, so a suppressed match cannot mask a later encoded finding on the same body. Compiled core matches are never suppression candidates. Suppressed non-core findings still appear in logs with `suppressed: true`.
 
-**Whole-host trust: use `exempt_domains`, and know what it costs.** This is the broadest response-side control. For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched: no injection scan, and also no media metadata strip, no Browser Shield rewrite, and no response scan-cap block. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. Reach for it when you trust the host wholesale or need large downloads byte-intact, not to silence one pattern.
+**Whole-host trust: use `exempt_domains`, and know what it costs.** This is the broadest response-side control. Forward, TLS-intercepted, and reverse traffic refuses every `206` and `304` with `response_incomplete` before response-scan exemptions, Shield exemptions, media policy, or budget truncation. For forward-proxy and TLS-intercepted traffic, an exempt host's complete response streams through untouched: no injection scan, and also no media metadata strip, no Browser Shield rewrite, and no response scan-cap block. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. Reach for it when you trust the host wholesale or need large downloads byte-intact, not to silence one pattern.
 
 ```yaml
 response_scanning:

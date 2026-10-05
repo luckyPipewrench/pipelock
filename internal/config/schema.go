@@ -2243,7 +2243,7 @@ type BrowserShield struct {
 	Strictness             string   `yaml:"strictness"`               // minimal|standard|aggressive
 	MaxShieldBytes         int      `yaml:"max_shield_bytes"`         // size limit for shielding
 	OversizeAction         string   `yaml:"oversize_action"`          // block|scan_head|warn
-	ExemptDomains          []string `yaml:"exempt_domains"`           // hostnames only (validated, no paths)
+	ExemptDomains          []string `yaml:"exempt_domains"`           // hostnames skipping Shield rewriting only; no partial-response bypass (validated, no paths)
 	StripExtensionProbing  bool     `yaml:"strip_extension_probing"`  // strip chrome-extension:// URLs; no script is injected
 	StripHiddenTraps       bool     `yaml:"strip_hidden_traps"`       // strip hidden DOM elements with instructions
 	StripTrackingPixels    bool     `yaml:"strip_tracking_pixels"`    // strip 1x1 images and beacon calls

@@ -564,11 +564,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			Metrics:            m,
 		}
 
-		var redactFn recorder.RedactFunc
-		if cfg.FlightRecorder.Redact {
-			redactFn = sc.ScanTextForDLP
-		}
-
 		if cfg.FlightRecorder.SigningKeyPath != "" {
 			k, kErr := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
 			if kErr != nil {
@@ -578,7 +573,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			recPrivKey = k
 		}
 
-		rec, recErr := recorder.New(recCfg, redactFn, recPrivKey)
+		rec, recErr := recorder.NewWithScanner(recCfg, sc, recPrivKey)
 		if recErr != nil {
 			s.cleanup()
 			return nil, fmt.Errorf("creating flight recorder: %w", recErr)

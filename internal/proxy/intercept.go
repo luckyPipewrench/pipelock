@@ -1855,6 +1855,7 @@ func newInterceptHandler(
 		// policy decision already bound the actor.
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
+		applyFullResponsePolicy(r.Header, nil)
 
 		// Inject mediation envelope (and attach RFC 9421 signature when
 		// the envelope emitter has a signer) before forwarding on the
@@ -1969,6 +1970,19 @@ func newInterceptHandler(
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
 		stripUpstreamPipelockNamespace(resp)
+		if !applyFullResponsePolicy(nil, resp) {
+			reason := fullResponseRefusal(resp)
+			pattern := string(blockreason.ResponseIncomplete)
+			ic.Logger.LogBlocked(actx, "browser_cache", reason)
+			ic.Metrics.RecordTLSResponseBlocked("browser_cache")
+			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
+				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+			}))
+			writeFullResponseBlock(w)
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, pattern)
+			return
+		}
 		// The authenticated-artifact exception is verified at the proxy before
 		// bytes reach the client; it is not a route-level response exemption.
 		interceptAuthenticatedArtifact := false
@@ -2410,6 +2424,7 @@ func newInterceptHandler(
 				setShieldRewriteHeader(resp.Header, shieldSummary)
 				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
 				resp.Header.Del("ETag")
+				resp.Header.Del("Last-Modified")
 				resp.Header.Del("Digest")
 				resp.Header.Del("Content-MD5")
 			}
@@ -2455,6 +2470,7 @@ func newInterceptHandler(
 			// bytes - stale after metadata stripping, and a client or
 			// intermediary that validates it will reject the response.
 			resp.Header.Del("ETag")
+			resp.Header.Del("Last-Modified")
 			resp.Header.Del("Digest")
 			resp.Header.Del("Content-MD5")
 		}
@@ -2695,6 +2711,10 @@ func newInterceptHandler(
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
 					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+					resp.Header.Del("ETag")
+					resp.Header.Del("Last-Modified")
+					resp.Header.Del("Digest")
+					resp.Header.Del("Content-MD5")
 					ic.Logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					// warn/forward: log and forward unmodified.

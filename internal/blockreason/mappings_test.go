@@ -29,6 +29,7 @@ func TestSeverityFor_FullVocabulary(t *testing.T) {
 		blockreason.RateLimit:                  blockreason.SeverityWarn,
 		blockreason.DataBudget:                 blockreason.SeverityWarn,
 		blockreason.ResponseSize:               blockreason.SeverityWarn,
+		blockreason.ResponseIncomplete:         blockreason.SeverityWarn,
 		blockreason.MediaPolicy:                blockreason.SeverityWarn,
 		blockreason.ParseError:                 blockreason.SeverityWarn,
 		blockreason.Timeout:                    blockreason.SeverityWarn,
@@ -115,6 +116,7 @@ func TestRetryFor_FullVocabulary(t *testing.T) {
 		blockreason.CrossRequestDeny:     blockreason.RetryNone,
 		blockreason.SchemeBlocked:        blockreason.RetryNone,
 		blockreason.ParseError:           blockreason.RetryNone,
+		blockreason.ResponseIncomplete:   blockreason.RetryNone,
 		blockreason.BadRequest:           blockreason.RetryNone,
 	}
 	for r, want := range cases {

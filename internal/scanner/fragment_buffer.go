@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -129,6 +130,7 @@ type FragmentAppendResult struct {
 // DLP patterns synchronously. This guarantees pre-forward detection: a request
 // that completes a split secret is blocked before egress. Thread-safe.
 type FragmentBuffer struct {
+	cleanMemo    fragmentCleanMemo
 	mu           sync.Mutex
 	maxBytes     int // per-session byte cap
 	maxSessions  int // global owner cap (new identities are denied at capacity)
@@ -258,7 +260,7 @@ func (fb *FragmentBuffer) AppendAndScanOwnedInGroup(ctx context.Context, owner i
 	fb.maybeCleanupLocked(time.Now())
 	result := fb.appendWithSnapshotLocked(owner.Key(), group.Key(), streamKey.Key(), FragmentPiece{Data: payload}, nil, &snapshot)
 	fb.mu.Unlock()
-	return result, scanFragmentsForSecrets(ctx, sc, snapshot)
+	return result, fb.scanBatchWithCleanMemo(ctx, sc, snapshot, fragmentStreamKindData+streamKey.Key())
 }
 
 // FragmentPiece is one leaf inside a stream. Continuity is the identity that
@@ -334,8 +336,8 @@ func (fb *FragmentBuffer) AppendAndScanOwnedBatch(ctx context.Context, owner ide
 		return result, nil
 	}
 	matches := make([][]DLPMatch, len(snapshots))
-	for i, snapshot := range snapshots {
-		matches[i] = scanFragmentsForSecrets(ctx, sc, snapshot)
+	for i, item := range appends {
+		matches[i] = fb.scanBatchWithCleanMemo(ctx, sc, snapshots[i], fragmentStreamKindData+item.Stream.Key())
 	}
 	return FragmentAppendResult{}, matches
 }
@@ -655,7 +657,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey identit
 	}
 	fragments := fb.activeFragmentsLocked(sb.fragments)
 	fb.mu.Unlock()
-	return scanFragmentsForSecrets(ctx, sc, fragments)
+	return fb.scanBatchWithCleanMemo(ctx, sc, fragments, fragmentStreamKindData+sessionKey.Key())
 }
 
 // AppendPathSegments records a URL path as bounded, position-aware CEE state.
@@ -681,22 +683,23 @@ func (fb *FragmentBuffer) AppendPathSegmentsForSession(streamKey identitykey.CEE
 // identity. Path state shares that identity's ledger slot with any sibling
 // JSON or raw streams rather than competing with them one key at a time.
 func (fb *FragmentBuffer) AppendPathSegmentsOwned(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte) FragmentAppendResult {
-	return fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, nil)
+	return fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, nil, nil)
 }
 
 // AppendAndScanPathSegmentsOwned inspects each completed position before the
 // shared path retention budget evicts its earlier fragments.
 func (fb *FragmentBuffer) AppendAndScanPathSegmentsOwned(ctx context.Context, owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte, sc *Scanner) (FragmentAppendResult, []DLPMatch) {
 	var snapshots [][]fragment
-	result := fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, &snapshots)
+	var snapshotKeys []string
+	result := fb.appendPathSegmentsWithSnapshot(owner, streamKey, segments, &snapshots, &snapshotKeys)
 	var matches []DLPMatch
-	for _, fragments := range snapshots {
-		matches = append(matches, scanFragmentsForSecrets(ctx, sc, fragments)...)
+	for i, fragments := range snapshots {
+		matches = append(matches, fb.scanBatchWithCleanMemo(ctx, sc, fragments, snapshotKeys[i])...)
 	}
 	return result, matches
 }
 
-func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte, snapshots *[][]fragment) FragmentAppendResult {
+func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEIdentity, streamKey identitykey.CEEStream, segments [][]byte, snapshots *[][]fragment, snapshotKeys *[]string) FragmentAppendResult {
 	if streamKey.Owner() != owner {
 		return FragmentAppendResult{OwnerMismatch: true}
 	}
@@ -764,9 +767,10 @@ func (fb *FragmentBuffer) appendPathSegmentsWithSnapshot(owner identitykey.CEEId
 		fb.appendPathFragmentLocked(ps, pb, segment)
 	}
 	if snapshots != nil {
-		for _, pb := range ps.positions {
+		for position, pb := range ps.positions {
 			if fragments := fb.activeFragmentsLocked(pb.fragments); len(fragments) >= minFragmentsForMatch {
 				*snapshots = append(*snapshots, fragments)
+				*snapshotKeys = append(*snapshotKeys, fragmentStreamKindPath+streamKey.Key()+"\x00"+strconv.Itoa(position))
 			}
 		}
 	}
@@ -796,16 +800,18 @@ func (fb *FragmentBuffer) ScanPathForSecrets(ctx context.Context, sessionKey ide
 	}
 
 	streams := make([][]fragment, 0, len(ps.positions))
-	for _, pb := range ps.positions {
+	var streamKeys []string
+	for position, pb := range ps.positions {
 		if fragments := fb.activeFragmentsLocked(pb.fragments); len(fragments) >= minFragmentsForMatch {
 			streams = append(streams, fragments)
+			streamKeys = append(streamKeys, fragmentStreamKindPath+sessionKey.Key()+"\x00"+strconv.Itoa(position))
 		}
 	}
 	fb.mu.Unlock()
 
 	var matches []DLPMatch
-	for _, fragments := range streams {
-		matches = append(matches, scanFragmentsForSecrets(ctx, sc, fragments)...)
+	for i, fragments := range streams {
+		matches = append(matches, fb.scanBatchWithCleanMemo(ctx, sc, fragments, streamKeys[i])...)
 	}
 	return matches
 }
@@ -869,6 +875,10 @@ func fragmentContinuityGroups(fragments []fragment) [][]fragment {
 }
 
 func scanOneFragmentContinuity(ctx context.Context, sc *Scanner, fragments []fragment) []DLPMatch {
+	return scanOneFragmentContinuityMemo(ctx, sc, fragments, nil, "")
+}
+
+func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string) []DLPMatch {
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}
@@ -888,8 +898,16 @@ func scanOneFragmentContinuity(ctx context.Context, sc *Scanner, fragments []fra
 		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: normalized, fragment: f})
 	}
 
-	result := sc.ScanTextForDLP(ctx, string(buf))
+	text := string(buf)
+	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity)}
+	if memo != nil && memo.lookup(key, text) {
+		return nil
+	}
+	result := sc.ScanTextForDLP(ctx, text)
 	if result.Clean && len(result.InformationalMatches) == 0 {
+		if memo != nil {
+			memo.store(key, text)
+		}
 		return nil
 	}
 
@@ -1245,6 +1263,10 @@ func (fb *FragmentBuffer) Close() {
 	}
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
+	fb.cleanMemo.mu.Lock()
+	clear(fb.cleanMemo.entries)
+	fb.cleanMemo.bytes = 0
+	fb.cleanMemo.mu.Unlock()
 	fb.sessions = make(map[string]*sessionBuffer)
 	fb.pathSessions = make(map[string]*pathSessionBuffer)
 	fb.owners = make(map[string]*ownerState)
@@ -1357,4 +1379,70 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 			fb.deletePathStreamLocked(key)
 		}
 	}
+}
+
+// A memo entry certifies only a warning-free full scan of identical normalized
+// text within one buffer, stream, continuity and immutable scanner generation.
+type fragmentCleanKey struct {
+	scanner            *Scanner
+	stream, continuity string
+}
+type fragmentCleanMemo struct {
+	mu                         sync.Mutex
+	entries                    map[fragmentCleanKey]string
+	bytes, limit, hits, misses int
+}
+
+func (m *fragmentCleanMemo) lookup(key fragmentCleanKey, text string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if prior, ok := m.entries[key]; ok && prior == text {
+		m.hits++
+		return true
+	}
+	m.misses++
+	return false
+}
+
+func (m *fragmentCleanMemo) store(key fragmentCleanKey, text string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(text) > m.limit || m.limit <= 0 {
+		return
+	}
+	if m.entries == nil {
+		m.entries = make(map[fragmentCleanKey]string)
+	}
+	if prior, ok := m.entries[key]; ok {
+		m.bytes -= len(prior) + len(key.stream) + len(key.continuity)
+		delete(m.entries, key)
+	}
+	cost := len(text) + len(key.stream) + len(key.continuity)
+	if cost > m.limit {
+		return
+	}
+	if m.bytes+cost > m.limit {
+		clear(m.entries)
+		m.bytes = 0
+	}
+	m.entries[key] = text
+	m.bytes += cost
+}
+
+func (fb *FragmentBuffer) scanBatchWithCleanMemo(ctx context.Context, sc *Scanner, fragments []fragment, stream string) []DLPMatch {
+	fb.mu.Lock()
+	limit := 4 * fb.maxBytes
+	fb.mu.Unlock()
+	fb.cleanMemo.mu.Lock()
+	fb.cleanMemo.limit = limit
+	if fb.cleanMemo.bytes > limit {
+		clear(fb.cleanMemo.entries)
+		fb.cleanMemo.bytes = 0
+	}
+	fb.cleanMemo.mu.Unlock()
+	var matches []DLPMatch
+	for _, group := range fragmentContinuityGroups(fragments) {
+		matches = append(matches, scanOneFragmentContinuityMemo(ctx, sc, group, &fb.cleanMemo, stream)...)
+	}
+	return matches
 }

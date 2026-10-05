@@ -19,8 +19,8 @@ import (
 
 const (
 	shieldUninspectableLayer         = "shield_uninspectable"
-	shieldUTF16ScanHeadBlockReason   = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip"
-	shieldPartialResponseBlockReason = "Browser Shield cannot safely rewrite a partial response; request the complete resource or use browser_shield.exempt_domains for an intentional whole-host skip"
+	shieldUTF16ScanHeadBlockReason   = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains to skip Shield rewriting only"
+	shieldPartialResponseBlockReason = "Browser Shield cannot safely rewrite a partial response; request the complete resource; browser_shield.exempt_domains skips Shield on fetch, including partial responses Shield would otherwise rewrite, but cannot bypass response_incomplete on forward, TLS-intercepted, or reverse proxy traffic"
 	browserMIMESniffHeaderBytes      = 1445
 )
 
@@ -73,7 +73,7 @@ func runShieldPipelineWithEncoding(engine *shield.Engine, body []byte, contentTy
 
 	content, utf16, err := decodeShieldUTF16(body, contentType, pipeline)
 	if err != nil {
-		return shieldPipelineResult{body: body, pipeline: pipeline, uninspectableReason: fmt.Sprintf("Browser Shield cannot safely inspect UTF-16 response: %v; correct upstream encoding or use browser_shield.exempt_domains for an intentional whole-host skip", err)}
+		return shieldPipelineResult{body: body, pipeline: pipeline, uninspectableReason: fmt.Sprintf("Browser Shield cannot safely inspect UTF-16 response: %v; correct upstream encoding or use browser_shield.exempt_domains to skip Shield rewriting only", err)}
 	}
 	if !utf16 {
 		content = string(body)

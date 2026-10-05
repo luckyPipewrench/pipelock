@@ -1820,6 +1820,7 @@ func (t *reverseOutcomeTracker) EmitOnce(rp *ReverseProxyHandler) {
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
 func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	applyFullResponsePolicy(req.Header, nil)
 	// Use the emitter snapshot from admission time, not the current
 	// global atomic. A reload between ServeHTTP and RoundTrip must
 	// not flip the signing decision for an in-flight request.
@@ -2206,6 +2207,20 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		requestActionID = actionID
 	}
 	targetURL := resp.Request.URL.String()
+	if !applyFullResponsePolicy(nil, resp) {
+		pattern := string(blockreason.ResponseIncomplete)
+		if responseReceiptState != nil {
+			responseReceiptState.responseBlocked = true
+		}
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "browser_cache")
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
+			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		replaceWithBlockReason(resp, string(blockreason.ResponseIncomplete), blockInfoFor(blockreason.ResponseIncomplete, "browser_cache"))
+		reverseOutcomeFromContext(resp.Request.Context()).Record(http.StatusForbidden, -1, pattern)
+		return nil
+	}
 	// Response taint: observe this response against the SAME transport-independent
 	// taint key the request path evaluated, so a prompt-injection hit or an
 	// untrusted-origin response introduces taint that a later request on any
@@ -3502,7 +3517,7 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.
 // Scrubs ALL upstream headers to prevent leaking Set-Cookie, Content-Encoding,
 // Etag, and other upstream headers through a synthetic block response. The
 // forward proxy avoids this by never copying headers on block; since
-// httputil.ReverseProxy copies them before ModifyResponse, we clear them.
+// httputil.ReverseProxy copies them after ModifyResponse, we clear them first.
 // replaceWithMediaBlockResponse replaces the upstream response with a 403
 // JSON body tagged as a media-policy block. Separate from
 // replaceWithBlockResponse because that builder hardcodes the

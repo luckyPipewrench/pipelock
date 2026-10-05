@@ -189,27 +189,24 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
 
-	// Every action inspects the same visible strings. Add envelope and
-	// extension strings that the typed result extractor does not consume. The
-	// Typed text keeps its own context, and media payloads keep its rule:
-	// opaque media is skipped and text decoded from it is scanned.
-	values := jsonrpc.ExtractVisibleStringsFromJSONResult(trimmed)
-	keys := jsonrpc.ExtractKeysFromJSONResult(trimmed)
-	if values.Truncated || keys.Truncated {
+	// Every action inspects envelope strings not already owned by the typed
+	// extractor. Resource URIs retain injection coverage without becoming
+	// inbound response-DLP text.
+	envelopeText, resourceURIs, inspectable := responseEnvelopeRemainder(trimmed, rpc)
+	if !inspectable {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
-	envelopeText := strings.Join(append(values.Strings, keys.Keys...), "\n")
 
-	if text == "" && envelopeText == "" && (!includeDLP || numeric == "") {
+	if text == "" && envelopeText == "" && resourceURIs == "" && (!includeDLP || numeric == "") {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
 	// An all-numeric response has nothing for the injection scanner; it is
 	// treated as a clean response scan and only the numeric channel runs.
-	views := []string{text, envelopeText}
+	views := []string{text, envelopeText, resourceURIs}
 	var dlpViews []string
 	if includeDLP {
-		dlpViews = views
+		dlpViews = []string{text, envelopeText}
 	}
 	result, dlpMatches, droppedDLP := scanResponseViews(context.Background(), sc, opts, views, dlpViews)
 	if result.Failed() {

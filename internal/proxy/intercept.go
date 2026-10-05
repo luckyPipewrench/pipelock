@@ -2575,7 +2575,7 @@ func newInterceptHandler(
 				}
 				if scanResult.Clean {
 					iRespAction = config.ActionAllow
-				} else if scanResult.Failed() {
+				} else if scanResult.Failed() || (iRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 					iRespAction = config.ActionBlock
 				}
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{

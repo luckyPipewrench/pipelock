@@ -3271,7 +3271,7 @@ responseScanning:
 		}
 		if result.Clean {
 			revAction = config.ActionAllow
-		} else if result.Failed() {
+		} else if result.Failed() || (revAction == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 			revAction = config.ActionBlock
 		}
 		captureAgent := reverseCaptureAgent(resp.Request)
@@ -3319,6 +3319,10 @@ responseScanning:
 	// Exempt domains: pin to warn for visibility without blocking.
 	if revRespExempt {
 		action = config.ActionWarn
+	}
+
+	if action == config.ActionStrip && (result.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent) {
+		action = config.ActionBlock
 	}
 
 	var patternNames []string

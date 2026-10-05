@@ -857,7 +857,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						outbound = blockResponseReason(verdict.ID, "inbound DLP finding cannot be safely stripped")
 						writeContext = "writing block response"
 					} else {
-						actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
+						actualAction, msg := stripOrBlockMessageWithOptions(line, sc, logW, verdict.ID, opts.warnContext(), respScanOpts)
 						effectiveAction = actualAction
 						outbound = msg
 						writeContext = "writing strip/block response"
@@ -880,7 +880,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				outbound = blockResponseReason(verdict.ID, "inbound DLP finding cannot be safely stripped")
 				writeContext = "writing block response"
 			} else {
-				actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
+				actualAction, msg := stripOrBlockMessageWithOptions(line, sc, logW, verdict.ID, opts.warnContext(), respScanOpts)
 				effectiveAction = actualAction
 				outbound = msg
 				writeContext = "writing strip/block response"
@@ -963,6 +963,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			releaseToolInventory()
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
+		_, _ = fmt.Fprintf(logW, "pipelock: line %d: response action=%s\n", lineNum, effectiveAction)
 		if effectiveAction == config.ActionWarn || effectiveAction == config.ActionAllow {
 			commitToolInventory()
 		}
@@ -1082,7 +1083,16 @@ func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWrit
 }
 
 func stripOrBlockMessage(line []byte, sc *scanner.Scanner, logW io.Writer, rpcID json.RawMessage) (string, []byte) {
-	stripped, sErr := stripResponse(line, sc)
+	return stripOrBlockMessageWithOptions(line, sc, logW, rpcID, context.Background(), ResponseScanOptions{})
+}
+
+func stripOrBlockMessageWithOptions(line []byte, sc *scanner.Scanner, logW io.Writer, rpcID json.RawMessage, ctx context.Context, opts ResponseScanOptions) (string, []byte) {
+	stripped, sErr := stripResponseWithOptions(line, sc, ctx, opts)
+	if sErr == nil && bytes.Equal(stripped, line) {
+		// Callers strip only a message whose scan reported a finding. When no
+		// supported field changed, the finding is outside what strip rewrites.
+		sErr = fmt.Errorf("no strippable field carried the finding")
+	}
 	if sErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
 		return config.ActionBlock, blockResponse(rpcID)
@@ -1274,120 +1284,162 @@ func blockSessionDenyResponse(id json.RawMessage, _ string) []byte {
 	return data
 }
 
-// stripRPCResponse is used only by stripResponse for typed result manipulation.
-// The main jsonrpc.RPCResponse uses json.RawMessage for flexible scanning.
-type stripRPCResponse struct {
-	JSONRPC string              `json:"jsonrpc"`
-	ID      json.RawMessage     `json:"id"`
-	Result  *jsonrpc.ToolResult `json:"result,omitempty"`
-	Error   json.RawMessage     `json:"error,omitempty"`
-}
-
 // maxStripDepth limits recursion between stripResponseDepth and stripBatchDepth
 // to prevent stack overflow from maliciously nested JSON arrays.
 const maxStripDepth = 4
 
-// stripResponse re-parses a JSON-RPC response, redacts matched injection
-// patterns in content blocks and error fields, and returns the re-marshaled JSON.
+type stripResponseScanner func(string) scanner.ResponseScanResult
+
+// stripResponse rewrites supported fields without discarding the envelope and
+// returns content only after a whole-message rescan finds no residual finding.
 func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
-	return stripResponseDepth(line, sc, 0)
+	return stripResponseWithOptions(line, sc, context.Background(), ResponseScanOptions{})
 }
 
-func stripResponseDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
+func stripResponseWithOptions(line []byte, sc *scanner.Scanner, ctx context.Context, opts ResponseScanOptions) ([]byte, error) {
+	scan := stripResponseScanner(func(text string) scanner.ResponseScanResult {
+		return sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
+	})
+	out, err := stripResponseDepth(line, scan, 0)
+	if err != nil {
+		return nil, err
+	}
+	// Rescan the outgoing message with the response scan that decided it, so
+	// every view that produced a finding (typed fields, decoded media text,
+	// envelope strings and keys) must now be clean. The raw view also covers
+	// findings that span fields. Observation callbacks already fired for the
+	// original message and must not fire again for the candidate.
+	checkOpts := opts
+	checkOpts.OnSuppressedResponse = nil
+	checkOpts.OnObservedCoreResponse = nil
+	checkOpts.OnDroppedDLP = nil
+	if verdict := ScanResponseOpts(out, sc, checkOpts); !verdict.Clean || verdict.Error != "" {
+		return nil, fmt.Errorf("stripped response is not clean")
+	}
+	if checked := scan(string(out)); !checked.Clean || checked.Failed() {
+		return nil, fmt.Errorf("stripped response is not clean")
+	}
+	return out, nil
+}
+
+// stripResponseString rewrites only supported string fields. Object-valued
+// fields remain intact and are inspected by the whole-message rescan.
+func stripResponseString(object map[string]json.RawMessage, key string, scan stripResponseScanner) (bool, error) {
+	var text string
+	if raw, ok := object[key]; !ok || json.Unmarshal(raw, &text) != nil {
+		return false, nil
+	}
+	result := scan(text)
+	if result.Clean {
+		return false, nil
+	}
+	if result.Failed() || result.TransformedContent == "" {
+		return false, fmt.Errorf("injection detected but not redactable in response string")
+	}
+	rewritten, err := json.Marshal(result.TransformedContent)
+	if err != nil {
+		return false, fmt.Errorf("encoding stripped string: %w", err)
+	}
+	object[key] = rewritten
+	return true, nil
+}
+
+func stripResponseDepth(line []byte, scan stripResponseScanner, depth int) ([]byte, error) {
 	// Handle batch responses (JSON array). Trim so a leading-whitespace
 	// array is classified the same way ParseMCPFrame sets IsBatch.
 	if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 && trimmed[0] == '[' {
 		if depth >= maxStripDepth {
 			return nil, fmt.Errorf("batch nesting too deep (max %d)", maxStripDepth)
 		}
-		return stripBatchDepth(trimmed, sc, depth+1)
+		return stripBatchDepth(trimmed, scan, depth+1)
 	}
 
-	var rpc stripRPCResponse
+	if err := jsonscan.RejectDuplicateKeys(line); err != nil {
+		return nil, fmt.Errorf("parsing response for strip: %w", err)
+	}
+	var rpc map[string]json.RawMessage
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return nil, fmt.Errorf("parsing response for strip: %w", err)
 	}
-
-	if rpc.Result != nil {
-		for i, block := range rpc.Result.Content {
-			if block.Text == "" {
-				continue
+	if rpc == nil {
+		return nil, fmt.Errorf("strip requires a response object")
+	}
+	changed := false
+	if raw, ok := rpc["result"]; ok && len(raw) > 0 && string(raw) != "null" {
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &result); err != nil || result == nil {
+			return nil, fmt.Errorf("strip requires a result object")
+		}
+		if rawContent, ok := result["content"]; ok {
+			var content []map[string]json.RawMessage
+			if err := json.Unmarshal(rawContent, &content); err != nil {
+				return nil, fmt.Errorf("parsing content for strip: %w", err)
 			}
-			result := sc.ScanResponse(context.Background(), block.Text)
-			if !result.Clean {
-				if result.TransformedContent != "" {
-					rpc.Result.Content[i].Text = result.TransformedContent
-				} else {
-					// Detection from non-redactable pass (vowel-fold/decoded).
-					// Can't strip, fail-closed to block.
-					return nil, fmt.Errorf("injection detected but not redactable in content block %d", i)
+			contentChanged := false
+			for _, block := range content {
+				c, err := stripResponseString(block, "text", scan)
+				if err != nil {
+					return nil, err
 				}
+				contentChanged = contentChanged || c
+			}
+			if contentChanged {
+				rewritten, err := json.Marshal(content)
+				if err != nil {
+					return nil, fmt.Errorf("encoding stripped content: %w", err)
+				}
+				result["content"] = rewritten
+				rewritten, err = json.Marshal(result)
+				if err != nil {
+					return nil, fmt.Errorf("encoding stripped result: %w", err)
+				}
+				rpc["result"] = rewritten
+				changed = true
 			}
 		}
 	}
-
-	// Scan error.message and error.data for injection content.
-	if len(rpc.Error) > 0 {
-		var errObj struct {
-			Code    int             `json:"code"`
-			Message string          `json:"message"`
-			Data    json.RawMessage `json:"data,omitempty"`
+	if raw, ok := rpc["error"]; ok && len(raw) > 0 && string(raw) != "null" {
+		var errorObject map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &errorObject); err != nil || errorObject == nil {
+			return nil, fmt.Errorf("strip requires an error object")
 		}
-		if json.Unmarshal(rpc.Error, &errObj) == nil {
-			changed := false
-			if errObj.Message != "" {
-				result := sc.ScanResponse(context.Background(), errObj.Message)
-				if !result.Clean {
-					if result.TransformedContent != "" {
-						errObj.Message = result.TransformedContent
-						changed = true
-					} else {
-						return nil, fmt.Errorf("injection detected but not redactable in error message")
-					}
-				}
+		errorChanged := false
+		for _, key := range []string{"message", "data"} {
+			c, err := stripResponseString(errorObject, key, scan)
+			if err != nil {
+				return nil, err
 			}
-			if len(errObj.Data) > 0 {
-				var dataStr string
-				if json.Unmarshal(errObj.Data, &dataStr) == nil && dataStr != "" {
-					result := sc.ScanResponse(context.Background(), dataStr)
-					if !result.Clean {
-						if result.TransformedContent != "" {
-							if newData, mErr := json.Marshal(result.TransformedContent); mErr == nil {
-								errObj.Data = newData
-								changed = true
-							}
-						} else {
-							return nil, fmt.Errorf("injection detected but not redactable in error data")
-						}
-					}
-				}
+			errorChanged = errorChanged || c
+		}
+		if errorChanged {
+			rewritten, err := json.Marshal(errorObject)
+			if err != nil {
+				return nil, fmt.Errorf("encoding stripped error: %w", err)
 			}
-			if changed {
-				if newErr, mErr := json.Marshal(errObj); mErr == nil {
-					rpc.Error = newErr
-				}
-			}
+			rpc["error"] = rewritten
+			changed = true
 		}
 	}
-
+	if !changed {
+		return line, nil
+	}
 	return json.Marshal(rpc)
 }
 
 // stripBatchDepth handles stripping injection from batch (array) JSON-RPC responses.
-func stripBatchDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error) {
+func stripBatchDepth(line []byte, scan stripResponseScanner, depth int) ([]byte, error) {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		return nil, fmt.Errorf("parsing batch for strip: %w", err)
 	}
 	result := make([]json.RawMessage, len(batch))
 	for i, elem := range batch {
-		stripped, err := stripResponseDepth(elem, sc, depth)
+		stripped, err := stripResponseDepth(elem, scan, depth)
 		if err != nil {
-			// Never forward unstripped injection - block the element instead.
-			result[i] = json.RawMessage(blockResponse(nil))
-		} else {
-			result[i] = json.RawMessage(stripped)
+			// A blocked element is not a successful strip of the batch.
+			return nil, fmt.Errorf("stripping batch element %d: %w", i, err)
 		}
+		result[i] = json.RawMessage(stripped)
 	}
 	return json.Marshal(result)
 }

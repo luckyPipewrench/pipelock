@@ -1971,14 +1971,15 @@ func newInterceptHandler(
 		defer resp.Body.Close() //nolint:errcheck // response body
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
-			reason, pattern := fullResponseRefusal(resp)
+			reason := fullResponseRefusal(resp)
+			pattern := string(blockreason.ResponseIncomplete)
 			ic.Logger.LogBlocked(actx, "browser_cache", reason)
 			ic.Metrics.RecordTLSResponseBlocked("browser_cache")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
 				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 			}))
-			writeFullResponseBlock(w, reason)
+			writeFullResponseBlock(w)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, pattern)
 			return
 		}

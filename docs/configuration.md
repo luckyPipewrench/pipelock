@@ -3908,7 +3908,7 @@ browser_shield:
 | `strictness` | string | `standard` | Rewrite posture: `minimal`, `standard`, or `aggressive` |
 | `max_shield_bytes` | int | `5242880` (5 MiB) | Normal maximum shieldable response body size before `oversize_action` applies. On forward, TLS-intercepted, and reverse traffic, matching `response_scanning.size_exempt_domains` use the bounded `size_exempt_scan_max_bytes` ceiling for whole-body shielding. |
 | `oversize_action` | string | `scan_head` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
-| `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that bypass Browser Shield entirely |
+| `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that skip Browser Shield rewriting only; other response policies, including incomplete-response refusal, still apply |
 | `strip_extension_probing` | bool | `true` | Remove browser-extension URLs outside existing scripts. No script is injected: replacing the page's `fetch` or `XMLHttpRequest` is what bot-verification services such as Cloudflare test for, so a shielded browser would be challenged on ordinary navigation |
 | `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap content. A CSS-hidden or `aria-hidden="true"` `div`, `span` or `p` whose text, read with tags removed and character references decoded, carries an instruction word such as "ignore" or "disregard" is removed whole. When it holds interface markup (a form, input, button, link, image, list, table or similar) it is an application view waiting to be shown, so its markup stays and only the text carrying those words is removed. An `aria-hidden="true"` element of another tag whose own text carries such a word, and an HTML comment that does, are also removed. Markup is read with the HTML tokenizer, so text inside a comment, an attribute value, or a `script`, `style`, `textarea` or `title` body is never treated as an element. Response scanning is a separate control: it can be disabled independently, its default action is `warn`, and its patterns are narrower than these words |
 | `strip_tracking_pixels` | bool | `true` | Remove 1x1 tracking images and prefetch links outside existing scripts |
@@ -3929,7 +3929,7 @@ movement, block deltas, and application breakage before moving to the standard
 fail-closed posture. Use `oversize_action: warn` only for short, explicitly
 scoped diagnostics because it returns oversized shieldable bodies unchanged.
 
-Browser Shield blocks partial (`206`) HTML and SVG responses that it would otherwise rewrite. Rewriting a fragment would leave its upstream byte range inaccurate, even if the new body had the same length. This block also applies when `oversize_action: warn` is set. Request the complete resource, or use `browser_shield.exempt_domains` for a host you intentionally want to pass through Shield unchanged. JavaScript and other content Shield does not rewrite keep their normal response-scanning path.
+Forward, TLS-intercepted, and reverse proxy traffic refuses every partial (`206`) or not-modified (`304`) response before Browser Shield runs, with the `response_incomplete` block reason. Request the complete resource. `browser_shield.exempt_domains` skips Shield rewriting only; it cannot permit an unscanned partial response. Fetch also blocks partial HTML and SVG that Shield would otherwise rewrite, because rewriting a fragment invalidates its upstream byte range, even when the body length stays the same.
 
 Other response policies also preserve byte-range integrity: a partial response is blocked if response-scanning strip would change it, if its encoded body would need decoding for inspection, or if an agent byte budget would truncate it. These refusals do not affect complete responses.
 
@@ -3966,7 +3966,7 @@ All boolean fields use nil-means-security-default semantics: omitting a field fr
 | `max_image_bytes` | int64 | `5242880` (5 MiB) | Reject images larger than this before parsing (decompression bomb defense) |
 | `log_media_exposure` | *bool | `true` | Emit `media_exposure` events for allowed media responses |
 
-Media policy blocks a partial (`206`) image response only when stripping would change its bytes. An unchanged image keeps its range response. If you need partial images from a trusted source, request the complete image or set `media_policy.strip_image_metadata: false` to pass its metadata through unchanged.
+Media policy blocks a partial (`206`) image response only when stripping would change its bytes. On forward, TLS-intercepted, and reverse proxy traffic, the earlier full-response policy refuses every `206`, including unchanged images and hosts exempt from Shield rewriting. Request the complete image; `media_policy.strip_image_metadata: false` does not bypass that refusal.
 
 ### Metadata stripping
 

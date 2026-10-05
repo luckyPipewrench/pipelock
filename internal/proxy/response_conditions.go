@@ -26,18 +26,18 @@ func applyFullResponsePolicy(headers http.Header, resp *http.Response) bool {
 
 // fullResponseRefusal identifies the incomplete representation without treating
 // the refusal as an upstream outage or an injection finding.
-func fullResponseRefusal(resp *http.Response) (reason, pattern string) {
+func fullResponseRefusal(resp *http.Response) string {
 	if resp.StatusCode == http.StatusPartialContent {
-		return "unbound partial response", "unbound_partial_content"
+		return "unbound partial response; request the complete resource"
 	}
-	return "unbound not-modified response", "unbound_not_modified"
+	return "unbound not-modified response; request the complete resource"
 }
 
 // writeFullResponseBlock uses the same synthetic response as the reverse path,
 // including its block metadata, without copying any origin headers.
-func writeFullResponseBlock(w http.ResponseWriter, reason string) {
+func writeFullResponseBlock(w http.ResponseWriter) {
 	resp := &http.Response{Header: make(http.Header)}
-	replaceWithBlockReason(resp, reason, blockInfoFor(blockreason.ParseError, "browser_cache"))
+	replaceWithBlockReason(resp, string(blockreason.ResponseIncomplete), blockInfoFor(blockreason.ResponseIncomplete, "browser_cache"))
 	for name, values := range resp.Header {
 		w.Header()[name] = values
 	}

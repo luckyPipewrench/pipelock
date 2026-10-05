@@ -2329,7 +2329,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 	stripUpstreamPipelockNamespace(resp)
 	if !applyFullResponsePolicy(nil, resp) {
-		reason, pattern := fullResponseRefusal(resp)
+		reason := fullResponseRefusal(resp)
+		pattern := string(blockreason.ResponseIncomplete)
 		p.logger.LogBlocked(actx, "browser_cache", reason)
 		p.metrics.RecordBlocked(r.URL.Hostname(), "browser_cache", time.Since(start), agentLabel)
 		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
@@ -2337,7 +2338,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Method: r.Method, Target: targetURL, Layer: "browser_cache",
 			Pattern: pattern, Taint: forwardTaint,
 		})))
-		writeFullResponseBlock(w, reason)
+		writeFullResponseBlock(w)
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
 		outcomeReason = pattern
 		return

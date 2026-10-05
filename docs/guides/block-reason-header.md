@@ -36,6 +36,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | `url_length` | URL exceeds `monitoring.max_url_length`. |
 | `rate_limit` | Per-session, tunnel-capacity, or per-base-domain rate ceiling exceeded; every subdomain of a site shares the URL scanner's budget. |
 | `data_budget` | Per-session data or capacity budget exhausted, or the URL scanner's per-base-domain `max_data_per_minute` ceiling reached (shared by all subdomains). |
+| `response_incomplete` | Forward, TLS-intercepted, or reverse proxy refused a partial (`206`) or not-modified (`304`) origin response. Request the complete resource; Browser Shield exemptions skip rewriting only and cannot bypass this refusal. |
 
 ### Content / payload
 
@@ -83,7 +84,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | `bad_request` | The request itself is malformed (e.g. missing required headers, bad CONNECT target). |
 | `compressed_response` | A response used an encoding Pipelock cannot decode (gzip and deflate are decoded and scanned; other encodings, stacked or malformed bodies are not). |
 | `browser_shield_oversize` | Response exceeded Browser Shield's size limit. |
-| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, scan-head mode refused a partial character stream, or the response was a partial (`206`) response that Shield would have to rewrite. |
+| `browser_shield_uninspectable` | Browser Shield could not safely decode a declared or detected UTF-16 response, scan-head mode refused a partial character stream, or fetch received a partial (`206`) response that Shield would have to rewrite. |
 | `block_reason_overflow` | Internal sentinel used when WebSocket close-frame metadata would exceed RFC 6455's 123-byte payload limit. Distinct from `parse_error` so the operator sees that the block metadata itself was malformed, not the underlying request. |
 
 ## Severity

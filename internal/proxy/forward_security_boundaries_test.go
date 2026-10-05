@@ -128,7 +128,7 @@ func TestForwardSecurityBoundary_StripsConnectionNamedAndIdentityHeaders(t *test
 				t.Errorf("end-to-end header = %q, want preserved", got)
 			}
 			return &http.Response{
-				StatusCode: http.StatusPartialContent,
+				StatusCode: http.StatusOK,
 				Header: http.Header{
 					"Connection":         {"X-Upstream-Hop"},
 					"X-Upstream-Hop":     {"must-not-leak"},
@@ -158,8 +158,8 @@ func TestForwardSecurityBoundary_StripsConnectionNamedAndIdentityHeaders(t *test
 	if !sawOutbound.Load() {
 		t.Fatal("outbound transport was not reached")
 	}
-	if rec.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want 206; body=%q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", rec.Code, rec.Body.String())
 	}
 	for _, name := range []string{"Connection", "X-Upstream-Hop", "Proxy-Authenticate", "Content-Length"} {
 		if got := rec.Header().Get(name); got != "" {

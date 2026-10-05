@@ -152,6 +152,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "DataBudget"
 	case blockreason.ResponseSize:
 		return "ResponseSize"
+	case blockreason.ResponseIncomplete:
+		return "ResponseIncomplete"
 	case blockreason.DLPMatch:
 		return "DLPMatch"
 	case blockreason.PromptInjection:

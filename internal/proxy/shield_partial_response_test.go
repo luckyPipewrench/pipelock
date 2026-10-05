@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 const partialShieldPage = `<html><body><img src="https://track.vendor.example/pixel" width="1" height="1"></body></html>`
@@ -61,7 +64,7 @@ func TestForwardShieldPartialResponse(t *testing.T) {
 	}{
 		{"blocked", false, false, http.StatusForbidden},
 		{"oversize warning still blocks range", false, true, http.StatusForbidden},
-		{"explicit host exemption", true, false, http.StatusPartialContent},
+		{"explicit host exemption", true, false, http.StatusForbidden},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			backend := httptest.NewServer(http.HandlerFunc(partialShieldUpstream))
@@ -93,12 +96,10 @@ func TestForwardShieldPartialResponse(t *testing.T) {
 			if resp.StatusCode != tt.want {
 				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tt.want, body)
 			}
-			if tt.exempt && (string(body) != partialShieldPage || resp.Header.Get("Content-Range") == "") {
-				t.Fatalf("exempt range was not preserved: headers=%v body=%q", resp.Header, body)
-			}
-			if !tt.exempt && (resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage)) {
+			if resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
 				t.Fatalf("blocked range leaked upstream metadata or body: headers=%v body=%q", resp.Header, body)
 			}
+			assertIncompleteResponseBlock(t, resp, body)
 		})
 	}
 }
@@ -118,19 +119,29 @@ func TestFetchShieldPartialResponse(t *testing.T) {
 }
 
 func TestReverseShieldPartialResponse(t *testing.T) {
-	cfg := reverseTestConfig()
-	cfg.ResponseScanning.Enabled = false
-	cfg.BrowserShield.Enabled = true
-	cfg.BrowserShield.StripTrackingPixels = true
-	server := reverseShieldConfiguredServer(t, cfg, partialShieldUpstream, nil, nil)
-	resp := testGet(t, server.URL+"/page")
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
-		t.Fatalf("reverse status=%d headers=%v body=%q, want Shield denial", resp.StatusCode, resp.Header, body)
+	for _, exempt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shield_exempt_%t", exempt), func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.StripTrackingPixels = true
+			if exempt {
+				cfg.BrowserShield.ExemptDomains = []string{"127.0.0.1"}
+			}
+			server, dir, closeRecorder := reverseReceiptParitySetupWithShield(t, cfg, partialShieldUpstream, shield.NewEngine(nil))
+			resp := testGet(t, server.URL+"/page")
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
+				t.Fatalf("reverse status=%d headers=%v body=%q, want full-response policy denial", resp.StatusCode, resp.Header, body)
+			}
+			assertIncompleteResponseBlock(t, resp, body)
+			closeRecorder()
+			assertIncompleteResponseReceipt(t, extractReceiptsFromDir(t, dir))
+		})
 	}
 }
 
@@ -150,40 +161,51 @@ func TestReverseSVGPartialResponse(t *testing.T) {
 			resp := testGet(t, server.URL+"/icon.svg")
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" {
-				t.Fatalf("SVG status=%d range=%q, want Shield refusal", resp.StatusCode, resp.Header.Get("Content-Range"))
+				t.Fatalf("SVG status=%d range=%q, want full-response policy refusal", resp.StatusCode, resp.Header.Get("Content-Range"))
 			}
-			if !mediaEnabled && resp.Header.Get(blockreason.HeaderReason) != string(blockreason.BrowserShieldUninspectable) {
-				t.Fatalf("SVG reason=%q, want Shield refusal", resp.Header.Get(blockreason.HeaderReason))
+			if resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ResponseIncomplete) {
+				t.Fatalf("SVG reason=%q, want full-response policy refusal", resp.Header.Get(blockreason.HeaderReason))
 			}
 		})
 	}
 }
 
 func TestInterceptShieldPartialResponse(t *testing.T) {
-	upstream := httptest.NewTLSServer(http.HandlerFunc(partialShieldUpstream))
-	t.Cleanup(upstream.Close)
-	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
-	cfg.DLP.Patterns = nil
-	cfg.ResponseScanning.Enabled = false
-	cfg.BrowserShield.Enabled = true
-	cfg.BrowserShield.StripTrackingPixels = true
-	p, err := New(cfg, audit.NewNop(), sc, m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(p.Close)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/page", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
-		t.Fatalf("CONNECT status=%d headers=%v body=%q, want Shield denial", resp.StatusCode, resp.Header, body)
+	for _, exempt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shield_exempt_%t", exempt), func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(partialShieldUpstream))
+			t.Cleanup(upstream.Close)
+			cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+			cfg.DLP.Patterns = nil
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.StripTrackingPixels = true
+			if exempt {
+				cfg.BrowserShield.ExemptDomains = []string{"127.0.0.1"}
+			}
+			p, err := New(cfg, audit.NewNop(), sc, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, m)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/page", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
+				t.Fatalf("CONNECT status=%d headers=%v body=%q, want full-response policy denial", resp.StatusCode, resp.Header, body)
+			}
+			assertIncompleteResponseBlock(t, resp, body)
+			assertIncompleteResponseReceipt(t, rph.findReceipts(t))
+		})
 	}
 }
 
@@ -336,7 +358,32 @@ func TestForwardBudgetRejectsPartialTruncation(t *testing.T) {
 	}})
 	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Content-Range") != "" {
-		t.Fatalf("partial budget status=%d range=%q, want budget refusal", resp.StatusCode, resp.Header.Get("Content-Range"))
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Content-Range") != "" {
+		t.Fatalf("partial budget status=%d range=%q, want full-response refusal", resp.StatusCode, resp.Header.Get("Content-Range"))
 	}
+}
+
+// assertIncompleteResponseBlock pins the same canonical code on both caller surfaces.
+func assertIncompleteResponseBlock(t *testing.T, resp *http.Response, body []byte) {
+	t.Helper()
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ResponseIncomplete) {
+		t.Errorf("block reason header = %q, want %q", got, blockreason.ResponseIncomplete)
+	}
+	var result ReverseProxyBlockResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("decode block response: %v", err)
+	}
+	if !result.Blocked || result.BlockReason != string(blockreason.ResponseIncomplete) {
+		t.Errorf("block JSON = %+v, want blocked response_incomplete", result)
+	}
+}
+
+func assertIncompleteResponseReceipt(t *testing.T, records []receipt.Receipt) {
+	t.Helper()
+	for _, record := range records {
+		if record.ActionRecord.Verdict == config.ActionBlock && record.ActionRecord.Layer == "browser_cache" && record.ActionRecord.Pattern == string(blockreason.ResponseIncomplete) {
+			return
+		}
+	}
+	t.Fatal("missing browser_cache block receipt with response_incomplete code")
 }

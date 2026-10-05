@@ -4,6 +4,8 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 
 For HTTP-shaped responses, `X-Pipelock-Receipt` optionally returns the proxy-minted `action_id` after the matching receipt has been recorded. A caller can retain that value beside its own request ID and later verify the signed receipt; the header alone is not proof. The header is available for blocks and for allow responses when `flight_recorder.require_receipts` records admission before egress. Best-effort allow responses intentionally remain uncorrelated until a pre-emission design is introduced.
 
+The full-response policy on `forward`, `intercept`, and `reverse` records refusals of partial (`206`) and not-modified (`304`) responses on layer `browser_cache`, with pattern `response_incomplete`. The same code appears in the block-reason header and JSON body. Browser Shield exemptions skip rewriting only and do not bypass this policy.
+
 ## Transports and Event Kinds
 
 | Transport | Event Kind | Layer / Subsurface | Description |

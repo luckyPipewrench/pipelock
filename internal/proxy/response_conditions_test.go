@@ -16,6 +16,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -194,15 +195,19 @@ func TestForwardIncompleteResponseReceipts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.Copy(io.Discard, resp.Body)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_ = resp.Body.Close()
+			assertIncompleteResponseBlock(t, resp, body)
 			if resp.StatusCode != http.StatusForbidden {
 				t.Fatalf("status=%d, want 403", resp.StatusCode)
 			}
-			_, pattern := fullResponseRefusal(&http.Response{StatusCode: status})
+			pattern := string(blockreason.ResponseIncomplete)
 			var foundBlock, foundOutcome bool
 			for _, record := range rph.findReceipts(t) {
-				if record.ActionRecord.Verdict == config.ActionBlock && record.ActionRecord.Layer == "browser_cache" {
+				if record.ActionRecord.Verdict == config.ActionBlock && record.ActionRecord.Layer == "browser_cache" && record.ActionRecord.Pattern == string(blockreason.ResponseIncomplete) {
 					foundBlock = true
 				}
 				if record.ActionRecord.Layer == receiptOutcomeLayer && record.ActionRecord.Pattern == receiptOutcomePattern("403", -1, pattern) {
@@ -443,7 +448,7 @@ func TestReverseIncompleteResponseReceipts(t *testing.T) {
 			closeRec()
 			records := extractReceiptsFromDir(t, dir)
 			block := findReceiptByLayer(t, records, "browser_cache")
-			_, pattern := fullResponseRefusal(&http.Response{StatusCode: status})
+			pattern := string(blockreason.ResponseIncomplete)
 			if block.ActionRecord.Verdict != config.ActionBlock || block.ActionRecord.Pattern != pattern {
 				t.Fatalf("wrong refusal receipt: %+v", block.ActionRecord)
 			}

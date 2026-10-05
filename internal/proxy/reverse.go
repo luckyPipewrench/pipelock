@@ -2208,7 +2208,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 	targetURL := resp.Request.URL.String()
 	if !applyFullResponsePolicy(nil, resp) {
-		reason, pattern := fullResponseRefusal(resp)
+		pattern := string(blockreason.ResponseIncomplete)
 		if responseReceiptState != nil {
 			responseReceiptState.responseBlocked = true
 		}
@@ -2217,7 +2217,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
 			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent,
 		})
-		replaceWithBlockReason(resp, reason, blockInfoFor(blockreason.ParseError, "browser_cache"))
+		replaceWithBlockReason(resp, string(blockreason.ResponseIncomplete), blockInfoFor(blockreason.ResponseIncomplete, "browser_cache"))
 		reverseOutcomeFromContext(resp.Request.Context()).Record(http.StatusForbidden, -1, pattern)
 		return nil
 	}

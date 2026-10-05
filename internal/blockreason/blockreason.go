@@ -66,19 +66,20 @@ type Reason string
 
 const (
 	// Egress / network layer.
-	SchemeBlocked    Reason = "scheme_blocked"
-	DomainBlocklist  Reason = "domain_blocklist"
-	SSRFPrivateIP    Reason = "ssrf_private_ip"
-	SSRFMetadata     Reason = "ssrf_metadata"
-	SSRFDNSRebind    Reason = "ssrf_dns_rebind"
-	PathEntropy      Reason = "path_entropy"
-	QueryEntropy     Reason = "query_entropy"
-	BodyEntropy      Reason = "body_entropy"
-	SubdomainEntropy Reason = "subdomain_entropy"
-	URLLength        Reason = "url_length"
-	RateLimit        Reason = "rate_limit"
-	DataBudget       Reason = "data_budget"
-	ResponseSize     Reason = "response_size"
+	SchemeBlocked      Reason = "scheme_blocked"
+	DomainBlocklist    Reason = "domain_blocklist"
+	SSRFPrivateIP      Reason = "ssrf_private_ip"
+	SSRFMetadata       Reason = "ssrf_metadata"
+	SSRFDNSRebind      Reason = "ssrf_dns_rebind"
+	PathEntropy        Reason = "path_entropy"
+	QueryEntropy       Reason = "query_entropy"
+	BodyEntropy        Reason = "body_entropy"
+	SubdomainEntropy   Reason = "subdomain_entropy"
+	URLLength          Reason = "url_length"
+	RateLimit          Reason = "rate_limit"
+	DataBudget         Reason = "data_budget"
+	ResponseSize       Reason = "response_size"
+	ResponseIncomplete Reason = "response_incomplete"
 
 	// Content / payload layer.
 	DLPMatch         Reason = "dlp_match"
@@ -159,6 +160,7 @@ var validReasons = map[Reason]struct{}{
 	RateLimit:                  {},
 	DataBudget:                 {},
 	ResponseSize:               {},
+	ResponseIncomplete:         {},
 	DLPMatch:                   {},
 	PromptInjection:            {},
 	RedactionFailure:           {},
@@ -618,6 +620,7 @@ func SeverityFor(reason Reason) Severity {
 		RateLimit,
 		DataBudget,
 		ResponseSize,
+		ResponseIncomplete,
 		MediaPolicy,
 		ParseError,
 		Timeout,

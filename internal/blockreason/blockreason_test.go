@@ -530,19 +530,20 @@ var specCanonicalPairs = map[Reason]struct {
 	retry    Retry
 }{
 	// Egress / network layer.
-	SchemeBlocked:    {SeverityWarn, RetryNone},
-	DomainBlocklist:  {SeverityCritical, RetryPolicy},
-	SSRFPrivateIP:    {SeverityCritical, RetryNone},
-	SSRFMetadata:     {SeverityCritical, RetryNone},
-	SSRFDNSRebind:    {SeverityCritical, RetryTransient},
-	PathEntropy:      {SeverityWarn, RetryPolicy},
-	QueryEntropy:     {SeverityWarn, RetryPolicy},
-	BodyEntropy:      {SeverityWarn, RetryPolicy},
-	SubdomainEntropy: {SeverityWarn, RetryPolicy},
-	URLLength:        {SeverityWarn, RetryPolicy},
-	RateLimit:        {SeverityWarn, RetryTransient},
-	DataBudget:       {SeverityWarn, RetryPolicy},
-	ResponseSize:     {SeverityWarn, RetryPolicy},
+	SchemeBlocked:      {SeverityWarn, RetryNone},
+	DomainBlocklist:    {SeverityCritical, RetryPolicy},
+	SSRFPrivateIP:      {SeverityCritical, RetryNone},
+	SSRFMetadata:       {SeverityCritical, RetryNone},
+	SSRFDNSRebind:      {SeverityCritical, RetryTransient},
+	PathEntropy:        {SeverityWarn, RetryPolicy},
+	QueryEntropy:       {SeverityWarn, RetryPolicy},
+	BodyEntropy:        {SeverityWarn, RetryPolicy},
+	SubdomainEntropy:   {SeverityWarn, RetryPolicy},
+	URLLength:          {SeverityWarn, RetryPolicy},
+	RateLimit:          {SeverityWarn, RetryTransient},
+	DataBudget:         {SeverityWarn, RetryPolicy},
+	ResponseSize:       {SeverityWarn, RetryPolicy},
+	ResponseIncomplete: {SeverityWarn, RetryNone},
 
 	// Content / payload layer.
 	DLPMatch:         {SeverityCritical, RetryNone},

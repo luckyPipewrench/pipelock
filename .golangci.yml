@@ -141,6 +141,20 @@ linters:
       - path: internal/cli/contain/config_mode_contract_test\.go
         linters: [gosec]
         text: "G302"
+      # The root filesystem canary creates its grant as root. The unprivileged
+      # agent has to traverse that directory, so other-execute is the mode the
+      # probe is proving. 0750 would hide the workspace from the agent and the
+      # pass case would fail for the wrong reason. The directory is under /tmp
+      # and removed when the test ends.
+      - path: internal/cli/contain/filesystem_root_linux_test\.go
+        linters: [gosec]
+        text: "G302"
+      # Cleanup reads the sentinel it just wrote beside the canary tree to
+      # prove an unfollowed symlink did not delete it. The path is built inside
+      # the test's own directory.
+      - path: internal/cli/contain/filesystem_cleanup_linux_test\.go
+        linters: [gosec]
+        text: "G304"
       # migrateScalarFile takes the destination's mode per call site. Its
       # callers pass modeConfigSecret or modePinSecret, which are distinct
       # policy classes that happen to carry the same numeric mode now that the

@@ -31,7 +31,7 @@ func TestFilesystemCanaryCleanupIsBounded(t *testing.T) {
 		dir.close()
 		full := filepath.Join(base, name)
 		for i := 0; i < filesystemCleanupMaxEntries+1; i++ {
-			if err := os.WriteFile(filepath.Join(full, fmt.Sprintf("f%02d", i)), []byte("x"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(full, fmt.Sprintf("f%02d", i)), []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -53,7 +53,7 @@ func TestFilesystemCanaryCleanupIsBounded(t *testing.T) {
 		cur := filepath.Join(base, name)
 		for i := 0; i < filesystemCleanupMaxDepth+1; i++ {
 			cur = filepath.Join(cur, "d")
-			if err := os.Mkdir(cur, 0o755); err != nil {
+			if err := os.Mkdir(cur, 0o750); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -73,7 +73,7 @@ func TestFilesystemCanaryCleanupIsBounded(t *testing.T) {
 		}
 		dir.close()
 		full := filepath.Join(base, name)
-		if err := os.WriteFile(filepath.Join(full, "keep"), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(full, "keep"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -94,7 +94,7 @@ func TestFilesystemCanaryCleanupIsBounded(t *testing.T) {
 		}
 		dir.close()
 		victim := filepath.Join(base, "victim")
-		if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Symlink(victim, filepath.Join(dir.path, "link")); err != nil {
@@ -117,13 +117,11 @@ func TestFilesystemCanaryCleanupIsBounded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir.path, "one"), []byte("x"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir.path, "one"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		dir.close()
-		if err := parent.removeBounded(context.Background(), name); err != nil {
-			t.Fatal(err)
-		}
+		parent.removeDir(name)
 		if _, err := os.Lstat(filepath.Join(base, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("small directory = %v", err)
 		}

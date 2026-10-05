@@ -19,7 +19,7 @@ import (
 func TestFilesystemCanaryScriptGuards(t *testing.T) {
 	base := t.TempDir()
 	operator := filepath.Join(base, "operator")
-	if err := os.WriteFile(operator, []byte("op\n"), 0o644); err != nil {
+	if err := os.WriteFile(operator, []byte("op\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var st unix.Stat_t
@@ -28,23 +28,23 @@ func TestFilesystemCanaryScriptGuards(t *testing.T) {
 	}
 	inode := strconv.FormatUint(st.Ino, 10)
 	workspace := filepath.Join(base, "workspace")
-	if err := os.WriteFile(workspace, []byte("ws\n"), 0o666); err != nil {
+	if err := os.WriteFile(workspace, []byte("ws\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(base, "secret")
-	if err := os.WriteFile(secret, []byte("secret\n"), 0o644); err != nil {
+	if err := os.WriteFile(secret, []byte("secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	readOnly := filepath.Join(base, "readonly")
-	if err := os.Mkdir(readOnly, 0o755); err != nil {
+	if err := os.Mkdir(readOnly, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	writable := filepath.Join(base, "writable")
-	if err := os.Mkdir(writable, 0o755); err != nil {
+	if err := os.Mkdir(writable, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	denied := filepath.Join(base, "denied")
-	if err := os.Mkdir(denied, 0o555); err != nil {
+	if err := os.Mkdir(denied, 0o500); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,15 +78,13 @@ func TestFilesystemCanaryScriptGuards(t *testing.T) {
 
 func filesystemCanaryScriptExit(t *testing.T, readOnlyWrite bool, op, inode, write, workspace, secret string) int {
 	t.Helper()
-	script := filesystemCanaryScript
-	argv := []string{"-c", script, "bash", op, inode, write, workspace, secret}
-	name := "/bin/bash"
+	var cmd *exec.Cmd
 	if readOnlyWrite {
-		script = "mount --bind \"$3\" \"$3\" && mount -o remount,bind,ro \"$3\" || exit 99\n" + filesystemCanaryScript
-		name = "unshare"
-		argv = []string{"--user", "--map-root-user", "--mount", "/bin/bash", "-c", script, "bash", op, inode, write, workspace, secret}
+		script := "mount --bind \"$3\" \"$3\" && mount -o remount,bind,ro \"$3\" || exit 99\n" + filesystemCanaryScript
+		cmd = exec.Command("unshare", "--user", "--map-root-user", "--mount", "/bin/bash", "-c", script, "bash", op, inode, write, workspace, secret)
+	} else {
+		cmd = exec.Command("/bin/bash", "-c", filesystemCanaryScript, "bash", op, inode, write, workspace, secret)
 	}
-	cmd := exec.Command(name, argv...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return 0

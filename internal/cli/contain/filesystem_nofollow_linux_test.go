@@ -15,16 +15,16 @@ import (
 
 func TestOpenNoFollowDirRejectsIntermediateSymlink(t *testing.T) {
 	base := writableSymlinkFreeDir(t)
-	real := filepath.Join(base, "real")
-	if err := os.Mkdir(real, 0o755); err != nil {
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	child := filepath.Join(real, "child")
-	if err := os.Mkdir(child, 0o755); err != nil {
+	child := filepath.Join(realDir, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(base, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 	linkedChild := filepath.Join(link, "child")

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -72,12 +73,17 @@ type doctorEnv struct {
 	configPath     string
 	// displayUnitPath locates the managed display unit and, beside it, the
 	// viewer units. Empty means the installed default.
-	displayUnitPath string
-	agentHome       string
-	rfbSocketPath   string
-	lookPath        func(string) (string, error)
-	platformFamily  string
-	filesystemProbe func(context.Context, *probeEnv) (string, string)
+	displayUnitPath  string
+	agentHome        string
+	rfbSocketPath    string
+	lookPath         func(string) (string, error)
+	platformFamily   string
+	filesystemProbe  func(context.Context, *probeEnv) (string, string)
+	operatorUser     string
+	workspaceInvPath string
+	configDir        string
+	groupIDs         groupIDsFunc
+	now              func() time.Time
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -91,25 +97,30 @@ func defaultDoctorEnv() *doctorEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	counterEnv := defaultProbeEnv()
 	env := &doctorEnv{
-		port:           defaultProxyPort,
-		proxyUserName:  defaultProxyUser,
-		pipelockTarget: defaultPipelockTarget,
-		lookupUser:     user.Lookup,
-		lstat:          os.Lstat,
-		agentUserName:  defaultAgentUser,
-		wrapperDir:     defaultWrapperDir,
-		caBundlePath:   defaultCABundlePath,
-		undiciShimPath: defaultUndiciShimPath,
-		canaryURL:      canaryURL,
-		curlPath:       platform.curlPath,
-		runCmd:         realRunCommand,
-		dialCtx:        realDial,
-		readFile:       os.ReadFile,
-		stat:           os.Stat,
-		configPath:     defaultConfigDir + "/pipelock.yaml",
-		agentHome:      "/home/" + defaultAgentUser,
-		lookPath:       exec.LookPath,
-		platformFamily: platform.family,
+		port:             defaultProxyPort,
+		proxyUserName:    defaultProxyUser,
+		pipelockTarget:   defaultPipelockTarget,
+		lookupUser:       user.Lookup,
+		lstat:            os.Lstat,
+		agentUserName:    defaultAgentUser,
+		wrapperDir:       defaultWrapperDir,
+		caBundlePath:     defaultCABundlePath,
+		undiciShimPath:   defaultUndiciShimPath,
+		canaryURL:        canaryURL,
+		curlPath:         platform.curlPath,
+		runCmd:           realRunCommand,
+		dialCtx:          realDial,
+		readFile:         os.ReadFile,
+		stat:             os.Stat,
+		configPath:       defaultConfigDir + "/pipelock.yaml",
+		agentHome:        "/home/" + defaultAgentUser,
+		lookPath:         exec.LookPath,
+		platformFamily:   platform.family,
+		operatorUser:     counterEnv.operatorUser,
+		workspaceInvPath: counterEnv.workspaceInvPath,
+		configDir:        counterEnv.configDir,
+		groupIDs:         counterEnv.groupIDs,
+		now:              counterEnv.now,
 	}
 	env.dropCounter = doctorDropCounterReader(counterEnv, env)
 	env.chainStructure = doctorChainStructureReader(counterEnv, env)
@@ -347,17 +358,22 @@ func allDoctorChecks() []doctorCheck {
 
 func checkFilesystemConfinement(ctx context.Context, env *doctorEnv) doctorResult {
 	status, detail := probeFilesystemConfinement(ctx, &probeEnv{
-		configPath:      env.configPath,
-		agentUserName:   env.agentUserName,
-		agentHome:       env.agentHome,
-		readFile:        env.readFile,
-		stat:            env.stat,
-		lookupUser:      env.lookupUser,
-		runCmd:          env.runCmd,
-		filesystemProbe: env.filesystemProbe,
-		pipelockTarget:  env.pipelockTarget,
-		port:            env.port,
-		proxyUserName:   env.proxyUserName,
+		configPath:       env.configPath,
+		configDir:        env.configDir,
+		agentUserName:    env.agentUserName,
+		agentHome:        env.agentHome,
+		operatorUser:     env.operatorUser,
+		workspaceInvPath: env.workspaceInvPath,
+		groupIDs:         env.groupIDs,
+		now:              env.now,
+		readFile:         env.readFile,
+		stat:             env.stat,
+		lookupUser:       env.lookupUser,
+		runCmd:           env.runCmd,
+		filesystemProbe:  env.filesystemProbe,
+		pipelockTarget:   env.pipelockTarget,
+		port:             env.port,
+		proxyUserName:    env.proxyUserName,
 	})
 	switch status {
 	case statusPass:

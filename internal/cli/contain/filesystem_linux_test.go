@@ -224,6 +224,47 @@ func TestFilesystemStateCanaryParentIsVarLib(t *testing.T) {
 	}
 }
 
+func TestDoctorEnforceReachesFilesystemCanary(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	agentHome := t.TempDir()
+	configDir := t.TempDir()
+	called := 0
+	env := &doctorEnv{
+		configPath:       filepath.Join(configDir, "pipelock.yaml"),
+		configDir:        configDir,
+		agentUserName:    "pipelock-agent",
+		agentHome:        agentHome,
+		operatorUser:     "operator",
+		workspaceInvPath: filepath.Join(configDir, "workspaces.json"),
+		lookupUser: func(name string) (*user.User, error) {
+			home := agentHome
+			uid := "966"
+			if name == "operator" {
+				home = "/home/operator"
+				uid = "1000"
+			}
+			return &user.User{Username: name, Uid: uid, Gid: uid, HomeDir: home}, nil
+		},
+		groupIDs: func(*user.User) ([]string, error) { return []string{"966"}, nil },
+		now:      time.Now,
+		readFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, "pipelock.yaml") {
+				return []byte("containment:\n  filesystem:\n    mode: enforce\n  display:\n    enabled: false\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		runCmd: func(context.Context, string, ...string) (string, int, error) {
+			called++
+			return "", 0, nil
+		},
+	}
+	result := checkFilesystemConfinement(context.Background(), env)
+	if called == 0 || strings.Contains(result.detail, "operator home is required") || result.status != statusPass {
+		t.Fatalf("called=%d result=%+v", called, result)
+	}
+}
+
 func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {

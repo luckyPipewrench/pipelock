@@ -94,7 +94,7 @@ func assertNoFilesystemCanaryResidue(t *testing.T, before map[string]struct{}) {
 // service run-*.service and removes it with --collect.
 func filesystemCanaryUnits(t *testing.T) map[string]struct{} {
 	t.Helper()
-	out, err := exec.Command("systemctl", "list-units", "--all", "--no-legend", "--plain", "run-*.service").CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "systemctl", "list-units", "--all", "--no-legend", "--plain", "run-*.service").CombinedOutput()
 	if err != nil {
 		t.Fatalf("list transient units: %v\n%s", err, out)
 	}

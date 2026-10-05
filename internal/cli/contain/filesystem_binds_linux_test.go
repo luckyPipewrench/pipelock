@@ -77,7 +77,7 @@ func TestLifecycleAdmissionUsesCapturedTypedBinds(t *testing.T) {
 
 func TestMissingAbsoluteBusctlSelectsFailClosedDisplayFallback(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "busctl")
-	err := exec.CommandContext(t.Context(), missing).Run()
+	err := exec.CommandContext(t.Context(), missing).Run() //nolint:gosec // G204: missing is a nonexistent file in the test temp directory, not a user-supplied command.
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("absolute executable error = %T %v", err, err)
 	}

@@ -325,8 +325,18 @@ func lifecycleSystemdBinds(ctx context.Context, unit string) ([]systemdBindEntry
 }
 
 func lifecycleBusctlMissing(err error) bool {
+	if err == nil {
+		return false
+	}
 	var execErr *exec.Error
-	return errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound)
+	if errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
+		return true
+	}
+	// An absolute executable skips PATH lookup. The kernel reports that as
+	// *fs.PathError with ENOENT, not *exec.Error / exec.ErrNotFound. That
+	// ENOENT is the missing-reader case: the display-form fallback may run,
+	// and it still fails closed unless every entry names norbind or rbind.
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func parseLifecycleExecStart(body []byte) ([]string, error) {

@@ -7,6 +7,11 @@ package contain
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,6 +73,40 @@ func TestLifecycleAdmissionUsesCapturedTypedBinds(t *testing.T) {
 			t.Fatalf("err=%v admitted=%v cleanup=%v", err, l.record.AdmissionObserved, l.record.CleanupComplete)
 		}
 	})
+}
+
+func TestMissingAbsoluteBusctlSelectsFailClosedDisplayFallback(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "busctl")
+	err := exec.CommandContext(t.Context(), missing).Run()
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("absolute executable error = %T %v", err, err)
+	}
+	if !lifecycleBusctlMissing(err) {
+		t.Fatal("absolute ENOENT was not treated as a missing busctl")
+	}
+	if !lifecycleBusctlMissing(&exec.Error{Name: "busctl", Err: exec.ErrNotFound}) {
+		t.Fatal("PATH lookup control was not treated as a missing busctl")
+	}
+	denied := &fs.PathError{Op: "fork/exec", Path: "/usr/bin/busctl", Err: fs.ErrPermission}
+	if lifecycleBusctlMissing(denied) || lifecycleBusctlMissing(errors.New("busctl exit 1")) || lifecycleBusctlMissing(nil) {
+		t.Fatal("a present busctl that failed was treated as missing")
+	}
+
+	unavailable := func(context.Context, string) ([]systemdBindEntry, []systemdBindEntry, error) {
+		return nil, nil, errTypedBindsUnavailable
+	}
+	fields := map[string]string{"BindPaths": "/tmp/a:/tmp/a", "BindReadOnlyPaths": ""}
+	if _, err := observeLifecycleBinds(t.Context(), lifecycleBackend{binds: unavailable}, "unit.service", fields); err == nil {
+		t.Fatal("display form without norbind or rbind was accepted")
+	}
+	fields["BindPaths"] = "/tmp/a:/tmp/a:norbind"
+	observed, err := observeLifecycleBinds(t.Context(), lifecycleBackend{binds: unavailable}, "unit.service", fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := matchTypedBindEntries(observed.BindPaths, []string{canonicalBind("/tmp/a", "/tmp/a", "norbind")}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func enforceShowLifecycle(t *testing.T, bindShow string) (*containRunLifecycle, map[string]string) {

@@ -136,8 +136,9 @@ func TestResponseStreamIntegrity(t *testing.T) {
 	}
 	for _, branch := range branches {
 		for _, proto := range []int{1, 2} {
-			for _, ending := range []string{"chunked_break", "short_length", "cancel", "complete"} {
+			for _, ending := range []string{"chunked_break", "short_length", "cancel", "handler_cancel", "complete"} {
 				t.Run(fmt.Sprintf("%s/h%d/%s", branch.name, proto, ending), func(t *testing.T) {
+					t.Parallel()
 					if branch.large && ending == "chunked_break" {
 						t.Skip("unscannable_passthrough requires a positive declared Content-Length; chunked bodies are buffered fail-closed")
 					}
@@ -165,7 +166,14 @@ func TestResponseStreamIntegrity(t *testing.T) {
 						} else if branch.large {
 							w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 						}
-						_, _ = io.WriteString(w, payload)
+						prefix := payload
+						if branch.large && (ending == "cancel" || ending == "handler_cancel") {
+							// Keep the declared body incomplete. Sending every promised
+							// byte lets the proxy finish before cancellation reaches it,
+							// even while this upstream handler is still waiting.
+							prefix = payload[:len(payload)-1]
+						}
+						_, _ = io.WriteString(w, prefix)
 						w.(http.Flusher).Flush()
 						select {
 						case <-release:
@@ -199,8 +207,13 @@ func TestResponseStreamIntegrity(t *testing.T) {
 					t.Cleanup(logger.Close)
 					handler := integrityHandler(t, branch.transport, cfg, upstream, logger, rph)
 					handlerDone := make(chan struct{})
+					handlerCancel := make(chan context.CancelFunc, 1)
 					downstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						defer close(handlerDone)
+						ctx, cancelHandler := context.WithCancel(r.Context())
+						defer cancelHandler()
+						handlerCancel <- cancelHandler
+						r = r.WithContext(ctx)
 						handler.ServeHTTP(w, r)
 					}))
 					downstream.EnableHTTP2 = proto == 2
@@ -233,9 +246,15 @@ func TestResponseStreamIntegrity(t *testing.T) {
 					if _, err := io.ReadFull(resp.Body, first); err != nil {
 						t.Fatalf("first byte: %v", err)
 					}
-					if ending == "cancel" {
+					switch ending {
+					case "cancel":
 						cancel()
-					} else {
+					case "handler_cancel":
+						// Leave the client context live: its own cancellation error
+						// must not hide a server that completes the failed stream.
+						cancelHandler := <-handlerCancel
+						cancelHandler()
+					default:
 						releaseUpstream()
 					}
 					body, readErr := io.ReadAll(resp.Body)
@@ -246,10 +265,13 @@ func TestResponseStreamIntegrity(t *testing.T) {
 					} else if readErr == nil {
 						t.Fatalf("truncated response ended cleanly: bytes=%d", len(body)+1)
 					}
+					if ending == "handler_cancel" && ctx.Err() != nil {
+						t.Fatalf("client context ended before server abort: %v", ctx.Err())
+					}
 					integrityWait(t, handlerDone)
 					integrityWait(t, upstreamDone)
 					wantReason := httpstream.Incomplete
-					if ending == "cancel" {
+					if ending == "cancel" || ending == "handler_cancel" {
 						wantReason = httpstream.Cancelled
 						// SSE streams keep their established reason.
 						if branch.contentType == "text/event-stream" {
@@ -264,6 +286,9 @@ func TestResponseStreamIntegrity(t *testing.T) {
 						}
 						pattern := rec.ActionRecord.Pattern
 						if ending == "complete" {
+							if branch.name == "intercept_exempt" && !strings.Contains(pattern, "reason="+receiptReasonExemptOverCapUnscanned) {
+								t.Errorf("completed exempt over-cap outcome = %s", pattern)
+							}
 							if strings.Contains(pattern, "reason="+httpstream.Incomplete) || strings.Contains(pattern, "reason="+httpstream.Cancelled) || strings.Contains(pattern, "reason="+receiptReasonSSEStreamCancelled) {
 								t.Errorf("complete outcome = %s", pattern)
 							}

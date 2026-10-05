@@ -11,6 +11,9 @@ import (
 type compiledMatchRequirements struct {
 	requiresEquals bool
 	minASCIIDigits uint8
+	// shape is nil when the grammar cannot be gated or when a second
+	// boundary-free grammar also runs against the same views.
+	shape *regexShapeGate
 }
 
 // analyzePatternMatchRequirements parses each effective compiled regex once
@@ -26,6 +29,12 @@ func analyzePatternMatchRequirements(re, withoutLeftBoundary *regexp.Regexp) com
 		body := analyzeRegexpMatchRequirements(withoutLeftBoundary.String())
 		requirements.requiresEquals = requirements.requiresEquals && body.requiresEquals
 		requirements.minASCIIDigits = min(requirements.minASCIIDigits, body.minASCIIDigits)
+		requirements.shape = nil
+	}
+	if prefix, _ := re.LiteralPrefix(); prefix != "" {
+		// The regexp engine already skips to its literal prefix, which is
+		// cheaper than a byte-shape pass. Dropping a gate only costs time.
+		requirements.shape = nil
 	}
 	return requirements
 }
@@ -38,5 +47,6 @@ func analyzeRegexpMatchRequirements(expression string) compiledMatchRequirements
 	return compiledMatchRequirements{
 		requiresEquals: regexpTreeRequiresEquals(tree),
 		minASCIIDigits: regexpTreeMinASCIIDigits(tree),
+		shape:          analyzeRegexShape(tree),
 	}
 }

@@ -321,6 +321,25 @@ func TestFilesystemProfileProperties_SkipsInaccessibleParentOfProof(t *testing.T
 	}
 }
 
+func TestFilesystemProfileProperties_RefusesOperatorHomeOutsideHomeOrRoot(t *testing.T) {
+	in := enforceInput()
+	in.OperatorHome = "/srv/operator"
+	_, err := filesystemProfileProperties(in)
+	if err == nil || !strings.Contains(err.Error(), "/srv/operator") || !strings.Contains(err.Error(), "under /home or /root") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, home := range []string{"/home/operator", "/root", "/root/operator"} {
+		in.OperatorHome = home
+		if _, err := filesystemProfileProperties(in); err != nil {
+			t.Fatalf("operator home %s: %v", home, err)
+		}
+	}
+	in.OperatorHome = "/run/user/1000"
+	if _, err := filesystemProfileProperties(in); err == nil || !strings.Contains(err.Error(), "/run/user/1000") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestFilesystemProfileProperties_RequiredKeyCannotParentReadablePath(t *testing.T) {
 	in := enforceInput()
 	in.RequiredSecretPaths = []string{"/etc/pipelock"}

@@ -77,6 +77,9 @@ func filesystemProfileProperties(in filesystemProfileInput) (filesystemProfile, 
 	if err != nil {
 		return filesystemProfile{}, fmt.Errorf("operator home: %w", err)
 	}
+	if err := refuseUnsupportedOperatorHome(operatorHome); err != nil {
+		return filesystemProfile{}, err
+	}
 	in.OperatorHome = operatorHome
 	if strings.TrimSpace(in.AgentHome) == "" {
 		return filesystemProfile{}, errors.New("agent home is required to build the filesystem profile")
@@ -333,6 +336,16 @@ func (in filesystemProfileInput) inaccessiblePaths() ([]string, error) {
 		out = append(out, candidate)
 	}
 	return out, nil
+}
+
+// ProtectHome=tmpfs hides /home and /root only. An operator home anywhere
+// else stays readable under ProtectSystem=strict, so enforce refuses it
+// instead of launching a profile that does not hide that home.
+func refuseUnsupportedOperatorHome(home string) error {
+	if home == "/root" || linuxPathContains("/root", home) || linuxPathContains("/home", home) {
+		return nil
+	}
+	return fmt.Errorf("operator home %s is not hidden by enforce; enforce supports operator homes under /home or /root", home)
 }
 
 func refuseFilesystemBind(kind, original, resolved, operatorHome string) error {

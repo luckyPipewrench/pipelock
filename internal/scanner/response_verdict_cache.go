@@ -39,6 +39,7 @@ type responseVerdictCache struct {
 	entries  map[responseVerdictKey]*list.Element
 	order    list.List
 	bytes    int
+	flights  map[responseVerdictKey]*responseVerdictFlight
 }
 
 func (c *responseVerdictCache) key(body []byte, target string, suppress []config.SuppressEntry) (responseVerdictKey, bool) {
@@ -77,7 +78,7 @@ func (c *responseVerdictCache) get(key responseVerdictKey) (ResponseScanResult, 
 func (c *responseVerdictCache) put(key responseVerdictKey, size int, result ResponseScanResult) {
 	// A suppressed or observed finding is evidence, even when the verdict is clean.
 	// It must be produced again for every request and can depend on time.
-	if !result.Clean || result.Failed() || len(result.Matches) != 0 ||
+	if size < 0 || size > responseVerdictMaxBody || !result.Clean || result.Failed() || len(result.Matches) != 0 ||
 		len(result.SuppressedMatches) != 0 || len(result.ObservedCoreMatches) != 0 || result.TransformedContent != "" {
 		return
 	}
@@ -90,15 +91,22 @@ func (c *responseVerdictCache) put(key responseVerdictKey, size int, result Resp
 		c.order.MoveToFront(existing)
 		return
 	}
-	c.entries[key] = c.order.PushFront(responseVerdictEntry{key: key, size: size, result: result})
-	c.bytes += size
-	for len(c.entries) > responseVerdictMaxEntries || c.bytes > responseVerdictMaxBytes {
-		oldest := c.order.Back()
-		entry := oldest.Value.(responseVerdictEntry)
+	// Prefer retaining larger represented bodies, whose full scans cost more.
+	// Recency breaks size ties; a new entry is always admitted within the bounds.
+	for len(c.entries) >= responseVerdictMaxEntries || c.bytes+size > responseVerdictMaxBytes {
+		victim := c.order.Back()
+		for el := victim.Prev(); el != nil; el = el.Prev() {
+			if el.Value.(responseVerdictEntry).size < victim.Value.(responseVerdictEntry).size {
+				victim = el
+			}
+		}
+		entry := victim.Value.(responseVerdictEntry)
 		delete(c.entries, entry.key)
 		c.bytes -= entry.size
-		c.order.Remove(oldest)
+		c.order.Remove(victim)
 	}
+	c.entries[key] = c.order.PushFront(responseVerdictEntry{key: key, size: size, result: result})
+	c.bytes += size
 }
 
 func (s *Scanner) responsePatternRevision() [32]byte {
@@ -128,4 +136,31 @@ func (s *Scanner) responsePatternRevision() [32]byte {
 	var revision [32]byte
 	copy(revision[:], h.Sum(nil))
 	return revision
+}
+
+// Flights signal cache publication only. Nonordinary results are never shared.
+type responseVerdictFlight struct{ done chan struct{} }
+
+func (c *responseVerdictCache) beginFlight(key responseVerdictKey) (*responseVerdictFlight, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if flight := c.flights[key]; flight != nil {
+		return flight, false
+	}
+	if len(c.flights) >= responseVerdictMaxEntries {
+		return nil, false
+	}
+	if c.flights == nil {
+		c.flights = make(map[responseVerdictKey]*responseVerdictFlight)
+	}
+	flight := &responseVerdictFlight{done: make(chan struct{})}
+	c.flights[key] = flight
+	return flight, true
+}
+
+func (c *responseVerdictCache) endFlight(key responseVerdictKey, flight *responseVerdictFlight) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.flights, key)
+	close(flight.done)
 }

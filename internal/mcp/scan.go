@@ -1245,12 +1245,6 @@ func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanV
 			PatternName: u.Reason,
 		})
 	}
-	// Wrap DLP findings as ResponseMatch for the verdict.
-	for _, d := range result.DLPFindings {
-		matches = append(matches, scanner.ResponseMatch{
-			PatternName: d.PatternName,
-		})
-	}
 	if result.EntropyFinding != nil {
 		matches = append(matches, scanner.ResponseMatch{
 			PatternName: scanner.AuditBodyEntropy,
@@ -1258,10 +1252,11 @@ func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanV
 	}
 
 	return jsonrpc.ScanVerdict{
-		ID:      rpcID,
-		Clean:   false,
-		Action:  result.Action,
-		Matches: matches,
+		ID:         rpcID,
+		Clean:      false,
+		Action:     result.Action,
+		Matches:    matches,
+		DLPMatches: result.DLPFindings,
 	}
 }
 
@@ -1295,10 +1290,11 @@ func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *
 	matches = append(matches, verdict.Matches...)
 
 	return jsonrpc.ScanVerdict{
-		ID:      rpcID,
-		Clean:   false,
-		Action:  action,
-		Matches: matches,
+		ID:         rpcID,
+		Clean:      false,
+		Action:     action,
+		Matches:    matches,
+		DLPMatches: verdict.DLPMatches,
 	}
 }
 

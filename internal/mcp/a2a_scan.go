@@ -59,8 +59,9 @@ const rollingTailSize = 4096
 
 // ScanA2ARequestBody runs field-aware scanning on an A2A request body.
 // Classifies JSON leaves by field name, routes URLs through SSRF scanner,
-// text/opaque through injection + DLP. Falls back to raw DLP for split-secret
-// detection when the walker completes within budget.
+// every string and key through injection, and text/opaque/secret through DLP.
+// Falls back to raw DLP for split-secret detection when the walker completes
+// within budget.
 func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts ...A2AContentEntropyOptions) A2AScanResult {
 	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
@@ -83,6 +84,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 	result := A2AScanResult{Clean: true}
 	budgetExceeded := false
+	injectionTexts := make(map[string]struct{})
 	var entropyTexts []string
 	var entropyKeys []string
 	action := ""
@@ -142,6 +144,25 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		default:
 		}
 
+		// Content in every string value and key receives injection scanning,
+		// independently of the field-aware URL, DLP, and entropy checks.
+		// Identical content shares its completed inspection within this body;
+		// field-aware checks still run for each leaf and no state survives a scan.
+		if _, scanned := injectionTexts[value]; !scanned {
+			injectResult := sc.ScanResponse(ctx, value)
+			if injectResult.Failed() {
+				result.Clean = false
+				result.ScanError = injectResult.ScanError
+				return
+			}
+			injectionTexts[value] = struct{}{}
+			if !injectResult.Clean {
+				result.Clean = false
+				result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+				action = config.StrongestAction(action, defaultFindingAction)
+			}
+		}
+
 		switch class {
 		case FieldURL:
 			urlResult := sc.Scan(ctx, value)
@@ -155,38 +176,11 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				}
 			}
 
-		case FieldText, FieldOpaque:
+		case FieldText, FieldOpaque, FieldSecret:
 			if entropyOpts != nil {
 				entropyTexts = append(entropyTexts, value)
-			}
-			// Injection scanning
-			injectResult := sc.ScanResponse(ctx, value)
-			if injectResult.Failed() {
-				result.Clean = false
-				result.ScanError = injectResult.ScanError
-				return
-			}
-			if !injectResult.Clean {
-				result.Clean = false
-				result.InjectFindings = append(result.InjectFindings, injectResult.Matches...)
-				action = config.StrongestAction(action, defaultFindingAction)
 			}
 			// DLP scanning
-			dlpResult := sc.ScanTextForDLP(ctx, value)
-			if !dlpResult.Clean {
-				result.Clean = false
-				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if a2aDLPForcesBlock(dlpResult.Matches) {
-					action = config.StrongestAction(action, config.ActionBlock)
-				} else {
-					action = config.StrongestAction(action, defaultFindingAction)
-				}
-			}
-
-		case FieldSecret:
-			if entropyOpts != nil {
-				entropyTexts = append(entropyTexts, value)
-			}
 			dlpResult := sc.ScanTextForDLP(ctx, value)
 			if !dlpResult.Clean {
 				result.Clean = false

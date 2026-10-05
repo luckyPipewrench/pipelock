@@ -24,18 +24,18 @@ import (
 type FieldClass int
 
 const (
-	// FieldURL routes through scanner.Scan() (SSRF + scheme + blocklist + DLP).
+	// FieldURL routes through scanner.Scan() (SSRF + scheme + blocklist + DLP)
+	// and scanner.ScanResponse() (injection).
 	FieldURL FieldClass = iota
 	// FieldText routes through scanner.ScanResponse() (injection) + ScanTextForDLP().
 	FieldText
-	// FieldSecret routes through scanner.ScanTextForDLP() with high severity.
+	// FieldSecret routes through injection and DLP scanning.
 	FieldSecret
 	// FieldOpaque routes through scanner.ScanResponse() (injection) + ScanTextForDLP().
 	// Same scanners as FieldText but lower classification confidence.
 	FieldOpaque
-	// FieldKeyEntropy emits JSON object keys for content-entropy scanning only.
-	// The A2A scanner intentionally does not run prompt-injection or DLP on
-	// every structural key, but opaque data can be hidden in keys.
+	// FieldKeyEntropy emits every JSON object key for injection and
+	// content-entropy scanning, independently of its field classification.
 	FieldKeyEntropy
 	// FieldBudgetExceeded signals the walker hit its node budget. Caller should
 	// fail closed - the payload is too wide for classified scanning.
@@ -232,8 +232,7 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 			childPath := appendA2APath(path, separator, k)
 
 			// Emit the key itself as a leaf - keys can be URLs or secrets.
-			// Also emit every key to the entropy-only class so A2A content
-			// entropy covers key surfaces without a second JSON parse.
+			// Every key receives content inspection without a second JSON parse.
 			keyPath := appendA2APath(childPath, "", "@key")
 			emit(keyPath, k, FieldKeyEntropy)
 			keyClass := classifyKeyAsLeaf(k)
@@ -342,13 +341,13 @@ func classifyLeafValue(parentKey, value string) FieldClass {
 }
 
 // classifyKeyAsLeaf classifies an object key when emitted as a leaf.
-// Returns -1 if the key should not be emitted (not interesting).
+// Returns -1 if no additional field-aware check is needed.
 func classifyKeyAsLeaf(key string) FieldClass {
 	if isURILike(key) {
 		return FieldURL
 	}
-	// Don't emit boring keys - only emit keys that look like URIs or secrets.
-	// Regular field names are structural, not attacker content.
+	// Every key already receives injection and entropy inspection. URI and
+	// secret keys also receive their field-aware checks.
 	if normalizedSecretFields[normalizeFieldName(key)] {
 		return FieldSecret
 	}

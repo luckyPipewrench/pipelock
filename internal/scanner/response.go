@@ -118,6 +118,14 @@ func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte,
 		}
 	}
 	result := s.scanResponseBodyUncached(ctx, body, suppressTarget, suppress)
+	if result.TransformedContent != "" {
+		// A candidate rewritten from one body view must be clean in every view
+		// the body scan uses, not only in the view that produced the rewrite.
+		checked := s.scanResponseBodyUncached(ctx, []byte(result.TransformedContent), suppressTarget, suppress)
+		if !checked.Clean || checked.Failed() {
+			result.TransformedContent = ""
+		}
+	}
 	if eligible {
 		s.responseVerdicts.put(key, len(body), result)
 	}
@@ -418,6 +426,75 @@ func (s *Scanner) scanResponseWithSuppress(ctx context.Context, content, suppres
 }
 
 func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
+	result := s.scanResponseMatches(ctx, content, suppressTarget, suppress, forceEncodedDecode, memo)
+	if result.Clean || result.Failed() || (s.responseAction != config.ActionStrip && s.responseAction != config.ActionAsk) {
+		return result
+	}
+	// Only coordinates that map losslessly to the original string may be
+	// rewritten. Other views remain detectable and force a block.
+	type rawMatch struct {
+		start, end int
+		name       string
+	}
+	var spans []rawMatch
+	for _, match := range result.Matches {
+		if match.span.ViewLabel != ViewForMatching && match.span.ViewLabel != ViewInvisibleSpaced {
+			return result
+		}
+	}
+	// Match coordinates refer to the text after verified image data URLs are
+	// excised. They address the original only before the first excision; the
+	// first image data URL prefix is a lower bound on where that starts.
+	scanned := exciseVerifiedImageDataURLs(content)
+	ranges, ok := normalizedMatchSourceRanges(scanned, result.Matches)
+	if !ok {
+		return result
+	}
+	shared := len(content)
+	if scanned != content {
+		shared = indexDataImagePrefix(content)
+	}
+	for _, r := range ranges {
+		if r[1] > shared {
+			return result
+		}
+	}
+	for i, match := range result.Matches {
+		spans = append(spans, rawMatch{start: ranges[i][0], end: ranges[i][1], name: match.PatternName})
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start == spans[j].start {
+			return spans[i].end > spans[j].end
+		}
+		return spans[i].start < spans[j].start
+	})
+	var rewritten strings.Builder
+	end := 0
+	for i := 0; i < len(spans); i++ {
+		span := spans[i]
+		for i+1 < len(spans) && spans[i+1].start < span.end {
+			i++
+			if spans[i].end > span.end {
+				span.end = spans[i].end
+			}
+		}
+		rewritten.WriteString(content[end:span.start])
+		fmt.Fprintf(&rewritten, "[REDACTED: %s]", span.name)
+		end = span.end
+	}
+	rewritten.WriteString(content[end:])
+	candidate := rewritten.String()
+	// Detection only: a residual finding must not start another rewrite and
+	// must never be exposed to a caller as successfully stripped content.
+	checked := s.scanResponseMatches(ctx, candidate, suppressTarget, suppress, forceEncodedDecode, newResponseMatchMemo(len(candidate)))
+	if !checked.Clean || checked.Failed() {
+		return result
+	}
+	result.TransformedContent = candidate
+	return result
+}
+
+func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
@@ -505,17 +582,6 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
-		}
-		// Support strip/ask actions on core matches so callers that
-		// configured strip still get TransformedContent.
-		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
-			transformed := normalize.ForMatching(content)
-			transformed = redactResponsePatterns(transformed, s.core.responsePatterns)
-			transformed = redactResponsePatterns(transformed, s.core.responseOptSpacePatterns)
-			transformed = redactResponsePatterns(transformed, s.core.responseVowelFoldPatterns)
-			if transformed != normalize.ForMatching(content) {
-				result.TransformedContent = transformed
-			}
 		}
 		return result
 	}
@@ -623,33 +689,7 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 		Matches: matches,
 	}
 
-	if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
-		transformed := content
-		transformed = redactResponsePatterns(transformed, s.responsePatterns)
-		transformed = redactResponsePatterns(transformed, s.responseOptSpacePatterns)
-		transformed = redactResponsePatterns(transformed, s.responseVowelFoldPatterns)
-		// If redaction had no effect (detection came from a transformed pass
-		// like vowel-fold or decoded where patterns don't match the original
-		// text form), leave TransformedContent empty. Callers treat empty
-		// TransformedContent as "could not strip, fall back to block".
-		if transformed != content {
-			result.TransformedContent = transformed
-		}
-	}
-
 	return result
-}
-
-func redactResponsePatterns(content string, patterns []*compiledPattern) string {
-	for _, p := range patterns {
-		replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-		locs := responsePatternMatchLocations(p, content)
-		sort.Slice(locs, func(i, j int) bool { return locs[i][0] > locs[j][0] })
-		for _, loc := range locs {
-			content = content[:loc[0]] + replacement + content[loc[1]:]
-		}
-	}
-	return content
 }
 
 func responseMatchLogicalKey(match ResponseMatch) string {
@@ -1120,20 +1160,40 @@ func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []in
 }
 
 func normalizedMatchSourceRange(decoded string, match ResponseMatch) (int, int, bool) {
+	ranges, ok := normalizedMatchSourceRanges(decoded, []ResponseMatch{match})
+	if !ok {
+		return 0, 0, false
+	}
+	return ranges[0][0], ranges[0][1], true
+}
+
+// normalizedMatchSourceRanges builds one source map for an entire match set,
+// so stripping many spans does not normalize the whole field per finding.
+func normalizedMatchSourceRanges(decoded string, matches []ResponseMatch) ([][2]int, bool) {
+	if len(matches) == 0 {
+		return nil, false
+	}
+	label := matches[0].span.ViewLabel
 	transform := func(value string) string {
-		if strings.Contains(match.span.ViewLabel, "invisible_spaced") {
+		if strings.Contains(label, "invisible_spaced") {
 			value = normalize.ReplaceInvisibleWithSpace(value)
 		}
 		value = normalize.ForMatching(value)
-		if strings.Contains(match.span.ViewLabel, "vowel_fold") {
+		if strings.Contains(label, "vowel_fold") {
 			value = normalize.FoldVowels(value)
 		}
 		return value
 	}
-
 	view := transform(decoded)
-	if match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
-		return 0, 0, false
+	ranges := make([][2]int, len(matches))
+	for i, match := range matches {
+		if match.span.ViewLabel != label || match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
+			return nil, false
+		}
+		ranges[i] = [2]int{match.span.ByteStart, match.span.ByteEnd}
+	}
+	if view == decoded {
+		return ranges, true
 	}
 	var rebuilt strings.Builder
 	starts := make([]int, 0, len(view))
@@ -1149,10 +1209,24 @@ func normalizedMatchSourceRange(decoded string, match ResponseMatch) (int, int, 
 		}
 		start = end
 	}
-	if rebuilt.String() != view || match.span.ByteEnd > len(starts) {
-		return 0, 0, false
+	if rebuilt.String() != view {
+		return nil, false
 	}
-	return starts[match.span.ByteStart], ends[match.span.ByteEnd-1], true
+	for i, match := range matches {
+		end := ends[match.span.ByteEnd-1]
+		// Characters that normalize to nothing, such as combining marks, have
+		// no position in the view. Extend the range over any that directly
+		// follow it, so a redaction never splits a visible character.
+		for end < len(decoded) {
+			_, size := utf8.DecodeRuneInString(decoded[end:])
+			if transform(decoded[end:end+size]) != "" {
+				break
+			}
+			end += size
+		}
+		ranges[i] = [2]int{starts[match.span.ByteStart], end}
+	}
+	return ranges, true
 }
 
 func decodedRangeToEncoded(start, end int, hexEncoded bool) (int, int) {

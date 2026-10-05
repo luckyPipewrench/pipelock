@@ -3021,7 +3021,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				if scanResult.Clean {
 					fwdRespAction = config.ActionAllow
-				} else if scanResult.Failed() {
+				} else if scanResult.Failed() || (fwdRespAction == config.ActionStrip && (scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent)) {
 					fwdRespAction = config.ActionBlock
 				}
 				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
@@ -3083,6 +3083,27 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+				if action == config.ActionStrip {
+					// Record SignalStrip for adaptive enforcement scoring whether or
+					// not the rewrite succeeds: a refused strip still blocks, and
+					// the block path records no signal of its own.
+					// Exempt domains skip scoring - findings are logged but don't escalate.
+					if !fwdRespExempt && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled {
+						sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+						recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(fwdRespHost), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
+							Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+							Logger:    p.logger,
+							Metrics:   p.metrics,
+							Session:   sessionKey,
+							ClientIP:  clientIP,
+							RequestID: requestID,
+						})
+					}
+					if scanResult.TransformedContent == "" || resp.StatusCode == http.StatusPartialContent {
+						action = config.ActionBlock
+					}
+				}
+
 				switch action {
 				case config.ActionBlock, config.ActionAsk:
 					p.logger.LogBlocked(actx, responseScanLayer, reason)
@@ -3105,52 +3126,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					outcomeReason = responseScanLayer
 					return
 				case config.ActionStrip:
-					// Record SignalStrip for adaptive enforcement scoring.
-					// Exempt domains skip scoring - findings are logged but don't escalate.
-					if !fwdRespExempt {
-						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled {
-							sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
-							recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(fwdRespHost), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
-								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-								Logger:    p.logger,
-								Metrics:   p.metrics,
-								Session:   sessionKey,
-								ClientIP:  clientIP,
-								RequestID: requestID,
-							})
-						}
-					}
-					if scanResult.TransformedContent != "" && resp.StatusCode != http.StatusPartialContent {
-						respBody = []byte(scanResult.TransformedContent)
-						// Remove body-derived validators that no longer match the stripped content.
-						resp.Header.Del("Etag")
-						resp.Header.Del("Content-Md5")
-						resp.Header.Del("Digest")
-					} else {
-						stripFailureReason := reason + " (strip failed)"
-						if resp.StatusCode == http.StatusPartialContent && scanResult.TransformedContent != "" {
-							stripFailureReason = reason + " (partial response cannot be rewritten)"
-						}
-						p.logger.LogBlocked(actx, responseScanLayer, stripFailureReason)
-						emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
-							ActionID:  actionID,
-							RequestID: requestID,
-							Agent:     agent,
-							Method:    r.Method,
-							Target:    targetURL,
-							Layer:     responseScanLayer,
-							Pattern:   stripFailureReason,
-							Taint:     forwardTaint,
-						})))
-						p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
-						writeBlockedError(w,
-							blockInfoFor(blockreason.PromptInjection, responseScanLayer),
-							"blocked: response contains injection", http.StatusForbidden)
-						outcomeStatus = strconv.Itoa(http.StatusForbidden)
-						outcomeBytes = int64(len(respBody))
-						outcomeReason = responseScanLayer
-						return
-					}
+					respBody = []byte(scanResult.TransformedContent)
+					// Remove body-derived validators that no longer match the stripped content.
+					resp.Header.Del("Etag")
+					resp.Header.Del("Content-Md5")
+					resp.Header.Del("Digest")
 					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)

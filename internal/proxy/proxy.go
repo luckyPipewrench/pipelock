@@ -6558,6 +6558,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		} else {
 			scanResult = sc.ScanResponseBodyWithSuppress(r.Context(), []byte(content), finalResponseURL, cfg.Suppress)
 		}
+		if title != "" && !responseScanExempt && !scanResult.Failed() && (sc.ResponseAction() == config.ActionStrip || sc.ResponseAction() == config.ActionAsk) {
+			// The title is forwarded separately and is not a strip target.
+			// Check it together with the candidate body before claiming strip.
+			candidate := content
+			if scanResult.TransformedContent != "" {
+				candidate = scanResult.TransformedContent
+			}
+			checked := sc.ScanResponseWithSuppress(r.Context(), title+"\n"+candidate, finalResponseURL, cfg.Suppress)
+			if !checked.Clean || checked.Failed() {
+				scanResult.Clean = false
+				scanResult.Matches = append(scanResult.Matches, checked.Matches...)
+				scanResult.ScanError = checked.ScanError
+				scanResult.TransformedContent = ""
+			}
+		}
 		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		recordDroppedResponseScanMatches(p.metrics, log, actx, scanResult.SuppressedMatches, TransportFetch)
 		recordObservedCoreResponseMatches(p.metrics, log, actx, scanResult.ObservedCoreMatches, TransportFetch)
@@ -6572,7 +6587,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		if scanResult.Clean {
 			respAction = config.ActionAllow
-		} else if scanResult.Failed() {
+		} else if scanResult.Failed() || (respAction == config.ActionStrip && scanResult.TransformedContent == "") {
 			// An incomplete scan is a fail-closed runtime error, not a
 			// response-scanning match. Keep replay/capture from presenting it
 			// as a warn/allow verdict.

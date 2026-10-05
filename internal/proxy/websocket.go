@@ -2803,6 +2803,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	case config.ActionStrip:
+		// The strip attempt scores whether or not the rewrite succeeds; the
+		// refused path blocks and records no signal of its own.
 		if !wsRespExempt {
 			r.recordFinding(session.SignalStrip, log, responseScanLayer, fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", ")))
 		}

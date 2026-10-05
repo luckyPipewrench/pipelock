@@ -753,8 +753,8 @@ func TestScanResponse_StripMultiplePatterns(t *testing.T) {
 	if !strings.Contains(result.TransformedContent, "[REDACTED: New Instructions]") {
 		t.Errorf("expected New Instructions redaction, got: %s", result.TransformedContent)
 	}
-	if !strings.Contains(result.TransformedContent, "[REDACTED: Jailbreak Attempt]") {
-		t.Errorf("expected Jailbreak Attempt redaction, got: %s", result.TransformedContent)
+	if !s.ScanResponse(context.Background(), result.TransformedContent).Clean {
+		t.Errorf("expected a clean stripped response, got: %s", result.TransformedContent)
 	}
 	if !strings.Contains(result.TransformedContent, "Normal text.") {
 		t.Error("expected non-injected content preserved")
@@ -3227,9 +3227,8 @@ func TestScanResponse_VowelFoldStrip_RedactionFallback(t *testing.T) {
 	}
 }
 
-func TestScanResponse_StandardStrip_StillWorks(t *testing.T) {
-	// Standard (non-core) pattern matches should still produce redacted TransformedContent.
-	// Use "New Instructions" which is NOT in core patterns.
+func TestScanResponse_StripPlaceholderMustBeClean(t *testing.T) {
+	// A rule name in a replacement must not leave a finding in the output.
 	cfg := testConfig()
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -3245,11 +3244,8 @@ func TestScanResponse_StandardStrip_StillWorks(t *testing.T) {
 	if result.Clean {
 		t.Fatal("expected injection to be detected")
 	}
-	if result.TransformedContent == "" {
-		t.Error("expected TransformedContent to be set for standard pattern match")
-	}
-	if !strings.Contains(result.TransformedContent, "[REDACTED: New Instructions]") {
-		t.Errorf("expected redaction marker, got: %s", result.TransformedContent)
+	if result.TransformedContent != "" {
+		t.Errorf("a placeholder that still matches must fail closed: %q", result.TransformedContent)
 	}
 }
 

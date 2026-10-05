@@ -185,7 +185,12 @@ type MCPProxyOpts struct {
 
 	// Observability
 	AuditLogger *audit.Logger
-	Metrics     *metrics.Metrics
+	// CorrelationHeader is emit.correlation_header, captured at startup like
+	// the emit sinks it feeds. The HTTP listener copies the vetted value of
+	// this inbound request header into every event the request emits.
+	// Transports without inbound request headers (stdio) ignore it.
+	CorrelationHeader string
+	Metrics           *metrics.Metrics
 
 	// AuthorityVerifier validates external grants immediately before an MCP
 	// request is forwarded. AuthorityActor and AuthorityDestination are

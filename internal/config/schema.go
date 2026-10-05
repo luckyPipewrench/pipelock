@@ -1622,6 +1622,15 @@ type EmitConfig struct {
 	Syslog     SyslogConfig    `yaml:"syslog"`
 	OTLP       OTLPConfig      `yaml:"otlp"`
 	Forwarder  ForwarderConfig `yaml:"forwarder" json:"-"`
+
+	// CorrelationHeader names one client request header whose value is
+	// copied into emitted events as correlation_id for the request it came
+	// from. Empty disables it. The value is attacker-influenced, so it is
+	// length-capped, charset-checked and DLP-scanned before use, and omitted
+	// on any failure. It never enters signed receipts or other evidence
+	// formats. json:"-" because it is a telemetry-output knob with no effect
+	// on detection or enforcement, like Filter above.
+	CorrelationHeader string `yaml:"correlation_header" json:"-"`
 }
 
 // ForwarderConfig configures the Enterprise durable SIEM HTTP forwarder.

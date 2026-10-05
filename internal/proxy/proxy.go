@@ -78,6 +78,7 @@ const (
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
 	ctxKeyAgentContractLoader
+	ctxKeyCorrelation // vetted emit.correlation_header tag (audit.CorrelationID)
 
 	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
 	// reverse proxy pre-computes in ServeHTTP so the signing
@@ -534,13 +535,13 @@ func newHTTPAuditContext(reqCtx context.Context, logger *audit.Logger, ev httpAu
 		// Build the fallback once and grade it before logging. Logging an
 		// ungraded fallback and returning a graded one would make the error
 		// event itself the only record claiming unknown provenance.
-		fallback := audit.NewMethodLogContext(ev.Method).WithActorAuth(grade)
+		fallback := audit.NewMethodLogContext(ev.Method).WithActorAuth(grade).WithCorrelation(correlationFromContext(reqCtx))
 		if logger != nil {
 			logger.LogError(fallback, err)
 		}
 		return fallback
 	}
-	return ctx.WithActorAuth(grade)
+	return ctx.WithActorAuth(grade).WithCorrelation(correlationFromContext(reqCtx))
 }
 
 // agentAuthFromContext returns the provenance grade recorded alongside the
@@ -562,13 +563,13 @@ func newConnectAuditContext(reqCtx context.Context, logger *audit.Logger, target
 	grade := agentAuthFromContext(reqCtx)
 	ctx, err := audit.NewConnectLogContext(target, clientIP, requestID, agent)
 	if err != nil {
-		fallback := audit.NewMethodLogContext(http.MethodConnect).WithActorAuth(grade)
+		fallback := audit.NewMethodLogContext(http.MethodConnect).WithActorAuth(grade).WithCorrelation(correlationFromContext(reqCtx))
 		if logger != nil {
 			logger.LogError(fallback, err)
 		}
 		return fallback
 	}
-	return ctx.WithActorAuth(grade)
+	return ctx.WithActorAuth(grade).WithCorrelation(correlationFromContext(reqCtx))
 }
 
 const defaultVersion = "0.0.0-dev.unknown"
@@ -1030,7 +1031,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
 			requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
 			agentName, _ := req.Context().Value(ctxKeyAgent).(string)
-			logger.LogRedirect(originalURL, redirectURL, clientIP, requestID, agentName, len(via))
+			logger.WithCorrelation(correlationFromContext(req.Context())).LogRedirect(originalURL, redirectURL, clientIP, requestID, agentName, len(via))
 			// Scan redirect URL with the per-agent scanner when available.
 			// Handlers attach the resolved agent config/scanner to the
 			// request context so redirect enforcement matches the agent
@@ -4000,13 +4001,13 @@ func (p *Proxy) logShieldRewriteSummary(summary *receipt.ShieldSummary, actx aud
 		return
 	}
 	if summary.ExtensionProbes > 0 {
-		p.logger.LogShieldRewrite("extension", summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
+		p.logger.WithCorrelation(actx.Correlation()).LogShieldRewrite("extension", summary.ExtensionProbes, transport, actx.URL(), clientIP, requestID)
 	}
 	if summary.TrackingBeacons > 0 {
-		p.logger.LogShieldRewrite("tracking", summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
+		p.logger.WithCorrelation(actx.Correlation()).LogShieldRewrite("tracking", summary.TrackingBeacons, transport, actx.URL(), clientIP, requestID)
 	}
 	if summary.AgentTraps > 0 {
-		p.logger.LogShieldRewrite("trap", summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
+		p.logger.WithCorrelation(actx.Correlation()).LogShieldRewrite("trap", summary.AgentTraps, transport, actx.URL(), clientIP, requestID)
 	}
 }
 
@@ -5149,6 +5150,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportFetch, requestID)
 		emitFetchReceipt(receipt.EmitOpts{
@@ -5173,7 +5175,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a per-request sub-logger tagged with the agent name
-	log := p.logger.With("agent", agent)
+	log := p.logger.With("agent", agent).WithCorrelation(correlation)
 
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, FetchResponse{

@@ -4,8 +4,6 @@
 package audit
 
 import (
-	"context"
-
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 )
 
@@ -62,6 +60,7 @@ func (l *Logger) LogAuthorityVerification(ctx LogContext, verification Authority
 		optStr("resource", ctx.Resource()).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
+		correlationField(ctx.Correlation()).
 		agentField(ctx.Agent(), ctx.AgentAuth())
 	e.msg(message)
 
@@ -70,6 +69,6 @@ func (l *Logger) LogAuthorityVerification(ctx LogContext, verification Authority
 		if verification.Decision == "allow" {
 			severity = emit.SeverityInfo
 		}
-		l.emitter.EmitWithSeverity(context.Background(), severity, string(EventAuthorityVerification), e.fields)
+		l.emitEventWithSeverity(severity, string(EventAuthorityVerification), e.fields)
 	}
 }

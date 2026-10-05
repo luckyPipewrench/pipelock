@@ -167,6 +167,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
 		// Reload thrash beat the request to scanner acquisition. Fail
 		// closed AND attest the deny so an operator reconstructing the
@@ -803,7 +804,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		p.metrics.RecordSNI(category, agentLabel)
 		if sniErr != nil {
-			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, agent, category)
+			p.logger.WithCorrelation(correlation).LogSNIMismatch(host, sniHost, clientIP, requestID, agent, category)
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			outcomeStatus = strconv.Itoa(http.StatusOK)
 			outcomeBytes = 0
@@ -884,6 +885,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Agent:              agent,
 			Profile:            id.Profile,
 			ActorAuth:          id.Auth,
+			Correlation:        correlation,
 			IssuerRuntime:      p.issuerCookieRuntime.Load(),
 			UpstreamRT:         p.tlsTransport,
 			SafeDial:           p.ssrfSafeDialContext,
@@ -1027,6 +1029,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	r, _ = attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportForward, requestID)
 		emitForwardReceipt(receipt.EmitOpts{

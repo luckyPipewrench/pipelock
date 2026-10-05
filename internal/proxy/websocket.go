@@ -65,7 +65,8 @@ type wsRelay struct {
 	redaction    *redactionRuntime
 	agent        string
 	metricAgent  string
-	actorAuth    envelope.ActorAuth // provenance of agent identity; gates CEE session-key namespacing
+	actorAuth    envelope.ActorAuth  // provenance of agent identity; gates CEE session-key namespacing
+	correlation  audit.CorrelationID // vetted emit.correlation_header tag from the upgrade request
 	clientIP     string
 	requestID    string
 	targetURL    string
@@ -295,6 +296,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	authorityRef, authorityCarrierErr := consumeAuthorityHeader(r)
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
 		_, requestID := requestMeta(r)
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
@@ -322,7 +324,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log := p.logger.With("agent", agent)
+	log := p.logger.With("agent", agent).WithCorrelation(correlation)
 
 	// Extract and validate target URL. Uses the same extraction logic as /fetch
 	// to handle unencoded '&' in target URLs without silent truncation.
@@ -1162,6 +1164,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		agent:           agent,
 		metricAgent:     id.Profile,
 		actorAuth:       id.Auth,
+		correlation:     correlation,
 		clientIP:        clientIP,
 		requestID:       requestID,
 		targetURL:       targetURL,
@@ -1536,7 +1539,7 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 // kept on the relay itself rather than read back off a request that may already
 // be done.
 func (r *wsRelay) auditProvenanceCtx() context.Context {
-	return context.WithValue(context.Background(), ctxKeyAgentAuth, string(r.actorAuth))
+	return withCorrelation(context.WithValue(context.Background(), ctxKeyAgentAuth, string(r.actorAuth)), r.correlation)
 }
 
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
@@ -1664,7 +1667,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 	if sm := ceeAdmission.Sessions; sm != nil {
 		ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
 			Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
-			AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: r.proxy.logger, Metrics: r.proxy.metrics,
+			AdaptiveCfg: &ceeAdmission.AdaptiveConfig, Logger: r.proxy.logger.WithCorrelation(r.correlation), Metrics: r.proxy.metrics,
 			ClientIP: r.clientIP, RequestID: r.requestID,
 		})
 	}
@@ -2405,7 +2408,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte   // rolling tail for text-message DLP scanning
 	var controlMsgTail []byte // separate tail for Ping/Pong payload DLP scanning
-	log := r.proxy.logger.With("agent", r.agent)
+	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 	redactionEnabled := r.redaction != nil && r.redaction.required
 
 	for {
@@ -2849,7 +2852,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 
 func (r *wsRelay) denySessionCapacity(direction string) {
 	r.terminalOnce.Do(func() {
-		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{
+		r.proxy.logger.WithCorrelation(r.correlation).LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: direction, Scanner: sessionCapacityLayer,
 			Reason: session.ErrCapacity.Error(), ClientIP: r.clientIP, RequestID: r.requestID,
 			Agent: r.agent, AgentAuth: string(r.actorAuth),
@@ -2896,7 +2899,7 @@ func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
 func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
-	log := r.proxy.logger.With("agent", r.agent)
+	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 
 	for {
 		select {

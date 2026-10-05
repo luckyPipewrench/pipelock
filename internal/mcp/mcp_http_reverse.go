@@ -24,6 +24,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -525,6 +526,12 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		// Per-request audit logger carrying the vetted correlation tag, so
+		// every event this HTTP request emits can be matched to the client's
+		// tag. The JSON-RPC id is client-chosen and not unique, so it cannot
+		// key this; the logger copy is scoped to this request instead.
+		requestBaseOpts.AuditLogger = baseOpts.AuditLogger.WithCorrelation(
+			audit.CorrelationIDFromHeader(r.Context(), r.Header, opts.CorrelationHeader, reqScanner))
 		fullRequestBaseOpts := requestBaseOpts
 		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), io.Discard)
 		reportReset := reset.Result == ResetAuthorityAccepted
@@ -836,7 +843,7 @@ func RunHTTPListenerProxy(
 			}
 			recordMCPAdaptiveSignal(requestBaseOpts, reqRec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
-				Logger:        opts.AuditLogger,
+				Logger:        requestBaseOpts.AuditLogger,
 				Metrics:       opts.Metrics,
 				ConsoleWriter: safeLogW,
 				Session:       auditSessionKey,

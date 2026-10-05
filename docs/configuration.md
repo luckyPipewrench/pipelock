@@ -2112,6 +2112,7 @@ Forward audit events to external systems. Three independent sinks (webhook, sysl
 ```yaml
 emit:
   instance_id: "prod-agent-1"
+  correlation_header: ""  # e.g. X-Correlation-Id; empty disables
   webhook:
     url: "https://your-siem.example.com/webhook"
     min_severity: warn
@@ -2138,6 +2139,7 @@ emit:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `instance_id` | hostname | Identifies this instance in events |
+| `correlation_header` | `""` | Name of one client request header whose value is copied into emitted events as `correlation_id`. Empty disables it. See [SIEM correlation](#siem-correlation). |
 | `webhook.url` | `""` | Webhook endpoint URL |
 | `webhook.min_severity` | `"warn"` | info, warn, or critical |
 | `webhook.auth_token` | `""` | Bearer token for webhook |
@@ -2162,6 +2164,57 @@ OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit even
 - **critical:** kill switch deny, adaptive escalation to critical level (enforcement upgraded across all transports)
 - **warn:** blocked requests, anomalies, session events, MCP unknown tools, scan hits
 - **info:** allowed requests, tunnel open/close, WebSocket open/close, config reload
+
+### SIEM Correlation
+
+`correlation_header` lets a client tag its own requests and find Pipelock's matching allow and block events in a SIEM. A tester sends each attack request with a unique value, such as `X-Correlation-Id: case-0042`, and joins on `correlation_id` instead of matching timestamps and URLs.
+
+```yaml
+emit:
+  correlation_header: X-Correlation-Id
+  webhook:
+    url: "https://your-siem.example.com/webhook"
+    min_severity: info   # include allowed requests, not only blocks
+```
+
+The value appears in each format as follows:
+
+| Format | Location |
+|--------|----------|
+| JSON (webhook, syslog) | `fields.correlation_id` |
+| CEF | `cs3=<value> cs3Label=correlationId` |
+| OCSF | `metadata.correlation_uid` |
+| OTLP | `correlation_id` log record attribute |
+
+The header value comes from the client, so Pipelock treats it as untrusted. The value is used only when the header appears exactly once, is at most 128 bytes after trimming surrounding spaces and tabs, and contains only visible printable ASCII (`!` through `~`, bytes 0x21 to 0x7E). A value with an interior space, a control character, or any non-ASCII byte is dropped, because an unescaped space ends a CEF extension value for many parsers and would cut off the field. A value that fails any check is left out of the event. The request itself is never blocked or changed because of this setting, and the header is still forwarded and scanned like any other header.
+
+A value that passes these checks is copied verbatim into every sink the operator configured under `emit`. The client chooses only the value; it cannot choose or add a destination. Before copying, Pipelock runs a quiet text DLP scan over the value, including environment and file secret matching, and drops the value on any match. That scan reduces the chance of a secret landing in a SIEM but is not a guarantee: an encoded, split, or partial secret that matches no pattern passes. Don't send anything in this header that you wouldn't want stored in your SIEM.
+
+The header name must be a valid HTTP token. Hop-by-hop headers (`Connection`, `Upgrade`, `Proxy-Authorization`, and similar), `Host`, `Content-Length`, credential headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, and similar), and any name listed in `request_body_scanning.sensitive_headers` are rejected at config load. Names that look credential-bearing are rejected too. The check lowercases the name, splits it into words on `-`, `_`, and `.`, and rejects the name when any word or run of adjacent words joined together is a credential word such as `auth`, `token`, `secret`, `password`, `pass`, `pwd`, `cookie`, `credential`, `apikey`, `accesskey`, `signature`, `sig`, `session`, `sessionid`, `jwt`, `bearer`, `assertion`, `csrf`, `xsrf`, `otp`, `totp`, or `private`. So `X-Session-Id`, `X-Api_Key`, and `Cf-Access-Jwt-Assertion` are rejected, while `X-Author` and `X-Authority` are allowed. A single word that starts with a credential word such as `token` or `secret`, or ends with one such as `token`, `session`, or `auth`, is rejected as well, so `X-Sessiontoken` and `X-Oauth` fail.
+
+The value is added to emitted events only. It does not appear in the local audit log, signed action receipts, evidence receipts, mediation envelopes, or flight recorder entries. Like the rest of the `emit` block, changing `correlation_header` requires a restart; a hot reload that changes it is ignored with a warning.
+
+Coverage by transport:
+
+| Transport | Carries `correlation_id` |
+|-----------|--------------------------|
+| Fetch (`/fetch`) | Yes |
+| Forward proxy (absolute-URI HTTP) | Yes |
+| Reverse proxy | Yes |
+| WebSocket (`/ws`) | Yes, from the upgrade request, on every event for that connection including frame scans and close |
+| CONNECT with TLS interception | Yes. Each inner request uses its own header value; when an inner request has none, the CONNECT request's value is used. Tunnel-level events use the CONNECT request's value. |
+| CONNECT passthrough (no interception) | Only from headers on the CONNECT request itself (for example `curl --proxy-header`). Headers inside the encrypted tunnel are not visible. |
+| MCP HTTP listener (`--listen`) | Yes, per HTTP request, including SSE responses to that request |
+| MCP stdio, MCP to an HTTP or WebSocket upstream from stdio | No. There are no inbound request headers, so the field is absent. |
+
+Allow and block decisions carry the field on every transport listed above. On fetch, WebSocket, TLS-intercepted requests, and the MCP HTTP listener, the request's session-level events (such as `session_anomaly` and adaptive escalation) carry it too; on the forward proxy, CONNECT, and reverse proxy paths those session-level events do not. Warn-mode DLP findings (`dlp_warn`) do not carry it on any transport. Events not tied to a request, such as startup and config reload, never carry it.
+
+Known gaps, where an event for a tagged request has no `correlation_id`:
+
+- MCP stdio, and stdio to an HTTP or WebSocket upstream: no inbound request headers exist.
+- CONNECT passthrough: headers inside the encrypted tunnel are not visible.
+- Session-level events (`session_anomaly`, adaptive escalation) on the forward proxy, CONNECT, and reverse proxy paths.
+- Warn-mode DLP findings (`dlp_warn`) on every transport.
 
 ## Tool Chain Detection
 

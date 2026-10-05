@@ -94,11 +94,15 @@ type InterceptContext struct {
 	Logger    *audit.Logger
 	Metrics   *metrics.Metrics
 
-	ClientIP      string
-	RequestID     string
-	Agent         string
-	Profile       string
-	ActorAuth     envelope.ActorAuth
+	ClientIP  string
+	RequestID string
+	Agent     string
+	Profile   string
+	ActorAuth envelope.ActorAuth
+	// Correlation is the vetted emit.correlation_header tag from the CONNECT
+	// request. Tunnel-level events carry it; each inner request uses its own
+	// header value when present and falls back to this one otherwise.
+	Correlation   audit.CorrelationID
 	IssuerRuntime *issuerCookieRuntime
 
 	UpstreamRT http.RoundTripper
@@ -536,6 +540,15 @@ func newInterceptHandler(
 		requestContext := *ic
 		ic := &requestContext
 		reqStart := time.Now()
+		// Inner request headers are visible here after TLS termination, so
+		// the inner request's own tag wins over the CONNECT request's. The
+		// per-request Logger copy carries it into every event this request
+		// emits, including events not built from an audit context.
+		if inner := requestCorrelation(r, ic.Config, ic.Scanner); !inner.IsZero() {
+			ic.Correlation = inner
+		}
+		ic.Logger = ic.Logger.WithCorrelation(ic.Correlation)
+		r = r.WithContext(withCorrelation(r.Context(), ic.Correlation))
 
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
@@ -2788,7 +2801,7 @@ func (l *singleConnListener) Addr() net.Addr {
 // actorAuthContext returns a context carrying this interception's agent-label
 // provenance grade, so audit contexts built here report it instead of unknown.
 func (ic *InterceptContext) actorAuthContext() context.Context {
-	return withActorAuth(context.Background(), ic.ActorAuth)
+	return withCorrelation(withActorAuth(context.Background(), ic.ActorAuth), ic.Correlation)
 }
 
 // baseContext returns the http.Server BaseContext hook for the tunnel's inner

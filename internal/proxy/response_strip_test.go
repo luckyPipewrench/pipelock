@@ -47,6 +47,9 @@ func TestResponseStripTransportInvariant(t *testing.T) {
 					if tc.name == "safe" && strings.Contains(strings.ToLower(body), phrase) {
 						t.Fatalf("stripped response still contains the finding: %s", body)
 					}
+					if tc.status != http.StatusOK && (strings.Contains(strings.ToLower(body), phrase) || strings.Contains(body, base64.StdEncoding.EncodeToString([]byte(phrase))) || strings.Contains(body, "Привет")) {
+						t.Fatalf("refused response exposed upstream content: %s", body)
+					}
 				}
 				cfg := config.Defaults()
 				cfg.Internal = nil
@@ -182,6 +185,9 @@ func TestResponseStripFetchTitle(t *testing.T) {
 			}
 			if tc.status == http.StatusOK && !strings.Contains(w.Body.String(), tc.title) {
 				t.Fatal("clean title changed")
+			}
+			if tc.status != http.StatusOK && (strings.Contains(strings.ToLower(w.Body.String()), tc.title) || strings.Contains(w.Body.String(), "gardening")) {
+				t.Fatalf("refused response exposed upstream content: %s", w.Body.String())
 			}
 		})
 	}

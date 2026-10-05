@@ -125,7 +125,7 @@ func normalizeSegmented(s string, t *segmentTable, full func(string) string) str
 			normalized = full(run)
 		}
 		if out == nil && normalized != run {
-			out = make([]byte, 0, len(s)+8)
+			out = make([]byte, 0, len(s))
 			out = append(out, s[:runStart]...)
 		}
 		if out != nil {
@@ -148,7 +148,7 @@ func normalizeSegmented(s string, t *segmentTable, full func(string) string) str
 		}
 		if invalid {
 			if out == nil {
-				out = make([]byte, 0, len(s)+8)
+				out = make([]byte, 0, len(s))
 				out = append(out, s[:i]...)
 			}
 			out = utf8.AppendRune(out, utf8.RuneError)

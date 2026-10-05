@@ -146,6 +146,9 @@ func TestFilesystemProfileProperties_EnforceBindsGrantsAndSecrets(t *testing.T) 
 			}
 		}
 	}
+	if hidden := filesystemInaccessiblePaths(got.Properties); !sliceContains(hidden, "/etc/pipelock/tls") || !sliceContains(hidden, "/var/lib/pipelock/rules") {
+		t.Fatalf("inaccessible paths = %v", hidden)
+	}
 	if !sliceContains(got.BindReadOnlyPaths, "/tmp/.X11-unix/X99:/tmp/.X11-unix/X99:rbind") {
 		t.Fatalf("read-only binds = %v", got.BindReadOnlyPaths)
 	}

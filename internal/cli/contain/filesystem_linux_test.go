@@ -139,19 +139,34 @@ func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	}
 }
 
-func TestLifecycleOwned_ParsesGrantPathWithSpace(t *testing.T) {
-	_, fields := lifecycleFixture()
+func enforceLifecycleRecord(fields map[string]string) containLifecycleRecord {
 	fields["ProtectSystem"] = "strict"
 	fields["ProtectHome"] = "tmpfs"
 	fields["NoNewPrivileges"] = "yes"
-	fields["BindPaths"] = `"/srv/my proj":"/srv/my proj":norbind`
 	fields["BindReadOnlyPaths"] = ""
+	fields["InaccessiblePaths"] = "/etc/pipelock/tls"
+	fields["TemporaryFileSystem"] = "/dev/shm"
+	fields["ProtectKernelTunables"] = "yes"
+	fields["ProtectKernelModules"] = "yes"
+	fields["ProtectControlGroups"] = "yes"
 	record := containLifecycleRecord{
-		FilesystemMode:      config.ContainmentFilesystemModeEnforce,
-		FilesystemBindPaths: []string{"/srv/my proj:/srv/my proj:norbind"},
+		FilesystemMode:                  config.ContainmentFilesystemModeEnforce,
+		FilesystemInaccessiblePaths:     []string{"/etc/pipelock/tls"},
+		FilesystemTemporaryFileSystem:   "/dev/shm",
+		FilesystemProtectKernelTunables: "yes",
+		FilesystemProtectKernelModules:  "yes",
+		FilesystemProtectControlGroups:  "yes",
 	}
 	record.Unit = fields["Id"]
 	record.RunID = strings.TrimPrefix(fields["Description"], lifecycleDescriptionPrefix)
+	return record
+}
+
+func TestLifecycleOwned_ParsesGrantPathWithSpace(t *testing.T) {
+	_, fields := lifecycleFixture()
+	record := enforceLifecycleRecord(fields)
+	record.FilesystemBindPaths = []string{"/srv/my proj:/srv/my proj:norbind"}
+	fields["BindPaths"] = `"/srv/my proj":"/srv/my proj":norbind`
 	if err := lifecycleOwned(fields, record, 966); err != nil {
 		t.Fatal(err)
 	}
@@ -163,22 +178,73 @@ func TestLifecycleOwned_ParsesGrantPathWithSpace(t *testing.T) {
 
 func TestLifecycleOwned_RejectsBindMismatch(t *testing.T) {
 	_, fields := lifecycleFixture()
-	fields["ProtectSystem"] = "strict"
-	fields["ProtectHome"] = "tmpfs"
-	fields["NoNewPrivileges"] = "yes"
+	record := enforceLifecycleRecord(fields)
+	record.FilesystemBindPaths = []string{"/srv/agent-home:/srv/agent-home:norbind"}
 	fields["BindPaths"] = "/srv/agent-home:/srv/agent-home:norbind"
-	fields["BindReadOnlyPaths"] = ""
-	record := containLifecycleRecord{
-		FilesystemMode:      config.ContainmentFilesystemModeEnforce,
-		FilesystemBindPaths: []string{"/srv/agent-home:/srv/agent-home:norbind"},
-	}
-	record.Unit = fields["Id"]
-	record.RunID = strings.TrimPrefix(fields["Description"], lifecycleDescriptionPrefix)
 	if err := lifecycleOwned(fields, record, 966); err != nil {
 		t.Fatalf("matching binds: %v", err)
 	}
 	record.FilesystemBindPaths = []string{"/srv/other:/srv/other:norbind"}
 	if err := lifecycleOwned(fields, record, 966); err == nil || !strings.Contains(err.Error(), "bind paths") {
 		t.Fatalf("mismatch error = %v", err)
+	}
+}
+
+func TestLifecycleOwned_RejectsFilesystemPropertyMismatch(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(map[string]string, *containLifecycleRecord)
+		want string
+	}{
+		{
+			name: "inaccessible paths",
+			edit: func(fields map[string]string, _ *containLifecycleRecord) {
+				fields["InaccessiblePaths"] = "/etc/pipelock/integrity"
+			},
+			want: "inaccessible paths",
+		},
+		{
+			name: "temporary filesystem",
+			edit: func(fields map[string]string, _ *containLifecycleRecord) {
+				fields["TemporaryFileSystem"] = "/run/shm"
+			},
+			want: "temporary filesystem",
+		},
+		{
+			name: "kernel tunables",
+			edit: func(fields map[string]string, _ *containLifecycleRecord) {
+				fields["ProtectKernelTunables"] = "no"
+			},
+			want: "kernel protection",
+		},
+		{
+			name: "kernel modules",
+			edit: func(fields map[string]string, _ *containLifecycleRecord) {
+				fields["ProtectKernelModules"] = "no"
+			},
+			want: "kernel protection",
+		},
+		{
+			name: "control groups",
+			edit: func(fields map[string]string, _ *containLifecycleRecord) {
+				fields["ProtectControlGroups"] = "no"
+			},
+			want: "kernel protection",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, fields := lifecycleFixture()
+			record := enforceLifecycleRecord(fields)
+			fields["BindPaths"] = ""
+			if err := lifecycleOwned(fields, record, 966); err != nil {
+				t.Fatalf("matching profile: %v", err)
+			}
+			tt.edit(fields, &record)
+			err := lifecycleOwned(fields, record, 966)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }

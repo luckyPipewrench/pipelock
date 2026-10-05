@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -170,7 +171,7 @@ func defaultLifecycleBackend() lifecycleBackend {
 
 // Keep the line-based observation scalar-only. ExecStart's display format can
 // contain argument newlines; the typed reader verifies its path and exact argv.
-const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart,ProtectSystem,ProtectHome,NoNewPrivileges,BindPaths,BindReadOnlyPaths"
+const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart,ProtectSystem,ProtectHome,NoNewPrivileges,BindPaths,BindReadOnlyPaths,InaccessiblePaths,TemporaryFileSystem,ProtectKernelTunables,ProtectKernelModules,ProtectControlGroups"
 
 func lifecycleSystemdShow(ctx context.Context, unit string) (map[string]string, error) {
 	out, code, err := lifecycleSystemctl(ctx, "show", unit, "--property="+lifecycleSystemdProperties)
@@ -411,7 +412,74 @@ func lifecycleFilesystemOwned(fields map[string]string, record containLifecycleR
 	if !sameBindList(readOnly, record.FilesystemBindReadOnlyPaths) {
 		return errors.New("lifecycle read-only bind paths differ from managed launch")
 	}
+	if err := sameLifecyclePathList(fields["InaccessiblePaths"], record.FilesystemInaccessiblePaths); err != nil {
+		return fmt.Errorf("lifecycle inaccessible paths: %w", err)
+	}
+	if err := sameLifecyclePathList(fields["TemporaryFileSystem"], lifecyclePathSingleton(record.FilesystemTemporaryFileSystem)); err != nil {
+		return fmt.Errorf("lifecycle temporary filesystem: %w", err)
+	}
+	if !systemdShowYes(fields["ProtectKernelTunables"], record.FilesystemProtectKernelTunables) ||
+		!systemdShowYes(fields["ProtectKernelModules"], record.FilesystemProtectKernelModules) ||
+		!systemdShowYes(fields["ProtectControlGroups"], record.FilesystemProtectControlGroups) {
+		return errors.New("lifecycle kernel protection differs from managed launch")
+	}
 	return nil
+}
+
+func lifecyclePathSingleton(path string) []string {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return []string{path}
+}
+
+func sameLifecyclePathList(got string, want []string) error {
+	parsed, err := parseSystemdPathList(got)
+	if err != nil {
+		return err
+	}
+	if !samePathSet(parsed, want) {
+		return errors.New("differ from managed launch")
+	}
+	return nil
+}
+
+func parseSystemdPathList(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	tokens, err := splitSystemdShowTokens(value)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		path := unquoteSystemdPath(token)
+		if path == "" {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out, nil
+}
+
+func samePathSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	left := append([]string(nil), got...)
+	right := append([]string(nil), want...)
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
+}
+
+func systemdShowYes(got, want string) bool {
+	if strings.TrimSpace(want) == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(want)) ||
+		(strings.EqualFold(want, "yes") && strings.EqualFold(strings.TrimSpace(got), "true"))
 }
 
 func lifecycleTerminal(fields map[string]string) bool {
@@ -532,6 +600,11 @@ func launchContainedAgentLifecycleWithBackend(opts containedAgentCommandOptions,
 	if opts.filesystem.Mode == config.ContainmentFilesystemModeEnforce {
 		l.record.FilesystemBindPaths = append([]string(nil), opts.filesystem.BindPaths...)
 		l.record.FilesystemBindReadOnlyPaths = append([]string(nil), opts.filesystem.BindReadOnlyPaths...)
+		l.record.FilesystemInaccessiblePaths = filesystemInaccessiblePaths(opts.filesystem.Properties)
+		l.record.FilesystemTemporaryFileSystem = "/dev/shm"
+		l.record.FilesystemProtectKernelTunables = "yes"
+		l.record.FilesystemProtectKernelModules = "yes"
+		l.record.FilesystemProtectControlGroups = "yes"
 	}
 	l.argv = append([]string{defaultLaunchScript}, opts.args...)
 	// Hash the executing image, not a pathname that an atomic replacement

@@ -396,6 +396,18 @@ func canonicalBind(src, dest, opt string) string {
 	return src + ":" + dest + ":" + opt
 }
 
+func filesystemInaccessiblePaths(properties []string) []string {
+	out := make([]string, 0)
+	for _, prop := range properties {
+		rest, ok := strings.CutPrefix(prop, "InaccessiblePaths=")
+		if !ok || rest == "" {
+			continue
+		}
+		out = append(out, unquoteSystemdPath(rest))
+	}
+	return out
+}
+
 func systemdPathToken(p string) string {
 	if !strings.ContainsAny(p, " \t\"'\\") {
 		return p

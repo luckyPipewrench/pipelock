@@ -175,16 +175,6 @@ func firstInaccessibleDirectory(properties []string) (string, error) {
 	return "", errors.New("filesystem profile has no inaccessible directory to prove")
 }
 
-func unquoteSystemdPath(value string) string {
-	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-		inner := value[1 : len(value)-1]
-		inner = strings.ReplaceAll(inner, `\"`, `"`)
-		inner = strings.ReplaceAll(inner, `\\`, `\`)
-		return inner
-	}
-	return value
-}
-
 func filesystemWorkspaceCanaryDir(profile filesystemProfile, agentHome string) string {
 	home := ""
 	if cleaned, err := cleanLinuxPath(agentHome); err == nil {

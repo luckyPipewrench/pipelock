@@ -164,6 +164,16 @@ func bindOption(raw string) (string, error) {
 	}
 }
 
+func unquoteSystemdPath(value string) string {
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		inner := value[1 : len(value)-1]
+		inner = strings.ReplaceAll(inner, `\"`, `"`)
+		inner = strings.ReplaceAll(inner, `\\`, `\`)
+		return inner
+	}
+	return value
+}
+
 func splitSystemdShowTokens(value string) ([]string, error) {
 	var tokens []string
 	var b strings.Builder

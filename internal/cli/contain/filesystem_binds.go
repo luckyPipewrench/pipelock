@@ -4,11 +4,15 @@
 package contain
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // systemdBindRecursiveFlag is the recursive mount bit systemd stores on a
@@ -16,11 +20,140 @@ import (
 // flags 0. systemctl show prints the dbus tuple, not the unit-file colon form.
 const systemdBindRecursiveFlag = 16384
 
+// systemdBindEntry is one typed BindPaths or BindReadOnlyPaths tuple.
+// systemd's D-Bus signature is a(ssbt): source, destination, ignore-missing,
+// flags. The recursive mount bit is systemdBindRecursiveFlag.
+type systemdBindEntry struct {
+	Source        string
+	Destination   string
+	IgnoreMissing bool
+	Flags         uint64
+}
+
+// errTypedBindsUnavailable means the typed D-Bus reader cannot be invoked.
+// Callers may then read systemctl show, and that display text fails closed
+// when it does not name norbind or rbind. A present reader that returns any
+// other error is a failed observation, not permission to guess.
+var errTypedBindsUnavailable = errors.New("typed systemd bind reader is unavailable")
+
+// parseTypedSystemdBinds decodes one busctl --json=short get-property body
+// for BindPaths or BindReadOnlyPaths. The signature must be a(ssbt).
+// ignore-missing must be the JSON false; any other spelling is refused.
+func parseTypedSystemdBinds(body []byte) ([]systemdBindEntry, error) {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil, errors.New("typed systemd bind list is empty")
+	}
+	if len(body) > maxCmdOutputBytes {
+		return nil, errors.New("typed systemd bind list exceeds bound")
+	}
+	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+		return nil, fmt.Errorf("invalid typed systemd bind JSON: %w", err)
+	}
+	if err := jsonscan.RejectCaseFoldedAliases(body, "type", "data"); err != nil {
+		return nil, fmt.Errorf("invalid typed systemd bind fields: %w", err)
+	}
+	var payload struct {
+		Type string              `json:"type"`
+		Data [][]json.RawMessage `json:"data"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode typed systemd binds: %w", err)
+	}
+	if payload.Type != "a(ssbt)" {
+		return nil, fmt.Errorf("typed systemd binds have signature %q", payload.Type)
+	}
+	out := make([]systemdBindEntry, 0, len(payload.Data))
+	for _, row := range payload.Data {
+		if len(row) != 4 {
+			return nil, errors.New("typed systemd bind entry does not have four fields")
+		}
+		var entry systemdBindEntry
+		if err := errors.Join(
+			json.Unmarshal(row[0], &entry.Source),
+			json.Unmarshal(row[1], &entry.Destination),
+			json.Unmarshal(row[2], &entry.IgnoreMissing),
+			json.Unmarshal(row[3], &entry.Flags),
+		); err != nil {
+			return nil, fmt.Errorf("decode typed systemd bind entry: %w", err)
+		}
+		if string(bytes.TrimSpace(row[2])) != "false" || entry.IgnoreMissing {
+			return nil, fmt.Errorf("systemd bind %s ignores a missing path", entry.Source)
+		}
+		if entry.Source == "" || entry.Destination == "" {
+			return nil, errors.New("typed systemd bind entry is missing a path")
+		}
+		if entry.Flags&^uint64(systemdBindRecursiveFlag) != 0 {
+			return nil, fmt.Errorf("systemd bind %s has unexpected flags %d", entry.Source, entry.Flags)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// matchTypedBindEntries compares a typed observation with the canonical
+// src:dest:option list the launch recorded. norbind requires the recursive
+// flag to be absent. rbind, including the display-socket entry the launch
+// asked for, requires that flag. ignore-missing is never accepted.
+func matchTypedBindEntries(got []systemdBindEntry, want []string) error {
+	if len(got) != len(want) {
+		return errors.New("differ from managed launch")
+	}
+	used := make([]bool, len(got))
+	for _, recorded := range want {
+		src, dest, opt, err := splitCanonicalBind(recorded)
+		if err != nil {
+			return err
+		}
+		matched := false
+		for i, entry := range got {
+			if used[i] || entry.Source != src || entry.Destination != dest {
+				continue
+			}
+			recursive := entry.Flags&uint64(systemdBindRecursiveFlag) != 0
+			switch opt {
+			case "norbind":
+				if recursive {
+					return fmt.Errorf("systemd bind %s is recursive", src)
+				}
+			case "rbind":
+				if !recursive {
+					return fmt.Errorf("systemd bind %s is not recursive", src)
+				}
+			default:
+				return fmt.Errorf("recorded bind option %q is not norbind or rbind", opt)
+			}
+			used[i] = true
+			matched = true
+			break
+		}
+		if !matched {
+			return errors.New("differ from managed launch")
+		}
+	}
+	return nil
+}
+
+func splitCanonicalBind(value string) (string, string, string, error) {
+	src, rest, ok := strings.Cut(value, ":")
+	if !ok {
+		return "", "", "", fmt.Errorf("recorded bind %q is not src:dest:option", value)
+	}
+	dest, opt, ok := strings.Cut(rest, ":")
+	if !ok || src == "" || dest == "" || strings.Contains(dest, ":") {
+		return "", "", "", fmt.Errorf("recorded bind %q is not src:dest:option", value)
+	}
+	return src, dest, opt, nil
+}
+
 // parseSystemdBindShow normalizes one BindPaths or BindReadOnlyPaths value
-// from systemctl show. It accepts colon triples (src:dest:norbind) and the
-// dbus 4-tuple layout (source, destination, ignore-missing, flags). An
-// unparseable value fails closed. An ignore-missing bind is refused because
-// the managed profile never asks for one.
+// from systemctl show. It is the fallback when the typed D-Bus reader is
+// unavailable. A value that does not name norbind or rbind fails closed:
+// systemd 261 prints a norbind entry as src:dest and drops the option, so
+// the display text must not be treated as norbind. An ignore-missing bind
+// is refused because the managed profile never asks for one.
 func parseSystemdBindShow(value string) ([]string, error) {
 	if strings.TrimSpace(value) == "" {
 		return nil, nil

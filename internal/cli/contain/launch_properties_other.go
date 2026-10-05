@@ -15,6 +15,7 @@ func launchPropertiesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "launch-properties",
 		Hidden: true,
+		Args:   cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			return errors.New("contain launch-properties is supported only on Linux")
 		},

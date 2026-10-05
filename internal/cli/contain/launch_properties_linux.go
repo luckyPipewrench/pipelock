@@ -22,6 +22,7 @@ func launchPropertiesCmd() *cobra.Command {
 		Use:    "launch-properties",
 		Short:  "Print systemd properties for one contained launch",
 		Hidden: true,
+		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runLaunchProperties(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), agentUser)
 		},

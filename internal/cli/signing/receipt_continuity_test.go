@@ -359,7 +359,7 @@ func TestRecorderChangedDuringVerificationMessage(t *testing.T) {
 	changed := receipt.BaseReport{Base: "proxy", Findings: []receipt.BaseFinding{{
 		Kind:            receipt.FindingCorruptChain,
 		Session:         "proxy.run.f7b327337534352a514bd0a256b1d1c0",
-		Detail:          "evidence changed during verification: link file bytes changed",
+		Detail:          "link file bytes differ from the first read",
 		EvidenceChanged: true,
 	}}}
 	var out bytes.Buffer
@@ -369,8 +369,10 @@ func TestRecorderChangedDuringVerificationMessage(t *testing.T) {
 	}
 
 	// Positive control: an ordinary link finding prints no such line.
+	// Its text names the change on purpose: classification must come from
+	// the typed flag, never from the detail.
 	ordinary := receipt.BaseReport{Base: "proxy", Findings: []receipt.BaseFinding{{
-		Kind: receipt.FindingInvalidLink, Session: "proxy.run.a", Detail: "link file x: bad signature",
+		Kind: receipt.FindingCorruptChain, Session: "proxy.run.a", Detail: "evidence changed during verification: text read from a link file",
 	}}}
 	if ordinary.EvidenceChangedDuringVerification() {
 		t.Fatal("an ordinary link finding read as a changed recorder")

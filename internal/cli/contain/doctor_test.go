@@ -60,6 +60,26 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	return env
 }
 
+func TestDoctorOperatorIdentityNamesSudo(t *testing.T) {
+	env := &doctorEnv{
+		configPath:   "/fixture/pipelock.yaml",
+		operatorUser: "",
+		readFile: func(string) ([]byte, error) {
+			return []byte("containment:\n  filesystem:\n    mode: enforce\n"), nil
+		},
+	}
+	result := checkFilesystemConfinement(context.Background(), env)
+	if result.status != statusFail {
+		t.Fatalf("status=%s detail=%s", result.status, result.detail)
+	}
+	if !strings.Contains(result.detail, "run this command through sudo from the operator account") {
+		t.Fatalf("detail = %q", result.detail)
+	}
+	if result.remediation != "run this command through sudo from the operator account" {
+		t.Fatalf("remediation = %q", result.remediation)
+	}
+}
+
 func TestDoctorViewerMissingConfigurationAndRFB(t *testing.T) {
 	root := t.TempDir()
 	env := &doctorEnv{

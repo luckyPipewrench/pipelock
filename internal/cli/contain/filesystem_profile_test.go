@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -506,6 +507,43 @@ func TestProbeFilesystemConfinement_OffIsNotPassOrSkip(t *testing.T) {
 	}
 	if status == statusPass || status == statusSkip {
 		t.Fatal("off must not read as confinement or a skipped probe")
+	}
+}
+
+func TestEnforceOperatorIdentityNamesSudo(t *testing.T) {
+	t.Setenv("SUDO_USER", "")
+	env := defaultProbeEnv()
+	if env.operatorUser != "" {
+		t.Fatalf("operator = %q, want the empty SUDO_USER", env.operatorUser)
+	}
+	env.configPath = "/fixture/pipelock.yaml"
+	env.workspaceInvPath = ""
+	env.readFile = func(string) ([]byte, error) {
+		return []byte("containment:\n  filesystem:\n    mode: enforce\n"), nil
+	}
+	env.postureLauncher = servicePostureLauncher
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusFilesystemNotApplicable || strings.Contains(detail, "operator home is required") {
+		t.Fatalf("service posture status=%s detail=%s", status, detail)
+	}
+
+	env.postureLauncher = ""
+	_, err := filesystemProfileInputForProbe(env, "/srv/agent")
+	if err == nil || !strings.Contains(err.Error(), "run this command through sudo from the operator account") {
+		t.Fatalf("contain identity error = %v", err)
+	}
+	_, err = filesystemProfileProperties(filesystemProfileInput{Mode: config.ContainmentFilesystemModeEnforce})
+	if err == nil || !strings.Contains(err.Error(), "run this command through sudo from the operator account") {
+		t.Fatalf("wrapper identity error = %v", err)
+	}
+
+	env.operatorUser = "operator"
+	env.lookupUser = func(string) (*user.User, error) {
+		return &user.User{Username: "operator", HomeDir: "/home/operator"}, nil
+	}
+	in, err := filesystemProfileInputForProbe(env, "/srv/agent")
+	if err != nil || in.OperatorHome != "/home/operator" || in.Mode != config.ContainmentFilesystemModeEnforce {
+		t.Fatalf("positive control err=%v mode=%s home=%s", err, in.Mode, in.OperatorHome)
 	}
 }
 

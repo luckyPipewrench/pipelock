@@ -383,8 +383,15 @@ func checkFilesystemConfinement(ctx context.Context, env *doctorEnv) doctorResul
 	case statusSkip:
 		return skip(detail, "rerun pipelock contain verify on Linux as root")
 	default:
-		return fail(classInfra, detail, "repair containment.filesystem.mode or the paths it binds")
+		return fail(classInfra, detail, filesystemDoctorRemediation(detail))
 	}
+}
+
+func filesystemDoctorRemediation(detail string) string {
+	if strings.Contains(detail, "run this command through sudo from the operator account") {
+		return "run this command through sudo from the operator account"
+	}
+	return "repair containment.filesystem.mode or the paths it binds"
 }
 
 func doctorChecksForEnv(env *doctorEnv) []doctorCheck {

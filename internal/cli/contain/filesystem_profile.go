@@ -71,7 +71,7 @@ func filesystemProfileProperties(in filesystemProfileInput) (filesystemProfile, 
 		return filesystemProfile{}, fmt.Errorf("containment.filesystem.mode %q must be off or enforce", in.Mode)
 	}
 	if strings.TrimSpace(in.OperatorHome) == "" {
-		return filesystemProfile{}, errors.New("operator home is required to validate filesystem binds")
+		return filesystemProfile{}, errors.New(operatorHomeRequired)
 	}
 	operatorHome, err := cleanLinuxPath(in.OperatorHome)
 	if err != nil {
@@ -523,16 +523,21 @@ func filesystemProfileInputForProbe(env *probeEnv, agentHome string) (filesystem
 	}, nil
 }
 
+// operatorHomeRequired names the control contain run, verify, doctor, and the
+// plk-* wrappers actually read. Those commands have no operator flag; sudo
+// sets SUDO_USER to the invoking account.
+const operatorHomeRequired = "operator home is required to validate filesystem binds; run this command through sudo from the operator account"
+
 func filesystemOperatorHome(env *probeEnv, mode string) (string, error) {
 	if strings.TrimSpace(env.operatorUser) == "" || env.operatorUser == "root" {
 		if mode == config.ContainmentFilesystemModeEnforce {
-			return "", errors.New("operator home is required to validate filesystem binds")
+			return "", errors.New(operatorHomeRequired)
 		}
 		return "", nil
 	}
 	if env.lookupUser == nil {
 		if mode == config.ContainmentFilesystemModeEnforce {
-			return "", errors.New("operator home is required to validate filesystem binds")
+			return "", errors.New(operatorHomeRequired)
 		}
 		return "", nil
 	}

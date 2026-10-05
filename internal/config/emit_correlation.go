@@ -103,7 +103,45 @@ var (
 
 // credentialHeaderWord returns the credential-shaped word or word run found in
 // a header name, or "" when the name looks harmless.
+// credentialHeaderSubstrings is the baseline floor: any of these anywhere in
+// the lowercased name, with separators removed, rejects it unless the hit is
+// inside a word on credentialHeaderSafeWords. The word rules below can only
+// add rejections on top of this floor.
+var credentialHeaderSubstrings = []string{
+	"auth", "token", "secret", "password", "passwd", "cookie", "credential",
+	"apikey", "accesskey", "signature", "session", "jwt", "bearer",
+}
+
+// credentialHeaderSafeWords are whole words that contain a floor substring
+// but carry no credential meaning.
+var credentialHeaderSafeWords = map[string]struct{}{
+	"author": {}, "authors": {}, "authored": {}, "authority": {}, "authorities": {},
+}
+
+func credentialHeaderSubstring(name string) string {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	})
+	kept := make([]string, 0, len(words))
+	for _, w := range words {
+		if _, ok := credentialHeaderSafeWords[w]; ok {
+			continue
+		}
+		kept = append(kept, w)
+	}
+	compact := strings.Join(kept, "")
+	for _, sub := range credentialHeaderSubstrings {
+		if strings.Contains(compact, sub) {
+			return sub
+		}
+	}
+	return ""
+}
+
 func credentialHeaderWord(name string) string {
+	if sub := credentialHeaderSubstring(name); sub != "" {
+		return sub
+	}
 	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
 		return r == '-' || r == '_' || r == '.'
 	})

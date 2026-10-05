@@ -45,7 +45,7 @@ func TestValidateEmitCorrelationHeader(t *testing.T) {
 		{name: "te", header: "TE", wantErr: "hop-by-hop"},
 		{name: "proxy-connection", header: "Proxy-Connection", wantErr: "hop-by-hop"},
 		{name: "host", header: "Host", wantErr: "hop-by-hop"},
-		{name: "session token heuristic", header: "X-Session-Token", wantErr: `word "session"`},
+		{name: "session token heuristic", header: "X-Session-Token", wantErr: `word "token"`},
 		{name: "amz security token heuristic", header: "X-Amz-Security-Token", wantErr: `word "token"`},
 		{name: "custom auth heuristic", header: "X-Custom-Auth", wantErr: `word "auth"`},
 		{name: "client secret heuristic", header: "X-Client-Secret", wantErr: `word "secret"`},
@@ -263,6 +263,20 @@ func TestValidateEmitCorrelationHeader_CredentialWords(t *testing.T) {
 					t.Fatalf("validate(%q) = %v, want nil", name, err)
 				}
 			})
+		}
+	}
+}
+
+func TestValidateEmitCorrelationHeader_SubstringFloor(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"X-Tokens", "X-Apikeys", "X-Auth2", "X-Authkey", "X-Myauth", "X-Accesskeys", "X-Sessions", "X-Jwts", "X-Author-Token"} {
+		if credentialHeaderWord(name) == "" {
+			t.Errorf("%s: want rejected by substring floor", name)
+		}
+	}
+	for _, name := range []string{"X-Author", "X-Authority", "X-Author-Id", "X-Correlation-Id", "X-Request-Id", "X-Trace-Id"} {
+		if w := credentialHeaderWord(name); w != "" {
+			t.Errorf("%s: want allowed, rejected on %q", name, w)
 		}
 	}
 }

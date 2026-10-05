@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -58,6 +59,116 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 		return statusFilesystemOff, "filesystem profile: off"
 	}
 	return env
+}
+
+func TestDoctorVerifyRunFilesystemProfileInputsMatch(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("SUDO_USER", "operator")
+	const (
+		configPath = "/fixture/pipelock.yaml"
+		invPath    = "/fixture/workspaces.json"
+		agentUser  = "pipelock-agent"
+		agentHome  = "/home/pipelock-agent"
+	)
+	yamlText := []byte("containment:\n  filesystem:\n    mode: enforce\nflight_recorder:\n  signing_key_path: /var/lib/pipelock/signing.key\n  dir: /var/lib/pipelock/flight\n")
+	inventory := []byte(`{"workspaces":[{"path":"/srv/granted","mode":"rw","agent_user":"pipelock-agent"}]}`)
+	read := func(path string) ([]byte, error) {
+		switch path {
+		case configPath:
+			return yamlText, nil
+		case invPath:
+			return inventory, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+	stat := func(path string) (os.FileInfo, error) {
+		if path == defaultXvfbPath {
+			return nil, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	lookup := func(name string) (*user.User, error) {
+		if name == "operator" {
+			return &user.User{Username: name, HomeDir: "/home/operator"}, nil
+		}
+		return nil, errors.New("unknown user")
+	}
+	now := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	apply := func(probe *probeEnv) {
+		t.Helper()
+		probe.configPath = configPath
+		probe.configDir = "/fixture"
+		probe.agentUserName = agentUser
+		probe.agentHome = agentHome
+		probe.operatorUser = "operator"
+		probe.workspaceInvPath = invPath
+		probe.readFile = read
+		probe.stat = stat
+		probe.lookupUser = lookup
+		probe.now = now
+		probe.display = ""
+	}
+	loadGrants := func(probe *probeEnv) {
+		t.Helper()
+		inv, err := loadWorkspaceInventoryFrom(probe.readFile, probe.workspaceInvPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe.workspaceGrants = grantsForAgent(inv.Workspaces, probe.agentUserName)
+	}
+
+	doctorProbe := filesystemProbeEnvForDoctor(&doctorEnv{
+		configPath:       configPath,
+		configDir:        "/fixture",
+		agentUserName:    agentUser,
+		agentHome:        agentHome,
+		operatorUser:     "operator",
+		workspaceInvPath: invPath,
+		readFile:         read,
+		stat:             stat,
+		lookupUser:       lookup,
+		now:              now,
+	})
+	verifyProbe := defaultProbeEnv()
+	apply(verifyProbe)
+	loadGrants(verifyProbe)
+	runProbe := defaultProbeEnv()
+	apply(runProbe)
+	loadGrants(runProbe)
+	cfg, err := loadProbeConfig(runProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runProbe.display = resolveLaunchDisplay(cfg, runProbe.display, probeXvfbPresent(runProbe))
+
+	doctorIn, err := filesystemProfileInputForProbe(doctorProbe, doctorProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyIn, err := filesystemProfileInputForProbe(verifyProbe, verifyProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runIn, err := filesystemProfileInputForProbe(runProbe, runProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSocket := displaySocketPath(99)
+	for _, in := range []filesystemProfileInput{doctorIn, verifyIn, runIn} {
+		if in.DisplaySocket != wantSocket || in.OperatorHome != "/home/operator" || in.Mode != "enforce" || in.AgentHome != agentHome || in.AgentUser != agentUser {
+			t.Fatalf("profile input = %+v", in)
+		}
+		if len(in.Grants) != 1 || in.Grants[0].Path != "/srv/granted" || in.Grants[0].Mode != "rw" {
+			t.Fatalf("grants = %+v", in.Grants)
+		}
+		if len(in.RequiredSecretPaths) != 1 || in.RequiredSecretPaths[0] != "/var/lib/pipelock/signing.key" {
+			t.Fatalf("required secrets = %+v", in.RequiredSecretPaths)
+		}
+		if len(in.OptionalSecretPaths) != 1 || in.OptionalSecretPaths[0] != "/var/lib/pipelock/flight" {
+			t.Fatalf("optional secrets = %+v", in.OptionalSecretPaths)
+		}
+	}
 }
 
 func TestDoctorOperatorIdentityNamesSudo(t *testing.T) {

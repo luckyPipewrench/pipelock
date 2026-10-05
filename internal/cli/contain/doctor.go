@@ -356,25 +356,36 @@ func allDoctorChecks() []doctorCheck {
 	}
 }
 
+// filesystemProbeEnvForDoctor starts from the same defaults verify and
+// contain run use, then applies doctor's live overrides. Display and the
+// X server path stay on those defaults so an omitted display setting resolves
+// the same socket for all three.
+func filesystemProbeEnvForDoctor(env *doctorEnv) *probeEnv {
+	probe := defaultProbeEnv()
+	if env == nil {
+		return probe
+	}
+	probe.configPath = env.configPath
+	probe.configDir = env.configDir
+	probe.agentUserName = env.agentUserName
+	probe.agentHome = env.agentHome
+	probe.operatorUser = env.operatorUser
+	probe.workspaceInvPath = env.workspaceInvPath
+	probe.groupIDs = env.groupIDs
+	probe.now = env.now
+	probe.readFile = env.readFile
+	probe.stat = env.stat
+	probe.lookupUser = env.lookupUser
+	probe.runCmd = env.runCmd
+	probe.filesystemProbe = env.filesystemProbe
+	probe.pipelockTarget = env.pipelockTarget
+	probe.port = env.port
+	probe.proxyUserName = env.proxyUserName
+	return probe
+}
+
 func checkFilesystemConfinement(ctx context.Context, env *doctorEnv) doctorResult {
-	status, detail := probeFilesystemConfinement(ctx, &probeEnv{
-		configPath:       env.configPath,
-		configDir:        env.configDir,
-		agentUserName:    env.agentUserName,
-		agentHome:        env.agentHome,
-		operatorUser:     env.operatorUser,
-		workspaceInvPath: env.workspaceInvPath,
-		groupIDs:         env.groupIDs,
-		now:              env.now,
-		readFile:         env.readFile,
-		stat:             env.stat,
-		lookupUser:       env.lookupUser,
-		runCmd:           env.runCmd,
-		filesystemProbe:  env.filesystemProbe,
-		pipelockTarget:   env.pipelockTarget,
-		port:             env.port,
-		proxyUserName:    env.proxyUserName,
-	})
+	status, detail := probeFilesystemConfinement(ctx, filesystemProbeEnvForDoctor(env))
 	switch status {
 	case statusPass:
 		return pass(detail)

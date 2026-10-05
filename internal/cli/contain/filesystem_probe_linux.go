@@ -191,11 +191,41 @@ type noFollowDir struct {
 }
 
 func openNoFollowDir(path string) (*noFollowDir, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	cleaned, err := cleanLinuxPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("open %s without following symlinks: %w", path, err)
+		return nil, err
 	}
-	return &noFollowDir{file: os.NewFile(uintptr(fd), path), path: path}, nil
+	if cleaned == "/" {
+		return nil, errors.New("refusing to pin the filesystem root")
+	}
+	root, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open filesystem root: %w", err)
+	}
+	defer func() { _ = unix.Close(root) }()
+	fd, err := openatNoSymlinkDir(root, strings.TrimPrefix(cleaned, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("open %s without following symlinks: %w", cleaned, err)
+	}
+	return &noFollowDir{file: os.NewFile(uintptr(fd), cleaned), path: cleaned}, nil
+}
+
+// openatNoSymlinkDir opens rel under dirfd. openat2 refuses a symlink in any
+// component and refuses a walk that leaves dirfd. A kernel that cannot do
+// that open fails closed; a path open would follow the intermediate link.
+func openatNoSymlinkDir(dirfd int, rel string) (int, error) {
+	how := &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_BENEATH,
+	}
+	fd, err := unix.Openat2(dirfd, rel, how)
+	if err == nil {
+		return fd, nil
+	}
+	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {
+		return -1, fmt.Errorf("openat2 symlink-safe open is unavailable: %w", err)
+	}
+	return -1, err
 }
 
 func (d *noFollowDir) close() {

@@ -1213,7 +1213,18 @@ func normalizedMatchSourceRanges(decoded string, matches []ResponseMatch) ([][2]
 		return nil, false
 	}
 	for i, match := range matches {
-		ranges[i] = [2]int{starts[match.span.ByteStart], ends[match.span.ByteEnd-1]}
+		end := ends[match.span.ByteEnd-1]
+		// Characters that normalize to nothing, such as combining marks, have
+		// no position in the view. Extend the range over any that directly
+		// follow it, so a redaction never splits a visible character.
+		for end < len(decoded) {
+			_, size := utf8.DecodeRuneInString(decoded[end:])
+			if transform(decoded[end:end+size]) != "" {
+				break
+			}
+			end += size
+		}
+		ranges[i] = [2]int{starts[match.span.ByteStart], end}
 	}
 	return ranges, true
 }

@@ -65,15 +65,18 @@ func TestResponseStripSourceRanges(t *testing.T) {
 		name, source, label string
 		start, end          int
 		valid               bool
+		want                string
 	}{
-		{"ascii", "ignore", ViewForMatching, 0, 6, true},
-		{"confusable", "іgnore", ViewForMatching, 0, 6, true},
-		{"folded", "ignore", ViewVowelFold, 0, 6, true},
-		{"empty", "", ViewForMatching, 0, 0, false},
-		{"negative", "ignore", ViewForMatching, -1, 6, false},
-		{"past_end", "ignore", ViewForMatching, 0, 7, false},
-		{"composition", "e\u0301", ViewForMatching, 0, 1, true},
-		{"contextual_composition", "\u1100\u1161", ViewForMatching, 0, 3, false},
+		{"ascii", "ignore", ViewForMatching, 0, 6, true, "ignore"},
+		{"confusable", "іgnore", ViewForMatching, 0, 6, true, "іgnore"},
+		{"folded", "ignore", ViewVowelFold, 0, 6, true, "ignore"},
+		{"empty", "", ViewForMatching, 0, 0, false, ""},
+		{"negative", "ignore", ViewForMatching, -1, 6, false, ""},
+		{"past_end", "ignore", ViewForMatching, 0, 7, false, ""},
+		{"composition", "e\u0301", ViewForMatching, 0, 1, true, "e\u0301"},
+		{"contextual_composition", "\u1100\u1161", ViewForMatching, 0, 3, false, ""},
+		{"composition_mid_text", "xe\u0301y", ViewForMatching, 1, 2, true, "e\u0301"},
+		{"stacked_marks", "e\u0301\u0323z", ViewForMatching, 0, 1, true, "e\u0301\u0323"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := ResponseMatch{span: newMatchSpan(tc.start, tc.end, tc.label, "test", "", "")}
@@ -84,8 +87,14 @@ func TestResponseStripSourceRanges(t *testing.T) {
 			if ok != tc.valid {
 				t.Fatalf("mapping valid=%v, want %v", ok, tc.valid)
 			}
-			if ok && tc.name == "confusable" && tc.source[ranges[0][0]:ranges[0][1]] != tc.source {
-				t.Fatal("raw Unicode span was not preserved")
+			if !ok {
+				return
+			}
+			if len(ranges) != 1 {
+				t.Fatalf("mapped %d ranges, want 1: %v", len(ranges), ranges)
+			}
+			if got := tc.source[ranges[0][0]:ranges[0][1]]; got != tc.want {
+				t.Fatalf("mapped source %q (%v), want %q", got, ranges[0], tc.want)
 			}
 		})
 	}

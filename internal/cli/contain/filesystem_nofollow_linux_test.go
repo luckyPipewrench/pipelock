@@ -27,7 +27,10 @@ func TestOpenNoFollowDirRejectsIntermediateSymlink(t *testing.T) {
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
-	linkedChild := filepath.Join(link, "child")
+	relative := filepath.Join(base, "relative")
+	if err := os.Symlink("real", relative); err != nil {
+		t.Fatal(err)
+	}
 
 	opened, err := openNoFollowDir(child)
 	if err != nil {
@@ -35,8 +38,11 @@ func TestOpenNoFollowDirRejectsIntermediateSymlink(t *testing.T) {
 	}
 	opened.close()
 
-	if _, err := openNoFollowDir(linkedChild); err == nil {
-		t.Fatal("intermediate symlink was followed")
+	if _, err := openNoFollowDir(filepath.Join(link, "child")); err == nil {
+		t.Fatal("absolute intermediate symlink was followed")
+	}
+	if _, err := openNoFollowDir(filepath.Join(relative, "child")); err == nil {
+		t.Fatal("relative intermediate symlink was followed")
 	}
 }
 

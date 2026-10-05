@@ -177,3 +177,28 @@ func TestKnownValueWindowHitsRejectsOtherViewsAndIndexes(t *testing.T) {
 		t.Fatal("nil memo must scan directly")
 	}
 }
+
+func TestKnownValueWindowHitsBoundedFallsBackToDirectScan(t *testing.T) {
+	rng := newTestRand(1801)
+	secrets := knownValueHitsSecrets(rng)
+	s := knownSecretEncodingScanner(t, secrets)
+	secret := s.fileSecrets[len(knownSecretEncodingSecrets)]
+	window := secret[:minKnownSecretSubstringLen]
+	text := strings.Repeat(window+" ", maxKnownValueWindowHits+10) + secret
+	views := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
+	memo := newKnownValueWindowHits(views)
+	if hits, ok := memo.forIndex(s.knownSecretWindows[secret], views); ok || hits != nil {
+		t.Fatalf("memo past the bound must refuse: ok=%v hits=%d", ok, len(hits))
+	}
+	if !memo.overflow || memo.hits != nil {
+		t.Fatal("overflowed memo must retain no hits")
+	}
+	if _, ok := memo.forIndex(s.knownSecretWindows[secret], views); ok {
+		t.Fatal("overflowed memo must keep refusing")
+	}
+	ws, we, wl, wv, wok := indexKnownValueSubstring(secret, s.knownSecretWindows[secret], views)
+	gs, ge, gl, gv, gok := indexKnownValueSubstringWithHits(secret, s.knownSecretWindows[secret], views, memo)
+	if !wok || gs != ws || ge != we || gl != wl || gv != wv || gok != wok {
+		t.Fatalf("overflow fallback differs: got (%d %d %d %q %v), want (%d %d %d %q %v)", gs, ge, gl, gv, gok, ws, we, wl, wv, wok)
+	}
+}

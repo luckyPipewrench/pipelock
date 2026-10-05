@@ -3725,8 +3725,14 @@ type knownValueWindowHits struct {
 	windows  []knownValueWindowCandidate
 	prefixes *knownValueWindowPrefixes
 	built    bool
+	overflow bool
 	hits     []knownValueWindowHit
 }
+
+// maxKnownValueWindowHits bounds the memo. Past it the memo is dropped and
+// every value scans directly, which is the pre-memo behavior and costs only
+// time, so repeated secret-shaped windows cannot grow memory per input byte.
+const maxKnownValueWindowHits = 4096
 
 type knownValueWindowHit struct {
 	view       int
@@ -3748,6 +3754,9 @@ func (h *knownValueWindowHits) forIndex(index knownValueWindowIndex, views []spa
 		return nil, false
 	}
 	if h.built {
+		if h.overflow {
+			return nil, false
+		}
 		if len(h.windows) != len(index.windows) || &h.windows[0] != &index.windows[0] || h.prefixes != index.prefixes {
 			return nil, false
 		}
@@ -3759,6 +3768,11 @@ func (h *knownValueWindowHits) forIndex(index knownValueWindowIndex, views []spa
 	for v, view := range views {
 		for textStart := 0; textStart <= len(view.text)-minKnownSecretSubstringLen; textStart++ {
 			if candidates := index.lookup(view.text[textStart : textStart+minKnownSecretSubstringLen]); len(candidates) > 0 {
+				if len(h.hits) == maxKnownValueWindowHits {
+					h.overflow = true
+					h.hits = nil
+					return nil, false
+				}
 				h.hits = append(h.hits, knownValueWindowHit{view: v, textStart: textStart, candidates: candidates})
 			}
 		}

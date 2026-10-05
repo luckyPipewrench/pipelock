@@ -504,6 +504,106 @@ func TestLifecycleCancellationDominatesSuccessfulClientAndCleanup(t *testing.T) 
 	}
 }
 
+func TestTransientTypedBindReadStillStopsOwnedService(t *testing.T) {
+	entries := func(t *testing.T, l *containRunLifecycle) []systemdBindEntry {
+		t.Helper()
+		got, err := entriesFromCanonicalBinds(l.record.FilesystemBindPaths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	supervise := func(t *testing.T, stage string) (reads, actions int, active string, l *containRunLifecycle, err error) {
+		t.Helper()
+		l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+		valid := entries(t, l)
+		b := lifecycleTestBackend(fields)
+		b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
+		b.action = func(context.Context, string, ...string) error {
+			actions++
+			fields["ActiveState"], fields["MainPID"] = "inactive", "0"
+			return nil
+		}
+		waits := 0
+		b.wait = func(context.Context, time.Duration) error {
+			waits++
+			if stage == "admission-persistent" || (stage == "cleanup-persistent" && waits <= 2) || stage == "identity" {
+				return errors.New("no further poll")
+			}
+			return nil
+		}
+		b.binds = func(context.Context, string) ([]systemdBindEntry, []systemdBindEntry, error) {
+			reads++
+			switch stage {
+			case "admission":
+				if reads == 1 {
+					return nil, nil, errors.New("one transient typed-read transport failure")
+				}
+			case "cleanup":
+				if reads == 3 {
+					return nil, nil, errors.New("one transient typed-read transport failure")
+				}
+			case "admission-persistent":
+				return nil, nil, errors.New("typed read still down")
+			case "cleanup-persistent":
+				if reads > 2 {
+					return nil, nil, errors.New("typed read still down")
+				}
+			case "identity":
+				if reads > 2 {
+					fields["User"] = "0"
+				}
+			case "mismatch":
+				if reads > 2 {
+					return nil, nil, nil
+				}
+			}
+			return valid, nil, nil
+		}
+		done := make(chan error, 1)
+		done <- nil
+		err = superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
+		return reads, actions, fields["ActiveState"], l, err
+	}
+
+	t.Run("admission retries then stops", func(t *testing.T) {
+		reads, actions, active, l, err := supervise(t, "admission")
+		if err != nil || actions != 1 || active != "inactive" || !l.record.AdmissionObserved || !l.record.CleanupComplete || reads < 2 {
+			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("cleanup retries then stops", func(t *testing.T) {
+		reads, actions, active, l, err := supervise(t, "cleanup")
+		if err != nil || actions != 1 || active != "inactive" || !l.record.AdmissionObserved || !l.record.CleanupComplete || reads < 4 {
+			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("unobserved admission is not stopped", func(t *testing.T) {
+		reads, actions, active, l, err := supervise(t, "admission-persistent")
+		if err == nil || actions != 0 || active != "active" || l.record.AdmissionObserved || l.record.CleanupComplete || reads != 1 {
+			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("owned service stops when the typed read keeps failing", func(t *testing.T) {
+		reads, actions, active, l, err := supervise(t, "cleanup-persistent")
+		if err != nil || actions != 1 || active != "inactive" || !l.record.AdmissionObserved || !l.record.CleanupComplete {
+			t.Fatalf("reads=%d actions=%d active=%s admitted=%v cleanup=%v err=%v", reads, actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("changed identity is not stopped", func(t *testing.T) {
+		_, actions, active, l, err := supervise(t, "identity")
+		if err == nil || actions != 0 || active != "active" || !l.record.AdmissionObserved || l.record.CleanupComplete {
+			t.Fatalf("actions=%d active=%s admitted=%v cleanup=%v err=%v", actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+	t.Run("bind mismatch is not stopped", func(t *testing.T) {
+		_, actions, active, l, err := supervise(t, "mismatch")
+		if err == nil || actions != 0 || active != "active" || !l.record.AdmissionObserved || l.record.CleanupComplete {
+			t.Fatalf("actions=%d active=%s admitted=%v cleanup=%v err=%v", actions, active, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+		}
+	})
+}
+
 func lifecycleTestParent(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

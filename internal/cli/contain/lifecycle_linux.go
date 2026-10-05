@@ -169,6 +169,15 @@ type lifecycleBackend struct {
 	binds func(context.Context, string) (bindPaths, readOnly []systemdBindEntry, err error)
 }
 
+// errLifecycleTypedObservation is a failed typed bind read. It is retried
+// inside the admission and cleanup deadlines. It is not an identity mismatch
+// and it is not permission to treat display text as a typed tuple.
+var errLifecycleTypedObservation = errors.New("typed lifecycle bind observation failed")
+
+// Immediate test doubles return without sleeping. Cap those polls so a
+// persistent error cannot busy-loop inside a deadline that is still open.
+const lifecycleTypedRetryInstantCap = 8
+
 type lifecycleBindObservation struct {
 	BindPaths []systemdBindEntry
 	ReadOnly  []systemdBindEntry
@@ -472,7 +481,7 @@ func observeLifecycleBinds(ctx context.Context, b lifecycleBackend, unit string,
 			return &lifecycleBindObservation{BindPaths: bindPaths, ReadOnly: readOnly}, nil
 		}
 		if !errors.Is(err, errTypedBindsUnavailable) {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", errLifecycleTypedObservation, err)
 		}
 	}
 	bindPaths, err := parseSystemdBindShow(fields["BindPaths"])
@@ -638,6 +647,72 @@ func lifecycleAdmissionPending(fields map[string]string, record containLifecycle
 		(fields["InvocationID"] == "" || fields["ControlGroup"] == "")
 }
 
+func lifecycleObservationRetryable(ctx context.Context, reserve time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	return time.Until(deadline) > reserve
+}
+
+// retryLifecycleTypedObservation repeats a typed bind read until it succeeds,
+// the error is not a transport failure, or the deadline no longer leaves
+// reserve. Callers pass the admission or cleanup context they already hold.
+// There is no extra sleep outside that deadline. A wait that returns without
+// blocking is counted so a persistent error cannot busy-loop.
+func retryLifecycleTypedObservation(ctx context.Context, b lifecycleBackend, reserve time.Duration, read func() error) error {
+	instant := 0
+	for {
+		err := read()
+		if err == nil || !errors.Is(err, errLifecycleTypedObservation) {
+			return err
+		}
+		if b.wait == nil || !lifecycleObservationRetryable(ctx, reserve) {
+			return err
+		}
+		started := time.Now()
+		if waitErr := b.wait(ctx, lifecyclePollInterval); waitErr != nil || ctx.Err() != nil {
+			return err
+		}
+		if time.Since(started) < time.Millisecond {
+			instant++
+			if instant >= lifecycleTypedRetryInstantCap {
+				return err
+			}
+		}
+	}
+}
+
+// lifecycleOwnershipForAdmission retries a transient typed read inside the
+// admission deadline. Failure leaves the invocation unobserved. Cleanup must
+// not stop a unit whose ownership was never established.
+func lifecycleOwnershipForAdmission(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32) error {
+	return retryLifecycleTypedObservation(ctx, b, 0, func() error {
+		return confirmLifecycleOwned(ctx, b, fields, l.record, uid)
+	})
+}
+
+// lifecycleOwnershipAllowsAction retries a transient typed read inside the
+// cleanup deadline, leaving one command budget so stop can still be issued.
+// When the read still fails, stop is permitted only if this invocation was
+// already admitted and its identity still matches. A mismatched unit is not
+// stopped. An unobserved invocation is not stopped.
+func lifecycleOwnershipAllowsAction(ctx context.Context, b lifecycleBackend, fields map[string]string, l *containRunLifecycle, uid uint32) error {
+	err := retryLifecycleTypedObservation(ctx, b, lifecycleClientTimeout, func() error {
+		return confirmLifecycleOwned(ctx, b, fields, l.record, uid)
+	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, errLifecycleTypedObservation) && l.record.AdmissionObserved {
+		return lifecycleServiceIdentity(fields, l.record, uid)
+	}
+	return err
+}
+
 // stopLifecycleService acts only after admission has been observed and bound.
 // Every destructive operation rechecks the invocation. A vanished service is
 // evidence only when its previously observed cgroup is also empty/absent.
@@ -678,7 +753,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		if fields["LoadState"] == "not-found" {
 			return errors.New("lifecycle unit vanished while its cgroup remained populated")
 		}
-		if err := confirmLifecycleOwned(ctx, b, fields, l.record, uid); err != nil {
+		if err := lifecycleOwnershipAllowsAction(ctx, b, fields, l, uid); err != nil {
 			return err
 		}
 		if err := verifyLifecycleArgv(ctx, b, l); err != nil {
@@ -690,7 +765,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		if err != nil {
 			return err
 		}
-		if err := confirmLifecycleOwned(ctx, b, confirmed, l.record, uid); err != nil {
+		if err := lifecycleOwnershipAllowsAction(ctx, b, confirmed, l, uid); err != nil {
 			return err
 		}
 		if !l.record.StopRequested {
@@ -789,7 +864,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 			break
 		}
 		if !lifecycleAdmissionPending(fields, l.record) {
-			if err := confirmLifecycleOwned(admission, b, fields, l.record, uid); err != nil {
+			if err := lifecycleOwnershipForAdmission(admission, b, fields, l, uid); err != nil {
 				primaryErr = err
 				break
 			}
@@ -802,7 +877,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 				primaryErr = err
 				break
 			}
-			if err := confirmLifecycleOwned(admission, b, confirmed, l.record, uid); err != nil {
+			if err := lifecycleOwnershipForAdmission(admission, b, confirmed, l, uid); err != nil {
 				primaryErr = err
 				break
 			}

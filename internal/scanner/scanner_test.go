@@ -7534,7 +7534,7 @@ func TestMatchSecretEncodingSpan_SkipsEncodingsLongerThanText(t *testing.T) {
 	secret := highEntropyKnownValue(64 * 1024)
 	short := []spanTextView{{text: "payload=nothing to see here", viewLabel: "raw"}}
 	allocs := testing.AllocsPerRun(20, func() {
-		if _, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, short, short); ok {
+		if _, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, nil, short, short); ok {
 			t.Fatal("short unrelated text matched a long secret")
 		}
 	})
@@ -7545,7 +7545,7 @@ func TestMatchSecretEncodingSpan_SkipsEncodingsLongerThanText(t *testing.T) {
 	// text is still found, so the guard only skips impossible encodings.
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
 	long := []spanTextView{{text: "payload=" + encoded, viewLabel: "raw"}}
-	match, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, long, long)
+	match, _, _, _, ok := matchSecretEncodingSpan(secret, knownValueWindowIndex{}, nil, long, long)
 	if !ok || match.encoding != encodingBase64 {
 		t.Fatalf("base64 of a long secret in a long text: ok=%v encoding=%q, want base64 match", ok, match.encoding)
 	}

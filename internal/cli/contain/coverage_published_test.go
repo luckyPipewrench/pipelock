@@ -362,32 +362,36 @@ func TestCovPubRevokeErrors(t *testing.T) {
 // the step's undo: the defensive stop/disable of a unit that was not
 // previously running/enabled, the restore of a touched (changed) file, the
 // restore of a retired (revoked) file, the daemon-reload, and the re-enable/
-// restart of a unit that was previously active. A two-service install
-// followed by a one-service reconciliation gives each branch a distinct
+// restart of a declared unit that was previously active. A three-service install
+// followed by a two-service reconciliation gives each branch a distinct
 // governing unit so every injected failure is independently attributable.
 func TestCovPubInstallPublishedServicesUndoAllBranches(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 
 	unitA := publishedServiceUnitBase("viewer")
 	unitB := publishedServiceUnitBase("editor")
+	unitC := publishedServiceUnitBase("console")
 	svcA := publishedTestService()
 	svcB := svcA
 	svcB.Name = "editor"
 	svcB.AgentPort = 5901
+	svcC := svcA
+	svcC.Name = "console"
+	svcC.AgentPort = 5902
 
-	// Previous-state snapshot: A was neither active nor enabled, B was both.
+	// A needs cleanup, B is retired, and C remains declared and needs restoration.
 	runner.on(argvFor("systemctl", "is-active", unitA+".socket"), "inactive\n", 3, nil)
 	runner.on(argvFor("systemctl", "is-enabled", unitA+".socket"), "disabled\n", 1, nil)
-	runner.on(argvFor("systemctl", "is-active", unitB+".socket"), "active\n", 0, nil)
-	runner.on(argvFor("systemctl", "is-enabled", unitB+".service"), "enabled\n", 0, nil)
+	runner.on(argvFor("systemctl", "is-active", unitC+".socket"), "active\n", 0, nil)
+	runner.on(argvFor("systemctl", "is-enabled", unitC+".socket"), "enabled\n", 0, nil)
 
-	both := []config.ContainmentPublishedService{svcA, svcB}
-	if _, err := stepInstallPublishedServices(&both).apply(context.Background(), env); err != nil {
-		t.Fatalf("initial two-service install: %v", err)
+	all := []config.ContainmentPublishedService{svcA, svcB, svcC}
+	if _, err := stepInstallPublishedServices(&all).apply(context.Background(), env); err != nil {
+		t.Fatalf("initial three-service install: %v", err)
 	}
 
-	onlyA := []config.ContainmentPublishedService{svcA}
-	s := stepInstallPublishedServices(&onlyA)
+	remaining := []config.ContainmentPublishedService{svcA, svcC}
+	s := stepInstallPublishedServices(&remaining)
 	if _, err := s.apply(context.Background(), env); err != nil {
 		t.Fatalf("revoke editor: %v", err)
 	}
@@ -396,8 +400,8 @@ func TestCovPubInstallPublishedServicesUndoAllBranches(t *testing.T) {
 	// applies succeeded, so they can only be reached from undo() itself.
 	runner.on(argvFor("systemctl", "stop", unitA+".socket"), "", 1, errors.New("stop denied"))
 	runner.on(argvFor("systemctl", "disable", unitA+".socket"), "", 1, errors.New("disable denied"))
-	runner.on(argvFor("systemctl", "enable", unitB+".service"), "", 1, errors.New("enable denied"))
-	runner.on(argvFor("systemctl", "start", unitB+".socket"), "", 1, errors.New("start denied"))
+	runner.on(argvFor("systemctl", "enable", unitC+".socket"), "", 1, errors.New("enable denied"))
+	runner.on(argvFor("systemctl", "start", unitC+".socket"), "", 1, errors.New("start denied"))
 	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, errors.New("reload denied"))
 
 	recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)

@@ -1483,6 +1483,41 @@ func TestScanRequestBody_SeedPhraseDoesNotSpanJSONFields(t *testing.T) {
 	}
 }
 
+// TestScanRequestBody_SeedPhraseQuoted covers request body scanning when the
+// phrase arrives with quotes glued to its first and last word: a text body
+// carrying JSON, and a JSON field whose value is itself serialized JSON.
+func TestScanRequestBody_SeedPhraseQuoted(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+
+	phrase := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	cases := []struct {
+		name        string
+		body        string
+		contentType string
+	}{
+		{"text body JSON string", `"` + phrase + `"`, "text/plain"},
+		{"text body JSON object", `{"mnemonic":"` + phrase + `"}`, "text/plain"},
+		{"text body single quotes", "'" + phrase + "'", "text/plain"},
+		{"JSON field holding serialized JSON", `{"payload":"{\"mnemonic\":\"` + phrase + `\"}"}`, contentTypeJSON},
+		{"JSON field holding quoted phrase", `{"payload":"\"` + phrase + `\""}`, contentTypeJSON},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, result := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:        strings.NewReader(tc.body),
+				ContentType: tc.contentType,
+				MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:     sc,
+			})
+			if result.Clean {
+				t.Fatalf("quoted seed phrase in request body not detected: %s", tc.body)
+			}
+		})
+	}
+}
+
 func TestScanRequestBody_JSONKeyExfil(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)

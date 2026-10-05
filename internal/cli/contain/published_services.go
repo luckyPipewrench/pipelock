@@ -345,10 +345,11 @@ func checkPublishedOperators(env *installEnv, services []config.ContainmentPubli
 // config (or the override the reload path passes) against the recorded set:
 // new ones are written and started, changed ones re-rendered, and removed or
 // expired ones stopped and their unit files restored, so a doorway never
-// outlives its declaration. A failure undoes every file and runtime change
-// back to the captured prior state.
+// outlives its declaration. A failure restores files, but restores captured
+// runtime state only for units that remain declared.
 func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublishedService) step {
 	var previous map[string]unitRuntimeState
+	var desired map[string]bool
 	var touched []string
 	var retired map[string][]byte
 	return step{
@@ -395,7 +396,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			}
 			unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 			var files []publishedManagedFile
-			desired := make(map[string]bool)
+			desired = make(map[string]bool)
 			changedUnit := make(map[string]bool)
 			for _, service := range services {
 				for _, item := range publishedServiceFiles(unitDir, env.pipelockTarget, env.proxyUserName, service) {
@@ -518,12 +519,12 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			sort.Strings(units)
 			for _, unit := range units {
 				state := previous[unit]
-				if !state.active {
+				if !state.active || !desired[unit] {
 					if err := runSystemctlCleanupUnit(ctx, env, "stop", unit); err != nil {
 						errs = append(errs, err)
 					}
 				}
-				if !state.enabled && strings.HasSuffix(unit, ".socket") {
+				if (!state.enabled || !desired[unit]) && strings.HasSuffix(unit, ".socket") {
 					if err := runSystemctlCleanupUnit(ctx, env, "disable", unit); err != nil {
 						errs = append(errs, err)
 					}
@@ -543,6 +544,9 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				errs = append(errs, err)
 			}
 			for _, unit := range units {
+				if !desired[unit] {
+					continue
+				}
 				state := previous[unit]
 				if state.enabled {
 					if err := runOrErr(ctx, env, "systemctl", "enable", unit); err != nil {

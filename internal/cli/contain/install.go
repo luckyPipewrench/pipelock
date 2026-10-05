@@ -873,6 +873,9 @@ func toolsListEntryRunnable(env *installEnv, e toolsListEntry) bool {
 		}
 		target = resolved
 	}
+	if env.toolCanExecute != nil {
+		return env.toolCanExecute(target)
+	}
 	return agentCanExecute(env, target)
 }
 

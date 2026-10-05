@@ -67,6 +67,8 @@ Use `--dry-run` to run preflight, print the contract, and exit without emitting 
 
 Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
+The capsule stays schema version 1. An off-mode capsule has the same JSON fields as a capsule from before filesystem confinement: `filesystem_mode` and `filesystem_binds_sha256` are absent. An enforce-mode capsule adds those two fields on the launch evidence and the containment evidence. A verifier older than this release rejects an enforce-mode capsule, because it rejects unknown fields, and that rejection is fail-closed. Upgrade the verifier before it checks an enforce-mode capsule.
+
 Flags:
 
 | Flag | Default | Purpose |

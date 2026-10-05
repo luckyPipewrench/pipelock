@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,102 @@ func TestFilesystemEvidenceRoundTripAndOldCapsuleOmitsIt(t *testing.T) {
 	}
 	if decoded.Evidence.Containment.FilesystemMode != "enforce" || !decoded.Evidence.Containment.BoundaryVerified {
 		t.Fatalf("containment filesystem evidence = %+v", decoded.Evidence.Containment)
+	}
+}
+
+func TestOffModeCapsuleFieldSetMatchesOldFormat(t *testing.T) {
+	if SchemaVersion != "1" {
+		t.Fatalf("SchemaVersion = %s, want 1", SchemaVersion)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("ab", 32)
+	off, err := Emit(config.Defaults(), Options{
+		SigningKey: priv,
+		ContainLaunch: &ContainLaunchEvidence{
+			Launcher:     "/usr/local/lib/pipelock/plk-launch",
+			AgentUser:    "pipelock-agent",
+			TargetUID:    "966",
+			TargetGID:    "966",
+			TargetGroups: []string{"966"},
+			Tool:         "claude",
+			Argc:         1,
+			ArgvSHA256:   digest,
+			CWD:          "/srv/agent-home",
+			ProxyPort:    8080,
+			EnvVars:      []string{"HOME"},
+			EnvSHA256:    digest,
+		},
+		Containment: &ContainmentEvidence{
+			Mode:                     ContainmentModeKernelNFTOwnerMatch,
+			BoundaryVerified:         true,
+			ProbeRefusedDirectEgress: true,
+			TargetUID:                "966",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offBytes, err := json.Marshal(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(offBytes, []byte("filesystem_mode")) || bytes.Contains(offBytes, []byte("filesystem_binds_sha256")) {
+		t.Fatalf("off-mode capsule added filesystem fields: %s", offBytes)
+	}
+	assertJSONKeys(t, offBytes, nil, []string{
+		"config_hash", "evidence", "expires_at", "generated_at", "schema_version", "signature", "signer_key_id", "tool_version",
+	})
+	assertJSONKeys(t, offBytes, []string{"evidence", "contain_launch"}, []string{
+		"agent_user", "argc", "argv_sha256", "cwd", "env_sha256", "env_vars", "launcher", "proxy_port", "target_gid", "target_groups", "target_uid", "tool",
+	})
+	assertJSONKeys(t, offBytes, []string{"evidence", "containment"}, []string{
+		"boundary_verified", "mode", "probe_refused_direct_egress", "target_uid",
+	})
+
+	var decoded Capsule
+	if err := json.Unmarshal(offBytes, &decoded); err != nil {
+		t.Fatalf("new reader rejected an old field set: %v", err)
+	}
+	if err := Verify(&decoded, pub); err != nil {
+		t.Fatalf("new reader rejected an old capsule: %v", err)
+	}
+	if decoded.SchemaVersion != "1" || decoded.Evidence.ContainLaunch.FilesystemMode != "" || decoded.Evidence.Containment.FilesystemMode != "" {
+		t.Fatalf("decoded off capsule = schema %s launch %+v containment %+v", decoded.SchemaVersion, decoded.Evidence.ContainLaunch, decoded.Evidence.Containment)
+	}
+}
+
+func assertJSONKeys(t *testing.T, raw []byte, path []string, want []string) {
+	t.Helper()
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	cur := doc
+	for _, step := range path {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			t.Fatalf("path %v is not an object", path)
+		}
+		next, ok := obj[step]
+		if !ok {
+			t.Fatalf("path %v missing %s", path, step)
+		}
+		cur = next
+	}
+	obj, ok := cur.(map[string]any)
+	if !ok {
+		t.Fatalf("path %v is not an object", path)
+	}
+	got := make([]string, 0, len(obj))
+	for key := range obj {
+		got = append(got, key)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("keys at %v = %v, want %v", path, got, want)
 	}
 }
 

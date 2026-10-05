@@ -81,6 +81,16 @@ passing result does not prove no run's evidence is missing. Pass --session
 to verify one chain; continuity for its base is still verified, and any
 finding in the base, including two runs that share a signed run nonce, fails
 the result.
+
+Full chain verification (--chain, --whole-recorder) is for a recorder that is
+not being written while it is verified: stop the writer, or copy the recorder
+directory and verify the copy. A change during verification is detected on a
+best-effort basis: a shard or link file added, removed, replaced, or resized,
+or a link file's bytes changed, fails the result as a recorder that changed
+while being verified. A same-size in-place rewrite of a shard by a process
+with write access to the evidence directory is outside what an offline
+verifier can rule out. For a check of a live recorder, run
+"pipelock evidence doctor DIR".
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -354,52 +364,6 @@ type verifyReceiptOptions struct {
 	RotationEndorsements []receipt.RotationEndorsement
 }
 
-// verifyWholeRecorderFromFile verifies every entry of one recorder file. name
-// is the filename the operator gave, which may differ from the base of the
-// resolved path when the operator named a symlink.
-func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return fmt.Errorf("reading recorder file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	// Stream the handle so the reader's bounded-read limits apply before the
-	// whole file is held in memory.
-	entries, err := recorder.ReadEntriesFromReader(file)
-	if err != nil {
-		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
-	}
-	// A file named for a session holds only that session's entries.
-	if session, _, ok := recorder.ParseEvidenceFilename(name); ok {
-		if err := recorder.CheckEntrySessions(entries, session); err != nil {
-			_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %s: %v\n", path, name, err)
-			return fmt.Errorf("whole-recorder verification failed: %s: %w", name, err)
-		}
-	}
-	result, err := receipt.VerifyWholeRecorderEntries(entries)
-	if err != nil {
-		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
-	}
-	return verifyWholeRecorderDetailed(out, path, entries, result, trustedKeys, opts)
-}
-
-func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
-	query, err := recorder.QuerySessionResolved(location, sessionID, nil)
-	if err != nil {
-		return fmt.Errorf("reading recorder session: %w", err)
-	}
-	if query.Truncated {
-		_, _ = fmt.Fprintf(out, "INCOMPLETE: evidence session %s exceeded bounded read limits\n", sessionID)
-		return fmt.Errorf("whole-recorder verification failed: evidence session %s exceeded bounded read limits", sessionID)
-	}
-	result, err := receipt.VerifyWholeRecorderEntries(query.Entries)
-	if err != nil {
-		return fmt.Errorf("whole-recorder verification failed: %w", err)
-	}
-	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
-	return verifyWholeRecorderDetailed(out, label, query.Entries, result, trustedKeys, opts)
-}
-
 // resolveOneReceiptSession keeps single-chain outputs unambiguous. The clean
 // report has one chain summary, so a base with several runs needs an explicit
 // run session rather than silently reporting only one of them.
@@ -466,6 +430,9 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 	if len(incomplete) > 0 {
 		_, _ = fmt.Fprintf(out, "INCOMPLETE RUNS (%d): %s\n", len(incomplete), strings.Join(incomplete, ", "))
 	}
+	if report.EvidenceChangedDuringVerification() {
+		return recorderChangedError(location.Dir)
+	}
 	if len(failed) > 0 {
 		if len(sessions) == 1 {
 			return firstErr
@@ -478,72 +445,278 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 	return nil
 }
 
-func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder.Entry, whole receipt.WholeRecorderResult, trustedKeys []string, opts verifyReceiptOptions) error {
+// Whole-recorder verification runs every check while the recorder is read,
+// one entry at a time, and decides only when the read is complete. Each check
+// keeps its own first failure, and the report applies them in the fixed
+// order the checks have always had, so a recorder gets the same verdict and
+// the same message it got when every entry was loaded first. What the scan
+// holds is bounded by the shape of the evidence rather than its length: the
+// receipt chain walkers' segment and run state, the last transcript_root and
+// the at-most-two entries after it, and the signed checkpoints waiting for
+// the next receipt's signer (see anchorWalker).
+
+// verifyWholeRecorderFromFile verifies every entry of one recorder file. name
+// is the filename the operator gave, which may differ from the base of the
+// resolved path when the operator named a symlink.
+func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("reading recorder file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	scan := newWholeRecorderScan(trustedKeys, opts)
+	defer scan.close()
+	// A file named for a session holds only that session's entries. The
+	// refusal is decided after the whole file reads cleanly, as before.
+	fileSession, _, named := recorder.ParseEvidenceFilename(name)
+	var sessionErr error
+	// Stream the handle so the reader's bounded-read limits apply and the
+	// file is never held in memory.
+	if err := recorder.WalkEntriesFromReader(file, func(e recorder.Entry) error {
+		if named && sessionErr == nil && e.SessionID != fileSession {
+			sessionErr = recorder.EntrySessionError(e, fileSession)
+		}
+		scan.add(e)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
+	}
+	if sessionErr != nil {
+		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %s: %v\n", path, name, sessionErr)
+		return fmt.Errorf("whole-recorder verification failed: %s: %w", name, sessionErr)
+	}
+	if err := scan.whole.Err(); err != nil {
+		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
+	}
+	return scan.report(out, path)
+}
+
+func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
+	scan := newWholeRecorderScan(trustedKeys, opts)
+	defer scan.close()
+	query, err := recorder.WalkSessionResolved(location, sessionID, func(e recorder.Entry) error {
+		scan.add(e)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("reading recorder session: %w", err)
+	}
+	if query.Truncated {
+		_, _ = fmt.Fprintf(out, "INCOMPLETE: evidence session %s exceeded bounded read limits\n", sessionID)
+		return fmt.Errorf("whole-recorder verification failed: evidence session %s exceeded bounded read limits", sessionID)
+	}
+	if err := scan.whole.Err(); err != nil {
+		return fmt.Errorf("whole-recorder verification failed: %w", err)
+	}
+	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
+	return scan.report(out, label)
+}
+
+// entryMark is the part of an entry the report names.
+type entryMark struct {
+	typ string
+	seq uint64
+}
+
+// wholeRecorderScan carries every whole-recorder check through one read.
+type wholeRecorderScan struct {
+	trustedKeys []string
+	opts        verifyReceiptOptions
+
+	whole    receipt.WholeRecorderWalker
+	index    int
+	receipts int
+	chain    receipt.ChainAccumulator
+	posture  receiptPostureSummary
+
+	evidenceErr error
+	evidence    *receipt.EvidenceChainWalker
+
+	// The last transcript_root, as the in-memory check read it: each root
+	// decodes into the same value, the last one wins, and the first that
+	// fails to decode is the error.
+	rootErr          error
+	rootFound        bool
+	root             receipt.TranscriptRoot
+	rootIndex        int
+	rootSessionID    string
+	rootReceiptCount int
+	rootChain        receipt.ChainResult
+	// afterRoot counts the entries after the last root; the first two are
+	// all the unsealed-tail check reads.
+	afterRoot   int
+	afterFirst  entryMark
+	afterSecond entryMark
+
+	anchors anchorWalker
+}
+
+func newWholeRecorderScan(trustedKeys []string, opts verifyReceiptOptions) *wholeRecorderScan {
+	var chain receipt.ChainAccumulator
+	if len(opts.RotationEndorsements) > 0 {
+		chain = receipt.NewEndorsedChainWalker(opts.SessionID, opts.RotationEndorsements, trustedKeys)
+	} else {
+		chain = receipt.NewChainWalker(trustedKeys)
+	}
+	return &wholeRecorderScan{
+		trustedKeys: trustedKeys,
+		opts:        opts,
+		chain:       chain,
+		evidence:    receipt.NewEvidenceChainWalker(trustedKeys, contractreceipt.ChainVerifyOptions{}),
+		rootIndex:   -1,
+		anchors:     anchorWalker{anchor: checkpointAnchor{lastSignedIndex: -1}},
+	}
+}
+
+// close releases the scan's spill file. report may return before the
+// checkpoint anchors are settled (an unsealed or broken recorder never
+// reaches them, as before); every caller closes the scan however it ends.
+func (s *wholeRecorderScan) close() { s.anchors.close() }
+
+func (s *wholeRecorderScan) add(e recorder.Entry) {
+	i := s.index
+	s.index++
+	r, isReceipt := s.whole.Add(e)
+	// Once an earlier check has failed, the verdict is that failure whatever
+	// follows, so the signature checks stop; the cheap ones and the reader
+	// keep going, because a read failure later in the recorder outranks them.
+	failed := s.whole.Err() != nil
+
+	if s.evidenceErr == nil && !failed {
+		ev, isEvidence, err := contractreceipt.EvidenceReceiptFromEntry(i, e)
+		switch {
+		case err != nil:
+			s.evidenceErr = err
+		case isEvidence:
+			s.evidence.Add(ev)
+		}
+	}
+	failed = failed || s.evidenceErr != nil
+
+	if isReceipt {
+		s.receipts++
+		if !failed {
+			s.chain.Add(r)
+			s.posture.add(r)
+		}
+		s.anchors.addReceipt(r)
+	}
+	s.anchors.addEntry(i, e)
+
+	if s.rootFound {
+		switch s.afterRoot {
+		case 0:
+			s.afterFirst = entryMark{typ: e.Type, seq: e.Sequence}
+		case 1:
+			s.afterSecond = entryMark{typ: e.Type, seq: e.Sequence}
+		}
+		s.afterRoot++
+	}
+	if e.Type == "transcript_root" && s.rootErr == nil {
+		s.addRoot(i, e, failed)
+	}
+}
+
+func (s *wholeRecorderScan) addRoot(i int, e recorder.Entry, failed bool) {
+	data := e.RawDetail
+	if len(data) == 0 {
+		var err error
+		data, err = json.Marshal(e.Detail)
+		if err != nil {
+			s.rootErr = fmt.Errorf("marshal transcript_root detail: %w", err)
+			return
+		}
+	}
+	if err := json.Unmarshal(data, &s.root); err != nil {
+		s.rootErr = fmt.Errorf("parse transcript_root detail: %w", err)
+		return
+	}
+	s.rootFound = true
+	s.rootIndex = i
+	s.rootSessionID = e.SessionID
+	s.rootReceiptCount = s.receipts
+	s.afterRoot = 0
+	s.rootChain = receipt.ChainResult{}
+	if !failed && s.receipts > 0 {
+		// The seal covers the receipt chain up to here. The walker's result
+		// now is the verified result of exactly that prefix.
+		s.rootChain = s.chain.Result()
+	}
+}
+
+// report renders the verdict in the order of the checks: evidence receipt
+// extraction, the receipt chain, the evidence chain, the seal, the entries
+// after the seal, and the checkpoint anchors.
+func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 	_, _ = fmt.Fprintf(out, "WHOLE-RECORDER: %s\n", label)
 	_, _ = fmt.Fprintf(out, "  Mode:      whole-recorder\n")
-	_, _ = fmt.Fprintf(out, "  Entries:   %d recorder entries hash-chain-verified and in-taxonomy\n", whole.EntryCount)
-	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
-	if err != nil {
-		_, _ = fmt.Fprintf(out, "  EVIDENCE CHAIN BROKEN: %v\n", err)
-		return fmt.Errorf("evidence receipt chain: %w", err)
+	_, _ = fmt.Fprintf(out, "  Entries:   %d recorder entries hash-chain-verified and in-taxonomy\n", s.whole.EntryCount())
+	if s.evidenceErr != nil {
+		_, _ = fmt.Fprintf(out, "  EVIDENCE CHAIN BROKEN: %v\n", s.evidenceErr)
+		return fmt.Errorf("evidence receipt chain: %w", s.evidenceErr)
 	}
-	if len(whole.Receipts) == 0 && len(evidenceReceipts) > 0 {
+	trustedKeys, opts := s.trustedKeys, s.opts
+	evidenceCount := s.evidence.Count()
+	if s.receipts == 0 && evidenceCount > 0 {
 		// Evidence receipts alone: verify them, but the transcript_root seal
 		// covers an action receipt chain, so there is nothing it can seal.
-		if err := verifyEvidenceChainDetailed(out, label, evidenceReceipts, trustedKeys, opts); err != nil {
+		if err := verifyEvidenceChainResultDetailed(out, label, s.evidence.Result(), trustedKeys, opts); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no action receipt chain, so no transcript_root seal covers this recorder")
 		return errUnsealedRecorder
 	}
-	chain := verifiedChainResult(whole.Receipts, trustedKeys, opts)
+	chain := s.chain.Result()
 	if !chain.Valid || (len(trustedKeys) == 0 && !opts.AllowUnpinned) {
-		return verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts)
+		return verifyChainSummaryDetailed(out, label, s.posture, chain, trustedKeys, opts)
 	}
 	// Both receipt chains are authenticated by their own signatures. A
 	// checkpoint anchors only the entries that are not receipts, so a forged
 	// EvidenceReceipt v2 must fail here even when the anchor is waived.
 	var evidenceChain contractreceipt.ChainResult
-	if len(evidenceReceipts) > 0 {
-		evidenceChain = receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{})
+	if evidenceCount > 0 {
+		evidenceChain = s.evidence.Result()
 		if !evidenceChain.Valid {
 			_, _ = fmt.Fprintf(out, "  EVIDENCE CHAIN BROKEN: %s\n", evidenceChain.Error)
 			return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", evidenceChain.BrokenAtSeq, evidenceChain.Error)
 		}
 	}
-	root, rootIndex, rootSessionID, found, err := transcriptRootFromEntries(entries)
-	if err != nil {
-		_, _ = fmt.Fprintf(out, "  SEAL MISMATCH: %v\n", err)
-		return fmt.Errorf("seal verification failed: %w", err)
+	if s.rootErr != nil {
+		_, _ = fmt.Fprintf(out, "  SEAL MISMATCH: %v\n", s.rootErr)
+		return fmt.Errorf("seal verification failed: %w", s.rootErr)
 	}
-	if !found {
+	if !s.rootFound {
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no transcript_root seal (recorder still running or tail truncated)")
 		return errUnsealedRecorder
 	}
-	rootReceiptCount := receiptEntriesBefore(entries, rootIndex)
-	if rootReceiptCount == 0 || rootReceiptCount > len(whole.Receipts) {
+	if s.rootReceiptCount == 0 || s.rootReceiptCount > s.receipts {
 		_, _ = fmt.Fprintln(out, "  SEAL MISMATCH")
 		return fmt.Errorf("seal verification failed: transcript_root has no matching receipt prefix")
 	}
-	rootChain := verifiedChainResult(whole.Receipts[:rootReceiptCount], trustedKeys, opts)
-	if !rootChain.Valid || !transcriptRootMatchesChainSegment(root, rootSessionID, rootChain) {
+	if !s.rootChain.Valid || !transcriptRootMatchesChainSegment(s.root, s.rootSessionID, s.rootChain) {
 		_, _ = fmt.Fprintln(out, "  SEAL MISMATCH")
 		return fmt.Errorf("seal verification failed: transcript_root does not match its verified receipt-chain segment")
 	}
-	if unsealed, ok := firstUnsealedEntryAfter(entries, rootIndex); ok {
-		_, _ = fmt.Fprintf(out, "  INCOMPLETE: transcript_root seal precedes later unsealed entries (first: %s at seq %d)\n", unsealed.Type, unsealed.Sequence)
-		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.Type, unsealed.Sequence)
+	// The recorder writes exactly one checkpoint after the root on clean
+	// shutdown (either the threshold checkpoint the root itself triggers or
+	// the final one Close writes, never both), so a sealed recorder may carry
+	// at most one entry past the seal and it must be a checkpoint. Anything
+	// else there is evidence the seal never committed to.
+	if unsealed, ok := s.firstUnsealedAfterRoot(); ok {
+		_, _ = fmt.Fprintf(out, "  INCOMPLETE: transcript_root seal precedes later unsealed entries (first: %s at seq %d)\n", unsealed.typ, unsealed.seq)
+		return fmt.Errorf("whole-recorder verification incomplete: transcript_root seal precedes later unsealed %s entry at seq %d", unsealed.typ, unsealed.seq)
 	}
 	// The receipt chain already verified every signer, including a successor
 	// authorized by a rotation endorsement. A checkpoint must be signed by the
 	// key that was active where it sits, so each one is checked against the
 	// signer of the receipt segment it belongs to rather than the union of
 	// every key that ever signed.
-	anchor, err := verifyCheckpointAnchors(entries, whole.Receipts)
+	anchor, err := s.anchors.finish()
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "  ANCHOR MISMATCH: %v\n", err)
 		return fmt.Errorf("checkpoint anchor verification failed: %w", err)
 	}
+	rootIndex := s.rootIndex
 	// A signed checkpoint authenticates only the entries before it. The seal
 	// is the last thing that matters, so the checkpoint that covers it must
 	// come after it: with at most one entry allowed past the root, that is
@@ -560,14 +733,14 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 		_, _ = fmt.Fprintln(out, "  UNANCHORED: no signed checkpoint covers the transcript_root seal; recorder entries after the last signed checkpoint that are not receipts are hash-linked but not authenticated")
 		return fmt.Errorf("whole-recorder verification unanchored: no signed checkpoint covers the transcript_root seal (checkpoints absent, unsigned, or none after the seal); pass --allow-unanchored-seal to accept hash linkage only for the non-receipt entries after the last anchor")
 	}
-	if err := verifyChainResultDetailed(out, label, whole.Receipts, chain, trustedKeys, opts); err != nil {
+	if err := verifyChainSummaryDetailed(out, label, s.posture, chain, trustedKeys, opts); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d receipts verified\n", chain.ReceiptCount)
-	if len(evidenceReceipts) > 0 {
+	if evidenceCount > 0 {
 		_, _ = fmt.Fprintf(out, "  Evidence:  %d evidence receipts verified\n", evidenceChain.ReceiptCount)
 	}
-	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", root.FinalSeq)
+	_, _ = fmt.Fprintf(out, "  Seal:      sealed at seq %d\n", s.root.FinalSeq)
 	switch {
 	case anchor.lastSignedIndex > rootIndex && len(trustedKeys) == 0:
 		// Unpinned: the signer came from the receipts in this same file, so it
@@ -576,12 +749,28 @@ func verifyWholeRecorderDetailed(out io.Writer, label string, entries []recorder
 	case anchor.lastSignedIndex > rootIndex:
 		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified; every entry through the seal is committed by a trusted key\n", anchor.signed)
 	case anchor.signed > 0:
-		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified, none after the seal (accepted by --allow-unanchored-seal); recorder entries after seq %d that are not action or evidence receipts are hash-linked but not authenticated\n", anchor.signed, entries[anchor.lastSignedIndex].Sequence)
+		_, _ = fmt.Fprintf(out, "  Anchor:    %d signed checkpoints verified, none after the seal (accepted by --allow-unanchored-seal); recorder entries after seq %d that are not action or evidence receipts are hash-linked but not authenticated\n", anchor.signed, s.anchors.lastSignedSeq)
 	default:
 		_, _ = fmt.Fprintln(out, "  Anchor:    no signed checkpoint (accepted by --allow-unanchored-seal); recorder entries other than action and evidence receipts are hash-linked but not authenticated; both receipt chains were signature-verified")
 	}
 	_, _ = fmt.Fprintln(out, "  Limit:     the seal covers the final signing segment; only the recorder's trailing checkpoint may follow it, hash-chain-verified but not sealed")
 	return nil
+}
+
+// firstUnsealedAfterRoot returns the first entry after the last
+// transcript_root that the seal does not account for: the first entry when
+// it is not a checkpoint, otherwise the second.
+func (s *wholeRecorderScan) firstUnsealedAfterRoot() (entryMark, bool) {
+	switch {
+	case s.afterRoot == 0:
+		return entryMark{}, false
+	case s.afterFirst.typ != "checkpoint":
+		return s.afterFirst, true
+	case s.afterRoot > 1:
+		return s.afterSecond, true
+	default:
+		return entryMark{}, false
+	}
 }
 
 // checkpointAnchor summarizes how many checkpoints carried a signature that
@@ -594,190 +783,225 @@ type checkpointAnchor struct {
 	lastSignedIndex int
 }
 
-// verifyCheckpointAnchors checks every checkpoint entry's span and, when it
-// carries a signature, verifies that signature against the key that was
-// active where the checkpoint sits: the signer of the most recent receipt
-// before it, or, for a checkpoint written in the gap between two signing
-// segments, either that key or the signer of the next receipt, since a new
-// writer instance can checkpoint before its first receipt. The receipts are
-// the already-verified chain, so every signer in them is trusted or endorsed,
-// and scoping to the segment means a retired key cannot re-sign checkpoints
-// after its rotation and a successor cannot sign before its activation. A
-// signed checkpoint commits the chain hash of every entry before it, so it
-// is the only authenticated anchor for entries that are not receipts; an
-// unsigned checkpoint proves nothing beyond hash linkage and is not an
-// anchor. A session may legitimately mix the two when sign_checkpoints
-// changed between restarts; that costs nothing, because a stripped earlier
-// signature changes that entry's hash and breaks every later checkpoint's
-// signature, and a stripped trailing signature leaves the seal uncovered.
-// The span must match the checkpoint's position: it ends at the preceding
-// entry, starts after the previous checkpoint, and counts exactly the
-// entries between; it need not start right after the previous checkpoint,
-// because a crash resume starts a new span at the first resumed entry, and
-// the span is metadata the signature does not depend on. A checkpoint whose
-// detail does not parse, whose span disagrees with its position, or whose
-// signature does not verify under its segment's key fails closed. What this
-// cannot catch: on a recorder that never signed, a rewritten trailing entry
-// with a self-consistent span; the output reports that state as unanchored.
-func verifyCheckpointAnchors(entries []recorder.Entry, receipts []receipt.Receipt) (checkpointAnchor, error) {
-	anchor := checkpointAnchor{lastSignedIndex: -1}
-	var prevCheckpoint *recorder.Entry
-	seenReceipts := 0
-	for i := range entries {
-		entry := entries[i]
-		if entry.Type == "action_receipt" {
-			seenReceipts++
-			continue
+// anchorWalker checks every checkpoint entry's span and, when it carries a
+// signature, verifies that signature against the key that was active where
+// the checkpoint sits: the signer of the most recent receipt before it, or,
+// for a checkpoint written in the gap between two signing segments, either
+// that key or the signer of the next receipt, since a new writer instance
+// can checkpoint before its first receipt. Scoping to the segment means a
+// retired key cannot re-sign checkpoints after its rotation and a successor
+// cannot sign before its activation. A signed checkpoint commits the chain
+// hash of every entry before it, so it is the only authenticated anchor for
+// entries that are not receipts; an unsigned checkpoint proves nothing beyond
+// hash linkage and is not an anchor. A session may legitimately mix the two
+// when sign_checkpoints changed between restarts; that costs nothing, because
+// a stripped earlier signature changes that entry's hash and breaks every
+// later checkpoint's signature, and a stripped trailing signature leaves the
+// seal uncovered. The span must match the checkpoint's position: it ends at
+// the preceding entry, starts after the previous checkpoint, and counts
+// exactly the entries between; it need not start right after the previous
+// checkpoint, because a crash resume starts a new span at the first resumed
+// entry, and the span is metadata the signature does not depend on. A
+// checkpoint whose detail does not parse, whose span disagrees with its
+// position, or whose signature does not verify under its segment's key fails
+// closed. What this cannot catch: on a recorder that never signed, a
+// rewritten trailing entry with a self-consistent span; the output reports
+// that state as unanchored.
+//
+// The next receipt's signer is unknown when a checkpoint is read, so only a
+// signature the previous receipt's signer did not make waits, and it is
+// settled at the next receipt. The walker therefore holds just the signed
+// checkpoints of one receipt gap that the earlier signer did not sign, which
+// for an honest recorder is a new writer's checkpoints before its first
+// receipt. The verdict is the failure at the earliest entry, which is the
+// failure the in-order check reported.
+type anchorWalker struct {
+	anchor        checkpointAnchor
+	lastSignedSeq uint64
+
+	err      error
+	errIndex int
+	stopped  bool
+
+	havePrev       bool
+	prevSeq        uint64
+	havePrevCP     bool
+	prevCPSeq      uint64
+	seenReceipts   int
+	lastReceiptKey string
+	// pending holds the signed checkpoints of the current receipt gap that
+	// lastReceiptKey (or no key, before the first receipt) did not verify.
+	pending pendingCheckpoints
+	// maxPending overrides maxPendingCheckpoints when set; tests only.
+	maxPending int
+}
+
+func (a *anchorWalker) fail(index int, err error) {
+	if a.err == nil || index < a.errIndex {
+		a.err, a.errIndex = err, index
+	}
+}
+
+func (a *anchorWalker) signedAt(index int, seq uint64) {
+	a.anchor.signed++
+	if index > a.anchor.lastSignedIndex {
+		a.anchor.lastSignedIndex = index
+		a.lastSignedSeq = seq
+	}
+}
+
+// addReceipt settles the checkpoints waiting for this receipt's signer.
+func (a *anchorWalker) addReceipt(r receipt.Receipt) {
+	// Every waiting checkpoint was tried under lastReceiptKey, or under no
+	// key when no receipt preceded it.
+	tried := a.lastReceiptKey
+	pub, keyErr := decodeSegmentSignerKey(r.SignerKey)
+	a.drainPending(func(p pendingCheckpoint) {
+		// The next receipt is a candidate only when its signer differs from
+		// the one already tried.
+		if tried != "" && r.SignerKey == tried {
+			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
+			return
 		}
-		if entry.Type != "checkpoint" {
-			continue
+		if keyErr != nil {
+			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: %w", p.seq, keyErr))
+			return
 		}
-		detailJSON, err := json.Marshal(entry.Detail)
+		if !ed25519.Verify(pub, []byte(p.prevHash), p.sig) {
+			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
+			return
+		}
+		a.signedAt(p.index, p.seq)
+	})
+	a.seenReceipts++
+	a.lastReceiptKey = r.SignerKey
+}
+
+// drainPending settles every waiting checkpoint through settle. Checkpoints
+// that could not be read back exactly as held fail verification at the first
+// of them, and stop the walk.
+func (a *anchorWalker) drainPending(settle func(pendingCheckpoint)) {
+	first := a.pending.firstSpilled
+	if err := a.pending.drain(settle); err != nil {
+		a.fail(first, fmt.Errorf("checkpoint at entry %d: %w", first, err))
+		a.stopped = true
+	}
+}
+
+// close releases what the walker holds outside memory.
+func (a *anchorWalker) close() { a.pending.close() }
+
+// addEntry checks entry i when it is a checkpoint. Call it after addReceipt
+// for the same entry.
+func (a *anchorWalker) addEntry(i int, e recorder.Entry) {
+	defer func() {
+		a.havePrev = true
+		a.prevSeq = e.Sequence
+	}()
+	// The first failure ended the in-order check, so later checkpoints cannot
+	// change the verdict. Waiting checkpoints before it still can.
+	if e.Type != "checkpoint" || a.stopped {
+		return
+	}
+	stop := func(err error) {
+		a.fail(i, err)
+		a.stopped = true
+	}
+	detailJSON, err := json.Marshal(e.Detail)
+	if err != nil {
+		stop(fmt.Errorf("checkpoint at seq %d: encoding detail: %w", e.Sequence, err))
+		return
+	}
+	var detail recorder.CheckpointDetail
+	if err := json.Unmarshal(detailJSON, &detail); err != nil {
+		stop(fmt.Errorf("checkpoint at seq %d: malformed detail: %w", e.Sequence, err))
+		return
+	}
+	if !a.havePrev || detail.LastSeq != a.prevSeq {
+		var preceding uint64
+		if a.havePrev {
+			preceding = a.prevSeq
+		}
+		stop(fmt.Errorf("checkpoint at seq %d: span ends at seq %d but the preceding entry is seq %d", e.Sequence, detail.LastSeq, preceding))
+		return
+	}
+	// EntryCount-1 == LastSeq-FirstSeq avoids the +1 that would wrap at the
+	// top of the sequence space; FirstSeq <= LastSeq is checked first so
+	// the subtraction cannot wrap either.
+	if detail.FirstSeq > detail.LastSeq || detail.EntryCount == 0 || detail.EntryCount-1 != detail.LastSeq-detail.FirstSeq {
+		stop(fmt.Errorf("checkpoint at seq %d: span %d-%d does not hold %d entries", e.Sequence, detail.FirstSeq, detail.LastSeq, detail.EntryCount))
+		return
+	}
+	if a.havePrevCP && detail.FirstSeq <= a.prevCPSeq {
+		stop(fmt.Errorf("checkpoint at seq %d: span starts at seq %d, inside the previous checkpoint at seq %d", e.Sequence, detail.FirstSeq, a.prevCPSeq))
+		return
+	}
+	a.havePrevCP = true
+	a.prevCPSeq = e.Sequence
+	if detail.Signature == "" {
+		a.anchor.unsigned++
+		return
+	}
+	var prevPub ed25519.PublicKey
+	if a.seenReceipts > 0 {
+		prevPub, err = decodeSegmentSignerKey(a.lastReceiptKey)
 		if err != nil {
-			return anchor, fmt.Errorf("checkpoint at seq %d: encoding detail: %w", entry.Sequence, err)
+			stop(fmt.Errorf("checkpoint at seq %d: %w", e.Sequence, err))
+			return
 		}
-		var detail recorder.CheckpointDetail
-		if err := json.Unmarshal(detailJSON, &detail); err != nil {
-			return anchor, fmt.Errorf("checkpoint at seq %d: malformed detail: %w", entry.Sequence, err)
-		}
-		if i == 0 || detail.LastSeq != entries[i-1].Sequence {
-			return anchor, fmt.Errorf("checkpoint at seq %d: span ends at seq %d but the preceding entry is seq %d", entry.Sequence, detail.LastSeq, precedingSequence(entries, i))
-		}
-		// EntryCount-1 == LastSeq-FirstSeq avoids the +1 that would wrap at the
-		// top of the sequence space; FirstSeq <= LastSeq is checked first so
-		// the subtraction cannot wrap either.
-		if detail.FirstSeq > detail.LastSeq || detail.EntryCount == 0 || detail.EntryCount-1 != detail.LastSeq-detail.FirstSeq {
-			return anchor, fmt.Errorf("checkpoint at seq %d: span %d-%d does not hold %d entries", entry.Sequence, detail.FirstSeq, detail.LastSeq, detail.EntryCount)
-		}
-		if prevCheckpoint != nil && detail.FirstSeq <= prevCheckpoint.Sequence {
-			return anchor, fmt.Errorf("checkpoint at seq %d: span starts at seq %d, inside the previous checkpoint at seq %d", entry.Sequence, detail.FirstSeq, prevCheckpoint.Sequence)
-		}
-		prevCheckpoint = &entries[i]
-		if detail.Signature == "" {
-			anchor.unsigned++
-			continue
-		}
-		pubs, err := segmentSignerKeys(receipts, seenReceipts)
-		if err != nil {
-			return anchor, fmt.Errorf("checkpoint at seq %d: %w", entry.Sequence, err)
-		}
-		sig, err := hex.DecodeString(detail.Signature)
-		if err != nil {
-			return anchor, fmt.Errorf("checkpoint at seq %d: decoding signature: %w", entry.Sequence, err)
-		}
-		verified := false
-		for _, pub := range pubs {
-			if ed25519.Verify(pub, []byte(entry.PrevHash), sig) {
-				verified = true
-				break
-			}
-		}
-		if !verified {
-			return anchor, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", entry.Sequence)
-		}
-		anchor.signed++
-		anchor.lastSignedIndex = i
 	}
-	return anchor, nil
+	sig, err := hex.DecodeString(detail.Signature)
+	if err != nil {
+		stop(fmt.Errorf("checkpoint at seq %d: decoding signature: %w", e.Sequence, err))
+		return
+	}
+	if prevPub != nil && ed25519.Verify(prevPub, []byte(e.PrevHash), sig) {
+		a.signedAt(i, e.Sequence)
+		return
+	}
+	limit := a.maxPending
+	if limit <= 0 {
+		limit = maxPendingCheckpoints
+	}
+	if a.pending.len() >= limit {
+		// Unreachable by an honest recorder (see maxPendingCheckpoints).
+		// Refuse rather than skip: the verdict is a failure, never a pass.
+		stop(fmt.Errorf("checkpoint at seq %d: %w", e.Sequence, errTooManyPendingCheckpoints))
+		return
+	}
+	if err := a.pending.add(pendingCheckpoint{index: i, seq: e.Sequence, prevHash: e.PrevHash, sig: sig}); err != nil {
+		stop(fmt.Errorf("checkpoint at seq %d: holding it for the next receipt's signer: %w", e.Sequence, err))
+	}
 }
 
-func precedingSequence(entries []recorder.Entry, i int) uint64 {
-	if i == 0 {
-		return 0
-	}
-	return entries[i-1].Sequence
+// finish settles the checkpoints still waiting: with no receipt after them
+// the only candidate signer already failed, and with no receipt at all there
+// is no signer to name. It releases the spill file.
+func (a *anchorWalker) finish() (checkpointAnchor, error) {
+	defer a.close()
+	a.drainPending(func(p pendingCheckpoint) {
+		if a.seenReceipts == 0 {
+			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: %w", p.seq, errNoSegmentSigner))
+			return
+		}
+		a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
+	})
+	return a.anchor, a.err
 }
 
-// segmentSignerKeys returns the public keys that may sign a checkpoint with
-// seenReceipts receipts before it: the signer of the last of those (or of
-// the first receipt when none precede it), plus the signer of the next
-// receipt when it differs, because a checkpoint in the gap between two
-// signing segments can legitimately come from either writer instance.
-func segmentSignerKeys(receipts []receipt.Receipt, seenReceipts int) ([]ed25519.PublicKey, error) {
-	if len(receipts) == 0 {
-		return nil, fmt.Errorf("signed checkpoint present but the recorder holds no receipts to name its signer")
-	}
-	prev := seenReceipts - 1
-	if prev < 0 {
-		prev = 0
-	}
-	if prev >= len(receipts) {
-		prev = len(receipts) - 1
-	}
-	hexKeys := []string{receipts[prev].SignerKey}
-	if next := seenReceipts; next < len(receipts) && next != prev && receipts[next].SignerKey != receipts[prev].SignerKey {
-		hexKeys = append(hexKeys, receipts[next].SignerKey)
-	}
-	pubs := make([]ed25519.PublicKey, 0, len(hexKeys))
-	for _, key := range hexKeys {
-		raw, err := hex.DecodeString(key)
-		if err != nil {
-			return nil, fmt.Errorf("decode segment signer key: %w", err)
-		}
-		if len(raw) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("segment signer key length=%d want %d", len(raw), ed25519.PublicKeySize)
-		}
-		pubs = append(pubs, ed25519.PublicKey(raw))
-	}
-	return pubs, nil
-}
+var errNoSegmentSigner = errors.New("signed checkpoint present but the recorder holds no receipts to name its signer")
 
-func transcriptRootFromEntries(entries []recorder.Entry) (receipt.TranscriptRoot, int, string, bool, error) {
-	var root receipt.TranscriptRoot
-	rootIndex := -1
-	var rootSessionID string
-	found := false
-	for index, entry := range entries {
-		if entry.Type != "transcript_root" {
-			continue
-		}
-		data := entry.RawDetail
-		if len(data) == 0 {
-			var err error
-			data, err = json.Marshal(entry.Detail)
-			if err != nil {
-				return receipt.TranscriptRoot{}, -1, "", false, fmt.Errorf("marshal transcript_root detail: %w", err)
-			}
-		}
-		if err := json.Unmarshal(data, &root); err != nil {
-			return receipt.TranscriptRoot{}, -1, "", false, fmt.Errorf("parse transcript_root detail: %w", err)
-		}
-		rootIndex = index
-		rootSessionID = entry.SessionID
-		found = true
+// decodeSegmentSignerKey decodes a receipt signer key for checkpoint
+// verification.
+func decodeSegmentSignerKey(key string) (ed25519.PublicKey, error) {
+	raw, err := hex.DecodeString(key)
+	if err != nil {
+		return nil, fmt.Errorf("decode segment signer key: %w", err)
 	}
-	return root, rootIndex, rootSessionID, found, nil
-}
-
-func receiptEntriesBefore(entries []recorder.Entry, index int) int {
-	count := 0
-	for _, entry := range entries[:index] {
-		if entry.Type == "action_receipt" {
-			count++
-		}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("segment signer key length=%d want %d", len(raw), ed25519.PublicKeySize)
 	}
-	return count
-}
-
-// firstUnsealedEntryAfter returns the first entry after the transcript_root
-// seal that the seal does not account for. The recorder writes exactly one
-// checkpoint after the root on clean shutdown (either the threshold
-// checkpoint the root itself triggers or the final one Close writes, never
-// both), so a sealed recorder may carry at most one entry past the seal and
-// it must be a checkpoint. Anything else there is evidence the seal never
-// committed to, and the file is incomplete.
-func firstUnsealedEntryAfter(entries []recorder.Entry, index int) (recorder.Entry, bool) {
-	tail := entries[index+1:]
-	if len(tail) == 0 {
-		return recorder.Entry{}, false
-	}
-	if tail[0].Type != "checkpoint" {
-		return tail[0], true
-	}
-	if len(tail) > 1 {
-		return tail[1], true
-	}
-	return recorder.Entry{}, false
+	return ed25519.PublicKey(raw), nil
 }
 
 func transcriptRootMatchesChainSegment(root receipt.TranscriptRoot, sessionID string, chain receipt.ChainResult) bool {
@@ -1044,6 +1268,11 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		_, _ = fmt.Fprintln(out)
 	}
 	printRestartContinuity(out, report)
+	if report.EvidenceChangedDuringVerification() {
+		// Any chain failure above may be the change itself, so the change
+		// is the verdict.
+		return recorderChangedError(location.Dir)
+	}
 	if len(failed) > 0 {
 		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s (first: %w)", len(failed), len(targets), strings.Join(failed, ", "), firstErr)
 	}
@@ -1052,6 +1281,15 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		return fmt.Errorf("restart continuity: %d link finding(s), first %s on %s: %s", len(report.Findings), f.Kind, f.Session, f.Detail)
 	}
 	return nil
+}
+
+// recorderChangedError is the verdict when the recorder directory changed
+// while it was verified. It is not a continuity finding: the verifier cannot
+// say what the evidence holds, only that it did not hold still.
+func recorderChangedError(dir string) error {
+	return fmt.Errorf("the recorder in %s changed while it was being verified, so no verdict on its evidence was reached; "+
+		"stop the process writing to it and verify again, or verify an atomic snapshot of the recorder directory; "+
+		"for a check of a live recorder, run `pipelock evidence doctor %s`", dir, dir)
 }
 
 // chainScopedTrust narrows the operator's endorsements and keys to one chain.
@@ -1076,6 +1314,9 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 		label = "RESTART CONTINUITY FAILED"
 	}
 	unlinked := report.Unlinked()
+	if report.EvidenceChangedDuringVerification() {
+		_, _ = fmt.Fprintln(out, "RECORDER CHANGED DURING VERIFICATION: shards or link files were added, removed, replaced, resized, or rewritten while they were read; the findings below describe the change, not the evidence")
+	}
 	_, _ = fmt.Fprintf(out, "%s: base %q: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
 		label, report.Base, len(report.Chains), report.LinkCount(), len(unlinked), len(report.Findings))
 	for _, c := range report.Chains {
@@ -1154,6 +1395,10 @@ func verifyTypedChainDetailed(out io.Writer, label string, receipts []receipt.Re
 // verifyEvidenceChainDetailed verifies and prints an EvidenceReceipt v2 chain.
 func verifyEvidenceChainDetailed(out io.Writer, label string, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, opts verifyReceiptOptions) error {
 	res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{})
+	return verifyEvidenceChainResultDetailed(out, label, res, trustedKeys, opts)
+}
+
+func verifyEvidenceChainResultDetailed(out io.Writer, label string, res contractreceipt.ChainResult, trustedKeys []string, opts verifyReceiptOptions) error {
 	if !res.Valid {
 		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN BROKEN: %s\n", label)
 		_, _ = fmt.Fprintf(out, "  Error:    %s\n", res.Error)
@@ -1198,6 +1443,10 @@ func verifyChainDetailed(out io.Writer, label string, receipts []receipt.Receipt
 }
 
 func verifyChainResultDetailed(out io.Writer, label string, receipts []receipt.Receipt, result receipt.ChainResult, trustedKeys []string, opts verifyReceiptOptions) error {
+	return verifyChainSummaryDetailed(out, label, summarizeReceiptsForPosture(receipts), result, trustedKeys, opts)
+}
+
+func verifyChainSummaryDetailed(out io.Writer, label string, posture receiptPostureSummary, result receipt.ChainResult, trustedKeys []string, opts verifyReceiptOptions) error {
 	if !result.Valid {
 		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", label)
 		_, _ = fmt.Fprintf(out, "  Error:    %s\n", result.Error)
@@ -1231,7 +1480,7 @@ func verifyChainResultDetailed(out io.Writer, label string, receipts []receipt.R
 		}
 	}
 	printReceiptLimits(out)
-	if err := printContainmentForReceipts(out, receipts, opts.Posture); err != nil {
+	if err := printContainmentForSummary(out, posture, opts.Posture); err != nil {
 		return err
 	}
 	if unpinned {
@@ -1548,7 +1797,11 @@ func printReceiptLimits(out io.Writer) {
 }
 
 func printContainmentForReceipts(out io.Writer, receipts []receipt.Receipt, opts receiptPostureOptions) error {
-	assessment, err := containmentAssessmentForReceipts(receipts, opts)
+	return printContainmentForSummary(out, summarizeReceiptsForPosture(receipts), opts)
+}
+
+func printContainmentForSummary(out io.Writer, summary receiptPostureSummary, opts receiptPostureOptions) error {
+	assessment, err := containmentAssessmentForSummary(summary, opts)
 	if err != nil {
 		return err
 	}
@@ -1559,7 +1812,49 @@ func printContainmentForReceipts(out io.Writer, receipts []receipt.Receipt, opts
 	return nil
 }
 
-func containmentAssessmentForReceipts(receipts []receipt.Receipt, opts receiptPostureOptions) (evidence.ContainmentAssessment, error) {
+// receiptPostureSummary is what a containment assessment reads from a
+// receipt chain: its time window and the first session_open's posture
+// binding. It can be built one receipt at a time.
+type receiptPostureSummary struct {
+	count      int
+	from, to   time.Time
+	binding    receiptPostureBindingInfo
+	hasBinding bool
+}
+
+func (s *receiptPostureSummary) add(r receipt.Receipt) {
+	ts := r.ActionRecord.Timestamp
+	if s.count == 0 {
+		s.from, s.to = ts, ts
+	} else {
+		if ts.Before(s.from) {
+			s.from = ts
+		}
+		if ts.After(s.to) {
+			s.to = ts
+		}
+	}
+	s.count++
+	if !s.hasBinding && r.ActionRecord.SessionControl != nil && r.ActionRecord.SessionControl.Open != nil {
+		open := r.ActionRecord.SessionControl.Open
+		s.binding = receiptPostureBindingInfo{
+			containedUID:         open.ContainedUID,
+			postureCapsuleSHA256: open.PostureCapsuleSHA256,
+			postureSignerKeyID:   open.PostureSignerKeyID,
+		}
+		s.hasBinding = true
+	}
+}
+
+func summarizeReceiptsForPosture(receipts []receipt.Receipt) receiptPostureSummary {
+	var s receiptPostureSummary
+	for i := range receipts {
+		s.add(receipts[i])
+	}
+	return s
+}
+
+func containmentAssessmentForSummary(summary receiptPostureSummary, opts receiptPostureOptions) (evidence.ContainmentAssessment, error) {
 	if opts.Path == "" {
 		return evidence.AssessContainment(evidence.ContainmentAssessmentOptions{}), nil
 	}
@@ -1578,8 +1873,8 @@ func containmentAssessmentForReceipts(receipts []receipt.Receipt, opts receiptPo
 	if err != nil {
 		return evidence.ContainmentAssessment{}, fmt.Errorf("decode posture key: %w", err)
 	}
-	from, to := receiptWindow(receipts)
-	binding := receiptPostureBinding(receipts)
+	from, to := summary.from, summary.to
+	binding := summary.binding
 	capsuleHash, err := postureCapsuleSHA256(&capsule)
 	if err != nil {
 		return evidence.ContainmentAssessment{}, fmt.Errorf("hash posture capsule: %w", err)
@@ -1596,42 +1891,17 @@ func containmentAssessmentForReceipts(receipts []receipt.Receipt, opts receiptPo
 	}), nil
 }
 
+// receiptWindow returns the earliest and latest receipt timestamps, or zero
+// bounds for no receipts.
 func receiptWindow(receipts []receipt.Receipt) (time.Time, time.Time) {
-	if len(receipts) == 0 {
-		return time.Time{}, time.Time{}
-	}
-	start := receipts[0].ActionRecord.Timestamp
-	end := receipts[0].ActionRecord.Timestamp
-	for _, r := range receipts[1:] {
-		ts := r.ActionRecord.Timestamp
-		if ts.Before(start) {
-			start = ts
-		}
-		if ts.After(end) {
-			end = ts
-		}
-	}
-	return start, end
+	s := summarizeReceiptsForPosture(receipts)
+	return s.from, s.to
 }
 
 type receiptPostureBindingInfo struct {
 	containedUID         string
 	postureCapsuleSHA256 string
 	postureSignerKeyID   string
-}
-
-func receiptPostureBinding(receipts []receipt.Receipt) receiptPostureBindingInfo {
-	for _, r := range receipts {
-		if r.ActionRecord.SessionControl != nil && r.ActionRecord.SessionControl.Open != nil {
-			open := r.ActionRecord.SessionControl.Open
-			return receiptPostureBindingInfo{
-				containedUID:         open.ContainedUID,
-				postureCapsuleSHA256: open.PostureCapsuleSHA256,
-				postureSignerKeyID:   open.PostureSignerKeyID,
-			}
-		}
-	}
-	return receiptPostureBindingInfo{}
 }
 
 func postureCapsuleSHA256(capsule *posture.Capsule) (string, error) {

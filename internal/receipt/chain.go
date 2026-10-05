@@ -410,6 +410,9 @@ type chainVerifier struct {
 	segmentStart uint64
 
 	integrityOnly bool
+	// trustChainKeys trusts exactly the set VerifyChainTrusted builds from
+	// every signer key in the chain, without first collecting that set.
+	trustChainKeys bool
 }
 
 // StreamingVerifier verifies a v1 receipt chain one receipt at a time.  It is
@@ -574,7 +577,7 @@ func (v *chainVerifier) startFirstSegment(r Receipt) (ChainResult, bool) {
 	// Trust-on-first-use: when no trusted set was supplied, adopt the first
 	// receipt's signer_key as the sole trusted key. Otherwise the first
 	// segment's key must already be in the trusted set.
-	if len(v.trusted) == 0 {
+	if len(v.trusted) == 0 && !v.trustChainKeys {
 		v.trusted = map[string]struct{}{r.SignerKey: {}}
 	}
 	if !v.keyTrusted(r.SignerKey) {
@@ -656,6 +659,14 @@ func (v *chainVerifier) startRotatedSegment(r Receipt, marker *KeyTransition) (C
 }
 
 func (v *chainVerifier) keyTrusted(key string) bool {
+	if v.trustChainKeys {
+		// The trusted set is every signer key the chain itself names, after
+		// normalizeTrustedKeys trims each one. A key trims to itself or is
+		// absent from that trimmed set, so membership needs no lookahead.
+		// An empty key fails normalization for the whole chain instead; the
+		// caller reports that.
+		return key == strings.TrimSpace(key)
+	}
 	_, ok := v.trusted[key]
 	return ok
 }

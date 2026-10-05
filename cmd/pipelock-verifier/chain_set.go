@@ -50,6 +50,10 @@ type chainSetFinding struct {
 	Kind    string `json:"kind"`
 	Session string `json:"session"`
 	Detail  string `json:"detail"`
+	// EvidenceChanged marks a finding the verifier raised because the
+	// recorder changed while it was being verified, so no verdict on the
+	// evidence was reached.
+	EvidenceChanged bool `json:"evidence_changed,omitempty"`
 }
 
 // runChainSetIfRuns verifies the whole base when the directory holds per-run
@@ -123,7 +127,7 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 		})
 	}
 	for _, f := range baseReport.Findings {
-		report.Continuity.Findings = append(report.Continuity.Findings, chainSetFinding(f))
+		report.Continuity.Findings = append(report.Continuity.Findings, chainSetFinding{Kind: f.Kind, Session: f.Session, Detail: f.Detail, EvidenceChanged: f.EvidenceChanged})
 	}
 	if opts.sessionExplicit {
 		return true, runNamedChainInBase(stdout, stderr, location, report, baseReport, trust, opts)
@@ -185,6 +189,11 @@ func chainSetFailureReason(r chainSetReport) string {
 	for _, c := range r.Chains {
 		if !c.Valid {
 			failed = append(failed, c.Session)
+		}
+	}
+	for _, f := range r.Continuity.Findings {
+		if f.EvidenceChanged {
+			return "receipt chain set not verified: the recorder changed while it was being verified, so no verdict on its evidence was reached; stop the writer and verify again, or verify an atomic snapshot of the recorder directory"
 		}
 	}
 	parts := []string{"receipt chain set rejected"}
@@ -262,6 +271,10 @@ func emitContinuity(stdout io.Writer, r chainSetReport) {
 		_, _ = fmt.Fprintf(stdout, "  unlinked: %s\n", s)
 	}
 	for _, f := range r.Continuity.Findings {
+		if f.EvidenceChanged {
+			_, _ = fmt.Fprintf(stdout, "  - RECORDER CHANGED DURING VERIFICATION: %s: %s\n", f.Session, f.Detail)
+			continue
+		}
 		_, _ = fmt.Fprintf(stdout, "  - %s: %s: %s\n", f.Kind, f.Session, f.Detail)
 	}
 	_, _ = fmt.Fprintln(stdout, "  Note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,")

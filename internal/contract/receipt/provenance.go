@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"strings"
 	"unicode/utf8"
 
@@ -263,7 +264,9 @@ func commitment(key []byte, domain string, parts ...[]byte) string {
 // so there is exactly ONE implementation of `u64be(byte_length) || bytes`.
 // Two copies would let a change to one silently diverge commitments from the
 // specification while the other copy still matched it.
-func writePart(mac interface{ Write([]byte) (int, error) }, value []byte) {
+// mac is a hash.Hash rather than any writer so the commitment input can only
+// flow into a digest, never into an HTTP response or other output stream.
+func writePart(mac hash.Hash, value []byte) {
 	_, _ = mac.Write(appendFrame(nil, value))
 }
 

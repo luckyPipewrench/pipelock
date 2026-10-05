@@ -692,7 +692,7 @@ func canonicalizeJSON(raw json.RawMessage) []byte {
 
 // writeBool writes a capability boolean to the hash. nil = 0, false = 1, true = 2.
 // Distinguishes nil (unset) from false (explicitly disabled).
-func writeBool(h interface{ Write([]byte) (int, error) }, v *bool) {
+func writeBool(h hash.Hash, v *bool) {
 	if v == nil {
 		_, _ = h.Write([]byte{0})
 	} else if *v {

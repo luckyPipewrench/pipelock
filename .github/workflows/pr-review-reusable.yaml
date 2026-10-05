@@ -277,8 +277,8 @@ jobs:
             esac
           done <<< "${body}"
           case "${REVIEW_MODE}" in
-            default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`high` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`high` reasoning\)\.$' ;;
-            deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`xhigh` reasoning\)\.$' ;;
+            default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\)\.$' ;;
+            deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\)\.$' ;;
             *) profile_pattern='a^' ;;
           esac
           if [[ ! "${profile}" =~ ${profile_pattern} ]]; then
@@ -286,5 +286,18 @@ jobs:
           fi
           printf '## AI PR Review\n\n**Verdict:** `failed`\n%s\n**Findings:** unavailable because the review job did not publish a final result.\n\n<details>\n<summary>Review details: binding and identity</summary>\n\n**Binding:** base `%s` head `%s`\n**Review identity:** `%s`\n\n</details>\n\n<!-- pr-review-status:v1 state=failed identity=%s mode=%s findings= reviewed_head=%s scope=full coverage_base=%s -->\n' \
             "${profile}" "${BASE_SHA}" "${HEAD_SHA}" "${IDENTITY}" "${IDENTITY}" "${REVIEW_MODE}" "${HEAD_SHA}" "${BASE_SHA}" > /tmp/pr-review-finalize.md
-          gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null
+          if ! gh api --method PATCH "repos/${REPO}/issues/comments/${COMMENT_ID}" -F body=@/tmp/pr-review-finalize.md >/dev/null; then
+            # The edit can land with its reply lost. Read the comment back once:
+            # if it now carries this run's failed marker, the verdict is published.
+            sleep 5
+            if after="$(gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" --jq '.body')"; then
+              case "${after}" in
+                *"<!-- pr-review-status:v1 state=failed identity=${IDENTITY} "*)
+                  echo "pr-review phase=finalize status=closed-after-lost-reply"
+                  exit 0 ;;
+              esac
+            fi
+            echo "::error title=pr-review finalize::could not close the status comment, so it may still read running. Reruns stay blocked until the claim is 105 minutes old (the stale-claim timeout) or the comment is deleted."
+            exit 1
+          fi
           echo "pr-review phase=finalize status=closed"

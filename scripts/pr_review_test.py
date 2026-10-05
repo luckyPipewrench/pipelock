@@ -1822,16 +1822,21 @@ class FinalizerIndependenceTest(OfflineReviewTestCase):
                 """#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" --method PATCH "* ]]; then
-  for arg in "$@"; do
-    case "$arg" in
-      body=@*) cp "${arg#body=@}" "$FAKE_CAPTURE" ;;
-    esac
-  done
+  # FAKE_PATCH: ok (default), lost (edit lands, reply lost), fail (edit never lands).
+  if [ "${FAKE_PATCH:-ok}" != fail ]; then
+    for arg in "$@"; do
+      case "$arg" in
+        body=@*) cp "${arg#body=@}" "$FAKE_CAPTURE" ;;
+      esac
+    done
+  fi
+  [ "${FAKE_PATCH:-ok}" = ok ] || exit 1
   exit 0
 fi
 echo x >> "$FAKE_GETS"
 if [ "$(wc -l < "$FAKE_GETS")" -le "${FAKE_GET_FAILURES:-0}" ]; then exit 1; fi
-printf '%s' "$FAKE_BODY"
+# After an edit has landed, a read returns the edited comment.
+if [ -f "$FAKE_CAPTURE" ]; then cat "$FAKE_CAPTURE"; else printf '%s' "$FAKE_BODY"; fi
 """,
                 encoding="utf-8",
             )
@@ -1882,6 +1887,33 @@ printf '%s' "$FAKE_BODY"
                 self.assertEqual((gets, sleeps, posted), (3, ["5", "5"], ""), "three paced reads, and no edit")
                 if result != "success":
                     self.assertIn(f"the claim is {pr_review.STALE_RUNNING_MINUTES} minutes old", run.stdout)
+
+    def test_a_lost_edit_reply_is_confirmed_by_reading_the_comment_back(self) -> None:
+        # The edit landed but its reply was lost: the read-back finds this run's
+        # failed marker, so the published verdict stays green.
+        run, posted, gets, sleeps = self._finalize("body", "default", FAKE_PATCH="lost", REVIEW_RESULT="cancelled")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("status=closed-after-lost-reply", run.stdout)
+        self.assertNotIn("::error", run.stdout)
+        self.assertEqual((gets, sleeps), (2, ["5"]))
+        self.assertEqual(pr_review.parse_status_marker(posted)["state"], "failed")
+
+    def test_an_edit_that_never_landed_stays_red(self) -> None:
+        # Nothing was published and the comment still reads running, which
+        # blocks reruns, so this is the one case that must fail the job.
+        run, posted, gets, _ = self._finalize("body", "default", FAKE_PATCH="fail", REVIEW_RESULT="cancelled")
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("::error title=pr-review finalize::could not close the status comment", run.stdout)
+        self.assertNotIn("status=closed", run.stdout)
+        self.assertEqual((posted, gets), ("", 2))
+
+    def test_finalizer_keeps_the_profile_the_runner_actually_generates(self) -> None:
+        # The grammar must accept the real profile line for every mode, or a
+        # finalized comment loses the model and effort the review ran with.
+        for mode in ("default", "deep"):
+            with self.subTest(mode=mode):
+                profile = f"**Review profile:** {pr_review.review_profile(mode)}"
+                self.assertIn(profile, self._run_finalizer(profile, mode))
 
     def test_a_transient_read_failure_is_retried_and_the_claim_closed(self) -> None:
         run, posted, gets, sleeps = self._finalize("body", "default", FAKE_GET_FAILURES="1", REVIEW_RESULT="cancelled")

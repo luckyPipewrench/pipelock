@@ -592,7 +592,7 @@ func TestVerifyBaseSecondReadMustSeeTheFirstReadsEntries(t *testing.T) {
 				t.Fatalf("cut prefix does not verify on its own: %s", res.Error)
 			}
 		}
-		verifyBaseChain(&evidenceReread{dir: dir}, ix, d, keys[:1], nil, false, add)
+		verifyBaseChain(&evidenceReread{dir: dir}, ix, d, keys[:1], nil, false, add, add)
 		changed := len(findings) > 0 && strings.Contains(findings[0].Detail, "evidence changed between verification reads")
 		if edit && (!changed || d.chain.Valid) {
 			t.Fatalf("edited between reads: valid=%v findings=%+v", d.chain.Valid, findings)

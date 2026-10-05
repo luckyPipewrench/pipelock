@@ -123,7 +123,7 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 		})
 	}
 	for _, f := range baseReport.Findings {
-		report.Continuity.Findings = append(report.Continuity.Findings, chainSetFinding(f))
+		report.Continuity.Findings = append(report.Continuity.Findings, chainSetFinding{Kind: f.Kind, Session: f.Session, Detail: f.Detail})
 	}
 	if opts.sessionExplicit {
 		return true, runNamedChainInBase(stdout, stderr, location, report, baseReport, trust, opts)

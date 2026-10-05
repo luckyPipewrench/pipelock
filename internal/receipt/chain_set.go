@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -86,6 +85,9 @@ type BaseFinding struct {
 	Kind    string
 	Session string
 	Detail  string
+	// EvidenceChanged is set only by the verifier itself when the evidence
+	// changed while it was being verified, never derived from Detail text.
+	EvidenceChanged bool `json:"-"`
 }
 
 // BaseReport is the verification result for every chain of one base.
@@ -105,9 +107,8 @@ func (r BaseReport) Healthy() bool { return len(r.Findings) == 0 }
 // nothing about the evidence itself: the verifier cannot tell what it would
 // have found had the recorder held still.
 func (r BaseReport) EvidenceChangedDuringVerification() bool {
-	prefix := errEvidenceChangedDuring.Error() + ":"
 	for _, f := range r.Findings {
-		if f.Kind == FindingCorruptChain && strings.HasPrefix(f.Detail, prefix) {
+		if f.EvidenceChanged {
 			return true
 		}
 	}
@@ -442,6 +443,9 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	add := func(kind, session, detail string) {
 		report.Findings = append(report.Findings, BaseFinding{Kind: kind, Session: session, Detail: detail})
 	}
+	addChanged := func(kind, session, detail string) {
+		report.Findings = append(report.Findings, BaseFinding{Kind: kind, Session: session, Detail: detail, EvidenceChanged: true})
+	}
 
 	scoped := make([]chainLinkRecord, 0, len(links))
 	need := make(map[string]bool)
@@ -568,7 +572,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 					own = append(own, e)
 				}
 			}
-			verifyBaseChain(reread, ix, data[s], opts.TrustedKeys, own, endorsed[s], add)
+			verifyBaseChain(reread, ix, data[s], opts.TrustedKeys, own, endorsed[s], add, addChanged)
 		}
 		resolved := make(map[string]bool)
 		pending := sessions
@@ -624,7 +628,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	// live recorders whose active shard grows; it makes no full-verification
 	// claim, so it does not refuse a directory that changed while it read.
 	if !opts.LinksOnly {
-		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, add); err != nil {
+		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, addChanged); err != nil {
 			return report, err
 		}
 	}
@@ -1104,7 +1108,7 @@ func reverifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainDat
 // verifyBaseChain runs full signature and key-trust verification on one
 // chain: its ActionReceipt v1 chain and its EvidenceReceipt v2 chain, each
 // when present. The chain is valid only when every chain present verifies.
-func verifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
+func verifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add, addChanged func(kind, session, detail string)) {
 	if d.chain.Error != "" || (d.receiptCount == 0 && d.evidenceCount == 0) {
 		return
 	}
@@ -1115,7 +1119,11 @@ func verifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainData,
 		if err := reverifyBaseChain(reread, ix, d, trusted, own); err != nil {
 			d.chain.Valid = false
 			d.chain.Error = err.Error()
-			add(FindingCorruptChain, d.chain.Session, d.chain.Error)
+			report := add
+			if errors.Is(err, errEvidenceChanged) {
+				report = addChanged
+			}
+			report(FindingCorruptChain, d.chain.Session, d.chain.Error)
 			return
 		}
 	}

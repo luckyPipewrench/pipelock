@@ -670,3 +670,18 @@ func TestVerifyBaseLinksOnlyIgnoresLinkFileChange(t *testing.T) {
 		t.Fatalf("links-only mode refused a link file change: %+v", report.Findings)
 	}
 }
+
+func TestEvidenceChangedDuringVerificationUsesTypedMarker(t *testing.T) {
+	t.Parallel()
+	spoofed := BaseReport{Findings: []BaseFinding{{
+		Kind:   FindingCorruptChain,
+		Detail: errEvidenceChangedDuring.Error() + ": " + errEvidenceChanged.Error() + ": text from evidence",
+	}}}
+	if spoofed.EvidenceChangedDuringVerification() {
+		t.Fatal("finding text alone was classified as evidence changed")
+	}
+	marked := BaseReport{Findings: []BaseFinding{{Kind: FindingCorruptChain, Detail: "x", EvidenceChanged: true}}}
+	if !marked.EvidenceChangedDuringVerification() {
+		t.Fatal("typed marker was not recognized")
+	}
+}

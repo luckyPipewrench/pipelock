@@ -357,9 +357,10 @@ func TestRecorderChangedDuringVerificationMessage(t *testing.T) {
 	}
 
 	changed := receipt.BaseReport{Base: "proxy", Findings: []receipt.BaseFinding{{
-		Kind:    receipt.FindingCorruptChain,
-		Session: "proxy.run.f7b327337534352a514bd0a256b1d1c0",
-		Detail:  "evidence changed during verification: link file bytes changed",
+		Kind:            receipt.FindingCorruptChain,
+		Session:         "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+		Detail:          "evidence changed during verification: link file bytes changed",
+		EvidenceChanged: true,
 	}}}
 	var out bytes.Buffer
 	printRestartContinuity(&out, changed)

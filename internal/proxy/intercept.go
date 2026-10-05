@@ -2426,6 +2426,7 @@ func newInterceptHandler(
 				setShieldRewriteHeader(resp.Header, shieldSummary)
 				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
 				resp.Header.Del("ETag")
+				resp.Header.Del("Last-Modified")
 				resp.Header.Del("Digest")
 				resp.Header.Del("Content-MD5")
 			}
@@ -2471,6 +2472,7 @@ func newInterceptHandler(
 			// bytes - stale after metadata stripping, and a client or
 			// intermediary that validates it will reject the response.
 			resp.Header.Del("ETag")
+			resp.Header.Del("Last-Modified")
 			resp.Header.Del("Digest")
 			resp.Header.Del("Content-MD5")
 		}
@@ -2711,6 +2713,10 @@ func newInterceptHandler(
 					// Update Content-Length to match stripped body; prevents HTTP/1.1
 					// framing errors from a stale upstream Content-Length header.
 					resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+					resp.Header.Del("ETag")
+					resp.Header.Del("Last-Modified")
+					resp.Header.Del("Digest")
+					resp.Header.Del("Content-MD5")
 					ic.Logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					// warn/forward: log and forward unmodified.

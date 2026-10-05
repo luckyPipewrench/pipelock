@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func isRoot() bool {
@@ -96,10 +97,18 @@ func launchContainedAgent(
 
 	profile := env.filesystem
 	if profile.Mode == "" {
-		var profileErr error
-		profile, profileErr = filesystemProfileForProbe(env, homeDir)
-		if profileErr != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, profileErr)
+		// A launch env with no config path and no reader has not selected a
+		// profile. Do not open the host default: contain run always sets both,
+		// and preflight records the mode before it reaches here. Reading the
+		// host file from a zero env would make unit tests depend on /etc.
+		if env.configPath == "" && env.readFile == nil {
+			profile = filesystemProfile{Mode: config.ContainmentFilesystemModeOff}
+		} else {
+			var profileErr error
+			profile, profileErr = filesystemProfileForProbe(env, homeDir)
+			if profileErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, profileErr)
+			}
 		}
 	}
 	commandOpts := containedAgentCommandOptions{

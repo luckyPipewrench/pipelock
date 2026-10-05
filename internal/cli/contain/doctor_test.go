@@ -708,12 +708,13 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				}
 				if agg.Aggregate.Pass != 5 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
+					agg.Aggregate.Off != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / 1 off / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN / 1 OFF — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -759,8 +760,8 @@ func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
-		{name: "text aggregate", successfulWrites: 10, want: "writing doctor aggregate"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 8, want: "encoding aggregate JSON"},
+		{name: "text aggregate", successfulWrites: 11, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 9, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {

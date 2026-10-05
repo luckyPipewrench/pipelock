@@ -132,6 +132,7 @@ func TestKnownSecretEncodingsScanVerdictsUnchanged(t *testing.T) {
 	rng := newTestRand(7)
 	ctx := context.Background()
 	blocked := 0
+	urlBlocked := 0
 	for i, secret := range precomputed.fileSecrets {
 		other := precomputed.fileSecrets[(i+1)%len(precomputed.fileSecrets)]
 		for _, text := range knownSecretEncodingTexts(rng, secret, other) {
@@ -149,10 +150,16 @@ func TestKnownSecretEncodingsScanVerdictsUnchanged(t *testing.T) {
 			if gotURL.Allowed != wantURL.Allowed || gotURL.Reason != wantURL.Reason || gotURL.Scanner != wantURL.Scanner {
 				t.Errorf("URL verdict differs for secret %d text %q: got %+v want %+v", i, text, gotURL, wantURL)
 			}
+			if !gotURL.Allowed {
+				urlBlocked++
+			}
 		}
 	}
 	if blocked == 0 {
 		t.Fatal("no fixture text was detected; comparison is vacuous")
+	}
+	if urlBlocked == 0 {
+		t.Fatal("no fixture URL was blocked; URL comparison is vacuous")
 	}
 }
 

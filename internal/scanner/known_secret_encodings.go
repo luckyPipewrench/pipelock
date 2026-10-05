@@ -69,11 +69,20 @@ const knownSecretEncodingBudgetBytes = 32 << 20
 
 // buildKnownSecretEncodings precomputes encodings for each secret, in list
 // order, until the byte budget is spent.
+// knownSecretEncodingMinBytesPerByte is a lower bound on retained bytes per
+// secret byte, so the pre-check never skips a secret that would have fit.
+const knownSecretEncodingMinBytesPerByte = 8
+
 func buildKnownSecretEncodings(budget int, lists ...[]string) map[string]*knownSecretEncodings {
 	set := make(map[string]*knownSecretEncodings)
 	for _, secrets := range lists {
 		for _, secret := range secrets {
 			if _, ok := set[secret]; ok || secret == "" {
+				continue
+			}
+			// The encoded forms run to roughly thirty bytes per secret byte;
+			// skip a secret that cannot fit before building them at all.
+			if len(secret)*knownSecretEncodingMinBytesPerByte > budget {
 				continue
 			}
 			encodings := newKnownSecretEncodings(secret)

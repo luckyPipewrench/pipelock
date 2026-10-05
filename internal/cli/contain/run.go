@@ -14,6 +14,7 @@ import (
 	"io"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -233,25 +234,22 @@ func runContainRun(
 	if opts.servicePrestart {
 		commandLabel = "pipelock contain service-posture"
 	}
-	_, _ = fmt.Fprintf(stdout, "%s: verifying containment preflight\n", commandLabel)
-	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
-	if err != nil {
-		return err
-	}
-
-	// Resolve the posture proof path this run writes, and thread it into the
-	// contained launch env so an in-child emitter binds the exact capsule rather
-	// than fall back to the default path and grade containment UNKNOWN. The child
-	// starts with its cwd set to the agent home, so relative --posture-output
-	// values must become absolute before they are hashed into launch evidence.
 	proofPath, err := containRunPostureProofPath(opts.postureOutput)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 	env.probe.postureProofPath = proofPath
 
+	_, _ = fmt.Fprintf(stdout, "%s: verifying containment preflight\n", commandLabel)
+	entries, err := containRunPreflight(ctx, stdout, env.probe, tool)
+	if err != nil {
+		return err
+	}
+
 	contract := buildSessionContract(env.probe, tool, entries, grants, proofPath)
 	contract.Command = commandLabel
+	contract.FilesystemMode = env.probe.filesystem.Mode
+	contract.FilesystemBinds = filesystemContractBinds(env.probe.filesystem)
 	// The contract is the operator's review surface. If it cannot be written
 	// (closed pipe, failed writer) nobody saw the boundary, so refuse to go on
 	// rather than emit a capsule and launch unreviewed (fail closed).
@@ -526,6 +524,10 @@ type sessionContract struct {
 	// contain run preflight proves the transient-service canary before this
 	// contract is rendered, so this field is never true without that evidence.
 	PrivateTmp bool
+	// FilesystemMode is off, enforce, or empty when this launch did not resolve
+	// a profile. Empty stays out of the rendered contract.
+	FilesystemMode  string
+	FilesystemBinds []string
 }
 
 type contractWorkspace struct {
@@ -606,6 +608,19 @@ func renderSessionContract(w io.Writer, c sessionContract) error {
 	} else {
 		_, _ = fmt.Fprintln(out, "  agent temp dirs:  /tmp and /var/tmp shared with the operator (not private)")
 	}
+	if c.FilesystemMode != "" {
+		_, _ = fmt.Fprintf(out, "  filesystem profile: %s\n", c.FilesystemMode)
+		if c.FilesystemMode == config.ContainmentFilesystemModeEnforce {
+			if len(c.FilesystemBinds) == 0 {
+				_, _ = fmt.Fprintln(out, "  filesystem binds: (none)")
+			} else {
+				_, _ = fmt.Fprintln(out, "  filesystem binds:")
+				for _, bind := range c.FilesystemBinds {
+					_, _ = fmt.Fprintf(out, "    %s\n", bind)
+				}
+			}
+		}
+	}
 	if len(c.RegisteredTools) == 0 {
 		_, _ = fmt.Fprintln(out, "  registered tools: (none)")
 	} else {
@@ -674,7 +689,7 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 	for _, p := range probesForEnv(env) {
 		status, detail := p.fn(ctx, env)
 		writeTextLine(out, p, status, detail)
-		if status != statusPass {
+		if status != statusPass && status != statusFilesystemOff {
 			return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 				fmt.Errorf("containment preflight failed at probe %d (%s): %s: %s", p.n, p.name, status, detail))
 		}
@@ -853,19 +868,22 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 	if launcher == "" {
 		launcher = defaultLaunchScript
 	}
+	mode, digest := filesystemEvidenceFields(env.filesystem)
 	return posturepkg.ContainLaunchEvidence{
-		Launcher:     launcher,
-		AgentUser:    env.agentUserName,
-		TargetUID:    strconv.FormatUint(uid, 10),
-		TargetGID:    strconv.FormatUint(gid, 10),
-		TargetGroups: groupIDStrings(groups),
-		Tool:         args[0],
-		Argc:         len(args),
-		ArgvSHA256:   argvHash,
-		CWD:          homeDir,
-		ProxyPort:    env.port,
-		EnvVars:      envVars,
-		EnvSHA256:    envHash,
+		Launcher:              launcher,
+		AgentUser:             env.agentUserName,
+		TargetUID:             strconv.FormatUint(uid, 10),
+		TargetGID:             strconv.FormatUint(gid, 10),
+		TargetGroups:          groupIDStrings(groups),
+		Tool:                  args[0],
+		Argc:                  len(args),
+		ArgvSHA256:            argvHash,
+		CWD:                   homeDir,
+		ProxyPort:             env.port,
+		EnvVars:               envVars,
+		EnvSHA256:             envHash,
+		FilesystemMode:        mode,
+		FilesystemBindsSHA256: digest,
 	}, nil
 }
 
@@ -880,12 +898,15 @@ func containRunContainmentEvidence(env *probeEnv, targetUID string) (posturepkg.
 		if err != nil {
 			return posturepkg.ContainmentEvidence{}, err
 		}
+		mode, digest := filesystemEvidenceFields(env.filesystem)
 		return posturepkg.ContainmentEvidence{
 			Mode:                     posturepkg.ContainmentModeKernelNFTOwnerMatch,
 			BoundaryVerified:         true,
 			ProbeRefusedDirectEgress: true,
 			KernelRuleHash:           ruleHash,
 			TargetUID:                targetUID,
+			FilesystemMode:           mode,
+			FilesystemBindsSHA256:    digest,
 		}, nil
 	}
 	if nftStatus != statusPass {
@@ -911,6 +932,28 @@ func groupIDsForEnv(env *probeEnv, u *user.User) ([]string, error) {
 		return env.groupIDs(u)
 	}
 	return realGroupIDs(u)
+}
+
+func filesystemContractBinds(profile filesystemProfile) []string {
+	if profile.Mode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	out := make([]string, 0, len(profile.BindPaths)+len(profile.BindReadOnlyPaths))
+	for _, bind := range profile.BindPaths {
+		out = append(out, "BindPaths="+bind)
+	}
+	for _, bind := range profile.BindReadOnlyPaths {
+		out = append(out, "BindReadOnlyPaths="+bind)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func filesystemEvidenceFields(profile filesystemProfile) (string, string) {
+	if profile.Mode != config.ContainmentFilesystemModeEnforce {
+		return "", ""
+	}
+	return profile.Mode, filesystemBindsDigest(profile)
 }
 
 func groupIDStrings(groups []uint32) []string {

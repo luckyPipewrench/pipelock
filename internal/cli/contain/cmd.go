@@ -61,6 +61,7 @@ planned actions without touching state.`,
 		viewerCmd(),
 		viewCmd(),
 		upgradeCmd(),
+		launchPropertiesCmd(),
 	)
 
 	return cmd

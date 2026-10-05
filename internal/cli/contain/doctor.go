@@ -77,6 +77,7 @@ type doctorEnv struct {
 	rfbSocketPath   string
 	lookPath        func(string) (string, error)
 	platformFamily  string
+	filesystemProbe func(context.Context, *probeEnv) (string, string)
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -340,6 +341,33 @@ func allDoctorChecks() []doctorCheck {
 		{6, "raw_egress_blocked", "direct (proxy-bypassing) egress is blocked for the agent", checkRawEgressBlocked},
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
 		{8, "managed_doorway_sockets", "managed containment doorway sockets and namespace forwarders are active", checkManagedDoorwaySockets},
+		{9, "filesystem_confinement", "contained-agent filesystem profile", checkFilesystemConfinement},
+	}
+}
+
+func checkFilesystemConfinement(ctx context.Context, env *doctorEnv) doctorResult {
+	status, detail := probeFilesystemConfinement(ctx, &probeEnv{
+		configPath:      env.configPath,
+		agentUserName:   env.agentUserName,
+		agentHome:       env.agentHome,
+		readFile:        env.readFile,
+		stat:            env.stat,
+		lookupUser:      env.lookupUser,
+		runCmd:          env.runCmd,
+		filesystemProbe: env.filesystemProbe,
+		pipelockTarget:  env.pipelockTarget,
+		port:            env.port,
+		proxyUserName:   env.proxyUserName,
+	})
+	switch status {
+	case statusPass:
+		return pass(detail)
+	case statusFilesystemOff:
+		return doctorResult{status: statusFilesystemOff, detail: detail}
+	case statusSkip:
+		return skip(detail, "rerun pipelock contain verify on Linux as root")
+	default:
+		return fail(classInfra, detail, "repair containment.filesystem.mode or the paths it binds")
 	}
 }
 
@@ -353,15 +381,15 @@ func doctorChecksForEnv(env *doctorEnv) []doctorCheck {
 		return checks
 	}
 	if cfg.Containment.Display.IsEnabled(true) && cfg.Containment.Display.EffectiveBackend() == "xvnc" {
-		checks = append(checks, doctorCheck{9, "agent_display_rfb", "TigerVNC display RFB socket is available", checkDoctorDisplayRFB})
-		checks = append(checks, doctorCheck{10, "viewer_service", "viewer socket is available to its operator", checkDoctorViewerService})
-		checks = append(checks, doctorCheck{11, "viewer_rfb_access", "viewer RFB socket group is exact", checkDoctorViewerRFBAccess})
+		checks = append(checks, doctorCheck{10, "agent_display_rfb", "TigerVNC display RFB socket is available", checkDoctorDisplayRFB})
+		checks = append(checks, doctorCheck{11, "viewer_service", "viewer socket is available to its operator", checkDoctorViewerService})
+		checks = append(checks, doctorCheck{12, "viewer_rfb_access", "viewer RFB socket group is exact", checkDoctorViewerRFBAccess})
 	}
 	// Runs whenever the config loaded, independent of the configured
 	// backend: a leftover legacy grant from a PRIOR install must still be
 	// caught even if the operator has since switched away from xvnc.
 	if env.agentHome != "" {
-		checks = append(checks, doctorCheck{12, "legacy_viewer_acl", "obsolete agent-home viewer access is absent", checkDoctorLegacyViewerACL})
+		checks = append(checks, doctorCheck{13, "legacy_viewer_acl", "obsolete agent-home viewer access is absent", checkDoctorLegacyViewerACL})
 	}
 	return checks
 }
@@ -907,7 +935,7 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 		}
 	}
 
-	var passN, failN, skipN, unknownN int
+	var passN, failN, skipN, unknownN, offN int
 	checks := doctorChecksForEnv(env)
 	for _, c := range checks {
 		res := c.fn(ctx, env)
@@ -920,6 +948,8 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			skipN++
 		case statusUnknown:
 			unknownN++
+		case statusFilesystemOff:
+			offN++
 		default:
 			failN++
 			res.detail = fmt.Sprintf("invalid status %q (detail: %s)", res.status, res.detail)
@@ -959,17 +989,14 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 			Fail:     failN,
 			Skip:     skipN,
 			Unknown:  unknownN,
+			Off:      offN,
 			Total:    len(checks),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)
 		}
 	} else {
-		if unknownN > 0 {
-			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP / %d UNKNOWN — exit %d\n", passN, failN, skipN, unknownN, exitCode)
-		} else {
-			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
-		}
+		_, _ = fmt.Fprint(w, formatContainAggregate(passN, failN, skipN, unknownN, offN, exitCode))
 		printEvidencePaths(w)
 		if err := textWriter.Err(); err != nil {
 			return fmt.Errorf("writing doctor aggregate: %w", err)
@@ -999,6 +1026,8 @@ func writeDoctorLine(w io.Writer, c doctorCheck, res doctorResult) {
 		tag = "[SKIP]"
 	case statusUnknown:
 		tag = "[UNKNOWN]"
+	case statusFilesystemOff:
+		tag = "[OFF]"
 	}
 	line := fmt.Sprintf("  %s check %d: %s", tag, c.n, c.desc)
 	if res.detail != "" {

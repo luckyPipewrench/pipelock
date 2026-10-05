@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -169,7 +170,7 @@ func defaultLifecycleBackend() lifecycleBackend {
 
 // Keep the line-based observation scalar-only. ExecStart's display format can
 // contain argument newlines; the typed reader verifies its path and exact argv.
-const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart"
+const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart,ProtectSystem,ProtectHome,NoNewPrivileges,BindPaths,BindReadOnlyPaths"
 
 func lifecycleSystemdShow(ctx context.Context, unit string) (map[string]string, error) {
 	out, code, err := lifecycleSystemctl(ctx, "show", unit, "--property="+lifecycleSystemdProperties)
@@ -383,6 +384,33 @@ func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid
 	if fields["PrivateNetwork"] != "yes" || fields["PrivateTmp"] != "yes" || fields["JoinsNamespaceOf"] != containedNetworkNamespaceUnit || fields["KillMode"] != "control-group" || fields["SendSIGKILL"] != "yes" || fields["Restart"] != "no" {
 		return errors.New("lifecycle service properties differ from managed launch")
 	}
+	if err := lifecycleFilesystemOwned(fields, record); err != nil {
+		return err
+	}
+	return nil
+}
+
+func lifecycleFilesystemOwned(fields map[string]string, record containLifecycleRecord) error {
+	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	if fields["ProtectSystem"] != "strict" || fields["ProtectHome"] != "tmpfs" || fields["NoNewPrivileges"] != "yes" {
+		return errors.New("lifecycle filesystem profile differs from managed launch")
+	}
+	bindPaths, err := parseSystemdBindShow(fields["BindPaths"])
+	if err != nil {
+		return fmt.Errorf("lifecycle bind paths: %w", err)
+	}
+	if !sameBindList(bindPaths, record.FilesystemBindPaths) {
+		return errors.New("lifecycle bind paths differ from managed launch")
+	}
+	readOnly, err := parseSystemdBindShow(fields["BindReadOnlyPaths"])
+	if err != nil {
+		return fmt.Errorf("lifecycle read-only bind paths: %w", err)
+	}
+	if !sameBindList(readOnly, record.FilesystemBindReadOnlyPaths) {
+		return errors.New("lifecycle read-only bind paths differ from managed launch")
+	}
 	return nil
 }
 
@@ -499,6 +527,11 @@ func launchContainedAgentLifecycleWithBackend(opts containedAgentCommandOptions,
 	l.record.ArgvSHA256, err = stringSliceSHA256(opts.args)
 	if err != nil {
 		return err
+	}
+	l.record.FilesystemMode = opts.filesystem.Mode
+	if opts.filesystem.Mode == config.ContainmentFilesystemModeEnforce {
+		l.record.FilesystemBindPaths = append([]string(nil), opts.filesystem.BindPaths...)
+		l.record.FilesystemBindReadOnlyPaths = append([]string(nil), opts.filesystem.BindReadOnlyPaths...)
 	}
 	l.argv = append([]string{defaultLaunchScript}, opts.args...)
 	// Hash the executing image, not a pathname that an atomic replacement

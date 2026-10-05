@@ -54,6 +54,9 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	}
 	env.readFile = func(string) ([]byte, error) { return nil, errors.New("no read") }
 	env.stat = func(string) (os.FileInfo, error) { return nil, nil } // shim present
+	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusFilesystemOff, "filesystem profile: off"
+	}
 	return env
 }
 
@@ -562,7 +565,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "8 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "9 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -582,7 +585,7 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
 		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
-		!strings.Contains(out, `"total":8`) {
+		!strings.Contains(out, `"total":9`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 	doorwaySockets := 0
@@ -1065,7 +1068,7 @@ func TestRunDoctor_TextSkipRemediation(t *testing.T) {
 // and direct egress is refused.
 func allPassDoctorEnv(t *testing.T) *doctorEnv {
 	t.Helper()
-	return newDoctorEnv(t, func(args []string) (string, int, error) {
+	env := newDoctorEnv(t, func(args []string) (string, int, error) {
 		switch {
 		case argsContain(args, "--noproxy"):
 			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil // direct egress blocked
@@ -1075,6 +1078,10 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 			return "200", 0, nil // proxied curl/python/node
 		}
 	})
+	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "filesystem profile enforced"
+	}
+	return env
 }
 
 func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
@@ -1095,7 +1102,7 @@ func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 		t.Fatal(err)
 	}
-	if agg.Aggregate.Total != 12 || len(lines) != 13 {
-		t.Fatalf("aggregate total = %d, records = %d; want 12 checks", agg.Aggregate.Total, len(lines)-1)
+	if agg.Aggregate.Total != 13 || len(lines) != 14 {
+		t.Fatalf("aggregate total = %d, records = %d; want 13 checks", agg.Aggregate.Total, len(lines)-1)
 	}
 }

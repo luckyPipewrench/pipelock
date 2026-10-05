@@ -94,6 +94,14 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
+	profile := env.filesystem
+	if profile.Mode == "" {
+		var profileErr error
+		profile, profileErr = filesystemProfileForProbe(env, homeDir)
+		if profileErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, profileErr)
+		}
+	}
 	commandOpts := containedAgentCommandOptions{
 		ctx:              ctx,
 		agentUserName:    env.agentUserName,
@@ -108,6 +116,7 @@ func launchContainedAgent(
 		stdin:            stdin,
 		stdout:           stdout,
 		stderr:           stderr,
+		filesystem:       profile,
 	}
 	var runErr error
 	var systemdUnit string
@@ -170,6 +179,7 @@ type containedAgentCommandOptions struct {
 	stderr           io.Writer
 	lifecycleUnit    string
 	lifecycleRunID   string
+	filesystem       filesystemProfile
 }
 
 func containedAgentCommand(opts containedAgentCommandOptions) (*exec.Cmd, string) {

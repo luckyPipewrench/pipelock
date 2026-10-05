@@ -354,8 +354,11 @@ func TestContainedLaunchWrapperBindsConfiguredDisplaySocket(t *testing.T) {
 	if !strings.Contains(body, "--property=PrivateTmp=true") {
 		t.Fatalf("contained launch wrapper missing PrivateTmp isolation:\n%s", body)
 	}
-	if !strings.Contains(body, "--property=BindReadOnlyPaths=/tmp/.X11-unix/X99") {
-		t.Fatalf("contained launch wrapper missing display socket bind:\n%s", body)
+	if !strings.Contains(body, "contain launch-properties --agent-user") {
+		t.Fatalf("contained launch wrapper missing launch-time property helper:\n%s", body)
+	}
+	if strings.Contains(body, "--property=BindReadOnlyPaths=/tmp/.X11-unix/X99") {
+		t.Fatalf("contained launch wrapper baked the display socket instead of resolving it at launch:\n%s", body)
 	}
 }
 
@@ -366,8 +369,11 @@ func TestContainedLaunchWrapperNoDisplayNoBind(t *testing.T) {
 	if !strings.Contains(body, "--property=PrivateTmp=true") {
 		t.Fatalf("contained launch wrapper missing PrivateTmp isolation:\n%s", body)
 	}
-	if strings.Contains(body, "BindReadOnlyPaths") {
-		t.Fatalf("contained launch wrapper bound a display socket with no display configured:\n%s", body)
+	if strings.Contains(body, "BindReadOnlyPaths=") {
+		t.Fatalf("contained launch wrapper baked a display socket with no display configured:\n%s", body)
+	}
+	if !strings.Contains(body, env.pipelockTarget) {
+		t.Fatalf("contained launch wrapper did not pin the pipelock binary:\n%s", body)
 	}
 }
 

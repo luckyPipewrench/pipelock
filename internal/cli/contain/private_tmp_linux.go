@@ -16,6 +16,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 var privateTmpUnitSequence atomic.Uint64
@@ -100,7 +102,14 @@ func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.C
 		unit = opts.lifecycleUnit
 	}
 	cmd := exec.CommandContext(opts.ctx, systemdRunPath)
-	args := privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, opts.display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)
+	display := opts.display
+	var filesystemProperties []string
+	if opts.filesystem.Mode == config.ContainmentFilesystemModeEnforce {
+		filesystemProperties = opts.filesystem.Properties
+		display = ""
+	}
+	args := privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)
+	args = insertSystemdProperties(args, filesystemProperties)
 	if opts.lifecycleRunID != "" {
 		args = append([]string{
 			"--system", "--no-ask-password",
@@ -213,6 +222,37 @@ func privateTmpSystemdRunArgsForAgent(env *probeEnv, command []string) ([]string
 		return nil, fmt.Errorf("group ids for %s: %w", env.agentUserName, err)
 	}
 	return privateTmpSystemdRunArgs(uint32(uid), uint32(gid), groups, u.HomeDir, "", nil, command, false, true, ""), nil
+}
+
+func privateTmpSystemdRunArgsForAgentProperties(env *probeEnv, command, properties []string) ([]string, error) {
+	args, err := privateTmpSystemdRunArgsForAgent(env, command)
+	if err != nil {
+		return nil, err
+	}
+	return insertSystemdProperties(args, properties), nil
+}
+
+func insertSystemdProperties(args, properties []string) []string {
+	if len(properties) == 0 {
+		return args
+	}
+	out := make([]string, 0, len(args)+len(properties))
+	inserted := false
+	for _, arg := range args {
+		if !inserted && arg == "--" {
+			for _, prop := range properties {
+				out = append(out, "--property="+prop)
+			}
+			inserted = true
+		}
+		out = append(out, arg)
+	}
+	if !inserted {
+		for _, prop := range properties {
+			out = append(out, "--property="+prop)
+		}
+	}
+	return out
 }
 
 func isTerminalReader(reader any) bool {

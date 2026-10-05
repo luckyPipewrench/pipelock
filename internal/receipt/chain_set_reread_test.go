@@ -490,3 +490,183 @@ func TestVerifyBaseLinksOnlyToleratesGrowth(t *testing.T) {
 		}
 	}
 }
+
+const (
+	rereadLinkFile      = "chain-link-proxy.run.03b13ee13e01e7f770480f62ea42f1fe.json"
+	rereadLinkSuccessor = "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+)
+
+// flipTailHashDigit rewrites the link file in place, at the same size, with
+// one hex digit of predecessor_tail_hash changed.
+func flipTailHashDigit(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const field = `"predecessor_tail_hash":"`
+	i := strings.Index(string(raw), field)
+	if i < 0 {
+		t.Fatalf("%s has no %s", path, field)
+	}
+	i += len(field)
+	if raw[i] == '0' {
+		raw[i] = '1'
+	} else {
+		raw[i] = '0'
+	}
+	if err := os.WriteFile(filepath.Clean(path), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A link file is parsed once, before the chains are read. One changed while
+// verification is still running must fail the report, whether it was added,
+// removed, replaced, resized, or rewritten in place at the same size.
+func TestVerifyBaseLinkFileChangedDuringReadFailsClosed(t *testing.T) {
+	cases := []struct {
+		name     string
+		endorsed bool
+		want     string
+		mutate   func(t *testing.T, dir string)
+	}{
+		{"tail hash digit flipped", false, "link file bytes changed", func(t *testing.T, dir string) {
+			flipTailHashDigit(t, filepath.Join(dir, rereadLinkFile))
+		}},
+		{"tail hash digit flipped endorsed", true, "link file bytes changed", func(t *testing.T, dir string) {
+			flipTailHashDigit(t, filepath.Join(dir, rereadLinkFile))
+		}},
+		{"removed", false, "link file set differs", func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, rereadLinkFile)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"added", false, "link file set differs", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, ChainLinkFileName(rereadLinkSuccessor)), []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replaced", false, "link file replaced", func(t *testing.T, dir string) {
+			path := filepath.Join(dir, rereadLinkFile)
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path+".tmp", path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"resized", false, "link file size changed", func(t *testing.T, dir string) {
+			f, err := os.OpenFile(filepath.Clean(filepath.Join(dir, rereadLinkFile)), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString("\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fired := false
+			report := verifyBaseWithWalkHook(t, tc.endorsed, func(t *testing.T, dir, _ string, _ int) {
+				if !fired {
+					fired = true
+					tc.mutate(t, dir)
+				}
+			})
+			if !fired {
+				t.Fatal("hook did not fire")
+			}
+			if report.Healthy() {
+				t.Fatalf("link file changed during verification but the report is healthy: %+v", report.Chains)
+			}
+			full := "evidence changed during verification: " + tc.want
+			found := false
+			for _, f := range report.Findings {
+				found = found || (f.Kind == FindingCorruptChain && f.Session == rereadLinkSuccessor && f.Detail == full)
+			}
+			if !found {
+				t.Fatalf("want a corrupt_chain finding %q on %s, got %+v", full, rereadLinkSuccessor, report.Findings)
+			}
+			if !report.EvidenceChangedDuringVerification() {
+				t.Fatal("report does not say evidence changed during verification")
+			}
+			for _, c := range report.Chains {
+				if c.Session == rereadLinkSuccessor && c.Valid {
+					t.Fatalf("chain whose link changed reported valid: %+v", c)
+				}
+			}
+		})
+	}
+}
+
+// Positive control: rewriting a link file in place with the bytes it already
+// held changes nothing the verifier relied on.
+func TestVerifyBaseLinkFileRewrittenIdenticalPasses(t *testing.T) {
+	fired := false
+	report := verifyBaseWithWalkHook(t, false, func(t *testing.T, dir, _ string, _ int) {
+		if fired {
+			return
+		}
+		fired = true
+		path := filepath.Join(dir, rereadLinkFile)
+		raw, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !fired {
+		t.Fatal("hook did not fire")
+	}
+	if !report.Healthy() || report.EvidenceChangedDuringVerification() {
+		t.Fatalf("identical rewrite: findings %+v", report.Findings)
+	}
+	if report.LinkCount() != 1 {
+		t.Fatalf("want the fixture's link to verify, got %d linked", report.LinkCount())
+	}
+}
+
+// Links-only mode tolerates a live recorder, so a link file change during
+// its read is not a finding there.
+func TestVerifyBaseLinksOnlyIgnoresLinkFileChange(t *testing.T) {
+	dir := copyShardDir(t, filepath.Join(walkConformanceTestdata, "run-chains", "valid"))
+	fired := false
+	prev := duringEvidenceWalk
+	duringEvidenceWalk = func(path string) {
+		if fired || filepath.Dir(path) != filepath.Clean(dir) {
+			return
+		}
+		fired = true
+		f, err := os.OpenFile(filepath.Clean(filepath.Join(dir, rereadLinkFile)), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { duringEvidenceWalk = prev })
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{LinksOnly: true})
+	if err != nil {
+		t.Fatalf("VerifyBase: %v", err)
+	}
+	if !fired {
+		t.Fatal("hook did not fire")
+	}
+	if report.EvidenceChangedDuringVerification() {
+		t.Fatalf("links-only mode refused a link file change: %+v", report.Findings)
+	}
+}

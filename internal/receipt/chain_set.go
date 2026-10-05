@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -97,6 +99,20 @@ type BaseReport struct {
 // Healthy reports whether every chain verified and every link file held.
 // It says nothing about unlinked runs; see Unlinked.
 func (r BaseReport) Healthy() bool { return len(r.Findings) == 0 }
+
+// EvidenceChangedDuringVerification reports whether any finding says the
+// evidence directory changed while it was being verified. Such a report says
+// nothing about the evidence itself: the verifier cannot tell what it would
+// have found had the recorder held still.
+func (r BaseReport) EvidenceChangedDuringVerification() bool {
+	prefix := errEvidenceChangedDuring.Error() + ":"
+	for _, f := range r.Findings {
+		if f.Kind == FindingCorruptChain && strings.HasPrefix(f.Detail, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // LinkCount returns the number of chains with a verified-in-place link file.
 func (r BaseReport) LinkCount() int {
@@ -278,6 +294,34 @@ type chainLinkRecord struct {
 	seal       *RecoverySeal
 	isRecovery bool
 	err        error
+
+	// info is the file's identity when it was read, nil when it could not
+	// be stat'ed. digest is the SHA-256 of the bytes read, set only when
+	// hashed. The final directory re-check compares both, so a link file
+	// changed after it was parsed fails the verification.
+	info   os.FileInfo
+	digest [sha256.Size]byte
+	hashed bool
+}
+
+// baseSession returns the first chain of base this link file concerns: the
+// successor it continues, then the predecessor, then the predecessor its
+// name claims. ok is false when the file concerns no chain of base.
+func (lf chainLinkRecord) baseSession(base string) (string, bool) {
+	var candidates []string
+	if lf.link != nil {
+		candidates = append(candidates, lf.link.SuccessorSession, lf.link.PredecessorSession)
+	}
+	if lf.seal != nil {
+		candidates = append(candidates, lf.seal.SuccessorSession, lf.seal.PredecessorSession)
+	}
+	candidates = append(candidates, lf.namePred)
+	for _, s := range candidates {
+		if isBaseChain(s, base) {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // chainLinkFileNames lists link file names in dir, sorted.
@@ -306,34 +350,46 @@ func readChainLinkFiles(dir string) ([]chainLinkRecord, error) {
 	}
 	out := make([]chainLinkRecord, 0, len(names))
 	for _, name := range names {
-		pred, _ := chainLinkFilePredecessor(name)
-		rec := chainLinkRecord{name: name, namePred: pred}
-		raw, readErr := readClaimBytes(filepath.Join(filepath.Clean(dir), name))
-		var fields map[string]json.RawMessage
-		if readErr == nil {
-			readErr = json.Unmarshal(raw, &fields)
-		}
-		_, rec.isRecovery = fields["kind"]
-		if readErr != nil {
-			rec.err = readErr
-		} else if rec.isRecovery {
-			seal, err := UnmarshalRecoverySeal(raw)
-			if err != nil {
-				rec.err = err
-			} else {
-				rec.seal = &seal
-			}
-		} else {
-			link, err := UnmarshalChainLink(raw)
-			if err != nil {
-				rec.err = err
-			} else {
-				rec.link = &link
-			}
-		}
-		out = append(out, rec)
+		out = append(out, readChainLinkRecord(dir, name))
 	}
 	return out, nil
+}
+
+// readChainLinkRecord reads, hashes, and parses one link file. Any failure is
+// kept in the record's err.
+func readChainLinkRecord(dir, name string) chainLinkRecord {
+	pred, _ := chainLinkFilePredecessor(name)
+	rec := chainLinkRecord{name: name, namePred: pred}
+	raw, info, readErr := readClaimFile(filepath.Join(filepath.Clean(dir), name))
+	rec.info = info
+	if readErr == nil {
+		rec.digest = sha256.Sum256(raw)
+		rec.hashed = true
+	}
+	var fields map[string]json.RawMessage
+	if readErr == nil {
+		readErr = json.Unmarshal(raw, &fields)
+	}
+	_, rec.isRecovery = fields["kind"]
+	switch {
+	case readErr != nil:
+		rec.err = readErr
+	case rec.isRecovery:
+		seal, err := UnmarshalRecoverySeal(raw)
+		if err != nil {
+			rec.err = err
+		} else {
+			rec.seal = &seal
+		}
+	default:
+		link, err := UnmarshalChainLink(raw)
+		if err != nil {
+			rec.err = err
+		} else {
+			rec.link = &link
+		}
+	}
+	return rec
 }
 
 func readChainLinkFile(path string) (ChainLink, error) {
@@ -345,18 +401,25 @@ func readChainLinkFile(path string) (ChainLink, error) {
 }
 
 func readClaimBytes(path string) ([]byte, error) {
+	raw, _, err := readClaimFile(path)
+	return raw, err
+}
+
+// readClaimFile reads a link file and returns its bytes and the identity it
+// had when stat'ed before the read. info is nil only when the stat failed.
+func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, fmt.Errorf("stat chain link file: %w", err)
+		return nil, nil, fmt.Errorf("stat chain link file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("chain link file is not a regular file")
+		return nil, info, errors.New("chain link file is not a regular file")
 	}
 	raw, err := recorder.ReadEvidenceFileBounded(path, maxChainLinkFileBytes)
 	if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		return nil, fmt.Errorf("chain link file exceeds %d bytes: %w", maxChainLinkFileBytes, err)
+		return nil, info, fmt.Errorf("chain link file exceeds %d bytes: %w", maxChainLinkFileBytes, err)
 	}
-	return raw, err
+	return raw, info, err
 }
 
 // VerifyBase verifies every chain of base in dir and every link file that
@@ -383,17 +446,14 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	scoped := make([]chainLinkRecord, 0, len(links))
 	need := make(map[string]bool)
 	for _, lf := range links {
-		in := isBaseChain(lf.namePred, base)
 		if lf.link != nil {
-			in = in || isBaseChain(lf.link.PredecessorSession, base) || isBaseChain(lf.link.SuccessorSession, base)
 			need[lf.link.PredecessorSession] = true
 			need[lf.link.SuccessorSession] = true
 		}
 		if lf.seal != nil {
-			in = in || isBaseChain(lf.seal.PredecessorSession, base) || isBaseChain(lf.seal.SuccessorSession, base)
 			need[lf.seal.PredecessorSession], need[lf.seal.SuccessorSession] = true, true
 		}
-		if in {
+		if _, in := lf.baseSession(base); in {
 			scoped = append(scoped, lf)
 		}
 	}
@@ -564,7 +624,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	// live recorders whose active shard grows; it makes no full-verification
 	// claim, so it does not refuse a directory that changed while it read.
 	if !opts.LinksOnly {
-		if err := checkShardSetUnchanged(dir, base, ix, sessions, data, add); err != nil {
+		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, add); err != nil {
 			return report, err
 		}
 	}
@@ -815,9 +875,14 @@ var errEvidenceChangedDuring = errors.New("evidence changed during verification"
 // identity or size, differs from what its reads verified, and each chain of
 // base that appeared or vanished. A shard created or replaced after a read
 // listed the directory was never opened by that read, so without this check
-// it could hold anything. A listing error is returned and means the
-// verification is incomplete.
-func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, data map[string]*baseChainData, add func(kind, session, detail string)) error {
+// it could hold anything. Link files of base get the same check, plus a
+// comparison of their bytes, since they are small and are parsed only once.
+// A listing error is returned and means the verification is incomplete.
+//
+// This is best-effort detection for a recorder that should not be written
+// while it is verified. A same-size in-place rewrite of a shard by a process
+// with write access to dir can still go unseen.
+func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string)) error {
 	final, err := indexRecorderFiles(dir)
 	if err != nil {
 		return fmt.Errorf("re-listing sessions after verification: %w", err)
@@ -850,7 +915,61 @@ func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []strin
 			failChain(s, why)
 		}
 	}
+	return checkLinkFilesUnchanged(dir, base, links, failChain)
+}
+
+// checkLinkFilesUnchanged lists and reads dir's link files again and fails
+// the chain of base that each added, removed, replaced, resized, or rewritten
+// link file concerns, judged by what the file held at either read.
+func checkLinkFilesUnchanged(dir, base string, links []chainLinkRecord, failChain func(s, why string)) error {
+	names, err := chainLinkFileNames(dir)
+	if err != nil {
+		return fmt.Errorf("re-listing chain link files after verification: %w", err)
+	}
+	before := make(map[string]chainLinkRecord, len(links))
+	for _, lf := range links {
+		before[lf.name] = lf
+	}
+	fail := func(why string, records ...chainLinkRecord) {
+		for _, lf := range records {
+			if s, ok := lf.baseSession(base); ok {
+				failChain(s, why)
+				return
+			}
+		}
+	}
+	for _, name := range names {
+		now := readChainLinkRecord(dir, name)
+		orig, existed := before[name]
+		if !existed {
+			fail("link file set differs", now)
+			continue
+		}
+		delete(before, name)
+		if why := linkFileChange(orig, now); why != "" {
+			fail(why, orig, now)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(before)) {
+		fail("link file set differs", before[name])
+	}
 	return nil
+}
+
+// linkFileChange reports how a link file read again differs from the read
+// that was verified, or "" when it is the same file with the same bytes.
+func linkFileChange(orig, now chainLinkRecord) string {
+	switch {
+	case (orig.info == nil) != (now.info == nil):
+		return "link file replaced"
+	case orig.info != nil && !os.SameFile(orig.info, now.info):
+		return "link file replaced"
+	case orig.info != nil && orig.info.Size() != now.info.Size():
+		return "link file size changed"
+	case orig.hashed != now.hashed || orig.digest != now.digest:
+		return "link file bytes changed"
+	}
+	return ""
 }
 
 // shardIdentityChange reports how the files now at paths differ from the

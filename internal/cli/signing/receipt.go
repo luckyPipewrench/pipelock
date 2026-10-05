@@ -81,6 +81,16 @@ passing result does not prove no run's evidence is missing. Pass --session
 to verify one chain; continuity for its base is still verified, and any
 finding in the base, including two runs that share a signed run nonce, fails
 the result.
+
+Full chain verification (--chain, --whole-recorder) is for a recorder that is
+not being written while it is verified: stop the writer, or copy the recorder
+directory and verify the copy. A change during verification is detected on a
+best-effort basis: a shard or link file added, removed, replaced, or resized,
+or a link file's bytes changed, fails the result as a recorder that changed
+while being verified. A same-size in-place rewrite of a shard by a process
+with write access to the evidence directory is outside what an offline
+verifier can rule out. For a check of a live recorder, run
+"pipelock evidence doctor DIR".
 For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
@@ -419,6 +429,9 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 	printRestartContinuity(out, report)
 	if len(incomplete) > 0 {
 		_, _ = fmt.Fprintf(out, "INCOMPLETE RUNS (%d): %s\n", len(incomplete), strings.Join(incomplete, ", "))
+	}
+	if report.EvidenceChangedDuringVerification() {
+		return recorderChangedError(location.Dir)
 	}
 	if len(failed) > 0 {
 		if len(sessions) == 1 {
@@ -1255,6 +1268,11 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		_, _ = fmt.Fprintln(out)
 	}
 	printRestartContinuity(out, report)
+	if report.EvidenceChangedDuringVerification() {
+		// Any chain failure above may be the change itself, so the change
+		// is the verdict.
+		return recorderChangedError(location.Dir)
+	}
 	if len(failed) > 0 {
 		return fmt.Errorf("chain verification failed for %d of %d chain(s): %s (first: %w)", len(failed), len(targets), strings.Join(failed, ", "), firstErr)
 	}
@@ -1263,6 +1281,15 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		return fmt.Errorf("restart continuity: %d link finding(s), first %s on %s: %s", len(report.Findings), f.Kind, f.Session, f.Detail)
 	}
 	return nil
+}
+
+// recorderChangedError is the verdict when the recorder directory changed
+// while it was verified. It is not a continuity finding: the verifier cannot
+// say what the evidence holds, only that it did not hold still.
+func recorderChangedError(dir string) error {
+	return fmt.Errorf("the recorder in %s changed while it was being verified, so no verdict on its evidence was reached; "+
+		"stop the process writing to it, or copy the recorder directory and verify the copy; "+
+		"for a check of a live recorder, run `pipelock evidence doctor %s`", dir, dir)
 }
 
 // chainScopedTrust narrows the operator's endorsements and keys to one chain.
@@ -1287,6 +1314,9 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 		label = "RESTART CONTINUITY FAILED"
 	}
 	unlinked := report.Unlinked()
+	if report.EvidenceChangedDuringVerification() {
+		_, _ = fmt.Fprintln(out, "RECORDER CHANGED DURING VERIFICATION: shards or link files were added, removed, replaced, resized, or rewritten while they were read; the findings below describe the change, not the evidence")
+	}
 	_, _ = fmt.Fprintf(out, "%s: base %q: %d chain(s), %d linked, %d unlinked, %d link finding(s)\n",
 		label, report.Base, len(report.Chains), report.LinkCount(), len(unlinked), len(report.Findings))
 	for _, c := range report.Chains {

@@ -346,6 +346,69 @@ func detailJSONForHash(e Entry) []byte {
 	return detailJSON
 }
 
+// ChainWalker is the hash-chain check of VerifyChain applied one entry at a
+// time. It keeps only the previous entry's version and hash and the v3
+// namespace, so a caller can verify a recorder without holding it. The zero
+// value is ready. Once Add returns an error the walker stays failed and
+// returns that same error.
+type ChainWalker struct {
+	started                                bool
+	prevVersion                            int
+	prevHash                               string
+	v3SessionID, v3ChainKind, v3WriterInst string
+	err                                    error
+}
+
+// Add checks one entry against the chain so far.
+func (w *ChainWalker) Add(e Entry) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.err = w.add(e)
+	return w.err
+}
+
+// Err returns the first chain error, or nil.
+func (w *ChainWalker) Err() error { return w.err }
+
+func (w *ChainWalker) add(e Entry) error {
+	if !acceptedEntryVersions[e.Version] {
+		return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
+	}
+	if err := ValidateEntrySchema(e); err != nil {
+		return fmt.Errorf("entry seq %d: %w", e.Sequence, err)
+	}
+	if EntryVersionHasNamespace(e.Version) {
+		if w.started && !EntryVersionHasNamespace(w.prevVersion) {
+			return fmt.Errorf("entry seq %d: v3 chain cannot continue a legacy recorder namespace", e.Sequence)
+		}
+		if w.v3ChainKind == "" {
+			w.v3SessionID, w.v3ChainKind, w.v3WriterInst = e.SessionID, e.ChainKind, e.WriterInstanceID
+		} else if e.SessionID != w.v3SessionID || e.ChainKind != w.v3ChainKind || e.WriterInstanceID != w.v3WriterInst {
+			return fmt.Errorf("entry seq %d: v3 chain namespace changed", e.Sequence)
+		}
+	} else {
+		if w.v3ChainKind != "" {
+			return fmt.Errorf("entry seq %d: legacy entry cannot continue a v3 recorder namespace", e.Sequence)
+		}
+	}
+	computed := ComputeHash(e)
+	if computed != e.Hash {
+		return fmt.Errorf("entry seq %d: hash mismatch: computed %s, stored %s", e.Sequence, computed, e.Hash)
+	}
+	if !w.started {
+		if e.PrevHash != GenesisHash {
+			return fmt.Errorf("entry seq %d: first entry PrevHash should be %q, got %q", e.Sequence, GenesisHash, e.PrevHash)
+		}
+	} else if e.PrevHash != w.prevHash {
+		return fmt.Errorf("entry seq %d: chain break: PrevHash %s != previous Hash %s", e.Sequence, e.PrevHash, w.prevHash)
+	}
+	w.started = true
+	w.prevVersion = e.Version
+	w.prevHash = e.Hash
+	return nil
+}
+
 // VerifyChain checks the integrity of a sequence of entries. Returns an error
 // describing the first break found, or nil if the chain is intact. Mixed v1
 // and v2 entries are accepted; each entry's hash is computed using the
@@ -353,40 +416,10 @@ func detailJSONForHash(e Entry) []byte {
 // across the version boundary.
 // If pubKey is provided, checkpoint entry signatures are also verified.
 func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
-	var v3SessionID, v3ChainKind, v3WriterInstanceID string
-	for i, e := range entries {
-		if !acceptedEntryVersions[e.Version] {
-			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2, 3)", e.Sequence, e.Version)
-		}
-		if err := ValidateEntrySchema(e); err != nil {
-			return fmt.Errorf("entry seq %d: %w", e.Sequence, err)
-		}
-		if EntryVersionHasNamespace(e.Version) {
-			if i > 0 && !EntryVersionHasNamespace(entries[i-1].Version) {
-				return fmt.Errorf("entry seq %d: v3 chain cannot continue a legacy recorder namespace", e.Sequence)
-			}
-			if v3ChainKind == "" {
-				v3SessionID, v3ChainKind, v3WriterInstanceID = e.SessionID, e.ChainKind, e.WriterInstanceID
-			} else if e.SessionID != v3SessionID || e.ChainKind != v3ChainKind || e.WriterInstanceID != v3WriterInstanceID {
-				return fmt.Errorf("entry seq %d: v3 chain namespace changed", e.Sequence)
-			}
-		} else {
-			if v3ChainKind != "" {
-				return fmt.Errorf("entry seq %d: legacy entry cannot continue a v3 recorder namespace", e.Sequence)
-			}
-		}
-		computed := ComputeHash(e)
-		if computed != e.Hash {
-			return fmt.Errorf("entry seq %d: hash mismatch: computed %s, stored %s", e.Sequence, computed, e.Hash)
-		}
-		if i == 0 {
-			if e.PrevHash != GenesisHash {
-				return fmt.Errorf("entry seq %d: first entry PrevHash should be %q, got %q", e.Sequence, GenesisHash, e.PrevHash)
-			}
-		} else {
-			if e.PrevHash != entries[i-1].Hash {
-				return fmt.Errorf("entry seq %d: chain break: PrevHash %s != previous Hash %s", e.Sequence, e.PrevHash, entries[i-1].Hash)
-			}
+	var walk ChainWalker
+	for _, e := range entries {
+		if err := walk.Add(e); err != nil {
+			return err
 		}
 	}
 
@@ -477,37 +510,88 @@ func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
 }
 
 func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, int64, error) {
+	var entries []Entry
+	truncated, bytesRead, err := walkEntriesFromReader(r, limits, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, false, bytesRead, err
+	}
+	return entries, truncated, bytesRead, nil
+}
+
+// WalkEntries is ReadEntries without retaining the entries: it applies the
+// same default read limits, tail inspection, parsing and version fences, and
+// calls consume once per entry in file order. Any returned error invalidates
+// the whole walk, because consume may already have seen earlier entries.
+func WalkEntries(path string, consume func(Entry) error) error {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("opening evidence file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	limits := defaultEntryReadLimits()
+	truncated, bytesRead, err := walkEntriesFromReader(f, limits, consume)
+	if err != nil {
+		return fmt.Errorf("reading evidence file: %w", err)
+	}
+	if truncated {
+		return readLimitExceededError(path, limits, bytesRead)
+	}
+	return nil
+}
+
+// WalkEntriesFromReader is ReadEntriesFromReader without retaining the
+// entries, with the same limits and errors.
+func WalkEntriesFromReader(r io.Reader, consume func(Entry) error) error {
+	limits := defaultEntryReadLimits()
+	truncated, bytesRead, err := walkEntriesFromReader(r, limits, consume)
+	if err != nil {
+		return err
+	}
+	if truncated {
+		return readLimitExceededError("reader", limits, bytesRead)
+	}
+	return nil
+}
+
+// walkEntriesFromReader is the single entry reader. It delivers each parsed
+// entry to consume instead of collecting them, so a caller that verifies as
+// it reads holds one entry at a time. truncated reports that a read limit
+// stopped the walk; the entries delivered before it are a prefix.
+func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Entry) error) (bool, int64, error) {
 	// File-backed verification must report incomplete physical writes even if
 	// the final JSON object is valid. In-memory record parsing has no such
 	// newline contract. Inspect the existing handle to preserve secured opens.
 	if file, ok := r.(*os.File); ok {
 		info, err := file.Stat()
 		if err != nil {
-			return nil, false, 0, fmt.Errorf("stat evidence file: %w", err)
+			return false, 0, fmt.Errorf("stat evidence file: %w", err)
 		}
 		if info.Mode().IsRegular() && (limits.MaxBytes <= 0 || info.Size() <= limits.MaxBytes) {
 			if err := inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil)); err != nil {
-				return nil, false, 0, err
+				return false, 0, err
 			}
 		}
 	}
-	var entries []Entry
 	reader := bufio.NewReader(r)
 
 	var (
 		lineNum   int
 		bytesRead int64
 		line      []byte
+		delivered int
 	)
 	for {
 		fragment, err := reader.ReadSlice('\n')
 		if len(fragment) > 0 {
 			bytesRead += int64(len(fragment))
 			if limits.MaxBytes > 0 && bytesRead > limits.MaxBytes {
-				return entries, true, bytesRead, nil
+				return true, bytesRead, nil
 			}
 			if len(line)+len(fragment) > maxEntryWireLineBytes {
-				return nil, false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum+1, MaxEntryLineBytes)
+				return false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum+1, MaxEntryLineBytes)
 			}
 			line = append(line, fragment...)
 		}
@@ -517,10 +601,10 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 			continue
 		} else if errors.Is(err, io.EOF) {
 			if len(line) == 0 {
-				return entries, false, bytesRead, nil
+				return false, bytesRead, nil
 			}
 		} else {
-			return nil, false, bytesRead, fmt.Errorf("scanning evidence entries: %w", err)
+			return false, bytesRead, fmt.Errorf("scanning evidence entries: %w", err)
 		}
 		lineNum++
 		if len(line) > 0 && line[len(line)-1] == '\n' {
@@ -530,33 +614,36 @@ func readEntriesFromReader(r io.Reader, limits entryReadLimits) ([]Entry, bool, 
 			}
 		}
 		if len(line) > MaxEntryLineBytes {
-			return nil, false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
+			return false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
 		}
 		trimmed := strings.TrimSpace(string(line))
 		line = line[:0]
 		if trimmed == "" {
 			if errors.Is(err, io.EOF) {
-				return entries, false, bytesRead, nil
+				return false, bytesRead, nil
 			}
 			continue
 		}
-		if limits.MaxEntries > 0 && len(entries) >= limits.MaxEntries {
-			return entries, true, bytesRead, nil
+		if limits.MaxEntries > 0 && delivered >= limits.MaxEntries {
+			return true, bytesRead, nil
 		}
 
 		entry, parseErr := ParseEntryLine([]byte(trimmed))
 		if parseErr != nil {
-			return nil, false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, parseErr)
+			return false, bytesRead, fmt.Errorf("line %d: parsing entry: %w", lineNum, parseErr)
 		}
 		if !acceptedEntryVersions[entry.Version] {
-			return nil, false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, entry.Version)
+			return false, bytesRead, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2, 3)", lineNum, entry.Version)
 		}
 		if err := ValidateEntrySchema(entry); err != nil {
-			return nil, false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
+			return false, bytesRead, fmt.Errorf("line %d: %w", lineNum, err)
 		}
-		entries = append(entries, entry)
+		if consumeErr := consume(entry); consumeErr != nil {
+			return false, bytesRead, consumeErr
+		}
+		delivered++
 		if errors.Is(err, io.EOF) {
-			return entries, false, bytesRead, nil
+			return false, bytesRead, nil
 		}
 	}
 }

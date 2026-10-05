@@ -4,9 +4,12 @@
 package receipt
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
 	"slices"
@@ -204,10 +207,63 @@ func VerifyCrossChainEndorsement(e RotationEndorsement, link ChainLink) error {
 	return nil
 }
 
+// baseChainData is what VerifyBase keeps about one chain. It is gathered in
+// one streaming read and holds no receipts beyond the last one: the counts,
+// the first signer, the run nonces, whether a link's named tail occurs before
+// the chain's last receipt, and, when the chain's trust inputs were known
+// before the read, its verification results.
 type baseChainData struct {
-	chain    BaseChain
-	receipts []Receipt
-	evidence []contractreceipt.EvidenceReceipt
+	chain BaseChain
+
+	receiptCount  int
+	evidenceCount int
+	firstKey      string
+	last          Receipt
+	runNonces     map[string]struct{}
+	// tailMatches records, for each link tail that names this chain as its
+	// predecessor, how often a receipt with that sequence and hash occurs and
+	// where the last one sits.
+	tailMatches map[linkTail]tailMatch
+	// digest binds a later verification read to the entries this read saw.
+	digest [sha256.Size]byte
+
+	verified    bool
+	actionRes   ChainResult
+	evidenceRes contractreceipt.ChainResult
+}
+
+// linkTail is the predecessor tail a link names.
+type linkTail struct {
+	hash string
+	seq  uint64
+}
+
+// tailMatch counts receipts matching a linkTail and remembers the index of
+// the last one, which tells whether one occurs before the final receipt.
+type tailMatch struct {
+	count int
+	last  int
+}
+
+// clearSummary drops everything a failed read summarized. A receipt decode
+// failure keeps the receipts decoded before it, as later checks expect, so it
+// does not clear.
+func (d *baseChainData) clearSummary() {
+	d.receiptCount, d.evidenceCount = 0, 0
+	d.firstKey = ""
+	d.last = Receipt{}
+	d.runNonces = nil
+	d.tailMatches = nil
+}
+
+// sortedRunNonces returns the chain's distinct run nonces, sorted.
+func (d *baseChainData) sortedRunNonces() []string {
+	out := make([]string, 0, len(d.runNonces))
+	for n := range d.runNonces {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // chainLinkRecord is one link file as read from disk.
@@ -338,6 +394,23 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		}
 	}
 
+	// Every tail a link names, by predecessor, so a chain's read can note
+	// where those tails occur without keeping its receipts.
+	tails := make(map[string][]linkTail)
+	for _, lf := range links {
+		if lf.link != nil {
+			tails[lf.link.PredecessorSession] = append(tails[lf.link.PredecessorSession], linkTail{hash: lf.link.PredecessorTailHash, seq: lf.link.PredecessorTailSeq})
+		}
+	}
+	// Without endorsements every chain is verified under exactly the pinned
+	// keys, so it can be verified during the same read that loads it. With
+	// them, a chain's trust depends on its predecessor's verdict and its own
+	// tail, so it is verified by a second read in dependency order.
+	load := baseLoadOptions{linksOnly: opts.LinksOnly}
+	if !opts.LinksOnly && len(opts.Endorsements) == 0 {
+		load.verifyInline = true
+		load.trustedKeys = opts.TrustedKeys
+	}
 	data := make(map[string]*baseChainData, len(sessions))
 	for _, s := range sessions {
 		d := &baseChainData{chain: BaseChain{Session: s, Legacy: s == base}}
@@ -345,7 +418,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		if opts.LinksOnly && !need[s] {
 			continue
 		}
-		loadBaseChain(ix, d, opts.LinksOnly, add)
+		loadBaseChain(ix, d, load, tails[s], add)
 	}
 
 	// Attach each link file to its successor. Every rejection is a finding:
@@ -429,7 +502,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 					own = append(own, e)
 				}
 			}
-			verifyBaseChain(data[s], opts.TrustedKeys, own, endorsed[s], add)
+			verifyBaseChain(ix, data[s], opts.TrustedKeys, own, endorsed[s], add)
 		}
 		resolved := make(map[string]bool)
 		pending := sessions
@@ -446,8 +519,8 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 					}
 					// The endorsement's signer must be the key that signed the
 					// predecessor's actual tail, not only the key the link names.
-					endorsed[s] = exists && pred.chain.Valid && len(pred.receipts) > 0 &&
-						checkLinkedTail(pred.receipts, *data[s].chain.Link) == nil
+					endorsed[s] = exists && pred.chain.Valid && pred.receiptCount > 0 &&
+						checkLinkedTail(pred, *data[s].chain.Link) == nil
 				}
 				verify(s)
 				resolved[s] = true
@@ -490,7 +563,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 func checkRunNonces(data map[string]*baseChainData, sessions []string, add func(kind, session, detail string)) {
 	owner := make(map[string]string)
 	for _, s := range sessions {
-		for _, n := range runNonces(data[s].receipts) {
+		for _, n := range data[s].sortedRunNonces() {
 			if first, dup := owner[n]; dup {
 				add(FindingDuplicateRunNonce, s, fmt.Sprintf("run nonce %s is also signed in chain %s: the same run is present twice", n, first))
 				continue
@@ -503,57 +576,202 @@ func checkRunNonces(data map[string]*baseChainData, sessions []string, add func(
 // loadBaseChain reads one chain's receipts and records its tail. In
 // links-only mode a chain is valid when its tail receipt verifies on its own;
 // otherwise validity is decided later by full chain verification.
-func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(kind, session, detail string)) {
+// baseLoadOptions selects what loadBaseChain checks during its read.
+type baseLoadOptions struct {
+	linksOnly bool
+	// verifyInline verifies both receipt chains under trustedKeys during the
+	// load read, for a chain whose trust inputs cannot change afterwards.
+	verifyInline bool
+	trustedKeys  []string
+}
+
+// baseChainRead is the per-read state of one chain's entries: the checks a
+// read applies in order, each keeping its first failure, plus the summary
+// the later link checks need.
+type baseChainRead struct {
+	session    string
+	index      int
+	sessionErr error
+	outer      recorder.ChainWalker
+	evidence   bool // extract EvidenceReceipt v2 receipts
+	evErr      error
+	rErr       error
+	digest     hash.Hash
+
+	d       *baseChainData
+	tails   []linkTail
+	actions ChainAccumulator
+	evWalk  *EvidenceChainWalker
+}
+
+func (r *baseChainRead) add(e recorder.Entry) {
+	i := r.index
+	r.index++
+	writeEntryDigest(r.digest, e)
+	if r.sessionErr == nil && e.SessionID != r.session {
+		r.sessionErr = recorder.EntrySessionError(e, r.session)
+	}
+	if r.evidence {
+		_ = r.outer.Add(e)
+		if r.evErr == nil {
+			ev, ok, err := contractreceipt.EvidenceReceiptFromEntry(i, e)
+			switch {
+			case err != nil:
+				r.evErr = err
+			case ok:
+				r.d.evidenceCount++
+				if r.evWalk != nil {
+					r.evWalk.Add(ev)
+				}
+			}
+		}
+	}
+	if e.Type != recorderEntryType || r.rErr != nil {
+		return
+	}
+	rcpt, err := receiptFromEntry(e)
+	if err != nil {
+		r.rErr = err
+		return
+	}
+	r.addReceipt(*rcpt)
+}
+
+func (r *baseChainRead) addReceipt(rcpt Receipt) {
+	d := r.d
+	index := d.receiptCount
+	d.receiptCount++
+	if index == 0 {
+		d.firstKey = rcpt.SignerKey
+	}
+	d.last = rcpt
+	if n := rcpt.ActionRecord.RunNonce; n != "" {
+		if d.runNonces == nil {
+			d.runNonces = make(map[string]struct{})
+		}
+		d.runNonces[n] = struct{}{}
+	}
+	for _, t := range r.tails {
+		if rcpt.ActionRecord.ChainSeq != t.seq {
+			continue
+		}
+		if h, err := ReceiptHash(rcpt); err == nil && h == t.hash {
+			if d.tailMatches == nil {
+				d.tailMatches = make(map[linkTail]tailMatch)
+			}
+			m := d.tailMatches[t]
+			m.count++
+			m.last = index
+			d.tailMatches[t] = m
+		}
+	}
+	if r.actions != nil {
+		r.actions.Add(rcpt)
+	}
+}
+
+// writeEntryDigest folds one entry's identity and receipt bytes into h. A
+// second read of a chain must produce the same digest, so the receipts it
+// verifies are the receipts the first read summarized.
+func writeEntryDigest(h hash.Hash, e recorder.Entry) {
+	var n [8]byte
+	field := func(b []byte) {
+		binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+		_, _ = h.Write(n[:])
+		_, _ = h.Write(b)
+	}
+	binary.BigEndian.PutUint64(n[:], e.Sequence)
+	_, _ = h.Write(n[:])
+	field([]byte(e.Type))
+	field([]byte(e.SessionID))
+	field([]byte(e.Hash))
+	detail := []byte(e.RawDetail)
+	if len(detail) == 0 {
+		detail, _ = json.Marshal(e.Detail)
+	}
+	field(detail)
+}
+
+// walkIndexedEntries reads every recorder entry of session, in shard order,
+// with the same per-shard limits and errors as readIndexedEntries.
+func walkIndexedEntries(ix evidenceIndex, session string, consume func(recorder.Entry)) error {
+	files, err := ix.files(session)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := recorder.WalkEntries(f, func(e recorder.Entry) error {
+			consume(e)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("reading %s: %w", filepath.Base(f), err)
+		}
+	}
+	return nil
+}
+
+// loadBaseChain reads one chain once and records its tail. In links-only
+// mode a chain is valid when its tail receipt verifies on its own; otherwise
+// validity is decided by full chain verification, done during this read when
+// opts.verifyInline is set and by verifyBaseChain's own read otherwise.
+func loadBaseChain(ix evidenceIndex, d *baseChainData, opts baseLoadOptions, tails []linkTail, add func(kind, session, detail string)) {
 	s := d.chain.Session
-	entries, readErr := readIndexedEntries(ix, s)
+	read := &baseChainRead{session: s, evidence: !opts.linksOnly, digest: sha256.New(), d: d, tails: tails}
+	if opts.verifyInline {
+		read.actions = NewChainWalker(opts.trustedKeys)
+		read.evWalk = NewEvidenceChainWalker(opts.trustedKeys, contractreceipt.ChainVerifyOptions{})
+	}
+	readErr := walkIndexedEntries(ix, s, read.add)
 	if readErr == nil {
-		readErr = recorder.CheckEntrySessions(entries, s)
+		readErr = read.sessionErr
 	}
 	if readErr != nil {
+		// A chain that could not be read holds no receipts for any later
+		// check, whatever was summarized before the failure surfaced.
+		d.clearSummary()
 		d.chain.Error = readErr.Error()
 		add(FindingCorruptChain, s, readErr.Error())
 		return
 	}
-	if !linksOnly {
-		if chainErr := recorder.VerifyChain(entries); chainErr != nil {
+	read.digest.Sum(d.digest[:0])
+	if !opts.linksOnly {
+		if chainErr := read.outer.Err(); chainErr != nil {
 			add(FindingOuterChainBroken, s, chainErr.Error())
 		}
-		evidence, evErr := contractreceipt.ExtractEvidenceReceiptsFromEntries(entries)
-		if evErr != nil {
-			d.chain.Error = "evidence receipt chain: " + evErr.Error()
+		if read.evErr != nil {
+			// Receipts are extracted only once the evidence chain extracts.
+			d.clearSummary()
+			d.chain.Error = "evidence receipt chain: " + read.evErr.Error()
 			add(FindingCorruptChain, s, d.chain.Error)
 			return
 		}
-		d.evidence = evidence
-		d.chain.EvidenceReceipts = len(evidence)
+		d.chain.EvidenceReceipts = d.evidenceCount
 	}
-	for _, entry := range entries {
-		if entry.Type != recorderEntryType {
-			continue
-		}
-		rcpt, rErr := receiptFromEntry(entry)
-		if rErr != nil {
-			d.chain.Error = rErr.Error()
-			add(FindingCorruptChain, s, rErr.Error())
-			return
-		}
-		d.receipts = append(d.receipts, *rcpt)
+	if read.rErr != nil {
+		d.chain.Error = read.rErr.Error()
+		add(FindingCorruptChain, s, read.rErr.Error())
+		return
 	}
-	if len(d.receipts) == 0 {
+	if opts.verifyInline {
+		d.verified = true
+		d.actionRes = read.actions.Result()
+		d.evidenceRes = read.evWalk.Result()
+	}
+	if d.receiptCount == 0 {
 		// A chain with only EvidenceReceipt v2 entries is decided by full
 		// verification; one with no receipts of either kind has nothing to
 		// fail.
-		d.chain.Valid = len(d.evidence) == 0
+		d.chain.Valid = d.evidenceCount == 0
 		return
 	}
-	d.chain.Receipts = len(d.receipts)
-	d.chain.SignerKey = d.receipts[0].SignerKey
-	last := d.receipts[len(d.receipts)-1]
+	d.chain.Receipts = d.receiptCount
+	d.chain.SignerKey = d.firstKey
+	last := d.last
 	d.chain.FinalSeq = last.ActionRecord.ChainSeq
 	if h, hErr := ReceiptHash(last); hErr == nil {
 		d.chain.TailHash = h
 	}
-	if linksOnly {
+	if opts.linksOnly {
 		if tailErr := VerifyInternalConsistencyOnly(last); tailErr != nil {
 			d.chain.Error = tailErr.Error()
 			return
@@ -562,23 +780,79 @@ func loadBaseChain(ix evidenceIndex, d *baseChainData, linksOnly bool, add func(
 	}
 }
 
+// reverifyBaseChain reads a loaded chain again and verifies both receipt
+// chains under the trust its predecessor decided. The read must see exactly
+// the entries the load saw; anything else fails the chain.
+func reverifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement) error {
+	var actions ChainAccumulator
+	if len(own) > 0 {
+		actions = NewEndorsedChainWalker(d.chain.Session, own, trusted)
+	} else {
+		actions = NewChainWalker(trusted)
+	}
+	evWalk := NewEvidenceChainWalker(trusted, contractreceipt.ChainVerifyOptions{})
+	digest := sha256.New()
+	index := 0
+	var stepErr error
+	err := walkIndexedEntries(ix, d.chain.Session, func(e recorder.Entry) {
+		i := index
+		index++
+		writeEntryDigest(digest, e)
+		if stepErr != nil {
+			return
+		}
+		if ev, ok, evErr := contractreceipt.EvidenceReceiptFromEntry(i, e); evErr != nil {
+			stepErr = evErr
+			return
+		} else if ok {
+			evWalk.Add(ev)
+		}
+		if e.Type == recorderEntryType {
+			rcpt, rErr := receiptFromEntry(e)
+			if rErr != nil {
+				stepErr = rErr
+				return
+			}
+			actions.Add(*rcpt)
+		}
+	})
+	if err == nil {
+		err = stepErr
+	}
+	var sum [sha256.Size]byte
+	digest.Sum(sum[:0])
+	if err == nil && sum != d.digest {
+		err = errors.New("evidence changed between verification reads")
+	}
+	if err != nil {
+		return fmt.Errorf("re-reading chain for verification: %w", err)
+	}
+	d.verified = true
+	d.actionRes = actions.Result()
+	d.evidenceRes = evWalk.Result()
+	return nil
+}
+
 // verifyBaseChain runs full signature and key-trust verification on one
 // chain: its ActionReceipt v1 chain and its EvidenceReceipt v2 chain, each
 // when present. The chain is valid only when every chain present verifies.
-func verifyBaseChain(d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
-	if d.chain.Error != "" || (len(d.receipts) == 0 && len(d.evidence) == 0) {
+func verifyBaseChain(ix evidenceIndex, d *baseChainData, trusted []string, own []RotationEndorsement, endorsed bool, add func(kind, session, detail string)) {
+	if d.chain.Error != "" || (d.receiptCount == 0 && d.evidenceCount == 0) {
 		return
 	}
 	if endorsed && len(trusted) > 0 && d.chain.Link != nil {
 		trusted = append(slices.Clone(trusted), d.chain.Link.SuccessorSignerKey)
 	}
-	if len(d.receipts) > 0 {
-		var res ChainResult
-		if len(own) > 0 {
-			res = VerifyChainWithEndorsements(d.chain.Session, d.receipts, own, trusted)
-		} else {
-			res = VerifyChainTrusted(d.receipts, trusted)
+	if !d.verified {
+		if err := reverifyBaseChain(ix, d, trusted, own); err != nil {
+			d.chain.Valid = false
+			d.chain.Error = err.Error()
+			add(FindingCorruptChain, d.chain.Session, d.chain.Error)
+			return
 		}
+	}
+	if d.receiptCount > 0 {
+		res := d.actionRes
 		if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
 			d.chain.Valid = false
 			d.chain.Error = res.Error
@@ -586,8 +860,8 @@ func verifyBaseChain(d *baseChainData, trusted []string, own []RotationEndorseme
 			return
 		}
 	}
-	if len(d.evidence) > 0 {
-		res := VerifyEvidenceChainTrusted(d.evidence, trusted, contractreceipt.ChainVerifyOptions{})
+	if d.evidenceCount > 0 {
+		res := d.evidenceRes
 		if !res.Valid {
 			d.chain.Valid = false
 			d.chain.Error = "evidence receipt chain: " + res.Error
@@ -605,7 +879,7 @@ func checkBaseLink(data map[string]*baseChainData, s string, opts BaseVerifyOpti
 	if link == nil {
 		return
 	}
-	if len(d.receipts) > 0 && d.receipts[0].SignerKey != link.SuccessorSignerKey {
+	if d.receiptCount > 0 && d.firstKey != link.SuccessorSignerKey {
 		add(FindingInvalidLink, s, "link successor key does not sign the chain")
 	}
 	pred, exists := data[link.PredecessorSession]
@@ -613,11 +887,11 @@ func checkBaseLink(data map[string]*baseChainData, s string, opts BaseVerifyOpti
 		add(FindingDanglingLink, s, fmt.Sprintf("predecessor %q not found", link.PredecessorSession))
 		return
 	}
-	if !pred.chain.Valid || len(pred.receipts) == 0 {
+	if !pred.chain.Valid || pred.receiptCount == 0 {
 		add(FindingPredecessorUnverified, s, fmt.Sprintf("predecessor %q did not verify", link.PredecessorSession))
 		return
 	}
-	if checkErr := checkLinkedTail(pred.receipts, *link); checkErr != nil {
+	if checkErr := checkLinkedTail(pred, *link); checkErr != nil {
 		kind := FindingLinkTailMismatch
 		if errors.Is(checkErr, errAppendedAfterLink) {
 			kind = FindingAppendedAfterLink
@@ -641,8 +915,10 @@ func checkBaseLink(data map[string]*baseChainData, s string, opts BaseVerifyOpti
 var errAppendedAfterLink = errors.New("entries were appended to the predecessor after the linked tail")
 
 // checkLinkedTail matches the link against the predecessor's verified chain.
-func checkLinkedTail(receipts []Receipt, link ChainLink) error {
-	last := receipts[len(receipts)-1]
+// The predecessor's receipts were summarized when it was read: its last
+// receipt, and where each linked tail occurs.
+func checkLinkedTail(pred *baseChainData, link ChainLink) error {
+	last := pred.last
 	lastHash, err := ReceiptHash(last)
 	if err != nil {
 		return err
@@ -653,11 +929,10 @@ func checkLinkedTail(receipts []Receipt, link ChainLink) error {
 		}
 		return nil
 	}
-	for i := len(receipts) - 2; i >= 0; i-- {
-		h, hErr := ReceiptHash(receipts[i])
-		if hErr == nil && h == link.PredecessorTailHash && receipts[i].ActionRecord.ChainSeq == link.PredecessorTailSeq {
-			return errAppendedAfterLink
-		}
+	// A receipt before the last one carries the linked tail.
+	if m, ok := pred.tailMatches[linkTail{hash: link.PredecessorTailHash, seq: link.PredecessorTailSeq}]; ok &&
+		(m.count > 1 || m.last != pred.receiptCount-1) {
+		return errAppendedAfterLink
 	}
 	return fmt.Errorf("link names tail seq %d hash %s, predecessor tail is seq %d hash %s",
 		link.PredecessorTailSeq, link.PredecessorTailHash, last.ActionRecord.ChainSeq, lastHash)

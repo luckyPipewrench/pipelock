@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -58,7 +59,7 @@ func TestFilesystemPropertyParity(t *testing.T) {
 func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
 	root := t.TempDir()
 	secret := filepath.Join(root, "secret")
-	if err := os.Mkdir(secret, 0o755); err != nil {
+	if err := os.Mkdir(secret, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	prevRoot := filesystemCanaryRoot
@@ -107,7 +108,7 @@ func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	marker := filepath.Join(dir, "helper-ran")
 	helper := filepath.Join(dir, "pipelock")
 	script := "#!/bin/bash\necho ran > " + marker + "\nexit 3\n"
-	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(helper, []byte(script), 0o700); err != nil { //nolint:gosec // G306: this test executes the stub it just wrote
 		t.Fatal(err)
 	}
 	env.pipelockTarget = helper
@@ -123,10 +124,12 @@ func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	end := strings.Index(body[start:], "\n")
 	body = body[:start] + "if false; then" + body[start+end:]
 	path := filepath.Join(dir, "plk-contained-launch")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec // G306: this test executes the wrapper it just wrote
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bash, path)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bash, path) //nolint:gosec // G204: bash is LookPath's result and the script is the temp file this test wrote
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Fatalf("wrapper succeeded after helper failure: %s", out)

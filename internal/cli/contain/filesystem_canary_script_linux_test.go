@@ -81,9 +81,9 @@ func filesystemCanaryScriptExit(t *testing.T, readOnlyWrite bool, op, inode, wri
 	var cmd *exec.Cmd
 	if readOnlyWrite {
 		script := "mount --bind \"$3\" \"$3\" && mount -o remount,bind,ro \"$3\" || exit 99\n" + filesystemCanaryScript
-		cmd = exec.Command("unshare", "--user", "--map-root-user", "--mount", "/bin/bash", "-c", script, "bash", op, inode, write, workspace, secret)
+		cmd = exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--mount", "/bin/bash", "-c", script, "bash", op, inode, write, workspace, secret)
 	} else {
-		cmd = exec.Command("/bin/bash", "-c", filesystemCanaryScript, "bash", op, inode, write, workspace, secret)
+		cmd = exec.CommandContext(t.Context(), "/bin/bash", "-c", filesystemCanaryScript, "bash", op, inode, write, workspace, secret)
 	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {

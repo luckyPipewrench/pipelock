@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"runtime"
 	"testing"
 	"unsafe"
 
@@ -39,6 +40,9 @@ import (
 func applyUserNSDenyFilter(t *testing.T) {
 	t.Helper()
 
+	// Keep the per-thread prerequisite on the thread installing this filter.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := SetNoNewPrivs(); err != nil {
 		t.Fatalf("set no_new_privs before user-namespace deny filter: %v", err)
 	}

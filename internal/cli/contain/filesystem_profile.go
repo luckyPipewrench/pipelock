@@ -617,6 +617,14 @@ func configuredSecretPaths(cfg *config.Config) (required, optional []string) {
 // own status: contain run does not refuse it, and verify does not count it as
 // a pass, a skip, or a failure. Enforce runs the canary and fails closed.
 func probeFilesystemConfinement(ctx context.Context, env *probeEnv) (string, string) {
+	// service-posture signs an operator-written unit Pipelock does not render.
+	// A canary of a separate transient unit would not be that unit's filesystem,
+	// so this path reports a distinct non-pass and clears any preloaded profile
+	// before a test hook or a config load can turn it into a signed claim.
+	if env != nil && env.postureLauncher == servicePostureLauncher {
+		env.filesystem = filesystemProfile{}
+		return statusFilesystemNotApplicable, filesystemNotApplicableDetail
+	}
 	if env != nil && env.filesystemProbe != nil {
 		return env.filesystemProbe(ctx, env)
 	}

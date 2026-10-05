@@ -248,8 +248,10 @@ func runContainRun(
 
 	contract := buildSessionContract(env.probe, tool, entries, grants, proofPath)
 	contract.Command = commandLabel
-	contract.FilesystemMode = env.probe.filesystem.Mode
-	contract.FilesystemBinds = filesystemContractBinds(env.probe.filesystem)
+	if !opts.servicePrestart {
+		contract.FilesystemMode = env.probe.filesystem.Mode
+		contract.FilesystemBinds = filesystemContractBinds(env.probe.filesystem)
+	}
 	// The contract is the operator's review surface. If it cannot be written
 	// (closed pipe, failed writer) nobody saw the boundary, so refuse to go on
 	// rather than emit a capsule and launch unreviewed (fail closed).
@@ -689,7 +691,7 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 	for _, p := range probesForEnv(env) {
 		status, detail := p.fn(ctx, env)
 		writeTextLine(out, p, status, detail)
-		if status != statusPass && status != statusFilesystemOff {
+		if !containRunPreflightAllows(env, status) {
 			return nil, cliutil.ExitCodeError(cliutil.ExitGeneral,
 				fmt.Errorf("containment preflight failed at probe %d (%s): %s: %s", p.n, p.name, status, detail))
 		}
@@ -716,6 +718,17 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 			fmt.Errorf("containment preflight failed at requested_tool_registered: %s: %s", status, detail))
 	}
 	return entries, nil
+}
+
+// containRunPreflightAllows is the launch gate. Pass and an explicit off
+// profile may continue. The service-posture filesystem result may continue
+// because that command does not claim filesystem confinement; every other
+// non-pass still refuses the launch.
+func containRunPreflightAllows(env *probeEnv, status string) bool {
+	if status == statusPass || status == statusFilesystemOff {
+		return true
+	}
+	return env != nil && env.postureLauncher == servicePostureLauncher && status == statusFilesystemNotApplicable
 }
 
 func probeAgentPrivilegeEscapeDenied(ctx context.Context, env *probeEnv) (string, string) {
@@ -868,7 +881,7 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 	if launcher == "" {
 		launcher = defaultLaunchScript
 	}
-	mode, digest := filesystemEvidenceFields(env.filesystem)
+	mode, digest := filesystemEvidenceForLaunch(env)
 	return posturepkg.ContainLaunchEvidence{
 		Launcher:              launcher,
 		AgentUser:             env.agentUserName,
@@ -898,7 +911,7 @@ func containRunContainmentEvidence(env *probeEnv, targetUID string) (posturepkg.
 		if err != nil {
 			return posturepkg.ContainmentEvidence{}, err
 		}
-		mode, digest := filesystemEvidenceFields(env.filesystem)
+		mode, digest := filesystemEvidenceForLaunch(env)
 		return posturepkg.ContainmentEvidence{
 			Mode:                     posturepkg.ContainmentModeKernelNFTOwnerMatch,
 			BoundaryVerified:         true,
@@ -954,6 +967,16 @@ func filesystemEvidenceFields(profile filesystemProfile) (string, string) {
 		return "", ""
 	}
 	return profile.Mode, filesystemBindsDigest(profile)
+}
+
+// filesystemEvidenceForLaunch omits the filesystem claim when the signed
+// capsule is for an operator-managed unit. A profile loaded or injected on
+// that path is not evidence of the unit systemd is about to start.
+func filesystemEvidenceForLaunch(env *probeEnv) (string, string) {
+	if env == nil || env.postureLauncher == servicePostureLauncher {
+		return "", ""
+	}
+	return filesystemEvidenceFields(env.filesystem)
 }
 
 func groupIDStrings(groups []uint32) []string {

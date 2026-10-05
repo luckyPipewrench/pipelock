@@ -85,6 +85,12 @@ const (
 	// run allows it. verify and doctor count it apart from pass, fail, skip,
 	// and unknown so an upgrade that leaves the key absent stays exit 0.
 	statusFilesystemOff = "off"
+	// statusFilesystemNotApplicable is the service-posture result. Pipelock
+	// does not render that unit, so it neither tests nor signs a filesystem
+	// claim. The status is not a pass and is not confinement. verify and
+	// doctor never produce it; an unexpected appearance is coerced to fail.
+	statusFilesystemNotApplicable = "not-applicable"
+	filesystemNotApplicableDetail = "not applicable: operator-managed unit"
 
 	// Internal: cap on stdout/stderr we keep from a subprocess so a
 	// runaway command can't blow the runner's heap.
@@ -1617,6 +1623,8 @@ func writeTextLine(w io.Writer, p probe, status, detail string) {
 		tag = "[UNKNOWN]"
 	case statusFilesystemOff:
 		tag = "[OFF]"
+	case statusFilesystemNotApplicable:
+		tag = "[N/A]"
 	}
 
 	line := fmt.Sprintf("  %s probe %d: %s", tag, p.n, p.desc)

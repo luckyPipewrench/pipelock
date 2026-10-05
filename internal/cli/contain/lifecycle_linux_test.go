@@ -628,6 +628,74 @@ func lifecycleTestOwner(t *testing.T) uint32 {
 	return uint32(uid)
 }
 
+func waitLifecycleBudget(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func TestLifecycleCleanupBindRetryLeavesStopBudget(t *testing.T) {
+	l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+	bindLifecycleFixture(l, fields)
+	l.record.AdmissionObserved = false
+	const managerRead = 1250 * time.Millisecond
+	if managerRead >= lifecycleCommandBudget {
+		t.Fatal("manager read must stay inside one helper budget")
+	}
+	b := lifecycleTestBackend(fields)
+	shows := 0
+	actions := 0
+	b.wait = waitLifecycleBudget
+	b.show = func(ctx context.Context, unit string) (map[string]string, error) {
+		shows++
+		if err := waitLifecycleBudget(ctx, managerRead); err != nil {
+			return nil, err
+		}
+		if unit != l.record.Unit {
+			return nil, errors.New("wrong unit")
+		}
+		observed := make(map[string]string, len(fields))
+		for key, value := range fields {
+			observed[key] = value
+		}
+		return observed, nil
+	}
+	b.execStart = func(ctx context.Context, _ string) ([]string, error) {
+		if err := waitLifecycleBudget(ctx, managerRead); err != nil {
+			return nil, err
+		}
+		return append([]string(nil), l.argv...), nil
+	}
+	b.binds = func(ctx context.Context, _ string) ([]systemdBindEntry, []systemdBindEntry, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errors.New("typed bind read still down")
+	}
+	b.action = func(ctx context.Context, _ string, _ ...string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		actions++
+		fields["ActiveState"], fields["MainPID"] = "inactive", "0"
+		return nil
+	}
+	b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycleCleanupTimeout)
+	defer cancel()
+	start := time.Now()
+	err := stopLifecycleService(ctx, l, 966, b)
+	elapsed := time.Since(start)
+	if actions != 1 || elapsed >= lifecycleCleanupTimeout || errors.Is(err, context.DeadlineExceeded) || !l.record.CleanupComplete || l.record.AdmissionObserved || !l.record.OwnershipObserved {
+		t.Fatalf("elapsed=%s shows=%d actions=%d admitted=%v owned=%v cleanup=%v err=%v", elapsed, shows, actions, l.record.AdmissionObserved, l.record.OwnershipObserved, l.record.CleanupComplete, err)
+	}
+}
+
 func TestLifecycleOwnershipWitnessSeparateFromAdmission(t *testing.T) {
 	entries := func(t *testing.T, l *containRunLifecycle) []systemdBindEntry {
 		t.Helper()

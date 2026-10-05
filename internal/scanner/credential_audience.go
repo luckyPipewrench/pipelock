@@ -9,9 +9,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,6 +134,10 @@ func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint1
 // unreachable from YAML, so this cannot widen the floor from configuration. This
 // deliberately fails closed: a host allow is never inferred from a parse error.
 func filterCredentialAudience(candidates []credentialAudienceCandidate, target, surface string) ([]bool, []CredentialAudienceAllow) {
+	return filterCredentialAudienceAt(candidates, target, surface, time.Now())
+}
+
+func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target, surface string, now time.Time) ([]bool, []CredentialAudienceAllow) {
 	keep := make([]bool, len(candidates))
 	for i := range keep {
 		keep[i] = true
@@ -152,10 +160,10 @@ func filterCredentialAudience(candidates []credentialAudienceCandidate, target, 
 		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
 			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts)
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
-			!releaseGrantSASCandidateAllowed(candidate, host, target, surface) &&
+			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
 			!registryBearerAllowed(candidate, host, target, surface) &&
-			!attestationBundleSASCandidateAllowed(candidate, host, target, surface) {
+			!attestationBundleSASCandidateAllowed(candidate, host, target, surface, now) {
 			continue
 		}
 		keep[i] = false
@@ -337,7 +345,7 @@ func registryJWTAudienceMatches(token, host string) bool {
 		return false
 	}
 	var claims map[string]json.RawMessage
-	if !decodeJWTSegment(parts[1], &claims) {
+	if !decodeJWTSegment(parts[1], 0, &claims) {
 		return false
 	}
 	if !jwtAudienceNamesHost(claims["aud"], host) {
@@ -475,11 +483,10 @@ func releaseGrantSASShapeValid(parsed *url.URL) bool {
 // query-entropy exemption (releaseGrantSASQueryValueAllowed) all answer
 // through it, so none of them can independently decide a different release
 // grant than the others. The SAS signature is never verified here -- it is an
-// HMAC under an Azure key this proxy does not hold -- so trust rests
-// entirely on the co-located JWT downloadGrantClaimsMatch already proved
-// GitHub issued for this exact host, plus the query carrying GitHub's whole
-// delegation-key SAS shape.
-func releaseGrantSASAllowed(hosts []string, host, target string) bool {
+// HMAC under an Azure key this proxy does not hold -- so the allowance requires
+// bounded JWT claims naming this host, a current validity window, and the
+// complete delegation-key SAS shape. This does not authenticate issuance.
+func releaseGrantSASAllowed(hosts []string, host, target string, now time.Time) bool {
 	if len(hosts) == 0 || !destination.MatchesDomainList(host, hosts) {
 		return false
 	}
@@ -487,17 +494,17 @@ func releaseGrantSASAllowed(hosts []string, host, target string) bool {
 	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return false
 	}
-	return len(validatedQueryGrants(parsed)) > 0 && releaseGrantSASShapeValid(parsed)
+	return len(validatedQueryGrants(parsed, now)) > 0 && releaseGrantSASShapeValid(parsed) && sasValidityWindowValid(parsed.Query(), now)
 }
 
 // releaseGrantSASCandidateAllowed is releaseGrantSASAllowed gated to the
 // url_query surface and the compiled ReleaseGrantSAS carrier, mirroring
 // gitTransportAllowed's shape for its own separate grant.
-func releaseGrantSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+func releaseGrantSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
 	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 		return false
 	}
-	return releaseGrantSASAllowed(candidate.hosts, host, target)
+	return releaseGrantSASAllowed(candidate.hosts, host, target, now)
 }
 
 // githubAttestationBundleHosts are the storage accounts GitHub names as the
@@ -551,7 +558,7 @@ var attestationBundleSASSignedParamSet = func() map[string]bool {
 // credential in the same URL (path, extra parameters, signed fields) is
 // still scanned and blocked; TestAttestationBundleSASReleasesOnlyTheSignature
 // pins that. The release-download grant rule rests on the same bound.
-func attestationBundleSASAllowed(host, target string) bool {
+func attestationBundleSASAllowed(host, target string, now time.Time) bool {
 	if !destination.MatchesDomainList(host, githubAttestationBundleHosts) {
 		return false
 	}
@@ -562,7 +569,7 @@ func attestationBundleSASAllowed(host, target string) bool {
 	if !attestationBundlePath(parsed) {
 		return false
 	}
-	return attestationBundleSASQueryValid(parsed)
+	return attestationBundleSASQueryValid(parsed, now)
 }
 
 func attestationBundlePath(u *url.URL) bool {
@@ -574,7 +581,7 @@ func attestationBundlePath(u *url.URL) bool {
 	return ok && rest != ""
 }
 
-func attestationBundleSASQueryValid(parsed *url.URL) bool {
+func attestationBundleSASQueryValid(parsed *url.URL, now time.Time) bool {
 	query := parsed.Query()
 	for _, name := range attestationBundleSASSignedParams {
 		values := query[name]
@@ -597,14 +604,14 @@ func attestationBundleSASQueryValid(parsed *url.URL) bool {
 	if err != nil || !expiry.After(start) {
 		return false
 	}
-	return expiry.Sub(start) <= attestationBundleSASMaxLifetime
+	return expiry.Sub(start) <= attestationBundleSASMaxLifetime && grantValidityWindowValid(start, expiry, now)
 }
 
-func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string) bool {
+func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
 	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 		return false
 	}
-	return attestationBundleSASAllowed(host, target)
+	return attestationBundleSASAllowed(host, target, now)
 }
 
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
@@ -612,14 +619,22 @@ func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
 }
 
 func (s *Scanner) credentialAudienceAllows(pattern *compiledPattern, target, surface string) (CredentialAudienceAllow, bool) {
-	return s.credentialAudienceAllowsWithHeader(pattern, target, surface, "")
+	return s.credentialAudienceAllowsAt(pattern, target, surface, s.currentTime())
+}
+
+func (s *Scanner) credentialAudienceAllowsAt(pattern *compiledPattern, target, surface string, now time.Time) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, "", now)
 }
 
 func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, target, surface, headerValue string) (CredentialAudienceAllow, bool) {
+	return s.credentialAudienceAllowsWithHeaderAt(pattern, target, surface, headerValue, s.currentTime())
+}
+
+func (s *Scanner) credentialAudienceAllowsWithHeaderAt(pattern *compiledPattern, target, surface, headerValue string, now time.Time) (CredentialAudienceAllow, bool) {
 	if pattern == nil {
 		return CredentialAudienceAllow{}, false
 	}
-	keep, allows := filterCredentialAudience([]credentialAudienceCandidate{{
+	keep, allows := filterCredentialAudienceAt([]credentialAudienceCandidate{{
 		patternName:       pattern.name,
 		hosts:             pattern.credentialAudienceHosts,
 		authorizationOnly: pattern.credentialAudienceAuthorizationOnly,
@@ -627,7 +642,7 @@ func (s *Scanner) credentialAudienceAllowsWithHeader(pattern *compiledPattern, t
 		gitHosts:          pattern.credentialAudienceGitHosts,
 		registryHosts:     pattern.credentialAudienceRegistryHosts,
 		headerValue:       headerValue,
-	}}, target, surface)
+	}}, target, surface, now)
 	if len(keep) != 1 || keep[0] || len(allows) != 1 {
 		return CredentialAudienceAllow{}, false
 	}
@@ -679,7 +694,7 @@ func (s *Scanner) filterTextDLPMatchesForDestination(matches []TextDLPMatch, tar
 		candidates[i].registryHosts = match.credentialAudienceRegistryHosts
 		candidates[i].headerValue = headerValue
 	}
-	keep, allows := filterCredentialAudience(candidates, target, surface)
+	keep, allows := filterCredentialAudienceAt(candidates, target, surface, s.currentTime())
 	filtered := make([]TextDLPMatch, 0, len(matches))
 	for i, match := range matches {
 		if keep[i] {
@@ -805,6 +820,10 @@ func deduplicateCredentialAudienceAllows(allows []CredentialAudienceAllow) []Cre
 // match must span the whole value, so any extra bytes beside the credential
 // keep the value under entropy scoring. Every other scanner still runs.
 func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
+	return s.queryValueIsAudienceCredentialAt(target, value, s.currentTime())
+}
+
+func (s *Scanner) queryValueIsAudienceCredentialAt(target, value string, now time.Time) bool {
 	if value == "" {
 		return false
 	}
@@ -816,7 +835,13 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 		if !ok || start != 0 || end != len(value) {
 			continue
 		}
-		if _, allowed := s.credentialAudienceAllows(p, target, credentialAudienceURLQuerySurface); allowed {
+		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierURLQuery != 0 {
+			host, ok := canonicalCredentialAudienceDestination(target)
+			if !ok || !downloadGrantClaimsMatch(value, host, now) {
+				continue
+			}
+		}
+		if _, allowed := s.credentialAudienceAllowsAt(p, target, credentialAudienceURLQuerySurface, now); allowed {
 			return true
 		}
 	}
@@ -830,6 +855,10 @@ func (s *Scanner) queryValueIsAudienceCredential(target, value string) bool {
 // delegation-key GUID) would still be blocked by entropy even after DLP has
 // allowed it, which would make the fix inert for the operator.
 func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) bool {
+	return s.releaseGrantSASQueryValueAllowedAt(parsed, key, s.currentTime())
+}
+
+func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string, now time.Time) bool {
 	// The name is matched exactly, as the shape check matches it, so a case
 	// alias of a signed field cannot take an exemption meant for the field.
 	if parsed == nil || (!releaseGrantSASSignedParamSet[key] && !attestationBundleSASSignedParamSet[key]) {
@@ -847,10 +876,10 @@ func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) 
 		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 			continue
 		}
-		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String()) {
+		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String(), now) {
 			return true
 		}
-		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String()) {
+		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String(), now) {
 			return true
 		}
 	}
@@ -876,7 +905,8 @@ func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo
 	withoutQuery := *parsed
 	withoutQuery.RawQuery = ""
 	withoutQuery.ForceQuery = false
-	result, _ := s.checkDLP(&withoutQuery)
+	var decodes decodingMemo
+	result, _ := s.checkDLPWithDecodesAt(&withoutQuery, &decodes, s.queryScanTime(memo))
 	if memo != nil {
 		memo.done, memo.clean = true, result.Allowed
 	}
@@ -886,8 +916,17 @@ func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo
 // queryLessDLPMemo holds the query-less rescan result for one outer URL scan,
 // so several URL-query audience matches in that scan share one rescan.
 type queryLessDLPMemo struct {
-	done  bool
-	clean bool
+	now    time.Time
+	nowSet bool
+	done   bool
+	clean  bool
+}
+
+func (s *Scanner) queryScanTime(memo *queryLessDLPMemo) time.Time {
+	if memo != nil && memo.nowSet {
+		return memo.now
+	}
+	return s.currentTime()
 }
 
 // urlDLPAudienceSurface picks the decision surface for a URL DLP match. It is
@@ -898,6 +937,7 @@ type queryLessDLPMemo struct {
 // fragment, and one split across the path and query, stays "url", which no
 // query-carrier audience accepts. Any parse or scan uncertainty stays "url".
 func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, memo *queryLessDLPMemo) string {
+	now := s.queryScanTime(memo)
 	const bareURLSurface = "url"
 	const queryCarrierMask = config.CredentialAudienceCarrierURLQuery | config.CredentialAudienceCarrierReleaseGrantSAS
 	if p == nil || p.credentialAudienceCarrierMask&queryCarrierMask == 0 ||
@@ -906,7 +946,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	}
 	// Only an audience host can ever earn url_query, so every other destination
 	// skips the query-less rescan below.
-	if _, allowed := s.credentialAudienceAllows(p, parsed.String(), credentialAudienceURLQuerySurface); !allowed {
+	if _, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), credentialAudienceURLQuerySurface, now); !allowed {
 		return bareURLSurface
 	}
 	if !s.queryLessURLScansClean(parsed, memo) {
@@ -936,7 +976,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// Every credential match in the query must be a download grant issued for
 	// this host. One unrelated or undecodable token keeps the whole URL on the
 	// bare surface, so a real grant cannot carry a second token past DLP.
-	grants := validatedQueryGrants(parsed)
+	grants := validatedQueryGrants(parsed, now)
 	// The Azure SAS is never itself a grant, so it cannot use the per-match
 	// isGrant/startsWithGrant check below, which only makes sense for a
 	// pattern whose match text IS the credential being validated (the JWT).
@@ -947,8 +987,8 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// planted in the path or elsewhere cannot ride a genuine grant's query.
 	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
 		host, hostOK := canonicalCredentialAudienceDestination(parsed.String())
-		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String())
-		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed)) {
+		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String(), now)
+		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed) || !sasValidityWindowValid(parsed.Query(), now)) {
 			return bareURLSurface
 		}
 		matchInView := func(view string) bool {
@@ -1032,12 +1072,12 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 // candidateTokensAreGrants reports whether every match of p in text is a
 // download grant for target's host. A target that does not parse, or text
 // with no match, is false.
-func candidateTokensAreGrants(p *compiledPattern, text, target string) bool {
+func candidateTokensAreGrants(p *compiledPattern, text, target string, now time.Time) bool {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return false
 	}
-	grants := validatedQueryGrants(parsed)
+	grants := validatedQueryGrants(parsed, now)
 	locs := p.re.FindAllStringIndex(text, -1)
 	if len(locs) == 0 {
 		return false
@@ -1053,12 +1093,12 @@ func candidateTokensAreGrants(p *compiledPattern, text, target string) bool {
 // validatedQueryGrants returns the query values that are, whole and on their
 // own, a download grant for the URL's host. GitHub sends the grant as one
 // query value; a grant reassembled from several values is not one.
-func validatedQueryGrants(parsed *url.URL) []string {
+func validatedQueryGrants(parsed *url.URL, now time.Time) []string {
 	host := canonicalAudienceHost(parsed.Hostname())
 	var grants []string
 	for _, values := range parsed.Query() {
 		for _, v := range values {
-			if downloadGrantClaimsMatch(v, host) {
+			if downloadGrantClaimsMatch(v, host, now) {
 				grants = append(grants, v)
 			}
 		}
@@ -1094,35 +1134,35 @@ func canonicalAudienceHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
-// downloadGrantClaimsMatch reports whether token is a JWT whose payload names
-// GitHub as issuer and host as audience. Any decode or shape failure is false.
-// The signature is not verified: GitHub signs the grant with HS256 under a key
-// only GitHub holds, so no proxy can check it. The check binds the token to
-// its stated purpose rather than authenticating it. A forged token that
-// passes can only deliver its bytes to GitHub's own download storage, which
-// the sender cannot read back; the destination check is what stops a leak.
-func downloadGrantClaimsMatch(token, host string) bool {
+// downloadGrantClaimsMatch validates the audience, bounded claim shape and
+// current validity window. The HS256 signature cannot be authenticated here.
+func downloadGrantClaimsMatch(token, host string, now time.Time) bool {
+	start, expiry, ok := downloadGrantClaims(token, host)
+	return ok && grantValidityWindowValid(start, expiry, now)
+}
+
+func downloadGrantClaims(token, host string) (time.Time, time.Time, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return false
+		return time.Time{}, time.Time{}, false
 	}
 	// Header: exactly the two fields GitHub sends.
 	var header map[string]string
-	if !decodeJWTSegment(parts[0], &header) || len(header) != 2 || header["typ"] != "JWT" || header["alg"] != "HS256" {
-		return false
+	if !decodeJWTSegment(parts[0], downloadGrantMaxHeaderBytes, &header) || len(header) != 2 || header["typ"] != "JWT" || header["alg"] != "HS256" {
+		return time.Time{}, time.Time{}, false
 	}
 	// Signature: an HS256 MAC is exactly 32 bytes, so it has no room to carry
 	// anything else.
 	if sig, err := base64.RawURLEncoding.DecodeString(parts[2]); err != nil || len(sig) != sha256.Size {
-		return false
+		return time.Time{}, time.Time{}, false
 	}
 	var claims map[string]json.RawMessage
-	if !decodeJWTSegment(parts[1], &claims) {
-		return false
+	if !decodeJWTSegment(parts[1], downloadGrantMaxPayloadBytes(host), &claims) {
+		return time.Time{}, time.Time{}, false
 	}
 	for name := range claims {
 		if !downloadGrantClaimNames[name] {
-			return false
+			return time.Time{}, time.Time{}, false
 		}
 	}
 	var iss, aud, key, grantPath string
@@ -1130,17 +1170,17 @@ func downloadGrantClaimsMatch(token, host string) bool {
 	if !jsonField(claims, "iss", &iss) || iss != config.GitHubDownloadGrantIssuer ||
 		!jsonField(claims, "aud", &aud) || canonicalAudienceHost(aud) != host ||
 		!jsonField(claims, "exp", &exp) || !jsonField(claims, "nbf", &nbf) ||
-		exp <= nbf || exp-nbf > downloadGrantMaxLifetimeSeconds {
-		return false
+		!downloadGrantLifetimeValid(nbf, exp) {
+		return time.Time{}, time.Time{}, false
 	}
-	// key and path are optional in shape but must be plain strings when set.
-	if _, ok := claims["key"]; ok && !jsonField(claims, "key", &key) {
-		return false
+	// Optional claims keep the sampled format and explicit length bounds.
+	if _, ok := claims["key"]; ok && (!jsonField(claims, "key", &key) || len(key) > downloadGrantMaxKeyLength || !downloadGrantKeyFormat.MatchString(key)) {
+		return time.Time{}, time.Time{}, false
 	}
-	if _, ok := claims["path"]; ok && !jsonField(claims, "path", &grantPath) {
-		return false
+	if _, ok := claims["path"]; ok && (!jsonField(claims, "path", &grantPath) || len(grantPath) > downloadGrantMaxPathLength || !slices.Contains(githubReleaseGrantStorageHosts, grantPath)) {
+		return time.Time{}, time.Time{}, false
 	}
-	return true
+	return time.Unix(nbf, 0), time.Unix(exp, 0), true
 }
 
 // downloadGrantClaimNames is the complete claim set of GitHub's release
@@ -1154,14 +1194,72 @@ var downloadGrantClaimNames = map[string]bool{"aud": true, "exp": true, "iss": t
 // near GitHub's 2 GiB file limit have not been measured.
 const downloadGrantMaxLifetimeSeconds = 3600
 
-func decodeJWTSegment(segment string, v any) bool {
+// decodeJWTSegment decodes one base64url JWT segment into v. A positive
+// maxBytes bounds the decoded segment and is checked before decoding. A
+// member name repeated in any object is refused: the decoder keeps only the
+// last occurrence, so checks on decoded claims would not bound the others.
+func decodeJWTSegment(segment string, maxBytes int, v any) bool {
+	if maxBytes > 0 && base64.RawURLEncoding.DecodedLen(len(segment)) > maxBytes {
+		return false
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(segment)
-	if err != nil {
+	if err != nil || !jsonMemberNamesUnique(raw) {
 		return false
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	return dec.Decode(v) == nil && !dec.More()
+}
+
+// jsonMemberNamesUnique reports whether no object in raw repeats a member
+// name. Names compare after unescaping, as the decoder compares them. A
+// syntax error is false; the full decode afterwards checks the structure.
+func jsonMemberNamesUnique(raw []byte) bool {
+	type frame struct {
+		names    map[string]bool // nil for an array
+		wantName bool
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var stack []*frame
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].names != nil {
+			stack[n-1].wantName = true
+		}
+	}
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return len(stack) == 0
+		}
+		if err != nil {
+			return false
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, &frame{names: map[string]bool{}, wantName: true})
+			case '[':
+				stack = append(stack, &frame{})
+			default:
+				stack = stack[:len(stack)-1]
+				valueDone()
+			}
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].wantName {
+				if stack[n-1].names[t] {
+					return false
+				}
+				stack[n-1].names[t] = true
+				stack[n-1].wantName = false
+				continue
+			}
+			valueDone()
+		default:
+			valueDone()
+		}
+	}
 }
 
 func jsonField(claims map[string]json.RawMessage, name string, v any) bool {
@@ -1225,4 +1323,151 @@ func releaseGrantSASQueryViews(rawQuery string) []string {
 		}
 	}
 	return views
+}
+
+// githubReleaseGrantStorageHosts are the storage accounts a release download
+// grant's path claim may name. Each entry is one account, matched exactly;
+// *.blob.core.windows.net is not an audience. GitHub publishes no list:
+// releaseassetproduction is the path of every grant sampled on 2026-10-04
+// (40 redirects across 10 repositories, assets from 65 bytes to 1.5 GB, from
+// both the browser and the REST asset download paths) and of a public
+// redirect from July 2025.
+var githubReleaseGrantStorageHosts = []string{
+	"releaseassetproduction.blob.core.windows.net",
+}
+
+// downloadGrantKeyFormat is the format of the key claim. Every sampled grant
+// carried key1, an index naming GitHub's signing key, so the pin is the
+// index format rather than its current value: a key rotation must not block
+// every release download. The digit width is a local bound, not published.
+var downloadGrantKeyFormat = regexp.MustCompile(`^key[0-9]{1,3}$`)
+
+var downloadGrantMaxPathLength = func() int {
+	longest := 0
+	for _, host := range githubReleaseGrantStorageHosts {
+		longest = max(longest, len(host))
+	}
+	return longest
+}()
+
+const (
+	downloadGrantMaxKeyLength = len("key") + 3
+	// RFC3339 uses a four-digit year; keep grant dates in that calendar range.
+	downloadGrantMaxUnixSeconds int64 = 253402300799
+	// downloadGrantClockSkew is Azure Storage's documented skew envelope: a SAS
+	// client "may observe up to 15 minutes of clock skew in either direction on
+	// any request" (https://learn.microsoft.com/en-us/azure/storage/common/storage-sas-overview,
+	// "Be careful with SAS start time"). GitHub publishes no skew or lifetime
+	// for the grant JWT that travels in the same redirect; applying the same
+	// envelope to it is a local compatibility choice, so one slow host clock
+	// does not reject the JWT half of a grant whose SAS half passes. The
+	// JWT's nbf is set at issuance, so this leeway is the whole tolerance for
+	// a host clock that runs slow. The destination enforces
+	// expiry itself; this window bounds stale values and does not authenticate.
+	downloadGrantClockSkew = 15 * time.Minute
+	// downloadGrantMaxHeaderBytes is the compact header GitHub sends. A
+	// header with any other byte, whitespace or escape included, is refused.
+	downloadGrantMaxHeaderBytes = len(`{"typ":"JWT","alg":"HS256"}`)
+	// downloadGrantPayloadFrame is the compact claim object without its values.
+	downloadGrantPayloadFrame = `{"iss":"","aud":"","key":"","exp":,"nbf":,"path":""}`
+)
+
+// downloadGrantMaxPayloadBytes is the compact size of the largest claim set
+// downloadGrantClaims accepts for host: every claim present at its longest
+// accepted value, including the trailing dot canonicalAudienceHost accepts on
+// aud. Serialized bytes beyond the validated values cannot fit.
+func downloadGrantMaxPayloadBytes(host string) int {
+	maxDateDigits := len(strconv.FormatInt(downloadGrantMaxUnixSeconds, 10))
+	return len(downloadGrantPayloadFrame) + len(config.GitHubDownloadGrantIssuer) + len(host) + 1 +
+		downloadGrantMaxKeyLength + 2*maxDateDigits + downloadGrantMaxPathLength
+}
+
+func downloadGrantLifetimeValid(nbf, exp int64) bool {
+	// Bound operands before subtraction so the lifetime calculation is safe.
+	if nbf < 0 || exp > downloadGrantMaxUnixSeconds {
+		return false
+	}
+	return exp > nbf && exp-nbf <= downloadGrantMaxLifetimeSeconds
+}
+
+func grantValidityWindowValid(start, expiry, now time.Time) bool {
+	return !now.Before(start.Add(-downloadGrantClockSkew)) && now.Before(expiry.Add(downloadGrantClockSkew))
+}
+
+func sasValidityWindowValid(query url.Values, now time.Time) bool {
+	start, expiry, valid := sasValidityWindow(query)
+	return valid && grantValidityWindowValid(start, expiry, now)
+}
+
+func sasValidityWindow(query url.Values) (time.Time, time.Time, bool) {
+	values := query["se"]
+	if len(values) != 1 || !releaseGrantSASFieldFormats["se"].MatchString(values[0]) {
+		return time.Time{}, time.Time{}, false
+	}
+	expiry, err := time.Parse(time.RFC3339, values[0])
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	values, present := query["st"]
+	if !present {
+		return time.Time{}, expiry, true
+	}
+	if len(values) != 1 || !releaseGrantSASFieldFormats["se"].MatchString(values[0]) {
+		return time.Time{}, time.Time{}, false
+	}
+	start, err := time.Parse(time.RFC3339, values[0])
+	return start, expiry, err == nil && expiry.After(start)
+}
+
+// queryGrantValidityNote names a validity window as the cause of a URL DLP
+// block. A grant outside its window at now nominates a time inside that
+// window, and the note is returned only when DLP at that time allows the URL.
+// A block that any other match causes keeps its own reason and guidance, so
+// the clock advice is never attached to a block the clock cannot clear.
+func (s *Scanner) queryGrantValidityNote(parsed *url.URL, now time.Time) string {
+	note, at, ok := queryGrantValidityCandidate(parsed, now)
+	if !ok {
+		return ""
+	}
+	var decodes decodingMemo
+	if result, _ := s.checkDLPWithDecodesAt(parsed, &decodes, at); !result.Allowed {
+		return ""
+	}
+	return note
+}
+
+func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.Time, bool) {
+	host, ok := canonicalCredentialAudienceDestination(parsed.String())
+	if !ok || !strings.EqualFold(parsed.Scheme, "https") {
+		return "", time.Time{}, false
+	}
+	query := parsed.Query()
+	for _, values := range query {
+		for _, value := range values {
+			start, expiry, valid := downloadGrantClaims(value, host)
+			switch {
+			case !valid:
+				continue
+			case !grantValidityWindowValid(start, expiry, now):
+				return "GitHub download grant outside its validity window; check the host clock or obtain a current download URL", start, true
+			case !sasValidityWindowValid(query, now):
+				return "GitHub download SAS outside its validity window; check the host clock or obtain a current download URL", start, true
+			}
+		}
+	}
+	if destination.MatchesDomainList(host, githubAttestationBundleHosts) && attestationBundlePath(parsed) &&
+		!attestationBundleSASQueryValid(parsed, now) {
+		start, err := time.Parse(time.RFC3339, query.Get("st"))
+		if err == nil && attestationBundleSASQueryValid(parsed, start) {
+			return "GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL", start, true
+		}
+	}
+	return "", time.Time{}, false
+}
+
+func (s *Scanner) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }

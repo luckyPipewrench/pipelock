@@ -1081,7 +1081,10 @@ class HonestIncompleteVerdictTest(OfflineReviewTestCase):
         self.assertNotIn("ctrl-c 9e2a", update.call_args.args[3])
 
     SIGNAL_PROGRAM = """
-import importlib.util, os, pathlib, sys, time
+import importlib.util, os, pathlib, signal, sys, time
+# A parent that ignores SIGINT (a background job or service) passes that on,
+# and Python then installs no handler; restore it so the real signal lands.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 from unittest import mock
 spec = importlib.util.spec_from_file_location("pr_review", {script!r})
 module = importlib.util.module_from_spec(spec)

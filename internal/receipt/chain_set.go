@@ -558,6 +558,17 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		checkRunNonces(data, sessions, add)
 	}
 
+	// Every read is finished. A shard the reads never opened must not leave
+	// the report healthy.
+	// Links-only mode is the evidence doctor's structural check, run against
+	// live recorders whose active shard grows; it makes no full-verification
+	// claim, so it does not refuse a directory that changed while it read.
+	if !opts.LinksOnly {
+		if err := checkShardSetUnchanged(dir, base, ix, sessions, data, add); err != nil {
+			return report, err
+		}
+	}
+
 	for _, s := range sessions {
 		report.Chains = append(report.Chains, data[s].chain)
 	}
@@ -700,6 +711,7 @@ func walkIndexedEntries(ix evidenceIndex, session string, raw hash.Hash, consume
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
 		infos = append(infos, info)
+		duringEvidenceWalk(f)
 		name := filepath.Base(f)
 		binary.BigEndian.PutUint64(n[:], uint64(len(name)))
 		_, _ = raw.Write(n[:])
@@ -788,6 +800,77 @@ var errEvidenceChanged = errors.New("evidence changed between verification reads
 // second read. Tests replace it to change the evidence directory there.
 var betweenVerificationReads = func(_ string) {}
 
+// duringEvidenceWalk runs after each shard a verification read walks, while
+// that read is still in progress. Tests replace it to change the evidence
+// directory in the middle of a read.
+var duringEvidenceWalk = func(_ string) {}
+
+// errEvidenceChangedDuring is the failure of a verification whose evidence
+// directory no longer lists, after every read finished, exactly the shard
+// files the reads verified.
+var errEvidenceChangedDuring = errors.New("evidence changed during verification")
+
+// checkShardSetUnchanged lists dir once more after every verification read
+// has finished and fails each chain whose shard list, or any shard's file
+// identity or size, differs from what its reads verified, and each chain of
+// base that appeared or vanished. A shard created or replaced after a read
+// listed the directory was never opened by that read, so without this check
+// it could hold anything. A listing error is returned and means the
+// verification is incomplete.
+func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, data map[string]*baseChainData, add func(kind, session, detail string)) error {
+	final, err := indexRecorderFiles(dir)
+	if err != nil {
+		return fmt.Errorf("re-listing sessions after verification: %w", err)
+	}
+	failChain := func(s, why string) {
+		detail := fmt.Sprintf("%v: %s", errEvidenceChangedDuring, why)
+		if d, ok := data[s]; ok {
+			d.chain.Valid = false
+			d.chain.Error = detail
+		}
+		add(FindingCorruptChain, s, detail)
+	}
+	for _, s := range baseSessions(final, base) {
+		if !slices.Contains(sessions, s) {
+			failChain(s, "shard set differs")
+		}
+	}
+	for _, s := range sessions {
+		if !slices.Equal(ix[s], final[s]) {
+			failChain(s, "shard set differs")
+			continue
+		}
+		d := data[s]
+		if len(d.shards) != len(final[s]) {
+			// This chain's read did not finish, so it verified no shard
+			// whose identity could be compared; it already failed.
+			continue
+		}
+		if why := shardIdentityChange(d.shards, final[s]); why != "" {
+			failChain(s, why)
+		}
+	}
+	return nil
+}
+
+// shardIdentityChange reports how the files now at paths differ from the
+// shards a read verified, without following a symlink, or "" when they are
+// the same files at the same sizes.
+func shardIdentityChange(verified []os.FileInfo, paths []string) string {
+	for i, f := range paths {
+		info, err := os.Lstat(f)
+		switch {
+		case err != nil:
+			return "shard set differs"
+		case !os.SameFile(verified[i], info):
+			return "shard file replaced"
+		case verified[i].Size() != info.Size():
+			return "shard size changed"
+		}
+	}
+	return ""
+}
+
 // evidenceReread lists the evidence directory again, once, for the second
 // verification reads, so a shard added or removed after the first reads is
 // seen.
@@ -851,7 +934,10 @@ func reverifyBaseChain(reread *evidenceReread, ix evidenceIndex, d *baseChainDat
 	digest := sha256.New()
 	index := 0
 	var stepErr error
-	shards, err := walkIndexedEntries(ix, s, digest, func(e recorder.Entry) {
+	// Walk the list just compared, not the index the first read used: the
+	// two are equal here, and the final relist in VerifyBase catches any
+	// shard created after this point.
+	shards, err := walkIndexedEntries(current, s, digest, func(e recorder.Entry) {
 		i := index
 		index++
 		if stepErr != nil {

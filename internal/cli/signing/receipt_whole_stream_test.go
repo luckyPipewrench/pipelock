@@ -745,17 +745,17 @@ func TestAnchorWalkerHoldsOnlyOneReceiptGap(t *testing.T) {
 	add(entry("action_receipt"), &receipt.Receipt{SignerKey: keyA})
 	// Signed by the next writer before its first receipt: waits.
 	add(checkpoint(privB, "h1"), nil)
-	if len(a.pending) != 1 {
-		t.Fatalf("pending = %d, want 1", len(a.pending))
+	if a.pending.len() != 1 {
+		t.Fatalf("pending = %d, want 1", a.pending.len())
 	}
 	add(entry("action_receipt"), &receipt.Receipt{SignerKey: keyB})
-	if len(a.pending) != 0 {
-		t.Fatalf("pending after the next receipt = %d, want 0", len(a.pending))
+	if a.pending.len() != 0 {
+		t.Fatalf("pending after the next receipt = %d, want 0", a.pending.len())
 	}
 	// Signed by the current signer: verified at once.
 	add(checkpoint(privB, "h2"), nil)
-	if len(a.pending) != 0 {
-		t.Fatalf("pending after an in-segment checkpoint = %d, want 0", len(a.pending))
+	if a.pending.len() != 0 {
+		t.Fatalf("pending after an in-segment checkpoint = %d, want 0", a.pending.len())
 	}
 	// Signed by the retired key after the rotation: waits, then fails when
 	// no different signer follows.
@@ -770,11 +770,18 @@ func TestAnchorWalkerHoldsOnlyOneReceiptGap(t *testing.T) {
 	}
 }
 
-// TestAnchorWalkerCapsPendingCheckpoints pins that one receipt gap cannot
-// grow the waiting checkpoints without bound, and that reaching the cap fails
-// verification rather than skipping the checkpoints past it.
+// TestAnchorWalkerCapsPendingCheckpoints pins that the hard bound on one
+// receipt gap fails verification rather than skipping the checkpoints past
+// it, that its error names the setting that avoids it, and that the bound
+// sits where no honest recorder within the evidence read limits can reach.
 func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
 	t.Parallel()
+	if maxPendingCheckpoints < recorder.MaxEvidenceReadDirectoryEntries*recorder.MaxEvidenceReadEntries {
+		t.Fatalf("pending bound %d is below the session read ceiling; an honest recorder could reach it", maxPendingCheckpoints)
+	}
+	if !strings.Contains(errTooManyPendingCheckpoints.Error(), "checkpoint_interval") {
+		t.Fatalf("pending bound error names no control: %v", errTooManyPendingCheckpoints)
+	}
 	pubA, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -784,8 +791,10 @@ func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyA, keyB := hex.EncodeToString(pubA), hex.EncodeToString(pubB)
+	const limit = 64
 	run := func(waiting int) (checkpointAnchor, int, error) {
-		a := &anchorWalker{anchor: checkpointAnchor{lastSignedIndex: -1}}
+		a := &anchorWalker{anchor: checkpointAnchor{lastSignedIndex: -1}, maxPending: limit}
+		defer a.close()
 		seq := uint64(0)
 		i := 0
 		peak := 0
@@ -795,7 +804,7 @@ func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
 			}
 			a.addEntry(i, e)
 			i++
-			peak = max(peak, len(a.pending))
+			peak = max(peak, a.pending.len())
 		}
 		add(recorder.Entry{Sequence: seq, Type: "action_receipt"}, &receipt.Receipt{SignerKey: keyA})
 		seq++
@@ -814,23 +823,23 @@ func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
 		return anchor, peak, err
 	}
 
-	// Positive control: a gap exactly at the cap still verifies every
+	// Positive control: a gap exactly at the bound still verifies every
 	// checkpoint once the next signer is known.
-	anchor, peak, err := run(maxPendingCheckpoints)
+	anchor, peak, err := run(limit)
 	if err != nil {
-		t.Fatalf("gap at the cap: %v", err)
+		t.Fatalf("gap at the bound: %v", err)
 	}
-	if anchor.signed != maxPendingCheckpoints || peak != maxPendingCheckpoints {
-		t.Fatalf("gap at the cap: signed %d peak %d, want %d", anchor.signed, peak, maxPendingCheckpoints)
+	if anchor.signed != limit || peak != limit {
+		t.Fatalf("gap at the bound: signed %d peak %d, want %d", anchor.signed, peak, limit)
 	}
 
-	// One past the cap fails closed and holds no more than the cap.
-	_, peak, err = run(maxPendingCheckpoints + 50)
+	// Past the bound fails closed and holds no more than the bound.
+	_, peak, err = run(limit + 50)
 	if !errors.Is(err, errTooManyPendingCheckpoints) {
 		t.Fatalf("flooded gap: err = %v, want errTooManyPendingCheckpoints", err)
 	}
-	if peak > maxPendingCheckpoints {
-		t.Fatalf("flooded gap held %d pending checkpoints, cap %d", peak, maxPendingCheckpoints)
+	if peak > limit {
+		t.Fatalf("flooded gap held %d pending checkpoints, bound %d", peak, limit)
 	}
 }
 

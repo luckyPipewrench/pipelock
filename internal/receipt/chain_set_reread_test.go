@@ -240,3 +240,253 @@ func TestVerifyBaseRereadFailsClosedOnChange(t *testing.T) {
 		})
 	}
 }
+
+// verifyBaseWithWalkHook runs VerifyBase over a copy of the valid run-chain
+// fixture and calls hook after each shard a verification read walks, with
+// the shard's path and how many times that path has been walked so far.
+// endorsed selects the two-read path; otherwise each chain is read once.
+// Tests using it do not run in parallel because the seams are package state.
+func verifyBaseWithWalkHook(t *testing.T, endorsed bool, hook func(t *testing.T, dir, path string, visit int)) BaseReport {
+	t.Helper()
+	src := filepath.Join(walkConformanceTestdata, "run-chains", "valid")
+	keys := corpusKeys(src)
+	dir := copyShardDir(t, src)
+	visits := make(map[string]int)
+	prev := duringEvidenceWalk
+	duringEvidenceWalk = func(path string) {
+		if filepath.Dir(path) != filepath.Clean(dir) {
+			return
+		}
+		visits[path]++
+		hook(t, dir, path, visits[path])
+	}
+	t.Cleanup(func() { duringEvidenceWalk = prev })
+	opts := BaseVerifyOptions{TrustedKeys: keys}
+	if endorsed {
+		opts.Endorsements = []RotationEndorsement{{Version: 1, SessionID: "proxy.run.does-not-exist"}}
+	}
+	report, err := VerifyBase(dir, "proxy", opts)
+	if err != nil {
+		t.Fatalf("VerifyBase: %v", err)
+	}
+	return report
+}
+
+// addBrokenShard writes a later shard of the target chain that does not
+// parse, so any read that opened it would fail.
+func addBrokenShard(t *testing.T, dir string) {
+	t.Helper()
+	name := strings.Replace(rereadTargetShard, "-0.jsonl", "-5000.jsonl", 1)
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("{not a recorder entry}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func requireChangedDuring(t *testing.T, report BaseReport, want string) {
+	t.Helper()
+	if report.Healthy() {
+		t.Fatalf("evidence changed during verification but the report is healthy: %+v", report.Chains)
+	}
+	full := "evidence changed during verification: " + want
+	found := false
+	for _, f := range report.Findings {
+		found = found || (f.Kind == FindingCorruptChain && f.Session == "proxy.run.03b13ee13e01e7f770480f62ea42f1fe" && strings.Contains(f.Detail, full))
+	}
+	if !found {
+		t.Fatalf("want a corrupt_chain finding containing %q, got %+v", full, report.Findings)
+	}
+	for _, c := range report.Chains {
+		if c.Session == "proxy.run.03b13ee13e01e7f770480f62ea42f1fe" && c.Valid {
+			t.Fatalf("changed chain reported valid: %+v", c)
+		}
+	}
+}
+
+func TestVerifyBaseWalkHookUnchangedPasses(t *testing.T) {
+	for _, endorsed := range []bool{false, true} {
+		walked := 0
+		report := verifyBaseWithWalkHook(t, endorsed, func(*testing.T, string, string, int) { walked++ })
+		if walked == 0 {
+			t.Fatalf("endorsed=%v: walk seam was not reached", endorsed)
+		}
+		if !report.Healthy() {
+			t.Fatalf("endorsed=%v: unchanged directory: findings %+v", endorsed, report.Findings)
+		}
+		for _, c := range report.Chains {
+			if !c.Valid {
+				t.Fatalf("endorsed=%v: unchanged directory: chain %s invalid: %s", endorsed, c.Session, c.Error)
+			}
+		}
+	}
+}
+
+// A shard created while a chain's only read is in progress is never opened
+// by that read; the report must not stay healthy.
+func TestVerifyBaseShardAddedDuringSingleReadFailsClosed(t *testing.T) {
+	fired := false
+	report := verifyBaseWithWalkHook(t, false, func(t *testing.T, dir, path string, visit int) {
+		if filepath.Base(path) == rereadTargetShard && visit == 1 {
+			fired = true
+			addBrokenShard(t, dir)
+		}
+	})
+	if !fired {
+		t.Fatal("hook did not fire during the single read")
+	}
+	requireChangedDuring(t, report, "shard set differs")
+}
+
+// A shard created while the second, endorsed read is in progress was listed
+// by neither read.
+func TestVerifyBaseShardAddedDuringSecondReadFailsClosed(t *testing.T) {
+	fired := false
+	report := verifyBaseWithWalkHook(t, true, func(t *testing.T, dir, path string, visit int) {
+		if filepath.Base(path) == rereadTargetShard && visit == 2 {
+			fired = true
+			addBrokenShard(t, dir)
+		}
+	})
+	if !fired {
+		t.Fatal("hook did not fire during the second read")
+	}
+	requireChangedDuring(t, report, "shard set differs")
+}
+
+// A shard grown or replaced after the single read finished with it, while
+// verification is still running, differs from what that read verified.
+func TestVerifyBaseShardChangedDuringSingleReadFailsClosed(t *testing.T) {
+	cases := []struct {
+		name   string
+		want   string
+		mutate func(t *testing.T, path string)
+	}{
+		{"grown", "shard size changed", func(t *testing.T, path string) {
+			lines := readShardLines(t, path)
+			f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteString(lines[len(lines)-2]); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replaced", "shard file replaced", func(t *testing.T, path string) {
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tmp := path + ".tmp"
+			if err := os.WriteFile(tmp, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := verifyBaseWithWalkHook(t, false, func(t *testing.T, _, path string, visit int) {
+				if filepath.Base(path) == rereadTargetShard && visit == 1 {
+					tc.mutate(t, path)
+				}
+			})
+			requireChangedDuring(t, report, tc.want)
+		})
+	}
+}
+
+// After every read has finished, the directory is listed once more: a shard
+// added then, on the single-read path, still fails the report.
+func TestVerifyBaseShardAddedAfterReadsFailsClosed(t *testing.T) {
+	src := filepath.Join(walkConformanceTestdata, "run-chains", "valid")
+	keys := corpusKeys(src)
+	dir := copyShardDir(t, src)
+	called := false
+	prev := betweenVerificationReads
+	betweenVerificationReads = func(d string) {
+		if d == dir {
+			called = true
+			addBrokenShard(t, dir)
+		}
+	}
+	t.Cleanup(func() { betweenVerificationReads = prev })
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{TrustedKeys: keys})
+	if err != nil {
+		t.Fatalf("VerifyBase: %v", err)
+	}
+	if !called {
+		t.Fatal("seam after the reads was not reached")
+	}
+	requireChangedDuring(t, report, "shard set differs")
+}
+
+// A new chain of the base that appears during verification was never read.
+func TestVerifyBaseChainAddedDuringReadFailsClosed(t *testing.T) {
+	const added = "proxy.run.ffffffffffffffffffffffffffffffff"
+	fired := false
+	report := verifyBaseWithWalkHook(t, false, func(t *testing.T, dir, path string, visit int) {
+		if filepath.Base(path) == rereadTargetShard && visit == 1 {
+			fired = true
+			if err := os.WriteFile(filepath.Join(dir, "evidence-"+added+"-0.jsonl"), []byte("{not a recorder entry}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if !fired {
+		t.Fatal("hook did not fire")
+	}
+	found := false
+	for _, f := range report.Findings {
+		found = found || (f.Kind == FindingCorruptChain && f.Session == added && strings.Contains(f.Detail, "evidence changed during verification: shard set differs"))
+	}
+	if !found {
+		t.Fatalf("want a finding for the added chain, got %+v", report.Findings)
+	}
+}
+
+// Links-only mode is the doctor's check of live recorders; a shard that
+// grows while it reads is not a finding there.
+func TestVerifyBaseLinksOnlyToleratesGrowth(t *testing.T) {
+	src := filepath.Join(walkConformanceTestdata, "run-chains", "valid")
+	dir := copyShardDir(t, src)
+	grew := false
+	prev := duringEvidenceWalk
+	duringEvidenceWalk = func(path string) {
+		if grew || filepath.Dir(path) != filepath.Clean(dir) {
+			return
+		}
+		grew = true
+		lines := readShardLines(t, path)
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(lines[len(lines)-2]); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { duringEvidenceWalk = prev })
+	before, err := VerifyBase(copyShardDir(t, src), "proxy", BaseVerifyOptions{LinksOnly: true})
+	if err != nil {
+		t.Fatalf("VerifyBase: %v", err)
+	}
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{LinksOnly: true})
+	if err != nil {
+		t.Fatalf("VerifyBase: %v", err)
+	}
+	if !grew {
+		t.Fatal("links-only mode read no shard; the growth was never applied")
+	}
+	for _, f := range report.Findings {
+		if strings.Contains(f.Detail, "evidence changed during verification") {
+			t.Fatalf("links-only mode refused a growing shard: %+v (baseline %+v)", f, before.Findings)
+		}
+	}
+}

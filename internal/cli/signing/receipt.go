@@ -452,6 +452,7 @@ func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys [
 	}
 	defer func() { _ = file.Close() }()
 	scan := newWholeRecorderScan(trustedKeys, opts)
+	defer scan.close()
 	// A file named for a session holds only that session's entries. The
 	// refusal is decided after the whole file reads cleanly, as before.
 	fileSession, _, named := recorder.ParseEvidenceFilename(name)
@@ -479,6 +480,7 @@ func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys [
 
 func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	scan := newWholeRecorderScan(trustedKeys, opts)
+	defer scan.close()
 	query, err := recorder.WalkSessionResolved(location, sessionID, func(e recorder.Entry) error {
 		scan.add(e)
 		return nil
@@ -552,6 +554,11 @@ func newWholeRecorderScan(trustedKeys []string, opts verifyReceiptOptions) *whol
 		anchors:     anchorWalker{anchor: checkpointAnchor{lastSignedIndex: -1}},
 	}
 }
+
+// close releases the scan's spill file. report may return before the
+// checkpoint anchors are settled (an unsealed or broken recorder never
+// reaches them, as before); every caller closes the scan however it ends.
+func (s *wholeRecorderScan) close() { s.anchors.close() }
 
 func (s *wholeRecorderScan) add(e recorder.Entry) {
 	i := s.index
@@ -809,19 +816,11 @@ type anchorWalker struct {
 	prevCPSeq      uint64
 	seenReceipts   int
 	lastReceiptKey string
-	pending        []pendingCheckpoint
-}
-
-// pendingCheckpoint is a signed checkpoint whose only remaining candidate
-// signer is the next receipt's key.
-type pendingCheckpoint struct {
-	index    int
-	seq      uint64
-	prevHash string
-	sig      []byte
-	// triedKey is the earlier signer that did not verify it, or "" when no
-	// receipt preceded the checkpoint.
-	triedKey string
+	// pending holds the signed checkpoints of the current receipt gap that
+	// lastReceiptKey (or no key, before the first receipt) did not verify.
+	pending pendingCheckpoints
+	// maxPending overrides maxPendingCheckpoints when set; tests only.
+	maxPending int
 }
 
 func (a *anchorWalker) fail(index int, err error) {
@@ -840,28 +839,44 @@ func (a *anchorWalker) signedAt(index int, seq uint64) {
 
 // addReceipt settles the checkpoints waiting for this receipt's signer.
 func (a *anchorWalker) addReceipt(r receipt.Receipt) {
-	for _, p := range a.pending {
+	// Every waiting checkpoint was tried under lastReceiptKey, or under no
+	// key when no receipt preceded it.
+	tried := a.lastReceiptKey
+	pub, keyErr := decodeSegmentSignerKey(r.SignerKey)
+	a.drainPending(func(p pendingCheckpoint) {
 		// The next receipt is a candidate only when its signer differs from
 		// the one already tried.
-		if p.triedKey != "" && r.SignerKey == p.triedKey {
+		if tried != "" && r.SignerKey == tried {
 			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
-			continue
+			return
 		}
-		pub, err := decodeSegmentSignerKey(r.SignerKey)
-		if err != nil {
-			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: %w", p.seq, err))
-			continue
+		if keyErr != nil {
+			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: %w", p.seq, keyErr))
+			return
 		}
 		if !ed25519.Verify(pub, []byte(p.prevHash), p.sig) {
 			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
-			continue
+			return
 		}
 		a.signedAt(p.index, p.seq)
-	}
-	a.pending = a.pending[:0]
+	})
 	a.seenReceipts++
 	a.lastReceiptKey = r.SignerKey
 }
+
+// drainPending settles every waiting checkpoint through settle. Checkpoints
+// that could not be read back exactly as held fail verification at the first
+// of them, and stop the walk.
+func (a *anchorWalker) drainPending(settle func(pendingCheckpoint)) {
+	first := a.pending.firstSpilled
+	if err := a.pending.drain(settle); err != nil {
+		a.fail(first, fmt.Errorf("checkpoint at entry %d: %w", first, err))
+		a.stopped = true
+	}
+}
+
+// close releases what the walker holds outside memory.
+func (a *anchorWalker) close() { a.pending.close() }
 
 // addEntry checks entry i when it is a checkpoint. Call it after addReceipt
 // for the same entry.
@@ -931,37 +946,33 @@ func (a *anchorWalker) addEntry(i int, e recorder.Entry) {
 		a.signedAt(i, e.Sequence)
 		return
 	}
-	if len(a.pending) >= maxPendingCheckpoints {
-		// Every waiting checkpoint must still be verified, and holding more
-		// would let one receipt gap grow memory with the recorder's length.
+	limit := a.maxPending
+	if limit <= 0 {
+		limit = maxPendingCheckpoints
+	}
+	if a.pending.len() >= limit {
+		// Unreachable by an honest recorder (see maxPendingCheckpoints).
 		// Refuse rather than skip: the verdict is a failure, never a pass.
 		stop(fmt.Errorf("checkpoint at seq %d: %w", e.Sequence, errTooManyPendingCheckpoints))
 		return
 	}
-	a.pending = append(a.pending, pendingCheckpoint{index: i, seq: e.Sequence, prevHash: e.PrevHash, sig: sig, triedKey: a.lastReceiptKey})
+	if err := a.pending.add(pendingCheckpoint{index: i, seq: e.Sequence, prevHash: e.PrevHash, sig: sig}); err != nil {
+		stop(fmt.Errorf("checkpoint at seq %d: holding it for the next receipt's signer: %w", e.Sequence, err))
+	}
 }
-
-// maxPendingCheckpoints bounds the signed checkpoints one receipt gap may
-// hold while they wait for the next receipt's signer. An honest recorder
-// reaches it only with a new writer that signs thousands of checkpoints
-// before its first receipt; at the default checkpoint interval that is
-// millions of entries with no receipt, past the session read ceiling.
-const maxPendingCheckpoints = 4096
-
-var errTooManyPendingCheckpoints = fmt.Errorf("more than %d signed checkpoints wait for the next receipt's signer; refusing to verify unbounded pending state", maxPendingCheckpoints)
 
 // finish settles the checkpoints still waiting: with no receipt after them
 // the only candidate signer already failed, and with no receipt at all there
-// is no signer to name.
+// is no signer to name. It releases the spill file.
 func (a *anchorWalker) finish() (checkpointAnchor, error) {
-	for _, p := range a.pending {
+	defer a.close()
+	a.drainPending(func(p pendingCheckpoint) {
 		if a.seenReceipts == 0 {
 			a.fail(p.index, fmt.Errorf("checkpoint at seq %d: %w", p.seq, errNoSegmentSigner))
-			continue
+			return
 		}
 		a.fail(p.index, fmt.Errorf("checkpoint at seq %d: signature does not verify under the signer of its receipt segment", p.seq))
-	}
-	a.pending = nil
+	})
 	return a.anchor, a.err
 }
 

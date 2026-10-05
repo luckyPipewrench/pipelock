@@ -51,7 +51,9 @@ func covDispPrepareDisplayEnv(t *testing.T) (*installEnv, *fakeRunner) {
 	trustedDirs := make(map[string]struct{})
 	for current := filepath.Clean(authorityDir); ; current = filepath.Dir(current) {
 		trustedDirs[current] = struct{}{}
-		if current == string(os.PathSeparator) {
+		parent := filepath.Dir(current)
+		// filepath.Dir("C:\\") stays "C:\\", so a separator-only stop never ends.
+		if parent == current || current == string(os.PathSeparator) {
 			break
 		}
 	}

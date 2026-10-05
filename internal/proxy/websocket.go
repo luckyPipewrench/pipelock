@@ -3006,6 +3006,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// An idle or relay-ending deadline is the proxy closing an idle
 			// connection, not an upstream that broke off mid-stream.
 			if errors.As(err, &nerr) && nerr.Timeout() {
+				r.upstreamCancelled = true
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
 				return
 			}
@@ -3086,6 +3087,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
 			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
 			if err != nil {
+				// The client went away; the upstream did not break off.
+				r.upstreamCancelled = true
 				return
 			}
 			bytesTransferred += int64(len(payload))
@@ -3214,6 +3217,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Forward complete message to client (proxy is SERVER, no masking).
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
 		if err != nil {
+			r.upstreamCancelled = true
 			return
 		}
 		bytesTransferred += int64(len(msg))

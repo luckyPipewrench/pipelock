@@ -163,8 +163,8 @@ func TestWebSocketIdleUpstreamIsNotIncomplete(t *testing.T) {
 	}()
 
 	relay.upstreamToClient(t.Context(), func() {}, 50*time.Millisecond)
-	if relay.upstreamIncomplete {
-		t.Fatal("idle timeout recorded as an incomplete upstream stream")
+	if relay.upstreamIncomplete || !relay.upstreamCancelled {
+		t.Fatalf("idle timeout outcome: incomplete=%v cancelled=%v, want cancelled", relay.upstreamIncomplete, relay.upstreamCancelled)
 	}
 	frame, ok := <-frameRead
 	if !ok || frame.Header.OpCode != ws.OpClose {
@@ -172,5 +172,33 @@ func TestWebSocketIdleUpstreamIsNotIncomplete(t *testing.T) {
 	}
 	if code, _ := ws.ParseCloseFrameData(frame.Payload); code != ws.StatusGoingAway {
 		t.Fatalf("close code = %d, want %d", code, ws.StatusGoingAway)
+	}
+}
+
+// A client that is gone when the relay forwards an upstream message ends the
+// session locally. It is recorded as cancelled, never as complete or as an
+// upstream that broke off.
+func TestWebSocketClientWriteFailureIsCancelled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	p := newTestProxyWithConfig(t, cfg)
+	upstreamConn, upstreamPeer := net.Pipe()
+	clientConn, clientPeer := net.Pipe()
+	t.Cleanup(func() {
+		for _, c := range []net.Conn{upstreamConn, upstreamPeer, clientConn, clientPeer} {
+			_ = c.Close()
+		}
+	})
+	_ = clientPeer.Close()
+	relay := &wsRelay{
+		proxy: p, cfg: cfg, upstreamConn: upstreamConn, clientConn: clientConn,
+		maxMsg: 1024, targetURL: "ws://api.vendor.example/socket", agent: agentAnonymous,
+	}
+	relay.clockStart = time.Now()
+	go func() { _ = wsutil.WriteServerMessage(upstreamPeer, ws.OpText, []byte("hello")) }()
+
+	relay.upstreamToClient(t.Context(), func() {}, 5*time.Second)
+	if relay.upstreamIncomplete || !relay.upstreamCancelled {
+		t.Fatalf("client write failure outcome: incomplete=%v cancelled=%v, want cancelled", relay.upstreamIncomplete, relay.upstreamCancelled)
 	}
 }

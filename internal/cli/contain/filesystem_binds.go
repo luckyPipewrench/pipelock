@@ -59,6 +59,9 @@ func parseSystemdBindShow(value string) ([]string, error) {
 			parsed = append(parsed, entry)
 		}
 	default:
+		if entry, ok := parseSpacedColonBind(value); ok {
+			return []string{entry}, nil
+		}
 		return nil, errors.New("systemd bind list mixes colon and tuple entries")
 	}
 	sort.Strings(parsed)
@@ -82,6 +85,44 @@ func sameBindList(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// parseSpacedColonBind accepts one unquoted colon triple whose paths contain
+// spaces, which splitSystemdShowTokens would otherwise break apart. Quoted
+// sides never reach this. systemctl show's exact spelling for a spaced path
+// was not captured here, so both this form and the quoted form are accepted.
+func parseSpacedColonBind(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	opt := ""
+	for _, candidate := range []string{"norbind", "rbind"} {
+		suffix := ":" + candidate
+		if strings.HasSuffix(value, suffix) {
+			opt = candidate
+			value = strings.TrimSuffix(value, suffix)
+			break
+		}
+	}
+	if opt == "" || strings.Contains(value, `"`) {
+		return "", false
+	}
+	src, dest, ok := splitAbsoluteColon(value)
+	if !ok {
+		return "", false
+	}
+	return canonicalBind(src, dest, opt), true
+}
+
+func splitAbsoluteColon(value string) (string, string, bool) {
+	for i := 1; i < len(value)-1; i++ {
+		if value[i] != ':' || value[i+1] != '/' {
+			continue
+		}
+		src, dest := value[:i], value[i+1:]
+		if strings.HasPrefix(src, "/") && !strings.Contains(src, ":") && !strings.Contains(dest, ":") {
+			return src, dest, true
+		}
+	}
+	return "", "", false
 }
 
 func parseColonBind(token string) (string, error) {

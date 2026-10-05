@@ -139,6 +139,28 @@ func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	}
 }
 
+func TestLifecycleOwned_ParsesGrantPathWithSpace(t *testing.T) {
+	_, fields := lifecycleFixture()
+	fields["ProtectSystem"] = "strict"
+	fields["ProtectHome"] = "tmpfs"
+	fields["NoNewPrivileges"] = "yes"
+	fields["BindPaths"] = `"/srv/my proj":"/srv/my proj":norbind`
+	fields["BindReadOnlyPaths"] = ""
+	record := containLifecycleRecord{
+		FilesystemMode:      config.ContainmentFilesystemModeEnforce,
+		FilesystemBindPaths: []string{"/srv/my proj:/srv/my proj:norbind"},
+	}
+	record.Unit = fields["Id"]
+	record.RunID = strings.TrimPrefix(fields["Description"], lifecycleDescriptionPrefix)
+	if err := lifecycleOwned(fields, record, 966); err != nil {
+		t.Fatal(err)
+	}
+	fields["BindPaths"] = `/srv/my proj:/srv/my proj:norbind`
+	if err := lifecycleOwned(fields, record, 966); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLifecycleOwned_RejectsBindMismatch(t *testing.T) {
 	_, fields := lifecycleFixture()
 	fields["ProtectSystem"] = "strict"

@@ -354,6 +354,40 @@ func TestFilesystemProfileProperties_RequiredKeyCannotParentReadablePath(t *test
 	}
 }
 
+func TestFilesystemProfileProperties_GrantPathWithSpace(t *testing.T) {
+	in := enforceInput()
+	in.Grants = []workspaceGrant{{Path: "/srv/my proj", Mode: workspaceModeReadWrite, AgentUser: "pipelock-agent"}}
+	in.Eval = allowEval("/srv/agent-home", "/srv/my proj")
+	got, err := filesystemProfileProperties(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prop = `BindPaths="/srv/my proj":"/srv/my proj":norbind`
+	if !sliceContains(got.Properties, prop) {
+		t.Fatalf("properties = %v", got.Properties)
+	}
+	if !sliceContains(got.BindPaths, "/srv/my proj:/srv/my proj:norbind") {
+		t.Fatalf("binds = %v", got.BindPaths)
+	}
+	lines, err := containLaunchPropertyLines(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sliceContains(lines, prop) {
+		t.Fatalf("wrapper lines = %v", lines)
+	}
+	parsed, err := parseSystemdBindShow(`"/srv/my proj":"/srv/my proj":norbind /srv/agent-home:/srv/agent-home:norbind`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameBindList(parsed, got.BindPaths) {
+		t.Fatalf("parsed = %v, binds = %v", parsed, got.BindPaths)
+	}
+	if filesystemBindsDigest(got) == "" || filesystemBindsDigest(got) != filesystemBindsDigest(got) {
+		t.Fatal("digest was empty")
+	}
+}
+
 func TestFilesystemBindsDigest_OffIsEmpty(t *testing.T) {
 	profile, err := filesystemProfileProperties(filesystemProfileInput{Mode: "off"})
 	if err != nil {
@@ -466,6 +500,16 @@ func TestParseSystemdBindShow(t *testing.T) {
 		{name: "incomplete", value: "/srv/rw /srv/rw no", wantErr: true},
 		{name: "mixed", value: "/srv/rw:/srv/rw:norbind /srv/rw /srv/rw no 0", wantErr: true},
 		{name: "unknown flag", value: "/srv/rw /srv/rw no 7", wantErr: true},
+		{
+			name:  "quoted colon sides with a space",
+			value: `"/srv/my proj":"/srv/my proj":norbind`,
+			want:  []string{"/srv/my proj:/srv/my proj:norbind"},
+		},
+		{
+			name:  "unquoted colon triple with a space",
+			value: `/srv/my proj:/srv/my proj:norbind`,
+			want:  []string{"/srv/my proj:/srv/my proj:norbind"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

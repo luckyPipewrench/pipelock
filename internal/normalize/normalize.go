@@ -528,11 +528,17 @@ func isDLPControl(r rune) bool {
 //
 //pipelock:provenance-transform dlp_normalize
 func ForDLP(s string) string {
-	// Printable ASCII is unchanged by every step below. Keep non-ASCII and
-	// control bytes on the full pipeline, including malformed UTF-8.
+	// Printable ASCII is unchanged by every step below. Other input runs the
+	// full pipeline between stable code points (see segmentTable).
 	if isPrintableASCII(s) {
 		return s
 	}
+	return normalizeSegmented(s, &segmentTablesOnce().dlp, forDLPFull)
+}
+
+// forDLPFull is the complete ForDLP pipeline without fast paths. It is the
+// reference the segmented fast path is derived from and tested against.
+func forDLPFull(s string) string {
 	// These two stages only delete runes. Their union preserves the original
 	// order and strings.Map's malformed UTF-8 repair while walking once.
 	s = strings.Map(func(r rune) rune {
@@ -576,6 +582,18 @@ func matchingNormalize(s string, recompose bool) string {
 	if isPrintableASCII(s) {
 		return s
 	}
+	if recompose {
+		return normalizeSegmented(s, &segmentTablesOnce().matching[1], recomposedMatchingFull)
+	}
+	return normalizeSegmented(s, &segmentTablesOnce().matching[0], decomposedMatchingFull)
+}
+
+func recomposedMatchingFull(s string) string { return matchingNormalizeFull(s, true) }
+
+func decomposedMatchingFull(s string) string { return matchingNormalizeFull(s, false) }
+
+// matchingNormalizeFull is the complete matching pipeline without fast paths.
+func matchingNormalizeFull(s string, recompose bool) string {
 	s = StripZeroWidth(s)
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)

@@ -58,7 +58,17 @@ func Detect(text string, minWords int, verifyChecksum bool) []SeedMatch {
 // DetectSpans scans text for BIP-39 seed phrases and returns byte offsets for
 // each phrase. It uses the same checksum semantics as Detect.
 func DetectSpans(text string, minWords int, verifyChecksum bool) []SeedSpan {
-	tokens := tokenizeWithSpans(text)
+	// No window can match with fewer tokens than the smallest phrase length
+	// searched below. Every token is a non-empty field between separators,
+	// so too few fields rules a match out before any word is normalized.
+	if !hasRawFields(text, max(minWords, validLengths[0])) {
+		return nil
+	}
+	return detectSpansInTokens(tokenizeWithSpans(text), minWords, verifyChecksum)
+}
+
+// detectSpansInTokens is DetectSpans after tokenization.
+func detectSpansInTokens(tokens []tokenSpan, minWords int, verifyChecksum bool) []SeedSpan {
 	if len(tokens) < minWords {
 		return nil
 	}
@@ -133,6 +143,22 @@ func isSeedSeparator(r rune) bool {
 	}
 }
 
+// asciiSeedSeparator caches isSeedSeparator for ASCII, built by calling it.
+var asciiSeedSeparator = func() (table [utf8.RuneSelf]bool) {
+	for r := range rune(utf8.RuneSelf) {
+		table[r] = isSeedSeparator(r)
+	}
+	return table
+}()
+
+// isSeedSeparatorFast is isSeedSeparator with an ASCII lookup.
+func isSeedSeparatorFast(r rune) bool {
+	if r >= 0 && r < utf8.RuneSelf {
+		return asciiSeedSeparator[r]
+	}
+	return isSeedSeparator(r)
+}
+
 // isSeedBoundary reports quoting and enclosing punctuation. A boundary splits
 // tokens like a separator, so a quote glued to the first or last word no
 // longer hides a phrase serialized as a JSON string (MCP arguments, request
@@ -156,6 +182,31 @@ func isSeedBoundary(r rune) bool {
 	}
 }
 
+// hasRawFields reports whether text splits into at least want non-empty
+// fields under tokenizeWithSpans's separators. The token count never exceeds
+// the field count, because appendTokenSpan keeps a subset of these fields.
+func hasRawFields(text string, want int) bool {
+	if want <= 0 {
+		return true
+	}
+	fields := 0
+	start := 0
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if isSeedSeparatorFast(r) {
+			if start < i {
+				fields++
+				if fields >= want {
+					return true
+				}
+			}
+			start = i + size
+		}
+		i += size
+	}
+	return start < len(text) && fields+1 >= want
+}
+
 // tokenize splits text into lowercase words using seed phrase separators.
 func tokenizeWithSpans(text string) []tokenSpan {
 	tokens := make([]tokenSpan, 0, 16)
@@ -163,7 +214,7 @@ func tokenizeWithSpans(text string) []tokenSpan {
 	segment := 0
 	for i := 0; i < len(text); {
 		r, size := utf8.DecodeRuneInString(text[i:])
-		if isSeedSeparator(r) {
+		if isSeedSeparatorFast(r) {
 			appendTokenSpan(&tokens, text, start, i, segment)
 			start = i + size
 			if isSeedBoundary(r) {

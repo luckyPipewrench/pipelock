@@ -664,6 +664,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.Containment.Display.Validate(); err != nil {
 		return warnings, err
 	}
+	if err := c.Containment.Filesystem.Validate(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateEmit(); err != nil {
 		return warnings, err
 	}

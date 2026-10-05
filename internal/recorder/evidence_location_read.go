@@ -74,23 +74,43 @@ func ReadEvidenceLocationEntriesBounded(location EvidenceLocation, maxEntries in
 }
 
 func readEntriesAtEvidenceLocation(location EvidenceLocation, name string, limits entryReadLimits) ([]Entry, bool, int64, error) {
+	var entries []Entry
+	_, truncated, bytesRead, err := walkBoundedEntriesAtEvidenceLocation(location, name, limits, func(e Entry) error {
+		entries = append(entries, e)
+		return nil
+	})
+	if err != nil {
+		return nil, false, bytesRead, err
+	}
+	return entries, truncated, bytesRead, nil
+}
+
+// walkBoundedEntriesAtEvidenceLocation reads one shard through its resolved
+// location under limits, delivering each entry to consume. It returns the
+// number of entries delivered. A shard that changed while it was read is an
+// error even though its entries were already delivered.
+func walkBoundedEntriesAtEvidenceLocation(location EvidenceLocation, name string, limits entryReadLimits, consume func(Entry) error) (int, bool, int64, error) {
 	file, before, err := openEvidenceLocationFile(location, name)
 	if err != nil {
-		return nil, false, 0, fmt.Errorf("opening evidence file: %w", err)
+		return 0, false, 0, fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	entries, truncated, bytesRead, err := readEntriesFromReader(file, limits)
+	count := 0
+	truncated, bytesRead, err := walkEntriesFromReader(file, limits, func(e Entry) error {
+		count++
+		return consume(e)
+	})
 	if err != nil {
-		return nil, false, bytesRead, fmt.Errorf("reading evidence file: %w", err)
+		return 0, false, bytesRead, fmt.Errorf("reading evidence file: %w", err)
 	}
 	after, err := file.Stat()
 	if err != nil {
-		return nil, false, bytesRead, fmt.Errorf("restat evidence file: %w", err)
+		return 0, false, bytesRead, fmt.Errorf("restat evidence file: %w", err)
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() {
-		return nil, false, bytesRead, errors.New("evidence file changed during read")
+		return 0, false, bytesRead, errors.New("evidence file changed during read")
 	}
-	return entries, truncated, bytesRead, nil
+	return count, truncated, bytesRead, nil
 }
 
 // ReadEvidenceLocationFileBounded reads one regular evidence file through its

@@ -149,90 +149,136 @@ func brokenChain(seq uint64, format string, args ...any) ChainResult {
 // of the prior receipt), and — when ChainVerifyOptions.PinnedKey is set —
 // the Ed25519 signature against the pinned key.
 func VerifyChain(receipts []EvidenceReceipt, opts ChainVerifyOptions) ChainResult {
-	if len(receipts) == 0 {
+	walk := NewChainWalker(opts)
+	for _, r := range receipts {
+		if !walk.Add(r) {
+			break
+		}
+	}
+	return walk.Result()
+}
+
+// ChainWalker is VerifyChain applied one receipt at a time. It keeps the
+// previous receipt's hash and the chain signer, never the receipts, and
+// Result returns exactly what VerifyChain returns for the receipts added so
+// far. Once a receipt breaks the chain the walker stays broken.
+type ChainWalker struct {
+	opts              ChainVerifyOptions
+	pinnedSignerKeyID string
+	signerID          string
+	prevHash          string
+	tipHash           string
+	count             uint64
+	finalSeq          uint64
+	fail              *ChainResult
+}
+
+// NewChainWalker starts an empty chain under opts.
+func NewChainWalker(opts ChainVerifyOptions) *ChainWalker {
+	return &ChainWalker{opts: opts, pinnedSignerKeyID: SignerKeyID(opts.PinnedKey), prevHash: GenesisHash}
+}
+
+// Add checks the next receipt. It returns false once the chain is broken.
+func (w *ChainWalker) Add(r EvidenceReceipt) bool {
+	if w.fail != nil {
+		return false
+	}
+	if res, ok := w.add(r); !ok {
+		w.fail = &res
+		return false
+	}
+	return true
+}
+
+func (w *ChainWalker) add(r EvidenceReceipt) (ChainResult, bool) {
+	opts := w.opts
+	seq := w.count
+	if seq == 0 {
+		w.signerID = r.Signature.SignerKeyID
+	}
+
+	// Structural validity. VerifyWithKey re-runs Validate internally,
+	// so when a key is pinned the explicit call is folded into the
+	// signature check below to avoid double validation.
+	if opts.PinnedKey == nil {
+		if err := r.Validate(); err != nil {
+			return brokenChain(seq, "receipt %d invalid: %v", seq, err), false
+		}
+	}
+
+	if opts.ExpectSignerKeyID != "" && r.Signature.SignerKeyID != opts.ExpectSignerKeyID {
+		return brokenChain(seq, "receipt %d signer_key_id %q does not match pinned %q",
+			seq, r.Signature.SignerKeyID, opts.ExpectSignerKeyID), false
+	}
+	if opts.ExpectPayloadKind != "" && r.PayloadKind != opts.ExpectPayloadKind {
+		return brokenChain(seq, "receipt %d payload_kind %q does not match expected %q",
+			seq, r.PayloadKind, opts.ExpectPayloadKind), false
+	}
+	if opts.ExpectContractHash != "" && r.ContractHash != opts.ExpectContractHash {
+		return brokenChain(seq, "receipt %d contract_hash does not match expected", seq), false
+	}
+	if opts.ExpectManifestHash != "" && r.ActiveManifestHash != opts.ExpectManifestHash {
+		return brokenChain(seq, "receipt %d active_manifest_hash does not match expected", seq), false
+	}
+
+	// Signer consistency: a forged chain that splices receipts from a
+	// different signer is rejected even without a pinned key.
+	if r.Signature.SignerKeyID != w.signerID {
+		return brokenChain(seq, "receipt %d signer_key_id %q breaks chain signer %q",
+			seq, r.Signature.SignerKeyID, w.signerID), false
+	}
+
+	if r.ChainSeq != seq {
+		return brokenChain(seq, "receipt %d declares chain_seq %d", seq, r.ChainSeq), false
+	}
+	if r.ChainPrevHash != w.prevHash {
+		return brokenChain(seq, "receipt %d chain_prev_hash mismatch", seq), false
+	}
+
+	if opts.PinnedKey != nil {
+		if err := VerifyWithKey(r, opts.PinnedKey, w.pinnedSignerKeyID); err != nil {
+			return brokenChain(seq, "receipt %d signature: %v", seq, err), false
+		}
+	}
+
+	h, err := ReceiptHash(r)
+	if err != nil {
+		return brokenChain(seq, "receipt %d hash: %v", seq, err), false
+	}
+	w.prevHash = h
+	w.tipHash = h
+	w.finalSeq = r.ChainSeq
+	w.count++
+	return ChainResult{}, true
+}
+
+// Result returns VerifyChain's result for the receipts added so far.
+func (w *ChainWalker) Result() ChainResult {
+	if w.fail != nil {
+		return *w.fail
+	}
+	if w.count == 0 {
 		return ChainResult{Valid: false, Error: "empty chain"}
 	}
-
-	signerID := receipts[0].Signature.SignerKeyID
-	pinnedSignerKeyID := SignerKeyID(opts.PinnedKey)
-	prevHash := GenesisHash
-	var tipHash string
-
-	for i, r := range receipts {
-		seq := uint64(i)
-
-		// Structural validity. VerifyWithKey re-runs Validate internally,
-		// so when a key is pinned the explicit call is folded into the
-		// signature check below to avoid double validation.
-		if opts.PinnedKey == nil {
-			if err := r.Validate(); err != nil {
-				return brokenChain(seq, "receipt %d invalid: %v", seq, err)
-			}
-		}
-
-		if opts.ExpectSignerKeyID != "" && r.Signature.SignerKeyID != opts.ExpectSignerKeyID {
-			return brokenChain(seq, "receipt %d signer_key_id %q does not match pinned %q",
-				seq, r.Signature.SignerKeyID, opts.ExpectSignerKeyID)
-		}
-		if opts.ExpectPayloadKind != "" && r.PayloadKind != opts.ExpectPayloadKind {
-			return brokenChain(seq, "receipt %d payload_kind %q does not match expected %q",
-				seq, r.PayloadKind, opts.ExpectPayloadKind)
-		}
-		if opts.ExpectContractHash != "" && r.ContractHash != opts.ExpectContractHash {
-			return brokenChain(seq, "receipt %d contract_hash does not match expected", seq)
-		}
-		if opts.ExpectManifestHash != "" && r.ActiveManifestHash != opts.ExpectManifestHash {
-			return brokenChain(seq, "receipt %d active_manifest_hash does not match expected", seq)
-		}
-
-		// Signer consistency: a forged chain that splices receipts from a
-		// different signer is rejected even without a pinned key.
-		if r.Signature.SignerKeyID != signerID {
-			return brokenChain(seq, "receipt %d signer_key_id %q breaks chain signer %q",
-				seq, r.Signature.SignerKeyID, signerID)
-		}
-
-		if r.ChainSeq != seq {
-			return brokenChain(seq, "receipt %d declares chain_seq %d", seq, r.ChainSeq)
-		}
-		if r.ChainPrevHash != prevHash {
-			return brokenChain(seq, "receipt %d chain_prev_hash mismatch", seq)
-		}
-
-		if opts.PinnedKey != nil {
-			if err := VerifyWithKey(r, opts.PinnedKey, pinnedSignerKeyID); err != nil {
-				return brokenChain(seq, "receipt %d signature: %v", seq, err)
-			}
-		}
-
-		h, err := ReceiptHash(r)
-		if err != nil {
-			return brokenChain(seq, "receipt %d hash: %v", seq, err)
-		}
-		prevHash = h
-		tipHash = h
-	}
-
-	finalSeq := receipts[len(receipts)-1].ChainSeq
 
 	// Completeness, and the only check here that a valid prefix cannot pass.
 	// Deliberately last: a chain that is internally broken should report the
 	// broken link at its sequence rather than a head mismatch, which is the
 	// downstream symptom rather than the cause.
-	if opts.ExpectHeadHash != "" && tipHash != opts.ExpectHeadHash {
-		return brokenChain(finalSeq,
+	if w.opts.ExpectHeadHash != "" && w.tipHash != w.opts.ExpectHeadHash {
+		return brokenChain(w.finalSeq,
 			"chain head %s does not match expected %s: the chain is truncated, forked, or from a different session",
-			tipHash, opts.ExpectHeadHash)
+			w.tipHash, w.opts.ExpectHeadHash)
 	}
 
 	return ChainResult{
 		Valid:              true,
-		ReceiptCount:       uint64(len(receipts)),
-		FinalSeq:           finalSeq,
-		RootHash:           tipHash,
-		SignaturesVerified: opts.PinnedKey != nil,
-		HeadVerified:       opts.ExpectHeadHash != "",
-		SignerKeyID:        signerID,
+		ReceiptCount:       w.count,
+		FinalSeq:           w.finalSeq,
+		RootHash:           w.tipHash,
+		SignaturesVerified: w.opts.PinnedKey != nil,
+		HeadVerified:       w.opts.ExpectHeadHash != "",
+		SignerKeyID:        w.signerID,
 	}
 }
 
@@ -424,30 +470,45 @@ func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLoc
 func ExtractEvidenceReceiptsFromEntries(entries []recorder.Entry) ([]EvidenceReceipt, error) {
 	out := make([]EvidenceReceipt, 0)
 	for i, entry := range entries {
-		if entry.Type != EvidenceEntryType {
-			if knownRecorderEntryType(entry.Type) {
-				continue
-			}
-			return nil, fmt.Errorf("parsed recorder entry %d: unexpected recorder entry type %q", i+1, entry.Type)
-		}
-		detail := entry.RawDetail
-		if len(detail) == 0 {
-			var err error
-			detail, err = json.Marshal(entry.Detail)
-			if err != nil {
-				return nil, fmt.Errorf("parsed recorder entry %d: marshal evidence detail: %w", i+1, err)
-			}
-			if isSecretEgressWire(detail) {
-				return nil, fmt.Errorf("parsed recorder entry %d: secret egress receipt requires original RawDetail", i+1)
-			}
-		}
-		receipt, err := decodeEvidenceReceiptDetail(detail)
+		receipt, ok, err := EvidenceReceiptFromEntry(i, entry)
 		if err != nil {
-			return nil, fmt.Errorf("parsed recorder entry %d: %w", i+1, err)
+			return nil, err
 		}
-		out = append(out, receipt)
+		if ok {
+			out = append(out, receipt)
+		}
 	}
 	return out, nil
+}
+
+// EvidenceReceiptFromEntry is one step of ExtractEvidenceReceiptsFromEntries:
+// index is the entry's zero-based position among all recorder entries, which
+// errors name. ok is false for a known entry type that is not an evidence
+// receipt. A caller that extracts while reading gets the same receipts and
+// the same first error without holding the entries.
+func EvidenceReceiptFromEntry(index int, entry recorder.Entry) (EvidenceReceipt, bool, error) {
+	if entry.Type != EvidenceEntryType {
+		if knownRecorderEntryType(entry.Type) {
+			return EvidenceReceipt{}, false, nil
+		}
+		return EvidenceReceipt{}, false, fmt.Errorf("parsed recorder entry %d: unexpected recorder entry type %q", index+1, entry.Type)
+	}
+	detail := entry.RawDetail
+	if len(detail) == 0 {
+		var err error
+		detail, err = json.Marshal(entry.Detail)
+		if err != nil {
+			return EvidenceReceipt{}, false, fmt.Errorf("parsed recorder entry %d: marshal evidence detail: %w", index+1, err)
+		}
+		if isSecretEgressWire(detail) {
+			return EvidenceReceipt{}, false, fmt.Errorf("parsed recorder entry %d: secret egress receipt requires original RawDetail", index+1)
+		}
+	}
+	receipt, err := decodeEvidenceReceiptDetail(detail)
+	if err != nil {
+		return EvidenceReceipt{}, false, fmt.Errorf("parsed recorder entry %d: %w", index+1, err)
+	}
+	return receipt, true, nil
 }
 
 func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceReceipt, error) {

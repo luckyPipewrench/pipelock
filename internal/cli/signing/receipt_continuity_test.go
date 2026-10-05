@@ -334,3 +334,52 @@ func TestWholeRecorderReportsIncompleteRunsWithoutFailing(t *testing.T) {
 		t.Fatalf("--require-seal must fail on an unsealed run:\n%s", strict)
 	}
 }
+
+// A recorder that changed while it was verified is not a continuity finding.
+// The operator is told what happened and how to get a verdict.
+func TestRecorderChangedDuringVerificationMessage(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "evidence")
+	msg := recorderChangedError(dir).Error()
+	for _, want := range []string{
+		"the recorder in " + dir + " changed while it was being verified",
+		"no verdict on its evidence was reached",
+		"stop the process writing to it",
+		"verify an atomic snapshot of the recorder directory",
+		"pipelock evidence doctor " + dir,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message missing %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "link finding") {
+		t.Fatalf("a changed recorder must not be labeled a link finding: %s", msg)
+	}
+
+	changed := receipt.BaseReport{Base: "proxy", Findings: []receipt.BaseFinding{{
+		Kind:            receipt.FindingCorruptChain,
+		Session:         "proxy.run.f7b327337534352a514bd0a256b1d1c0",
+		Detail:          "link file bytes differ from the first read",
+		EvidenceChanged: true,
+	}}}
+	var out bytes.Buffer
+	printRestartContinuity(&out, changed)
+	if !strings.Contains(out.String(), "RECORDER CHANGED DURING VERIFICATION") {
+		t.Fatalf("summary does not say the recorder changed:\n%s", out.String())
+	}
+
+	// Positive control: an ordinary link finding prints no such line.
+	// Its text names the change on purpose: classification must come from
+	// the typed flag, never from the detail.
+	ordinary := receipt.BaseReport{Base: "proxy", Findings: []receipt.BaseFinding{{
+		Kind: receipt.FindingCorruptChain, Session: "proxy.run.a", Detail: "evidence changed during verification: text read from a link file",
+	}}}
+	if ordinary.EvidenceChangedDuringVerification() {
+		t.Fatal("an ordinary link finding read as a changed recorder")
+	}
+	out.Reset()
+	printRestartContinuity(&out, ordinary)
+	if strings.Contains(out.String(), "RECORDER CHANGED") {
+		t.Fatalf("ordinary finding reported as a changed recorder:\n%s", out.String())
+	}
+}

@@ -63,6 +63,34 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 
 // QuerySessionResolved reads one already-resolved evidence location.
 func QuerySessionResolved(location EvidenceLocation, sessionID string, filter *QueryFilter) (*QueryResult, error) {
+	var entries []Entry
+	result, err := walkSessionResolved(location, sessionID, filter, func(e Entry) error {
+		if matchesFilter(e, filter) {
+			entries = append(entries, e)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	result.Entries = entries
+	return result, nil
+}
+
+// WalkSessionResolved is QuerySessionResolved with no filter, delivering each
+// entry to consume instead of collecting them. It reads the same shards in
+// the same order under the same per-file limits and refusals and returns the
+// same statistics, Truncated included, with Entries left nil. Any error
+// invalidates the whole walk: consume may already have seen entries of a
+// shard that then failed to read or held another session's entries.
+func WalkSessionResolved(location EvidenceLocation, sessionID string, consume func(Entry) error) (*QueryResult, error) {
+	if consume == nil {
+		return nil, errors.New("session entry consumer is required")
+	}
+	return walkSessionResolved(location, sessionID, nil, consume)
+}
+
+func walkSessionResolved(location EvidenceLocation, sessionID string, filter *QueryFilter, consume func(Entry) error) (*QueryResult, error) {
 	dirEntries, dirTruncated, err := readEvidenceLocationDirectoryEntries(location, maxDirectoryEntries(filter))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
@@ -115,24 +143,28 @@ func QuerySessionResolved(location EvidenceLocation, sessionID string, filter *Q
 			maxBytes = remaining
 		}
 
-		entries, truncated, bytesRead, err := readEntriesAtEvidenceLocation(location, f, entryReadLimits{MaxEntries: maxEntries, MaxBytes: maxBytes})
+		// A shard holding another session's entry is refused whole, but only
+		// after the shard read itself succeeded, so a read error later in the
+		// shard still wins, as it did when the shard was read before checking.
+		var sessionErr error
+		count, truncated, bytesRead, err := walkBoundedEntriesAtEvidenceLocation(location, f, entryReadLimits{MaxEntries: maxEntries, MaxBytes: maxBytes}, func(e Entry) error {
+			if sessionErr == nil && e.SessionID != sessionID {
+				sessionErr = entrySessionError(e, sessionID)
+			}
+			return consume(e)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
 		result.FilesRead++
-		result.EntriesRead += len(entries)
+		result.EntriesRead += count
 		result.BytesRead += bytesRead
 		if truncated {
 			result.Truncated = true
 		}
 
-		if err := CheckEntrySessions(entries, sessionID); err != nil {
-			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
-		}
-		for _, e := range entries {
-			if matchesFilter(e, filter) {
-				result.Entries = append(result.Entries, e)
-			}
+		if sessionErr != nil {
+			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), sessionErr)
 		}
 
 		if result.Truncated {
@@ -474,8 +506,18 @@ func matchesFilter(e Entry, f *QueryFilter) bool {
 func CheckEntrySessions(entries []Entry, session string) error {
 	for _, e := range entries {
 		if e.SessionID != session {
-			return fmt.Errorf("%w: entry seq %d session_id %q does not match requested session %q", ErrEvidenceRefused, e.Sequence, e.SessionID, session)
+			return entrySessionError(e, session)
 		}
 	}
 	return nil
+}
+
+// EntrySessionError is the refusal CheckEntrySessions returns for the first
+// entry of another session, for callers that check entries one at a time.
+func EntrySessionError(e Entry, session string) error {
+	return entrySessionError(e, session)
+}
+
+func entrySessionError(e Entry, session string) error {
+	return fmt.Errorf("%w: entry seq %d session_id %q does not match requested session %q", ErrEvidenceRefused, e.Sequence, e.SessionID, session)
 }

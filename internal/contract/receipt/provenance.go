@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"hash"
 	"strings"
 	"unicode/utf8"
 
@@ -264,10 +263,7 @@ func commitment(key []byte, domain string, parts ...[]byte) string {
 // so there is exactly ONE implementation of `u64be(byte_length) || bytes`.
 // Two copies would let a change to one silently diverge commitments from the
 // specification while the other copy still matched it.
-// mac is typed hash.Hash rather than any writer to document that it is a
-// digest; commitment, the only caller, passes an HMAC. The narrower type also
-// keeps static analysis from routing these bytes into unrelated writers.
-func writePart(mac hash.Hash, value []byte) {
+func writePart(mac interface{ Write([]byte) (int, error) }, value []byte) {
 	_, _ = mac.Write(appendFrame(nil, value))
 }
 

@@ -155,6 +155,13 @@ linters:
       - path: internal/cli/contain/filesystem_cleanup_linux_test\.go
         linters: [gosec]
         text: "G304"
+      # The canary script test runs bash, or unshare and then bash, on the
+      # generated script and on paths the test created in its temporary
+      # directory. Both program names are literals. Gosec still flags the call
+      # because the argument vector is assembled from those paths.
+      - path: internal/cli/contain/filesystem_canary_script_linux_test\.go
+        linters: [gosec]
+        text: "G204"
       # migrateScalarFile takes the destination's mode per call site. Its
       # callers pass modeConfigSecret or modePinSecret, which are distinct
       # policy classes that happen to carry the same numeric mode now that the

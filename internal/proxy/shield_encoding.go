@@ -20,7 +20,7 @@ import (
 const (
 	shieldUninspectableLayer         = "shield_uninspectable"
 	shieldUTF16ScanHeadBlockReason   = "Browser Shield cannot safely inspect a UTF-16 response from a scan head; correct upstream encoding or use browser_shield.exempt_domains to skip Shield rewriting only"
-	shieldPartialResponseBlockReason = "Browser Shield cannot safely rewrite a partial response; request the complete resource; browser_shield.exempt_domains skips Shield rewriting only and does not permit unscanned partial responses"
+	shieldPartialResponseBlockReason = "Browser Shield cannot safely rewrite a partial response; request the complete resource; browser_shield.exempt_domains skips Shield on fetch, including partial responses Shield would otherwise rewrite, but cannot bypass response_incomplete on forward, TLS-intercepted, or reverse proxy traffic"
 	browserMIMESniffHeaderBytes      = 1445
 )
 

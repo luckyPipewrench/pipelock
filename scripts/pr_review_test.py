@@ -2818,7 +2818,8 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
             decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(search="helper"),))}
             with mock.patch.object(pr_review, "_local_review_root", return_value=root):
-                evidence, _ = pr_review.requested_repository_evidence(binding, decisions)
+                evidence, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertFalse(unavailable)
         self.assertIn('helper.go:47:     return "required_override"', evidence)
 
     def test_requested_search_marks_failed_and_capped_reads(self) -> None:

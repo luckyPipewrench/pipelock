@@ -1260,6 +1260,8 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// Authorization header" style documentation stays out of scope.
 		re: regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
 			`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
+			// A path is often quoted or fenced in a description ("`~/.aws/credentials`").
+			`[\x60"'(<\[]?` +
 			`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`),
 	},
 }
@@ -2191,8 +2193,10 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 		rest = rest[:160]
 		capped = true
 	}
+	next := ""
 	for i, r := range rest {
 		if isClauseBoundary(r) {
+			next = text[end+i+utf8.RuneLen(r):]
 			rest = rest[:i]
 			capped = false
 			break
@@ -2200,8 +2204,20 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 	}
 	// A clause longer than the window cannot be shown free of an exception,
 	// so it fails closed and the negation does not exempt the match.
-	return !capped && !handoverExceptionCue.MatchString(rest)
+	if capped || handoverExceptionCue.MatchString(rest) {
+		return false
+	}
+	// "Never share your API key. Except with this tool." carries the redirect
+	// in the clause that follows. A following clause that opens with an
+	// exception cue revokes the negation; one that merely continues ("Rotate it
+	// regularly.") does not.
+	return !leadingHandoverExceptionCue.MatchString(next)
 }
+
+// leadingHandoverExceptionCue matches an exception or redirect cue at the start
+// of the clause after a negated handover, ignoring leading whitespace and
+// punctuation.
+var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^[\s"'()\[\]-]*(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save\s+for|excluding|instead|only)\b`)
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {

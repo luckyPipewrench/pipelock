@@ -47,22 +47,26 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		layer = mcpReceiptLayerKillSwitch
 	}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
-		Emitter:           opts.receiptEmitter(),
-		V2Emitter:         opts.v2ReceiptEmitter(),
-		PolicyHash:        opts.receiptPolicyHash(),
-		Log:               logW,
-		Transport:         opts.Transport,
-		ActionID:          receipt.NewActionID(),
-		ParentActionID:    res.ParentActionID,
-		MCPMethod:         res.Method,
-		ToolName:          res.Target,
-		Verdict:           final,
-		Layer:             layer,
-		Pattern:           res.Reason,
-		Severity:          config.SeverityHigh,
-		Decision:          taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
-		RequireReceipts:   opts.requireReceipts(),
-		RequireReceipt:    true,
+		Emitter:         opts.receiptEmitter(),
+		V2Emitter:       opts.v2ReceiptEmitter(),
+		PolicyHash:      opts.receiptPolicyHash(),
+		Log:             logW,
+		Transport:       opts.Transport,
+		ActionID:        receipt.NewActionID(),
+		ParentActionID:  res.ParentActionID,
+		MCPMethod:       res.Method,
+		ToolName:        res.Target,
+		Verdict:         final,
+		Layer:           layer,
+		Pattern:         res.Reason,
+		Severity:        config.SeverityHigh,
+		Decision:        taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
+		RequireReceipts: opts.requireReceipts(),
+		RequireReceipt:  true,
+		// A resolution receipt must be on disk before the journal entry that
+		// closes the hold: restart recovery, which writes the journal entry
+		// right after, would otherwise leave a hold closed with no receipt.
+		Durable:           true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,
 		ResolutionPolicy:  resolutionPolicy,
@@ -78,9 +82,10 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 
 // deferredReceiptSettlement orders a released call's evidence. The allow
 // resolution receipt is the proof that a held call was released, so it is
-// written only once the journal has accepted the allow (Manager.AfterJournal):
-// a journal that cannot be written then leaves the signed chain with the block
-// alone, never an allow followed by a block for a call that was never sent.
+// written after the journal records a pending release (Manager.AfterJournal).
+// Whenever the release then closes to block, the same hook writes the
+// corrective block receipt before the corrective terminal journal entry, and
+// Resolve reuses that receipt instead of emitting another one.
 // Prepare runs before the journal and so only probes that a required receipt
 // could be written at all.
 //
@@ -125,8 +130,8 @@ func receiptWritable(opts MCPProxyOpts) bool {
 	return v1OK || v2OK
 }
 
-// commitAllow writes the allow resolution receipt after the journal accepted
-// the allow. It is the Manager.AfterJournal hook.
+// commitAllow writes the release resolution receipt from Manager.AfterJournal:
+// the initial allow, or the corrective block when the release closes.
 func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	return s.emit(opts, logW, res)
 }

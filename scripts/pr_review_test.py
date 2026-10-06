@@ -2726,6 +2726,26 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         # bash's keyword form with no parentheses
         self.assertEqual(pr_review._definition_end(["function helper {", "  echo hi", "}", "next"], 0), (3, False))
 
+    def test_windows_never_merge_backwards(self) -> None:
+        windows = pr_review._evidence_windows([(0, "a.go", 100, "x"), (0, "a.go", 10, "y")])
+        self.assertEqual(windows, [("a.go", [100]), ("a.go", [10])])
+
+    def test_skipped_definition_search_marks_truncation(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        finding = pr_review.Finding("medium", "caller.go", 1, "helper incomplete", "missing body", "check helper")
+        hits = [f"{binding.head_sha}:helper.go:1:helper"]
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
+            pr_review, "MAX_EVIDENCE_SEARCHES", 1
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=(hits, False, False)) as grep, mock.patch.object(
+            pr_review, "_read_local_file", return_value="helper"
+        ):
+            evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
+        self.assertFalse(failed)
+        self.assertEqual(grep.call_count, 1)
+        self.assertIn("use unresolved", evidence)
+
     def test_nearby_hits_merge_all_context(self) -> None:
         matches = [(0, "example.txt", line, "hit") for line in (8, 16, 24)]
         windows = pr_review._evidence_windows(matches)

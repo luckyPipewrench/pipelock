@@ -2645,7 +2645,9 @@ def _evidence_windows(matches: list[tuple[int, str, int, str]]) -> list[tuple[st
     """Merge nearby anchors without losing the later hit's context or body."""
     windows: list[tuple[str, list[int]]] = []
     for _, path, line, _ in matches:
-        if windows and windows[-1][0] == path and line - windows[-1][1][-1] <= 9:
+        # Merge only forward and nearby; callers sort by path and line, and a
+        # backwards jump never extends a window over distant code.
+        if windows and windows[-1][0] == path and 0 <= line - windows[-1][1][-1] <= 9:
             windows[-1][1].append(line)
         else:
             windows.append((path, [line]))
@@ -2735,7 +2737,11 @@ def cross_file_evidence(
             # helper used three times above its definition never shows the
             # definition. An identifier also gets one definition search,
             # charged to the same search budget.
-            if _IDENTIFIER_TERM.match(term) and searches < MAX_EVIDENCE_SEARCHES:
+            if _IDENTIFIER_TERM.match(term) and searches >= MAX_EVIDENCE_SEARCHES:
+                # The budget ran out before this identifier's definition search;
+                # say so rather than present the literal hits as complete.
+                search_output_truncated = True
+            elif _IDENTIFIER_TERM.match(term):
                 searches += 1
                 definition_lines, definition_truncated, definition_failed = _bounded_git_grep(
                     root, _definition_pattern(term), binding.head_sha, extended=True

@@ -85,6 +85,10 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 	}
 	var cleanups []func()
 	var cleanupErr error
+	// Cleanup must still run after the probe is cancelled, or canary
+	// directories accumulate. removeBounded is already bounded by entry count
+	// and depth, so it does not need the caller's deadline.
+	cleanupCtx := context.WithoutCancel(ctx)
 	recordCleanup := func(err error) {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
@@ -104,7 +108,7 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 	if err != nil {
 		return statusFail, fmt.Sprintf("create operator home canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { recordCleanup(opParent.removeBounded(ctx, opName)) }, opDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(opParent.removeBounded(cleanupCtx, opName)) }, opDir.close)
 	opFile, inode, err := opDir.createExclusiveFile("canary-", 0o644, []byte("canary\n"))
 	if err != nil {
 		return statusFail, fmt.Sprintf("write operator home canary: %v", err)
@@ -120,12 +124,12 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 	if err != nil {
 		return statusFail, fmt.Sprintf("create write canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(ctx, writeName)) }, writeDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(cleanupCtx, writeName)) }, writeDir.close)
 	secretName, secretDir, err := stateParent.mkdirExclusive(".pipelock-fs-secret-", 0o755)
 	if err != nil {
 		return statusFail, fmt.Sprintf("create secret canary: %v", err)
 	}
-	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(ctx, secretName)) }, secretDir.close)
+	cleanups = append(cleanups, func() { recordCleanup(stateParent.removeBounded(cleanupCtx, secretName)) }, secretDir.close)
 	secretFile, _, err := secretDir.createExclusiveFile("secret-", 0o644, []byte("secret\n"))
 	if err != nil {
 		return statusFail, fmt.Sprintf("write secret canary: %v", err)

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -38,17 +39,21 @@ type filesystemProfile struct {
 // Exists are injectable so the path policy can be tested without a Linux
 // filesystem. Nil uses filepath.EvalSymlinks and os.Stat.
 type filesystemProfileInput struct {
-	Mode                string
-	AgentUser           string
-	AgentHome           string
-	OperatorHome        string
-	DisplaySocket       string
-	Grants              []workspaceGrant
-	Now                 time.Time
-	PostureProofPath    string
-	ConfigDir           string
-	DataDir             string
-	RequiredSecretPaths []string
+	Mode         string
+	AgentUser    string
+	AgentHome    string
+	OperatorHome string
+	// OperatorHomeResolved is OperatorHome with symlinks followed. A home
+	// reached through /home but stored elsewhere stays readable after
+	// ProtectHome=tmpfs hides /home, so both paths must pass the checks.
+	OperatorHomeResolved string
+	DisplaySocket        string
+	Grants               []workspaceGrant
+	Now                  time.Time
+	PostureProofPath     string
+	ConfigDir            string
+	DataDir              string
+	RequiredSecretPaths  []string
 	// OptionalSecretPaths are configured secret locations. A missing path is
 	// skipped. A path that is or contains something the agent must read is
 	// refused, because InaccessiblePaths on a parent cannot be punched through.
@@ -81,6 +86,18 @@ func filesystemProfileProperties(in filesystemProfileInput) (filesystemProfile, 
 		return filesystemProfile{}, err
 	}
 	in.OperatorHome = operatorHome
+	if strings.TrimSpace(in.OperatorHomeResolved) != "" {
+		resolvedHome, err := cleanLinuxPath(in.OperatorHomeResolved)
+		if err != nil {
+			return filesystemProfile{}, fmt.Errorf("operator home: %w", err)
+		}
+		if resolvedHome != operatorHome {
+			if err := refuseUnsupportedOperatorHome(resolvedHome); err != nil {
+				return filesystemProfile{}, fmt.Errorf("operator home %s resolves to %s: %w", operatorHome, resolvedHome, err)
+			}
+		}
+		in.OperatorHomeResolved = resolvedHome
+	}
 	if strings.TrimSpace(in.AgentHome) == "" {
 		return filesystemProfile{}, errors.New("agent home is required to build the filesystem profile")
 	}
@@ -194,7 +211,7 @@ func (in filesystemProfileInput) resolveBindDir(kind, original string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%s %q: %w", kind, original, err)
 	}
-	if err := refuseFilesystemBind(kind, original, cleaned, in.OperatorHome); err != nil {
+	if err := refuseFilesystemBind(kind, original, cleaned, in.OperatorHome, in.OperatorHomeResolved); err != nil {
 		return "", err
 	}
 	resolved, isDir, err := in.eval(cleaned)
@@ -208,7 +225,7 @@ func (in filesystemProfileInput) resolveBindDir(kind, original string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%s %q: %w", kind, original, err)
 	}
-	if err := refuseFilesystemBind(kind, original, resolved, in.OperatorHome); err != nil {
+	if err := refuseFilesystemBind(kind, original, resolved, in.OperatorHome, in.OperatorHomeResolved); err != nil {
 		return "", err
 	}
 	return resolved, nil
@@ -342,6 +359,9 @@ func (in filesystemProfileInput) inaccessiblePaths() ([]string, error) {
 // ProtectHome=tmpfs hides /home and /root only. An operator home anywhere
 // else stays readable under ProtectSystem=strict, so enforce refuses it
 // instead of launching a profile that does not hide that home.
+// resolveOperatorHome follows symlinks in the operator home. Tests replace it.
+var resolveOperatorHome = filepath.EvalSymlinks
+
 func refuseUnsupportedOperatorHome(home string) error {
 	if home == "/root" || linuxPathContains("/root", home) || linuxPathContains("/home", home) {
 		return nil
@@ -349,13 +369,18 @@ func refuseUnsupportedOperatorHome(home string) error {
 	return fmt.Errorf("operator home %s is not hidden by enforce; enforce supports operator homes under /home or /root", home)
 }
 
-func refuseFilesystemBind(kind, original, resolved, operatorHome string) error {
+func refuseFilesystemBind(kind, original, resolved string, operatorHomes ...string) error {
 	switch resolved {
 	case "/", "/home", "/root", "/run/user":
 		return fmt.Errorf("%s %q resolves to %s, which cannot be bound into a contained agent", kind, original, resolved)
 	}
-	if resolved == operatorHome || linuxPathContains(resolved, operatorHome) {
-		return fmt.Errorf("%s %q resolves to %s, which contains operator home %s", kind, original, resolved, operatorHome)
+	for _, operatorHome := range operatorHomes {
+		if operatorHome == "" {
+			continue
+		}
+		if resolved == operatorHome || linuxPathContains(resolved, operatorHome) {
+			return fmt.Errorf("%s %q resolves to %s, which contains operator home %s", kind, original, resolved, operatorHome)
+		}
 	}
 	return nil
 }
@@ -478,6 +503,21 @@ func filesystemProfileInputForProbe(env *probeEnv, agentHome string) (filesystem
 	if err != nil {
 		return filesystemProfileInput{}, err
 	}
+	operatorHomeResolved := ""
+	if mode == config.ContainmentFilesystemModeEnforce && operatorHome != "" {
+		// Fail closed: a home whose real location can't be read can't be
+		// shown to sit under a directory enforce hides.
+		// A home that doesn't exist holds nothing to leak, so the lexical
+		// check stands alone; any other resolve error refuses the launch.
+		resolvedHome, resolveErr := resolveOperatorHome(operatorHome)
+		switch {
+		case resolveErr == nil:
+			operatorHomeResolved = resolvedHome
+		case errors.Is(resolveErr, fs.ErrNotExist):
+		default:
+			return filesystemProfileInput{}, fmt.Errorf("resolve operator home %s: %w", operatorHome, resolveErr)
+		}
+	}
 	socket := ""
 	if resolved, ok := localDisplaySocket(display); ok {
 		socket = resolved
@@ -500,19 +540,20 @@ func filesystemProfileInputForProbe(env *probeEnv, agentHome string) (filesystem
 		now = env.now()
 	}
 	return filesystemProfileInput{
-		Mode:                mode,
-		AgentUser:           env.agentUserName,
-		AgentHome:           agentHome,
-		OperatorHome:        operatorHome,
-		DisplaySocket:       socket,
-		Grants:              env.workspaceGrants,
-		Now:                 now,
-		PostureProofPath:    env.postureProofPath,
-		ConfigDir:           configDir,
-		DataDir:             defaultDataDir,
-		RequiredSecretPaths: required,
-		OptionalSecretPaths: optional,
-		ReadablePaths:       readable,
+		Mode:                 mode,
+		AgentUser:            env.agentUserName,
+		AgentHome:            agentHome,
+		OperatorHome:         operatorHome,
+		OperatorHomeResolved: operatorHomeResolved,
+		DisplaySocket:        socket,
+		Grants:               env.workspaceGrants,
+		Now:                  now,
+		PostureProofPath:     env.postureProofPath,
+		ConfigDir:            configDir,
+		DataDir:              defaultDataDir,
+		RequiredSecretPaths:  required,
+		OptionalSecretPaths:  optional,
+		ReadablePaths:        readable,
 	}, nil
 }
 

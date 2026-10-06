@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,9 +21,27 @@ import (
 )
 
 // permissionsBypassed reports whether DAC checks are skipped for this
-// process. Root with CAP_DAC_OVERRIDE writes into a 0555 directory, so a
-// case that expects a permission denial cannot observe one.
-func permissionsBypassed() bool { return os.Geteuid() == 0 }
+// process. Any process holding CAP_DAC_OVERRIDE in its effective set, root or
+// not, writes into a 0555 directory, so a case that expects a permission
+// denial cannot observe one. An unreadable status falls back to the uid.
+func permissionsBypassed() bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return os.Geteuid() == 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		hex, ok := strings.CutPrefix(line, "CapEff:")
+		if !ok {
+			continue
+		}
+		caps, err := strconv.ParseUint(strings.TrimSpace(hex), 16, 64)
+		if err != nil {
+			return os.Geteuid() == 0
+		}
+		return caps&(1<<unix.CAP_DAC_OVERRIDE) != 0
+	}
+	return os.Geteuid() == 0
+}
 
 func TestProbeFilesystemConfinementEnforceRejectsBeforeCreatingCanaries(t *testing.T) {
 	status, detail := probeFilesystemConfinementEnforce(context.Background(), nil, filesystemProfile{Mode: config.ContainmentFilesystemModeEnforce})
@@ -461,5 +480,29 @@ func TestMkdiratPermissionIsNotRetried(t *testing.T) {
 	_, _, err = parent.mkdirExclusive("once-", 0o755)
 	if err == nil || errors.Is(err, unix.EEXIST) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProbeFilesystemConfinementCleansUpAfterCancellation(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	env := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		// The probe is cancelled while its units run; cleanup still has to
+		// remove every canary directory it created.
+		cancel()
+		return "", 0, nil
+	})
+	_, _ = probeFilesystemConfinementEnforce(ctx, env, env.filesystem)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("canary residue after cancellation: %v", names)
 	}
 }

@@ -108,6 +108,10 @@ func mediaEncodings() []mediaEncoding {
 		}},
 		{"nul interleaved", func(s string) []byte { return mediaInterleaved(s, 0x00) }},
 		{"0x01 interleaved", func(s string) []byte { return mediaInterleaved(s, 0x01) }},
+		{"del interleaved", func(s string) []byte { return append([]byte{0xff}, mediaInterleaved(s, 0x7f)...) }},
+		{"utf8 C1 interleaved", func(s string) []byte {
+			return append([]byte{0xff}, []byte(strings.Join(strings.Split(s, ""), "\u0085"))...)
+		}},
 		{"benign ascii run beside utf16", func(s string) []byte {
 			return append(append([]byte(mediaBenignNote), 0x00), mediaUTF16(s, le)...)
 		}},

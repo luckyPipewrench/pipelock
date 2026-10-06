@@ -217,7 +217,7 @@ type mediaSpan struct{ lo, hi int }
 func (w *mediaTextWriter) controlView(b []byte) {
 	start := 0
 	for i := 0; i <= len(b); i++ {
-		if i < len(b) && b[i] <= 0x7e {
+		if i < len(b) && b[i] <= 0x7f {
 			continue
 		}
 		w.controlRun(b[start:i])
@@ -229,7 +229,7 @@ func (w *mediaTextWriter) controlView(b []byte) {
 	w.scratch = nil
 }
 
-// controlRun reads one run of bytes with no byte above 0x7e.
+// controlRun reads one run of bytes with no byte above 0x7f.
 func (w *mediaTextWriter) controlRun(run []byte) {
 	joined := w.scratch[:0]
 	var spans []mediaSpan
@@ -356,7 +356,7 @@ func (w *mediaTextWriter) utf8View(b []byte) {
 			} else {
 				class = classifyMediaRune(r)
 			}
-			if r > 0x7f && (class == mediaRuneText || class == mediaRuneSpace || class == mediaRuneKeep) {
+			if r > 0x7f && class != mediaRuneBreak {
 				w.marked = true
 			}
 			w.addClassified(r, class)

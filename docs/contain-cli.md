@@ -93,10 +93,13 @@ root-owned and private, outside any agent-writable workspace.
 The optional path requires `busctl` typed-property support and cgroup v2 in
 addition to the normal containment prerequisites. It observes the exact launch
 arguments through systemd, never by parsing child stderr. On normal exit or
-cancellation, cleanup acts only on that admitted invocation and checks terminal
-service state plus an empty or absent recorded cgroup. Missing admission, changed
-identity, unavailable cleanup evidence or observed cancellation cannot report
-successful completion. An unobserved submitted service may still exist: preserve
+cancellation, cleanup acts only on the invocation whose identity, cgroup, user
+and arguments it witnessed, and checks terminal service state plus an empty or
+absent recorded cgroup. When filesystem enforcement is on and the unit's
+filesystem properties can't be confirmed, that witnessed invocation is stopped
+and the report stays incomplete. Missing ownership, changed identity,
+unavailable cleanup evidence or observed cancellation cannot report successful
+completion. An unobserved submitted service may still exist: preserve
 the incomplete report and its exact unit identity for operator diagnosis, rather
 than treating a stopped `systemd-run` client as cleanup proof. The ordinary launch
 path is unchanged when the option is omitted. See the

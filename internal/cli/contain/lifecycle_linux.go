@@ -720,7 +720,20 @@ func lifecycleFilesystemAdmission(ctx context.Context, b lifecycleBackend, l *co
 		if err := lifecycleServiceIdentity(current, l.record, uid); err != nil {
 			return err
 		}
-		return confirmLifecycleFilesystem(ctx, b, current, l.record)
+		if err := confirmLifecycleFilesystem(ctx, b, current, l.record); err != nil {
+			return err
+		}
+		// The typed bind read is a separate manager call, so the invocation
+		// can be replaced between the show above and that read. Admit only
+		// when the same invocation is still the one observed afterwards.
+		after, err := b.show(ctx, l.record.Unit)
+		if err != nil {
+			return err
+		}
+		if after["InvocationID"] != witnessedID {
+			return errLifecycleInvocationChanged
+		}
+		return lifecycleServiceIdentity(after, l.record, uid)
 	})
 }
 
@@ -755,7 +768,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		}
 		if lifecycleTerminal(fields) && empty {
 			// Inactive units can clear InvocationID and ControlGroup. No action
-			// is taken here: the retained admitted cgroup and terminal manager
+			// is taken here: the retained witnessed cgroup and terminal manager
 			// state jointly establish that no workload remains.
 			if fields["LoadState"] != "not-found" && (fields["Description"] != lifecycleDescriptionPrefix+l.record.RunID || fields["Transient"] != "yes") {
 				return errors.New("terminal lifecycle unit ownership changed")

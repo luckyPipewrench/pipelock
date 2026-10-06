@@ -94,12 +94,13 @@ func TestReadOnlyCanaryCasesSkipWhenBindMountProbeFails(t *testing.T) {
 	denied := filepath.Join(base, "denied")
 	workspace := filepath.Join(base, "workspace")
 	secret := filepath.Join(base, "secret")
-	for _, dir := range []string{readOnly, writable, denied} {
-		if err := os.Mkdir(dir, 0o750); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Mkdir(readOnly, 0o750); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.Chmod(denied, 0o500); err != nil {
+	if err := os.Mkdir(writable, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(denied, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(workspace, []byte("ws\n"), 0o600); err != nil {

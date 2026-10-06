@@ -158,10 +158,13 @@ linters:
       # The canary script test runs bash, or unshare and then bash, on the
       # generated script and on paths the test created in its temporary
       # directory. Both program names are literals. Gosec still flags the call
-      # because the argument vector is assembled from those paths.
+      # because the argument vector is assembled from those paths (G204).
+      # The bind-mount probe test puts a fake unshare on PATH in its own
+      # temporary directory. That fixture has to be executable, so 0600 cannot
+      # express it (G306).
       - path: internal/cli/contain/filesystem_canary_script_linux_test\.go
         linters: [gosec]
-        text: "G204"
+        text: "G204|G306"
       # The wrapper test writes a stub pipelock binary that the rendered
       # launcher executes directly, so the stub needs the owner execute bit
       # (G306). It then runs bash from exec.LookPath on the wrapper it wrote in

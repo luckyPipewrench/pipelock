@@ -520,7 +520,7 @@ func TestLifecycleSupervisionReturnsFinalPublicationAndClientErrors(t *testing.T
 	done := make(chan error, 1)
 	done <- clientErr
 	err := superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
-	if !errors.Is(err, clientErr) || !errors.Is(err, reportErr) || saves != 2 {
+	if !errors.Is(err, clientErr) || !errors.Is(err, reportErr) || saves != 3 {
 		t.Fatalf("lost failure: err=%v saves=%d", err, saves)
 	}
 	if !l.record.CleanupComplete || !l.record.Final || l.record.Phase != "incomplete" || !strings.Contains(l.record.Failure, clientErr.Error()) || l.record.Terminal["ExecMainStatus"] != "17" {
@@ -738,10 +738,10 @@ func TestLifecycleLaunchOrdersWitnessBeforeStartingClient(t *testing.T) {
 						t.Fatalf("lost client exit: err=%v record=%+v", err, l.record)
 					}
 				}
-				if len(records) != 3 || !l.record.AdmissionObserved || !l.record.ArgvObserved || !l.record.Final || !l.record.CleanupComplete || child.ProcessState == nil {
+				if len(records) != 4 || !l.record.AdmissionObserved || !l.record.ArgvObserved || !l.record.Final || !l.record.CleanupComplete || child.ProcessState == nil {
 					t.Fatalf("launch lacks complete supervision: records=%+v child=%v", records, child)
 				}
-				if records[0].Phase != "reserved" || records[1].Phase != "admitted" || child.WaitDelay != lifecycleClientTimeout || !slices.Equal(child.Env, []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER="}) {
+				if records[0].Phase != "reserved" || !records[1].OwnershipObserved || records[1].AdmissionObserved || records[2].Phase != "admitted" || child.WaitDelay != lifecycleClientTimeout || !slices.Equal(child.Env, []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER="}) {
 					t.Fatalf("launch contract changed: records=%+v child=%v", records, child)
 				}
 			}

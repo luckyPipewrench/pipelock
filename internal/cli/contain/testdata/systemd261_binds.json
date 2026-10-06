@@ -1,0 +1,45 @@
+{
+  "source": "Captured from systemd 261.2. Each case was a user transient oneshot started with systemd-run --user --property=BindPaths=... or BindReadOnlyPaths=.... show is systemctl --user show --property=BindPaths,BindReadOnlyPaths. typed is busctl --user --json=short get-property org.freedesktop.systemd1 <unit> org.freedesktop.systemd1.Service BindPaths or BindReadOnlyPaths. norbind display text omits the option; the typed tuple is (source, destination, ignore-missing, flags) and flags 0 means the recursive bit is absent. A path-only BindReadOnlyPaths, which is how the display socket is requested, is stored with flags 16384 and show prints :rbind.",
+  "cases": [
+    {
+      "name": "plain",
+      "path": "/tmp/cfs-r2-capture/plain",
+      "option": "norbind",
+      "property": "BindPaths",
+      "show": "BindPaths=/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain\nBindReadOnlyPaths=",
+      "typed": {"type": "a(ssbt)", "data": [["/tmp/cfs-r2-capture/plain", "/tmp/cfs-r2-capture/plain", false, 0]]}
+    },
+    {
+      "name": "space",
+      "path": "/tmp/cfs-r2-capture/a b",
+      "option": "norbind",
+      "property": "BindPaths",
+      "show": "BindPaths=/tmp/cfs-r2-capture/a b:/tmp/cfs-r2-capture/a b\nBindReadOnlyPaths=",
+      "typed": {"type": "a(ssbt)", "data": [["/tmp/cfs-r2-capture/a b", "/tmp/cfs-r2-capture/a b", false, 0]]}
+    },
+    {
+      "name": "quote",
+      "path": "/tmp/cfs-r2-capture/a\"b",
+      "option": "norbind",
+      "property": "BindPaths",
+      "show": "BindPaths=/tmp/cfs-r2-capture/a\"b:/tmp/cfs-r2-capture/a\"b\nBindReadOnlyPaths=",
+      "typed": {"type": "a(ssbt)", "data": [["/tmp/cfs-r2-capture/a\"b", "/tmp/cfs-r2-capture/a\"b", false, 0]]}
+    },
+    {
+      "name": "backslash",
+      "path": "/tmp/cfs-r2-capture/a\\b",
+      "option": "norbind",
+      "property": "BindPaths",
+      "show": "BindPaths=/tmp/cfs-r2-capture/a\\b:/tmp/cfs-r2-capture/a\\b\nBindReadOnlyPaths=",
+      "typed": {"type": "a(ssbt)", "data": [["/tmp/cfs-r2-capture/a\\b", "/tmp/cfs-r2-capture/a\\b", false, 0]]}
+    },
+    {
+      "name": "display-socket",
+      "path": "/tmp/cfs-r2-capture/x11",
+      "option": "rbind",
+      "property": "BindReadOnlyPaths",
+      "show": "BindPaths=\nBindReadOnlyPaths=/tmp/cfs-r2-capture/x11:/tmp/cfs-r2-capture/x11:rbind",
+      "typed": {"type": "a(ssbt)", "data": [["/tmp/cfs-r2-capture/x11", "/tmp/cfs-r2-capture/x11", false, 16384]]}
+    }
+  ]
+}

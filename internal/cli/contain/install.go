@@ -436,6 +436,12 @@ func displayBindProperty(env *installEnv) string {
 func renderContainedLaunchWrapper(env *installEnv) string {
 	anchor := filepath.Base(env.networkNamespaceUnitPath)
 	launcher := filepath.Join(env.wrapperDir, "plk-launch")
+	pinned := shellQuote(env.pipelockTarget)
+	agent := shellQuote(env.agentUserName)
+	expand := ""
+	if flag := strings.TrimSpace(expandEnvironmentFlag(env)); flag != "" {
+		expand = "  " + flag + "\n"
+	}
 	return strings.Join([]string{
 		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
@@ -458,12 +464,39 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 		`    echo "plk-contained-launch: the contained network namespace is inactive; run pipelock contain install" >&2`,
 		`    exit 1`,
 		`fi`,
-		// --expand-environment requires systemd 254. `contain run` rejects older
-		// systemd in its preflight, but this generated wrapper is invoked
-		// directly and never runs that preflight, so an unconditional flag here
-		// makes every plk-* launch fail on systemd 253 and earlier before
-		// plk-launch even starts. Emit it only where it is supported.
-		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateTmp=true --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + displayBindProperty(env) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
+		// Filesystem properties are computed at launch. Command substitution
+		// under set -e aborts when the helper fails; a process substitution
+		// would not. The pinned binary is the one install placed, never PATH.
+		`launch_properties="$(` + pinned + ` contain launch-properties --agent-user ` + agent + `)" || exit 1`,
+		`property_args=()`,
+		`if [[ -n "${launch_properties}" ]]; then`,
+		`  while IFS= read -r line || [[ -n "${line}" ]]; do`,
+		`    [[ -z "${line}" ]] && continue`,
+		`    property_args+=("--property=${line}")`,
+		`  done <<< "${launch_properties}"`,
+		`fi`,
+		`systemd_args=(`,
+		`  --wait`,
+		`  --collect`,
+		`  --service-type=exec`,
+		strings.TrimRight(expand, "\n"),
+		`  --property=PrivateTmp=true`,
+		`  --property=PrivateNetwork=true`,
+		`  --property=JoinsNamespaceOf=` + shellQuote(anchor),
+		`)`,
+		`if ((${#property_args[@]} > 0)); then`,
+		`  systemd_args+=("${property_args[@]}")`,
+		`fi`,
+		`systemd_args+=(`,
+		`  --uid=` + agent,
+		`  --gid=` + agent,
+		`  --working-directory=` + shellQuote(env.agentHome),
+		`  --pipe`,
+		`  --pty`,
+		`  --`,
+		`  ` + shellQuote(launcher),
+		`)`,
+		`exec /usr/bin/systemd-run "${systemd_args[@]}" "$@"`,
 		"",
 	}, "\n")
 }
@@ -1413,6 +1446,13 @@ func stepStagePipelockConfig(opts installOpts) step {
 				return false, cause
 			}
 			data, migrated, err = migratePipelockConfigForContain(env, opts.configSource, data)
+			if err != nil {
+				return cleanup(err)
+			}
+			// A brand-new managed config gets filesystem enforce. An existing
+			// file, including one that never mentioned the key, stays as it is
+			// so an upgrade does not start hiding the operator's filesystem.
+			data, err = applyFreshFilesystemDefault(env, data)
 			if err != nil {
 				return cleanup(err)
 			}

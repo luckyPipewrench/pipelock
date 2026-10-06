@@ -53,6 +53,17 @@ func displaySocketPath(number int) string {
 // unchanged. Otherwise the managed display is used when provisioning
 // resolves to on, which for an omitted config means "this host has an X
 // server".
+// probeXvfbPresent is the host fact resolveLaunchDisplay consults when the
+// display setting is omitted. Launch and the filesystem profile both use it
+// so one side cannot invent a socket the other refused.
+func probeXvfbPresent(env *probeEnv) bool {
+	if env == nil || env.stat == nil {
+		return false
+	}
+	_, err := env.stat(env.xvfbPath)
+	return err == nil
+}
+
 func resolveLaunchDisplay(cfg *config.Config, operatorDisplay string, xvfbPresent bool) string {
 	if strings.TrimSpace(operatorDisplay) != "" {
 		return operatorDisplay

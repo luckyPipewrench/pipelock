@@ -2620,10 +2620,18 @@ _IDENTIFIER_TERM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{2,63}$")
 
 
 def _definition_pattern(term: str) -> str:
-    """POSIX extended pattern for the line that defines term in Go, Python or shell."""
+    """POSIX extended pattern for the line that defines term in Go, Python or shell.
+
+    Covers functions, methods, types and classes, Go const/var declarations
+    (including one entry inside a grouped block), and a top-level Python or
+    shell assignment.
+    """
     return (
-        r"^[[:space:]]*(func([[:space:]]+\([^)]*\))?|type|def|async[[:space:]]+def|class|function)"
-        rf"[[:space:]]+{term}([^A-Za-z0-9_]|$)|^[[:space:]]*{term}[[:space:]]*\(\)[[:space:]]*\{{"
+        r"^[[:space:]]*(func([[:space:]]+\([^)]*\))?|type|def|async[[:space:]]+def|class|function|const|var)"
+        rf"[[:space:]]+{term}([^A-Za-z0-9_]|$)"
+        rf"|^[[:space:]]*{term}[[:space:]]*\(\)[[:space:]]*\{{"
+        rf"|^{term}[[:space:]]*(:[^=]*)?=[^=]"
+        rf"|^[[:space:]]+{term}([[:space:]]+[A-Za-z_][A-Za-z0-9_.\[\]*]*)?[[:space:]]*=[^=]"
     )
 
 
@@ -2945,7 +2953,12 @@ def requested_repository_evidence(
                 for path, anchors in _evidence_windows(matches):
                     content = _read_commit_file(root, binding.head_sha, path, evidence_deadline)
                     if content is None:
-                        contexts.append(f"<requested-path-unavailable: {path}>")
+                        # Keep the matching lines the search already returned.
+                        texts = {line: text for _, hit_path, line, text in matches if hit_path == path}
+                        contexts.append(
+                            f"<requested-path-unavailable: {path}>\n"
+                            + "\n".join(f"{path}:{line}: {texts.get(line, '')[:500]}" for line in anchors)
+                        )
                         unavailable = True
                     else:
                         context, cut = _render_evidence_window(path, content, anchors)

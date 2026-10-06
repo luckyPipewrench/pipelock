@@ -2696,10 +2696,13 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             .replace("[[:space:]]", r"\s")
         )
         for line in ("func helper() {", "func (s *State) helper(x int) {", "def helper(x):", "    async def helper():",
-                     "class helper:", "type helper struct {", "helper() {", "function helper {"):
+                     "class helper:", "type helper struct {", "helper() {", "function helper {",
+                     "const helper = 3", "var helper []string", "helper = build()", "helper: int = 3",
+                     "\thelper = iota", "\thelper string = \"x\""):
             with self.subTest(line=line):
                 self.assertIsNotNone(pattern.search(line))
-        for line in ("x := helper()", "// helper builds", "func helperFor() {", "def helpers():"):
+        for line in ("x := helper()", "// helper builds", "func helperFor() {", "def helpers():",
+                     "    if helper == other:", "result = helper"):
             with self.subTest(line=line):
                 self.assertIsNone(pattern.search(line))
         self.assertIsNone(pr_review._IDENTIFIER_TERM.match("two words"))
@@ -2811,6 +2814,9 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             self.assertTrue(unavailable)
             self.assertIn("use unresolved", evidence)
             self.assertLessEqual(pr_review.estimate_tokens(evidence), 100)
+            if content is None:
+                # The matching line the search returned is kept.
+                self.assertIn("helper.go:1: func helper() {", evidence)
 
     def test_cross_file_evidence_retains_window_cap_and_fails_closed_on_read_error(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)

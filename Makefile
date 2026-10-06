@@ -182,6 +182,7 @@ docker:
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg LICENSE_PUBLIC_KEY=$(LICENSE_PUBLIC_KEY) \
 		--build-arg RULES_KEYRING_HEX=$(RULES_KEYRING_HEX) \
+		--build-arg RELEASE_KEYRING_HEX=$(RELEASE_KEYRING_HEX) \
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .
 
 fuzz:

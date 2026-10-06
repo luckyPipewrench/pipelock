@@ -1260,8 +1260,9 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// Authorization header" style documentation stays out of scope.
 		re: regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
 			`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
-			// A path is often quoted or fenced in a description ("`~/.aws/credentials`").
-			`[\x60"'(<\[]?` +
+			// A path is often quoted, fenced or emphasized in a description
+			// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
+			`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
 			`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`),
 	},
 }
@@ -2211,13 +2212,18 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 	// in the clause that follows. A following clause that opens with an
 	// exception cue revokes the negation; one that merely continues ("Rotate it
 	// regularly.") does not.
+	// Skip every boundary, mark and wrapper ("...", "--", "**", quotes) before
+	// the first word, so formatting cannot hide a leading cue.
+	next = strings.TrimLeftFunc(next, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 	return !leadingHandoverExceptionCue.MatchString(next)
 }
 
-// leadingHandoverExceptionCue matches an exception or redirect cue at the start
-// of the clause after a negated handover, ignoring leading whitespace and
-// punctuation.
-var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^[\s"'()\[\]-]*(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save\s+for|excluding|instead|only)\b`)
+// leadingHandoverExceptionCue matches an exception or redirect cue as the first
+// word of the clause after a negated handover. "Only" and "but" open ordinary
+// sentences too ("Only the server stores it."), so they count only when they
+// point at a destination or condition. The cue must end at a non-letter,
+// non-digit rune; Go's \b treats '_' as a word rune and would miss "_Unless_".
+var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|other\s+than|apart\s+from|aside\s+from|besides|save\s+for|excluding|instead|(?:only|but)\s+(?:to|for|with|through|via|when|if|here|this))(?:[^\pL\pN]|$)`)
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {

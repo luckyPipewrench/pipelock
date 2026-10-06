@@ -163,7 +163,7 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
 			!registryBearerAllowed(candidate, host, target, surface) &&
-			!attestationBundleSASCandidateAllowed(candidate, host, target, surface, now) {
+			!githubBlobSASCandidateAllowed(candidate, host, target, surface, now) {
 			continue
 		}
 		keep[i] = false
@@ -607,11 +607,11 @@ func attestationBundleSASQueryValid(parsed *url.URL, now time.Time) bool {
 	return expiry.Sub(start) <= attestationBundleSASMaxLifetime && grantValidityWindowValid(start, expiry, now)
 }
 
-func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
+func githubBlobSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
 	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 		return false
 	}
-	return attestationBundleSASAllowed(host, target, now)
+	return githubBlobSASAllowed(host, target, now)
 }
 
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
@@ -879,7 +879,7 @@ func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string
 		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String(), now) {
 			return true
 		}
-		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String(), now) {
+		if attestationBundleSASSignedParamSet[key] && githubBlobSASAllowed(host, parsed.String(), now) {
 			return true
 		}
 	}
@@ -944,14 +944,17 @@ func (s *Scanner) releaseGrantHolds(parsed *url.URL, now time.Time) bool {
 // parameter cannot widen what the exemption carries. DLP and every other scan
 // still run on the value.
 func (s *Scanner) releaseGrantResponseOverrideAllowed(parsed *url.URL, key, value string, now time.Time) bool {
-	format := releaseGrantResponseOverrideFormats[key]
-	if parsed == nil || format == nil || !format.MatchString(value) {
+	if parsed == nil || len(parsed.Query()[key]) != 1 {
 		return false
 	}
-	if len(parsed.Query()[key]) != 1 {
-		return false
+	if format := releaseGrantResponseOverrideFormats[key]; format != nil && format.MatchString(value) && s.releaseGrantHolds(parsed, now) {
+		return true
 	}
-	return s.releaseGrantHolds(parsed, now)
+	if format := actionsResultsOverrideFormats[key]; format != nil && format.MatchString(value) {
+		host, ok := canonicalCredentialAudienceDestination(parsed.String())
+		return ok && actionsResultsSASAllowed(host, parsed.String(), now)
+	}
+	return false
 }
 
 // urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
@@ -1055,7 +1058,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// planted in the path or elsewhere cannot ride a genuine grant's query.
 	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
 		host, hostOK := canonicalCredentialAudienceDestination(parsed.String())
-		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String(), now)
+		bundleSAS := hostOK && githubBlobSASAllowed(host, parsed.String(), now)
 		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed) || !sasValidityWindowValid(parsed.Query(), now)) {
 			return bareURLSurface
 		}
@@ -1528,6 +1531,13 @@ func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.T
 		start, err := time.Parse(time.RFC3339, query.Get("st"))
 		if err == nil && attestationBundleSASQueryValid(parsed, start) {
 			return "GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL", start, true
+		}
+	}
+	if destination.MatchesDomainList(host, githubActionsResultsHosts) && actionsResultsPath(parsed) &&
+		!attestationBundleSASQueryValid(parsed, now) {
+		start, err := time.Parse(time.RFC3339, query.Get("st"))
+		if err == nil && attestationBundleSASQueryValid(parsed, start) {
+			return "GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL", start, true
 		}
 	}
 	return "", time.Time{}, false

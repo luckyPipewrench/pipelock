@@ -859,6 +859,13 @@ func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) 
 }
 
 func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string, now time.Time) bool {
+	// The response-header overrides are judged on their value as well as their
+	// name. The override check requires the key to appear exactly once, so that
+	// one value is the value being scored.
+	if parsed != nil && (releaseGrantResponseOverrideFormats[key] != nil || actionsResultsOverrideFormats[key] != nil) {
+		values := parsed.Query()[key]
+		return len(values) == 1 && s.releaseGrantResponseOverrideAllowed(parsed, key, values[0], now)
+	}
 	// The name is matched exactly, as the shape check matches it, so a case
 	// alias of a signed field cannot take an exemption meant for the field.
 	if parsed == nil || (!releaseGrantSASSignedParamSet[key] && !attestationBundleSASSignedParamSet[key]) {

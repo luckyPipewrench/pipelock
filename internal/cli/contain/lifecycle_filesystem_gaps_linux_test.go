@@ -285,7 +285,7 @@ func TestLaunchRecordsFilesystemProfileBeforeTheClientStarts(t *testing.T) {
 		},
 	}
 	err := launchContainedAgentLifecycleWithBackend(opts, l, backend, func(containedAgentCommandOptions) (*exec.Cmd, string) {
-		return exec.Command("/no/such/pipelock-launch-helper"), ""
+		return exec.CommandContext(context.Background(), "/no/such/pipelock-launch-helper"), ""
 	})
 	if err == nil {
 		t.Fatal("missing helper started")

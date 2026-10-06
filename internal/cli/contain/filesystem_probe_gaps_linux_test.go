@@ -385,7 +385,7 @@ func TestCanaryDirectoryRemovalStopsWhenTheParentIsReadOnly(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	name, child, err = parent.mkdirExclusive("cancel-", 0o755)
+	_, child, err = parent.mkdirExclusive("cancel-", 0o755)
 	if err != nil {
 		t.Fatal(err)
 	}

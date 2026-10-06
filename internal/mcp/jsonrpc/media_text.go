@@ -216,16 +216,18 @@ type mediaSpan struct{ lo, hi int }
 // dense input costs no more than the run itself and still reaches the budget.
 func (w *mediaTextWriter) controlView(b []byte) {
 	start := 0
-	for i := 0; i <= len(b); i++ {
-		if i < len(b) && b[i] <= 0x7f {
+	for i, c := range b {
+		if c <= 0x7f {
 			continue
 		}
 		w.controlRun(b[start:i])
 		if w.failed {
-			break
+			w.scratch = nil
+			return
 		}
 		start = i + 1
 	}
+	w.controlRun(b[start:])
 	w.scratch = nil
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 func allowEval(paths ...string) func(string) (string, bool, error) {
@@ -333,7 +334,25 @@ func TestConfiguredSecretPathsAreInaccessible(t *testing.T) {
 	cfg.Rules.RulesDir = "/srv/secrets/rules"
 	cfg.Logging.File = "/srv/secrets/logs/pipelock.log"
 	cfg.MCPToolPolicy.QuarantineDir = "/srv/secrets/quarantine"
-	required, optional := configuredSecretPaths(cfg)
+	cfg.TLSInterception.CAKeyPath = "/srv/keys/ca.key"
+	cfg.TLSInterception.CACertPath = "/etc/pipelock/ca.pem"
+	cfg.LicenseFile = "/srv/secrets/license.token"
+	cfg.EvidenceProvenance.CommitmentKeyringPath = "/srv/secrets/commitment.keyring"
+	cfg.DLP.SecretsFile = "/srv/secrets/dlp.secrets"
+	cfg.LearnLock.RosterPath = "/srv/secrets/roster.json"
+	cfg.MCPBinaryIntegrity.ManifestPath = "/srv/secrets/integrity.json"
+	cfg.MCPBinaryIntegrity.Keystore = "/srv/secrets/keystore"
+	cfg.Conductor.ClientKeyPath = "/srv/secrets/conductor-client.key"
+	cfg.Conductor.EnrollmentTokenPath = "/srv/secrets/enrollment.token"
+	cfg.Conductor.DurableAuditQueueKeyring = "/srv/secrets/audit.keyring"
+	cfg.Conductor.TrustRosterPath = "/srv/secrets/trust-roster.json"
+	cfg.Conductor.DurableAuditQueueDir = "/srv/secrets/audit-queue"
+	cfg.Conductor.ClientCertPath = "/srv/public/client.crt"
+	cfg.Conductor.ServerCAFile = "/srv/public/server-ca.pem"
+	cfg.Redaction.Dictionaries = map[string]redact.DictionarySpec{
+		"customers": {EntriesFile: "/srv/secrets/redact-customers.yaml"},
+	}
+	required, optional := configuredSecretPaths(cfg, "/etc/pipelock")
 	wantRequired := []string{"/srv/secrets/flight.key", "/srv/secrets/envelope.key"}
 	wantOptional := []string{
 		"/srv/secrets/recorder",
@@ -344,6 +363,19 @@ func TestConfiguredSecretPathsAreInaccessible(t *testing.T) {
 		"/srv/secrets/salt",
 		"/srv/secrets/logs",
 		"/srv/secrets/quarantine",
+		"/srv/keys/ca.key",
+		"/srv/secrets/license.token",
+		"/srv/secrets/commitment.keyring",
+		"/srv/secrets/dlp.secrets",
+		"/srv/secrets/roster.json",
+		"/srv/secrets/integrity.json",
+		"/srv/secrets/keystore",
+		"/srv/secrets/conductor-client.key",
+		"/srv/secrets/enrollment.token",
+		"/srv/secrets/audit.keyring",
+		"/srv/secrets/trust-roster.json",
+		"/srv/secrets/audit-queue",
+		"/srv/secrets/redact-customers.yaml",
 	}
 	if strings.Join(required, "\n") != strings.Join(wantRequired, "\n") || strings.Join(optional, "\n") != strings.Join(wantOptional, "\n") {
 		t.Fatalf("required=%v optional=%v", required, optional)
@@ -363,6 +395,25 @@ func TestConfiguredSecretPathsAreInaccessible(t *testing.T) {
 		if !sliceContains(hidden, secret) {
 			t.Fatalf("missing %s in %v", secret, hidden)
 		}
+	}
+	for _, public := range []string{cfg.TLSInterception.CACertPath, cfg.Conductor.ClientCertPath, cfg.Conductor.ServerCAFile, "/etc/pipelock-absent/ca.pem"} {
+		if sliceContains(hidden, public) {
+			t.Fatalf("public path %s was hidden in %v", public, hidden)
+		}
+	}
+	relative, relOptional := configuredSecretPaths(&config.Config{TLSInterception: config.TLSInterception{CAKeyPath: "keys/ca.key"}}, "/etc/pipelock")
+	if len(relative) != 0 || !sliceContains(relOptional, "/etc/pipelock/keys/ca.key") {
+		t.Fatalf("relative CA key required=%v optional=%v", relative, relOptional)
+	}
+}
+
+func TestConfiguredSecretCannotCoverReadableCert(t *testing.T) {
+	in := enforceInput()
+	in.OptionalSecretPaths = []string{"/etc/pipelock"}
+	in.Exists = existsAll("/etc/pipelock")
+	_, err := filesystemProfileProperties(in)
+	if err == nil || !strings.Contains(err.Error(), "secret path /etc/pipelock") || !strings.Contains(err.Error(), "readable path /etc/pipelock/ca.pem") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

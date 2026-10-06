@@ -468,7 +468,7 @@ func filesystemProfileInputForProbe(env *probeEnv, agentHome string) (filesystem
 	}
 	if cfg != nil {
 		mode = cfg.Containment.Filesystem.Mode
-		required, optional = configuredSecretPaths(cfg)
+		required, optional = configuredSecretPaths(cfg, configDir)
 	}
 	// The same resolver contain run uses. IsEnabled(true) would require an
 	// X socket on a headless host that launch correctly leaves unset.
@@ -592,7 +592,7 @@ func loadProbeConfig(env *probeEnv) (*config.Config, error) {
 	return cfg, nil
 }
 
-func configuredSecretPaths(cfg *config.Config) (required, optional []string) {
+func configuredSecretPaths(cfg *config.Config, configDir string) (required, optional []string) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -621,7 +621,52 @@ func configuredSecretPaths(cfg *config.Config) (required, optional []string) {
 	if dir := strings.TrimSpace(cfg.MCPToolPolicy.QuarantineDir); strings.HasPrefix(dir, "/") {
 		add(dir)
 	}
+	// Private material outside the default configDir/tls hide. Public
+	// verification material (CA certificate, client certificate, server CA,
+	// posture proof, tools.list) stays readable.
+	add(absoluteConfiguredPath(configDir, cfg.TLSInterception.CAKeyPath))
+	add(absoluteConfiguredPath(configDir, cfg.LicenseFile))
+	add(absoluteConfiguredPath(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath))
+	add(absoluteConfiguredPath(configDir, cfg.DLP.SecretsFile))
+	add(absoluteConfiguredPath(configDir, cfg.LearnLock.RosterPath))
+	add(absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.ManifestPath))
+	add(absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.Keystore))
+	add(absoluteConfiguredPath(configDir, cfg.Conductor.ClientKeyPath))
+	add(absoluteConfiguredPath(configDir, cfg.Conductor.EnrollmentTokenPath))
+	add(absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueKeyring))
+	add(absoluteConfiguredPath(configDir, cfg.Conductor.TrustRosterPath))
+	add(absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueDir))
+	var dictionaries []string
+	for _, dict := range cfg.Redaction.Dictionaries {
+		if p := absoluteConfiguredPath(configDir, dict.EntriesFile); p != "" {
+			dictionaries = append(dictionaries, p)
+		}
+	}
+	sort.Strings(dictionaries)
+	optional = append(optional, dictionaries...)
 	return required, optional
+}
+
+// absoluteConfiguredPath keeps an absolute secret path and resolves a relative
+// one against the managed config directory. A relative path with no absolute
+// directory is omitted here; inaccessiblePaths still fails closed if a later
+// clean rejects it.
+func absoluteConfiguredPath(configDir, p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if strings.HasPrefix(p, "/") {
+		return path.Clean(p)
+	}
+	dir := strings.TrimSpace(configDir)
+	if dir == "" {
+		dir = defaultConfigDir
+	}
+	if !strings.HasPrefix(dir, "/") {
+		return ""
+	}
+	return path.Clean(path.Join(dir, p))
 }
 
 // probeFilesystemConfinement reports the filesystem profile. Mode off is its

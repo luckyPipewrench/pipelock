@@ -114,6 +114,8 @@ type mediaTextWriter struct {
 	marked   bool
 	needMark bool
 	failed   bool
+	// scratch is controlView's joined-text buffer, reused across runs.
+	scratch []byte
 }
 
 func (w *mediaTextWriter) room(n int) bool {
@@ -181,31 +183,151 @@ func (w *mediaTextWriter) asciiView(b []byte) {
 	w.end()
 }
 
+// mediaBridgeContext is how much joined text controlView keeps on each side of
+// a bridge, counted in units: a run of spaces is one unit, because the scanner
+// collapses whitespace and padding must not push the rest of a pattern out of
+// the window. It covers the widest bounded gap in the built-in patterns: the
+// 240 scalar gaps in internal/config/defaults.go and the 600 scalar URL
+// candidate in internal/scanner/external_transfer.go:17, the longest of them.
+// The one unbounded built-in tail (the URL after "https://") matches as soon
+// as its prefix is contiguous, so its length does not matter. An operator
+// pattern with an unbounded gap can reach past this width across a fused
+// control; that is the price of not re-emitting every run whole.
+const mediaBridgeContext = 600
+
+// mediaSpan is a half-open range of joined text.
+type mediaSpan struct{ lo, hi int }
+
 // controlView reads ASCII with the scanner's control stripping applied:
 // non-whitespace C0 controls and DEL vanish, tab, CR and LF become spaces, and
 // a byte at or above 0x80 ends the run rather than vanishing, so unrelated
 // fragments are never joined. NUL-interleaved and control-interleaved text
 // reads straight through here.
+//
+// Only text the plain view could not already show is emitted. A bridge is a
+// stretch of control bytes between two printable segments. When it holds a line
+// feed and both segments are long enough for the plain view to emit, the plain
+// view's line break is the scanner's own and the bridge adds nothing. A tab or
+// CR alone is not a line break to the scanner, so it is not redundant. Every
+// other bridge (a vanishing control that fuses its neighbours, a tab, or a
+// segment the plain view dropped for being too short) is emitted with
+// mediaBridgeContext of joined text on each side. Windows that touch merge, so
+// dense input costs no more than the run itself and still reaches the budget.
 func (w *mediaTextWriter) controlView(b []byte) {
-	w.needMark = true
-	defer func() { w.needMark = false }()
-	for _, c := range b {
-		switch {
-		case c == '\t' || c == '\n' || c == '\r':
-			w.marked = true
-			w.add(' ', true)
-		case c < 0x20 || c == 0x7f:
-			w.marked = true
-		case c <= 0x7e:
-			w.add(rune(c), true)
-		default:
-			w.end()
+	start := 0
+	for i := 0; i <= len(b); i++ {
+		if i < len(b) && b[i] <= 0x7e {
+			continue
 		}
+		w.controlRun(b[start:i])
+		if w.failed {
+			break
+		}
+		start = i + 1
+	}
+	w.scratch = nil
+}
+
+// controlRun reads one run of bytes with no byte above 0x7e.
+func (w *mediaTextWriter) controlRun(run []byte) {
+	joined := w.scratch[:0]
+	var spans []mediaSpan
+	type bridge struct {
+		lo, hi  int
+		newline bool
+		leftLen int
+	}
+	var (
+		cur      bridge
+		haveCur  bool
+		pending  bool
+		segLen   int
+		bridgeLo int
+		bridgeWS int
+		sawNL    bool
+		leftLen  int
+		// fwd is how many context units the last window may still take from
+		// text appended after it was resolved.
+		fwd int
+		// unit reports whether joined[i] starts a context unit: a space run
+		// counts once.
+		unit = func(i int) bool { return joined[i] != ' ' || i == 0 || joined[i-1] != ' ' }
+	)
+	resolve := func(rightLen int) {
+		if !haveCur {
+			return
+		}
+		haveCur = false
+		if cur.newline && cur.leftLen >= minSmuggledTextRun && rightLen >= minSmuggledTextRun {
+			return
+		}
+		floor := 0
+		if n := len(spans); n > 0 {
+			floor = spans[n-1].hi
+		}
+		lo, units := cur.lo, 0
+		for lo > floor && units < mediaBridgeContext {
+			lo--
+			if unit(lo) {
+				units++
+			}
+		}
+		hi, units := cur.hi, 0
+		for hi < len(joined) && units < mediaBridgeContext {
+			if unit(hi) {
+				units++
+			}
+			hi++
+		}
+		fwd = mediaBridgeContext - units
+		if n := len(spans); n > 0 && lo <= spans[n-1].hi {
+			spans[n-1].hi = hi
+			return
+		}
+		spans = append(spans, mediaSpan{lo: lo, hi: hi})
+	}
+	for _, c := range run {
+		if c >= 0x20 && c <= 0x7e {
+			if pending {
+				for ; bridgeWS > 0; bridgeWS-- {
+					joined = append(joined, ' ')
+				}
+				cur = bridge{lo: bridgeLo, hi: len(joined), newline: sawNL, leftLen: leftLen}
+				haveCur, pending = true, false
+			}
+			joined = append(joined, c)
+			segLen++
+			if fwd > 0 && len(spans) > 0 {
+				spans[len(spans)-1].hi = len(joined)
+				if unit(len(joined) - 1) {
+					fwd--
+				}
+			}
+			continue
+		}
+		if segLen > 0 {
+			resolve(segLen)
+			leftLen, segLen = segLen, 0
+			pending, bridgeLo, bridgeWS, sawNL = true, len(joined), 0, false
+		}
+		if pending && (c == '\t' || c == '\n' || c == '\r') {
+			bridgeWS++
+			if c == '\n' {
+				sawNL = true
+			}
+		}
+	}
+	resolve(segLen)
+	w.scratch = joined
+	for _, s := range spans {
+		for _, c := range joined[s.lo:min(s.hi, len(joined))] {
+			w.add(rune(c), true)
+		}
+		w.end()
 		if w.failed {
 			return
 		}
 	}
-	w.end()
 }
 
 // utf8View reads b as UTF-8. Text in the Latin-script and homoglyph ranges is

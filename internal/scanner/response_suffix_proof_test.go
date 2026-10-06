@@ -12,6 +12,7 @@ import (
 	"regexp/syntax"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -58,6 +59,51 @@ func TestResponseSuffixProofParity(t *testing.T) {
 		t.Fatal("empty comparison corpus")
 	}
 	t.Logf("comparisons=%d negative-proofs=%d", checked, negatives)
+}
+
+func TestResponseSuffixProofLazyCompilation(t *testing.T) {
+	p := &compiledPattern{name: "synthetic", re: regexp.MustCompile(`alpha.*suffix`)}
+	pf := newResponsePreFilter([]*compiledPattern{p})
+	proof := pf.proofs[0]
+	if proof == nil || proof.head != nil || proof.mid != nil {
+		t.Fatal("construction must retain an uncompiled proof")
+	}
+	pf.patternsToCheck("alpha suffix")
+	if proof.head != nil || proof.mid != nil {
+		t.Fatal("small bodies must not compile a proof")
+	}
+	if !proof.provesEmpty(suffixProofView("ordinary text")) || proof.head != nil || proof.mid != nil {
+		t.Fatal("absent suffix must prove empty without compilation")
+	}
+	positive := strings.Repeat(" ", responseMemoMinBytes) + "alpha suffix"
+	negative := "suffix " + strings.Repeat(" ", responseMemoMinBytes) + " alpha"
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Go(func() {
+			<-start
+			if got := pf.patternsToCheck(positive); !slices.Equal(got, []int{0}) {
+				t.Error("concurrent positive must run the original matcher")
+			}
+			if got := pf.patternsToCheck(negative); len(got) != 0 {
+				t.Error("concurrent negative proof changed")
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if proof.head == nil || proof.mid == nil || proof.tree != nil {
+		t.Fatal("first candidates must publish both matchers and release the tree")
+	}
+	head, mid := proof.head, proof.mid
+	if !proof.compile() || proof.head != head || proof.mid != mid {
+		t.Fatal("repeated initialization must reuse the matchers")
+	}
+	// A missing construction tree cannot become a conclusive candidate result.
+	invalid := &responseSuffixProof{anchors: []string{responseSimpleFold("xiffus")}}
+	if invalid.provesEmpty(suffixProofView(negative)) || invalid.compile() {
+		t.Fatal("incomplete initialization must fall back")
+	}
 }
 
 func TestResponseSuffixProofAssertions(t *testing.T) {

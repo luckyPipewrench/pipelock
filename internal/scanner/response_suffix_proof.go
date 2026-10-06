@@ -9,6 +9,7 @@ import (
 	"regexp/syntax"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -21,6 +22,8 @@ type responseSuffixProof struct {
 	anchors []string       // simple-folded reversed suffixes
 	head    *regexp.Regexp // ^(?:R), for a candidate at offset 0
 	mid     *regexp.Regexp // ^(?s:.)(?:R), consumes the real preceding rune
+	tree    *syntax.Regexp
+	once    sync.Once
 }
 
 func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
@@ -37,7 +40,7 @@ func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(starts))
-	proof := &responseSuffixProof{}
+	proof := &responseSuffixProof{tree: tree}
 	for _, start := range starts {
 		if utf8.RuneCountInString(start) < minPreFilterAnchorLength {
 			return nil
@@ -48,13 +51,26 @@ func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
 			proof.anchors = append(proof.anchors, folded)
 		}
 	}
-	head, err1 := regexp.Compile(`^(?:` + tree.String() + `)`)
-	mid, err2 := regexp.Compile(`^(?s:.)(?:` + tree.String() + `)`)
-	if err1 != nil || err2 != nil {
-		return nil
-	}
-	proof.head, proof.mid = head, mid
 	return proof
+}
+
+// compile defers expensive syntax printing and compilation until a large body
+// actually has a suffix candidate. Each immutable proof is shared by scans and
+// memo-filtered pattern lists, so initialization publishes both matchers once.
+func (p *responseSuffixProof) compile() bool {
+	p.once.Do(func() {
+		if p.tree == nil {
+			return
+		}
+		expr := p.tree.String()
+		head, err1 := regexp.Compile(`^(?:` + expr + `)`)
+		mid, err2 := regexp.Compile(`^(?s:.)(?:` + expr + `)`)
+		if err1 == nil && err2 == nil {
+			p.head, p.mid = head, mid
+		}
+		p.tree = nil
+	})
+	return p.head != nil && p.mid != nil
 }
 
 // responseFoldView is call-local reversed text used only by serial prefilter
@@ -125,6 +141,9 @@ func (p *responseSuffixProof) provesEmpty(v *responseFoldView) bool {
 	}
 	slices.Sort(cands)
 	if !v.contentOffsets(cands) {
+		return false
+	}
+	if len(cands) != 0 && !p.compile() {
 		return false
 	}
 	budget := len(content) // total runes the anchored runs may read

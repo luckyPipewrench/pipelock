@@ -370,11 +370,11 @@ func TestLifecycleOwned_ParsesGrantPathWithSpace(t *testing.T) {
 	record := enforceLifecycleRecord(fields)
 	record.FilesystemBindPaths = []string{"/srv/my proj:/srv/my proj:norbind"}
 	fields["BindPaths"] = `"/srv/my proj":"/srv/my proj":norbind`
-	if err := lifecycleOwned(fields, record, 966); err != nil {
+	if err := lifecycleFilesystemOwned(fields, record, nil); err != nil {
 		t.Fatal(err)
 	}
 	fields["BindPaths"] = `/srv/my proj:/srv/my proj:norbind`
-	if err := lifecycleOwned(fields, record, 966); err != nil {
+	if err := lifecycleFilesystemOwned(fields, record, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -384,11 +384,11 @@ func TestLifecycleOwned_RejectsBindMismatch(t *testing.T) {
 	record := enforceLifecycleRecord(fields)
 	record.FilesystemBindPaths = []string{"/srv/agent-home:/srv/agent-home:norbind"}
 	fields["BindPaths"] = "/srv/agent-home:/srv/agent-home:norbind"
-	if err := lifecycleOwned(fields, record, 966); err != nil {
+	if err := lifecycleFilesystemOwned(fields, record, nil); err != nil {
 		t.Fatalf("matching binds: %v", err)
 	}
 	record.FilesystemBindPaths = []string{"/srv/other:/srv/other:norbind"}
-	if err := lifecycleOwned(fields, record, 966); err == nil || !strings.Contains(err.Error(), "bind paths") {
+	if err := lifecycleFilesystemOwned(fields, record, nil); err == nil || !strings.Contains(err.Error(), "bind paths") {
 		t.Fatalf("mismatch error = %v", err)
 	}
 }
@@ -440,11 +440,11 @@ func TestLifecycleOwned_RejectsFilesystemPropertyMismatch(t *testing.T) {
 			_, fields := lifecycleFixture()
 			record := enforceLifecycleRecord(fields)
 			fields["BindPaths"] = ""
-			if err := lifecycleOwned(fields, record, 966); err != nil {
+			if err := lifecycleFilesystemOwned(fields, record, nil); err != nil {
 				t.Fatalf("matching profile: %v", err)
 			}
 			tt.edit(fields, &record)
-			err := lifecycleOwned(fields, record, 966)
+			err := lifecycleFilesystemOwned(fields, record, nil)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v, want substring %q", err, tt.want)
 			}

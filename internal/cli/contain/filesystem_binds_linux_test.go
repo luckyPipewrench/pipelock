@@ -63,14 +63,16 @@ func TestLifecycleAdmissionUsesCapturedTypedBinds(t *testing.T) {
 			return nil, nil, errTypedBindsUnavailable
 		}
 		b.action = func(context.Context, string, ...string) error {
-			t.Fatal("stopped a service whose binds were not typed")
+			fields["ActiveState"], fields["MainPID"] = "inactive", "0"
 			return nil
 		}
+		b.wait = func(context.Context, time.Duration) error { return nil }
+		b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
 		done := make(chan error, 1)
 		done <- nil
 		err := superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
-		if err == nil || l.record.AdmissionObserved || l.record.CleanupComplete {
-			t.Fatalf("err=%v admitted=%v cleanup=%v", err, l.record.AdmissionObserved, l.record.CleanupComplete)
+		if err == nil || l.record.AdmissionObserved || !l.record.OwnershipObserved || !l.record.CleanupComplete || l.record.Phase != "incomplete" {
+			t.Fatalf("err=%v owned=%v admitted=%v cleanup=%v phase=%s", err, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, l.record.Phase)
 		}
 	})
 }

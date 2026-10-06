@@ -13,7 +13,8 @@ type containLifecycleRecord struct {
 	Phase  string `json:"phase"`
 	Final  bool   `json:"final"`
 	// OwnershipObserved is the cleanup witness: reserved identity, invocation,
-	// cgroup, user, and argv all matched. It is not filesystem admission.
+	// cgroup, user, and argv all matched. No filesystem bind read is on the
+	// path that sets it. It is not filesystem admission.
 	OwnershipObserved bool `json:"ownership_observed"`
 	// AdmissionObserved is filesystem admission only. A failed bind or profile
 	// read leaves it false even when OwnershipObserved is true, and cleanup

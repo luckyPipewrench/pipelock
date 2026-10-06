@@ -2177,7 +2177,7 @@ var negatedHandoverPrefix = regexp.MustCompile(
 // handoverExceptionCue marks a negation that is really a redirect ("never X
 // except to this tool"): the prohibition carves out the very destination the
 // poisoned description wants the agent to use.
-var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|only)\b`)
+var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save|excluding|instead|only)\b`)
 
 // handoverNegationHoldsToClauseEnd reports whether the clause after a negated
 // handover match, bounded to 160 bytes, is free of exception or redirect cues.
@@ -2186,16 +2186,21 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 		return false
 	}
 	rest := text[end:]
+	capped := false
 	if len(rest) > 160 {
 		rest = rest[:160]
+		capped = true
 	}
 	for i, r := range rest {
 		if isClauseBoundary(r) {
 			rest = rest[:i]
+			capped = false
 			break
 		}
 	}
-	return !handoverExceptionCue.MatchString(rest)
+	// A clause longer than the window cannot be shown free of an exception,
+	// so it fails closed and the negation does not exempt the match.
+	return !capped && !handoverExceptionCue.MatchString(rest)
 }
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {

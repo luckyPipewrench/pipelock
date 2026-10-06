@@ -434,7 +434,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if cfg.EnforceEnabled() {
+		if urlResultBlocks(cfg, sc, scanURL, result) {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{

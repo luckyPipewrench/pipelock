@@ -1103,7 +1103,7 @@ func TestReverseProxy_DLPWarnMode(t *testing.T) {
 
 	proxy := reverseTestSetup(t, cfg, upstream)
 
-	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	apiKey := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := `{"secret":"` + apiKey + `"}`
 
 	resp := testPost(t, proxy.URL+"/api/send",
@@ -1426,7 +1426,7 @@ func TestReverseProxy_HotReload(t *testing.T) {
 	defer proxy.Close()
 
 	// First request: DLP blocks.
-	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	apiKey := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := `{"secret":"` + apiKey + `"}`
 	resp := testPost(t, proxy.URL+"/api/send",
 		"application/json", body)
@@ -1773,7 +1773,7 @@ func TestReverseProxy_EnforceDisabled(t *testing.T) {
 
 	proxy := reverseTestSetup(t, cfg, upstream)
 
-	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	apiKey := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := `{"secret":"` + apiKey + `"}`
 
 	resp := testPost(t, proxy.URL+"/api/send",

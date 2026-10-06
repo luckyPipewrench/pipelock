@@ -180,6 +180,7 @@ func driveProxyA2AHardening(t *testing.T, transport, request, response, contentT
 			c.A2AScanning = cfg.A2AScanning
 			c.RequestBodyScanning = cfg.RequestBodyScanning
 			c.ResponseScanning = cfg.ResponseScanning
+			c.Enforce = cfg.Enforce
 			c.FetchProxy.Monitoring.Blocklist = cfg.FetchProxy.Monitoring.Blocklist
 		})
 		t.Cleanup(cleanup)

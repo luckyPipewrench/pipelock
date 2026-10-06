@@ -429,10 +429,11 @@ func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, 
 // shouldHardBlockCriticalDLP returns true for enforced critical credential
 // detections while the proxy is in enforcement mode. These are high-confidence
 // core exfiltration findings and must fail closed even when request-body
-// scanning is otherwise in warn mode. Explicit audit mode still observes only.
+// scanning is otherwise in warn mode. Audit mode observes every other finding
+// but still blocks the core credential floor.
 func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled bool) bool {
 	if !enforceEnabled {
-		return false
+		return containsCoreFloorMatch(matches)
 	}
 	for _, match := range matches {
 		if match.Warn {
@@ -446,8 +447,11 @@ func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled b
 }
 
 func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Config) bool {
-	if cfg == nil || !cfg.EnforceEnabled() {
+	if cfg == nil {
 		return false
+	}
+	if !cfg.EnforceEnabled() {
+		return enforcedBlock(cfg, config.ActionWarn, containsCoreFloorMatch(matches))
 	}
 	for _, match := range matches {
 		if match.Warn {

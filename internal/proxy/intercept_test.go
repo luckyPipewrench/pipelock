@@ -2297,7 +2297,7 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 	t.Cleanup(func() { sc.Close() })
 
 	addr := upstream.Listener.Addr().String()
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := fmt.Sprintf(`{"data": "%s"}`, secret)
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -2511,6 +2511,9 @@ func TestInterceptTunnel_RedactionMetricUsesProfileLabel(t *testing.T) {
 		},
 		Limits: redact.DefaultLimits(),
 	}
+	// Audit mode blocks a core credential even when fully redacted, unless
+	// the destination is a trusted request-body host.
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, upstream.Listener.Addr().(*net.TCPAddr).IP.String())
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxyWithScanner(t, cfg, sc)
@@ -2972,7 +2975,7 @@ func TestInterceptTunnel_URLScanAuditMode(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	addr := upstream.Listener.Addr().String()
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api?token="+secret, nil)
 
 	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)

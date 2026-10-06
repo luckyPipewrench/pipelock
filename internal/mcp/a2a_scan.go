@@ -174,6 +174,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
 				}
+				if core, ok := a2aHiddenCoreFloor(sc, value, urlResult); ok {
+					result.URLFindings = append(result.URLFindings, core)
+					action = config.StrongestAction(action, config.ActionBlock)
+				}
 			}
 
 		case FieldText, FieldOpaque, FieldSecret:
@@ -368,6 +372,17 @@ func a2aURLResultForcesBlock(r scanner.Result) bool {
 	return scanner.IsHostnameExfilResult(r) || scanner.IsCoreCriticalResult(r)
 }
 
+// a2aHiddenCoreFloor returns the core credential finding a URL carries when
+// its scan stopped at an earlier stage, such as the blocklist, and so never
+// reached the core floor.
+func a2aHiddenCoreFloor(sc *scanner.Scanner, uri string, urlResult scanner.Result) (scanner.Result, bool) {
+	if urlResult.Allowed || scanner.IsCoreCriticalResult(urlResult) {
+		return scanner.Result{}, false
+	}
+	core := sc.ScanURLCoreFloor(uri)
+	return core, !core.Allowed
+}
+
 func a2aDefaultAction(cfg *config.A2AScanning) string {
 	if cfg == nil || cfg.Action == "" {
 		return config.ActionWarn
@@ -405,6 +420,10 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 			// carried in a header URI must hard-block regardless of the
 			// configured a2a_scanning.action, matching the body URL leaves.
 			if a2aURLResultForcesBlock(urlResult) {
+				forceBlock = true
+			}
+			if core, ok := a2aHiddenCoreFloor(sc, uri, urlResult); ok {
+				result.URLFindings = append(result.URLFindings, core)
 				forceBlock = true
 			}
 		}

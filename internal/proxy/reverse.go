@@ -1025,7 +1025,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action,
 				len(patternNames), patternNames, nil)
 
-			if action == config.ActionBlock && cfg.EnforceEnabled() {
+			if enforcedBlock(cfg, action, containsCoreFloorMatch(pathDLP.Matches)) {
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
 				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")

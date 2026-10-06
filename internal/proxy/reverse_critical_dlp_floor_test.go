@@ -28,8 +28,10 @@ func reverseCriticalFloorKey() string { return "AKIA" + "IOSFODNN7EXAMPLE" }
 // The reverse proxy's URL path and query scan did not, so the same key a
 // /fetch refused was forwarded upstream.
 //
-// The audit rows are the other direction: with enforce: false the finding is
-// observed and forwarded, never dropped.
+// The audit rows pin the contract that audit mode (enforce: false) still
+// blocks the core credential floor on every one of these surfaces, whatever
+// request_body_scanning.action says. Only ordinary findings are observed and
+// forwarded in audit mode.
 func TestReverseCriticalDLPHardBlocksEverySurface(t *testing.T) {
 	type surface struct {
 		name  string
@@ -50,8 +52,8 @@ func TestReverseCriticalDLPHardBlocksEverySurface(t *testing.T) {
 	}{
 		{"warn action, enforce", config.ActionWarn, true, true},
 		{"block action, enforce", config.ActionBlock, true, true},
-		{"warn action, audit", config.ActionWarn, false, false},
-		{"block action, audit", config.ActionBlock, false, false},
+		{"warn action, audit still blocks core floor", config.ActionWarn, false, true},
+		{"block action, audit still blocks core floor", config.ActionBlock, false, true},
 	}
 	for _, tt := range tests {
 		for _, sf := range surfaces {
@@ -92,10 +94,10 @@ func TestReverseCriticalDLPHardBlocksEverySurface(t *testing.T) {
 					return
 				}
 				if rec.Code != http.StatusOK {
-					t.Fatalf("audit status = %d, want 200: %s", rec.Code, rec.Body.String())
+					t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 				}
 				if got := upstreamCalls.Load(); got != 1 {
-					t.Fatalf("audit request reached upstream %d times, want 1", got)
+					t.Fatalf("request reached upstream %d times, want 1", got)
 				}
 			})
 		}
@@ -117,11 +119,10 @@ func TestReverseHardBlocksScoreAdaptiveOnce(t *testing.T) {
 		body    string
 		enforce bool
 		want    float64
-		wantOK  bool
 	}{
-		{"url floor under warn action", http.MethodGet, "http://reverse.example/x?k=", "", true, session.SignalPoints[session.SignalBlock], false},
-		{"body floor under warn action", http.MethodPost, "http://reverse.example/x", "k=", true, session.SignalPoints[session.SignalBlock], false},
-		{"body floor, audit mode forwards and does not score a block", http.MethodPost, "http://reverse.example/x", "k=", false, 0, true},
+		{"url floor under warn action", http.MethodGet, "http://reverse.example/x?k=", "", true, session.SignalPoints[session.SignalBlock]},
+		{"body floor under warn action", http.MethodPost, "http://reverse.example/x", "k=", true, session.SignalPoints[session.SignalBlock]},
+		{"body floor, audit mode still blocks the core floor and scores a block", http.MethodPost, "http://reverse.example/x", "k=", false, session.SignalPoints[session.SignalBlock]},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,11 +154,7 @@ func TestReverseHardBlocksScoreAdaptiveOnce(t *testing.T) {
 				target += key
 			}
 			rec := reverseParityRequest(t, rp, tt.method, target, clientHost+":9000", body)
-			if tt.wantOK {
-				if rec.Code != http.StatusOK {
-					t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
-				}
-			} else if rec.Code != http.StatusForbidden {
+			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
 			}
 
@@ -167,12 +164,6 @@ func TestReverseHardBlocksScoreAdaptiveOnce(t *testing.T) {
 			}
 			sess := sm.GetOrCreate(sessionKeyFor("", clientHost, envelope.ActorAuthUnknown))
 			got := sess.ScopedThreatScore(adaptiveScopeForHost(upstreamURL.Hostname()))
-			if tt.wantOK {
-				if got >= session.SignalPoints[session.SignalBlock] {
-					t.Fatalf("audit-mode forward scored %.2f, must not score as a block", got)
-				}
-				return
-			}
 			if got != tt.want {
 				t.Fatalf("scoped threat score = %.2f, want %.2f", got, tt.want)
 			}

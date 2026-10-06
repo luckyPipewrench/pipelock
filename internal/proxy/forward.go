@@ -408,7 +408,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if cfg.EnforceEnabled() {
+		if urlResultBlocks(cfg, sc, syntheticURL, result) {
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			emitConnectReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
@@ -1115,7 +1115,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason = "a2a: header finding"
 			}
 			p.logger.LogAnomaly(actx, "a2a_header", reason, 0)
-			if action == config.ActionBlock {
+			if enforcedBlock(cfg, action, a2aCoreFloor(hdrResult)) {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
 				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
 				emitForwardReceipt(receipt.EmitOpts{
@@ -1234,7 +1234,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if cfg.EnforceEnabled() {
+		if urlResultBlocks(cfg, sc, targetURL, result) {
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			emitForwardReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
@@ -1436,7 +1436,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			reason = "a2a: request body finding"
 		}
 		recordA2AContentEntropyTelemetry(p.logger, p.metrics, agentLabel, actx, action, a2aBodyResult)
-		if action == config.ActionAsk || (action == config.ActionBlock && cfg.EnforceEnabled()) {
+		if action == config.ActionAsk || enforcedBlock(cfg, action, a2aCoreFloor(a2aBodyResult)) {
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
 			blockReason := a2aBodyBlockReason(a2aBodyResult)
 			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
@@ -3026,7 +3026,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					a2aReason = "a2a: response finding"
 				}
 				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
-				if a2aAction == config.ActionBlock {
+				if enforcedBlock(cfg, a2aAction, a2aCoreFloor(a2aResult)) {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
 					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,

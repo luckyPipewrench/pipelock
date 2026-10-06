@@ -224,6 +224,33 @@ func IsHostnameExfilResult(r Result) bool {
 			strings.HasPrefix(r.Reason, subdomainEncodedChunksReasonPrefix))
 }
 
+// ScanURLCoreFloor runs only the core credential floor on rawURL, after the
+// same SigV4 presigned-URL carve-out the full pipeline applies. Scan stops at
+// the first failing stage, so a URL refused by an earlier stage (blocklist,
+// allowlist, traversal, CRLF, length, scheme) never reaches the core floor;
+// a caller that releases such findings, such as audit mode, asks here whether
+// the URL also carries a core credential. A URL that does not parse is checked
+// as text.
+func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
+	var decodes decodingMemo
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		if matches := s.scanCoreDLPWithDecodes(rawURL, &decodes); len(matches) > 0 {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("core DLP match: %s (%s)", matches[0].PatternName, matches[0].Severity),
+				Scanner: ScannerCoreDLP,
+				Score:   1.0,
+			}
+		}
+		return Result{Allowed: true}
+	}
+	if sigV4 := detectValidSigV4(parsed); sigV4.Valid {
+		parsed = scrubSigV4Credential(parsed, sigV4.KeyID)
+	}
+	return s.checkCoreDLPWithDecodes(parsed, &decodes)
+}
+
 // IsCoreCriticalResult reports whether a URL scan Result came from the immutable
 // core DLP credential floor and therefore must hard-block regardless of the
 // configured action. It is the URL analog of ContainsCoreCriticalMatch on the

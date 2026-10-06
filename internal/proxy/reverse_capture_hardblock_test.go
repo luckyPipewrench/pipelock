@@ -20,8 +20,8 @@ import (
 // request_body_scanning.action says; the record used to keep the configured
 // warn action, so a replay saw a warning where the client got a 403.
 //
-// Audit mode is the other direction: the request is forwarded, so the record
-// stays a warning.
+// Audit mode (enforce: false) still blocks the core credential floor, so the
+// audit rows assert the same blocked verdict as the enforce rows.
 func TestReverseCaptureReflectsCriticalHardBlock(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -35,9 +35,9 @@ func TestReverseCaptureReflectsCriticalHardBlock(t *testing.T) {
 		wantOutcome string
 	}{
 		{"url enforce", "dlp_reverse_url", http.MethodGet, "/x?token=" + reverseCriticalFloorKey(), "", true, http.StatusForbidden, config.ActionBlock, capture.OutcomeBlocked},
-		{"url audit", "dlp_reverse_url", http.MethodGet, "/x?token=" + reverseCriticalFloorKey(), "", false, http.StatusOK, config.ActionWarn, capture.OutcomeWarned},
+		{"url audit still blocks core floor", "dlp_reverse_url", http.MethodGet, "/x?token=" + reverseCriticalFloorKey(), "", false, http.StatusForbidden, config.ActionBlock, capture.OutcomeBlocked},
 		{"body enforce", "dlp_reverse_request", http.MethodPost, "/x", `{"k":"` + reverseCriticalFloorKey() + `"}`, true, http.StatusForbidden, config.ActionBlock, capture.OutcomeBlocked},
-		{"body audit", "dlp_reverse_request", http.MethodPost, "/x", `{"k":"` + reverseCriticalFloorKey() + `"}`, false, http.StatusOK, config.ActionWarn, capture.OutcomeWarned},
+		{"body audit still blocks core floor", "dlp_reverse_request", http.MethodPost, "/x", `{"k":"` + reverseCriticalFloorKey() + `"}`, false, http.StatusForbidden, config.ActionBlock, capture.OutcomeBlocked},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

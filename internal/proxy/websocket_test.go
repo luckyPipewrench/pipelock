@@ -783,14 +783,14 @@ func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
 
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(false)
-		applyRedactionTestProfile(cfg)
+		applyWSRedactionTestProfile(cfg)
 	})
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
 	defer conn.Close() //nolint:errcheck // test
 
-	secret := redactionE2ESecret()
+	secret := wsRedactionE2ESecret()
 	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
 		t.Fatalf("write: %v", err)
@@ -807,7 +807,7 @@ func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
 	if strings.Contains(replyStr, secret) {
 		t.Fatalf("echoed reply leaked secret: %q", replyStr)
 	}
-	if !strings.Contains(replyStr, placeholderAWS) {
+	if !strings.Contains(replyStr, wsPlaceholderAnthropic) {
 		t.Fatalf("echoed reply missing placeholder: %q", replyStr)
 	}
 }
@@ -818,7 +818,7 @@ func TestWSProxyRedactionMetricUsesProfileLabel(t *testing.T) {
 
 	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(false)
-		applyRedactionTestProfile(cfg)
+		applyWSRedactionTestProfile(cfg)
 	})
 	defer proxyCleanup()
 
@@ -829,7 +829,7 @@ func TestWSProxyRedactionMetricUsesProfileLabel(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	secret := redactionE2ESecret()
+	secret := wsRedactionE2ESecret()
 	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
 		t.Fatalf("write: %v", err)
@@ -838,8 +838,8 @@ func TestWSProxyRedactionMetricUsesProfileLabel(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	assertMetricsContain(t, p.metrics, `pipelock_body_redactions_total{agent="_default",class="aws-access-key",parser="json",provider="generic-json",transport="websocket"} 1`)
-	assertMetricsNotContain(t, p.metrics, `pipelock_body_redactions_total{agent="arbitrary-attacker-chosen-name",class="aws-access-key",parser="json",provider="generic-json",transport="websocket"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_body_redactions_total{agent="_default",class="anthropic-api-key",parser="json",provider="generic-json",transport="websocket"} 1`)
+	assertMetricsNotContain(t, p.metrics, `pipelock_body_redactions_total{agent="arbitrary-attacker-chosen-name",class="anthropic-api-key",parser="json",provider="generic-json",transport="websocket"} 1`)
 }
 
 func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
@@ -850,13 +850,13 @@ func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
 	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(false)
 		cfg.FlightRecorder.RequireReceipts = true
-		applyRedactionTestProfile(cfg)
+		applyWSRedactionTestProfile(cfg)
 	})
 	defer proxyCleanup()
 	p.receiptEmitterPtr.Store(rph.emitter)
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	secret := redactionE2ESecret()
+	secret := wsRedactionE2ESecret()
 	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
 		t.Fatalf("write: %v", err)

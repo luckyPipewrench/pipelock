@@ -91,6 +91,7 @@ func TestScan_GitHubActionsResultsSAS(t *testing.T) {
 	}{
 		{"account past the published range", actionsResultsLogURL("productionresultssa20.blob.core.windows.net", query)},
 		{"other azure account", actionsResultsLogURL("customer.blob.core.windows.net", query)},
+		{"artifact at another azure account", actionsResultsArtifactURL("customer.blob.core.windows.net", query)},
 		{"lookalike suffix", actionsResultsLogURL(actionsResultsHost+".evil.example", query)},
 		{"attestation account on a results path", actionsResultsLogURL("tmaproduction.blob.core.windows.net", query)},
 		{"results account on an attestation path", "https://" + actionsResultsHost + "/attestations/1152497359/2026/10/03/52325653.json.sn?" + query},
@@ -220,5 +221,36 @@ func TestQueryGrantValidityCandidate_ActionsResultsSASWindow(t *testing.T) {
 	}
 	if note, _, ok := queryGrantValidityCandidate(live, now); ok {
 		t.Fatalf("live SAS produced a window note: %q", note)
+	}
+}
+
+func TestActionsResultsURLAdversarialForms(t *testing.T) {
+	s, _ := newActionsResultsScanner(t)
+	good := actionsResultsArtifactURL(actionsResultsHost, actionsResultsQuery("review-control", nil))
+	for _, tc := range []struct {
+		name, target string
+		allow        bool
+	}{
+		{"control", good, true},
+		{"uppercase host", strings.Replace(good, actionsResultsHost, strings.ToUpper(actionsResultsHost), 1), true},
+		{"trailing dot", strings.Replace(good, actionsResultsHost, actionsResultsHost+".", 1), true},
+		{"explicit port", strings.Replace(good, actionsResultsHost, actionsResultsHost+":443", 1), true},
+		{"encoded unique override key", strings.Replace(good, "rscd=", "%72scd=", 1), true},
+		{"userinfo", strings.Replace(good, "https://", "https://user@", 1), false},
+		{"lookalike", strings.Replace(good, actionsResultsHost, "productionresultssa1.blob.core.windows.net.vendor.example", 1), false},
+		{"IDN lookalike", strings.Replace(good, actionsResultsHost, "productionresultssа1.blob.core.windows.net", 1), false},
+		{"encoded duplicate", good + "&%72scd=" + url.QueryEscape(`attachment; filename="`+highEntropyName(60)+`"`), false},
+		{"case alias", good + "&RSCD=" + url.QueryEscape(`attachment; filename="`+highEntropyName(60)+`"`), false},
+		{"encoded duplicate signature", good + "&%73ig=" + url.QueryEscape(releaseGrantSASSig("review-duplicate")), false},
+		{"semicolon ambiguity", good + ";x=" + highEntropyName(60), false},
+		{"credential fragment", good + "#sig=" + url.QueryEscape(releaseGrantSASSig("review-fragment")), false},
+		{"high entropy path", strings.Replace(good, "/artifacts/", "/artifacts/"+highEntropyName(200)+"/", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := s.Scan(context.Background(), tc.target)
+			if got.Allowed != tc.allow {
+				t.Fatalf("allowed=%v want=%v scanner=%s reason=%s", got.Allowed, tc.allow, got.Scanner, got.Reason)
+			}
+		})
 	}
 }

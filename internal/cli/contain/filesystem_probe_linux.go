@@ -81,7 +81,7 @@ func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profi
 		return statusFilesystemOff, "filesystem profile: off"
 	}
 	if !filesystemCanaryRoot() {
-		return statusFail, "filesystem confinement canary requires root to start a transient systemd service"
+		return statusSkip, "filesystem confinement canary requires root to start a transient systemd service"
 	}
 	var cleanups []func()
 	var cleanupErr error

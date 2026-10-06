@@ -8,6 +8,7 @@ package contain
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -89,6 +90,71 @@ func filesystemCanaryEnv(run func(context.Context, string, ...string) (string, i
 			BindPaths:  []string{"/srv/agent-home:/srv/agent-home:norbind"},
 		},
 		runCmd: run,
+	}
+}
+
+func TestNonRootEnforceFilesystemCanarySkipsAndRefusesLaunch(t *testing.T) {
+	prev := filesystemCanaryRoot
+	filesystemCanaryRoot = func() bool { return false }
+	t.Cleanup(func() { filesystemCanaryRoot = prev })
+
+	home := t.TempDir()
+	configDir := t.TempDir()
+	cfgPath := filepath.Join(configDir, "pipelock.yaml")
+	yamlText := []byte("containment:\n  filesystem:\n    mode: enforce\n")
+	if err := os.WriteFile(cfgPath, yamlText, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(name string) (*user.User, error) {
+		if name == "operator" {
+			return &user.User{Username: "operator", Uid: "1000", Gid: "1000", HomeDir: "/home/operator"}, nil
+		}
+		return &user.User{Username: name, Uid: "966", Gid: "966", HomeDir: home}, nil
+	}
+	read := func(path string) ([]byte, error) {
+		if path == cfgPath {
+			return yamlText, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	started := false
+	env := &probeEnv{
+		configPath:    cfgPath,
+		configDir:     configDir,
+		agentUserName: "pipelock-agent",
+		proxyUserName: "pipelock-proxy",
+		agentHome:     home,
+		operatorUser:  "operator",
+		lookupUser:    lookup,
+		readFile:      read,
+		runCmd: func(context.Context, string, ...string) (string, int, error) {
+			started = true
+			return "", 0, nil
+		},
+	}
+	status, detail := probeFilesystemConfinement(context.Background(), env)
+	if status != statusSkip || !strings.Contains(detail, "filesystem confinement canary requires root") || started {
+		t.Fatalf("verify status=%s detail=%s started=%v", status, detail, started)
+	}
+	if containRunPreflightAllows(env, status) {
+		t.Fatal("contain run preflight allowed a filesystem skip")
+	}
+	doctor := checkFilesystemConfinement(context.Background(), &doctorEnv{
+		configPath:    cfgPath,
+		configDir:     configDir,
+		agentUserName: "pipelock-agent",
+		agentHome:     home,
+		operatorUser:  "operator",
+		lookupUser:    lookup,
+		readFile:      read,
+		runCmd:        env.runCmd,
+	})
+	if doctor.status != statusSkip || !strings.Contains(doctor.detail, "filesystem confinement canary requires root") || started {
+		t.Fatalf("doctor status=%s detail=%s started=%v", doctor.status, doctor.detail, started)
+	}
+	err := writeLaunchProperties(context.Background(), io.Discard, env)
+	if err == nil || !strings.Contains(err.Error(), statusSkip) || !strings.Contains(err.Error(), "filesystem confinement canary requires root") || started {
+		t.Fatalf("helper err=%v started=%v", err, started)
 	}
 }
 

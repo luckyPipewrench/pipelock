@@ -36,6 +36,10 @@ func runLaunchProperties(ctx context.Context, stdout, _ io.Writer, agentUser str
 	if strings.TrimSpace(agentUser) != "" {
 		env.agentUserName = agentUser
 	}
+	return writeLaunchProperties(ctx, stdout, env)
+}
+
+func writeLaunchProperties(ctx context.Context, stdout io.Writer, env *probeEnv) error {
 	account, err := env.lookupUser(env.agentUserName)
 	if err != nil {
 		return fmt.Errorf("lookup %s: %w", env.agentUserName, err)

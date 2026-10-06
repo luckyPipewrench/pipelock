@@ -171,6 +171,32 @@ type lifecycleBackend struct {
 	// Nil, or a reader that returns errTypedBindsUnavailable, falls back to
 	// systemctl show and then fails closed unless every entry names its option.
 	binds func(context.Context, string) (bindPaths, readOnly []systemdBindEntry, err error)
+	// Zero values keep the production deadlines. Tests inject shorter windows
+	// without mutating the package constants other parallel tests still read.
+	admissionTimeout time.Duration
+	cleanupTimeout   time.Duration
+	pollInterval     time.Duration
+}
+
+func (b lifecycleBackend) admissionWindow() time.Duration {
+	if b.admissionTimeout <= 0 {
+		return lifecycleAdmissionTimeout
+	}
+	return b.admissionTimeout
+}
+
+func (b lifecycleBackend) cleanupWindow() time.Duration {
+	if b.cleanupTimeout <= 0 {
+		return lifecycleCleanupTimeout
+	}
+	return b.cleanupTimeout
+}
+
+func (b lifecycleBackend) pollEvery() time.Duration {
+	if b.pollInterval <= 0 {
+		return lifecyclePollInterval
+	}
+	return b.pollInterval
 }
 
 // errLifecycleTypedObservation is a failed typed bind read. It is retried
@@ -688,7 +714,7 @@ func retryLifecycleTypedObservation(ctx context.Context, b lifecycleBackend, res
 			return err
 		}
 		started := time.Now()
-		if waitErr := b.wait(ctx, lifecyclePollInterval); waitErr != nil || ctx.Err() != nil {
+		if waitErr := b.wait(ctx, b.pollEvery()); waitErr != nil || ctx.Err() != nil {
 			return err
 		}
 		if time.Since(started) < time.Millisecond {
@@ -806,7 +832,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 			}
 			l.record.KillRequested = true
 		}
-		if err := b.wait(ctx, lifecyclePollInterval); err != nil {
+		if err := b.wait(ctx, b.pollEvery()); err != nil {
 			return err
 		}
 	}
@@ -880,7 +906,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 	// observation window. If admission remains unobserved, cleanup is unknown:
 	// a submitted PID1-owned service may outlive its client. Never invent an
 	// ownership witness or stop a guessed service to cover that failure.
-	admission, cancelAdmission := context.WithTimeout(context.WithoutCancel(ctx), lifecycleAdmissionTimeout)
+	admission, cancelAdmission := context.WithTimeout(context.WithoutCancel(ctx), b.admissionWindow())
 	var primaryErr error
 	var clientErr error
 	clientDone := false
@@ -929,7 +955,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 		if primaryErr != nil {
 			break
 		}
-		if err := b.wait(admission, lifecyclePollInterval); err != nil {
+		if err := b.wait(admission, b.pollEvery()); err != nil {
 			primaryErr = err
 			break
 		}
@@ -938,7 +964,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 	// Filesystem admission has its own window. A bind outage here reports an
 	// admission failure and leaves the ownership witness for cleanup.
 	if primaryErr == nil && l.record.OwnershipObserved {
-		filesystem, cancelFilesystem := context.WithTimeout(context.WithoutCancel(ctx), lifecycleAdmissionTimeout)
+		filesystem, cancelFilesystem := context.WithTimeout(context.WithoutCancel(ctx), b.admissionWindow())
 		fsErr := lifecycleFilesystemAdmission(filesystem, b, l, uid)
 		cancelFilesystem()
 		if fsErr != nil {
@@ -957,7 +983,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 			primaryErr = ctx.Err()
 		}
 	}
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), lifecycleCleanupTimeout)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), b.cleanupWindow())
 	cleanupErr := stopLifecycleService(cleanupCtx, l, uid, b)
 	cancelCleanup()
 	cancelClient()

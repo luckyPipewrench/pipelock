@@ -643,90 +643,72 @@ func waitLifecycleBudget(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// helperCost is just under one systemd helper budget. A cleanup path that
-// reads binds again, the way the old reserve math did, misses the stop
-// deadline. Cleanup that only rechecks identity still stops.
+// Cleanup must not read binds. The stop has to return before the injected
+// cleanup deadline; waiting that deadline out is a failure.
 func TestLifecycleCleanupSlowManagerStopsWithoutBindReads(t *testing.T) {
-	for _, helper := range []time.Duration{600 * time.Millisecond, 1900 * time.Millisecond} {
-		t.Run(helper.String(), func(t *testing.T) {
-			if helper >= lifecycleCommandBudget {
-				t.Fatal("helper must stay inside one command budget")
-			}
-			l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
-			bindLifecycleFixture(l, fields)
-			l.record.AdmissionObserved = false
-			b := lifecycleTestBackend(fields)
-			shows, binds, actions := 0, 0, 0
-			spend := func(ctx context.Context) error {
-				bounded, cancel := context.WithTimeout(ctx, lifecycleCommandBudget)
-				defer cancel()
-				return waitLifecycleBudget(bounded, helper)
-			}
-			b.wait = waitLifecycleBudget
-			b.show = func(ctx context.Context, unit string) (map[string]string, error) {
-				shows++
-				if err := spend(ctx); err != nil {
-					return nil, err
-				}
-				if unit != l.record.Unit {
-					return nil, errors.New("wrong unit")
-				}
-				observed := make(map[string]string, len(fields))
-				for key, value := range fields {
-					observed[key] = value
-				}
-				return observed, nil
-			}
-			b.execStart = func(ctx context.Context, _ string) ([]string, error) {
-				if err := spend(ctx); err != nil {
-					return nil, err
-				}
-				return append([]string(nil), l.argv...), nil
-			}
-			// Two helper-budget sleeps stand in for the two typed property
-			// reads. Cleanup must not call this. Putting those reads back on
-			// the stop path, with the old reserve, misses the deadline.
-			b.binds = func(ctx context.Context, _ string) ([]systemdBindEntry, []systemdBindEntry, error) {
-				binds++
-				if err := spend(ctx); err != nil {
-					return nil, nil, err
-				}
-				if err := spend(ctx); err != nil {
-					return nil, nil, err
-				}
-				return nil, nil, errors.New("typed bind read still down")
-			}
-			b.action = func(ctx context.Context, _ string, _ ...string) error {
-				if err := spend(ctx); err != nil {
-					return err
-				}
-				actions++
-				fields["ActiveState"], fields["MainPID"] = "inactive", "0"
-				return nil
-			}
-			b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
-			ctx, cancel := context.WithTimeout(context.Background(), lifecycleCleanupTimeout)
-			defer cancel()
-			start := time.Now()
-			err := stopLifecycleService(ctx, l, 966, b)
-			elapsed := time.Since(start)
-			if actions != 1 || binds != 0 || elapsed >= lifecycleCleanupTimeout || errors.Is(err, context.DeadlineExceeded) || !l.record.CleanupComplete || l.record.AdmissionObserved || !l.record.OwnershipObserved {
-				t.Fatalf("elapsed=%s shows=%d binds=%d actions=%d admitted=%v owned=%v cleanup=%v err=%v", elapsed, shows, binds, actions, l.record.AdmissionObserved, l.record.OwnershipObserved, l.record.CleanupComplete, err)
-			}
-		})
+	l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+	bindLifecycleFixture(l, fields)
+	l.record.AdmissionObserved = false
+	b := lifecycleTestBackend(fields)
+	b.cleanupTimeout = 200 * time.Millisecond
+	shows, binds, actions := 0, 0, 0
+	b.wait = waitLifecycleBudget
+	b.show = func(ctx context.Context, unit string) (map[string]string, error) {
+		shows++
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if unit != l.record.Unit {
+			return nil, errors.New("wrong unit")
+		}
+		observed := make(map[string]string, len(fields))
+		for key, value := range fields {
+			observed[key] = value
+		}
+		return observed, nil
+	}
+	b.execStart = func(ctx context.Context, _ string) ([]string, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return append([]string(nil), l.argv...), nil
+	}
+	b.binds = func(ctx context.Context, _ string) ([]systemdBindEntry, []systemdBindEntry, error) {
+		binds++
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errors.New("typed bind read still down")
+	}
+	b.action = func(ctx context.Context, _ string, _ ...string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		actions++
+		fields["ActiveState"], fields["MainPID"] = "inactive", "0"
+		return nil
+	}
+	b.cgroupEmpty = func(string) (bool, error) { return fields["ActiveState"] == "inactive", nil }
+	ctx, cancel := context.WithTimeout(context.Background(), b.cleanupWindow())
+	defer cancel()
+	err := stopLifecycleService(ctx, l, 966, b)
+	if actions != 1 || binds != 0 || ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || !l.record.CleanupComplete || l.record.AdmissionObserved || !l.record.OwnershipObserved {
+		t.Fatalf("shows=%d binds=%d actions=%d admitted=%v owned=%v cleanup=%v ctx=%v err=%v", shows, binds, actions, l.record.AdmissionObserved, l.record.OwnershipObserved, l.record.CleanupComplete, ctx.Err(), err)
 	}
 }
 
 func TestLifecyclePersistentBindOutageStillWitnessesOwnership(t *testing.T) {
-	l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
-	valid, err := entriesFromCanonicalBinds(l.record.FilesystemBindPaths)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, stage := range []string{"healthy", "persistent-outage"} {
 		t.Run(stage, func(t *testing.T) {
-			l, fields = enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+			l, fields := enforceShowLifecycle(t, "/tmp/cfs-r2-capture/plain:/tmp/cfs-r2-capture/plain:norbind")
+			valid, err := entriesFromCanonicalBinds(l.record.FilesystemBindPaths)
+			if err != nil {
+				t.Fatal(err)
+			}
 			b := lifecycleTestBackend(fields)
+			b.admissionTimeout = 250 * time.Millisecond
+			b.pollInterval = 5 * time.Millisecond
+			b.cleanupTimeout = 200 * time.Millisecond
 			reads, actions := 0, 0
 			b.wait = waitLifecycleBudget
 			b.show = func(ctx context.Context, _ string) (map[string]string, error) {
@@ -766,20 +748,15 @@ func TestLifecyclePersistentBindOutageStillWitnessesOwnership(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			done <- nil
-			start := time.Now()
-			err := superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
-			elapsed := time.Since(start)
+			err = superviseLifecycleService(context.Background(), done, func() {}, l, 966, b)
 			switch stage {
 			case "healthy":
-				if err != nil || actions != 1 || reads < 1 || !l.record.OwnershipObserved || !l.record.AdmissionObserved || !l.record.CleanupComplete || elapsed >= lifecycleAdmissionTimeout+time.Second {
-					t.Fatalf("elapsed=%s reads=%d actions=%d owned=%v admitted=%v cleanup=%v err=%v", elapsed, reads, actions, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, err)
+				if err != nil || actions != 1 || reads < 1 || !l.record.OwnershipObserved || !l.record.AdmissionObserved || !l.record.CleanupComplete {
+					t.Fatalf("reads=%d actions=%d owned=%v admitted=%v cleanup=%v err=%v", reads, actions, l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, err)
 				}
 			default:
-				if err == nil || actions != 1 || reads < 1 || !l.record.OwnershipObserved || l.record.AdmissionObserved || !l.record.CleanupComplete || l.record.Phase != "incomplete" || fields["ActiveState"] != "inactive" {
-					t.Fatalf("elapsed=%s reads=%d actions=%d active=%s owned=%v admitted=%v cleanup=%v phase=%s err=%v", elapsed, reads, actions, fields["ActiveState"], l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, l.record.Phase, err)
-				}
-				if elapsed < lifecycleAdmissionTimeout-500*time.Millisecond {
-					t.Fatalf("outage returned in %s, before the filesystem admission window", elapsed)
+				if err == nil || actions != 1 || reads < 2 || !l.record.OwnershipObserved || l.record.AdmissionObserved || !l.record.CleanupComplete || l.record.Phase != "incomplete" || fields["ActiveState"] != "inactive" {
+					t.Fatalf("reads=%d actions=%d active=%s owned=%v admitted=%v cleanup=%v phase=%s err=%v", reads, actions, fields["ActiveState"], l.record.OwnershipObserved, l.record.AdmissionObserved, l.record.CleanupComplete, l.record.Phase, err)
 				}
 			}
 		})

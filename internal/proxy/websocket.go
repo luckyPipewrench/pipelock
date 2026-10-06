@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -75,6 +76,12 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
+
+	upstreamIncomplete bool // written only by upstreamToClient, read after it returns
+	// upstreamCancelled records that the upstream direction ended because the
+	// relay or a local close stopped it, not because the upstream finished or
+	// broke off. Written only by upstreamToClient, read after it returns.
+	upstreamCancelled bool
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
 	// same escaped path and method-override headers as the handshake gate.
@@ -243,6 +250,8 @@ type wsRelayStats struct {
 	textFrames     int64
 	binaryFrames   int64
 	blocked        bool // true if relay terminated due to a policy/DLP/injection block
+	incomplete     bool // upstream ended without completing its WebSocket stream
+	cancelled      bool // the relay or a local close ended the upstream direction
 }
 
 // handleWebSocket handles /ws WebSocket proxy requests.
@@ -1210,6 +1219,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	outcomeCloseCode := ws.StatusNormalClosure
 	outcomeReason = "complete"
+	switch {
+	case stats.incomplete:
+		outcomeCloseCode = ws.StatusAbnormalClosure
+		outcomeReason = receiptReasonIncomplete
+	case stats.cancelled:
+		outcomeCloseCode = ws.StatusGoingAway
+		outcomeReason = httpstream.Cancelled
+	}
 	if stats.blocked {
 		outcomeCloseCode = ws.StatusPolicyViolation
 		outcomeReason = "policy_blocked"
@@ -1519,6 +1536,8 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 		textFrames:     c2sText + s2cText,
 		binaryFrames:   c2sBinary + s2cBinary,
 		blocked:        c2sBlocked || s2cBlocked,
+		incomplete:     r.upstreamIncomplete,
+		cancelled:      r.upstreamCancelled,
 	}
 }
 
@@ -2910,6 +2929,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 				blocked = true
+			} else {
+				r.upstreamCancelled = true
 			}
 			return
 		default:
@@ -2982,9 +3003,23 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) {
 				continue
 			}
-			if !plwsutil.IsExpectedCloseErr(err) {
+			// An idle or relay-ending deadline is the proxy closing an idle
+			// connection, not an upstream that broke off mid-stream.
+			if errors.As(err, &nerr) && nerr.Timeout() {
+				r.upstreamCancelled = true
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
+				return
 			}
+			// A read that fails after the relay ended, or after Pipelock closed
+			// the upstream connection itself (airlock), is a local stop.
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				r.upstreamCancelled = true
+				return
+			}
+			r.upstreamIncomplete = true
+			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+			log.LogError(actx, fmt.Errorf("response stream incomplete: %w", err))
+			_ = r.clientConn.Close()
 			return
 		}
 		r.touch()
@@ -3019,6 +3054,14 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		payload := make([]byte, hdr.Length)
 		if hdr.Length > 0 {
 			if _, err := io.ReadFull(r.upstreamConn, payload); err != nil {
+				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+					r.upstreamCancelled = true
+					return
+				}
+				r.upstreamIncomplete = true
+				actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
+				log.LogError(actx, fmt.Errorf("response stream incomplete: %w", err))
+				_ = r.clientConn.Close()
 				return
 			}
 		}
@@ -3044,6 +3087,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
 			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
 			if err != nil {
+				// The client went away; the upstream did not break off.
+				r.upstreamCancelled = true
 				return
 			}
 			bytesTransferred += int64(len(payload))
@@ -3172,6 +3217,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Forward complete message to client (proxy is SERVER, no masking).
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
 		if err != nil {
+			r.upstreamCancelled = true
 			return
 		}
 		bytesTransferred += int64(len(msg))

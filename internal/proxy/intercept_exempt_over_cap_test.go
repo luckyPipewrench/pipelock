@@ -278,27 +278,42 @@ func TestInterceptExemptOverCap(t *testing.T) {
 			})
 			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				"https://"+net.JoinHostPort(tt.host, "443")+"/pkg.tar.gz", nil)
-			resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
-				&InterceptContext{Proxy: p, TargetHost: tt.host, TargetPort: "443"}, req)
-			defer func() { _ = resp.Body.Close() }()
-			got, err := io.ReadAll(resp.Body)
-			if err != nil && !tt.upstreamFail {
-				t.Fatalf("read body: %v", err)
+			ic := &InterceptContext{Proxy: p, TargetHost: tt.host, TargetPort: "443"}
+			var resp *http.Response
+			if tt.upstreamFail {
+				// A broken stream aborts the response. Bytes still buffered
+				// in the server, possibly including the headers, never arrive.
+				resp, _ = interceptWithRTResult(t, cache, pool, cfg, sc, logger, m, rt, ic, req)
+			} else {
+				resp = interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt, ic, req)
 			}
-			if resp.StatusCode != tt.wantStatus {
-				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tt.wantStatus, got)
-			}
-			if tt.wantIdentical && !bytes.Equal(got, []byte(tt.body)) {
-				t.Fatalf("body not byte-identical: got %d bytes, want %d", len(got), len(tt.body))
-			}
-			for _, want := range tt.wantMsg {
-				if !strings.Contains(string(got), want) {
-					t.Errorf("block message missing %q: %s", want, got)
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+				got, err := io.ReadAll(resp.Body)
+				if err != nil && !tt.upstreamFail {
+					t.Fatalf("read body: %v", err)
 				}
-			}
-			for _, bad := range tt.wantNotMsg {
-				if strings.Contains(string(got), bad) {
-					t.Errorf("block message names %q: %s", bad, got)
+				if err == nil && tt.upstreamFail {
+					t.Fatalf("broken upstream stream ended cleanly after %d bytes", len(got))
+				}
+				if resp.StatusCode != tt.wantStatus {
+					t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tt.wantStatus, got)
+				}
+				if tt.wantIdentical && !tt.upstreamFail && !bytes.Equal(got, []byte(tt.body)) {
+					t.Fatalf("body not byte-identical: got %d bytes, want %d", len(got), len(tt.body))
+				}
+				if tt.wantIdentical && tt.upstreamFail && !bytes.HasPrefix([]byte(tt.body), got) {
+					t.Fatalf("broken body is not a prefix of the upstream body: got %d bytes", len(got))
+				}
+				for _, want := range tt.wantMsg {
+					if !strings.Contains(string(got), want) {
+						t.Errorf("block message missing %q: %s", want, got)
+					}
+				}
+				for _, bad := range tt.wantNotMsg {
+					if strings.Contains(string(got), bad) {
+						t.Errorf("block message names %q: %s", bad, got)
+					}
 				}
 			}
 			assertResponseScanExemptOverCapMetric(t, m, TransportConnect, tt.wantOverCap)

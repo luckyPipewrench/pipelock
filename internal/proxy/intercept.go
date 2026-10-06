@@ -26,6 +26,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -484,8 +485,21 @@ func interceptTunnel(
 	// http.Server handles HTTP/2 when negotiated via ALPN.
 	ln := newSingleConnListener(tlsConn)
 	handler := newInterceptHandler(ic, upstreamRT)
+	var activeRequests sync.WaitGroup
+	var requestMu sync.Mutex
+	acceptRequests := true
 	srv := &http.Server{
-		Handler:           handler,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestMu.Lock()
+			if !acceptRequests {
+				requestMu.Unlock()
+				panic(http.ErrAbortHandler)
+			}
+			activeRequests.Add(1)
+			requestMu.Unlock()
+			defer activeRequests.Done()
+			handler.ServeHTTP(w, r)
+		}),
 		ReadHeaderTimeout: interceptReadHeaderTimeout,
 		// Every request served inside the tunnel inherits the grade that says
 		// how this connection's agent label was established. Without this the
@@ -520,6 +534,13 @@ func interceptTunnel(
 	// or net.ErrClosed (from listener). Both are expected.
 	err := srv.Serve(ln)
 	close(done)
+	// HTTP/2 connection shutdown can outlive Serve: wait for the active
+	// request handlers to finish body cleanup and outcome emission. Fence
+	// admission under the same lock as Add so no late handler races Wait.
+	requestMu.Lock()
+	acceptRequests = false
+	requestMu.Unlock()
+	activeRequests.Wait()
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil
 	}
@@ -2095,7 +2116,15 @@ func newInterceptHandler(
 			w.WriteHeader(resp.StatusCode)
 
 			flusher, _ := w.(http.Flusher)
-			streamErr := DispatchSSEScan(r.Context(), resp.Body, w, flusher, ic.Scanner, sseOpts)
+			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
+			// Findings and incomplete scans keep their evidence below, even
+			// when the client also went away.
+			if streamErr != nil && !IsSSEStreamFinding(streamErr) && !IsSSEStreamScanError(streamErr) {
+				reason := sseStreamReason(recordStreamError(r.Context(), ic.Logger, actx, streamErr))
+				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, reason)
+				_ = httpstream.Abort(r.Context(), streamErr)
+				return
+			}
 			if streamErr == nil {
 				recordDeliveredIssuerCookies(ic, r, resp, true)
 			}
@@ -2192,9 +2221,16 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
-			written, copyErr := io.Copy(w, resp.Body)
-			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
+			written, copyErr := httpstream.Copy(w, resp.Body)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
+			if copyErr != nil {
+				reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
+				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, reason)
+				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+				_ = httpstream.Abort(r.Context(), copyErr)
+				return
+			}
+			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 			// The outcome receipt is the durable record that an exempt host
 			// streamed a body past the scan ceiling unscanned, or that the
 			// stream broke before the body was delivered.
@@ -2315,7 +2351,14 @@ func newInterceptHandler(
 					}
 					removeHopByHopHeaders(w.Header())
 					w.WriteHeader(resp.StatusCode)
-					written, copyErr := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					if copyErr != nil {
+						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
+						interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, reason)
+						ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+						_ = httpstream.Abort(r.Context(), copyErr)
+						return
+					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -938,10 +939,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
-	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, time.Time{}, p.ks)
+	totalBytes, relayErr := bidirectionalCopyWithError(clientConn, targetConn, idleTimeout, time.Time{}, p.ks)
 	outcomeStatus = strconv.Itoa(http.StatusOK)
 	outcomeBytes = totalBytes
 	outcomeReason = "complete"
+	if relayErr != nil {
+		outcomeReason = recordStreamError(r.Context(), p.logger, targetCtx, relayErr)
+	}
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
@@ -2494,7 +2498,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
-		if err := DispatchSSEScan(r.Context(), resp.Body, w, flusher, sc, sseOpts); err != nil {
+		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			// Findings and incomplete scans keep their evidence below, even
+			// when the client also went away.
+			if !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = sseStreamReason(recordStreamError(r.Context(), p.logger, actx, err))
+				emitForwardAllowReceipt()
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
 			if IsSSEStreamFinding(err) {
 				responsePromptHit = true
 				// Same adaptive-decay protection as the OnFinding path
@@ -2618,8 +2631,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		written, copyErr := io.Copy(w, resp.Body)
+		written, copyErr := httpstream.Copy(w, resp.Body)
+		outcomeStatus = strconv.Itoa(resp.StatusCode)
+		outcomeBytes = written
 		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
+		if copyErr != nil {
+			outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+			sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
+			_ = resolved.Budget.RecordBytes(written)
+			emitForwardAllowReceipt()
+			_ = httpstream.Abort(r.Context(), copyErr)
+			return
+		}
 		// Account streamed bytes against both budgets so a trusted download
 		// still decrements the per-domain data budget and the per-agent byte
 		// budget. No scan-size cap is applied (the host is trusted to carry
@@ -2765,7 +2788,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						}
 						copyResponseHeaders(w.Header(), resp.Header)
 						w.WriteHeader(resp.StatusCode)
-						written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+						written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+						outcomeStatus = strconv.Itoa(resp.StatusCode)
+						outcomeBytes = written
+						if copyErr != nil {
+							outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+							sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
+							_ = resolved.Budget.RecordBytes(written)
+							_ = httpstream.Abort(r.Context(), copyErr)
+							return
+						}
 						sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 						_ = resolved.Budget.RecordBytes(written)
 						duration := time.Since(start)
@@ -3206,13 +3238,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// is a separate backward-compat decision, intentionally left unchanged.)
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxBytes))
+	written, copyErr := httpstream.Copy(w, io.LimitReader(resp.Body, maxBytes))
 
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 
 	// Record bytes for per-agent budget tracking.
 	_ = resolved.Budget.RecordBytes(written)
+	outcomeStatus = strconv.Itoa(resp.StatusCode)
+	outcomeBytes = written
+	if copyErr != nil {
+		outcomeReason = recordStreamError(r.Context(), p.logger, actx, copyErr)
+		emitForwardAllowReceipt()
+		_ = httpstream.Abort(r.Context(), copyErr)
+		return
+	}
 
 	// Detect truncated response due to budget exhaustion.
 	if budgetRemaining >= 0 && written >= budgetRemaining {

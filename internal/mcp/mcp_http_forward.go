@@ -559,7 +559,12 @@ func RunHTTPProxy(
 		}
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
-			emitTrackedIncompleteOutcome(safeLogW, tracker, frame.ID, "scan_error", fwdOpts)
+			logMCPIncompleteResponse(safeLogW, fwdOpts, frame.Method, scanErr)
+			if errors.Is(scanErr, transport.ErrIncompleteResponse) || ctx.Err() != nil {
+				emitTrackedStreamError(ctx, safeLogW, tracker, frame.ID, fwdOpts, scanErr)
+			} else {
+				emitTrackedIncompleteOutcome(safeLogW, tracker, frame.ID, "scan_error", fwdOpts)
+			}
 			lastScanErr = scanErr
 		} else if !foundInjection {
 			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), mcpFrameBaselineIdentity(frame))

@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -64,6 +65,12 @@ func RunWSProxy(
 	// when either direction finishes (stdin EOF or upstream close).
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	stopInputClose := context.AfterFunc(innerCtx, func() {
+		if closer, ok := clientIn.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	})
+	defer stopInputClose()
 
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
@@ -124,6 +131,29 @@ func RunWSProxy(
 
 	var wg sync.WaitGroup
 	var lastScanErr error
+	var upstreamEnded bool // read only after the response goroutine is joined
+	var upstreamBlocked bool
+	defer func() {
+		cancel()
+		if wsClient != nil {
+			_ = wsClient.Close()
+		}
+		wg.Wait()
+		pendingOutcomes := tracker.DrainPendingOutcomes()
+		for _, pending := range pendingOutcomes {
+			reason, status := httpstream.Cancelled, "cancelled"
+			if upstreamEnded && ctx.Err() == nil {
+				reason, status = httpstream.Incomplete, "incomplete"
+				if upstreamBlocked && lastScanErr == nil {
+					reason, status = "policy_blocked", "blocked"
+				}
+			}
+			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), safeLogW, pending.Outcome.Receipt, status, -1, reason)
+		}
+		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
+			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", -1, httpstream.Incomplete)
+		}
+	}()
 
 	startUpstream := func() error {
 		if wsClient != nil {
@@ -148,9 +178,12 @@ func RunWSProxy(
 		go func(client *transport.WSClient) {
 			defer wg.Done()
 			defer cancel() // Signal main goroutine if upstream closes first.
-			_, scanErr := ForwardScanned(client, safeClientOut, safeLogW, tracker, wsOpts)
+			foundInjection, scanErr := ForwardScanned(client, safeClientOut, safeLogW, tracker, wsOpts)
+			upstreamEnded = innerCtx.Err() == nil
+			upstreamBlocked = foundInjection
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scan error: %v\n", scanErr)
+				logMCPIncompleteResponse(safeLogW, wsOpts, "WS", scanErr)
 				lastScanErr = scanErr
 			}
 		}(wsClient)
@@ -168,9 +201,9 @@ func RunWSProxy(
 	// Stdin -> upstream loop (runs on main goroutine).
 	var stdinErr error
 	for {
-		msg, readErr := clientReader.ReadMessage()
+		msg, readErr := readMCPInputMessage(innerCtx, clientIn, clientReader)
 		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) &&
+			if innerCtx.Err() == nil && !errors.Is(readErr, io.EOF) &&
 				(!sessionExit.inProgress() || !isSessionExitCloseErr(readErr)) {
 				stdinErr = fmt.Errorf("reading stdin: %w", readErr)
 			}

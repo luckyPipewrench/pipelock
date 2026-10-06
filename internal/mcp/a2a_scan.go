@@ -990,7 +990,8 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 
 		event, err := reader.ReadMessage()
 		if errors.Is(err, io.EOF) {
-			return nil
+			// EOF can race with cancellation while the read is in flight.
+			return ctx.Err()
 		}
 		if err != nil {
 			return fmt.Errorf("a2a stream read: %w", err)

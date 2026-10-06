@@ -307,7 +307,7 @@ func (r *SingleMessageReader) ReadMessage() ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, int64(MaxLineSize)+1))
 	_ = r.Body.Close() // best-effort cleanup after read
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
+		return nil, fmt.Errorf("%w: reading response body: %w", ErrIncompleteResponse, err)
 	}
 	if len(data) > MaxLineSize {
 		return nil, fmt.Errorf("response body exceeds maximum size (%d bytes)", MaxLineSize)

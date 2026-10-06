@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -1666,7 +1667,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Forward to upstream. Response scanning happens in modifyResponse.
 	// Envelope signing happens in the signing RoundTripper wrapping
 	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
-	rp.proxy.ServeHTTP(&reverseInformationalGuardWriter{ResponseWriter: w}, r)
+	rp.proxy.ServeHTTP(&reverseInformationalGuardWriter{
+		ResponseWriter: w,
+		onWriteError: func(status int, written int64, err error) {
+			outcomeTracker.Record(status, written, httpstream.Reason(r.Context(), err))
+		},
+	}, r)
 }
 
 // reverseInformationalGuardWriter keeps an upstream's 1xx informational
@@ -1676,9 +1682,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // them and a forged X-Pipelock-Block-Reason would reach the client first.
 type reverseInformationalGuardWriter struct {
 	http.ResponseWriter
+	onWriteError func(int, int64, error)
+	status       int
+	written      int64
+}
+
+func (w *reverseInformationalGuardWriter) Write(p []byte) (int, error) {
+	n, err := (httpstream.Writer{Writer: w.ResponseWriter}).Write(p)
+	w.written += int64(n)
+	if err != nil && w.onWriteError != nil {
+		w.onWriteError(w.status, w.written, err)
+	}
+	return n, err
 }
 
 func (w *reverseInformationalGuardWriter) WriteHeader(code int) {
+	if code >= http.StatusOK {
+		w.status = code
+	}
 	if code >= http.StatusContinue && code < http.StatusOK && code != http.StatusSwitchingProtocols {
 		h := w.Header()
 		for name := range h {
@@ -1729,6 +1750,7 @@ type reverseOutcomeTracker struct {
 	reason           string
 	bytesExact       *bool
 	emitted          bool
+	sse              bool
 }
 
 type reverseShieldOversizeDecision struct {
@@ -1767,10 +1789,24 @@ func (t *reverseOutcomeTracker) Record(status int, bytesTransferred int64, reaso
 	if t.emitted {
 		return
 	}
+	if t.sse {
+		reason = sseStreamReason(reason)
+	}
 	t.status = statusText
 	t.bytesTransferred = bytesTransferred
 	t.reason = reason
 	t.bytesExact = nil
+}
+
+// markSSE keeps the established SSE cancellation reason for this response,
+// whichever stream layer observes the cancellation first.
+func (t *reverseOutcomeTracker) markSSE() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.sse = true
+	t.mu.Unlock()
 }
 
 func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int64, reason string, exact bool) {
@@ -2142,6 +2178,14 @@ func reverseResponseReceiptStateFrom(resp *http.Response) *reverseResponseReceip
 }
 
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
+	// ReverseProxy already aborts on body-copy errors under net/http. Observe
+	// the final body handed to it, including raw media, oversize tails and SSE
+	// pipes, so an admission-time success reason cannot survive a failed copy.
+	defer func() {
+		if resp.Body != nil && resp.StatusCode != http.StatusSwitchingProtocols {
+			resp.Body = &reverseStreamBody{ReadCloser: resp.Body, resp: resp, rp: rp}
+		}
+	}()
 	// httputil.ReverseProxy copies response headers after this hook. Reserve the
 	// recorded-receipt namespace before any response branch can reach the
 	// caller.
@@ -2861,6 +2905,12 @@ responseScanning:
 			if err == nil {
 				return
 			}
+			// Findings and incomplete scans keep their evidence below, even
+			// when the client also went away.
+			if httpstream.Reason(resp.Request.Context(), err) == httpstream.Cancelled && !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
+				recordReverseOutcome(resp.StatusCode, -1, httpstream.Cancelled)
+				return
+			}
 			if IsSSEStreamScanError(err) {
 				reason := "response scan failed: " + err.Error()
 				rp.logger.LogError(actx, fmt.Errorf("%s", reason))
@@ -2917,6 +2967,7 @@ responseScanning:
 		}
 		// Initialize before the scanner goroutine can publish its terminal result.
 		recordReverseOutcome(resp.StatusCode, -1, "sse_stream")
+		outcomeTracker.markSSE()
 		// SSE is open-ended; the upstream Content-Length (if any) becomes
 		// meaningless once we strip events through the pipe. -1 instructs
 		// httputil.ReverseProxy to chunk the response. Both writes must land

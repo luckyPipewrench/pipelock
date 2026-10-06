@@ -3692,6 +3692,28 @@ func interceptWithRT(
 	req *http.Request,
 ) *http.Response {
 	t.Helper()
+	resp, err := interceptWithRTResult(t, cache, pool, cfg, sc, logger, m, rt, ic, req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return resp
+}
+
+// interceptWithRTResult is interceptWithRT for responses that may end before
+// their headers arrive, such as a stream aborted while still buffered.
+func interceptWithRTResult(
+	t *testing.T,
+	cache *certgen.CertCache,
+	pool *x509.CertPool,
+	cfg *config.Config,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+	rt http.RoundTripper,
+	ic *InterceptContext,
+	req *http.Request,
+) (*http.Response, error) {
+	t.Helper()
 
 	clientConn, proxyConn := net.Pipe()
 	t.Cleanup(func() { _ = clientConn.Close() })
@@ -3728,10 +3750,10 @@ func interceptWithRT(
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
 	if err != nil {
-		t.Fatalf("read response: %v", err)
+		return nil, err
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp
+	return resp, nil
 }
 
 func TestInterceptTunnel_RequireReceiptsDurabilityFailureBlocksBeforeRoundTrip(t *testing.T) {

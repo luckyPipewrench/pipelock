@@ -75,6 +75,20 @@ linters:
         text: "G103|G204"
       # An executable test fixture has to be executable, so 0600 is not an
       # option for it.
+      # pipelock exec launches the command the operator names (G204, G702), and on
+      # Windows fills a typed job-limits struct passed by exact byte size
+      # (G103). Its tests re-run the test binary or fixed shell fixtures and
+      # make a fixture executable (G302). No external input selects a command.
+      # The CA write-failure test makes its cache directory read-only (0500)
+      # to force the failure, then restores 0750. The private-cache tests make
+      # cache entries writable by other accounts to prove they are tightened
+      # or refused. All are fixtures in the test's own temporary directory.
+      - path: ^internal/launchcontract/(ca_fault_linux|private_unix)_test\.go$
+        linters: [gosec]
+        text: "G302"
+      - path: ^internal/cli/exec/
+        linters: [gosec]
+        text: "G103|G204|G302|G702"
       - path: internal/mcp/fdexec_linux_test\.go
         linters: [gosec]
         text: "G302|G306"

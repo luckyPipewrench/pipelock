@@ -309,6 +309,26 @@ func TestKillSwitchHealthReportsActive(t *testing.T) {
 		t.Error("expected kill_switch_active=false when inactive")
 	}
 
+	// A reload candidate blocks traffic before it is committed. Health has to
+	// report that; the current source map still says the switch is off.
+	pending := config.Defaults()
+	pending.Internal = nil
+	pending.KillSwitch.Enabled = true
+	ks.PrepareReload(pending)
+	if sources := ks.Sources(); sources["config"] {
+		t.Fatal("pending kill switch must not be reported as the current config source")
+	}
+	w = httptest.NewRecorder()
+	p.handleHealth(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil))
+	var pendingHealth healthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &pendingHealth); err != nil {
+		t.Fatalf("unmarshal pending health: %v", err)
+	}
+	if !pendingHealth.KillSwitchActive || !ks.IsActive() {
+		t.Fatal("pending kill switch blocked traffic while health reported inactive")
+	}
+	ks.AbortReload()
+
 	// Activate via API source.
 	ks.SetAPI(true)
 	w = httptest.NewRecorder()

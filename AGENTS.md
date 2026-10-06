@@ -25,6 +25,7 @@ The code-checked capability manifest is docs/security/capability-manifest.json. 
 | Signed action receipts | Free | flight_recorder |  |
 | Host containment for agent processes | Free | pipelock contain | Kernel-enforced containment requires Linux, a private network namespace, nftables, and the managed identities. The recommended unprivileged systemd service emits signed pre-launch posture from a root signer that verifies its own managed namespace and proxy doorway; contain run instead signs a host-side preflight and also emits a post-session workspace statement. |
 | Single-agent process sandbox | Free | pipelock sandbox | Kernel isolation requires Linux user namespaces. Without them, best-effort network isolation only sets HTTP(S)_PROXY; seccomp adds restrictions only on linux/amd64. |
+| Cooperative command launch | Free | pipelock exec | Steers cooperative Unix and Windows clients through a running proxy; programs can ignore environment settings. Use contain or sandbox for operating-system enforcement. |
 | Global canary tokens | Free | canary_tokens |  |
 | Named agent profiles | Pro | agents.<profile> |  |
 | Per-agent sandbox overrides | Pro | agents.<profile>.sandbox |  |

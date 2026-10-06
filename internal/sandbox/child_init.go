@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/luckyPipewrench/pipelock/internal/launchcontract"
 	"github.com/luckyPipewrench/pipelock/internal/processexec"
 )
 
@@ -310,15 +311,7 @@ func appendBridgeProxyEnv(env []string, addr string) []string {
 // single source so the two cannot drift and reintroduce a proxy bypass. addr
 // comes from BridgeProxy.Addr(), a listener-backed host:port.
 func bridgeProxyEnv(addr string) []string {
-	proxyURL := "http://" + addr
-	return []string{
-		"HTTP_PROXY=" + proxyURL,
-		"HTTPS_PROXY=" + proxyURL,
-		"http_proxy=" + proxyURL,
-		"https_proxy=" + proxyURL,
-		"NO_PROXY=",
-		"no_proxy=",
-	}
+	return launchcontract.Entries(launchcontract.Vars(launchcontract.Sandbox, "http://"+addr, "", "", ""))
 }
 
 func removeProxyEnvKeys(env []string) []string {

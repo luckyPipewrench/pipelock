@@ -7091,16 +7091,11 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp.RequestBodyScanEnabled = cfg.RequestBodyScanning.Enabled
 		resp.TLSInterceptionEnabled = cfg.TLSInterception.Enabled
 	}
-	if p.ks != nil {
-		// Read-only kill switch status - no auth needed. Lets operators
-		// see kill switch state from the main port even when the API
-		// is on a separate port.
-		for _, active := range p.ks.Sources() {
-			if active {
-				resp.KillSwitchActive = true
-				break
-			}
-		}
+	if p.ks != nil && p.ks.IsActive() {
+		// Read-only kill switch status, with no auth. This matches enforcement,
+		// including a reload candidate that is already blocking traffic, rather
+		// than the current config sources alone.
+		resp.KillSwitchActive = true
 	}
 
 	status := http.StatusOK

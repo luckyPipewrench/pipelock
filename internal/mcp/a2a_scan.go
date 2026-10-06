@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -219,6 +220,30 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				result.EntropyFinding = finding
 				action = config.StrongestAction(action, entropyOpts.Action)
 			}
+		}
+	}
+
+	// Text parts form one message to the consumer. Inspect their joined values
+	// without inserting field names between them; per-leaf scanning above still
+	// owns keys and field-aware URL checks. This bounded pass also covers values
+	// beyond the classified walk's node allowance.
+	joinedValues := jsonrpc.ExtractStringsFromJSONResult(body)
+	if joinedValues.Truncated {
+		return A2AScanResult{Action: config.ActionBlock, InspectionIncomplete: true, Reason: "a2a: input exceeds maximum inspectable nesting depth"}
+	}
+	if len(joinedValues.Strings) > 0 {
+		injectResult := sc.ScanResponse(ctx, strings.Join(joinedValues.Strings, "\n"))
+		if injectResult.Failed() {
+			result.Clean = false
+			result.ScanError = injectResult.ScanError
+		} else if !injectResult.Clean {
+			result.Clean = false
+			result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+			findingAction := defaultFindingAction
+			if budgetExceeded {
+				findingAction = config.ActionBlock
+			}
+			action = config.StrongestAction(action, findingAction)
 		}
 	}
 

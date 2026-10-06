@@ -1417,7 +1417,7 @@ func newInterceptHandler(
 					}
 					recordA2AContentEntropyTelemetry(ic.Logger, ic.Metrics, ic.Profile, actx, action, a2aBodyResult)
 					// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-					if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+					if action == config.ActionAsk || a2aResultBlocks(ic.Config, action, a2aBodyResult) {
 						switch {
 						case a2aBodyResult.IsAdaptiveNeutral():
 							// Score-neutral: see header-scan path above.

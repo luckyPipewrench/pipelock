@@ -6,6 +6,7 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -103,5 +104,42 @@ func TestA2AResponseRetainsMessageBound(t *testing.T) {
 	v := ScanResponseA2A(line, sc, &A2AResponseOpts{Cfg: cfg, Method: "SendMessage"})
 	if v.Clean || v.Action != config.ActionBlock || v.Error == "" {
 		t.Fatal("uninspectable message did not block")
+	}
+}
+
+func TestA2ABodyJoinsTextParts(t *testing.T) {
+	sc := testA2AScanner(t)
+	t.Cleanup(sc.Close)
+	for kind, halves := range joinedViewSplits() {
+		for _, count := range []int{0, maxWalkNodes + 1} {
+			for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+				t.Run(fmt.Sprintf("%s/%d/%s", kind, count, action), func(t *testing.T) {
+					cfg := enabledA2ACfg()
+					cfg.Action = action
+					body, err := json.Marshal(map[string]any{"a": make([]int, count), "parts": []any{map[string]string{"text": halves[0]}, map[string]string{"text": halves[1]}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, v := range []A2AScanResult{
+						ScanA2ARequestBody(t.Context(), body, sc, cfg),
+						ScanA2AResponseBody(t.Context(), body, sc, cfg),
+					} {
+						if kind == "benign" {
+							if count == 0 && !v.Clean || count > 0 && (v.Clean || !v.BudgetExceeded || v.Action != action) {
+								t.Fatal("benign text parts flagged")
+							}
+						} else {
+							want := config.ActionBlock
+							if count == 0 && kind == "injection" {
+								want = action
+							}
+							if v.Clean || v.Action != want {
+								t.Fatalf("joined %s parts not blocked: clean=%t action=%s", kind, v.Clean, v.Action)
+							}
+						}
+					}
+				})
+			}
+		}
 	}
 }

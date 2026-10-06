@@ -621,6 +621,9 @@ func checkGatewayHealth(ctx context.Context, env *doctorEnv) doctorResult {
 // ---------------------------------------------------------------------------
 
 func checkCurlThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
+	if res, disabled := checkDisabledForwardProxy(env); disabled {
+		return res
+	}
 	name, args := env.sudoAgent(env.curlProxyArgs(env.canaryURL)...)
 	out, code, err := env.runCmd(ctx, name, args...)
 	if res, done := classifyAgentRun(out, err, "curl"); done {
@@ -671,6 +674,9 @@ except ImportError:
 `
 
 func checkPythonThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
+	if res, disabled := checkDisabledForwardProxy(env); disabled {
+		return res
+	}
 	wrapper := filepath.Join(env.wrapperDir, "pipelock-python")
 	name, args := env.sudoAgent(wrapper, "-c", pythonProbeScript, env.canaryURL)
 	out, code, err := env.runCmd(ctx, name, args...)
@@ -705,6 +711,9 @@ const nodeProbeScript = "(async()=>{try{" +
 	"}catch(e){process.stderr.write(String((e&&e.message)||e));process.exit(1);}})()"
 
 func checkNodeThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
+	if res, disabled := checkDisabledForwardProxy(env); disabled {
+		return res
+	}
 	// The shim is what makes node's fetch() honor HTTPS_PROXY; surface a clear
 	// remediation if it is missing rather than letting node fail on --require.
 	if _, err := env.stat(env.undiciShimPath); err != nil {
@@ -746,6 +755,9 @@ const dnsFailureHost = "pipelock-doctor-nonexistent.invalid"
 // checkDNSFailure proves an invalid hostname is rejected by the proxy rather
 // than succeeding, hanging, or failing without proxy attribution.
 func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
+	if res, disabled := checkDisabledForwardProxy(env); disabled {
+		return res
+	}
 	// %{http_connect} is the proxy's CONNECT response. It gives this check a
 	// positive attribution signal: the local Pipelock CONNECT response proves the
 	// proxy handled the request. Pipelock returns 403 for a scanner/policy denial
@@ -773,6 +785,18 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 		fmt.Sprintf("DNS-failure probe was inconclusive (curl exit %d, proxy CONNECT status %s): %s",
 			code, formatObservedHTTPCode(connectCode, ok), oneLine(out)),
 		"confirm the proxy is healthy, then inspect Pipelock logs for the "+dnsFailureHost+" resolution failure")
+}
+
+// Attribute disabled forwarding only to a successfully inspected effective
+// config. CONNECT 405 alone can come from a different proxy or endpoint.
+func checkDisabledForwardProxy(env *doctorEnv) (doctorResult, bool) {
+	cfg, err := config.LoadForInspection(env.configPath)
+	if err != nil || cfg.ForwardProxy.Enabled {
+		return doctorResult{}, false
+	}
+	return fail(classInfra,
+		"managed config disables forwarding; contained clients require CONNECT and absolute-URI requests",
+		"set forward_proxy.enabled: true in "+env.configPath+" and rerun `pipelock contain install`, then rerun `pipelock contain doctor`"), true
 }
 
 // formatObservedHTTPCode renders a parsed status or an explicit parse failure.

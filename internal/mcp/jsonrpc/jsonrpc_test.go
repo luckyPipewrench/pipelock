@@ -861,13 +861,19 @@ func gzipCredentialFixture(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
+// pngIHDRPrefix is a canonical PNG signature and IHDR chunk. The final byte is
+// not the real CRC byte: that value (0x89) completes a valid two-byte UTF-8
+// sequence with the byte before it, so the header's own letters would read as a
+// short run in the UTF-8 view and these fixtures would stop being opaque. No
+// code checks the CRC. A real encoder-made PNG, which does read as a short
+// harmless run, is covered by TestRecognizedContainersStayClean.
 func pngIHDRPrefix() []byte {
 	return []byte{
 		0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a,
 		0x00, 0x00, 0x00, 0x0d, 'I', 'H', 'D', 'R',
 		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
 		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-		0x89,
+		0xff,
 	}
 }
 

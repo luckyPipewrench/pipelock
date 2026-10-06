@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -31,6 +32,17 @@ func interleaved(s string, sep byte) []byte {
 	out := make([]byte, 0, 2*len(s))
 	for i := 0; i < len(s); i++ {
 		out = append(out, s[i], sep)
+	}
+	return out
+}
+
+// interleavedRunes places sep after every character, keeping each UTF-8
+// sequence whole.
+func interleavedRunes(s string, sep byte) []byte {
+	var out []byte
+	for _, r := range s {
+		out = utf8.AppendRune(out, r)
+		out = append(out, sep)
 	}
 	return out
 }
@@ -79,6 +91,8 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 		{"homoglyph utf16le", utf16Encode(cyr, le), cyr},
 		{"homoglyph utf16be", utf16Encode(cyr, be), cyr},
 		{"homoglyph utf8", []byte(cyr), cyr},
+		{"homoglyph utf8 with nul between characters", interleavedRunes(cyr, 0x00), cyr},
+		{"homoglyph utf8 with 0x01 between characters", interleavedRunes(cyr, 0x01), cyr},
 		{"homoglyph utf8 after a plain run", append([]byte(mediaTestPhrase+"\x00"), []byte(cyr)...), cyr},
 		{"astral letters utf8", []byte(bold), bold},
 		{"latin-1 letters utf8", []byte(strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)), strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)},
@@ -118,13 +132,13 @@ func TestNormalizedMediaTextUTF8Boundaries(t *testing.T) {
 	if got := recoverMediaText(t, broken); got != "" {
 		t.Fatalf("fragments joined across an invalid byte: %q", got)
 	}
-	// Raw control bytes end a run too: the control view reads through them, and
-	// this view must not read a header's NUL-padded fields as text.
+	// Raw control bytes are transparent, as in every view: the scanner deletes
+	// them, so two halves split by one are a single run to it.
 	nulSplit := []byte(e12[:len(e12)/2])
 	nulSplit = append(nulSplit, 0x00)
 	nulSplit = append(nulSplit, []byte(e12[:len(e12)/2])...)
-	if got := recoverMediaText(t, nulSplit); got != "" {
-		t.Fatalf("fragments joined across a control byte: %q", got)
+	if got := recoverMediaText(t, nulSplit); !strings.Contains(got, e12) {
+		t.Fatalf("fragments not read through a control byte: %q", got)
 	}
 	// A truncated final sequence keeps the valid prefix.
 	if got := recoverMediaText(t, append([]byte(e12), 0xC3)); !strings.Contains(got, e12) {

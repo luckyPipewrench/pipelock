@@ -111,9 +111,10 @@ type mediaTextWriter struct {
 	// marked records that the run held a scalar a plain printable-ASCII read
 	// would have broken on. A view that otherwise equals that read is a
 	// duplicate and is not emitted again.
-	marked   bool
-	needMark bool
-	failed   bool
+	marked         bool
+	needMark       bool
+	spaceUncounted bool
+	failed         bool
 	// scratch is controlView's joined-text buffer, reused across runs.
 	scratch []byte
 }
@@ -158,7 +159,7 @@ func (w *mediaTextWriter) addClassified(r rune, class mediaRuneClass) {
 	case mediaRuneText:
 		w.add(r, true)
 	case mediaRuneSpace:
-		w.add(' ', true)
+		w.add(' ', !w.spaceUncounted)
 	case mediaRuneKeep:
 		w.add(r, false)
 	case mediaRuneDrop:
@@ -333,17 +334,20 @@ func (w *mediaTextWriter) controlRun(run []byte) {
 // utf8View reads b as UTF-8. Text in the Latin-script and homoglyph ranges is
 // as natural in UTF-8 as in UTF-16, and the plain views break on its non-ASCII
 // bytes. A run is emitted only when it holds a non-ASCII scalar, so ASCII text
-// is not repeated; invalid bytes end the run. Raw control bytes also end it:
-// controlView already reads text through them, and bridging them here would
-// read the NUL-padded numeric fields of an ordinary container header as text.
+// is not repeated; invalid bytes end the run. Controls are transparent, as in
+// every other view: the scanner deletes them, so text split by them is still
+// text to it. Whitespace does not count toward the minimum here: bridging
+// controls would otherwise let the line-break and NUL bytes of an ordinary
+// container header pad its few printable letters up to a run.
 func (w *mediaTextWriter) utf8View(b []byte) {
 	classes := mediaBMPClasses()
 	w.needMark = true
-	defer func() { w.needMark = false }()
+	w.spaceUncounted = true
+	defer func() { w.needMark = false; w.spaceUncounted = false }()
 	for i := 0; i < len(b); {
 		r, size := utf8.DecodeRune(b[i:])
 		i += size
-		if (r == utf8.RuneError && size <= 1) || (r < 0x20 && r != '\t' && r != '\n' && r != '\r') || r == 0x7f {
+		if r == utf8.RuneError && size <= 1 {
 			w.end()
 		} else {
 			var class mediaRuneClass

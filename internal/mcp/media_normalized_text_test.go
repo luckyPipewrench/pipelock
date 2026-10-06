@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -90,6 +91,20 @@ func mediaEncodings() []mediaEncoding {
 			// Letters swapped for Cyrillic look-alikes the scanner folds back; the
 			// plain ASCII views cannot read the non-ASCII bytes.
 			return []byte(strings.NewReplacer("o", string(rune(0x043e)), "e", string(rune(0x0435)), "a", string(rune(0x0430)), "c", string(rune(0x0441))).Replace(s))
+		}},
+		{"utf8 homoglyphs with nul between characters", func(s string) []byte {
+			var out []byte
+			for _, r := range strings.NewReplacer("o", string(rune(0x043e)), "e", string(rune(0x0435)), "a", string(rune(0x0430)), "c", string(rune(0x0441))).Replace(s) {
+				out = append(utf8.AppendRune(out, r), 0x00)
+			}
+			return out
+		}},
+		{"utf8 homoglyphs with 0x01 between characters", func(s string) []byte {
+			var out []byte
+			for _, r := range strings.NewReplacer("o", string(rune(0x043e)), "e", string(rune(0x0435)), "a", string(rune(0x0430)), "c", string(rune(0x0441))).Replace(s) {
+				out = append(utf8.AppendRune(out, r), 0x01)
+			}
+			return out
 		}},
 		{"nul interleaved", func(s string) []byte { return mediaInterleaved(s, 0x00) }},
 		{"0x01 interleaved", func(s string) []byte { return mediaInterleaved(s, 0x01) }},

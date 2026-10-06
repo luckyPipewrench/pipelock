@@ -57,8 +57,24 @@ func TestDecide_AuditModeKeepsCoreCredentialFloor(t *testing.T) {
 					if decision.Outcome != want {
 						t.Fatalf("outcome = %s, want %s; evidence = %+v", decision.Outcome, want, decision.Evidence)
 					}
+					// When the blocklist stopped the scan, the evidence must still
+					// name the credential, the reason audit mode keeps the denial.
+					if kind == "coreblocked" && !evidenceNamesCoreCredential(decision.Evidence) {
+						t.Fatalf("evidence does not name the core credential: %+v", decision.Evidence)
+					}
 				})
 			}
 		}
 	}
+}
+
+// evidenceNamesCoreCredential reports whether any evidence entry is the core
+// credential floor rather than the stage that ended the URL scan.
+func evidenceNamesCoreCredential(evidence []Evidence) bool {
+	for _, e := range evidence {
+		if e.core && e.Severity == config.SeverityCritical {
+			return true
+		}
+	}
+	return false
 }

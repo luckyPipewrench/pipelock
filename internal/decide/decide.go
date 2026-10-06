@@ -251,15 +251,29 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 		return Decision{Outcome: Allow}
 	}
 
+	core := scanner.IsCoreCriticalResult(result)
 	evidence := []Evidence{{
 		Scanner:  result.Scanner,
 		Pattern:  result.Reason,
 		Severity: config.SeverityHigh,
 		Action:   config.ActionBlock,
-		// The URL scan stops at its first failing stage, so check the core
-		// floor directly when an earlier stage refused the URL.
-		core: scanner.IsCoreCriticalResult(result) || !sc.ScanURLCoreFloor(p.URL).Allowed,
+		core:     core,
 	}}
+	// The URL scan stops at its first failing stage, so check the core floor
+	// directly when an earlier stage refused the URL. Its own evidence entry
+	// names the credential, which is why the request stays denied in audit
+	// mode even though the earlier stage alone would only warn.
+	if !core {
+		if floor := sc.ScanURLCoreFloor(p.URL); !floor.Allowed {
+			evidence = append(evidence, Evidence{
+				Scanner:  floor.Scanner,
+				Pattern:  floor.Reason,
+				Severity: config.SeverityCritical,
+				Action:   config.ActionBlock,
+				core:     true,
+			})
+		}
+	}
 
 	return buildDecision(cfg, evidence)
 }

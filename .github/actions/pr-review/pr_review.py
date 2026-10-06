@@ -10,6 +10,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import selectors
 import subprocess
 import sys
 import time
+import tokenize
 import traceback
 import unicodedata
 import urllib.parse
@@ -163,6 +165,8 @@ MAX_REQUESTED_EVIDENCE_SECONDS = 10
 # for one judge pass; without it, twenty candidates times four terms can spend
 # minutes rescanning HEAD before a partial review is even published.
 MAX_EVIDENCE_SEARCHES = 8
+MAX_EVIDENCE_DEFINITION_LINES = 60
+EVIDENCE_TRUNCATED = "<evidence-search-truncated: use unresolved unless the evidence above already decides the premise>"
 MAX_DELETION_LINES_PER_HUNK = 24
 MAX_RENDERED_MANIFEST_ENTRIES = 8
 REPO_PATTERN = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -2500,6 +2504,150 @@ def _evidence_terms(finding: Finding, context: str) -> list[str]:
     return terms
 
 
+def _definition_end(lines: list[str], anchor: int) -> tuple[int, bool]:
+    """Find a definition's end conservatively, scanning at most sixty lines."""
+    first = lines[anchor]
+    limit = min(len(lines), anchor + MAX_EVIDENCE_DEFINITION_LINES)
+    if re.match(r"\s*(?:async\s+)?(?:def|class)\s+", first):
+        # Python's tokenizer handles multiline signatures, strings and nested
+        # suites. One lookahead line can supply the terminating DEDENT.
+        prefix = first[:len(first) - len(first.lstrip())]
+        source = "\n".join(
+            line[len(prefix):] if line.startswith(prefix) else line
+            for line in lines[anchor:min(len(lines), limit + 1)]
+        ) + "\n"
+        try:
+            body_depth: int | None = None
+            last = ""
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
+                if token.type == tokenize.INDENT:
+                    body_depth = (body_depth or 0) + 1
+                if body_depth is not None and token.type == tokenize.DEDENT:
+                    body_depth -= 1
+                    if body_depth == 0:
+                        end = anchor + token.start[0] - 1
+                        return min(limit, end), end > limit
+                if body_depth is None and token.type == tokenize.NEWLINE and last != ":":
+                    # A one-line suite ends with its logical statement.
+                    end = anchor + token.end[0]
+                    return min(limit, end), end > limit
+                if token.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT):
+                    last = token.string
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            pass
+        return limit, True
+    grouped = re.match(r"\s*(?:const|var)\s*\(", first)
+    braced = re.match(r"\s*(?:func\b|type\b|(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\))", first)
+    if not grouped and not braced:
+        return anchor + 1, False
+    source = "\n".join(lines[anchor:limit])
+    # Mask strings and comments before counting delimiters. Their newlines
+    # remain so the closing delimiter still maps to an actual source line.
+    literals = r'//[^\n]*|/\*[\s\S]*?(?:\*/|$)|"(?:\\[\s\S]|[^"\\])*(?:"|$)|\x27(?:\\[\s\S]|[^\x27\\])*(?:\x27|$)|`[^`]*(?:`|$)'
+    shell = not re.match(r"\s*(?:func|type|const|var)\b", first)
+    if shell:
+        literals += r"|\#[^\n]*"
+    source = re.sub(literals, lambda match: re.sub(r"[^\n]", " ", match[0]), source)
+    if shell and "<<" in source:
+        # A here-document can contain apparent closing braces. Without parsing
+        # its delimiter, do not present a guessed boundary as complete.
+        return limit, True
+    parens = 0
+    brackets = 0
+    signature_braces = 0
+    depth = 0
+    opened = False
+    word = ""
+    last_word = ""
+    number = anchor
+    for char in source:
+        if char.isalnum() or char == "_":
+            word = (word + char)[-16:]
+        elif word:
+            last_word, word = word, ""
+        elif not char.isspace() and char != "{":
+            last_word = ""
+        if char == "\n":
+            number += 1
+        elif grouped:
+            if char == "(":
+                depth += 1
+                opened = True
+            elif char == ")":
+                depth -= 1
+                if opened and depth == 0:
+                    return number + 1, False
+        elif char == "(":
+            parens += 1
+        elif char == ")":
+            parens -= 1
+        elif char == "[":
+            brackets += 1
+        elif char == "]":
+            brackets -= 1
+        elif char == "{":
+            # An anonymous return type is still the signature, not the
+            # function body. Parameter and generic-constraint braces are too.
+            anonymous_return = last_word in {"interface", "struct"} and first.lstrip().startswith("func")
+            if not opened and (parens or brackets or signature_braces or anonymous_return):
+                signature_braces += 1
+            else:
+                depth += 1
+                opened = True
+        elif char == "}":
+            if not opened and signature_braces:
+                signature_braces -= 1
+            else:
+                depth -= 1
+                if opened and depth == 0:
+                    return number + 1, False
+    # A simple Go type alias has no body to expand.
+    if not opened and re.match(r"\s*type\s+\w+\s+[^({]+$", first):
+        return anchor + 1, False
+    return limit, True
+
+
+def _evidence_windows(matches: list[tuple[int, str, int, str]]) -> list[tuple[str, list[int]]]:
+    """Merge nearby anchors without losing the later hit's context or body."""
+    windows: list[tuple[str, list[int]]] = []
+    for _, path, line, _ in matches:
+        if windows and windows[-1][0] == path and line - windows[-1][1][-1] <= 9:
+            windows[-1][1].append(line)
+        else:
+            windows.append((path, [line]))
+    return windows
+
+
+def _render_evidence_window(path: str, content: str, anchors: list[int]) -> tuple[str, bool]:
+    lines = content.splitlines()
+    if not anchors or any(line < 1 or line > len(lines) for line in anchors):
+        return f"<evidence-line-unavailable: {path}>", True
+    start = max(0, min(anchors) - 5)
+    end = min(len(lines), max(anchors) + 4)
+    truncated = False
+    for line in anchors:
+        definition_end, cut = _definition_end(lines, line - 1)
+        end = max(end, definition_end)
+        truncated = truncated or cut
+    rendered = []
+    for number in range(start, end):
+        value = lines[number]
+        rendered.append(f"{path}:{number + 1}: {value[:500]}")
+        truncated = truncated or len(value) > 500
+    return "\n".join(rendered), truncated
+
+
+def _bounded_evidence(text: str, max_tokens: int, truncated: bool) -> tuple[str, bool]:
+    """Include the omission marker inside, rather than beyond, the budget."""
+    if not truncated and estimate_tokens(text) <= max_tokens:
+        return text, False
+    if estimate_tokens(EVIDENCE_TRUNCATED) > max_tokens:
+        return "", True
+    allowance = max(0, max_tokens * 4 - len(EVIDENCE_TRUNCATED) - 1)
+    text = text[:allowance]
+    return (text + "\n" + EVIDENCE_TRUNCATED).lstrip("\n")[:max(0, max_tokens * 4)], True
+
+
 def cross_file_evidence(
     binding: PullBinding,
     candidates: list[Finding],
@@ -2567,45 +2715,25 @@ def cross_file_evidence(
         if search_budget_exhausted:
             break
     matches.sort(key=lambda item: (item[0], item[1], item[2]))
-    selected: list[tuple[int, str, int, str]] = []
-    for match in matches:
-        if any(path == match[1] and abs(line - match[2]) <= 9 for _, path, line, _ in selected):
-            continue
-        selected.append(match)
-        if len(selected) == 32:
-            break
-    truncated = search_output_truncated or (len(selected) == 32 and len(matches) > 32)
+    windows = _evidence_windows(matches)
+    selected = windows[:32]
+    truncated = search_output_truncated or len(windows) > 32
     rendered: list[str] = []
     used_tokens = 0
-    for _, path, line, text in selected:
+    for path, anchors in selected:
         content = _read_local_file(root, path)
         if content is None:
-            piece = f"{path}:{line}: {text[:500]}"
-            if used_tokens + estimate_tokens(piece) > max_tokens:
-                if not rendered:
-                    rendered.append(piece[: max_tokens * 4])
-                truncated = True
-                break
-            rendered.append(piece)
-            used_tokens += estimate_tokens(piece)
-            continue
-        lines = content.splitlines()
-        start = max(0, line - 5)
-        end = min(len(lines), line + 4)
-        piece = "\n".join(
-            f"{path}:{number + 1}: {value[:500]}"
-            for number, value in enumerate(lines[start:end], start=start)
-        )
+            return "", True
+        piece, cut = _render_evidence_window(path, content, anchors)
+        truncated = truncated or cut
         if used_tokens + estimate_tokens(piece) > max_tokens:
-            if not rendered:
-                rendered.append(piece[: max_tokens * 4])
+            rendered.append(piece)
             truncated = True
             break
         rendered.append(piece)
         used_tokens += estimate_tokens(piece)
-    if truncated:
-        rendered.append("<evidence-search-truncated: use unresolved unless the evidence above already decides the premise>")
-    return "\n".join(rendered), False
+    evidence, cut = _bounded_evidence("\n".join(rendered), max_tokens, truncated)
+    return evidence, cut and not evidence
 
 
 def _reap_process(process: subprocess.Popen[Any]) -> None:
@@ -2760,17 +2888,41 @@ def requested_repository_evidence(
                 unavailable = True
             else:
                 hits = lines[:12]
-                piece = f"REQUESTED LITERAL SEARCH {request.search!r}\n" + ("\n".join(hits) or "<no matches>")
+                matches = []
+                for raw in hits:
+                    match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
+                    if match is None:
+                        truncated = True
+                        continue
+                    path, line, text = match.groups()
+                    matches.append((0, path, int(line), text))
+                matches.sort(key=lambda item: (item[1], item[2]))
+                contexts = []
+                for path, anchors in _evidence_windows(matches):
+                    content = _read_commit_file(root, binding.head_sha, path, evidence_deadline)
+                    if content is None:
+                        contexts.append(f"<requested-path-unavailable: {path}>")
+                        unavailable = True
+                    else:
+                        context, cut = _render_evidence_window(path, content, anchors)
+                        contexts.append(context)
+                        truncated = truncated or cut
+                    if estimate_tokens("\n".join(contexts)) > max_tokens - used:
+                        truncated = True
+                        break
+                piece = f"REQUESTED LITERAL SEARCH {request.search!r}\n" + ("\n".join(contexts) or "<no matches>")
                 if truncated or len(lines) > len(hits):
                     piece += "\n<requested-search-truncated>"
+                    unavailable = True
         addition = estimate_tokens(piece)
         if used + addition > max_tokens:
-            rendered.append("<requested-repository-evidence-truncated>")
+            rendered.append(piece)
             unavailable = True
             break
         rendered.append(piece)
         used += addition
-    return "\n\n".join(rendered), unavailable
+    evidence, cut = _bounded_evidence("\n\n".join(rendered), max_tokens, unavailable)
+    return evidence, unavailable or cut
 
 
 def judge_findings(

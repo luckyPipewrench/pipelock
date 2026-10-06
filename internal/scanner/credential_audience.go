@@ -886,6 +886,74 @@ func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string
 	return false
 }
 
+// releaseGrantResponseOverrideMaxFilename caps the asset name inside a
+// release redirect's content-disposition override. GitHub publishes no asset
+// name limit; 255 bytes is the longest file name the common filesystems a
+// download is saved to accept, so a longer name is not a download name.
+const releaseGrantResponseOverrideMaxFilename = 255
+
+// releaseGrantResponseOverrideFormats pins the unsigned response-header
+// overrides GitHub's release redirect sends beside the SAS (rscd/rsct and the
+// response-content-disposition/response-content-type mirrors) to the one shape
+// GitHub issues. The content-disposition value is `attachment; filename=<name>`
+// where GitHub's stored asset name keeps only letters, digits and `.`, `_`, `+`,
+// `-` (its docs say asset names are normalized but publish no alphabet; this
+// set is what a live redirect and community reports show). A long asset name
+// scores above the entropy threshold on its own, so without this the redirect
+// for a real asset such as a `.sha256` file is blocked even though DLP allowed
+// the grant. The value is pinned rather than exempted by key: a filename in
+// this alphabet is the only thing the exemption can carry.
+var releaseGrantResponseOverrideFormats = func() map[string]*regexp.Regexp {
+	disposition := regexp.MustCompile(`^attachment; filename=[A-Za-z0-9._+-]{1,` + strconv.Itoa(releaseGrantResponseOverrideMaxFilename) + `}$`)
+	contentType := regexp.MustCompile(`^[a-z]{1,32}/[a-z0-9][a-z0-9.+-]{0,63}$`)
+	return map[string]*regexp.Regexp{
+		"rscd":                         disposition,
+		"response-content-disposition": disposition,
+		"rsct":                         contentType,
+		"response-content-type":        contentType,
+	}
+}()
+
+// releaseGrantHolds reports whether parsed is, whole, a release grant for one
+// of the scanner's ReleaseGrantSAS-carrier patterns: the same predicate
+// releaseGrantSASAllowed gives the DLP and surface decisions.
+func (s *Scanner) releaseGrantHolds(parsed *url.URL, now time.Time) bool {
+	host, ok := canonicalCredentialAudienceDestination(parsed.String())
+	if !ok {
+		return false
+	}
+	patterns := s.dlpPatterns
+	if s.core != nil {
+		patterns = append(append([]*compiledPattern{}, patterns...), s.core.dlpPatterns...)
+	}
+	for _, p := range patterns {
+		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+			continue
+		}
+		if releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String(), now) {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseGrantResponseOverrideAllowed exempts one of GitHub's response-header
+// override parameters from query-entropy scoring when the whole query is a
+// valid release grant and the value holds the pinned shape. The name is
+// matched exactly and must appear once, so a case alias or a repeated
+// parameter cannot widen what the exemption carries. DLP and every other scan
+// still run on the value.
+func (s *Scanner) releaseGrantResponseOverrideAllowed(parsed *url.URL, key, value string, now time.Time) bool {
+	format := releaseGrantResponseOverrideFormats[key]
+	if parsed == nil || format == nil || !format.MatchString(value) {
+		return false
+	}
+	if len(parsed.Query()[key]) != 1 {
+		return false
+	}
+	return s.releaseGrantHolds(parsed, now)
+}
+
 // urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
 // a string. An unparseable target keeps the bare "url" surface.
 func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string, memo *queryLessDLPMemo) string {

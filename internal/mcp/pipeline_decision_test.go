@@ -665,7 +665,7 @@ func TestEmitMCPV2Decision_RequiredDerivationFailureFailsClosed(t *testing.T) {
 		Transport: transportMCPStdio,
 		// Target intentionally empty: v1 currently rejects this too, but the
 		// required v2 helper must not silently skip configured v2 emission.
-	}, true)
+	}, true, true)
 	if !errors.Is(err, errMCPV2ReceiptEmit) {
 		t.Fatalf("emitMCPV2Decision error = %v, want errMCPV2ReceiptEmit", err)
 	}

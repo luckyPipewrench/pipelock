@@ -37,9 +37,12 @@ func TestManagerAfterJournal(t *testing.T) {
 			wantJournal: []string{`"state":"resolved_allow","source":"approval"`},
 		},
 		{
-			name: "allow, hook fails closes to block and corrects the journal", decision: config.ActionAllow, hookErr: errReceipt, wantCalled: true,
+			// The hook fails for the allow and for the corrective block, so
+			// the release is left pending for restart recovery: no terminal
+			// entry is written beside an allow receipt that may have landed.
+			name: "allow, hook fails closes to block", decision: config.ActionAllow, hookErr: errReceipt, wantCalled: true,
 			wantFinal: config.ActionBlock, wantSource: SourceCancel, wantReason: ReasonReceiptNotWritten,
-			wantJournal: []string{`"state":"resolved_allow","source":"approval"`, `"state":"resolved_block","source":"cancel"`},
+			wantJournal: []string{},
 		},
 		{
 			name: "block never calls the hook", decision: config.ActionBlock, hookErr: errReceipt,
@@ -47,8 +50,10 @@ func TestManagerAfterJournal(t *testing.T) {
 			wantJournal: []string{`"state":"resolved_block","source":"approval"`},
 		},
 		{
-			name: "journal failure never calls the hook", decision: config.ActionAllow, breakLog: true,
-			wantFinal: config.ActionBlock, wantSource: SourceCancel,
+			// The hook runs once, for the corrective block receipt; no allow
+			// receipt is attempted for a release the journal never accepted.
+			name: "journal failure calls the hook only for the block", decision: config.ActionAllow, breakLog: true,
+			wantCalled: true, wantFinal: config.ActionBlock, wantSource: SourceCancel,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

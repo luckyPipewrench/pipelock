@@ -6,6 +6,7 @@ package decide
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -72,7 +73,7 @@ func TestDecide_AuditModeKeepsCoreCredentialFloor(t *testing.T) {
 // credential floor rather than the stage that ended the URL scan.
 func evidenceNamesCoreCredential(evidence []Evidence) bool {
 	for _, e := range evidence {
-		if e.core && e.Severity == config.SeverityCritical {
+		if e.core && e.Severity == config.SeverityCritical && strings.Contains(e.Pattern, "AWS Access ID") {
 			return true
 		}
 	}

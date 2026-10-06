@@ -12,8 +12,9 @@ import "github.com/luckyPipewrench/pipelock/internal/config"
 // it checks whether any literal keyword anchor from the pattern set appears
 // in the text. If no keywords are found, regex matching is skipped entirely.
 //
-// This sits ahead of passes 1+2 (the primary bottleneck) and the opt-space
-// pass. Content-based, not position-based: no blind spots.
+// This sits ahead of passes 1+2 and the opt-space pass. Literal presence and
+// regex-derived distance conditions are necessary conditions, never limits on
+// which input positions the original matcher can inspect.
 //
 // Conservative: false positives (running regex unnecessarily) are fine.
 // False negatives (skipping regex when keywords exist) are not.
@@ -56,9 +57,10 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 // Returns nil when no patterns need to run.
 func (pf *responsePreFilter) patternsToCheck(content string) []int {
 	folded := responseSimpleFold(content)
+	distanceText := responseDistanceText(folded)
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
-		if gate == nil || gate.matches(content, folded) {
+		if gate == nil || gate.matchesWithDistance(content, folded, distanceText) {
 			hits = append(hits, i)
 		}
 	}

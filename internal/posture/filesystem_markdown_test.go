@@ -37,4 +37,25 @@ func TestRenderProofMarkdownIncludesFilesystemEvidence(t *testing.T) {
 	if strings.Contains(omitted, "Filesystem mode:") {
 		t.Fatalf("empty capsule rendered filesystem evidence:\n%s", omitted)
 	}
+
+	// Evidence present but filesystem mode empty: both renderers must omit
+	// the filesystem lines rather than print an empty mode or digest.
+	offMode := RenderProofMarkdown(&Capsule{
+		SchemaVersion: SchemaVersion,
+		Evidence: EvidenceBundle{
+			ContainLaunch: &ContainLaunchEvidence{
+				Launcher:  "/usr/local/lib/pipelock/plk-launch",
+				AgentUser: "pipelock-agent",
+				TargetUID: "966",
+				TargetGID: "966",
+				Tool:      "claude",
+			},
+			Containment: &ContainmentEvidence{Mode: ContainmentModeKernelNFTOwnerMatch},
+		},
+	})
+	for _, line := range []string{"Filesystem mode:", "Filesystem binds SHA-256:", "Containment filesystem mode:", "Containment filesystem binds SHA-256:"} {
+		if strings.Contains(offMode, line) {
+			t.Fatalf("empty filesystem mode rendered %q:\n%s", line, offMode)
+		}
+	}
 }

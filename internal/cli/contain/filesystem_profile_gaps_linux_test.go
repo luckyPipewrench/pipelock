@@ -30,6 +30,10 @@ func TestDefaultPathEvalAndExistsUseTheFilesystem(t *testing.T) {
 		t.Fatal("missing path evaluated")
 	}
 
+	if os.Geteuid() == 0 {
+		// Root bypasses directory search permission, so the stat succeeds.
+		return
+	}
 	if err := os.Chmod(dir, 0); err != nil {
 		t.Fatal(err)
 	}

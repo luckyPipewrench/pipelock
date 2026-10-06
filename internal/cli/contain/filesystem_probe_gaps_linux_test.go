@@ -19,6 +19,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// permissionsBypassed reports whether DAC checks are skipped for this
+// process. Root with CAP_DAC_OVERRIDE writes into a 0555 directory, so a
+// case that expects a permission denial cannot observe one.
+func permissionsBypassed() bool { return os.Geteuid() == 0 }
+
 func TestProbeFilesystemConfinementEnforceRejectsBeforeCreatingCanaries(t *testing.T) {
 	status, detail := probeFilesystemConfinementEnforce(context.Background(), nil, filesystemProfile{Mode: config.ContainmentFilesystemModeEnforce})
 	if status != statusFail || !strings.Contains(detail, "no command runner") {
@@ -67,10 +72,12 @@ func TestProbeFilesystemConfinementEnforceStopsAtParentAndCommandFailures(t *tes
 		t.Fatalf("missing operator parent = %s %s", status, detail)
 	}
 
-	filesystemOperatorCanaryParent = readonly
-	status, detail = probeFilesystemConfinementEnforce(context.Background(), env, profile)
-	if status != statusFail || !strings.Contains(detail, "create operator home canary") {
-		t.Fatalf("read-only operator parent = %s %s", status, detail)
+	if !permissionsBypassed() {
+		filesystemOperatorCanaryParent = readonly
+		status, detail = probeFilesystemConfinementEnforce(context.Background(), env, profile)
+		if status != statusFail || !strings.Contains(detail, "create operator home canary") {
+			t.Fatalf("read-only operator parent = %s %s", status, detail)
+		}
 	}
 
 	filesystemOperatorCanaryParent = writable
@@ -80,10 +87,12 @@ func TestProbeFilesystemConfinementEnforceStopsAtParentAndCommandFailures(t *tes
 		t.Fatalf("missing state parent = %s %s", status, detail)
 	}
 
-	filesystemStateCanaryParent = readonly
-	status, detail = probeFilesystemConfinementEnforce(context.Background(), env, profile)
-	if status != statusFail || !strings.Contains(detail, "create write canary") {
-		t.Fatalf("read-only state parent = %s %s", status, detail)
+	if !permissionsBypassed() {
+		filesystemStateCanaryParent = readonly
+		status, detail = probeFilesystemConfinementEnforce(context.Background(), env, profile)
+		if status != statusFail || !strings.Contains(detail, "create write canary") {
+			t.Fatalf("read-only state parent = %s %s", status, detail)
+		}
 	}
 }
 
@@ -104,9 +113,12 @@ func TestProbeFilesystemConfinementEnforceReportsCanaryFailures(t *testing.T) {
 		workspace + ":" + workspace + ":norbind",
 		env.agentHome + ":" + env.agentHome + ":norbind",
 	}
-	status, detail := probeFilesystemConfinementEnforce(context.Background(), env, env.filesystem)
-	if status != statusFail || !strings.Contains(detail, "write workspace canary") {
-		t.Fatalf("workspace = %s %s", status, detail)
+	var status, detail string
+	if !permissionsBypassed() {
+		status, detail = probeFilesystemConfinementEnforce(context.Background(), env, env.filesystem)
+		if status != statusFail || !strings.Contains(detail, "write workspace canary") {
+			t.Fatalf("workspace = %s %s", status, detail)
+		}
 	}
 
 	lookups := 0
@@ -258,14 +270,16 @@ func TestCanaryCreateAndCleanupEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) })
-	if _, _, err := lockedDir.mkdirExclusive("blocked-", 0o755); err == nil {
-		t.Fatal("mkdir on a read-only directory succeeded")
-	}
-	if _, _, err := parent.mkdirExclusive("mode0-", 0); err == nil || !errors.Is(err, unix.EACCES) {
-		t.Fatalf("mode 0 mkdir = %v", err)
-	}
-	if _, _, err := lockedDir.createExclusiveFile("blocked-", 0o644, []byte("x")); err == nil {
-		t.Fatal("create on a read-only directory succeeded")
+	if !permissionsBypassed() {
+		if _, _, err := lockedDir.mkdirExclusive("blocked-", 0o755); err == nil {
+			t.Fatal("mkdir on a read-only directory succeeded")
+		}
+		if _, _, err := parent.mkdirExclusive("mode0-", 0); err == nil || !errors.Is(err, unix.EACCES) {
+			t.Fatalf("mode 0 mkdir = %v", err)
+		}
+		if _, _, err := lockedDir.createExclusiveFile("blocked-", 0o644, []byte("x")); err == nil {
+			t.Fatal("create on a read-only directory succeeded")
+		}
 	}
 
 	leaf := filepath.Join(base, "leaf")
@@ -340,8 +354,10 @@ func TestCanaryCreateAndCleanupEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir.path, 0o750) })
-	if err := dir.removeOne(context.Background(), "keep", 0, &seen); err == nil || !strings.Contains(err.Error(), "keep") {
-		t.Fatalf("unlink = %v", err)
+	if !permissionsBypassed() {
+		if err := dir.removeOne(context.Background(), "keep", 0, &seen); err == nil || !strings.Contains(err.Error(), "keep") {
+			t.Fatalf("unlink = %v", err)
+		}
 	}
 	if err := os.Chmod(dir.path, 0o750); err != nil {
 		t.Fatal(err)
@@ -373,8 +389,10 @@ func TestCanaryDirectoryRemovalStopsWhenTheParentIsReadOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(base, 0o750) })
 	seen := 0
-	if err := parent.removeTree(context.Background(), name, 0, &seen); err == nil || !strings.Contains(err.Error(), name) {
-		t.Fatalf("rmdir = %v", err)
+	if !permissionsBypassed() {
+		if err := parent.removeTree(context.Background(), name, 0, &seen); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("rmdir = %v", err)
+		}
 	}
 	if err := os.Chmod(base, 0o750); err != nil {
 		t.Fatal(err)
@@ -427,6 +445,9 @@ func (e *errAfter) Err() error {
 func TestMkdiratPermissionIsNotRetried(t *testing.T) {
 	// Mkdirat's non-existence error is the one the create loop returns
 	// immediately. EEXIST is the only retry, and a read-only directory is not that.
+	if permissionsBypassed() {
+		t.Skip("root bypasses directory write permission, so mkdirat is not denied")
+	}
 	base := writableSymlinkFreeDir(t)
 	parent, err := openNoFollowDir(base)
 	if err != nil {

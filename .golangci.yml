@@ -160,6 +160,12 @@ linters:
       - path: internal/cli/contain/filesystem_probe_gaps_linux_test\.go
         linters: [staticcheck]
         text: "SA1012"
+      # The default-eval test removes search permission from a directory, then
+      # restores traversal so TempDir cleanup can delete it. A directory needs
+      # the execute bit, so 0600 cannot express the restored mode.
+      - path: internal/cli/contain/filesystem_profile_gaps_linux_test\.go
+        linters: [gosec]
+        text: "G302"
       # Cleanup reads the sentinel it just wrote beside the canary tree to
       # prove an unfollowed symlink did not delete it. The path is built inside
       # the test's own directory.

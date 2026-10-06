@@ -677,6 +677,9 @@ func RunHTTPListenerProxy(
 				if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
+					// A blocked outcome closes an intent written durably under
+					// required recording; sync it the same way.
+					Durable: requestBaseOpts.requireReceipts() && dec.intent.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
 				} else if emitter != nil || v2Emitter != nil {

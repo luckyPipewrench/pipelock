@@ -6,10 +6,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -270,50 +272,83 @@ func TestRunHTTPListenerProxyLiveLock_PerRequestUpstreamDenialClosesIntent(t *te
 	}
 }
 
-// TestEmitMCPOutcomeV2Only covers a setup with only the v2 emitter: the
-// outcome that closes an intent must still be recorded, for a sent call and
-// for a refused one.
-func TestEmitMCPOutcomeV2Only(t *testing.T) {
-	opts := receipt.EmitOpts{
-		ActionID:   "mcp-v2-only-outcome",
-		Transport:  transportMCPStdio,
-		Target:     mcpAllowedTool,
-		MCPMethod:  methodToolsCall,
-		ToolName:   mcpAllowedTool,
-		PolicyHash: mcpTestPolicyHash,
-	}
+// TestEmitMCPBlockedOutcomeDurableWhenRequired checks a blocked outcome is
+// fsync-confirmed when recording is required, like the intent it closes, and
+// stays an ordinary write otherwise. A failing sync only surfaces on the
+// durable path.
+func TestEmitMCPBlockedOutcomeDurableWhenRequired(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		emit func(*mcpDecisionReceiptHarness, io.Writer)
-		want string
+		name     string
+		required bool
+		wantFail bool
 	}{
-		{
-			name: "sent",
-			emit: func(h *mcpDecisionReceiptHarness, logW io.Writer) {
-				emitMCPOutcomeReceipt(nil, h.v2, logW, opts, "200", 10, "complete")
-			},
-			want: config.ActionAllow,
-		},
-		{
-			name: "refused",
-			emit: func(h *mcpDecisionReceiptHarness, logW io.Writer) {
-				refused := opts
-				refused.Layer = mcpContractReceiptLayer
-				emitMCPBlockedOutcomeReceipt(nil, h.v2, logW, refused, 0, mcpContractDeniedReason, true)
-			},
-			want: config.ActionBlock,
-		},
+		{name: "required", required: true, wantFail: true},
+		{name: "not required", required: false, wantFail: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newMCPDecisionReceiptHarness(t)
+			h.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
 			var logs strings.Builder
-			tc.emit(h, &logs)
-			if logs.Len() != 0 {
-				t.Fatalf("emit logged: %s", logs.String())
-			}
-			if got := strings.Join(v2Verdicts(t, h), ","); got != tc.want {
-				t.Fatalf("v2 verdicts = %q, want %q", got, tc.want)
+			emitMCPBlockedOutcomeReceipt(h.v1, h.v2, &logs, receipt.EmitOpts{
+				ActionID: "mcp-blocked-outcome-durable", Transport: transportMCPStdio,
+				Target: mcpAllowedTool, MCPMethod: methodToolsCall, ToolName: mcpAllowedTool,
+				PolicyHash: mcpTestPolicyHash, Layer: mcpContractReceiptLayer,
+			}, 0, mcpContractDeniedReason, tc.required)
+			if got := strings.Contains(logs.String(), "receipt emission failed"); got != tc.wantFail {
+				t.Fatalf("sync failure surfaced = %v, want %v: %s", got, tc.wantFail, logs.String())
 			}
 		})
+	}
+}
+
+// TestRunHTTPListenerProxyLiveLock_BlockedOutcomeIsDurable makes fsync fail
+// only after the intent is on disk, so the listener's blocked outcome reports
+// a failure only if it is written durably.
+func TestRunHTTPListenerProxyLiveLock_BlockedOutcomeIsDurable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	h := newMCPDecisionReceiptHarness(t)
+	opts := contractRefusedOpts(t, h, true)
+	// Loader calls: 1 startup gate, 2 input scan (the intent is synced then),
+	// 3 and later the per-request upstream gate.
+	var loaderCalls atomic.Int32
+	inner := opts.ContractLoaderFn
+	opts.ContractLoaderFn = func() *contractruntime.Loader {
+		loaderCalls.Add(1)
+		return inner()
+	}
+	h.rec.SetSyncForTest(func(f *os.File) error {
+		if loaderCalls.Load() >= 3 {
+			return errors.New("injected sync failure")
+		}
+		return f.Sync()
+	})
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logs, opts) }()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String(), strings.NewReader(mcpToolCall(mcpAllowedTool, "")))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	cancel()
+	_ = ln.Close()
+	<-done
+	if !strings.Contains(logs.String(), "receipt emission failed") {
+		t.Fatalf("blocked outcome was not written durably; logs: %s", logs.String())
 	}
 }

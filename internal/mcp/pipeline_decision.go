@@ -259,8 +259,8 @@ const (
 	mcpOutcomeStatusBlocked = "blocked"
 )
 
-// emitMCPOutcome writes an outcome receipt to whichever emitters exist and
-// logs a failure; outcomes never block, so the error is not returned.
+// emitMCPOutcome writes an outcome receipt and logs a failure; outcomes never
+// block, so the error is not returned.
 func emitMCPOutcome(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,
@@ -271,13 +271,18 @@ func emitMCPOutcome(
 	reason string,
 	requireReceipts bool,
 ) {
-	// Either format alone is enough to record an outcome; a v2-only setup
-	// still needs the record that closes the intent.
-	if (receiptEmitter == nil && v2Emitter == nil) || opts.ActionID == "" {
+	// The v1 receipt carries the action ID and phase that pair an outcome with
+	// its intent; a v2 proxy_decision record carries neither, so it is only
+	// written alongside v1, never as the outcome on its own.
+	if receiptEmitter == nil || opts.ActionID == "" {
 		return
 	}
 	opts = mcpOutcomeReceiptOpts(opts, status, bytesTransferred, reason)
-	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts}); err != nil {
+	// A blocked outcome closes an intent that required recording wrote
+	// durably, so it is synced too: losing it would leave that allow intent
+	// unmatched for a call that was refused.
+	durable := requireReceipts && opts.Verdict == config.ActionBlock
+	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts, Durable: durable}); err != nil {
 		logReceiptEmitFailure(logW, err, requireReceipts, opts.Verdict)
 	}
 }

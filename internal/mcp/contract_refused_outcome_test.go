@@ -352,3 +352,40 @@ func TestRunHTTPListenerProxyLiveLock_BlockedOutcomeIsDurable(t *testing.T) {
 		t.Fatalf("blocked outcome was not written durably; logs: %s", logs.String())
 	}
 }
+
+// TestEmitMCPDecisionOutcomeNeedsV1 checks a required outcome is reported
+// written only when its v1 receipt is, since only v1 pairs an outcome with its
+// intent. A v2 success still covers an ordinary decision, as before.
+func TestEmitMCPDecisionOutcomeNeedsV1(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		phase   string
+		wantErr bool
+	}{
+		{name: "blocked outcome", phase: receipt.DecisionPhaseOutcome, wantErr: true},
+		{name: "block decision", phase: "", wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			healthy := newMCPDecisionReceiptHarness(t)
+			broken := newMCPDecisionReceiptHarness(t)
+			if err := broken.rec.Close(); err != nil {
+				t.Fatalf("close recorder: %v", err)
+			}
+			_, err := EmitMCPDecision(broken.v1, healthy.v2, nil, MCPDecision{
+				Receipt: receipt.EmitOpts{
+					ActionID: "mcp-outcome-needs-v1", Verdict: config.ActionBlock,
+					Transport: transportMCPStdio, Target: mcpAllowedTool, MCPMethod: methodToolsCall,
+					ToolName: mcpAllowedTool, PolicyHash: mcpTestPolicyHash,
+					Layer: mcpContractReceiptLayer, DecisionPhase: tc.phase,
+				},
+				RequireReceipt: true,
+			})
+			if got := err != nil; got != tc.wantErr {
+				t.Fatalf("err = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, ErrReceiptRequired) {
+				t.Fatalf("err = %v, want ErrReceiptRequired", err)
+			}
+		})
+	}
+}

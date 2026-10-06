@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,7 +55,140 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	}
 	env.readFile = func(string) ([]byte, error) { return nil, errors.New("no read") }
 	env.stat = func(string) (os.FileInfo, error) { return nil, nil } // shim present
+	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusFilesystemOff, "filesystem profile: off"
+	}
 	return env
+}
+
+func TestDoctorVerifyRunFilesystemProfileInputsMatch(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("SUDO_USER", "operator")
+	const (
+		configPath = "/fixture/pipelock.yaml"
+		invPath    = "/fixture/workspaces.json"
+		agentUser  = "pipelock-agent"
+		agentHome  = "/home/pipelock-agent"
+	)
+	yamlText := []byte("containment:\n  filesystem:\n    mode: enforce\nflight_recorder:\n  signing_key_path: /var/lib/pipelock/signing.key\n  dir: /var/lib/pipelock/flight\n")
+	inventory := []byte(`{"workspaces":[{"path":"/srv/granted","mode":"rw","agent_user":"pipelock-agent"}]}`)
+	read := func(path string) ([]byte, error) {
+		switch path {
+		case configPath:
+			return yamlText, nil
+		case invPath:
+			return inventory, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+	stat := func(path string) (os.FileInfo, error) {
+		if path == defaultXvfbPath {
+			return nil, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	lookup := func(name string) (*user.User, error) {
+		if name == "operator" {
+			return &user.User{Username: name, HomeDir: "/home/operator"}, nil
+		}
+		return nil, errors.New("unknown user")
+	}
+	now := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	apply := func(probe *probeEnv) {
+		t.Helper()
+		probe.configPath = configPath
+		probe.configDir = "/fixture"
+		probe.agentUserName = agentUser
+		probe.agentHome = agentHome
+		probe.operatorUser = "operator"
+		probe.workspaceInvPath = invPath
+		probe.readFile = read
+		probe.stat = stat
+		probe.lookupUser = lookup
+		probe.now = now
+		probe.display = ""
+	}
+	loadGrants := func(probe *probeEnv) {
+		t.Helper()
+		inv, err := loadWorkspaceInventoryFrom(probe.readFile, probe.workspaceInvPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe.workspaceGrants = grantsForAgent(inv.Workspaces, probe.agentUserName)
+	}
+
+	doctorProbe := filesystemProbeEnvForDoctor(&doctorEnv{
+		configPath:       configPath,
+		configDir:        "/fixture",
+		agentUserName:    agentUser,
+		agentHome:        agentHome,
+		operatorUser:     "operator",
+		workspaceInvPath: invPath,
+		readFile:         read,
+		stat:             stat,
+		lookupUser:       lookup,
+		now:              now,
+	})
+	verifyProbe := defaultProbeEnv()
+	apply(verifyProbe)
+	loadGrants(verifyProbe)
+	runProbe := defaultProbeEnv()
+	apply(runProbe)
+	loadGrants(runProbe)
+	cfg, err := loadProbeConfig(runProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runProbe.display = resolveLaunchDisplay(cfg, runProbe.display, probeXvfbPresent(runProbe))
+
+	doctorIn, err := filesystemProfileInputForProbe(doctorProbe, doctorProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyIn, err := filesystemProfileInputForProbe(verifyProbe, verifyProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runIn, err := filesystemProfileInputForProbe(runProbe, runProbe.agentHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSocket := displaySocketPath(99)
+	for _, in := range []filesystemProfileInput{doctorIn, verifyIn, runIn} {
+		if in.DisplaySocket != wantSocket || in.OperatorHome != "/home/operator" || in.Mode != "enforce" || in.AgentHome != agentHome || in.AgentUser != agentUser {
+			t.Fatalf("profile input = %+v", in)
+		}
+		if len(in.Grants) != 1 || in.Grants[0].Path != "/srv/granted" || in.Grants[0].Mode != "rw" {
+			t.Fatalf("grants = %+v", in.Grants)
+		}
+		if len(in.RequiredSecretPaths) != 1 || in.RequiredSecretPaths[0] != "/var/lib/pipelock/signing.key" {
+			t.Fatalf("required secrets = %+v", in.RequiredSecretPaths)
+		}
+		if len(in.OptionalSecretPaths) != 1 || in.OptionalSecretPaths[0] != "/var/lib/pipelock/flight" {
+			t.Fatalf("optional secrets = %+v", in.OptionalSecretPaths)
+		}
+	}
+}
+
+func TestDoctorOperatorIdentityNamesSudo(t *testing.T) {
+	env := &doctorEnv{
+		configPath:   "/fixture/pipelock.yaml",
+		operatorUser: "",
+		readFile: func(string) ([]byte, error) {
+			return []byte("containment:\n  filesystem:\n    mode: enforce\n"), nil
+		},
+	}
+	result := checkFilesystemConfinement(context.Background(), env)
+	if result.status != statusFail {
+		t.Fatalf("status=%s detail=%s", result.status, result.detail)
+	}
+	if !strings.Contains(result.detail, "run this command through sudo from the operator account") {
+		t.Fatalf("detail = %q", result.detail)
+	}
+	if result.remediation != "run this command through sudo from the operator account" {
+		t.Fatalf("remediation = %q", result.remediation)
+	}
 }
 
 func TestDoctorViewerMissingConfigurationAndRFB(t *testing.T) {
@@ -562,7 +696,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "8 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "9 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -582,7 +716,7 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
 		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
-		!strings.Contains(out, `"total":8`) {
+		!strings.Contains(out, `"total":9`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 	doorwaySockets := 0
@@ -705,12 +839,13 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				}
 				if agg.Aggregate.Pass != 5 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
+					agg.Aggregate.Off != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / 1 off / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN — exit 1") {
+			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN / 1 OFF — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -756,8 +891,8 @@ func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
-		{name: "text aggregate", successfulWrites: 10, want: "writing doctor aggregate"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 8, want: "encoding aggregate JSON"},
+		{name: "text aggregate", successfulWrites: 11, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 9, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {
@@ -1065,7 +1200,7 @@ func TestRunDoctor_TextSkipRemediation(t *testing.T) {
 // and direct egress is refused.
 func allPassDoctorEnv(t *testing.T) *doctorEnv {
 	t.Helper()
-	return newDoctorEnv(t, func(args []string) (string, int, error) {
+	env := newDoctorEnv(t, func(args []string) (string, int, error) {
 		switch {
 		case argsContain(args, "--noproxy"):
 			return "curl: (7) refused\nPLK_TIME_CONNECT=0.000000\n000", 7, nil // direct egress blocked
@@ -1075,6 +1210,10 @@ func allPassDoctorEnv(t *testing.T) *doctorEnv {
 			return "200", 0, nil // proxied curl/python/node
 		}
 	})
+	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "filesystem profile enforced"
+	}
+	return env
 }
 
 func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
@@ -1095,7 +1234,7 @@ func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 		t.Fatal(err)
 	}
-	if agg.Aggregate.Total != 12 || len(lines) != 13 {
-		t.Fatalf("aggregate total = %d, records = %d; want 12 checks", agg.Aggregate.Total, len(lines)-1)
+	if agg.Aggregate.Total != 13 || len(lines) != 14 {
+		t.Fatalf("aggregate total = %d, records = %d; want 13 checks", agg.Aggregate.Total, len(lines)-1)
 	}
 }

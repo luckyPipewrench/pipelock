@@ -495,6 +495,71 @@ func documentMapping(root *yaml.Node) *yaml.Node {
 	return root
 }
 
+// applyFreshFilesystemDefault writes containment.filesystem.mode enforce only
+// when the managed config does not exist yet and the candidate never set the
+// key. An explicit off, enforce, null, or blank value is left as written.
+// A stat error other than absence fails closed instead of guessing fresh.
+func applyFreshFilesystemDefault(env *installEnv, data []byte) ([]byte, error) {
+	if env == nil || env.stat == nil {
+		return nil, errors.New("stat managed config: filesystem default requires a stat function")
+	}
+	dst := managedPipelockConfigPath(env)
+	_, err := env.stat(dst)
+	if err == nil {
+		return data, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat managed config %s: %w", dst, err)
+	}
+	return injectFreshFilesystemMode(data)
+}
+
+func injectFreshFilesystemMode(data []byte) ([]byte, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, errors.New("pipelock config must be a YAML mapping")
+	}
+	if getMappingPath(mapping, []string{"containment", "filesystem", "mode"}) != nil {
+		return data, nil
+	}
+	containment, err := ensureYAMLMapping(mapping, "containment")
+	if err != nil {
+		return nil, err
+	}
+	filesystem, err := ensureYAMLMapping(containment, "filesystem")
+	if err != nil {
+		return nil, err
+	}
+	setMappingScalar(filesystem, "mode", config.ContainmentFilesystemModeEnforce)
+	return encodeYAML(root)
+}
+
+func ensureYAMLMapping(parent *yaml.Node, key string) (*yaml.Node, error) {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("containment config %q must be a mapping to set filesystem.mode", key)
+	}
+	if n := mappingValue(parent, key); n != nil {
+		if n.Kind == yaml.ScalarNode && (n.Tag == "!!null" || strings.TrimSpace(n.Value) == "" || n.Value == "~" || n.Value == "null") {
+			n.Kind = yaml.MappingNode
+			n.Tag = "!!map"
+			n.Value = ""
+			n.Content = nil
+			return n, nil
+		}
+		if n.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("containment config %q must be a mapping to set filesystem.mode", key)
+		}
+		return n, nil
+	}
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	parent.Content = append(parent.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, n)
+	return n, nil
+}
+
 func operatorHomeDir(env *installEnv) (string, error) {
 	if env.operatorUser == "" {
 		return "", errors.New("operator user not set")

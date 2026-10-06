@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,14 +27,19 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
-	lifecycleCleanupTimeout    = 12 * time.Second
-	lifecycleClientTimeout     = 2 * time.Second
-	lifecycleAdmissionTimeout  = 3 * time.Second
-	lifecyclePollInterval      = 50 * time.Millisecond
+	lifecycleCleanupTimeout   = 12 * time.Second
+	lifecycleClientTimeout    = 2 * time.Second
+	lifecycleAdmissionTimeout = 3 * time.Second
+	lifecyclePollInterval     = 50 * time.Millisecond
+	// lifecycleCommandBudget is the deadline lifecycleSystemCommand gives each
+	// systemd helper. Filesystem bind reads are not part of cleanup, so cleanup
+	// does not reserve time for them.
+	lifecycleCommandBudget     = 2 * time.Second
 	lifecycleFilename          = "lifecycle.json"
 	lifecycleDescriptionPrefix = "pipelock-contain-lifecycle:"
 )
@@ -161,15 +167,64 @@ type lifecycleBackend struct {
 	wait        func(context.Context, time.Duration) error
 	now         func() time.Time
 	execStart   func(context.Context, string) ([]string, error)
+	// binds reads BindPaths and BindReadOnlyPaths as typed D-Bus tuples.
+	// Nil, or a reader that returns errTypedBindsUnavailable, falls back to
+	// systemctl show and then fails closed unless every entry names its option.
+	binds func(context.Context, string) (bindPaths, readOnly []systemdBindEntry, err error)
+	// Zero values keep the production deadlines. Tests inject shorter windows
+	// without mutating the package constants other parallel tests still read.
+	admissionTimeout time.Duration
+	cleanupTimeout   time.Duration
+	pollInterval     time.Duration
+}
+
+func (b lifecycleBackend) admissionWindow() time.Duration {
+	if b.admissionTimeout <= 0 {
+		return lifecycleAdmissionTimeout
+	}
+	return b.admissionTimeout
+}
+
+func (b lifecycleBackend) cleanupWindow() time.Duration {
+	if b.cleanupTimeout <= 0 {
+		return lifecycleCleanupTimeout
+	}
+	return b.cleanupTimeout
+}
+
+func (b lifecycleBackend) pollEvery() time.Duration {
+	if b.pollInterval <= 0 {
+		return lifecyclePollInterval
+	}
+	return b.pollInterval
+}
+
+// errLifecycleTypedObservation is a failed typed bind read. It is retried
+// inside the admission and cleanup deadlines. It is not an identity mismatch
+// and it is not permission to treat display text as a typed tuple.
+var errLifecycleTypedObservation = errors.New("typed lifecycle bind observation failed")
+
+// errLifecycleInvocationChanged means the invocation id moved while it was
+// being checked. That unit is not the reserved one, so it is not admitted
+// and cleanup does not stop it.
+var errLifecycleInvocationChanged = errors.New("invocation changed during typed command observation")
+
+// Immediate test doubles return without sleeping. Cap those polls so a
+// persistent error cannot busy-loop inside a deadline that is still open.
+const lifecycleTypedRetryInstantCap = 8
+
+type lifecycleBindObservation struct {
+	BindPaths []systemdBindEntry
+	ReadOnly  []systemdBindEntry
 }
 
 func defaultLifecycleBackend() lifecycleBackend {
-	return lifecycleBackend{show: lifecycleSystemdShow, action: lifecycleSystemdAction, cgroupEmpty: lifecycleCgroupEmpty, wait: waitForReadiness, now: time.Now, execStart: lifecycleExecStart}
+	return lifecycleBackend{show: lifecycleSystemdShow, action: lifecycleSystemdAction, cgroupEmpty: lifecycleCgroupEmpty, wait: waitForReadiness, now: time.Now, execStart: lifecycleExecStart, binds: lifecycleSystemdBinds}
 }
 
 // Keep the line-based observation scalar-only. ExecStart's display format can
 // contain argument newlines; the typed reader verifies its path and exact argv.
-const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart"
+const lifecycleSystemdProperties = "Id,LoadState,ActiveState,SubState,Transient,Description,InvocationID,ControlGroup,User,ExecMainCode,ExecMainStatus,MainPID,PrivateNetwork,PrivateTmp,JoinsNamespaceOf,KillMode,SendSIGKILL,Restart,ProtectSystem,ProtectHome,NoNewPrivileges,BindPaths,BindReadOnlyPaths,InaccessiblePaths,TemporaryFileSystem,ProtectKernelTunables,ProtectKernelModules,ProtectControlGroups"
 
 func lifecycleSystemdShow(ctx context.Context, unit string) (map[string]string, error) {
 	out, code, err := lifecycleSystemctl(ctx, "show", unit, "--property="+lifecycleSystemdProperties)
@@ -217,7 +272,7 @@ func lifecycleSystemctl(ctx context.Context, args ...string) (string, int, error
 }
 
 func lifecycleSystemCommand(ctx context.Context, binary string, args ...string) (string, int, error) {
-	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+	bounded, cancel := context.WithTimeout(ctx, lifecycleCommandBudget)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, binary, args...) //nolint:gosec // G204: binary is one of the two fixed systemd helper paths, never user input.
 	cmd.Env = lifecycleManagerEnvironment()
@@ -244,7 +299,7 @@ func lifecycleManagerEnvironment() []string {
 	return []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER="}
 }
 
-func lifecycleExecStart(ctx context.Context, unit string) ([]string, error) {
+func lifecycleUnitObjectPath(unit string) string {
 	// Unit names generated here contain only ASCII letters, digits, '-' and
 	// '.'. Encode all non-alphanumerics per systemd's D-Bus unit path contract.
 	var object strings.Builder
@@ -256,14 +311,67 @@ func lifecycleExecStart(ctx context.Context, unit string) ([]string, error) {
 			_, _ = fmt.Fprintf(&object, "_%02x", c)
 		}
 	}
-	out, code, err := lifecycleSystemCommand(ctx, "/usr/bin/busctl", "--system", "--json=short", "--allow-interactive-authorization=no", "--auto-start=no", "get-property", "org.freedesktop.systemd1", object.String(), "org.freedesktop.systemd1.Service", "ExecStart")
+	return object.String()
+}
+
+func lifecycleBusJSON(ctx context.Context, unit, property string) (string, error) {
+	out, code, err := lifecycleSystemCommand(ctx, "/usr/bin/busctl", "--system", "--json=short", "--allow-interactive-authorization=no", "--auto-start=no", "get-property", "org.freedesktop.systemd1", lifecycleUnitObjectPath(unit), "org.freedesktop.systemd1.Service", property)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("read typed lifecycle %s: busctl exit %d", property, code)
+	}
+	return out, nil
+}
+
+func lifecycleExecStart(ctx context.Context, unit string) ([]string, error) {
+	out, err := lifecycleBusJSON(ctx, unit, "ExecStart")
 	if err != nil {
 		return nil, err
 	}
-	if code != 0 {
-		return nil, fmt.Errorf("read typed lifecycle ExecStart: busctl exit %d", code)
-	}
 	return parseLifecycleExecStart([]byte(out))
+}
+
+func lifecycleSystemdBinds(ctx context.Context, unit string) ([]systemdBindEntry, []systemdBindEntry, error) {
+	bindRaw, err := lifecycleBusJSON(ctx, unit, "BindPaths")
+	if err != nil {
+		if lifecycleBusctlMissing(err) {
+			return nil, nil, errTypedBindsUnavailable
+		}
+		return nil, nil, err
+	}
+	readOnlyRaw, err := lifecycleBusJSON(ctx, unit, "BindReadOnlyPaths")
+	if err != nil {
+		if lifecycleBusctlMissing(err) {
+			return nil, nil, errTypedBindsUnavailable
+		}
+		return nil, nil, err
+	}
+	bindPaths, err := parseTypedSystemdBinds([]byte(bindRaw))
+	if err != nil {
+		return nil, nil, fmt.Errorf("lifecycle bind paths: %w", err)
+	}
+	readOnly, err := parseTypedSystemdBinds([]byte(readOnlyRaw))
+	if err != nil {
+		return nil, nil, fmt.Errorf("lifecycle read-only bind paths: %w", err)
+	}
+	return bindPaths, readOnly, nil
+}
+
+func lifecycleBusctlMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
+		return true
+	}
+	// An absolute executable skips PATH lookup. The kernel reports that as
+	// *fs.PathError with ENOENT, not *exec.Error / exec.ErrNotFound. That
+	// ENOENT is the missing-reader case: the display-form fallback may run,
+	// and it still fails closed unless every entry names norbind or rbind.
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func parseLifecycleExecStart(body []byte) ([]string, error) {
@@ -362,7 +470,27 @@ func parseLifecycleCgroupEvents(body []byte) (bool, error) {
 	return false, errors.New("lifecycle requires a cgroup v2 populated witness")
 }
 
+// lifecycleOwned is the pre-feature identity witness: reserved unit, transient
+// marker, run id, invocation, user, cgroup, argv's companion properties, and
+// the network and kill settings. It does not read filesystem binds.
 func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid uint32) error {
+	return lifecycleServiceIdentity(fields, record, uid)
+}
+
+// confirmLifecycleFilesystem checks the bind and profile properties. It does
+// not decide whether the unit is the reserved invocation.
+func confirmLifecycleFilesystem(ctx context.Context, b lifecycleBackend, fields map[string]string, record containLifecycleRecord) error {
+	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	observed, err := observeLifecycleBinds(ctx, b, record.Unit, fields)
+	if err != nil {
+		return err
+	}
+	return lifecycleFilesystemOwned(fields, record, observed)
+}
+
+func lifecycleServiceIdentity(fields map[string]string, record containLifecycleRecord, uid uint32) error {
 	if fields["Id"] != record.Unit || fields["Transient"] != "yes" || fields["Description"] != lifecycleDescriptionPrefix+record.RunID {
 		return errors.New("transient lifecycle ownership is missing or ambiguous")
 	}
@@ -386,6 +514,161 @@ func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid
 	return nil
 }
 
+func observeLifecycleBinds(ctx context.Context, b lifecycleBackend, unit string, fields map[string]string) (*lifecycleBindObservation, error) {
+	if b.binds != nil {
+		bindPaths, readOnly, err := b.binds(ctx, unit)
+		if err == nil {
+			return &lifecycleBindObservation{BindPaths: bindPaths, ReadOnly: readOnly}, nil
+		}
+		if !errors.Is(err, errTypedBindsUnavailable) {
+			return nil, fmt.Errorf("%w: %w", errLifecycleTypedObservation, err)
+		}
+	}
+	bindPaths, err := parseSystemdBindShow(fields["BindPaths"])
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle bind paths: %w", err)
+	}
+	readOnly, err := parseSystemdBindShow(fields["BindReadOnlyPaths"])
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle read-only bind paths: %w", err)
+	}
+	bindEntries, err := entriesFromCanonicalBinds(bindPaths)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle bind paths: %w", err)
+	}
+	readOnlyEntries, err := entriesFromCanonicalBinds(readOnly)
+	if err != nil {
+		return nil, fmt.Errorf("lifecycle read-only bind paths: %w", err)
+	}
+	return &lifecycleBindObservation{BindPaths: bindEntries, ReadOnly: readOnlyEntries}, nil
+}
+
+func entriesFromCanonicalBinds(list []string) ([]systemdBindEntry, error) {
+	out := make([]systemdBindEntry, 0, len(list))
+	for _, recorded := range list {
+		src, dest, opt, err := splitCanonicalBind(recorded)
+		if err != nil {
+			return nil, err
+		}
+		entry := systemdBindEntry{Source: src, Destination: dest}
+		switch opt {
+		case "norbind":
+		case "rbind":
+			entry.Flags = systemdBindRecursiveFlag
+		default:
+			return nil, fmt.Errorf("recorded bind option %q is not norbind or rbind", opt)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+func lifecycleFilesystemBindsMatch(observed *lifecycleBindObservation, record containLifecycleRecord) error {
+	if observed == nil {
+		return errors.New("lifecycle bind paths were not observed")
+	}
+	if err := matchTypedBindEntries(observed.BindPaths, record.FilesystemBindPaths); err != nil {
+		return fmt.Errorf("lifecycle bind paths: %w", err)
+	}
+	if err := matchTypedBindEntries(observed.ReadOnly, record.FilesystemBindReadOnlyPaths); err != nil {
+		return fmt.Errorf("lifecycle read-only bind paths: %w", err)
+	}
+	return nil
+}
+
+func lifecycleFilesystemOwned(fields map[string]string, record containLifecycleRecord, binds *lifecycleBindObservation) error {
+	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	if fields["ProtectSystem"] != "strict" || fields["ProtectHome"] != "tmpfs" || fields["NoNewPrivileges"] != "yes" {
+		return errors.New("lifecycle filesystem profile differs from managed launch")
+	}
+	if binds == nil {
+		bindPaths, err := parseSystemdBindShow(fields["BindPaths"])
+		if err != nil {
+			return fmt.Errorf("lifecycle bind paths: %w", err)
+		}
+		if !sameBindList(bindPaths, record.FilesystemBindPaths) {
+			return errors.New("lifecycle bind paths differ from managed launch")
+		}
+		readOnly, err := parseSystemdBindShow(fields["BindReadOnlyPaths"])
+		if err != nil {
+			return fmt.Errorf("lifecycle read-only bind paths: %w", err)
+		}
+		if !sameBindList(readOnly, record.FilesystemBindReadOnlyPaths) {
+			return errors.New("lifecycle read-only bind paths differ from managed launch")
+		}
+	} else if err := lifecycleFilesystemBindsMatch(binds, record); err != nil {
+		return err
+	}
+	if err := sameLifecyclePathList(fields["InaccessiblePaths"], record.FilesystemInaccessiblePaths); err != nil {
+		return fmt.Errorf("lifecycle inaccessible paths: %w", err)
+	}
+	if err := sameLifecyclePathList(fields["TemporaryFileSystem"], lifecyclePathSingleton(record.FilesystemTemporaryFileSystem)); err != nil {
+		return fmt.Errorf("lifecycle temporary filesystem: %w", err)
+	}
+	if !systemdShowYes(fields["ProtectKernelTunables"], record.FilesystemProtectKernelTunables) ||
+		!systemdShowYes(fields["ProtectKernelModules"], record.FilesystemProtectKernelModules) ||
+		!systemdShowYes(fields["ProtectControlGroups"], record.FilesystemProtectControlGroups) {
+		return errors.New("lifecycle kernel protection differs from managed launch")
+	}
+	return nil
+}
+
+func lifecyclePathSingleton(path string) []string {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return []string{path}
+}
+
+func sameLifecyclePathList(got string, want []string) error {
+	parsed, err := parseSystemdPathList(got)
+	if err != nil {
+		return err
+	}
+	if !samePathSet(parsed, want) {
+		return errors.New("differ from managed launch")
+	}
+	return nil
+}
+
+func parseSystemdPathList(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	tokens, err := splitSystemdShowTokens(value)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		// splitSystemdShowTokens never emits an empty token, and a token it
+		// emits does not still wear the quotes unquoteSystemdPath strips.
+		out = append(out, unquoteSystemdPath(token))
+	}
+	return out, nil
+}
+
+func samePathSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	left := append([]string(nil), got...)
+	right := append([]string(nil), want...)
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
+}
+
+func systemdShowYes(got, want string) bool {
+	if strings.TrimSpace(want) == "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(want)) ||
+		(strings.EqualFold(want, "yes") && strings.EqualFold(strings.TrimSpace(got), "true"))
+}
+
 func lifecycleTerminal(fields map[string]string) bool {
 	return fields["LoadState"] == "not-found" || ((fields["ActiveState"] == "inactive" || fields["ActiveState"] == "failed") && fields["MainPID"] == "0")
 }
@@ -402,11 +685,90 @@ func lifecycleAdmissionPending(fields map[string]string, record containLifecycle
 		(fields["InvocationID"] == "" || fields["ControlGroup"] == "")
 }
 
-// stopLifecycleService acts only after admission has been observed and bound.
-// Every destructive operation rechecks the invocation. A vanished service is
-// evidence only when its previously observed cgroup is also empty/absent.
+func lifecycleObservationRetryable(ctx context.Context, reserve time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return false
+	}
+	return time.Until(deadline) > reserve
+}
+
+// retryLifecycleTypedObservation repeats a typed bind read until it succeeds,
+// the error is not a transport failure, or the filesystem-admission deadline
+// no longer leaves reserve. There is no extra sleep outside that deadline. A
+// wait that returns without blocking is counted so a persistent error cannot
+// busy-loop.
+func retryLifecycleTypedObservation(ctx context.Context, b lifecycleBackend, reserve time.Duration, read func() error) error {
+	instant := 0
+	for {
+		err := read()
+		if err == nil || !errors.Is(err, errLifecycleTypedObservation) {
+			return err
+		}
+		if b.wait == nil || !lifecycleObservationRetryable(ctx, reserve) {
+			return err
+		}
+		started := time.Now()
+		if waitErr := b.wait(ctx, b.pollEvery()); waitErr != nil || ctx.Err() != nil {
+			return err
+		}
+		if time.Since(started) < time.Millisecond {
+			instant++
+			if instant >= lifecycleTypedRetryInstantCap {
+				return err
+			}
+		}
+	}
+}
+
+// lifecycleFilesystemAdmission retries a transient typed bind read inside its
+// own deadline. The caller has already witnessed ownership. A bind or profile
+// failure leaves that witness in place and does not admit the unit. An
+// invocation that changed during the read is not admitted either.
+func lifecycleFilesystemAdmission(ctx context.Context, b lifecycleBackend, l *containRunLifecycle, uid uint32) error {
+	if l.record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
+		return nil
+	}
+	witnessedID := l.record.InvocationID
+	return retryLifecycleTypedObservation(ctx, b, 0, func() error {
+		current, err := b.show(ctx, l.record.Unit)
+		if err != nil {
+			return err
+		}
+		if current["InvocationID"] != witnessedID {
+			return errLifecycleInvocationChanged
+		}
+		if err := lifecycleServiceIdentity(current, l.record, uid); err != nil {
+			return err
+		}
+		if err := confirmLifecycleFilesystem(ctx, b, current, l.record); err != nil {
+			return err
+		}
+		// The typed bind read is a separate manager call, so the invocation
+		// can be replaced between the show above and that read. Admit only
+		// when the same invocation is still the one observed afterwards.
+		after, err := b.show(ctx, l.record.Unit)
+		if err != nil {
+			return err
+		}
+		if after["InvocationID"] != witnessedID {
+			return errLifecycleInvocationChanged
+		}
+		return lifecycleServiceIdentity(after, l.record, uid)
+	})
+}
+
+// stopLifecycleService acts only after ownership has been witnessed. Filesystem
+// admission is not that witness: a bind outage still stops the invocation
+// whose identity, cgroup, user, and argv were verified, and it leaves
+// admission false. Every destructive operation rechecks the invocation. A
+// vanished service is evidence only when its previously observed cgroup is
+// also empty/absent.
 func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint32, b lifecycleBackend) error {
-	if !l.record.AdmissionObserved {
+	if !l.record.OwnershipObserved {
 		return errors.New("cannot clean up an unobserved lifecycle invocation")
 	}
 	start := b.now()
@@ -430,7 +792,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 		}
 		if lifecycleTerminal(fields) && empty {
 			// Inactive units can clear InvocationID and ControlGroup. No action
-			// is taken here: the retained admitted cgroup and terminal manager
+			// is taken here: the retained witnessed cgroup and terminal manager
 			// state jointly establish that no workload remains.
 			if fields["LoadState"] != "not-found" && (fields["Description"] != lifecycleDescriptionPrefix+l.record.RunID || fields["Transient"] != "yes") {
 				return errors.New("terminal lifecycle unit ownership changed")
@@ -468,7 +830,7 @@ func stopLifecycleService(ctx context.Context, l *containRunLifecycle, uid uint3
 			}
 			l.record.KillRequested = true
 		}
-		if err := b.wait(ctx, lifecyclePollInterval); err != nil {
+		if err := b.wait(ctx, b.pollEvery()); err != nil {
 			return err
 		}
 	}
@@ -499,6 +861,16 @@ func launchContainedAgentLifecycleWithBackend(opts containedAgentCommandOptions,
 	l.record.ArgvSHA256, err = stringSliceSHA256(opts.args)
 	if err != nil {
 		return err
+	}
+	l.record.FilesystemMode = opts.filesystem.Mode
+	if opts.filesystem.Mode == config.ContainmentFilesystemModeEnforce {
+		l.record.FilesystemBindPaths = append([]string(nil), opts.filesystem.BindPaths...)
+		l.record.FilesystemBindReadOnlyPaths = append([]string(nil), opts.filesystem.BindReadOnlyPaths...)
+		l.record.FilesystemInaccessiblePaths = filesystemInaccessiblePaths(opts.filesystem.Properties)
+		l.record.FilesystemTemporaryFileSystem = "/dev/shm"
+		l.record.FilesystemProtectKernelTunables = "yes"
+		l.record.FilesystemProtectKernelModules = "yes"
+		l.record.FilesystemProtectControlGroups = "yes"
 	}
 	l.argv = append([]string{defaultLaunchScript}, opts.args...)
 	// Hash the executing image, not a pathname that an atomic replacement
@@ -532,18 +904,18 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 	// observation window. If admission remains unobserved, cleanup is unknown:
 	// a submitted PID1-owned service may outlive its client. Never invent an
 	// ownership witness or stop a guessed service to cover that failure.
-	admission, cancelAdmission := context.WithTimeout(context.WithoutCancel(ctx), lifecycleAdmissionTimeout)
+	admission, cancelAdmission := context.WithTimeout(context.WithoutCancel(ctx), b.admissionWindow())
 	var primaryErr error
 	var clientErr error
 	clientDone := false
-	for !l.record.AdmissionObserved {
+	for !l.record.OwnershipObserved {
 		fields, err := b.show(admission, l.record.Unit)
 		if err != nil {
 			primaryErr = err
 			break
 		}
 		if !lifecycleAdmissionPending(fields, l.record) {
-			if err := lifecycleOwned(fields, l.record, uid); err != nil {
+			if err := lifecycleServiceIdentity(fields, l.record, uid); err != nil {
 				primaryErr = err
 				break
 			}
@@ -556,18 +928,19 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 				primaryErr = err
 				break
 			}
-			if err := lifecycleOwned(confirmed, l.record, uid); err != nil {
+			if err := lifecycleServiceIdentity(confirmed, l.record, uid); err != nil {
 				primaryErr = err
 				break
 			}
 			if confirmed["InvocationID"] != fields["InvocationID"] {
-				primaryErr = errors.New("invocation changed during typed command observation")
+				primaryErr = errLifecycleInvocationChanged
 				break
 			}
-			l.record.AdmissionObserved = true
+			// Identity and argv matched. Record the cleanup witness before any
+			// filesystem bind read. A later bind outage must not erase it.
+			l.record.OwnershipObserved = true
 			l.record.ArgvObserved = true
-			l.record.InvocationID, l.record.ControlGroup = fields["InvocationID"], fields["ControlGroup"]
-			l.record.Phase = "admitted"
+			l.record.InvocationID, l.record.ControlGroup = confirmed["InvocationID"], confirmed["ControlGroup"]
 			primaryErr = l.write()
 			break
 		}
@@ -580,12 +953,26 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 		if primaryErr != nil {
 			break
 		}
-		if err := b.wait(admission, lifecyclePollInterval); err != nil {
+		if err := b.wait(admission, b.pollEvery()); err != nil {
 			primaryErr = err
 			break
 		}
 	}
 	cancelAdmission()
+	// Filesystem admission has its own window. A bind outage here reports an
+	// admission failure and leaves the ownership witness for cleanup.
+	if primaryErr == nil && l.record.OwnershipObserved {
+		filesystem, cancelFilesystem := context.WithTimeout(context.WithoutCancel(ctx), b.admissionWindow())
+		fsErr := lifecycleFilesystemAdmission(filesystem, b, l, uid)
+		cancelFilesystem()
+		if fsErr != nil {
+			primaryErr = fsErr
+		} else {
+			l.record.AdmissionObserved = true
+			l.record.Phase = "admitted"
+			primaryErr = l.write()
+		}
+	}
 	if primaryErr == nil {
 		select {
 		case clientErr = <-done:
@@ -594,7 +981,7 @@ func superviseLifecycleService(ctx context.Context, done <-chan error, cancelCli
 			primaryErr = ctx.Err()
 		}
 	}
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), lifecycleCleanupTimeout)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), b.cleanupWindow())
 	cleanupErr := stopLifecycleService(cleanupCtx, l, uid, b)
 	cancelCleanup()
 	cancelClient()

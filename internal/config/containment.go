@@ -40,6 +40,10 @@ type ContainmentConfig struct {
 	LoopbackServices  []ContainmentLoopbackService  `yaml:"loopback_services"`
 	PublishedServices []ContainmentPublishedService `yaml:"published_services"`
 	Display           ContainmentDisplay            `yaml:"display"`
+	// Filesystem is the host mount profile applied to contained agent
+	// launches. Omitted, null, and blank mode mean off: the launch keeps
+	// today's PrivateTmp behavior and does not claim a filesystem boundary.
+	Filesystem ContainmentFilesystem `yaml:"filesystem,omitempty"`
 	// AgentListener names the per-agent listener the containment doorway
 	// delivers the contained agent's traffic to, e.g. "127.0.0.1:8889". It
 	// must be one of the listeners declared under agents.<name>.listeners, so
@@ -192,6 +196,42 @@ func (d ContainmentDisplay) IsEnabled(xvfbPresent bool) bool {
 		return true
 	}
 	return xvfbPresent
+}
+
+const (
+	// ContainmentFilesystemModeOff leaves the agent mount namespace unchanged
+	// aside from PrivateTmp. It is the effective mode when the key is absent.
+	ContainmentFilesystemModeOff = "off"
+	// ContainmentFilesystemModeEnforce hides the operator home and the rest
+	// of the host filesystem, then binds back the agent home and unexpired
+	// workspace grants.
+	ContainmentFilesystemModeEnforce = "enforce"
+)
+
+// ContainmentFilesystem is the operator's filesystem confinement choice.
+// The field is optional so an existing config that never mentioned it stays
+// off across upgrade.
+type ContainmentFilesystem struct {
+	Mode string `yaml:"mode,omitempty"`
+}
+
+// EffectiveMode returns off for every unset form and enforce only for the
+// exact enforce token. Validate rejects anything else before this is used.
+func (f ContainmentFilesystem) EffectiveMode() string {
+	if strings.TrimSpace(f.Mode) == ContainmentFilesystemModeEnforce {
+		return ContainmentFilesystemModeEnforce
+	}
+	return ContainmentFilesystemModeOff
+}
+
+// Validate fails closed on a mode token other than off, enforce, or blank.
+func (f ContainmentFilesystem) Validate() error {
+	switch strings.TrimSpace(f.Mode) {
+	case "", ContainmentFilesystemModeOff, ContainmentFilesystemModeEnforce:
+		return nil
+	default:
+		return fmt.Errorf("containment.filesystem.mode %q must be off or enforce", f.Mode)
+	}
 }
 
 // Validate checks the display settings that contain renders into systemd

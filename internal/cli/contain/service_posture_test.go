@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -160,6 +161,91 @@ func TestRunContainServicePostureSignsWithoutLaunching(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "pipelock contain run:") || !strings.Contains(out.String(), "pipelock contain service-posture: session contract") {
 		t.Fatalf("service output used the wrong command label:\n%s", out.String())
+	}
+}
+
+func TestServicePostureCapsuleOmitsFilesystemClaim(t *testing.T) {
+	probe := allPassEnv(t)
+	probe.readLink = func(path string) (string, error) {
+		switch path {
+		case "/proc/self/ns/net", "/proc/1/ns/net":
+			return "net:[1]", nil
+		case "/proc/self/ns/mnt", "/proc/1/ns/mnt":
+			return "mnt:[1]", nil
+		}
+		return "net:[2]", nil
+	}
+	probe.filesystem = filesystemProfile{
+		Mode:              config.ContainmentFilesystemModeEnforce,
+		BindPaths:         []string{"/srv/agent:/srv/agent:norbind"},
+		BindReadOnlyPaths: []string{"/tmp/.X11-unix/X0:/tmp/.X11-unix/X0:rbind"},
+	}
+	hookCalled := false
+	probe.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		hookCalled = true
+		return statusPass, "separate transient unit must not become a signed filesystem claim"
+	}
+	var launchRaw, containmentRaw []byte
+	runEnv := containRunEnv{
+		probe: probe,
+		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error {
+			t.Fatal("service posture launched the agent")
+			return nil
+		},
+		assertServiceNamespace: func(context.Context, netnsAssertEnv) error { return nil },
+		loadConfig: func(string) (*config.Config, error) {
+			cfg := config.Defaults()
+			cfg.FlightRecorder.SigningKeyPath = "/operator/receipt.key"
+			return cfg, nil
+		},
+		emitPosture: func(_ *config.Config, _ ed25519.PrivateKey, _ string, env *probeEnv, args []string) (postureEmission, error) {
+			launch, err := containRunLaunchEvidence(env, args)
+			if err != nil {
+				return postureEmission{}, err
+			}
+			launchRaw, err = json.Marshal(launch)
+			if err != nil {
+				return postureEmission{}, err
+			}
+			containment, err := containRunContainmentEvidence(env, launch.TargetUID)
+			if err != nil {
+				return postureEmission{}, err
+			}
+			containmentRaw, err = json.Marshal(containment)
+			if err != nil {
+				return postureEmission{}, err
+			}
+			return postureEmission{path: "/var/lib/pipelock/contain/posture/proof.json"}, nil
+		},
+	}
+	var out bytes.Buffer
+	err := runContainRun(context.Background(), nil, &out, io.Discard, runEnv, containRunOptions{
+		configFile:      defaultContainConfigPath,
+		postureOutput:   defaultContainPostureDir,
+		servicePrestart: true,
+		hostNamespace:   true,
+	}, []string{"claude", "--help"})
+	if err != nil {
+		t.Fatalf("runContainRun service posture: %v\n%s", err, out.String())
+	}
+	if hookCalled {
+		t.Fatal("service posture ran the filesystem canary hook")
+	}
+	for _, raw := range [][]byte{launchRaw, containmentRaw} {
+		text := string(raw)
+		if strings.Contains(text, "filesystem_mode") || strings.Contains(text, "filesystem_binds_sha256") {
+			t.Fatalf("signed evidence contains a filesystem claim: %s", text)
+		}
+	}
+	text := out.String()
+	if !strings.Contains(text, filesystemNotApplicableDetail) {
+		t.Fatalf("output missing operator-managed filesystem result:\n%s", text)
+	}
+	if !strings.Contains(text, "[N/A] probe 27:") {
+		t.Fatalf("filesystem probe was not reported as not applicable:\n%s", text)
+	}
+	if strings.Contains(text, "[PASS] probe 27:") || strings.Contains(text, "filesystem profile: enforce") {
+		t.Fatalf("service posture presented filesystem confinement as verified:\n%s", text)
 	}
 }
 

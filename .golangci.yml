@@ -141,6 +141,60 @@ linters:
       - path: internal/cli/contain/config_mode_contract_test\.go
         linters: [gosec]
         text: "G302"
+      # The root filesystem canary creates its grant as root. The unprivileged
+      # agent has to traverse that directory, so other-execute is the mode the
+      # probe is proving. 0750 would hide the workspace from the agent and the
+      # pass case would fail for the wrong reason. The directory is under /tmp
+      # and removed when the test ends.
+      - path: internal/cli/contain/filesystem_root_linux_test\.go
+        linters: [gosec]
+        text: "G302"
+      # Canary failure tests make a directory unwritable, then restore traversal
+      # so TempDir cleanup can delete it. A directory needs the execute bit,
+      # so 0600 cannot express either mode and G302 is unsatisfiable. One call
+      # also passes a nil context because removeBounded treats nil as
+      # background; context.TODO would not reach that branch.
+      - path: internal/cli/contain/filesystem_probe_gaps_linux_test\.go
+        linters: [gosec]
+        text: "G302"
+      - path: internal/cli/contain/filesystem_probe_gaps_linux_test\.go
+        linters: [staticcheck]
+        text: "SA1012"
+      # The default-eval test removes search permission from a directory, then
+      # restores traversal so TempDir cleanup can delete it. A directory needs
+      # the execute bit, so 0600 cannot express the restored mode.
+      - path: internal/cli/contain/filesystem_profile_gaps_linux_test\.go
+        linters: [gosec]
+        text: "G302"
+      # Cleanup reads the sentinel it just wrote beside the canary tree to
+      # prove an unfollowed symlink did not delete it. The path is built inside
+      # the test's own directory.
+      - path: internal/cli/contain/filesystem_cleanup_linux_test\.go
+        linters: [gosec]
+        text: "G304"
+      # The canary script test runs bash, or unshare and then bash, on the
+      # generated script and on paths the test created in its temporary
+      # directory. Both program names are literals. Gosec still flags the call
+      # because the argument vector is assembled from those paths (G204).
+      # The bind-mount probe test puts a fake unshare on PATH in its own
+      # temporary directory. That fixture has to be executable, so 0600 cannot
+      # express it (G306).
+      - path: internal/cli/contain/filesystem_canary_script_linux_test\.go
+        linters: [gosec]
+        text: "G204|G306"
+      # The wrapper test writes a stub pipelock binary that the rendered
+      # launcher executes directly, so the stub needs the owner execute bit
+      # (G306). It then runs bash from exec.LookPath on the wrapper it wrote in
+      # its own temporary directory (G204).
+      - path: internal/cli/contain/filesystem_linux_test\.go
+        linters: [gosec]
+        text: "G204|G306"
+      # The missing-busctl classifier test executes a path that does not exist
+      # inside its temporary directory, to get the exact error a missing
+      # absolute executable returns.
+      - path: internal/cli/contain/filesystem_binds_linux_test\.go
+        linters: [gosec]
+        text: "G204"
       # migrateScalarFile takes the destination's mode per call site. Its
       # callers pass modeConfigSecret or modePinSecret, which are distinct
       # policy classes that happen to carry the same numeric mode now that the
@@ -150,6 +204,12 @@ linters:
       - path: internal/cli/contain/config_migrate\.go
         linters: [unparam]
         text: "migrateScalarFile"
+      # Admission passes no extra reserve today. The parameter stays so a later
+      # caller can keep time for the manager call that follows the read without
+      # rewriting the retry loop.
+      - path: internal/cli/contain/lifecycle_linux\.go
+        linters: [unparam]
+        text: "retryLifecycleTypedObservation"
 
       # statIDs converts the raw stat fields to uint64 because their widths
       # differ across the platforms this file builds for: st_dev is int32 on

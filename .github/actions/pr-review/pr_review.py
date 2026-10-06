@@ -2631,7 +2631,7 @@ def _definition_pattern(term: str) -> str:
         rf"[[:space:]]+{term}([^A-Za-z0-9_]|$)"
         rf"|^[[:space:]]*{term}[[:space:]]*\(\)[[:space:]]*\{{"
         rf"|^{term}[[:space:]]*(:[^=]*)?=[^=]"
-        rf"|^[[:space:]]+{term}([[:space:]]+[A-Za-z_][A-Za-z0-9_.\[\]*]*)?[[:space:]]*(=[^=]|$)"
+        rf"|^[[:space:]]+{term}([[:space:]]+[^=[:space:]][^=]*)?[[:space:]]*(=[^=]|$)"
     )
 
 
@@ -2935,6 +2935,20 @@ def requested_repository_evidence(
                 treeish=binding.head_sha,
                 deadline=evidence_deadline,
             )
+            if not failed and _IDENTIFIER_TERM.match(request.search or ""):
+                # As in the first pass, an identifier also gets its definition
+                # line, which the three-hits-per-file literal search can miss.
+                definition_lines, definition_truncated, definition_failed = _bounded_git_grep(
+                    root,
+                    _definition_pattern(request.search or ""),
+                    treeish=binding.head_sha,
+                    deadline=evidence_deadline,
+                    extended=True,
+                )
+                failed = failed or definition_failed
+                truncated = truncated or definition_truncated
+                known = set(definition_lines)
+                lines = [*definition_lines, *(hit for hit in lines if hit not in known)]
             if failed:
                 piece = f"<requested-search-unavailable: {request.search}>"
                 unavailable = True

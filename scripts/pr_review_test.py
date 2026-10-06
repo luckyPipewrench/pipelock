@@ -2693,16 +2693,17 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_definition_pattern_matches_definitions_only(self) -> None:
         pattern = re.compile(
             pr_review._definition_pattern("helper")
-            .replace("[[:space:]]", r"\s")
+            .replace("[:space:]", r"\s")
         )
         for line in ("func helper() {", "func (s *State) helper(x int) {", "def helper(x):", "    async def helper():",
                      "class helper:", "type helper struct {", "helper() {", "function helper {",
                      "const helper = 3", "var helper []string", "helper = build()", "helper: int = 3",
-                     "\thelper = iota", "\thelper string = \"x\"", "\thelper string", "\thelper"):
+                     "\thelper = iota", "\thelper string = \"x\"", "\thelper string", "\thelper",
+                     "\thelper chan Thing", "\thelper map[string][]int", "\thelper func(int) error"):
             with self.subTest(line=line):
                 self.assertIsNotNone(pattern.search(line))
         for line in ("x := helper()", "// helper builds", "func helperFor() {", "def helpers():",
-                     "    if helper == other:", "result = helper"):
+                     "    if helper == other:", "result = helper", "\thelper(x)", "\treturn helper"):
             with self.subTest(line=line):
                 self.assertIsNone(pattern.search(line))
         self.assertIsNone(pr_review._IDENTIFIER_TERM.match("two words"))
@@ -2799,6 +2800,24 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertIn('helper.go:9:     value += "required_override"', evidence)
         self.assertIn("helper.go:11: }", evidence)
         self.assertNotIn("uncommitted replacement", evidence)
+
+    def test_requested_search_finds_definition_behind_three_earlier_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            lines = ["package example", ""]
+            lines += [f"func caller{index}() {{ helper() }}" for index in range(3)]
+            lines += [""] * 40
+            lines += ["func helper() string {", '    return "required_override"', "}"]
+            (root / "helper.go").write_text("\n".join(lines) + "\n")
+            subprocess.run(["git", "-C", str(root), "add", "helper.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(search="helper"),))}
+            with mock.patch.object(pr_review, "_local_review_root", return_value=root):
+                evidence, _ = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertIn('helper.go:47:     return "required_override"', evidence)
 
     def test_requested_search_marks_failed_and_capped_reads(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
@@ -3017,8 +3036,10 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertFalse(unavailable)
         self.assertIn("first", evidence)
         self.assertIn("second", evidence)
-        self.assertEqual([call.kwargs["deadline"] for call in grep.call_args_list], [105.0, 105.0])
-        self.assertEqual([call.kwargs["treeish"] for call in grep.call_args_list], [binding.head_sha] * 2)
+        # Each identifier search is a literal search plus its definition search;
+        # all four share the one aggregate deadline and the reviewed head.
+        self.assertEqual([call.kwargs["deadline"] for call in grep.call_args_list], [105.0] * 4)
+        self.assertEqual([call.kwargs["treeish"] for call in grep.call_args_list], [binding.head_sha] * 4)
 
     def test_requested_repository_evidence_caps_its_own_aggregate_time(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)

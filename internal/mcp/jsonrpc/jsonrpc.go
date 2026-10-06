@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -716,7 +717,7 @@ func SortedKeys(m map[string]interface{}) []string {
 
 // maxExtractDepth limits recursion in ExtractStringsFromJSON to prevent stack
 // overflow from maliciously deeply-nested JSON.
-const maxExtractDepth = 64
+const maxExtractDepth = extract.MaxExtractDepth
 
 // MaxExtractDepth exports the extraction depth bound so callers that gate a
 // subtree before it is re-extracted from a higher root can derive their own

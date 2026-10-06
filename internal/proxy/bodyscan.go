@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -1166,7 +1167,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 	return result, providerOpaque, generic, truncated, nil
 }
 
-const extractJSONMaxDepth = 64
+const extractJSONMaxDepth = extract.MaxExtractDepth
 
 func currentJSONBodyDLPPath(stack []jsonBodyDLPFrame) []string {
 	if len(stack) == 0 {

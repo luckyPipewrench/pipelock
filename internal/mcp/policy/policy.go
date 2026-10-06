@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -914,7 +915,8 @@ func parsePatchPath(value string, stripTimestamp bool) (string, bool) {
 	return value, true
 }
 
-const structuralMaxArgDepth = 64
+// structuralMaxArgDepth is the shared JSON nesting bound used by every extractor.
+const structuralMaxArgDepth = extract.MaxExtractDepth
 
 func (rule *CompiledRule) hasStructuralValidators() bool {
 	return rule.ArgType != "" ||

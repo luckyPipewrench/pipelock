@@ -203,10 +203,15 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 
 	// An all-numeric response has nothing for the injection scanner; it is
 	// treated as a clean response scan and only the numeric channel runs.
-	views := []string{text, envelopeText, resourceURIs}
+	// The agent reads typed text and envelope strings as one message, so they
+	// are scanned as one view: a finding split across result text and _meta
+	// must match as if it sat in one field. Resource URIs get injection
+	// coverage on their own view and stay out of inbound DLP.
+	joined := joinResponseText(text, envelopeText)
+	views := []string{joined, resourceURIs}
 	var dlpViews []string
 	if includeDLP {
-		dlpViews = []string{text, envelopeText}
+		dlpViews = []string{joined}
 	}
 	result, dlpMatches, droppedDLP := scanResponseViews(context.Background(), sc, opts, views, dlpViews)
 	if result.Failed() {
@@ -259,6 +264,37 @@ func appendUniqueResponseViewMatches(existing, incoming []scanner.ResponseMatch)
 
 func sameResponseViewMatch(a, b scanner.ResponseMatch) bool {
 	return a.PatternName == b.PatternName && a.MatchText == b.MatchText && a.Bundle == b.Bundle && a.BundleVersion == b.BundleVersion
+}
+
+// joinResponseText joins the non-empty parts of one message into one view.
+// DLP normalization deletes control characters, so a bare newline would glue
+// the last word of one part to the first word of the next and erase the word
+// boundary a pattern may end on. The space survives normalization and keeps
+// that boundary; the whitespace-collapsed DLP view still rejoins a credential
+// split across the parts.
+func joinResponseText(parts ...string) string {
+	nonEmpty := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			nonEmpty = append(nonEmpty, part)
+		}
+	}
+	return strings.Join(nonEmpty, " \n")
+}
+
+// uniqueResponseMatches keeps the first of each repeated finding. The
+// tools/list joined view carries result-sibling strings twice (typed text and
+// envelope), and one string must not report as two findings.
+func uniqueResponseMatches(matches []scanner.ResponseMatch) []scanner.ResponseMatch {
+	unique := make([]scanner.ResponseMatch, 0, len(matches))
+	for _, match := range matches {
+		if !slices.ContainsFunc(unique, func(prior scanner.ResponseMatch) bool {
+			return sameResponseViewMatch(prior, match)
+		}) {
+			unique = append(unique, match)
+		}
+	}
+	return unique
 }
 
 // scanResponseViews scans each non-empty view on its own and merges the
@@ -646,10 +682,24 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result, dlpMatches, droppedDLP := scanResponseViews(ctx, sc, opts, []string{text, envelopeText}, []string{dlpText, envelopeText})
+	// As on every other response path, sibling, error, params and envelope
+	// strings form one view so a finding split across them still matches.
+	// Tool text joins only the DLP view; the tool scanner owns its injection.
+	result, dlpMatches, droppedDLP := scanResponseViews(ctx, sc, opts, []string{joinResponseText(text, envelopeText)}, []string{joinResponseText(dlpText, envelopeText)})
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
+	result.Matches = uniqueResponseMatches(result.Matches)
+	result.SuppressedMatches = uniqueResponseMatches(result.SuppressedMatches)
+	observed := result.ObservedCoreMatches[:0:0]
+	for _, match := range result.ObservedCoreMatches {
+		if !slices.ContainsFunc(observed, func(prior scanner.ObservedCoreMatch) bool {
+			return sameResponseViewMatch(prior.Match, match.Match) && prior.Reason == match.Reason
+		}) {
+			observed = append(observed, match)
+		}
+	}
+	result.ObservedCoreMatches = observed
 	for _, match := range result.SuppressedMatches {
 		if opts.OnSuppressedResponse != nil {
 			opts.OnSuppressedResponse(match)

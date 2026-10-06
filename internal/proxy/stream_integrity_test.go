@@ -178,6 +178,14 @@ func TestResponseStreamIntegrity(t *testing.T) {
 						select {
 						case <-release:
 						case <-r.Context().Done():
+							if ending == "cancel" || ending == "handler_cancel" {
+								// Returning normally ends the chunked body with its
+								// terminator. The proxy can read that clean end before it
+								// notices the cancellation and record a completed stream.
+								// Abort instead, so a cancelled request can never look like
+								// a finished upstream response.
+								panic(http.ErrAbortHandler)
+							}
 							return
 						}
 						if ending == "chunked_break" {

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/testport"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -134,8 +133,7 @@ func TestContainmentMetricsHandlersEnforceSourcePolicyAndStatsLoopback(t *testin
 func TestServer_ContainmentMetricsExposureServesOnlyAllowedScraper(t *testing.T) {
 	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
 	host := containmentNonLoopbackIPv4(t)
-	metricsAddr := reserveTCPAddress(t, host)
-	fetchListen := testport.ListenAddrs(t, 1)[0]
+	metricsAddr, fetchListen := reserveDistinctTCPPorts(t, host)
 	configBody := fmt.Sprintf(`mode: balanced
 metrics_listen: %q
 containment:
@@ -231,14 +229,19 @@ containment:
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Start: %v", err)
+	// The server can spend its 5s idle wait before Start returns. The deadline
+	// has to be longer than that wait, and it has to scale in CI.
+	testwait.For(t, 6*time.Second, func() bool {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			return true
+		default:
+			return false
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for containment metrics server shutdown")
-	}
+	}, "containment metrics server shutdown")
 }
 
 func containmentNonLoopbackIPv4(t *testing.T) string {
@@ -264,6 +267,43 @@ func containmentNonLoopbackIPv4(t *testing.T) string {
 	}
 	t.Skip("no non-loopback IPv4 address is available for containment metrics listener test")
 	return ""
+}
+
+// reserveDistinctTCPPorts holds a metrics listener and a loopback fetch
+// listener at the same time, then returns them only when the port numbers
+// differ. The config rejects two listeners that share a port number even
+// when the addresses are different, and closing one before opening the other
+// lets the kernel hand that number out again.
+func reserveDistinctTCPPorts(t *testing.T, host string) (string, string) {
+	t.Helper()
+	lc := net.ListenConfig{}
+	for range 5 {
+		metricsLn, err := lc.Listen(t.Context(), "tcp4", net.JoinHostPort(host, "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetchLn, err := lc.Listen(t.Context(), "tcp4", "127.0.0.1:0")
+		if err != nil {
+			_ = metricsLn.Close()
+			t.Fatal(err)
+		}
+		metricsAddr := metricsLn.Addr().String()
+		fetchAddr := fetchLn.Addr().String()
+		metricsPort := metricsLn.Addr().(*net.TCPAddr).Port
+		fetchPort := fetchLn.Addr().(*net.TCPAddr).Port
+		if err := metricsLn.Close(); err != nil {
+			_ = fetchLn.Close()
+			t.Fatal(err)
+		}
+		if err := fetchLn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if metricsPort != fetchPort {
+			return metricsAddr, fetchAddr
+		}
+	}
+	t.Fatal("could not reserve two listeners with different port numbers")
+	return "", ""
 }
 
 func reserveTCPAddress(t *testing.T, host string) string {

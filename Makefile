@@ -6,6 +6,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_VERSION := $(shell go version | awk '{print $$3}')
 LICENSE_PUBLIC_KEY ?=
 RULES_KEYRING_HEX ?=
+RELEASE_KEYRING_HEX ?=
 LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cliutil.Version=$(VERSION) \
 	-X $(MODULE)/internal/cliutil.BuildDate=$(BUILD_DATE) \
@@ -13,7 +14,8 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cliutil.GoVersion=$(GO_VERSION) \
 	-X $(MODULE)/internal/proxy.Version=$(VERSION) \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
-	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
+	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX) \
+	-X $(MODULE)/internal/release.PublicKeyringHex=$(RELEASE_KEYRING_HEX)"
 
 .PHONY: all build build-verifier verify-examples test test-wasm-verifier bench bench-baseline bench-regression bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check brand-assets brand-check source-header-check reproducible-build-check \
 	test-runtime-critical test-replay-harness test-sharded test-sharded-enterprise release-audit runtime-policy-audit debt-check release-check hermes-e2e test-liveproof

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestFilesystemPropertyParity(t *testing.T) {
@@ -327,7 +328,7 @@ func TestContainedLaunchWrapperHelperFailureAborts(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(30*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bash, path)
 	out, runErr := cmd.CombinedOutput()

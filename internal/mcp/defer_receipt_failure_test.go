@@ -31,11 +31,11 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 		wantSent     bool
 	}{
 		{"recorder healthy", false, config.ActionAllow, []string{deferred.StateResolvedAllow + "/" + deferred.SourceOperator}, true},
-		// The allow only reaches the journal as final after its receipt is
-		// written, so a failed receipt write leaves the block alone.
-		{"required receipt cannot be written", true, config.ActionBlock, []string{
-			deferred.StateResolvedBlock + "/" + deferred.SourceCancel,
-		}, false},
+		// With the recorder broken, neither the allow nor the corrective block
+		// receipt can be confirmed, so no terminal entry is written: the hold
+		// stays pending and restart recovery closes it with its own receipt.
+		// The client is still refused.
+		{"required receipt cannot be written", true, config.ActionBlock, nil, false},
 	}
 
 	t.Run("stdio", func(t *testing.T) {

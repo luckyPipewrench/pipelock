@@ -107,13 +107,15 @@ func TestManagerReleaseFailures(t *testing.T) {
 			wantStates: []string{StateHeld, StateResolvedBlock},
 		},
 		{
-			// No allow receipt exists, so a failed corrective receipt still
-			// gets its terminal block: a visible gap, not a false allow.
+			// The failed allow write may still have reached the file, so when
+			// the corrective receipt fails too the hold stays pending and
+			// recovery closes it, rather than a terminal block beside a
+			// possible lone allow receipt.
 			name:       "receipt hook fails",
 			hookErr:    errReceipt,
 			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReceiptNotWritten,
-			wantStates:  []string{StateHeld, StateHeld + "+release_pending", StateResolvedBlock},
-			wantWarning: true,
+			wantStates:  []string{StateHeld, StateHeld + "+release_pending"},
+			wantPending: 1, wantWarning: true,
 		},
 		{
 			// The allow receipt exists, but the call must not be sent: the
@@ -210,6 +212,26 @@ func TestManagerReleaseCorrectiveReceiptPrecedesTerminalEntry(t *testing.T) {
 				t.Fatalf("journal states = %v, want a terminal block last", got)
 			}
 		})
+	}
+}
+
+// TestManagerReleaseFailedAllowThenCorrectiveStaysPending covers an allow
+// receipt write that reports failure after reaching the file, followed by a
+// corrective block receipt that fails too. Recovery must still see the hold,
+// so the chain never ends with that allow alone.
+func TestManagerReleaseFailedAllowThenCorrectiveStaysPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		return fmt.Errorf("%s receipt not confirmed", res.FinalDecision)
+	})
+	if _, err := h.m.resolveApplied("held", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	pending, err := PendingJournal(h.journal)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = %d err=%v, want the hold left for recovery", len(pending), err)
+	}
+	if h.got.FinalDecision != config.ActionBlock {
+		t.Fatalf("delivered %s, want block", h.got.FinalDecision)
 	}
 }
 

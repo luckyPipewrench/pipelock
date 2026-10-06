@@ -37,12 +37,12 @@ func TestManagerAfterJournal(t *testing.T) {
 			wantJournal: []string{`"state":"resolved_allow","source":"approval"`},
 		},
 		{
-			// The allow never reaches the journal as final: the release stays
-			// pending until the hook succeeds, so a failed hook leaves only
-			// the block.
+			// The hook fails for the allow and for the corrective block, so
+			// the release is left pending for restart recovery: no terminal
+			// entry is written beside an allow receipt that may have landed.
 			name: "allow, hook fails closes to block", decision: config.ActionAllow, hookErr: errReceipt, wantCalled: true,
 			wantFinal: config.ActionBlock, wantSource: SourceCancel, wantReason: ReasonReceiptNotWritten,
-			wantJournal: []string{`"state":"resolved_block","source":"cancel"`},
+			wantJournal: []string{},
 		},
 		{
 			name: "block never calls the hook", decision: config.ActionBlock, hookErr: errReceipt,

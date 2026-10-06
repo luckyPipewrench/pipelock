@@ -73,7 +73,7 @@ on a sink to receive the info events as well.
 
 ### Info (sent only when a sink sets `min_severity: info`)
 
-These always go to the local log, and reach a sink only when that sink's
+These go to the local log (except the six events named below when `logging.include_allowed` is `false`), and reach a sink only when that sink's
 `min_severity` is `info`. With the default `warn` threshold they stay local. To
 see allowed traffic without turning on info delivery, use Prometheus metrics or
 ship the local logs through a log collector (Promtail, Filebeat, Fluentd).
@@ -571,7 +571,7 @@ curl http://pipelock:9090/api/v1/killswitch/status \
 }
 ```
 
-The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, its three sources stay false.
+The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, the three Conductor-driven sources stay false.
 
 **Rate limiting:** `POST /api/v1/killswitch` is limited to 10 authenticated
 requests per 60-second window. Exceeding it returns `429` with a

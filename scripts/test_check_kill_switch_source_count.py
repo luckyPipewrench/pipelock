@@ -55,9 +55,13 @@ class KillSwitchSourceCountTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(len(check.stale_claims(make_root(line), 4)), 1)
 
-    def test_subset_and_unrelated_phrases_are_ignored(self):
+    def test_possessive_total_claims_are_counted(self):
+        root = make_root("The kill switch has its six independent activation sources.")
+        self.assertEqual(len(check.stale_claims(root, 4)), 1)
+
+    def test_named_subsets_and_unrelated_phrases_are_ignored(self):
         root = make_root(
-            "The kill switch stays off when its three sources are false.\n"
+            "The kill switch stays off when the three Conductor-driven sources are false.\n"
             "The license check reads three sources in priority order.\n"
         )
         self.assertEqual(check.stale_claims(root, 4), [])

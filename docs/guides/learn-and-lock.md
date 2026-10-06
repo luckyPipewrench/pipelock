@@ -325,9 +325,11 @@ Once an active manifest is promoted, the runtime gates every URL-bearing transpo
 
 **MCP upstream URL under an active contract:**
 
-The upstream rows above are allowed to be local or private only while no contract is active. Once a manifest is active for the agent, the configured upstream URL goes through the same scanner check as any other destination, and a scanner block wins over the contract. A loopback or private upstream such as `http://127.0.0.1/mcp` is therefore refused with block reason `parse_error` and the log line `contract upstream denied`, until `ssrf.ip_allowlist` covers its address (for example `127.0.0.0/8`) or, for an upstream given by hostname, `trusted_domains` names that host (an IP literal never matches `trusted_domains`). Cloud metadata addresses stay blocked either way.
+The upstream rows above are allowed to be local or private only while no contract is active. Once a manifest is active for the agent, the configured upstream URL goes through the same scanner check as any other destination, and a scanner block wins over the contract. A scanner-blocked loopback or private upstream such as `http://127.0.0.1/mcp` is refused with block reason `parse_error` and the log line `contract upstream denied` in every contract mode, until `ssrf.ip_allowlist` covers its address (for example `127.0.0.0/8`) or, for an upstream given by hostname, `trusted_domains` names that host (an IP literal never matches `trusted_domains`). Cloud metadata addresses stay blocked either way.
 
-An allowed upstream also needs a contract rule for its host, and that rule is evaluated on the default port only. When a rule for the upstream's host exists and the URL carries a non-default port (for example `:8080`), the request is refused with `contract_non_default_port`, even if `ssrf.ip_allowlist` allows the address. A contract cannot permit an upstream on a non-default port, so put the upstream behind the scheme's default port (80 or 443) before enforcing a contract for it.
+If the scanner allows the URL, contract-only denials apply only in live mode. Shadow and capture mode keep the scanner verdict.
+
+In live mode, an allowed upstream also needs a contract rule for its host, and that rule is evaluated on the default port only. When a rule for the upstream's host exists and the URL carries a non-default port (for example `:8080`), the request is refused with `contract_non_default_port`, even if `ssrf.ip_allowlist` allows the address. A contract cannot permit an upstream on a non-default port, so put the upstream behind the scheme's default port (80 or 443) before enforcing a contract for it.
 
 **Block-reason vocabulary additions:**
 

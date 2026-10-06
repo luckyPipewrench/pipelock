@@ -8,7 +8,8 @@ The expected count is read from Controller.Sources() in
 internal/killswitch/killswitch.go, so adding or removing an activation source
 moves the expectation without anyone editing this script. A doc line that
 mentions the kill switch and states "<N> (independent) (activation) sources"
-must use that count.
+must use that count. A sentence about a subset has to name it (for example
+"the three Conductor-driven sources") instead of "<N> sources".
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ COUNT_PHRASE = re.compile(
     r"\b(?P<n>\d+|" + "|".join(NUMBER_WORDS) + r")\s+(?:independent\s+)?(?:activation\s+)?sources\b",
     re.IGNORECASE,
 )
-SUBSET_PREFIX = re.compile(r"\b(?:its|the|these|those|other)\s+$", re.IGNORECASE)
 KILL_SWITCH_LINE =re.compile(r"kill[\s-]?switch|deny-all", re.IGNORECASE)
 SOURCES_FUNC = re.compile(r"func \(c \*Controller\) Sources\(\).*?\n}\n", re.DOTALL)
 MAP_KEY = re.compile(r'^\s*"(?P<key>[a-z_]+)":', re.MULTILINE)
@@ -78,10 +78,6 @@ def stale_claims(root: Path, expected: int) -> list[str]:
             if not KILL_SWITCH_LINE.search(line):
                 continue
             for match in COUNT_PHRASE.finditer(line):
-                # "its three sources" names a subset (the Conductor-driven ones),
-                # not the total.
-                if SUBSET_PREFIX.search(line[: match.start()]):
-                    continue
                 raw = match.group("n").lower()
                 stated = int(raw) if raw.isdigit() else NUMBER_WORDS[raw]
                 if stated != expected:

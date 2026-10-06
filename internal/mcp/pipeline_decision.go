@@ -171,14 +171,14 @@ func EmitMCPDecision(
 		}
 	}
 	// An outcome closes its intent only through the v1 receipt, which carries
-	// the action ID and phase; a v2 proxy_decision record carries neither. So
-	// when a v1 emitter is configured, a v2 success can't stand in for a failed
-	// v1 outcome, or the caller would report an outcome the chain can't pair.
-	v2Covers := v2Emitted && (receiptEmitter == nil || d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome)
+	// the action ID and phase; a v2 proxy_decision record carries neither. So a
+	// v2 success never stands in for a required outcome's v1 receipt, or the
+	// caller would report an outcome the chain can't pair.
+	v2Covers := v2Emitted && d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome
 	if receiptRequired && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
 		err = nil
 	}
-	if receiptRequired && !v1Emitted && !v2Emitted && err == nil {
+	if receiptRequired && !v1Emitted && !v2Covers && err == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	}
 	if done, escalateErr := escalateReceiptError(); done {

@@ -100,6 +100,16 @@ func TestManagerReleaseFailures(t *testing.T) {
 			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateResolvedAllow},
 		},
 		{
+			// Neither the pending entry nor the corrective block receipt is
+			// written, so no terminal entry is either: the hold stays pending.
+			name:       "release-pending entry and corrective receipt fail",
+			failWrites: []int{2},
+			hookErr:    errReceipt,
+			wantCalled: 1, wantFinal: config.ActionBlock,
+			wantStates:  []string{StateHeld},
+			wantPending: 1, wantWarning: true,
+		},
+		{
 			// The hook still runs once, for the corrective block receipt.
 			name:       "release-pending entry fails",
 			failWrites: []int{2},

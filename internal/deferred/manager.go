@@ -506,17 +506,15 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 // Any step that fails closes the allow to block. The block's own receipt is
 // written through AfterJournal before its terminal entry, so a process that
 // dies in between leaves a pending hold, never a closed hold with no block
-// receipt. If that corrective receipt fails once an allow receipt has been
-// attempted, the terminal entry is skipped and the still-pending release
-// recovers to block at the next start. A failed allow write can still have
-// reached the file (a write whose sync reports failure), and a terminal block
-// beside a lone allow receipt would read as a released call. Only when the
-// release-pending entry itself failed, before any allow receipt was tried, is
-// the terminal block written without its receipt. A recorder that keeps
+// receipt. If that corrective receipt fails, no terminal entry is written at
+// all and the hold stays pending, so restart recovery closes it with its own
+// receipt. A failed allow write can still have reached the file (a write whose
+// sync reports failure), and a terminal entry without its receipt would leave
+// a closed hold whose evidence nothing will revisit. A recorder that keeps
 // failing therefore surfaces at the next start, when recovery cannot write its
-// receipts, instead of leaving an allow the evidence cannot correct.
+// receipts, instead of as a hold closed with missing or contradicting evidence.
 func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
-	closeAllow := func(reason string, allowAttempted bool) {
+	closeAllow := func(reason string) {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = SourceCancel
 		res.Reason = reason
@@ -527,9 +525,7 @@ func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 			if err := held.AfterJournal(res); err != nil {
 				m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
 					res.ResolutionSource, held.DeferID, err)
-				if allowAttempted {
-					return
-				}
+				return
 			}
 		}
 		if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
@@ -538,17 +534,17 @@ func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 		}
 	}
 	if err := m.appendJournal(releasePendingEntry(*held, res.ResolutionSource)); err != nil {
-		closeAllow(res.Reason, false)
+		closeAllow(res.Reason)
 		return res
 	}
 	if held.AfterJournal != nil {
 		if err := held.AfterJournal(res); err != nil {
-			closeAllow(ReasonReceiptNotWritten, true)
+			closeAllow(ReasonReceiptNotWritten)
 			return res
 		}
 	}
 	if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedAllow, res.ResolutionSource)); err != nil {
-		closeAllow(ReasonReleaseNotJournaled, true)
+		closeAllow(ReasonReleaseNotJournaled)
 	}
 	return res
 }

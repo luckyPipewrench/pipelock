@@ -360,9 +360,11 @@ func TestEmitMCPDecisionOutcomeNeedsV1(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		phase   string
+		noV1    bool
 		wantErr bool
 	}{
 		{name: "blocked outcome", phase: receipt.DecisionPhaseOutcome, wantErr: true},
+		{name: "blocked outcome without a v1 emitter", phase: receipt.DecisionPhaseOutcome, noV1: true, wantErr: true},
 		{name: "block decision", phase: "", wantErr: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -371,7 +373,11 @@ func TestEmitMCPDecisionOutcomeNeedsV1(t *testing.T) {
 			if err := broken.rec.Close(); err != nil {
 				t.Fatalf("close recorder: %v", err)
 			}
-			_, err := EmitMCPDecision(broken.v1, healthy.v2, nil, MCPDecision{
+			v1 := broken.v1
+			if tc.noV1 {
+				v1 = nil
+			}
+			_, err := EmitMCPDecision(v1, healthy.v2, nil, MCPDecision{
 				Receipt: receipt.EmitOpts{
 					ActionID: "mcp-outcome-needs-v1", Verdict: config.ActionBlock,
 					Transport: transportMCPStdio, Target: mcpAllowedTool, MCPMethod: methodToolsCall,

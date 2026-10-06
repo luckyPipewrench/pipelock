@@ -225,12 +225,14 @@ pipelock signing roster build \
   --root /etc/pipelock/keys/fleet-root.json \
   --include id=activation-primary,key=/etc/pipelock/keys/activation.json,purpose=contract-activation-signing,role=operator \
   --include id=receipt-signing,key=/etc/pipelock/keys/receipt-signing.json,purpose=receipt-signing,role=runtime \
-  --include id=compile-agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
-  --include id=compile-agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
   --out /etc/pipelock/roster.json
 
 pipelock signing roster verify --path /etc/pipelock/roster.json --root-fingerprint sha256:<from-key-generate-output>
 ```
+
+A compile key's roster `id=` must equal the keystore agent name, because that name is the key ID that `learn compile` records in the candidate and that `learn ratify` and `learn promote` later look up in the roster. The key from `pipelock keygen agent-a` is `agent-a`, so its entry is `id=agent-a`. A different id, such as `compile-agent-a`, builds a valid roster that the later steps cannot match.
 
 The roster MUST include a `receipt-signing` entry. `pipelock learn promote` signs the lifecycle receipts with this key, and the runtime verifies them against the roster on load; if the roster does not name a `receipt-signing` key, the runtime rejects the receipts the operator just produced. The same applies to any compile signing key whose contracts you intend to promote: the agent's compile key must be in the roster the deploying runtime trusts.
 
@@ -317,9 +319,17 @@ Once an active manifest is promoted, the runtime gates every URL-bearing transpo
 | Intercept proxy | yes | n/a | TLS-intercepted CONNECT path. |
 | `/fetch` | yes | n/a | Target URL from query parameter. |
 | WebSocket `/ws` | yes (handshake) | n/a | Per-frame scanning unchanged. |
-| MCP HTTP listener (`--listen --upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed; cloud metadata endpoints blocked. |
-| MCP stdio-to-HTTP bridge (`--upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed; cloud metadata endpoints blocked. |
+| MCP HTTP listener (`--listen --upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed with no active contract, or when `ssrf.ip_allowlist` covers them; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
+| MCP stdio-to-HTTP bridge (`--upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed with no active contract, or when `ssrf.ip_allowlist` covers them; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
 | MCP stdio subprocess wrap (`-- COMMAND`) | n/a (no remote URL) | yes (per `tools/call`) | Denied tool calls return a JSON-RPC error with block-reason metadata; subprocess is not invoked. |
+
+**MCP upstream URL under an active contract:**
+
+The upstream rows above accept a local or private upstream without any extra setting only while no contract is active. Once a manifest is active for the agent, the configured upstream URL goes through the same scanner check as any other destination, and a scanner block wins over the contract. A scanner-blocked loopback or private upstream such as `http://127.0.0.1/mcp` is refused with block reason `parse_error` and the log line `contract upstream denied` in every contract mode, until `ssrf.ip_allowlist` covers its address (for example `127.0.0.0/8`) or, for an upstream given by hostname, `trusted_domains` names that host (an IP literal never matches `trusted_domains`). Cloud metadata addresses stay blocked either way.
+
+If the scanner allows the URL, for example because `ssrf.ip_allowlist` covers a private upstream, contract-only denials apply only in live mode. Shadow and capture mode keep the scanner verdict, so that upstream passes there.
+
+In live mode, an allowed upstream also needs a contract rule for its host, and that rule is evaluated on the default port only. When a rule for the upstream's host exists and the URL carries a non-default port (for example `:8080`), the request is refused with `contract_non_default_port`, even if `ssrf.ip_allowlist` allows the address. A contract cannot permit an upstream on a non-default port, so put the upstream behind the scheme's default port (80 or 443) before enforcing a contract for it.
 
 **Block-reason vocabulary additions:**
 

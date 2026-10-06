@@ -188,7 +188,7 @@ check_no_match '47 DLP patterns' 'old DLP pattern count'
 check_no_match '47 regex patterns' 'old DLP regex count'
 check_no_match '47 DLP-pattern' 'old DLP pattern count'
 check_no_match '\b11-layer\b|\b11 layers\b' 'fixed scanner-layer count'
-check_no_match '\b(all|All) 4 sources\b|\bfour independent (activation )?sources\b|\b4 independent sources\b' 'four-source kill-switch count'
+python3 -I scripts/check_kill_switch_source_count.py
 check_no_match 'verifiable trail of all agent network activity' 'unprovable audit-completeness claim'
 check_no_match 'inspects all cross-boundary traffic' 'unscoped transport-inspection claim'
 check_no_match 'every proxy decision produces a signed (action )?receipt' 'unprovable receipt-completeness claim'

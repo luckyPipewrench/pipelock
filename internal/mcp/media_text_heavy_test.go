@@ -60,6 +60,11 @@ func TestTextHeavyMediaIsDeliveredNotBudgetBlocked(t *testing.T) {
 			{"short lines", textHeavyShortLines, []int{3}},
 		} {
 			for _, mib := range body.mibs {
+				// Under the race detector keep the largest text-heavy case and
+				// the short-lines shape; the full sweep runs in normal builds.
+				if raceEnabled && (hdr.name != "pdf" || (body.name == "lines" && mib != 7)) {
+					continue
+				}
 				// ftyp shares the extraction path with pdf; two sizes bound
 				// its race-detector cost.
 				if hdr.name == "ftyp" && (mib == 4 || mib == 6 || body.name == "short lines") {

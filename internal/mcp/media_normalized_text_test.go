@@ -379,6 +379,11 @@ func TestLargeBenignMediaIsDeliveredNotBudgetBlocked(t *testing.T) {
 		bytes  []byte
 	}{{"png", mediaPNGHeader()}, {"jpeg", []byte{0xFF, 0xD8, 0xFF, 0xE0}}} {
 		for _, mib := range []int{1, 4, 5, 6, 7} {
+			// Under the race detector keep only the largest image, where the
+			// budget block would surface; the full sweep runs in normal builds.
+			if raceEnabled && (tc.header != "png" || mib != 7) {
+				continue
+			}
 			t.Run(fmt.Sprintf("%s %d MiB", tc.header, mib), func(t *testing.T) {
 				body := make([]byte, mib<<20)
 				stream.fill(body)

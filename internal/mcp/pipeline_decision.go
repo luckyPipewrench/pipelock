@@ -60,6 +60,13 @@ type MCPDecision struct {
 	// operator can opt into "no receipt, no traffic" without changing the
 	// default warn-and-forward behavior.
 	RequireReceipt bool
+
+	// Durable writes the receipt fsync-confirmed whatever its verdict. Required
+	// receipts for forwardable verdicts are always durable; this extends that to
+	// a receipt whose loss after a later durable write would leave a gap, such
+	// as a deferred resolution written before its journal entry. It changes how
+	// the receipt is written, not which emitter failures are accepted.
+	Durable bool
 }
 
 // EmitMCPDecision emits the receipt and (optionally) injects the
@@ -140,10 +147,11 @@ func EmitMCPDecision(
 	if markIntent && d.Receipt.ActionID != "" {
 		d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
 	}
+	syncReceipt := durableReceipt || d.Durable
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
-		if durableReceipt {
+		if syncReceipt {
 			err = receiptEmitter.EmitDurable(d.Receipt)
 		} else {
 			err = receiptEmitter.Emit(d.Receipt)
@@ -154,7 +162,7 @@ func EmitMCPDecision(
 		// envelope mutation.
 	}
 	if d.Receipt.ActionID != "" && v2Emitter != nil {
-		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired); v2Err != nil {
+		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired, syncReceipt); v2Err != nil {
 			if err == nil || durableReceipt {
 				err = v2Err
 			}
@@ -162,10 +170,15 @@ func EmitMCPDecision(
 			v2Emitted = true
 		}
 	}
-	if receiptRequired && (v1Emitted || v2Emitted) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
+	// An outcome closes its intent only through the v1 receipt, which carries
+	// the action ID and phase; a v2 proxy_decision record carries neither. So a
+	// v2 success never stands in for a required outcome's v1 receipt, or the
+	// caller would report an outcome the chain can't pair.
+	v2Covers := v2Emitted && d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome
+	if receiptRequired && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
 		err = nil
 	}
-	if receiptRequired && !v1Emitted && !v2Emitted && err == nil {
+	if receiptRequired && !v1Emitted && !v2Covers && err == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	}
 	if done, escalateErr := escalateReceiptError(); done {
@@ -183,7 +196,10 @@ func EmitMCPDecision(
 	return outbound, err
 }
 
-func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, required bool) error {
+// emitMCPV2Decision writes the v2 proxy_decision receipt for opts. durable
+// selects the fsync-confirmed write; required turns an underivable v2 payload
+// into an error instead of a skip.
+func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, required, durable bool) error {
 	if v2Emitter == nil {
 		return nil
 	}
@@ -196,8 +212,7 @@ func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, 
 		return nil
 	}
 	var emitErr error
-	verdict := receipt.NormalizeVerdict(opts.Verdict)
-	if required && (verdict == config.ActionAllow || verdict == config.ActionWarn || verdict == config.ActionForward || verdict == config.ActionStrip) {
+	if durable {
 		emitErr = v2Emitter.EmitDurable(v2Decision)
 	} else {
 		emitErr = v2Emitter.Emit(v2Decision)
@@ -208,6 +223,10 @@ func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, 
 	return nil
 }
 
+// emitMCPOutcomeReceipt records what happened to a call whose intent was
+// allowed and which Pipelock went on to send: the verdict stays allow and the
+// status says how the exchange ended. A call refused after its intent was
+// written uses emitMCPBlockedOutcomeReceipt instead.
 func emitMCPOutcomeReceipt(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,
@@ -217,9 +236,66 @@ func emitMCPOutcomeReceipt(
 	bytesTransferred int64,
 	reason string,
 ) {
+	opts.Verdict = config.ActionAllow
+	opts.Layer = mcpOutcomeLayer
+	emitMCPOutcome(receiptEmitter, v2Emitter, logW, opts, status, bytesTransferred, reason, false)
+}
+
+// emitMCPBlockedOutcomeReceipt closes an allowed intent for a call Pipelock
+// refused before sending it, such as one a live upstream contract denied after
+// the input scan passed. The outcome carries a block verdict under the intent's
+// action ID, so the chain shows the call was stopped rather than a bare allow.
+// The caller sets the refusing layer and any contract fields on opts.
+func emitMCPBlockedOutcomeReceipt(
+	receiptEmitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
+	logW io.Writer,
+	opts receipt.EmitOpts,
+	bytesTransferred int64,
+	reason string,
+	requireReceipts bool,
+) {
+	opts.Verdict = config.ActionBlock
+	emitMCPOutcome(receiptEmitter, v2Emitter, logW, opts, mcpOutcomeStatusBlocked, bytesTransferred, reason, requireReceipts)
+}
+
+const (
+	mcpOutcomeLayer         = "outcome"
+	mcpOutcomeStatusBlocked = "blocked"
+)
+
+// emitMCPOutcome writes an outcome receipt and logs a failure; outcomes never
+// block, so the error is not returned.
+func emitMCPOutcome(
+	receiptEmitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
+	logW io.Writer,
+	opts receipt.EmitOpts,
+	status string,
+	bytesTransferred int64,
+	reason string,
+	requireReceipts bool,
+) {
+	// The v1 receipt carries the action ID and phase that pair an outcome with
+	// its intent; a v2 proxy_decision record carries neither, so it is only
+	// written alongside v1, never as the outcome on its own.
 	if receiptEmitter == nil || opts.ActionID == "" {
 		return
 	}
+	opts = mcpOutcomeReceiptOpts(opts, status, bytesTransferred, reason)
+	// A blocked outcome closes an intent that required recording wrote
+	// durably, so it is synced too: losing it would leave that allow intent
+	// unmatched for a call that was refused.
+	durable := requireReceipts && opts.Verdict == config.ActionBlock
+	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts, Durable: durable}); err != nil {
+		logReceiptEmitFailure(logW, err, requireReceipts, opts.Verdict)
+	}
+}
+
+// mcpOutcomeReceiptOpts turns an intent's receipt options into its outcome:
+// same action ID, outcome phase, and a status/bytes/reason pattern. The caller
+// sets the verdict and layer.
+func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) receipt.EmitOpts {
 	if status == "" {
 		status = "unknown"
 	}
@@ -231,12 +307,8 @@ func emitMCPOutcomeReceipt(
 		bytesValue = fmt.Sprintf("%d", bytesTransferred)
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
-	opts.Verdict = config.ActionAllow
-	opts.Layer = "outcome"
 	opts.Pattern = fmt.Sprintf("status=%s bytes=%s reason=%s", status, bytesValue, reason)
-	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts}); err != nil {
-		logReceiptEmitFailure(logW, err, false, config.ActionAllow)
-	}
+	return opts
 }
 
 // mcpV2DecisionFromReceipt derives the v2 proxy_decision input from the v1

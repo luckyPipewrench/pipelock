@@ -1464,9 +1464,9 @@ func ForwardScannedInput(
 					prepared = receiptSettle.probeAllow(opts, prepared)
 					return prepared, finish
 				},
-				// The allow receipt is written once the journal has accepted
-				// the allow, so an unwritable journal never leaves an allow
-				// receipt for a call that is not sent.
+				// The release receipt is written while the journal shows the
+				// release as pending: the allow first, then a corrective block
+				// if the journal cannot record the allow as final.
 				AfterJournal: func(res deferred.Resolution) error {
 					return receiptSettle.commitAllow(opts, logW, res)
 				},

@@ -46,6 +46,7 @@ class DocsGuideLinksTest(unittest.TestCase):
         # The gate's unrelated brand, stats and Go checks remain in the script.
         # Stub their executables so this test exercises only the documentation path.
         (self.root / "scripts/render_brand.py").write_text("print('brand-check fixture')\n", encoding="utf-8")
+        (self.root / "scripts/check_kill_switch_source_count.py").write_text("", encoding="utf-8")
         for command in ("make", "go"):
             path = self.bin / command
             path.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{command} fixture'\n", encoding="utf-8")

@@ -107,6 +107,10 @@ func TestA2ABenignMultipartReviewCorpus(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.Action = config.ActionWarn
 	for _, count := range []int{100, 2000, 12000} {
+		// Under the race detector one mid-size corpus carries the check.
+		if raceEnabled && count != 2000 {
+			continue
+		}
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			parts := make([]any, count)
 			for i := range parts {

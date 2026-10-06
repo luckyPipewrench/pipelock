@@ -415,6 +415,11 @@ func denseMediaTail(n int) []byte { return bytes.Repeat([]byte{0x20}, n) }
 func TestMediaTextBudgetOverflowBlocksUnderEveryAction(t *testing.T) {
 	line := []byte(makeMediaResponse(mediaB64(denseMediaTail(3 << 20))))
 	for _, action := range []string{config.ActionBlock, config.ActionWarn, config.ActionStrip, config.ActionAsk} {
+		// Warn is the action a budget overrun must not inherit; under the race
+		// detector it alone carries the check.
+		if raceEnabled && action != config.ActionWarn {
+			continue
+		}
 		t.Run(action, func(t *testing.T) {
 			sc := testScannerWithAction(t, action)
 			for name, run := range map[string]func() jsonrpc.ScanVerdict{
@@ -452,6 +457,11 @@ func TestMediaTextBudgetIsSharedAcrossFieldsOfOneResponse(t *testing.T) {
 		"typed then structured":  fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"image","data":%q}],"structuredContent":{"data":%q}}}`, one, one),
 		"result then error data": fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"image","data":%q}]},"error":{"code":1,"message":"m","data":{"content":[{"type":"image","data":%q}]}}}`, one, one),
 	} {
+		// Each case scans about 14 MiB of recovered text; under the race
+		// detector one case proves the budget is shared.
+		if raceEnabled && name != "two typed blocks" {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			v := ScanResponse([]byte(body), sc)
 			if v.Clean || v.Error == "" || v.Action != config.ActionBlock {

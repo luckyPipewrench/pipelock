@@ -158,6 +158,23 @@ func TestNonRootEnforceFilesystemCanarySkipsAndRefusesLaunch(t *testing.T) {
 	}
 }
 
+func TestLaunchPropertiesMissingConfigNamesInstallRemedy(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "pipelock.yaml")
+	want := missingManagedConfigError(missing).Error()
+	env := &probeEnv{
+		configPath:    missing,
+		agentUserName: "pipelock-agent",
+		lookupUser: func(name string) (*user.User, error) {
+			return &user.User{Username: name, Uid: "966", Gid: "966", HomeDir: "/srv/agent-home"}, nil
+		},
+		readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
+	}
+	err := writeLaunchProperties(context.Background(), io.Discard, env)
+	if err == nil || err.Error() != want {
+		t.Fatalf("helper err=%v", err)
+	}
+}
+
 func TestProbeFilesystemConfinement_OperatorCanaryVisibleFails(t *testing.T) {
 	root := t.TempDir()
 	withFilesystemCanaryRoot(t, root)

@@ -553,6 +553,10 @@ func filesystemOperatorHome(env *probeEnv, mode string) (string, error) {
 	return user.HomeDir, nil
 }
 
+func missingManagedConfigError(path string) error {
+	return fmt.Errorf("managed config %s is missing; run `pipelock contain install` to restore the managed config", path)
+}
+
 func loadProbeConfig(env *probeEnv) (*config.Config, error) {
 	path := ""
 	if env != nil {
@@ -571,6 +575,9 @@ func loadProbeConfig(env *probeEnv) (*config.Config, error) {
 		// successfully parsed config that says off or omits the key.
 		// Empty configPath still names the default file; there is no test
 		// seam that turns a missing file into off.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, missingManagedConfigError(path)
+		}
 		return nil, fmt.Errorf("read containment config %s: %w", path, err)
 	}
 	cfg := &config.Config{}

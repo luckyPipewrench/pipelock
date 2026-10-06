@@ -6,6 +6,7 @@ package contain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -468,12 +470,40 @@ func TestProbeFilesystemConfinement_MissingConfigIsError(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	}
+	want := missingManagedConfigError(missing).Error()
 	status, detail := probeFilesystemConfinement(context.Background(), env)
-	if status != statusFail || !strings.Contains(detail, missing) {
-		t.Fatalf("status=%s detail=%s", status, detail)
+	if status != statusFail || detail != want {
+		t.Fatalf("verify status=%s detail=%s", status, detail)
 	}
 	if status == statusFilesystemOff {
 		t.Fatal("missing config reported off")
+	}
+	doctor := checkFilesystemConfinement(context.Background(), &doctorEnv{
+		configPath:    missing,
+		agentUserName: "pipelock-agent",
+		agentHome:     "/srv/agent-home",
+		readFile:      env.readFile,
+	})
+	if doctor.status != statusFail || doctor.detail != want {
+		t.Fatalf("doctor status=%s detail=%s", doctor.status, doctor.detail)
+	}
+	_, err := filesystemProfileInputForProbe(env, "/srv/agent-home")
+	if err == nil || err.Error() != want {
+		t.Fatalf("profile input err=%v", err)
+	}
+	var preflight error
+	for _, p := range probesForEnv(env) {
+		if p.name != "filesystem_confinement" {
+			continue
+		}
+		st, det := p.fn(context.Background(), env)
+		if containRunPreflightAllows(env, st) {
+			t.Fatal("contain run allowed a missing managed config")
+		}
+		preflight = cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("containment preflight failed at probe %d (%s): %s: %s", p.n, p.name, st, det))
+	}
+	if preflight == nil || !strings.Contains(preflight.Error(), want) {
+		t.Fatalf("contain run err=%v", preflight)
 	}
 	env.readFile = func(string) ([]byte, error) {
 		return nil, os.ErrPermission

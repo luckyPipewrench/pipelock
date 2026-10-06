@@ -374,9 +374,6 @@ func cleanLinuxPath(p string) (string, error) {
 	if !strings.HasPrefix(cleaned, "/") {
 		return "", fmt.Errorf("path %q must be absolute", p)
 	}
-	if strings.ContainsAny(cleaned, "\x00\r\n:") {
-		return "", errors.New("cannot be represented safely in a systemd bind path")
-	}
 	return cleaned, nil
 }
 

@@ -162,6 +162,19 @@ linters:
       - path: internal/cli/contain/filesystem_canary_script_linux_test\.go
         linters: [gosec]
         text: "G204"
+      # The wrapper test writes a stub pipelock binary that the rendered
+      # launcher executes directly, so the stub needs the owner execute bit
+      # (G306). It then runs bash from exec.LookPath on the wrapper it wrote in
+      # its own temporary directory (G204).
+      - path: internal/cli/contain/filesystem_linux_test\.go
+        linters: [gosec]
+        text: "G204|G306"
+      # The missing-busctl classifier test executes a path that does not exist
+      # inside its temporary directory, to get the exact error a missing
+      # absolute executable returns.
+      - path: internal/cli/contain/filesystem_binds_linux_test\.go
+        linters: [gosec]
+        text: "G204"
       # migrateScalarFile takes the destination's mode per call site. Its
       # callers pass modeConfigSecret or modePinSecret, which are distinct
       # policy classes that happen to carry the same numeric mode now that the

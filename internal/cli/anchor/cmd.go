@@ -130,6 +130,12 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if err != nil {
 		return err
 	}
+	// Refuse a checkpoint the anchor state would reject before the submit: a
+	// remote log entry cannot be withdrawn, so a conflict found afterwards
+	// leaves a public entry behind an error.
+	if err := anchorpkg.PreflightStateMarker(output.receiptDir, checkpoint); err != nil {
+		return err
+	}
 	proof, err := backend.Submit(checkpoint)
 	if err != nil {
 		return err

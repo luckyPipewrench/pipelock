@@ -24,9 +24,12 @@ type independentOptions struct {
 	logPath      string
 	logID        string
 	sessionID    string
-	locationID   string
-	asDir        bool
-	jsonOutput   bool
+	// sessionExplicit records that --session was passed, so the default does
+	// not override the operator's choice.
+	sessionExplicit bool
+	locationID      string
+	asDir           bool
+	jsonOutput      bool
 	// requireFullCoverage fails verification when the anchor covers fewer
 	// receipts than the supplied chain holds.
 	requireFullCoverage bool
@@ -48,6 +51,7 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runIndependent(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
@@ -57,7 +61,7 @@ and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 	cmd.Flags().StringVar(&opts.logPath, "local-log", "", "local fake-log JSONL path")
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchor.DefaultLocalLogID, "local fake-log identifier")
 	cmd.Flags().StringArrayVar(&opts.rekorLogKeys, "rekor-log-key", nil, "trusted Rekor log public key (PEM, Pipelock Ed25519 key, raw hex, or file path); repeat for rotations")
-	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory when --dir is set")
+	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory when --dir is set (default: the session the bundle anchored, else proxy)")
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory when --dir is set")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single evidence file")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
@@ -83,13 +87,14 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 		}
 		target = resolved
 	}
-	receipts, err := independentReceipts(target, opts)
-	if err != nil {
-		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
-	}
 	bundle, err := anchor.LoadBundle(opts.bundlePath)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	opts.sessionID = independentSession(opts, bundle)
+	receipts, err := independentReceipts(target, opts)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
 	}
 	backend, exitCode, err := independentBackend(bundle, opts)
 	if err != nil {
@@ -205,6 +210,25 @@ func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.B
 		return nil, cliutil.ExitConfig, fmt.Errorf("unsupported anchor backend %q", bundle.Backend)
 	}
 }
+
+// independentSession picks the session whose receipts an evidence directory
+// is read for. The bundle names the chain it anchored, and the recorder names a
+// run's chain proxy.run.<id>, so the flag's default of proxy matches a
+// directory of per-run chains only by accident: an anchor of one run could
+// never verify against it. Unless --session was passed, the bundle's own
+// session is used. A bundle from a single evidence file carries no directory
+// session ("file" or empty), and keeps the flag's value.
+func independentSession(opts independentOptions, bundle anchor.Bundle) string {
+	named := bundle.Checkpoint.SessionID
+	if !opts.asDir || opts.sessionExplicit || named == "" || named == anchorFileSession {
+		return opts.sessionID
+	}
+	return named
+}
+
+// anchorFileSession is the session ID the anchor command records for a chain
+// read from a single evidence file rather than a session directory.
+const anchorFileSession = "file"
 
 func independentReceipts(target string, opts independentOptions) ([]receipt.Receipt, error) {
 	if opts.asDir {

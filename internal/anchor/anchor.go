@@ -631,24 +631,38 @@ func LoadStateMarkersResilient(dir string) ([]StateMarker, int, error) {
 }
 
 func updateLatestStateMarker(cleanDir string, marker StateMarker, data []byte) error {
+	out, err := latestStateMarkerUpdate(cleanDir, marker, data, stateMarkerOrderingCoverage(cleanDir, marker))
+	if err != nil || out == nil {
+		return err
+	}
+	return writeLatestStateMarkerFile(cleanDir, out)
+}
+
+// latestStateMarkerUpdate decides what the latest-pointer file becomes when
+// marker is recorded, without writing anything. It returns the bytes to
+// publish, nil when the pointer must stay as it is, or the conflict that
+// refuses the marker. nextCoverage is the receipt coverage of marker. The
+// recording path and PreflightStateMarker both answer through it, so the
+// pre-submit check and the post-submit write cannot disagree about what
+// counts as a conflict.
+func latestStateMarkerUpdate(cleanDir string, marker StateMarker, data []byte, nextCoverage uint64) ([]byte, error) {
 	current, found, err := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
 	if err == nil && found && current.SessionID == marker.SessionID {
 		currentCoverage := stateMarkerOrderingCoverage(cleanDir, current)
-		nextCoverage := stateMarkerOrderingCoverage(cleanDir, marker)
 		switch {
 		case currentCoverage > nextCoverage:
-			return nil
+			return nil, nil
 		case currentCoverage == nextCoverage && current.RootHash != marker.RootHash:
-			return fmt.Errorf("anchor-state marker conflicts with latest marker at coverage %d", nextCoverage)
+			return nil, fmt.Errorf("anchor-state marker conflicts with latest marker at coverage %d", nextCoverage)
 		}
-		return writeLatestStateMarkerFile(cleanDir, data)
+		return data, nil
 	}
 	markers, _, loadErr := LoadStateMarkersResilient(cleanDir)
 	if loadErr != nil {
-		return loadErr
+		return nil, loadErr
 	}
 	selected := marker
-	selectedCoverage := stateMarkerOrderingCoverage(cleanDir, marker)
+	selectedCoverage := nextCoverage
 	for _, candidate := range markers {
 		if candidate.SessionID != marker.SessionID {
 			continue
@@ -659,17 +673,60 @@ func updateLatestStateMarker(cleanDir string, marker StateMarker, data []byte) e
 			selected = candidate
 			selectedCoverage = coverage
 		case coverage == selectedCoverage && candidate.RootHash != selected.RootHash:
-			return fmt.Errorf("anchor-state marker conflicts with history at coverage %d", coverage)
+			return nil, fmt.Errorf("anchor-state marker conflicts with history at coverage %d", coverage)
 		}
 	}
 	if !StateMarkersEqual(selected, marker) {
 		selectedData, marshalErr := json.Marshal(selected)
 		if marshalErr != nil {
-			return fmt.Errorf("marshal anchor-state latest marker: %w", marshalErr)
+			return nil, fmt.Errorf("marshal anchor-state latest marker: %w", marshalErr)
 		}
 		data = append(selectedData, '\n')
 	}
-	return writeLatestStateMarkerFile(cleanDir, data)
+	return data, nil
+}
+
+// PreflightStateMarker reports, before anything is submitted to a log, whether
+// recording an anchor of checkpoint in dir would be refused: the checkpoint's
+// identity is already anchored, or it conflicts with the recorded history at
+// the same coverage. WriteStateMarker runs the same checks after the submit,
+// which is too late for a remote log: the entry is public and cannot be
+// withdrawn, so the operator would be left with a log entry and an error. The
+// check is advisory under concurrency and WriteStateMarker stays
+// authoritative, but a conflict that exists before the submit is refused
+// before it.
+func PreflightStateMarker(dir string, checkpoint Checkpoint) error {
+	marker := StateMarker{
+		Schema:       stateMarkerSchema,
+		SessionID:    checkpoint.SessionID,
+		FinalSeq:     checkpoint.FinalSeq,
+		RootHash:     checkpoint.RootHash,
+		ReceiptCount: checkpoint.ReceiptCount,
+	}
+	cleanDir := filepath.Clean(dir)
+	unlock, err := lockStateMarkerDir(cleanDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, statErr := os.Lstat(filepath.Join(cleanDir, stateMarkerIndexDir)); statErr == nil {
+		if err := validateStateMarkerIndexDir(filepath.Join(cleanDir, stateMarkerIndexDir)); err != nil {
+			return err
+		}
+		path, pathErr := StateMarkerPath(cleanDir, marker)
+		if pathErr != nil {
+			return pathErr
+		}
+		existing, found, loadErr := LoadStateMarkerFile(path)
+		if loadErr != nil {
+			return loadErr
+		}
+		if found {
+			return fmt.Errorf("this checkpoint is already anchored (session %q, final seq %d, %s backend, log index %d, bundle %s); refusing to submit it again", existing.SessionID, existing.FinalSeq, existing.Backend, existing.LogIndex, existing.BundlePath)
+		}
+	}
+	_, err = latestStateMarkerUpdate(cleanDir, marker, nil, checkpoint.ReceiptCount)
+	return err
 }
 
 // StateMarkersEqual reports whether two markers carry the same state. Time is

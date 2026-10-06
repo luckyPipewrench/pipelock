@@ -791,6 +791,14 @@ func stateMarkerSequenceCoverage(marker StateMarker) uint64 {
 	return marker.FinalSeq + 1
 }
 
+// IsStateMarkerIndexPath reports whether a receipt-directory-relative path
+// names the immutable marker index or anything beneath it. Bundle output must
+// stay outside this directory, whose readers accept only state markers.
+func IsStateMarkerIndexPath(rel string) bool {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	return clean == stateMarkerIndexDir || strings.HasPrefix(clean, stateMarkerIndexDir+string(filepath.Separator))
+}
+
 // IsStateMarkerTempName reports whether name matches the private temp-file
 // pattern produced by WriteStateMarker before the final atomic rename.
 func IsStateMarkerTempName(name string) bool {

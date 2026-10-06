@@ -194,6 +194,9 @@ func resolveBundleOutput(target string, opts receiptsOptions) (bundleOutput, err
 	if rel == "." {
 		return bundleOutput{}, fmt.Errorf("--out must name an anchor bundle file under the receipt directory")
 	}
+	if anchorpkg.IsStateMarkerIndexPath(rel) {
+		return bundleOutput{}, fmt.Errorf("--out must stay outside the anchor-state index directory")
+	}
 	if err := validateBundleOutputPath(receiptDir, bundlePath); err != nil {
 		return bundleOutput{}, err
 	}

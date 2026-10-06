@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -191,5 +192,32 @@ func TestReceiptsCmdRekorFailedSubmitCanRetry(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Fatalf("retry requests = %d, want 2", hits.Load())
+	}
+}
+
+func TestReceiptsCmdRefusesAnchorStateIndexOutput(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			receiptsPath, keyHex := cliReceiptJSONL(t)
+			dir := filepath.Dir(receiptsPath)
+			if existing {
+				if err := os.Mkdir(filepath.Join(dir, "anchor-state.d"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := receiptsCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			cmd.SetArgs([]string{receiptsPath, "--key", keyHex, "--local-log", filepath.Join(t.TempDir(), "log.jsonl"), "--out", "anchor-state.d/bundle.json"})
+			err := cmd.Execute()
+			if err == nil {
+				_, loadErr := anchorpkg.LoadStateMarkers(dir)
+				t.Fatalf("anchor succeeded with bundle in immutable index; strict reader error: %v", loadErr)
+			}
+			if !strings.Contains(err.Error(), "anchor-state index") {
+				t.Fatalf("Execute=%v", err)
+			}
+		})
 	}
 }

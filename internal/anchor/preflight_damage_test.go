@@ -88,3 +88,26 @@ func writePreflightFile(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 }
+
+func TestIsStateMarkerIndexPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{stateMarkerIndexDir, true},
+		{stateMarkerIndexDir + "/bundle.json", true},
+		{stateMarkerIndexDir + "/nested/bundle.json", true},
+		{"./" + stateMarkerIndexDir + "/bundle.json", true},
+		{"bundles/bundle.json", false},
+		{stateMarkerIndexDir + "-backup/bundle.json", false},
+		{"nested/" + stateMarkerIndexDir + "/bundle.json", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			if got := IsStateMarkerIndexPath(tc.path); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

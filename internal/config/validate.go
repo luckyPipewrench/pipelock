@@ -1570,15 +1570,23 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 		}
 		// A pattern that reuses a built-in name replaces the built-in, and a
 		// changed regex, severity, validator or action costs it the compiled
-		// credential audience. The match then blocks at the vendor's own
-		// destinations too, which looks like an outage to the operator and
-		// otherwise says nothing about why.
+		// credential audience. A blocking replacement then blocks at the
+		// vendor's own destinations too, which looks like an outage to the
+		// operator and otherwise says nothing about why.
 		if warnings != nil && p.Bundle == "" && len(p.CredentialAudienceHosts) == 0 {
 			if builtIn, ok := builtInAudiencePattern(p.Name); ok {
 				if changed := changedFromBuiltIn(p, builtIn); len(changed) > 0 {
+					// The hostile preset intentionally ships these severity-only
+					// overrides without an audience. Recognize that exact shipped
+					// identity rather than warning on a supported preset. Custom
+					// regexes, actions, validators and exemptions still warn.
+					if len(changed) == 1 && changed[0] == "severity" &&
+						p.Severity == hostileDLPSeverityOverrides[p.Name] && len(p.ExemptDomains) == 0 {
+						continue
+					}
 					*warnings = append(*warnings, Warning{
 						Field:   fmt.Sprintf("dlp.patterns[%d]", i),
-						Message: fmt.Sprintf("dlp.patterns[%d] %q replaces the built-in pattern of the same name and changes its %s, so its compiled credential audience %v no longer applies and every match blocks, vendor destinations included; keep the shipped regex, severity, validator and action to keep the audience, or give the pattern a different name", i, p.Name, strings.Join(changed, ", "), builtIn.CredentialAudienceHosts),
+						Message: fmt.Sprintf("dlp.patterns[%d] %q replaces the built-in pattern of the same name and changes its %s, so its compiled credential audience %v no longer applies; matches follow the configured action and exemptions instead of receiving the built-in destination-and-carrier allowance; keep the shipped regex, severity, validator and action to keep the audience, or give the pattern a different name", i, p.Name, strings.Join(changed, ", "), builtIn.CredentialAudienceHosts),
 					})
 				}
 			}

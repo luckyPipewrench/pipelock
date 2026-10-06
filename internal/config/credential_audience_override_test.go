@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -178,5 +179,73 @@ dlp:
 `
 	if _, err := LoadBytes([]byte(yaml)); err == nil || !strings.Contains(err.Error(), "core safety-floor") {
 		t.Fatalf("LoadBytes error = %v, want the core safety-floor refusal", err)
+	}
+}
+
+func TestAudienceDroppedWarningDoesNotOverridePolicy(t *testing.T) {
+	for _, extra := range []string{
+		"      action: warn\n",
+		"      exempt_domains:\n        - downloads.vendor.example\n",
+	} {
+		t.Run(extra, func(t *testing.T) {
+			yaml := strings.Replace(azureSASOverrideYAML(extra), "severity: high", "severity: medium", 1)
+			cfg, err := LoadBytes([]byte(yaml))
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, w := range warningsFor(t, cfg) {
+				if strings.Contains(w.Message, "no longer applies") {
+					found = true
+					if strings.Contains(w.Message, "every match blocks") {
+						t.Fatalf("warning contradicts configured policy: %s", w.Message)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing dropped-audience warning")
+			}
+		})
+	}
+}
+
+func TestShippedPresetsHaveNoAudienceOverrideWarnings(t *testing.T) {
+	paths, err := filepath.Glob("../../configs/*.yaml")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("preset inventory: %v %v", paths, err)
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range warningsFor(t, cfg) {
+				if strings.HasPrefix(w.Field, "dlp.patterns[") && strings.Contains(w.Message, "compiled credential audience") {
+					t.Fatalf("shipped preset acquired audience warning: %+v", w)
+				}
+			}
+		})
+	}
+}
+
+func TestHostilePresetCustomizationStillWarns(t *testing.T) {
+	patterns, err := PresetDLPPatterns(DLPPresetProfileHostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range patterns {
+		if patterns[i].Name == "Google API Key" {
+			patterns[i].Regex += "|custom-value"
+		}
+	}
+	RestoreBuiltInCredentialAudienceHosts(patterns)
+	cfg := Defaults()
+	cfg.DLP.Patterns = patterns
+	if p := loadedPattern(t, cfg, "Google API Key"); len(p.CredentialAudienceHosts) != 0 || p.Severity != SeverityCritical {
+		t.Fatalf("customized hostile pattern state: %+v", p)
+	}
+	if !hasFieldWarning(warningsFor(t, cfg), "]", "Google API Key", "regex", "no longer applies") {
+		t.Fatal("customized preset suppressed dropped-audience warning")
 	}
 }

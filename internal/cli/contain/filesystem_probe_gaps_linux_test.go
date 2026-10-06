@@ -165,6 +165,66 @@ func TestOpenNoFollowDirRejectsRootAndRelativePaths(t *testing.T) {
 	}
 }
 
+func TestOpenNoFollowDirReportsAFileDescriptorLimit(t *testing.T) {
+	dir := t.TempDir()
+	var lim unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &lim); err != nil {
+		t.Fatal(err)
+	}
+	orig := lim
+	t.Cleanup(func() { _ = unix.Setrlimit(unix.RLIMIT_NOFILE, &orig) })
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lim.Cur = uint64(len(entries) + 8)
+	if lim.Cur > orig.Max {
+		lim.Cur = orig.Max
+	}
+	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &lim); err != nil {
+		t.Fatal(err)
+	}
+	var opened []int
+	t.Cleanup(func() {
+		for _, fd := range opened {
+			_ = unix.Close(fd)
+		}
+	})
+	for len(opened) < 64 {
+		fd, err := unix.Open("/dev/null", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			if !errors.Is(err, unix.EMFILE) && !errors.Is(err, unix.ENFILE) {
+				t.Fatalf("open /dev/null: %v", err)
+			}
+			break
+		}
+		opened = append(opened, fd)
+	}
+	if len(opened) == 0 {
+		t.Fatal("descriptor limit was already exhausted")
+	}
+	// One descriptor can be released between the failing open and the call
+	// under test. Hold every successful root open until the next one fails.
+	var leaked []*noFollowDir
+	t.Cleanup(func() {
+		for _, d := range leaked {
+			d.close()
+		}
+	})
+	var openErr error
+	for range 32 {
+		openedDir, err := openNoFollowDir(dir)
+		if err != nil {
+			openErr = err
+			break
+		}
+		leaked = append(leaked, openedDir)
+	}
+	if openErr == nil || !strings.Contains(openErr.Error(), "open filesystem root") {
+		t.Fatalf("open = %v after %d extra directories", openErr, len(leaked))
+	}
+}
+
 func TestCanaryCreateAndCleanupEdges(t *testing.T) {
 	base := writableSymlinkFreeDir(t)
 	parent, err := openNoFollowDir(base)
@@ -200,6 +260,9 @@ func TestCanaryCreateAndCleanupEdges(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) })
 	if _, _, err := lockedDir.mkdirExclusive("blocked-", 0o755); err == nil {
 		t.Fatal("mkdir on a read-only directory succeeded")
+	}
+	if _, _, err := parent.mkdirExclusive("mode0-", 0); err == nil || !errors.Is(err, unix.EACCES) {
+		t.Fatalf("mode 0 mkdir = %v", err)
 	}
 	if _, _, err := lockedDir.createExclusiveFile("blocked-", 0o644, []byte("x")); err == nil {
 		t.Fatal("create on a read-only directory succeeded")
@@ -290,6 +353,61 @@ func TestCanaryCreateAndCleanupEdges(t *testing.T) {
 
 	if err := parent.removeOne(context.Background(), "absent", 0, &seen); err == nil {
 		t.Fatal("missing child was removed")
+	}
+}
+
+func TestCanaryDirectoryRemovalStopsWhenTheParentIsReadOnly(t *testing.T) {
+	base := writableSymlinkFreeDir(t)
+	parent, err := openNoFollowDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.close()
+	name, child, err := parent.mkdirExclusive("kept-", 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.close()
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o750) })
+	seen := 0
+	if err := parent.removeTree(context.Background(), name, 0, &seen); err == nil || !strings.Contains(err.Error(), name) {
+		t.Fatalf("rmdir = %v", err)
+	}
+	if err := os.Chmod(base, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.removeBounded(context.Background(), name); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	name, child, err = parent.mkdirExclusive("cancel-", 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.close()
+	if err := child.removeChildren(ctx, 0, &seen); err == nil || !strings.Contains(err.Error(), child.path) {
+		t.Fatalf("cancelled cleanup = %v", err)
+	}
+}
+
+func TestProbeFilesystemConfinementEnforceStopsWhenBaselinePrepFails(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	env := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		t.Fatal("baseline command ran after account lookup failed")
+		return "", 0, nil
+	})
+	env.lookupUser = func(string) (*user.User, error) {
+		return nil, errors.New("lookup closed")
+	}
+	status, detail := probeFilesystemConfinementEnforce(context.Background(), env, env.filesystem)
+	if status != statusFail || !strings.Contains(detail, "prepare filesystem confinement baseline") || !strings.Contains(detail, "lookup closed") {
+		t.Fatalf("baseline = %s %s", status, detail)
 	}
 }
 

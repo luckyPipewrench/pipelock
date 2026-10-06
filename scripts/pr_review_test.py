@@ -2704,6 +2704,18 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
                 self.assertIsNone(pattern.search(line))
         self.assertIsNone(pr_review._IDENTIFIER_TERM.match("two words"))
 
+    def test_call_lines_are_not_definitions(self) -> None:
+        # A bare call matches the shell-function header shape; it must not be
+        # given the end of an unrelated block below it.
+        for lines in (
+            ["    helper()", "    x = 1", "def other():", "    return {1: 2}", ""],
+            ["\thelper()", "\tif x {", "\t\twork()", "\t}", "}"],
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(pr_review._definition_end(lines, 0), (1, False))
+        self.assertEqual(pr_review._definition_end(["helper()", "{", "  echo hi", "}", "next"], 0), (4, False))
+        self.assertEqual(pr_review._definition_end(["helper() {", "  echo hi", "}", "next"], 0), (3, False))
+
     def test_nearby_hits_merge_all_context(self) -> None:
         matches = [(0, "example.txt", line, "hit") for line in (8, 16, 24)]
         windows = pr_review._evidence_windows(matches)

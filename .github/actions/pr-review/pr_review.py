@@ -2537,7 +2537,15 @@ def _definition_end(lines: list[str], anchor: int) -> tuple[int, bool]:
             pass
         return limit, True
     grouped = re.match(r"\s*(?:const|var)\s*\(", first)
-    braced = re.match(r"\s*(?:func\b|type\b|(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\))", first)
+    go_braced = re.match(r"\s*(?:func\b|type\b)", first)
+    # A bare `name()` line is a call in Go and Python. It is a shell function
+    # only when its body opener follows on the same or the next line.
+    shell_header = re.match(r"\s*(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)", first)
+    shell_body = bool(shell_header) and bool(
+        re.match(r"\s*\{", first[shell_header.end():])
+        or (anchor + 1 < limit and re.match(r"\s*\{", lines[anchor + 1]))
+    )
+    braced = go_braced or shell_body
     if not grouped and not braced:
         return anchor + 1, False
     source = "\n".join(lines[anchor:limit])

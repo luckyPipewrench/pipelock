@@ -38,8 +38,10 @@ All three sinks default to the same JSON envelope (OTLP wraps it as an OTLP LogR
 
 ## Event Types
 
-Only security events (critical and warn) are pushed to emit sinks (webhook, syslog, OTLP).
-Info-level events go to local logs only, with one exception noted below.
+Every event type below can reach an emit sink (webhook, syslog, OTLP). Each sink
+drops events below its own `min_severity`, which defaults to `warn`, so a default
+configuration sends only the warn and critical events. Set `min_severity: info`
+on a sink to receive the info events as well.
 
 ### Critical (requires immediate response)
 
@@ -47,8 +49,11 @@ Info-level events go to local logs only, with one exception noted below.
 |------|-------------|------------|
 | `kill_switch_deny` | All traffic denied by emergency kill switch | `transport`, `endpoint`, `source`, `deny_message`, `client_ip` |
 | `adaptive_escalation`* | Session threat score escalated. Adaptive enforcement v2 upgrades actions at all enforcement points (elevated, high, critical levels). | `session`, `from`, `to`, `client_ip`, `request_id`, `score` |
+| `chain_detection`† | Tool-call chain pattern matched | `pattern`, `pattern_severity`, `action`, `tool`, `session`, `mitre_technique` |
 
 \* Critical when `to` is `block`. Otherwise warn. In v1, escalation is scoring and event emission only.
+
+† Critical when the configured action is `block`. Otherwise warn. The severity comes from the action, not from the pattern's own `pattern_severity` field.
 
 ### Warn (suspicious activity)
 
@@ -66,11 +71,16 @@ Info-level events go to local logs only, with one exception noted below.
 | `response_scan_suppressed` | Response-scan finding withheld from enforcement | `mode`, `pattern`, `surface`, `reason` (`suppressed` or `core_observed`), `observe_host`, `observe_owner`, `observe_expires`, `observe_reason` (`core_observed` only), `client_ip`, `request_id` |
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
-### Info (local logs only)
+### Info (sent only when a sink sets `min_severity: info`)
 
-These go to stderr/file but **not** to webhook or syslog. If you need
-visibility into allowed traffic, use Prometheus metrics or ship local logs
-via a log collector (Promtail, Filebeat, Fluentd).
+These go to the local log (except the six events named below when `logging.include_allowed` is `false`), and reach a sink only when that sink's
+`min_severity` is `info`. With the default `warn` threshold they stay local. To
+see allowed traffic without turning on info delivery, use Prometheus metrics or
+ship the local logs through a log collector (Promtail, Filebeat, Fluentd).
+
+`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open` and `ws_close`
+are also gated by `logging.include_allowed` (default `true`). When it is
+`false`, they are neither logged nor emitted, whatever `min_severity` says.
 
 | Type | Description | Key Fields |
 |------|-------------|------------|
@@ -83,10 +93,15 @@ via a log collector (Promtail, Filebeat, Fluentd).
 | `redirect` | HTTP redirect observed before target admission; not proof the target was contacted | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
 | `forward_http` | Forward proxy request completed | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms` |
 
-> **Note:** Chain detection events (`chain_detection`) are tracked via
-> Prometheus metrics (`pipelock_chain_detections_total`) but are not currently
-> emitted to webhook or syslog. Use the Alertmanager rules below to alert on
-> chain detection patterns.
+> **Note:** Chain detection events (`chain_detection`) are both counted in
+> Prometheus (`pipelock_chain_detections_total`) and emitted to the sinks, at
+> warn or critical severity. The Alertmanager rules below alert on the metric;
+> a SIEM rule on the `chain_detection` event sees the pattern, tool and session.
+
+> **Not every event type is listed.** The tables show the common ones. The
+> full set of severities is the `EventSeverity` map in `internal/emit/event.go`,
+> and a few events (for example `chain_detection`, `adaptive_upgrade`) take their
+> severity from the action at emit time rather than from a fixed value.
 
 ## Pipelock Configuration
 
@@ -224,8 +239,10 @@ Operator lifecycle:
 
 **Severity filtering:** Events below `min_severity` are silently dropped before
 reaching the sink. Set to `warn` for all security events (recommended), or
-`critical` for emergency alerts only. Setting `info` adds `config_reload`
-events. All other info-level events are local-only and never sent to sinks.
+`critical` for emergency alerts only. Setting `info` adds the info-level events
+(`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open`, `ws_close`,
+`config_reload`, `redirect` and the others in the Info table), which can be high
+volume on a busy proxy.
 
 **`min_severity` defaults to `warn`** when omitted. Valid values are `info`,
 `warn`, and `critical`. Invalid values fail config validation.
@@ -554,7 +571,7 @@ curl http://pipelock:9090/api/v1/killswitch/status \
 }
 ```
 
-The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, its three sources stay false.
+The kill switch uses OR logic across seven independent sources: config, API, Conductor remote kill, Conductor stale-bundle detection, uncertain Conductor apply state, SIGUSR1 signal, and sentinel file. If any source is active, all traffic is denied. Deactivating one doesn't affect the others. When the Enterprise follower isn't in use, the three Conductor-driven sources stay false.
 
 **Rate limiting:** `POST /api/v1/killswitch` is limited to 10 authenticated
 requests per 60-second window. Exceeding it returns `429` with a
@@ -642,12 +659,13 @@ available on Windows.
 pipelock instance so you can tell events apart in your SIEM. Defaults to the
 OS hostname.
 
-**Local logs vs emission.** `logging.include_allowed` and
-`logging.include_blocked` only affect local log output (stderr/file). Webhook
-and syslog emission is independent: security events (blocked, anomaly, error,
-etc.) are always sent if they meet the severity threshold. Info-level
-operational events (allowed, tunnel, WebSocket, redirect, forward) are
-local-only regardless of `min_severity`.
+**Local logs vs emission.** `logging.include_blocked` only affects local log
+output (stderr/file); a blocked request is emitted to the sinks whether or not
+it is set. `logging.include_allowed` is different: it also gates emission of
+`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open` and
+`ws_close`, so turning it off removes them from the sinks as well as the log.
+Whatever those two settings say, a sink only receives events at or above its own
+`min_severity`.
 
 **Auth header.** Pipelock sends `Authorization: Bearer <token>`. If your SIEM
 expects a different scheme (Splunk HEC wants `Splunk <token>`), put a reverse

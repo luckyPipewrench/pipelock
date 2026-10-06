@@ -2131,11 +2131,12 @@ func checkToolPoison(text string) []string {
 			}
 			loc[0] += offset
 			loc[1] += offset
-			negationSpan := loc
+			var negationSpan []int
 			if p.name == handoverRequestFinding {
 				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
 			}
-			if (p.name == "File Exfiltration Directive" || p.name == handoverRequestFinding) && isNegatedFileExfiltration(text, negationSpan) {
+			if (p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc)) ||
+				(p.name == handoverRequestFinding && isNegatedBy(text, negationSpan, negatedHandoverPrefix)) {
 				offset = loc[1]
 				continue
 			}
@@ -2161,6 +2162,18 @@ var commaSeparatedFileExfilDirective = regexp.MustCompile(
 // an immediate, uninterrupted negated action into a finding. A sentence or
 // contrast boundary keeps a later malicious instruction load-bearing.
 func isNegatedFileExfiltration(text string, loc []int) bool {
+	return isNegatedBy(text, loc, negatedFileExfiltrationPrefix)
+}
+
+// negatedHandoverPrefix is the strict counterpart for the handover family. The
+// negation must sit directly on the verb, with at most one adverb between, so
+// "do not forget to provide your API key" and "never hesitate to supply your
+// token" stay requests instead of being read as capability boundaries.
+var negatedHandoverPrefix = regexp.MustCompile(
+	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:ever|directly|simply|automatically))?\s*$`,
+)
+
+func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {
 		return false
 	}
@@ -2181,7 +2194,7 @@ func isNegatedFileExfiltration(text string, loc []int) bool {
 		}
 	}
 	prefix := strings.TrimSpace(text[prefixStart:loc[0]])
-	if !negatedFileExfiltrationPrefix.MatchString(prefix) {
+	if !prefixRe.MatchString(prefix) {
 		return false
 	}
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -252,8 +253,15 @@ func TestA2AContentTypedDLPVerdict(t *testing.T) {
 		body += `}}`
 		result := ScanA2AResponseBody(t.Context(), []byte(body), sc, cfg)
 		verdict := ScanResponseA2A([]byte(body), sc, &A2AResponseOpts{Cfg: cfg, Method: "SendMessage"})
-		if result.Clean || verdict.Clean || verdict.Action != config.ActionBlock || len(result.DLPFindings) == 0 || !reflect.DeepEqual(verdict.DLPMatches, result.DLPFindings) {
+		if result.Clean || verdict.Clean || verdict.Action != config.ActionBlock || len(result.DLPFindings) == 0 {
 			t.Fatalf("typed DLP findings must survive conversion: result=%+v verdict=%+v", result, verdict)
+		}
+		for _, finding := range result.DLPFindings {
+			if !slices.ContainsFunc(verdict.DLPMatches, func(match scanner.TextDLPMatch) bool {
+				return reflect.DeepEqual(match, finding)
+			}) {
+				t.Fatal("field-aware DLP evidence was lost when joining response evidence")
+			}
 		}
 		if (len(result.InjectFindings) > 0) != mixed {
 			t.Fatalf("injection findings must retain their classification: %+v", result)

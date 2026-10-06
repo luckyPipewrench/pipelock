@@ -1242,17 +1242,37 @@ func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2ARespo
 // response-pattern injection, the class the core response floor governs.
 func scanA2AResponseDispatchClass(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) (jsonrpc.ScanVerdict, bool) {
 	rpcID := extractRPCID(line)
+	// Protocol routing adds field-aware checks without replacing the joined
+	// text, media, and complete-message bounds shared by MCP responses.
+	joined := a2aFallbackScan(line, sc, a2aOpts)
+	if joined.Error != "" {
+		return joined, false
+	}
 
 	if isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line) {
-		return scanAgentCardRPCResponse(line, sc, a2aOpts, rpcID)
+		return scanAgentCardRPCResponse(line, sc, a2aOpts, rpcID, joined)
 	}
 
 	// All other A2A methods: field-aware body scanning.
 	result := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
-	return a2aScanToVerdict(rpcID, result), len(result.InjectFindings) > 0
+	return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, result), joined), len(result.InjectFindings) > 0 || len(joined.Matches) > 0
 }
 
-func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts, rpcID json.RawMessage) (jsonrpc.ScanVerdict, bool) {
+func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanVerdict {
+	if verdict.Error != "" || joined.Clean {
+		return verdict
+	}
+	verdict.Clean = false
+	verdict.Action = config.StricterAction(verdict.Action, joined.Action)
+	verdict.Matches = appendUniqueResponseViewMatches(verdict.Matches, joined.Matches)
+	verdict.DLPMatches = appendUniqueA2ADLPFindings(verdict.DLPMatches, joined.DLPMatches)
+	if a2aDLPForcesBlock(joined.DLPMatches) {
+		verdict.Action = config.ActionBlock
+	}
+	return verdict
+}
+
+func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts, rpcID json.RawMessage, joined jsonrpc.ScanVerdict) (jsonrpc.ScanVerdict, bool) {
 	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}, false
@@ -1262,44 +1282,21 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 	// the response is an error instead of a result.
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
 		errResult := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
-		return a2aScanToVerdict(rpcID, errResult), len(errResult.InjectFindings) > 0
-	}
-	// The card scanner owns result fields; the generic response scanner owns
-	// the remaining visible envelope, with the same media and suppression rules.
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		return jsonrpc.ScanVerdict{ID: rpcID, Action: config.ActionBlock, Error: "invalid Agent Card envelope"}, false
-	}
-	delete(envelope, "result")
-	envelopeJSON, err := json.Marshal(envelope)
-	if err != nil {
-		return jsonrpc.ScanVerdict{ID: rpcID, Action: config.ActionBlock, Error: "invalid Agent Card envelope"}, false
-	}
-	// The envelope verdict already carries the response action.
-	envelopeVerdict := a2aFallbackScan(envelopeJSON, sc, a2aOpts)
-	if envelopeVerdict.Error != "" {
-		return envelopeVerdict, false
+		return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, errResult), joined), len(errResult.InjectFindings) > 0 || len(joined.Matches) > 0
 	}
 	if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
-		return envelopeVerdict, false
+		return mergeA2AResponseVerdicts(jsonrpc.ScanVerdict{ID: rpcID, Clean: true}, joined), len(joined.Matches) > 0
 	}
 	cardResult := scanAgentCard(
 		context.Background(), rpc.Result, sc,
-		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: envelopeVerdict.Clean},
+		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean},
 	)
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
 		a2aOpts.OnCardDriftAdopted()
 	}
 	verdict := agentCardToVerdict(rpcID, cardResult, a2aOpts.Cfg)
-	injection := len(cardResult.Findings.InjectFindings) > 0
-	if verdict.Error != "" || envelopeVerdict.Clean {
-		return verdict, injection
-	}
-	verdict.Clean = false
-	verdict.Action = config.StricterAction(a2aDefaultAction(a2aOpts.Cfg), config.StricterAction(verdict.Action, envelopeVerdict.Action))
-	verdict.Matches = appendUniqueResponseViewMatches(verdict.Matches, envelopeVerdict.Matches)
-	verdict.DLPMatches = appendUniqueA2ADLPFindings(verdict.DLPMatches, envelopeVerdict.DLPMatches)
-	return verdict, injection
+	injection := len(cardResult.Findings.InjectFindings) > 0 || len(joined.Matches) > 0
+	return mergeA2AResponseVerdicts(verdict, joined), injection
 }
 
 // isA2AResponseShape returns true if the JSON-RPC result object has fields

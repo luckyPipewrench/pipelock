@@ -231,8 +231,12 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	if joinedValues.Truncated {
 		return A2AScanResult{Action: config.ActionBlock, InspectionIncomplete: true, Reason: "a2a: input exceeds maximum inspectable nesting depth"}
 	}
+	joinedViews := a2aPartTextViews(body)
 	if len(joinedValues.Strings) > 0 {
-		injectResult := sc.ScanResponse(ctx, strings.Join(joinedValues.Strings, "\n"))
+		joinedViews = append(joinedViews, strings.Join(joinedValues.Strings, "\n"))
+	}
+	for _, view := range joinedViews {
+		injectResult := sc.ScanResponse(ctx, view)
 		if injectResult.Failed() {
 			result.Clean = false
 			result.ScanError = injectResult.ScanError
@@ -313,6 +317,49 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 
 	return result
+}
+
+// a2aPartTextViews preserves the text sequence of each message or artifact's
+// parts array. Discriminators and other metadata remain in the all-values view
+// but cannot interrupt this view. Separate arrays never share a text sequence.
+// The caller validates JSON and its shared depth bound before this traversal.
+func a2aPartTextViews(body []byte) []string {
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	var views []string
+	var walk func(any, int)
+	walk = func(value any, depth int) {
+		if depth > maxWalkDepth {
+			return
+		}
+		switch v := value.(type) {
+		case []any:
+			for _, child := range v {
+				walk(child, depth+1)
+			}
+		case map[string]any:
+			if parts, ok := v["parts"].([]any); ok {
+				var texts []string
+				for _, part := range parts {
+					if fields, ok := part.(map[string]any); ok {
+						if text, ok := fields["text"].(string); ok && text != "" {
+							texts = append(texts, text)
+						}
+					}
+				}
+				if len(texts) > 1 {
+					views = append(views, strings.Join(texts, " "))
+				}
+			}
+			for _, key := range jsonrpc.SortedKeys(v) {
+				walk(v[key], depth+1)
+			}
+		}
+	}
+	walk(parsed, 0)
+	return views
 }
 
 // a2aOverflowPass inspects a body whose field-aware walk ran out of budget.

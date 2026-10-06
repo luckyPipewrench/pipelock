@@ -2846,7 +2846,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 				// A pattern carrying a core floor name never honors an exemption,
 				// matching the body and response filters, so a custom pattern
 				// cannot exempt a core credential class by reusing its name.
-				if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
+				if p.exemptsHost(parsed.Hostname()) {
 					continue
 				}
 				span := newMatchSpan(start, end, target.viewLabel, p.name, p.bundle, p.bundleVersion)
@@ -3103,7 +3103,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 						continue
 					}
 					mismatch, audienceMismatch := s.credentialAudienceMismatch(p, target, "url")
-					if !p.core && len(p.credentialAudienceHosts) == 0 && len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+					if p.exemptsHost(hostname) {
 						continue
 					}
 					span := newMatchSpan(start, end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)

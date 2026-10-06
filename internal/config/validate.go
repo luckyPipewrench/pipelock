@@ -1540,21 +1540,48 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 			return fmt.Errorf("DLP pattern %q is a core safety-floor pattern and cannot set exempt_domains; core credential destinations are controlled only by immutable compiled policy", p.Name)
 		}
 		// Gate on the pattern's OWN compiled audience, matching the warn-action
-		// branch above. A customized pattern that merely reuses a built-in name
-		// carries no audience after normalize clears it, and the scanner also
-		// checks the compiled audience, so classifying its exempt_domains
-		// against the built-in list would make validation disagree with runtime.
-		if len(p.ExemptDomains) > 0 && len(p.CredentialAudienceHosts) > 0 {
-			if credentialAudienceDomainSubset(p.ExemptDomains, p.CredentialAudienceHosts) {
-				if warnings != nil {
+		// branch above. exempt_domains never costs a pattern its audience: an
+		// entry the audience already covers is redundant and ignored, and an
+		// entry outside it is honored by the scanner for that host only. The
+		// second is a widening the operator is entitled to choose, so it warns
+		// and the config loads, as the suppress and disable_patterns widenings do.
+		if len(p.ExemptDomains) > 0 && len(p.CredentialAudienceHosts) > 0 && warnings != nil {
+			var inside, outside []string
+			for _, domain := range p.ExemptDomains {
+				if credentialAudienceDomainSubset([]string{domain}, p.CredentialAudienceHosts) {
+					inside = append(inside, domain)
+				} else {
+					outside = append(outside, domain)
+				}
+			}
+			field := fmt.Sprintf("dlp.patterns[%d].exempt_domains", i)
+			if len(inside) > 0 {
+				*warnings = append(*warnings, Warning{
+					Field:   field,
+					Message: fmt.Sprintf("%s %v is a redundant subset of the compiled credential audience for %q and is ignored; remove it", field, inside, p.Name),
+				})
+			}
+			if len(outside) > 0 {
+				*warnings = append(*warnings, Warning{
+					Field:   field,
+					Message: fmt.Sprintf("%s %v is outside the compiled credential audience %v for %q: the pattern is skipped for those destinations, so the credential can leave for a host its vendor does not own", field, outside, p.CredentialAudienceHosts, p.Name),
+				})
+			}
+		}
+		// A pattern that reuses a built-in name replaces the built-in, and a
+		// changed regex, severity, validator or action costs it the compiled
+		// credential audience. The match then blocks at the vendor's own
+		// destinations too, which looks like an outage to the operator and
+		// otherwise says nothing about why.
+		if warnings != nil && p.Bundle == "" && len(p.CredentialAudienceHosts) == 0 {
+			if builtIn, ok := builtInAudiencePattern(p.Name); ok {
+				if changed := changedFromBuiltIn(p, builtIn); len(changed) > 0 {
 					*warnings = append(*warnings, Warning{
-						Field:   fmt.Sprintf("dlp.patterns[%d].exempt_domains", i),
-						Message: fmt.Sprintf("dlp.patterns[%d].exempt_domains is a redundant subset of the compiled credential audience for %q and is ignored; remove it", i, p.Name),
+						Field:   fmt.Sprintf("dlp.patterns[%d]", i),
+						Message: fmt.Sprintf("dlp.patterns[%d] %q replaces the built-in pattern of the same name and changes its %s, so its compiled credential audience %v no longer applies and every match blocks, vendor destinations included; keep the shipped regex, severity, validator and action to keep the audience, or give the pattern a different name", i, p.Name, strings.Join(changed, ", "), builtIn.CredentialAudienceHosts),
 					})
 				}
-				continue
 			}
-			return fmt.Errorf("dlp.patterns[%d].exempt_domains for %q would widen its compiled credential audience; delete dlp.patterns[%d].exempt_domains", i, p.Name, i)
 		}
 	}
 

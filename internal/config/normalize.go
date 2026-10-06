@@ -972,12 +972,14 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 }
 
 // markBuiltInCredentialAudienceHosts restores the immutable audience property
-// for generated preset YAML. The field is excluded from YAML, so only an exact
-// copy of a shipped pattern receives it after default merging. A changed regex,
-// severity, validator, or widening operator exemption stays a normal blocking
-// pattern. A legacy exemption that is already a subset of the compiled
-// audience remains an audience-bound pattern; validation warns that the stale
-// stanza is ignored instead of making a shipped config fail on upgrade.
+// for generated preset YAML. The field is excluded from YAML, so only a copy
+// of a shipped pattern receives it after default merging. A changed regex,
+// severity, validator or action stays a normal blocking pattern, and validation
+// warns that the compiled audience no longer applies. An operator
+// exempt_domains list is not part of the identity: it never changes what the
+// pattern matches, so it cannot cost the pattern its audience. Validation
+// warns about an entry the audience already covers (ignored) and about one
+// outside it (honored by the scanner, and a widening the operator chose).
 func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	// Clear every candidate ONCE, before matching. A clone carries the audience
 	// field, so a pattern whose regex, severity, validator or action was
@@ -1010,8 +1012,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate := &patterns[i]
 			if candidate.Bundle != "" || candidate.Name != builtIn.Name ||
 				candidate.Regex != builtIn.Regex || candidate.Severity != builtIn.Severity ||
-				candidate.Validator != builtIn.Validator || candidate.Action != builtIn.Action ||
-				!credentialAudienceExemptDomainsSubset(candidate.ExemptDomains, builtIn.CredentialAudienceHosts) {
+				candidate.Validator != builtIn.Validator || candidate.Action != builtIn.Action {
 				continue
 			}
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)
@@ -1030,17 +1031,6 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 // constructing a scanner.
 func RestoreBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 	markBuiltInCredentialAudienceHosts(patterns)
-}
-
-func credentialAudienceExemptDomainsSubset(domains, audience []string) bool {
-	if len(domains) == 0 {
-		return true
-	}
-	normalized := append([]string(nil), domains...)
-	if err := ValidateTrustedDomains(normalized, "credential audience exempt_domains"); err != nil {
-		return false
-	}
-	return credentialAudienceDomainSubset(normalized, audience)
 }
 
 // mergeResponsePatterns merges default response scanning patterns with user-defined patterns.

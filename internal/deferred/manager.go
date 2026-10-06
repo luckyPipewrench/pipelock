@@ -165,14 +165,16 @@ type HeldAction struct {
 	// outcome that actually happens. The returned finish func runs, via
 	// defer, after Resolve returns or panics.
 	Prepare func(Resolution) (Resolution, func())
-	// AfterJournal, when set, runs only for an allow, after the journal has
+	// AfterJournal, when set, normally runs for an allow, after the journal has
 	// recorded the release as pending and before it records the allow as final.
 	// It is where evidence that must not exist for a call that is never sent
 	// (the allow resolution receipt) belongs: Prepare runs ahead of the journal
 	// write and cannot know it will succeed. Because the journal still shows
 	// the release as pending while this runs, a process that dies here leaves a
 	// hold that restart recovery closes to block with its own receipt. A
-	// non-nil error closes the allow with a terminal block entry. Prepare's
+	// non-nil error closes the allow. If the terminal allow write fails, it
+	// also records the corrective block before its terminal journal entry;
+	// failure of that receipt skips the corrective terminal entry. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
 	AfterJournal func(Resolution) error
@@ -500,6 +502,17 @@ func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = SourceCancel
 		res.Reason = reason
+		// Resolve writes the final receipt before replying to the client, but
+		// it runs after the journal. Close the evidence here first: otherwise
+		// a crash before Resolve's receipt would leave only an allow receipt
+		// and a terminal block that prevents restart recovery from closing it.
+		if reason == ReasonReleaseNotJournaled && held.AfterJournal != nil {
+			if err := held.AfterJournal(res); err != nil {
+				m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
+					res.ResolutionSource, held.DeferID, err)
+				return
+			}
+		}
 		if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
 			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s: %v\n",
 				res.ResolutionSource, held.DeferID, err)

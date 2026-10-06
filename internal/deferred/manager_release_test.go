@@ -115,13 +115,13 @@ func TestManagerReleaseFailures(t *testing.T) {
 			// it to block.
 			name:       "terminal allow entry fails",
 			failWrites: []int{3},
-			wantCalled: 1, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
+			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
 			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateResolvedBlock},
 		},
 		{
 			name:       "terminal allow and corrective block both fail",
 			failWrites: []int{3, 4},
-			wantCalled: 1, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
+			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReleaseNotJournaled,
 			wantStates:  []string{StateHeld, StateHeld + "+release_pending"},
 			wantPending: 1, wantWarning: true,
 		},
@@ -308,6 +308,54 @@ func TestManagerJournalSyncFailure(t *testing.T) {
 			t.Fatalf("applied=%s hook calls=%d, want block with no receipt hook", applied, h.called)
 		}
 	})
+}
+
+// A corrective block must have its receipt before it closes the pending
+// release. A crash while that receipt is being written must remain recoverable.
+func TestManagerReleaseCorrectiveReceiptCrashRemainsPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		if res.FinalDecision == config.ActionBlock {
+			panic("crash before corrective receipt")
+		}
+		return nil
+	}, 3)
+	h.m.holds["held"].Resolve = func(Resolution) {
+		panic("crash before callback receipt")
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("crash hook did not run")
+			}
+		}()
+		_ = h.m.Resolve("held", config.ActionAllow, SourceApproval)
+	}()
+	pending, err := PendingJournal(h.journal)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending after corrective receipt crash = %d, err=%v; want 1", len(pending), err)
+	}
+}
+
+func TestManagerReleaseCorrectiveReceiptFailureRemainsPending(t *testing.T) {
+	h := newReleaseHarness(t, func(res Resolution) error {
+		if res.FinalDecision == config.ActionBlock {
+			return errors.New("corrective receipt failed")
+		}
+		return nil
+	}, 3)
+	if err := h.m.Resolve("held", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatal(err)
+	}
+	if h.called != 2 || h.got.FinalDecision != config.ActionBlock {
+		t.Fatalf("receipt attempts = %d, final = %s; want 2 and block", h.called, h.got.FinalDecision)
+	}
+	pending, err := PendingJournal(h.journal)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending after corrective receipt failure = %d, err=%v; want 1", len(pending), err)
+	}
+	if !strings.Contains(h.warn.String(), "audit_gap=true") {
+		t.Fatalf("missing audit gap warning: %s", h.warn.String())
+	}
 }
 
 // The v3.6.0 journal reader below is copied verbatim from the v3.6.0 tag

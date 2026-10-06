@@ -3479,9 +3479,9 @@ a2a_scanning:
   action: block
   scan_agent_cards: true
   detect_card_drift: true
-  session_smuggling_detection: true
-  max_context_messages: 100
-  max_contexts: 1000
+  session_smuggling_detection: true   # reserved, not enforced
+  max_context_messages: 100          # reserved, not enforced
+  max_contexts: 1000                 # reserved, not enforced
   scan_raw_parts: true
   max_raw_size: 1048576
   # Agent Card signature verification (independent attestation). See below.
@@ -3499,9 +3499,9 @@ a2a_scanning:
 | `action` | `warn` | Action on findings: `block` or `warn`. Immutable core DLP findings in an A2A body hard-block regardless of this action, including on the branch where `request_body_scanning` is disabled and A2A scanning alone carries the body floor. Non-core findings follow this action. A response finding never gets a weaker action than response scanning would apply to the same response: when `response_scanning` is enabled, the stricter of this action and the response action wins, including a per-server MCP trust action and, for event streams, `response_scanning.sse_streaming.action`. With `response_scanning` disabled, a core response pattern finding still blocks. |
 | `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
 | `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull). Evaluates what a change introduced rather than blocking on the fact of a change — see below. |
-| `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
-| `max_context_messages` | `100` | Per-context message cap |
-| `max_contexts` | `1000` | Total tracked contexts |
+| `session_smuggling_detection` | `true` | Reserved, not enforced: no transport tracks `contextId` across messages, so this setting has no effect on scanning. Each A2A message is still scanned on its own. Turning it off does not lower protection. |
+| `max_context_messages` | `100` | Reserved, not enforced (companion to `session_smuggling_detection`) |
+| `max_contexts` | `1000` | Reserved, not enforced (companion to `session_smuggling_detection`) |
 | `scan_raw_parts` | `true` | Reserved, not yet enforced: `Part.raw` is not base64-decoded for scanning. The raw value still passes through general content scanning as an opaque string. |
 | `max_raw_size` | `1048576` | Reserved, not yet enforced (companion to `scan_raw_parts`) |
 | `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |

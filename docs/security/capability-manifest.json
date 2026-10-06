@@ -1148,7 +1148,7 @@
     {
       "id": "a2a-scanning",
       "name": "A2A protocol scanning",
-      "summary": "Scans Agent-to-Agent messages and Agent Cards for poisoning, drift, and session smuggling.",
+      "summary": "Scans Agent-to-Agent messages and Agent Cards for injection, credentials, poisoning, and drift.",
       "tier": "Free",
       "visibility": "operator",
       "gate": {

@@ -1421,9 +1421,9 @@ type A2AScanning struct {
 	Action                    string `yaml:"action"`                      // block, warn
 	ScanAgentCards            bool   `yaml:"scan_agent_cards"`            // Agent Card skill poisoning
 	DetectCardDrift           bool   `yaml:"detect_card_drift"`           // rug-pull detection on Agent Cards
-	SessionSmugglingDetection bool   `yaml:"session_smuggling_detection"` // contextId tracking
-	MaxContextMessages        int    `yaml:"max_context_messages"`        // per-context message cap (default 100)
-	MaxContexts               int    `yaml:"max_contexts"`                // total tracked contexts (default 1000)
+	SessionSmugglingDetection bool   `yaml:"session_smuggling_detection"` // reserved, not enforced: no transport tracks contextId
+	MaxContextMessages        int    `yaml:"max_context_messages"`        // reserved, not enforced (default 100)
+	MaxContexts               int    `yaml:"max_contexts"`                // reserved, not enforced (default 1000)
 	ScanRawParts              bool   `yaml:"scan_raw_parts"`              // decode text-like Part.raw
 	MaxRawSize                int    `yaml:"max_raw_size"`                // encoded size cap for Part.raw decode (default 1MB)
 

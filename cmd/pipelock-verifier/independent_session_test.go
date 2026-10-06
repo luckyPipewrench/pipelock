@@ -97,3 +97,54 @@ func TestIndependentSession_Selection(t *testing.T) {
 		})
 	}
 }
+
+func TestIndependent_DirRejectsHostileBundleSession(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	key := readRunChainFixture(t, "signer-key.hex")
+	evidence := filepath.Join(runChainFixtures, "valid")
+	bundlePath, logPath := writeRunChainAnchor(t, evidence, key)
+	original, err := anchorpkg.LoadBundle(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []string{"../" + parityRun1, "/" + parityRun1, parityRun1 + "\n", parityRun2} {
+		t.Run(session, func(t *testing.T) {
+			bundle := original
+			bundle.Checkpoint.SessionID = session
+			path := filepath.Join(t.TempDir(), "hostile.json")
+			if err := anchorpkg.WriteBundle(path, bundle); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runRoot(t, "independent", evidence, "--dir", "--bundle", path, "--key", key, "--local-log", logPath, "--log-id", "verifier-test-log", "--json")
+			if code == cliutil.ExitOK || strings.Contains(stdout, `"valid":true`) {
+				t.Fatalf("hostile session verified: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestCompleteness_PerRunDirectoryRequiresSession(t *testing.T) {
+	t.Parallel()
+	key := readRunChainFixture(t, "signer-key.hex")
+	evidence := filepath.Join(runChainFixtures, "valid")
+	for _, tc := range []struct {
+		name         string
+		args         []string
+		wantReceipts bool
+	}{
+		{"default", nil, false}, {"explicit run", []string{"--session", parityRun1}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"completeness", evidence, "--key", key, "--json"}, tc.args...)
+			stdout, stderr, code := runRoot(t, args...)
+			report := parseCompletenessReport(t, stdout)
+			t.Logf("code=%d status=%s reason=%s receipts=%d stderr=%s", code, report.Status, report.Reason, report.ReceiptCount, stderr)
+			if (report.ReceiptCount > 0) != tc.wantReceipts {
+				t.Fatalf("unexpected receipt count %d", report.ReceiptCount)
+			}
+			if !tc.wantReceipts && code == cliutil.ExitOK {
+				t.Fatal("empty default session succeeded")
+			}
+		})
+	}
+}

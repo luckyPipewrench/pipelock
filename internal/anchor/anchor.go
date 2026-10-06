@@ -709,24 +709,49 @@ func PreflightStateMarker(dir string, checkpoint Checkpoint) error {
 		return err
 	}
 	defer unlock()
-	if _, statErr := os.Lstat(filepath.Join(cleanDir, stateMarkerIndexDir)); statErr == nil {
-		if err := validateStateMarkerIndexDir(filepath.Join(cleanDir, stateMarkerIndexDir)); err != nil {
+	indexPath := filepath.Join(cleanDir, stateMarkerIndexDir)
+	_, statErr := os.Lstat(indexPath)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect anchor-state index: %w", statErr)
+	}
+	if statErr == nil {
+		if err := validateStateMarkerIndexDir(indexPath); err != nil {
 			return err
 		}
-		path, pathErr := StateMarkerPath(cleanDir, marker)
-		if pathErr != nil {
-			return pathErr
-		}
-		existing, found, loadErr := LoadStateMarkerFile(path)
+		existing, found, loadErr := LoadIndexedStateMarker(cleanDir, marker)
 		if loadErr != nil {
 			return loadErr
 		}
 		if found {
-			return fmt.Errorf("this checkpoint is already anchored (session %q, final seq %d, %s backend, log index %d, bundle %s); refusing to submit it again", existing.SessionID, existing.FinalSeq, existing.Backend, existing.LogIndex, existing.BundlePath)
+			return alreadyAnchoredError(existing)
 		}
+	} else {
+		// Mirror the strict read performed before legacy index migration.
+		// Resilient history reads intentionally skip damaged pointers, but a
+		// writer must not erase the only record of an earlier anchor.
+		legacy, found, loadErr := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker))
+		if loadErr != nil {
+			return fmt.Errorf("inspect legacy anchor-state pointer before index migration: %w", loadErr)
+		}
+		if found && stateMarkerIdentity(legacy) == stateMarkerIdentity(marker) {
+			return alreadyAnchoredError(legacy)
+		}
+	}
+	// A regular damaged pointer is recoverable when an index exists; a
+	// symlink or directory cannot be replaced by the recording path.
+	if info, err := os.Lstat(filepath.Join(cleanDir, legacyStateMarker)); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("anchor-state latest marker is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect anchor-state latest marker: %w", err)
 	}
 	_, err = latestStateMarkerUpdate(cleanDir, marker, nil, checkpoint.ReceiptCount)
 	return err
+}
+
+func alreadyAnchoredError(existing StateMarker) error {
+	return fmt.Errorf("this checkpoint is already anchored (session %q, final seq %d, %s backend, log index %d, bundle %s); refusing to submit it again", existing.SessionID, existing.FinalSeq, existing.Backend, existing.LogIndex, existing.BundlePath)
 }
 
 // StateMarkersEqual reports whether two markers carry the same state. Time is

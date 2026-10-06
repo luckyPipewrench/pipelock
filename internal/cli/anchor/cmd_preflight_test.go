@@ -98,9 +98,9 @@ func TestReceiptsCmdRekorRefusesConflictingHistoryBeforeSubmit(t *testing.T) {
 	if err != nil || len(markers) != 1 {
 		t.Fatalf("LoadStateMarkers = %d markers, err %v", len(markers), err)
 	}
-	real := markers[0]
+	recorded := markers[0]
 
-	data, err := os.ReadFile(receiptsPath)
+	data, err := os.ReadFile(filepath.Clean(receiptsPath))
 	if err != nil {
 		t.Fatalf("read receipts: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestReceiptsCmdRekorRefusesConflictingHistoryBeforeSubmit(t *testing.T) {
 		t.Fatalf("write receipts copy: %v", err)
 	}
 	otherRoot := sha256.Sum256([]byte("a different history"))
-	forged := real
+	forged := recorded
 	forged.RootHash = hex.EncodeToString(otherRoot[:])
 	forged.BundleSHA256 = hex.EncodeToString(otherRoot[:])
 	forged.BundlePath = "forged.json"
@@ -131,5 +131,65 @@ func TestReceiptsCmdRekorRefusesConflictingHistoryBeforeSubmit(t *testing.T) {
 	}
 	if got := hits.Load(); got != 0 {
 		t.Fatalf("the Rekor log received %d request(s) for a checkpoint that conflicts with local history", got)
+	}
+}
+
+func TestReceiptsCmdRekorPreflightDamagedState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+		want  string
+	}{
+		{"corrupt legacy", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "anchor-state.json"), []byte("broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "legacy"},
+		{"symlink latest with index", func(t *testing.T, dir string) {
+			if err := os.Mkdir(filepath.Join(dir, "anchor-state.d"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("absent", filepath.Join(dir, "anchor-state.json")); err != nil {
+				t.Fatal(err)
+			}
+		}, "regular file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receiptsPath, keyHex := cliReceiptJSONL(t)
+			tc.setup(t, filepath.Dir(receiptsPath))
+			rekorKey := writeRekorKey(t, t.TempDir())
+			server, hits := countingRekor(t)
+			cmd := receiptsCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			cmd.SetArgs(rekorAnchorArgs(receiptsPath, keyHex, rekorKey, server.URL, "bundle.json"))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Execute = %v, want %q", err, tc.want)
+			}
+			if hits.Load() != 0 {
+				t.Fatalf("Rekor received %d requests", hits.Load())
+			}
+		})
+	}
+}
+
+func TestReceiptsCmdRekorFailedSubmitCanRetry(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	rekorKey := writeRekorKey(t, t.TempDir())
+	server, hits := countingRekor(t)
+	for attempt := 0; attempt < 2; attempt++ {
+		cmd := receiptsCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
+		cmd.SetArgs(rekorAnchorArgs(receiptsPath, keyHex, rekorKey, server.URL, "bundle.json"))
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "unexpected submission") {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("retry requests = %d, want 2", hits.Load())
 	}
 }

@@ -211,6 +211,14 @@ type Manager struct {
 	pendingJournal map[string]journalEntry
 	// fileSync replaces File.Sync for journal writes in tests; nil uses it.
 	fileSync func(*os.File) error
+	// dirSync replaces directorysync.Sync in tests; nil uses it.
+	dirSync func(string) error
+	// journalDirSynced records that this manager has synced the journal's
+	// directory since it started. It is set only after a sync succeeds, so a
+	// failed attempt is retried on the next write, and it starts false so a
+	// file created by an earlier process that died before its directory sync
+	// is covered too. Guarded by journalMu.
+	journalDirSynced bool
 }
 
 var (
@@ -833,8 +841,6 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return err
 		}
-		_, statErr := os.Stat(path)
-		created := errors.Is(statErr, os.ErrNotExist)
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
@@ -850,10 +856,11 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 		if err := m.syncFile(f); err != nil {
 			return fmt.Errorf("sync defer journal: %w", err)
 		}
-		if created {
-			if err := directorysync.Sync(dir); err != nil {
+		if !m.journalDirSynced {
+			if err := m.syncDir(dir); err != nil {
 				return fmt.Errorf("sync defer journal directory: %w", err)
 			}
+			m.journalDirSynced = true
 		}
 		return nil
 	}
@@ -861,6 +868,13 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 		return m.cfg.JournalWriteGuard(write)
 	}
 	return write()
+}
+
+func (m *Manager) syncDir(dir string) error {
+	if m.dirSync != nil {
+		return m.dirSync(dir)
+	}
+	return directorysync.Sync(dir)
 }
 
 func (m *Manager) syncFile(f *os.File) error {

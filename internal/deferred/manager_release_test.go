@@ -358,6 +358,64 @@ func TestManagerReleaseCorrectiveReceiptFailureRemainsPending(t *testing.T) {
 	}
 }
 
+// TestManagerJournalDirectorySyncRetries checks the journal's directory is
+// synced until a sync succeeds. A first write whose data sync or directory sync
+// fails leaves the file in place, so later writes must still sync the
+// directory; otherwise a crash could drop the whole journal, held entries and
+// all, after those later writes reported success.
+func TestManagerJournalDirectorySyncRetries(t *testing.T) {
+	errSync := errors.New("injected sync failure")
+	for _, tc := range []struct {
+		name     string
+		failFile bool
+		failDir  bool
+	}{
+		{name: "first data sync fails", failFile: true},
+		{name: "first directory sync fails", failDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Minute, JournalPath: filepath.Join(t.TempDir(), "journal.jsonl")})
+			fileSyncs, dirSyncs := 0, 0
+			m.fileSync = func(f *os.File) error {
+				fileSyncs++
+				if tc.failFile && fileSyncs == 1 {
+					return errSync
+				}
+				return f.Sync()
+			}
+			m.dirSync = func(string) error {
+				dirSyncs++
+				if tc.failDir && dirSyncs == 1 {
+					return errSync
+				}
+				return nil
+			}
+			hold := func(id string) error {
+				return m.Hold(HeldAction{DeferID: id, ActionID: id, Resolve: func(Resolution) {}})
+			}
+			if err := hold("first"); !errors.Is(err, errSync) {
+				t.Fatalf("first hold err = %v, want injected sync failure", err)
+			}
+			if err := hold("second"); err != nil {
+				t.Fatalf("second hold: %v", err)
+			}
+			wantDirSyncs := 1
+			if tc.failDir {
+				wantDirSyncs = 2
+			}
+			if dirSyncs != wantDirSyncs {
+				t.Fatalf("directory syncs after retry = %d, want %d", dirSyncs, wantDirSyncs)
+			}
+			if err := hold("third"); err != nil {
+				t.Fatalf("third hold: %v", err)
+			}
+			if dirSyncs != wantDirSyncs {
+				t.Fatalf("directory syncs after a confirmed sync = %d, want %d (no repeat)", dirSyncs, wantDirSyncs)
+			}
+		})
+	}
+}
+
 // The v3.6.0 journal reader below is copied verbatim from the v3.6.0 tag
 // (internal/deferred/manager.go), renamed, so the cross-version tests run the
 // released parser rather than a description of it. Do not edit it.

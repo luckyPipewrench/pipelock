@@ -2541,7 +2541,8 @@ def _definition_end(lines: list[str], anchor: int, path: str = "") -> tuple[int,
     # A bare `name()` line is a call in Go and Python. It is a shell function
     # only when its body opener follows on the same line, or, in a shell
     # script, on the next line; in Go a next-line brace is an unrelated block.
-    shell_header = re.match(r"\s*(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)", first)
+    # `name()` or `function name()`, plus bash's `function name` with no parens.
+    shell_header = re.match(r"\s*(?:function\s+[A-Za-z_]\w*(?:\s*\(\s*\))?|[A-Za-z_]\w*\s*\(\s*\))", first)
     shell_body = bool(shell_header) and bool(
         re.match(r"\s*\{", first[shell_header.end():])
         or (_is_shell_path(path) and anchor + 1 < limit and re.match(r"\s*\{", lines[anchor + 1]))

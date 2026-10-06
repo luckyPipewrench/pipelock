@@ -2723,6 +2723,8 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertEqual(pr_review._definition_end(["\thelper()", "\t{", "\t\twork()", "\t}", "}"], 0, "main.go"), (1, False))
         self.assertEqual(pr_review._definition_end(next_line_brace, 0), (1, False))
         self.assertEqual(pr_review._definition_end(["helper() {", "  echo hi", "}", "next"], 0), (3, False))
+        # bash's keyword form with no parentheses
+        self.assertEqual(pr_review._definition_end(["function helper {", "  echo hi", "}", "next"], 0), (3, False))
 
     def test_nearby_hits_merge_all_context(self) -> None:
         matches = [(0, "example.txt", line, "hit") for line in (8, 16, 24)]

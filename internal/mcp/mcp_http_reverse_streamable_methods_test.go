@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -851,10 +852,27 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			const upstreamBody = "DELETE upstream body must not leak"
+			// The upstream is a catch-all on an ephemeral port, and a port that
+			// was just freed can still receive requests aimed at it by an
+			// earlier listener's pollers or clients, here or in another process.
+			// Judge only the request this test caused: the one for its own
+			// unique path. Anything else is not the proxy's doing. The proxy
+			// requests the configured upstream URL as given, with no path
+			// joining, so the DELETE arrives at exactly upstreamPath.
+			upstreamPath := "/delete-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			var deleteSeen atomic.Bool
+			var wrongMethod atomic.Value
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodDelete {
-					t.Fatalf("method = %s, want DELETE", r.Method)
+				if r.URL.Path != upstreamPath {
+					http.NotFound(w, r)
+					return
 				}
+				if r.Method != http.MethodDelete {
+					wrongMethod.Store(r.Method)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				deleteSeen.Store(true)
 				if tc.status == http.StatusSwitchingProtocols {
 					writeSwitchingProtocolsResponse(t, w, "text/plain", upstreamBody)
 					return
@@ -866,7 +884,7 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 			}))
 			defer upstream.Close()
 
-			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL+upstreamPath, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, baseURL+"/", nil)
 			if err != nil {
 				t.Fatalf("NewRequest: %v", err)
@@ -881,6 +899,12 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 				t.Fatalf("ReadAll: %v", err)
 			}
 
+			if method := wrongMethod.Load(); method != nil {
+				t.Fatalf("proxy sent %v upstream, want DELETE", method)
+			}
+			if !deleteSeen.Load() {
+				t.Fatal("DELETE never reached the upstream")
+			}
 			if resp.StatusCode != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
 			}

@@ -106,7 +106,11 @@ func collidingJSONDecoy(t *testing.T, session string, key []byte) string {
 	if contentBucket == "" {
 		t.Fatal("content leaf was not partitioned")
 	}
-	for i := range 20000 {
+	// Each name lands in the content bucket with probability 1/ceeJSONBodyBucketCount
+	// under a per-buffer random key, so the first hit is geometric with a mean near
+	// 4096. A bound of 20000 names failed about 0.8% of the time; this one makes a
+	// miss astronomically unlikely and costs the same on average.
+	for i := range 100 * ceeJSONBodyBucketCount {
 		name := "d" + strconv.Itoa(i)
 		body := `{"messages":[{"role":"user","content":"` + marker + `"}],"` + name + `":"INTRUDERTEXT"}`
 		got, _ := jsonBodyFragmentPayloads("application/json", []byte(body), session, key)

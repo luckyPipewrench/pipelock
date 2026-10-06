@@ -319,15 +319,15 @@ Once an active manifest is promoted, the runtime gates every URL-bearing transpo
 | Intercept proxy | yes | n/a | TLS-intercepted CONNECT path. |
 | `/fetch` | yes | n/a | Target URL from query parameter. |
 | WebSocket `/ws` | yes (handshake) | n/a | Per-frame scanning unchanged. |
-| MCP HTTP listener (`--listen --upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed while no contract is active; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
-| MCP stdio-to-HTTP bridge (`--upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed while no contract is active; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
+| MCP HTTP listener (`--listen --upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed with no active contract, or when `ssrf.ip_allowlist` covers them; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
+| MCP stdio-to-HTTP bridge (`--upstream`) | yes (configured upstream) | yes (per `tools/call`) | Local/private upstreams allowed with no active contract, or when `ssrf.ip_allowlist` covers them; see [MCP upstream URL under an active contract](#live-enforcement). Cloud metadata endpoints blocked. |
 | MCP stdio subprocess wrap (`-- COMMAND`) | n/a (no remote URL) | yes (per `tools/call`) | Denied tool calls return a JSON-RPC error with block-reason metadata; subprocess is not invoked. |
 
 **MCP upstream URL under an active contract:**
 
-The upstream rows above are allowed to be local or private only while no contract is active. Once a manifest is active for the agent, the configured upstream URL goes through the same scanner check as any other destination, and a scanner block wins over the contract. A scanner-blocked loopback or private upstream such as `http://127.0.0.1/mcp` is refused with block reason `parse_error` and the log line `contract upstream denied` in every contract mode, until `ssrf.ip_allowlist` covers its address (for example `127.0.0.0/8`) or, for an upstream given by hostname, `trusted_domains` names that host (an IP literal never matches `trusted_domains`). Cloud metadata addresses stay blocked either way.
+The upstream rows above accept a local or private upstream without any extra setting only while no contract is active. Once a manifest is active for the agent, the configured upstream URL goes through the same scanner check as any other destination, and a scanner block wins over the contract. A scanner-blocked loopback or private upstream such as `http://127.0.0.1/mcp` is refused with block reason `parse_error` and the log line `contract upstream denied` in every contract mode, until `ssrf.ip_allowlist` covers its address (for example `127.0.0.0/8`) or, for an upstream given by hostname, `trusted_domains` names that host (an IP literal never matches `trusted_domains`). Cloud metadata addresses stay blocked either way.
 
-If the scanner allows the URL, contract-only denials apply only in live mode. Shadow and capture mode keep the scanner verdict.
+If the scanner allows the URL, for example because `ssrf.ip_allowlist` covers a private upstream, contract-only denials apply only in live mode. Shadow and capture mode keep the scanner verdict, so that upstream passes there.
 
 In live mode, an allowed upstream also needs a contract rule for its host, and that rule is evaluated on the default port only. When a rule for the upstream's host exists and the URL carries a non-default port (for example `:8080`), the request is refused with `contract_non_default_port`, even if `ssrf.ip_allowlist` allows the address. A contract cannot permit an upstream on a non-default port, so put the upstream behind the scheme's default port (80 or 443) before enforcing a contract for it.
 

@@ -191,6 +191,9 @@ func EmitMCPDecision(
 	return outbound, err
 }
 
+// emitMCPV2Decision writes the v2 proxy_decision receipt for opts. durable
+// selects the fsync-confirmed write; required turns an underivable v2 payload
+// into an error instead of a skip.
 func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, required, durable bool) error {
 	if v2Emitter == nil {
 		return nil
@@ -256,6 +259,8 @@ const (
 	mcpOutcomeStatusBlocked = "blocked"
 )
 
+// emitMCPOutcome writes an outcome receipt to whichever emitters exist and
+// logs a failure; outcomes never block, so the error is not returned.
 func emitMCPOutcome(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,

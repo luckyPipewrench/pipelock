@@ -50,8 +50,10 @@ func TestManagerAfterJournal(t *testing.T) {
 			wantJournal: []string{`"state":"resolved_block","source":"approval"`},
 		},
 		{
-			name: "journal failure never calls the hook", decision: config.ActionAllow, breakLog: true,
-			wantFinal: config.ActionBlock, wantSource: SourceCancel,
+			// The hook runs once, for the corrective block receipt; no allow
+			// receipt is attempted for a release the journal never accepted.
+			name: "journal failure calls the hook only for the block", decision: config.ActionAllow, breakLog: true,
+			wantCalled: true, wantFinal: config.ActionBlock, wantSource: SourceCancel,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

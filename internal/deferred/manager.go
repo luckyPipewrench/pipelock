@@ -172,9 +172,9 @@ type HeldAction struct {
 	// write and cannot know it will succeed. Because the journal still shows
 	// the release as pending while this runs, a process that dies here leaves a
 	// hold that restart recovery closes to block with its own receipt. A
-	// non-nil error closes the allow. If the terminal allow write fails, it
-	// also records the corrective block before its terminal journal entry;
-	// failure of that receipt skips the corrective terminal entry. Prepare's
+	// non-nil error closes the allow. Whenever a release closes to block, it
+	// is called again with the block resolution before the terminal journal
+	// entry, so that block's receipt is written first. Prepare's
 	// finish func is still pending, so the release claim and sink lock cover
 	// this call.
 	AfterJournal func(Resolution) error
@@ -503,22 +503,30 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 // The call is sent only after step 3, from Resolve. A process that dies after
 // step 1 leaves a pending hold that restart recovery closes to block with its
 // own receipt, and the payload was never journaled, so it cannot be re-sent.
-// Any step that fails closes the allow to block; the terminal block entry is
-// best effort, and if it is lost too the pending entry still recovers to block.
+// Any step that fails closes the allow to block. The block's own receipt is
+// written through AfterJournal before its terminal entry, so a process that
+// dies in between leaves a pending hold, never a closed hold with no block
+// receipt. If that corrective receipt fails after an allow receipt was
+// written, the terminal entry is skipped and the still-pending release
+// recovers to block at the next start; a terminal block next to a lone allow
+// receipt would read as a released call. With no allow receipt on disk the
+// terminal block is still written, so a failing recorder costs one visible
+// receipt gap rather than a hold every restart must recover.
 func (m *Manager) journalRelease(held *HeldAction, res Resolution) Resolution {
 	closeAllow := func(reason string) {
 		res.FinalDecision = config.ActionBlock
 		res.ResolutionSource = SourceCancel
 		res.Reason = reason
-		// Resolve writes the final receipt before replying to the client, but
-		// it runs after the journal. Close the evidence here first: otherwise
-		// a crash before Resolve's receipt would leave only an allow receipt
-		// and a terminal block that prevents restart recovery from closing it.
-		if reason == ReasonReleaseNotJournaled && held.AfterJournal != nil {
+		// Resolve writes the final receipt, but only after the journal. Write
+		// it here first so the terminal entry never precedes its receipt;
+		// Resolve then reuses it.
+		if held.AfterJournal != nil {
 			if err := held.AfterJournal(res); err != nil {
 				m.warnf("pipelock: warning event=deferred_resolution_receipt_failed audit_gap=true source=%s defer_id=%s: %v\n",
 					res.ResolutionSource, held.DeferID, err)
-				return
+				if reason == ReasonReleaseNotJournaled {
+					return
+				}
 			}
 		}
 		if err := m.appendJournal(journalEntryFromHeld(*held, StateResolvedBlock, res.ResolutionSource)); err != nil {
@@ -870,6 +878,7 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 	return write()
 }
 
+// syncDir makes the journal's directory entry durable.
 func (m *Manager) syncDir(dir string) error {
 	if m.dirSync != nil {
 		return m.dirSync(dir)
@@ -877,6 +886,7 @@ func (m *Manager) syncDir(dir string) error {
 	return directorysync.Sync(dir)
 }
 
+// syncFile makes a journal write durable.
 func (m *Manager) syncFile(f *os.File) error {
 	if m.fileSync != nil {
 		return m.fileSync(f)

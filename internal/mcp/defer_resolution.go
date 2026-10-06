@@ -83,9 +83,9 @@ func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 // deferredReceiptSettlement orders a released call's evidence. The allow
 // resolution receipt is the proof that a held call was released, so it is
 // written after the journal records a pending release (Manager.AfterJournal).
-// If the terminal allow journal entry then fails, the same hook writes the
-// corrective block receipt before a corrective terminal journal entry. Resolve
-// reuses that receipt instead of emitting another one.
+// Whenever the release then closes to block, the same hook writes the
+// corrective block receipt before the corrective terminal journal entry, and
+// Resolve reuses that receipt instead of emitting another one.
 // Prepare runs before the journal and so only probes that a required receipt
 // could be written at all.
 //
@@ -131,7 +131,7 @@ func receiptWritable(opts MCPProxyOpts) bool {
 }
 
 // commitAllow writes the release resolution receipt from Manager.AfterJournal:
-// the initial allow, or a corrective block if the terminal allow write fails.
+// the initial allow, or the corrective block when the release closes.
 func (s *deferredReceiptSettlement) commitAllow(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	return s.emit(opts, logW, res)
 }

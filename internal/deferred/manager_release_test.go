@@ -18,11 +18,12 @@ import (
 )
 
 type releaseHarness struct {
-	m       *Manager
-	journal string
-	called  int
-	got     Resolution
-	warn    strings.Builder
+	m        *Manager
+	journal  string
+	called   int
+	lastHook string
+	got      Resolution
+	warn     strings.Builder
 }
 
 // newReleaseHarness holds one action whose AfterJournal hook runs hook. failWrites
@@ -51,6 +52,7 @@ func newReleaseHarness(t *testing.T, hook func(Resolution) error, failWrites ...
 		Authority: AuthoritySnapshot{SessionID: "session"},
 		AfterJournal: func(res Resolution) error {
 			h.called++
+			h.lastHook = res.FinalDecision
 			if hook == nil {
 				return nil
 			}
@@ -98,16 +100,20 @@ func TestManagerReleaseFailures(t *testing.T) {
 			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateResolvedAllow},
 		},
 		{
+			// The hook still runs once, for the corrective block receipt.
 			name:       "release-pending entry fails",
 			failWrites: []int{2},
-			wantFinal:  config.ActionBlock,
+			wantCalled: 1, wantFinal: config.ActionBlock,
 			wantStates: []string{StateHeld, StateResolvedBlock},
 		},
 		{
+			// No allow receipt exists, so a failed corrective receipt still
+			// gets its terminal block: a visible gap, not a false allow.
 			name:       "receipt hook fails",
 			hookErr:    errReceipt,
-			wantCalled: 1, wantFinal: config.ActionBlock, wantReason: ReasonReceiptNotWritten,
-			wantStates: []string{StateHeld, StateHeld + "+release_pending", StateResolvedBlock},
+			wantCalled: 2, wantFinal: config.ActionBlock, wantReason: ReasonReceiptNotWritten,
+			wantStates:  []string{StateHeld, StateHeld + "+release_pending", StateResolvedBlock},
+			wantWarning: true,
 		},
 		{
 			// The allow receipt exists, but the call must not be sent: the
@@ -159,6 +165,49 @@ func TestManagerReleaseFailures(t *testing.T) {
 				if len(pending) != tc.wantPending {
 					t.Fatalf("%s reader pending = %d, want %d", name, len(pending), tc.wantPending)
 				}
+			}
+		})
+	}
+}
+
+// TestManagerReleaseCorrectiveReceiptPrecedesTerminalEntry checks every way a
+// release closes to block: the block's receipt is attempted while the journal
+// still has no terminal block, so a process that dies before that receipt
+// leaves a hold recovery can close rather than a closed hold with no receipt.
+func TestManagerReleaseCorrectiveReceiptPrecedesTerminalEntry(t *testing.T) {
+	errReceipt := errors.New("receipt write failed")
+	for _, tc := range []struct {
+		name       string
+		failWrites []int
+		allowErr   error
+	}{
+		{name: "release-pending entry fails", failWrites: []int{2}},
+		{name: "allow receipt fails", allowErr: errReceipt},
+		{name: "terminal allow entry fails", failWrites: []int{3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var h *releaseHarness
+			blockCalls := 0
+			h = newReleaseHarness(t, func(res Resolution) error {
+				if res.FinalDecision != config.ActionBlock {
+					return tc.allowErr
+				}
+				blockCalls++
+				for _, state := range journalStates(t, h.journal) {
+					if state == StateResolvedBlock {
+						t.Fatalf("terminal block journaled before its receipt")
+					}
+				}
+				return nil
+			}, tc.failWrites...)
+			if _, err := h.m.resolveApplied("held", config.ActionAllow, SourceApproval); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if blockCalls != 1 {
+				t.Fatalf("corrective receipt attempts = %d, want 1", blockCalls)
+			}
+			if got := journalStates(t, h.journal); got[len(got)-1] != StateResolvedBlock {
+				t.Fatalf("journal states = %v, want a terminal block last", got)
 			}
 		})
 	}
@@ -304,8 +353,9 @@ func TestManagerJournalSyncFailure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
-		if applied != config.ActionBlock || h.called != 0 {
-			t.Fatalf("applied=%s hook calls=%d, want block with no receipt hook", applied, h.called)
+		// The only receipt attempted is the corrective block.
+		if applied != config.ActionBlock || h.called != 1 || h.lastHook != config.ActionBlock {
+			t.Fatalf("applied=%s hook calls=%d last=%s, want block with only the corrective block receipt", applied, h.called, h.lastHook)
 		}
 	})
 }

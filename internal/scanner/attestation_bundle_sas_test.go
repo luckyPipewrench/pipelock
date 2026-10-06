@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -42,6 +43,8 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
+	now := time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
 	t.Cleanup(s.Close)
 
 	query := attestationBundleQuery("bundle-sas-fixture", nil)
@@ -152,11 +155,11 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 	// Traversal is refused earlier by the URL scanner; the predicate must
 	// refuse it on its own too, so a future scanner reorder cannot open it.
 	for _, p := range []string{"/attestations/../other/blob.json.sn", "/attestations/%2e%2e/other/blob.json.sn", "/attestations/./x.json.sn"} {
-		if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "https://tmaproduction.blob.core.windows.net"+p+"?"+query) {
+		if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "https://tmaproduction.blob.core.windows.net"+p+"?"+query, now) {
 			t.Fatalf("predicate allowed path %q", p)
 		}
 	}
-	if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "http://tmaproduction.blob.core.windows.net/attestations/1152497359/2026/10/03/52325653.json.sn?"+query) {
+	if attestationBundleSASAllowed("tmaproduction.blob.core.windows.net", "http://tmaproduction.blob.core.windows.net/attestations/1152497359/2026/10/03/52325653.json.sn?"+query, now) {
 		t.Fatal("predicate allowed http scheme")
 	}
 
@@ -173,8 +176,8 @@ func TestScan_GitHubAttestationBundleSAS(t *testing.T) {
 	// The documented staging account uses the same shape. A day-long window
 	// matches the REST example and stays inside the measured cap.
 	staging := attestationBundleURL("tmastaging.blob.core.windows.net", attestationBundleQuery("bundle-staging", func(v url.Values) {
-		v.Set("st", "2024-11-08T17:13:43Z")
-		v.Set("se", "2024-11-09T17:13:43Z")
+		v.Set("st", "2026-10-03T21:29:55Z")
+		v.Set("se", "2026-10-04T21:29:55Z")
 		v.Set("spr", "https")
 	}))
 	staged := s.Scan(context.Background(), staging)
@@ -191,6 +194,8 @@ func TestAttestationBundleSASReleasesOnlyTheSignature(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
+	now := time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
 	t.Cleanup(s.Close)
 
 	aws := "AKIA" + "IOSFODNN7" + "EXAMPLE"

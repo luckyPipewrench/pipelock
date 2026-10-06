@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -27,7 +28,7 @@ const (
 func fakeAudienceJWT() string {
 	enc := base64.RawURLEncoding
 	header := enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"/asset","nbf":1000,"exp":1300}`))
+	payload := enc.EncodeToString([]byte(`{"aud":"release-assets.githubusercontent.com","iss":"github.com","path":"releaseassetproduction.blob.core.windows.net","nbf":1000,"exp":1300}`))
 	sum := sha256.Sum256([]byte("audience-fixture"))
 	return header + "." + payload + "." + enc.EncodeToString(sum[:])
 }
@@ -53,6 +54,7 @@ func oddHeaderJWT() string {
 func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	grant := fakeAudienceJWT()
 	unrelated := claimJWT(`{"aud":"api.vendor.example","iss":"auth.vendor.example","sub":"svc"}`)
@@ -99,6 +101,7 @@ func TestScan_GitHubReleaseGrantJWT_RequiresGrantClaims(t *testing.T) {
 func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	jwt := fakeAudienceJWT()
 
@@ -192,6 +195,7 @@ func TestScan_GitHubReleaseGrantJWT_RealRedirectShapeDefaultEntropy(t *testing.T
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	s := MustNew(cfg)
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	query := releaseGrantSASQuery(fakeAudienceJWT(), "release-redirect-sig-fixture")
 	target := "https://" + githubReleaseAssetsHost + "/github-production-release-asset/212613049/00000000-0000-4000-8000-000000000003?" + query
@@ -217,6 +221,7 @@ func TestScan_GitHubReleaseGrantJWT_RealRedirectShapeDefaultEntropy(t *testing.T
 func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	jwt := fakeAudienceJWT()
 	wrongHostJWT := claimJWT(`{"aud":"api.vendor.example","iss":"github.com","nbf":1000,"exp":1300}`)
@@ -272,6 +277,7 @@ func TestScan_GitHubReleaseGrantSAS_RequiresGrantAndShape(t *testing.T) {
 func TestScan_GitHubReleaseGrantSAS_PathCarriageStaysBlocked(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	jwt := fakeAudienceJWT()
 	sig := releaseGrantSASSig("path-carriage-fixture")
@@ -290,6 +296,7 @@ func TestScan_GitHubReleaseGrantSAS_PathCarriageStaysBlocked(t *testing.T) {
 func TestScan_GitHubReleaseGrantJWT_OtherCredentialsStayBlocked(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	jwt := fakeAudienceJWT()
 	for name, credential := range map[string]string{
@@ -317,6 +324,7 @@ func TestScan_GitHubReleaseGrantJWT_OtherCredentialsStayBlocked(t *testing.T) {
 func TestFilterTextDLPMatchesForDestination_GitHubReleaseGrantJWTOnlyInQuery(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	matches := s.ScanTextForDLPQuiet(context.Background(), fakeAudienceJWT()).Matches
 	if !matchRetained(matches, jwtPatternName) {
@@ -373,6 +381,7 @@ func TestBuiltInAudiencesQueryCarriageIsJWTOnly(t *testing.T) {
 func TestUrlDLPAudienceSurface_Edges(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	var jwtPattern, plainPattern *compiledPattern
 	for _, p := range s.dlpPatterns {
@@ -492,6 +501,7 @@ func TestCredentialAudienceURLQueryRequiresHTTPS(t *testing.T) {
 func TestReleaseGrantSASQueryValueAllowed_ExactFieldNames(t *testing.T) {
 	t.Parallel()
 	s := MustNew(credentialAudienceTestConfig())
+	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	parsed, err := url.Parse("https://" + githubReleaseAssetsHost + "/asset/1?" + releaseGrantSASQuery(fakeAudienceJWT(), "exact-name-fixture"))
 	if err != nil {

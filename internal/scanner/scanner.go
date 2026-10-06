@@ -252,6 +252,7 @@ func IsCoreCriticalResult(r Result) bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
+	now                       func() time.Time
 	core                      *compiledCoreScanner // immutable safety floor - always runs, no config knobs
 	allowlist                 []string
 	blocklist                 []string
@@ -458,6 +459,8 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 // boundary: invalid config-derived compile inputs and unavailable runtime
 // files are returned as errors so callers can fail closed without panicking.
 type Options struct {
+	// Now supplies the URL grant clock. Nil uses time.Now. Set at construction.
+	Now               func() time.Time
 	DestinationGrants destination.GrantSet
 	// ToolCommandEnvLookups builds a scanner for text that is a local tool
 	// command, result or agent message, never bytes on the wire. In such a
@@ -502,7 +505,12 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		allowlist = cfg.APIAllowlist
 	}
 
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	s := &Scanner{
+		now:                       now,
 		core:                      initCoreScanner(cfg),
 		allowlist:                 allowlist,
 		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
@@ -1138,6 +1146,7 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
 func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (result Result) {
+	now := s.currentTime()
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
 			Allowed: false,
@@ -1240,9 +1249,12 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (res
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
-	dlpResult, dlpWarns := s.checkDLPWithDecodes(scanURL, &decodes)
+	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	if !dlpResult.Allowed {
+		if note := s.queryGrantValidityNote(scanURL, now); note != "" {
+			dlpResult.Reason += "; " + note
+		}
 		dlpResult.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)
 		return dlpResult
@@ -1266,7 +1278,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (res
 		result.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)
 	}()
-	if result := s.checkEntropyWithContext(ctx, scanURL); !result.Allowed {
+	if result := s.checkEntropyWithContextAt(ctx, scanURL, now); !result.Allowed {
 		return result
 	}
 
@@ -2682,8 +2694,12 @@ func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMa
 	return s.checkDLPWithDecodes(parsed, &decodes)
 }
 
-func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
-	var queryLessMemo queryLessDLPMemo
+func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (Result, []WarnMatch) {
+	return s.checkDLPWithDecodesAt(parsed, decodes, s.currentTime())
+}
+
+func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, now time.Time) (result Result, warnMatches []WarnMatch) {
+	queryLessMemo := queryLessDLPMemo{now: now, nowSet: true}
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
@@ -2794,7 +2810,7 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (r
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
 			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
-				if allow, allowed := s.credentialAudienceAllows(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo)); allowed {
+				if allow, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo), now); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
 				}
@@ -3052,10 +3068,10 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
-					if surface == credentialAudienceURLQuerySurface && !candidateTokensAreGrants(p, cleaned, target) {
+					if surface == credentialAudienceURLQuerySurface && !candidateTokensAreGrants(p, cleaned, target, s.queryScanTime(memo)) {
 						surface = "url"
 					}
-					if allow, allowed := s.credentialAudienceAllows(p, target, surface); allowed {
+					if allow, allowed := s.credentialAudienceAllowsAt(p, target, surface, s.queryScanTime(memo)); allowed {
 						credentialAudienceAllows = append(credentialAudienceAllows, allow)
 						continue
 					}
@@ -4533,6 +4549,10 @@ func entropyQueryValues(rawQuery string) url.Values {
 }
 
 func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) Result {
+	return s.checkEntropyWithContextAt(ctx, parsed, s.currentTime())
+}
+
+func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL, now time.Time) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
@@ -4608,7 +4628,7 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
 				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) ||
-					s.queryValueIsAudienceCredential(parsed.String(), v) || s.releaseGrantSASQueryValueAllowed(parsed, key) {
+					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) {
 					continue
 				}
 				return s.queryEntropyParamResult(key, finding)

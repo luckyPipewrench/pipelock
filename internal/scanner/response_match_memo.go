@@ -69,6 +69,11 @@ func (m *responseMatchMemo) match(pf *responsePreFilter, patterns []*compiledPat
 			remaining = append(remaining, p)
 			if pf != nil {
 				remainingFilter.gates = append(remainingFilter.gates, pf.gates[i])
+				if i < len(pf.proofs) {
+					remainingFilter.proofs = append(remainingFilter.proofs, pf.proofs[i])
+				} else {
+					remainingFilter.proofs = append(remainingFilter.proofs, nil)
+				}
 			}
 		}
 	}

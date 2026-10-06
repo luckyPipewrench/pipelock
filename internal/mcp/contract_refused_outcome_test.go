@@ -341,9 +341,14 @@ func TestRunHTTPListenerProxyLiveLock_BlockedOutcomeIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	// A contract denial proves the intent's receipt was written: had its sync
+	// failed, the input scan would have refused the call for the receipt and
+	// the upstream gate would never have run. So the failure logged below can
+	// only be the blocked outcome's.
+	if got := decodeRPCError(t, string(body))[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s (the intent receipt must succeed)", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
 	cancel()
 	_ = ln.Close()

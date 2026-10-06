@@ -350,7 +350,7 @@ func a2aPartTextViews(body []byte) []string {
 					}
 				}
 				if len(texts) > 1 {
-					views = append(views, strings.Join(texts, " "))
+					views = append(views, strings.Join(texts, "\n"))
 				}
 			}
 			for _, key := range jsonrpc.SortedKeys(v) {

@@ -53,7 +53,7 @@ func TestA2ATypedPartsKeepJoinedInspection(t *testing.T) {
 func TestA2APartTextViewsKeepMessageBoundaries(t *testing.T) {
 	body := []byte(`{"history":[{"parts":[{"kind":"text","text":"First note"},{"kind":"text","text":"continues here"}]},{"parts":[{"text":"Second note"},{"text":"continues separately"}]}]}`)
 	views := a2aPartTextViews(body)
-	if !reflect.DeepEqual(views, []string{"First note continues here", "Second note continues separately"}) {
+	if !reflect.DeepEqual(views, []string{"First note\ncontinues here", "Second note\ncontinues separately"}) {
 		t.Fatalf("message boundaries changed: %v", views)
 	}
 	if a2aPartTextViews([]byte(`{`)) != nil {
@@ -112,13 +112,23 @@ func TestA2ABenignMultipartReviewCorpus(t *testing.T) {
 			for i := range parts {
 				parts[i] = map[string]string{"kind": "text", "text": "Quarterly summary row. " + strings.Repeat("The report lists totals and dates. ", 3)}
 			}
-			body, err := json.Marshal(map[string]any{"parts": parts})
+			payload := map[string]any{"parts": parts}
+			messages := 1
+			if count == 2000 {
+				var history []any
+				for i := 0; i < count; i += 10 {
+					history = append(history, map[string]any{"role": "user", "parts": parts[i : i+10]})
+				}
+				payload = map[string]any{"history": history}
+				messages = len(history)
+			}
+			body, err := json.Marshal(payload)
 			if err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
 			v := ScanA2AResponseBody(t.Context(), body, sc, cfg)
-			t.Logf("parts=%d bytes=%d elapsed=%s clean=%t action=%s overflow=%t", count, len(body), time.Since(start), v.Clean, v.Action, v.BudgetExceeded)
+			t.Logf("messages=%d parts=%d bytes=%d elapsed=%s clean=%t action=%s overflow=%t", messages, count, len(body), time.Since(start), v.Clean, v.Action, v.BudgetExceeded)
 			if len(v.InjectFindings) != 0 || len(v.DLPFindings) != 0 || v.ScanError != "" || v.InspectionIncomplete || !v.Clean && (!v.BudgetExceeded || v.Action != config.ActionWarn) {
 				t.Fatal("benign multipart corpus acquired a security finding or incomplete scan")
 			}

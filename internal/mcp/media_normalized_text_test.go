@@ -393,7 +393,9 @@ func TestLargeBenignMediaIsDeliveredNotBudgetBlocked(t *testing.T) {
 				if !verdict.Clean || verdict.Error != "" {
 					t.Fatalf("benign %d MiB image was not delivered: %+v", mib, verdict)
 				}
-				if elapsed > 30*time.Second {
+				// The race detector slows a 7 MiB scan to about a minute; see
+				// TestTextHeavyMediaIsDeliveredNotBudgetBlocked.
+				if elapsed > 5*time.Minute {
 					t.Fatalf("scan took %s", elapsed)
 				}
 			})

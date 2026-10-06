@@ -36,7 +36,7 @@ func TestJSONNestingBoundParity(t *testing.T) {
 			if value == nil {
 				t.Fatalf("%s no longer declares const %s; update this parity list", decl.file, decl.name)
 			}
-			if !refersToMaxExtractDepth(value) {
+			if !refersToMaxExtractDepth(value, decl.file == "internal/extract/json.go") {
 				t.Fatalf("%s: const %s must be MaxExtractDepth, not its own value", decl.file, decl.name)
 			}
 		})
@@ -64,10 +64,13 @@ func constValue(file *ast.File, name string) ast.Expr {
 	return nil
 }
 
-func refersToMaxExtractDepth(expr ast.Expr) bool {
+// refersToMaxExtractDepth reports whether expr names the shared bound. A bare
+// MaxExtractDepth means the shared constant only inside the extract package
+// itself; anywhere else it would be a package-local alias that can drift.
+func refersToMaxExtractDepth(expr ast.Expr, inExtractPackage bool) bool {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return e.Name == "MaxExtractDepth"
+		return inExtractPackage && e.Name == "MaxExtractDepth"
 	case *ast.SelectorExpr:
 		pkg, ok := e.X.(*ast.Ident)
 		return ok && pkg.Name == "extract" && e.Sel.Name == "MaxExtractDepth"

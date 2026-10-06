@@ -88,8 +88,11 @@ func TestA2AOverflowIncompletePassBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var result A2AScanResult
-	if !a2aOverflowPass(ctx, []byte(a2aWideBody(10500, "hello")), sc, &result) && result.ScanError == "" {
-		t.Fatal("an overflow pass that could not complete must block")
+	a2aOverflowPass(ctx, []byte(a2aWideBody(10500, "hello")), sc, &result)
+	// The caller turns ScanError into a block, so an incomplete pass must
+	// always record one; returning without it would let the body through.
+	if result.ScanError == "" {
+		t.Fatalf("an overflow pass that could not complete must record a scan error, got %+v", result)
 	}
 }
 

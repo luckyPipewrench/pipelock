@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -188,6 +189,20 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	}
 
 	steps := installSteps(opts)
+	// Check the source before users, directories, or migration artifacts can
+	// change. The staged candidate is checked again before promotion.
+	target, err := pipelockConfigPreflightTargetFor(env, opts, true)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	if target.missingManaged {
+		// Reuse the existing missing-config diagnostic before creating users
+		// or directories for a service that cannot start.
+		return cliutil.ExitCodeError(cliutil.ExitConfig, missingManagedPipelockConfigError(target.unitPath))
+	}
+	if err := requireContainForwardProxy(env, target.checkPath, target.checkPath); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 
 	if opts.dryRun {
 		if err := preflightPipelockConfig(ctx, env, opts, true); err != nil {
@@ -198,7 +213,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	}
 
 	_, _ = fmt.Fprintln(env.out, "pipelock contain install")
-	_, err := runSteps(ctx, env, env.out, steps)
+	_, err = runSteps(ctx, env, env.out, steps)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 	}
@@ -436,6 +451,12 @@ func displayBindProperty(env *installEnv) string {
 func renderContainedLaunchWrapper(env *installEnv) string {
 	anchor := filepath.Base(env.networkNamespaceUnitPath)
 	launcher := filepath.Join(env.wrapperDir, "plk-launch")
+	pinned := shellQuote(env.pipelockTarget)
+	agent := shellQuote(env.agentUserName)
+	expand := ""
+	if flag := strings.TrimSpace(expandEnvironmentFlag(env)); flag != "" {
+		expand = "  " + flag + "\n"
+	}
 	return strings.Join([]string{
 		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
@@ -458,12 +479,39 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 		`    echo "plk-contained-launch: the contained network namespace is inactive; run pipelock contain install" >&2`,
 		`    exit 1`,
 		`fi`,
-		// --expand-environment requires systemd 254. `contain run` rejects older
-		// systemd in its preflight, but this generated wrapper is invoked
-		// directly and never runs that preflight, so an unconditional flag here
-		// makes every plk-* launch fail on systemd 253 and earlier before
-		// plk-launch even starts. Emit it only where it is supported.
-		`exec /usr/bin/systemd-run --wait --collect --service-type=exec` + expandEnvironmentFlag(env) + ` --property=PrivateTmp=true --property=PrivateNetwork=true --property=JoinsNamespaceOf=` + shellQuote(anchor) + displayBindProperty(env) + ` --uid=` + shellQuote(env.agentUserName) + ` --gid=` + shellQuote(env.agentUserName) + ` --working-directory=` + shellQuote(env.agentHome) + ` --pipe --pty -- ` + shellQuote(launcher) + ` "$@"`,
+		// Filesystem properties are computed at launch. Command substitution
+		// under set -e aborts when the helper fails; a process substitution
+		// would not. The pinned binary is the one install placed, never PATH.
+		`launch_properties="$(` + pinned + ` contain launch-properties --agent-user ` + agent + `)" || exit 1`,
+		`property_args=()`,
+		`if [[ -n "${launch_properties}" ]]; then`,
+		`  while IFS= read -r line || [[ -n "${line}" ]]; do`,
+		`    [[ -z "${line}" ]] && continue`,
+		`    property_args+=("--property=${line}")`,
+		`  done <<< "${launch_properties}"`,
+		`fi`,
+		`systemd_args=(`,
+		`  --wait`,
+		`  --collect`,
+		`  --service-type=exec`,
+		strings.TrimRight(expand, "\n"),
+		`  --property=PrivateTmp=true`,
+		`  --property=PrivateNetwork=true`,
+		`  --property=JoinsNamespaceOf=` + shellQuote(anchor),
+		`)`,
+		`if ((${#property_args[@]} > 0)); then`,
+		`  systemd_args+=("${property_args[@]}")`,
+		`fi`,
+		`systemd_args+=(`,
+		`  --uid=` + agent,
+		`  --gid=` + agent,
+		`  --working-directory=` + shellQuote(env.agentHome),
+		`  --pipe`,
+		`  --pty`,
+		`  --`,
+		`  ` + shellQuote(launcher),
+		`)`,
+		`exec /usr/bin/systemd-run "${systemd_args[@]}" "$@"`,
 		"",
 	}, "\n")
 }
@@ -1416,6 +1464,13 @@ func stepStagePipelockConfig(opts installOpts) step {
 			if err != nil {
 				return cleanup(err)
 			}
+			// A brand-new managed config gets filesystem enforce. An existing
+			// file, including one that never mentioned the key, stays as it is
+			// so an upgrade does not start hiding the operator's filesystem.
+			data, err = applyFreshFilesystemDefault(env, data)
+			if err != nil {
+				return cleanup(err)
+			}
 			paths, err := containServiceReadOnlyPaths(data, env.proxyPort)
 			if err != nil {
 				return cleanup(fmt.Errorf("read file_sentry paths for service sandbox: %w", err))
@@ -1607,11 +1662,7 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 		return err
 	}
 	if target.missingManaged {
-		return fmt.Errorf("contain install config preflight failed for %s: --config is required if the managed config is not already in place. "+
-			"No --config was given and no config exists at the managed path, so the service would start with no configuration. "+
-			"Pass --config to copy a pipelock.yaml to %s. "+
-			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
-			target.unitPath, target.unitPath)
+		return missingManagedPipelockConfigError(target.unitPath)
 	}
 	if target.drySource {
 		_, _ = fmt.Fprintf(env.out,
@@ -1659,8 +1710,38 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; rerun install with a stable --pipelock-binary path",
 			target.unitPath, env.pipelockBinary)
 	}
+	if err := requireContainForwardProxy(env, target.checkPath, target.unitPath); err != nil {
+		return err
+	}
 	if !dryRun {
 		env.preflightBinaryHash = binaryHashAfter
+	}
+	return nil
+}
+
+func missingManagedPipelockConfigError(path string) error {
+	return fmt.Errorf("contain install config preflight failed for %s: --config is required if the managed config is not already in place. "+
+		"No --config was given and no config exists at the managed path, so the service would start with no configuration. "+
+		"Pass --config to copy a pipelock.yaml to %s. "+
+		"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
+		path, path)
+}
+
+// General config validation permits fetch-only operation. Containment needs
+// forwarding because its clients use CONNECT and absolute-URI requests.
+func requireContainForwardProxy(env *installEnv, checkPath, displayPath string) error {
+	data, err := env.readFile(checkPath)
+	if err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s: read config: %w; refusing config promotion, binary installation, service restart, or nftables loading", displayPath, err)
+	}
+	var cfg config.Config
+	// The selected binary still owns full schema and build compatibility.
+	// Decode the same boolean type here without resolving runtime files.
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("contain install config preflight failed for %s: parse config: %w; refusing config promotion, binary installation, service restart, or nftables loading", displayPath, err)
+	}
+	if !cfg.ForwardProxy.Enabled {
+		return fmt.Errorf("contain install config preflight failed for %s: containment requires forward_proxy.enabled: true for CONNECT and absolute-URI requests; set forward_proxy.enabled: true in this config and rerun contain install; refusing config promotion, binary installation, service restart, or nftables loading", displayPath)
 	}
 	return nil
 }

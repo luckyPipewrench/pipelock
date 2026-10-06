@@ -125,7 +125,7 @@ func TestStepWritePipelockConfig_CopiesFromSource(t *testing.T) {
 	}
 	dst := filepath.Join(env.configDir, "pipelock.yaml")
 	got, _ := os.ReadFile(dst) //nolint:gosec // tmpdir-scoped test path
-	if string(got) != "mode: balanced\nmetrics_listen: 127.0.0.1:9091\n" {
+	if string(got) != "mode: balanced\nmetrics_listen: 127.0.0.1:9091\ncontainment:\n  filesystem:\n    mode: enforce\n" {
 		t.Errorf("dst: %q", got)
 	}
 }

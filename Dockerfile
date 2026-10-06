@@ -33,6 +33,7 @@ ARG BUILD_DATE=unknown
 ARG GIT_COMMIT=unknown
 ARG LICENSE_PUBLIC_KEY=""
 ARG RULES_KEYRING_HEX=""
+ARG RELEASE_KEYRING_HEX=""
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN apk add --no-cache tini-static=0.19.0-r3 && \
@@ -44,7 +45,8 @@ RUN apk add --no-cache tini-static=0.19.0-r3 && \
       -X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion=$(go version | awk '{print $3}') \
       -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION} \
       -X github.com/luckyPipewrench/pipelock/internal/license.PublicKeyHex=${LICENSE_PUBLIC_KEY} \
-      -X github.com/luckyPipewrench/pipelock/internal/rules.KeyringHex=${RULES_KEYRING_HEX}" \
+      -X github.com/luckyPipewrench/pipelock/internal/rules.KeyringHex=${RULES_KEYRING_HEX} \
+      -X github.com/luckyPipewrench/pipelock/internal/release.PublicKeyringHex=${RELEASE_KEYRING_HEX}" \
     -o /pipelock ./cmd/pipelock
 
 # Scratch-based final image (~15MB)

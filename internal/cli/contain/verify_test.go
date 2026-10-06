@@ -3969,6 +3969,9 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.privateTmpProbe = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test private temporary-directory canary passed"
 	}
+	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
+		return statusPass, "test filesystem profile enforced"
+	}
 	env.browserCATrust = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test NSS browser CA trust passed"
 	}

@@ -130,6 +130,12 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if err != nil {
 		return err
 	}
+	// Refuse a checkpoint the anchor state would reject before the submit: a
+	// remote log entry cannot be withdrawn, so a conflict found afterwards
+	// leaves a public entry behind an error.
+	if err := anchorpkg.PreflightStateMarker(output.receiptDir, checkpoint); err != nil {
+		return err
+	}
 	proof, err := backend.Submit(checkpoint)
 	if err != nil {
 		return err
@@ -187,6 +193,9 @@ func resolveBundleOutput(target string, opts receiptsOptions) (bundleOutput, err
 	}
 	if rel == "." {
 		return bundleOutput{}, fmt.Errorf("--out must name an anchor bundle file under the receipt directory")
+	}
+	if anchorpkg.IsStateMarkerIndexPath(rel) {
+		return bundleOutput{}, fmt.Errorf("--out must stay outside the anchor-state index directory")
 	}
 	if err := validateBundleOutputPath(receiptDir, bundlePath); err != nil {
 		return bundleOutput{}, err

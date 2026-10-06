@@ -458,7 +458,7 @@
       },
       "availability": {
         "scope": "platform_dependent",
-        "qualifier": "Kernel-enforced containment requires Linux, a private network namespace, nftables, and the managed identities. The recommended unprivileged systemd service emits signed pre-launch posture from a root signer that verifies its own managed namespace and proxy doorway; contain run instead signs a host-side preflight and also emits a post-session workspace statement."
+        "qualifier": "Kernel-enforced containment requires Linux, a private network namespace, nftables, and the managed identities. The recommended unprivileged systemd service emits signed pre-launch posture from a root signer that verifies its own managed namespace and proxy doorway; contain run instead signs a host-side preflight and also emits a post-session workspace statement. Filesystem confinement is a separate containment.filesystem.mode setting. enforce hides the host filesystem with ProtectSystem=strict and ProtectHome=tmpfs and binds the agent home plus unexpired workspace grants. Omitted or off leaves the mount namespace unchanged aside from private temporary directories. A process that can create a user namespace can remount, same-uid /proc stays visible, private /tmp is shared with the network-namespace anchor and its forwarders, and operator-written units are left unchanged."
       },
       "surface_coverage": [
         {

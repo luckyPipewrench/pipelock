@@ -98,6 +98,11 @@ type ContainLaunchEvidence struct {
 	ProxyPort    int      `json:"proxy_port"`
 	EnvVars      []string `json:"env_vars"`
 	EnvSHA256    string   `json:"env_sha256"`
+	// FilesystemMode and FilesystemBindsSHA256 are optional. Absent means this
+	// launch did not confine the host filesystem. They do not change
+	// BoundaryVerified, which remains the nftables boundary.
+	FilesystemMode        string `json:"filesystem_mode,omitempty"`
+	FilesystemBindsSHA256 string `json:"filesystem_binds_sha256,omitempty"`
 }
 
 const (
@@ -111,6 +116,11 @@ type ContainmentEvidence struct {
 	ProbeRefusedDirectEgress bool   `json:"probe_refused_direct_egress"`
 	KernelRuleHash           string `json:"kernel_rule_hash,omitempty"`
 	TargetUID                string `json:"target_uid"`
+	// FilesystemMode and FilesystemBindsSHA256 report the mount profile. They
+	// are optional and do not feed the nftables grade. Absent means the host
+	// filesystem was not confined.
+	FilesystemMode        string `json:"filesystem_mode,omitempty"`
+	FilesystemBindsSHA256 string `json:"filesystem_binds_sha256,omitempty"`
 }
 
 // DiscoverEvidence captures high-level MCP protection counts.
@@ -420,6 +430,14 @@ func RenderProofMarkdown(c *Capsule) string {
 		_, _ = fmt.Fprintf(&b, "- Proxy port: %d\n", launch.ProxyPort)
 		_, _ = fmt.Fprintf(&b, "- Env SHA-256: `%s`\n", launch.EnvSHA256)
 		_, _ = fmt.Fprintf(&b, "- Env vars: `%s`\n", strings.Join(launch.EnvVars, "`, `"))
+		if launch.FilesystemMode != "" {
+			_, _ = fmt.Fprintf(&b, "- Filesystem mode: `%s`\n", launch.FilesystemMode)
+			_, _ = fmt.Fprintf(&b, "- Filesystem binds SHA-256: `%s`\n", launch.FilesystemBindsSHA256)
+		}
+	}
+	if containment := c.Evidence.Containment; containment != nil && containment.FilesystemMode != "" {
+		_, _ = fmt.Fprintf(&b, "- Containment filesystem mode: `%s`\n", containment.FilesystemMode)
+		_, _ = fmt.Fprintf(&b, "- Containment filesystem binds SHA-256: `%s`\n", containment.FilesystemBindsSHA256)
 	}
 
 	return b.String()

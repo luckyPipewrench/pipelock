@@ -81,6 +81,16 @@ const (
 	statusFail    = "fail"
 	statusSkip    = "skip"
 	statusUnknown = "unknown"
+	// statusFilesystemOff is not confinement and not a skipped probe. contain
+	// run allows it. verify and doctor count it apart from pass, fail, skip,
+	// and unknown so an upgrade that leaves the key absent stays exit 0.
+	statusFilesystemOff = "off"
+	// statusFilesystemNotApplicable is the service-posture result. Pipelock
+	// does not render that unit, so it neither tests nor signs a filesystem
+	// claim. The status is not a pass and is not confinement. verify and
+	// doctor never produce it; an unexpected appearance is coerced to fail.
+	statusFilesystemNotApplicable = "not-applicable"
+	filesystemNotApplicableDetail = "not applicable: operator-managed unit"
 
 	// Internal: cap on stdout/stderr we keep from a subprocess so a
 	// runaway command can't blow the runner's heap.
@@ -193,24 +203,30 @@ type probeEnv struct {
 
 	now func() time.Time
 
-	runCmd                 runCommand
-	dropCounter            dropCounterFunc
-	dialCtx                dialFunc
-	wait                   waitFunc
-	lookupUser             lookupUserFunc
-	groupIDs               groupIDsFunc
-	stat                   func(path string) (os.FileInfo, error)
-	lstat                  func(path string) (os.FileInfo, error)
-	readFile               func(path string) ([]byte, error)
-	readDir                func(path string) ([]os.DirEntry, error)
-	readLink               func(path string) (string, error)
-	selfPath               func() (string, error)
-	hashFile               func(path string) (string, error)
-	privateTmpProbe        func(context.Context, *probeEnv) (string, string)
-	networkNamespaceProbe  func(context.Context, *probeEnv) (string, string)
-	agentProcessNetnsProbe func(context.Context, *probeEnv, string) (string, string)
-	currentCA              func(context.Context, *probeEnv) ([]byte, error)
-	displaySocket          func(int) string
+	runCmd          runCommand
+	dropCounter     dropCounterFunc
+	dialCtx         dialFunc
+	wait            waitFunc
+	lookupUser      lookupUserFunc
+	groupIDs        groupIDsFunc
+	stat            func(path string) (os.FileInfo, error)
+	lstat           func(path string) (os.FileInfo, error)
+	readFile        func(path string) ([]byte, error)
+	readDir         func(path string) ([]os.DirEntry, error)
+	readLink        func(path string) (string, error)
+	selfPath        func() (string, error)
+	hashFile        func(path string) (string, error)
+	privateTmpProbe func(context.Context, *probeEnv) (string, string)
+	filesystemProbe func(context.Context, *probeEnv) (string, string)
+	filesystem      filesystemProfile
+	// filesystemCanaryOmitProperties is a test seam. The confined canary unit
+	// is started without the filesystem profile, so a real probe must fail.
+	// Production leaves it false.
+	filesystemCanaryOmitProperties bool
+	networkNamespaceProbe          func(context.Context, *probeEnv) (string, string)
+	agentProcessNetnsProbe         func(context.Context, *probeEnv, string) (string, string)
+	currentCA                      func(context.Context, *probeEnv) ([]byte, error)
+	displaySocket                  func(int) string
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -410,6 +426,7 @@ func allProbes() []probe {
 		{19, "pipelock_ca_export_current", "exported Pipelock CA matches the CA in the contain-managed keystore", probeCurrentCAExport},
 		{probeBrowserCATrustNum, probeBrowserCATrust, "contained agent NSS database trusts the Pipelock CA", probeBrowserCATrustState},
 		{21, "agent_network_namespace", "contained-agent namespace is private and reaches only its proxy socket", probeAgentNetworkNamespace},
+		{27, "filesystem_confinement", "contained-agent filesystem profile hides the host and binds only the agent home and unexpired workspace grants", probeFilesystemConfinement},
 	}
 }
 
@@ -1365,6 +1382,7 @@ type aggregateBody struct {
 	Fail     int `json:"fail"`
 	Skip     int `json:"skip"`
 	Unknown  int `json:"unknown,omitempty"`
+	Off      int `json:"off,omitempty"`
 	Total    int `json:"total"`
 	ExitCode int `json:"exit_code"`
 }
@@ -1383,9 +1401,9 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run containment probes against the containment model",
-		Long: `Run fifteen fixed probes to verify the workstation containment model
+		Long: `Run nineteen fixed probes to verify the workstation containment model
 is installed correctly and the boundary is intact. A conditional workspace
-probe runs as a sixteenth result when workspace paths or grants are present.
+probe runs as an additional result when workspace paths or grants are present.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
 wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY
@@ -1491,7 +1509,7 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 	if opts.enforcementOnly {
 		probes = enforcementProbes(probes)
 	}
-	var passN, failN, skipN, unknownN int
+	var passN, failN, skipN, unknownN, offN int
 
 	for _, p := range probes {
 		status, detail := p.fn(ctx, &runEnv)
@@ -1504,6 +1522,8 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 			skipN++
 		case statusUnknown:
 			unknownN++
+		case statusFilesystemOff:
+			offN++
 		default:
 			// A probe returned something unexpected. Coerce to fail
 			// and carry the value forward so we don't silently drop it.
@@ -1544,17 +1564,14 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 			Fail:     failN,
 			Skip:     skipN,
 			Unknown:  unknownN,
+			Off:      offN,
 			Total:    len(probes),
 			ExitCode: exitCode,
 		}}); err != nil {
 			return fmt.Errorf("encoding aggregate JSON: %w", err)
 		}
 	} else {
-		if unknownN > 0 {
-			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP / %d UNKNOWN — exit %d\n", passN, failN, skipN, unknownN, exitCode)
-		} else {
-			_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
-		}
+		_, _ = fmt.Fprint(w, formatContainAggregate(passN, failN, skipN, unknownN, offN, exitCode))
 		if err := textWriter.Err(); err != nil {
 			return fmt.Errorf("writing verify aggregate: %w", err)
 		}
@@ -1588,6 +1605,17 @@ func enforcementProbes(probes []probe) []probe {
 }
 
 // writeTextLine renders one probe outcome in text mode.
+func formatContainAggregate(passN, failN, skipN, unknownN, offN, exitCode int) string {
+	line := fmt.Sprintf("Result: %d PASS / %d FAIL / %d SKIP", passN, failN, skipN)
+	if unknownN > 0 {
+		line += fmt.Sprintf(" / %d UNKNOWN", unknownN)
+	}
+	if offN > 0 {
+		line += fmt.Sprintf(" / %d OFF", offN)
+	}
+	return fmt.Sprintf("%s — exit %d\n", line, exitCode)
+}
+
 func writeTextLine(w io.Writer, p probe, status, detail string) {
 	tag := "[PASS]"
 	switch status {
@@ -1597,6 +1625,10 @@ func writeTextLine(w io.Writer, p probe, status, detail string) {
 		tag = "[SKIP]"
 	case statusUnknown:
 		tag = "[UNKNOWN]"
+	case statusFilesystemOff:
+		tag = "[OFF]"
+	case statusFilesystemNotApplicable:
+		tag = "[N/A]"
 	}
 
 	line := fmt.Sprintf("  %s probe %d: %s", tag, p.n, p.desc)

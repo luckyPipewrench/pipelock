@@ -689,16 +689,16 @@ func TestDoctorDisplayChecksFollowConfiguredViewer(t *testing.T) {
 	// Keep the viewer unit lookup off the host: a workstation with a real
 	// contained viewer installed would otherwise decide the disabled case.
 	env.displayUnitPath = filepath.Join(root, "pipelock-contain-display.service")
-	if got := doctorChecksForEnv(&doctorEnv{}); len(got) != 8 {
+	if got := doctorChecksForEnv(&doctorEnv{}); len(got) != 9 {
 		t.Fatalf("unconfigured checks = %d", len(got))
 	}
 	for _, tc := range []struct {
 		name, body string
 		want       int
 	}{
-		{"invalid", "containment: [", 8},
-		{"xvfb", "containment:\n  display:\n    enabled: true\n    backend: xvfb\n", 9},
-		{"xvnc", "containment:\n  display:\n    enabled: true\n    backend: xvnc\n", 12},
+		{"invalid", "containment: [", 9},
+		{"xvfb", "containment:\n  display:\n    enabled: true\n    backend: xvfb\n", 10},
+		{"xvnc", "containment:\n  display:\n    enabled: true\n    backend: xvnc\n", 13},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := os.WriteFile(cfgPath, []byte(tc.body), 0o600); err != nil {
@@ -708,8 +708,8 @@ func TestDoctorDisplayChecksFollowConfiguredViewer(t *testing.T) {
 			if len(checks) != tc.want {
 				t.Fatalf("checks = %d, want %d", len(checks), tc.want)
 			}
-			if tc.want == 12 && (checks[8].name != "agent_display_rfb" || checks[10].name != "viewer_rfb_access" || checks[11].name != "legacy_viewer_acl") {
-				t.Fatalf("display checks = %+v", checks[8:])
+			if tc.want == 13 && (checks[9].name != "agent_display_rfb" || checks[11].name != "viewer_rfb_access" || checks[12].name != "legacy_viewer_acl") {
+				t.Fatalf("display checks = %+v", checks[9:])
 			}
 		})
 	}

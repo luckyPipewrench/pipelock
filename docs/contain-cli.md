@@ -67,6 +67,8 @@ Use `--dry-run` to run preflight, print the contract, and exit without emitting 
 
 Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
+The capsule stays schema version 1. An off-mode capsule has the same JSON fields as a capsule from before filesystem confinement: `filesystem_mode` and `filesystem_binds_sha256` are absent. An enforce-mode capsule adds those two fields on the launch evidence and the containment evidence. A verifier older than this release rejects an enforce-mode capsule, because it rejects unknown fields, and that rejection is fail-closed. Upgrade the verifier before it checks an enforce-mode capsule.
+
 Flags:
 
 | Flag | Default | Purpose |
@@ -91,10 +93,13 @@ root-owned and private, outside any agent-writable workspace.
 The optional path requires `busctl` typed-property support and cgroup v2 in
 addition to the normal containment prerequisites. It observes the exact launch
 arguments through systemd, never by parsing child stderr. On normal exit or
-cancellation, cleanup acts only on that admitted invocation and checks terminal
-service state plus an empty or absent recorded cgroup. Missing admission, changed
-identity, unavailable cleanup evidence or observed cancellation cannot report
-successful completion. An unobserved submitted service may still exist: preserve
+cancellation, cleanup acts only on the invocation whose identity, cgroup, user
+and arguments it witnessed, and checks terminal service state plus an empty or
+absent recorded cgroup. When filesystem enforcement is on and the unit's
+filesystem properties can't be confirmed, that witnessed invocation is stopped
+and the report stays incomplete. Missing ownership, changed identity,
+unavailable cleanup evidence or observed cancellation cannot report successful
+completion. An unobserved submitted service may still exist: preserve
 the incomplete report and its exact unit identity for operator diagnosis, rather
 than treating a stopped `systemd-run` client as cleanup proof. The ordinary launch
 path is unchanged when the option is omitted. See the
@@ -147,7 +152,7 @@ Flags:
 | `--pipelock-binary` | current process | Pipelock binary to install. Hashed and pinned at install time. |
 | `--config` | (required if not already in place) | Source `pipelock.yaml` copied to `/etc/pipelock/pipelock.yaml`. |
 
-The installed config must set `forward_proxy.enabled: true`. Contained agents reach the internet through Pipelock's forward proxy (`CONNECT` tunnels and absolute-URI requests), and with it off the proxy answers them with `405`. `pipelock init` writes `forward_proxy.enabled: false` for every preset and `contain install` copies the config as it finds it, so set the field in the `--config` file before you install, or edit `/etc/pipelock/pipelock.yaml` and rerun `contain install`. `contain verify` can still pass with the forward proxy off; [`contain doctor`](#pipelock-contain-doctor) is the command that catches it.
+The installed config must set `forward_proxy.enabled: true`. Contained agents reach the internet through Pipelock's forward proxy (`CONNECT` tunnels and absolute-URI requests). `contain install` refuses omitted, null, blank, or false forwarding settings before changing the system, including reinstalls and dry runs, and checks the staged config again before promotion. Set the field in the `--config` file before installing, or edit `/etc/pipelock/pipelock.yaml` before reinstalling without `--config`. General fetch-only configurations and `pipelock init` defaults remain supported. `contain verify` can still pass with the forward proxy off; [`contain doctor`](#pipelock-contain-doctor) diagnoses the runtime configuration.
 
 Install steps run in order; each one is idempotent. If a step fails, install undoes what that attempt changed in reverse order. Rollback restores only files and state changed by the attempt. For a previously loaded containment table, it restores the captured prior contents; if those contents could not be captured, it keeps the loaded table and reports `rollback incomplete`. The error also names any file or unit restore that could not finish and tells the operator to rerun `pipelock contain install` as root.
 
@@ -231,7 +236,7 @@ Exit codes:
 
 ## `pipelock contain verify`
 
-Verify normally makes no host changes. It walks 18 fixed probes (numbered 1-14, 16, 19, 20, and 21) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. When `containment.display` is enabled, or a prior display install is detected, verify adds `22 agent_display`. The Xvnc backend adds `23 agent_display_rfb`, `24 viewer_service`, and `25 viewer_rfb_access`; an agent home directory always adds `26 legacy_viewer_acl` to catch stale pre-namespace ACLs, whatever the current backend. It prints pass, fail, skip, or unknown for each probe.
+Verify normally makes no host changes. It walks 19 fixed probes (numbered 1-14, 16, 19, 20, 21, and 27) plus the conditional workspace probe, numbered 15, when workspaces are configured. Probes 17 and 18 are published by `contain run`, not `verify`. When `containment.display` is enabled, or a prior display install is detected, verify adds `22 agent_display`. The Xvnc backend adds `23 agent_display_rfb`, `24 viewer_service`, and `25 viewer_rfb_access`; an agent home directory always adds `26 legacy_viewer_acl` to catch stale pre-namespace ACLs, whatever the current backend. It prints pass, fail, skip, unknown, or off for each probe. Probe 27 reports off when `containment.filesystem.mode` is omitted or `off`; that result is not a pass and does not fail the command.
 
 ```bash
 pipelock contain verify
@@ -263,6 +268,23 @@ pipelock contain verify
 | 24 | `viewer_service` (conditional) | Present with the Xvnc display backend. The contained display viewer socket is restricted to its operator. |
 | 25 | `viewer_rfb_access` (conditional) | Present with the Xvnc display backend. RFB socket mode and group match the viewer setting. |
 | 26 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete pre-namespace agent-home viewer access is absent. |
+| 27 | `filesystem_confinement` | When `containment.filesystem.mode` is `enforce`, a transient service with the same filesystem properties cannot read an operator-home canary or a hidden secret, cannot create a file on the protected filesystem, and can write a read-write workspace grant when one exists. Omitted or `off` reports `filesystem profile: off`. |
+
+## Filesystem confinement
+
+`containment.filesystem.mode` is `off` or `enforce`. A config that parses and omits the key stays off. A fresh `contain install` writes `enforce`. Upgrading an existing config does not turn the profile on. A missing or unreadable config file is an error: `contain run` refuses the launch, and the installed wrapper stops because its property helper exits non-zero.
+
+`off` leaves the mount namespace the way `contain` left it before this setting: private `/tmp` and `/var/tmp`, and the configured display socket when a display is enabled. It does not claim the host filesystem is hidden.
+
+`enforce` launches the agent with `ProtectSystem=strict`, `ProtectHome=tmpfs`, and `NoNewPrivileges=true`. The agent home is bind-mounted read-write. Each unexpired workspace grant for that agent is bind-mounted at the same path: `read-write` becomes `BindPaths`, `read-only` becomes `BindReadOnlyPaths`, both with `norbind`. Expired grants are not mounted. The display socket, when one is configured, stays a read-only bind. `/dev/shm` is a fresh temporary filesystem. Kernel tunables, kernel modules, and control groups are protected.
+
+The profile hides secret subpaths the agent must not read: the integrity directory, the TLS private directory, signing keys, and the recorder, capture, baseline, contract, quarantine, log, and rules directories under the Pipelock data directory when those paths exist. It does not hide `/etc/pipelock/ca.pem`, the combined CA bundle, `tools.list`, or the posture proof the child reads. `ProtectSystem=strict` mounts the whole hierarchy read-only except `/dev`, `/proc`, `/sys`, and the paths this profile bind-mounts back. A secret path that is, or contains, a file the agent must read is refused before launch. An inaccessible parent cannot be reopened for one file inside it, and dropping the hide would leave the secret readable.
+
+A path is refused before launch when it is empty, not an existing directory, contains a character systemd cannot put in a bind path, or resolves to `/`, `/home`, `/root`, `/run/user`, or a path equal to or above the operator's home. An agent home that is the operator's home, or that contains it, is refused. An operator home outside `/home` or `/root` is refused, because enforce cannot hide it. `contain run`, `contain verify`, `contain doctor`, and the installed `plk-*` wrappers read that operator from `SUDO_USER`. They have no operator flag. Run them through sudo from the operator account; an enforce launch without that identity stops and names that command. `contain service-posture` does not read it, because that path does not claim filesystem confinement.
+
+`contain verify`, `contain doctor`, and `contain run` all report the same profile. Enforce runs the canary inside a transient unit that has the agent's properties and refuses the launch when any check fails. The same commands first run in a unit without that profile, and the canary is not a proof unless the operator file and the secret file are readable there. The confined unit must then miss that operator file or see a different inode, fail to create a file in a root-created directory under `/var/lib` because the hierarchy is read-only, keep a read-write workspace grant writable, and fail to read a probe-owned file hidden with `InaccessiblePaths`. The installed `plk-*` wrappers ask the pinned `pipelock` binary for the property list at launch, so a later config change applies without reinstalling the wrapper. A helper failure stops the wrapper.
+
+These limits remain. A process that can create a user namespace can remount filesystems inside it. The agent can still see its own `/proc`. Private `/tmp` is shared with the network-namespace anchor and its forwarders. Units the operator wrote by hand, including a service installed outside `contain install`, are not changed.
 
 ### Managed metrics invariant
 
@@ -390,7 +412,7 @@ The short-lived `ExecStartPre` command runs with root credentials because of the
 
 Immediately before it executes the tool, `plk-launch` checks its user, its real kernel namespace identity, the interfaces visible in that namespace, and the Pipelock health endpoint. The root preflight and probe 21 also compare the managed namespace with the host and inspect every live process under the agent user. The service settings state the intended isolation. These checks prove the running process received it.
 
-The pre-start signer writes the same signed posture capsule path used by `contain run` and labels its signed `contain_launch.launcher` evidence as `systemd-service-prestart:/usr/local/bin/plk-launch`. That label means the signer directly observed the exact managed namespace and working proxy doorway before systemd admitted the pending unprivileged service launch. The tool and arguments on `ExecStartPre` must match `ExecStart`; they describe the pending launch, while the capsule doesn't claim that the agent process had already started.
+The pre-start signer writes the same signed posture capsule path used by `contain run` and labels its signed `contain_launch.launcher` evidence as `systemd-service-prestart:/usr/local/bin/plk-launch`. That label means the signer directly observed the exact managed namespace and working proxy doorway before systemd admitted the pending unprivileged service launch. The tool and arguments on `ExecStartPre` must match `ExecStart`; they describe the pending launch, while the capsule doesn't claim that the agent process had already started. The capsule also omits `filesystem_mode` and `filesystem_binds_sha256`. Pipelock does not render the operator's unit, so it does not test that unit's filesystem and does not sign a filesystem claim taken from config or from a separate transient canary. The filesystem probe is reported as not applicable for an operator-managed unit. That result is not confinement, is not a pass, and does not refuse the service.
 
 `contain run` makes a different observation. Its root supervisor signs the host-side preflight and intended launch contract, then `plk-launch` independently refuses to execute the child unless the child is in the exact managed namespace. Because the `contain run` signer itself is outside the child namespace, its capsule doesn't claim signer membership in that namespace. The supervisor remains alive and additionally emits the post-session workspace change statement; the unprivileged service path has no long-lived supervisor and therefore emits no final workspace statement.
 
@@ -518,7 +540,7 @@ Checks:
 | 11 | `viewer_rfb_access` (conditional) | Present when `containment.display.backend: xvnc`. The viewer RFB socket group is exact. |
 | 12 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete agent-home viewer access is absent. |
 
-With `forward_proxy.enabled: false`, checks 2 and 3 fail with `CONNECT tunnel failed, response 405` and check 5 reports `unknown` with the same status. The remediation printed for those checks talks about the proxy and the CA bundle and doesn't name the setting. Set `forward_proxy.enabled: true` in `/etc/pipelock/pipelock.yaml`, rerun `contain install`, then rerun `doctor`.
+When the effective managed config confirms disabled forwarding, checks 2–5 fail with a remedy that names `forward_proxy.enabled: true` and the config path. Set that field, rerun `contain install`, then rerun `doctor`. A CONNECT `405` alone does not establish disabled forwarding: if the config enables forwarding or cannot be inspected, doctor preserves the live probe diagnostics rather than attributing the response to that setting.
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

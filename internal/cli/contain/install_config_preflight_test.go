@@ -6,10 +6,13 @@ package contain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
@@ -21,14 +24,14 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 	}{
 		{
 			name: "removed budget field parse failure",
-			body: "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n",
+			body: "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n",
 			failureOut: "Config validation FAILED: parsing config CONFIG: max_retries_per_endpoint was removed because it was not enforced; " +
 				"remove it from the config: yaml: unmarshal errors: field max_retries_per_endpoint not found in type config.BudgetConfig\n",
 			want: []string{"max_retries_per_endpoint", "removed because it was not enforced", "remove it from the config"},
 		},
 		{
 			name: "reserved concurrent tool limit validation failure",
-			body: "agents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: 3\n",
+			body: "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: 3\n",
 			failureOut: "Config validation FAILED: invalid config: agents._default.budget: " +
 				"max_concurrent_tool_calls is not yet enforced; it is reserved for future lease-based concurrency control. Unset it\n",
 			want: []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"},
@@ -97,7 +100,7 @@ func TestRunInstall_ConfigPreflightRefusesMissingManagedConfigBeforeServiceMutat
 func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) {
 	env, runner, _ := newPreflightInstallEnv(t)
 	target := managedPipelockConfigPath(env)
-	if err := os.WriteFile(target, []byte("metrics_listen: 127.0.0.1:9091\nagents:\n  _default:\n    budget:\n      fan_out_limit: 4\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("forward_proxy:\n  enabled: true\nmetrics_listen: 127.0.0.1:9091\nagents:\n  _default:\n    budget:\n      fan_out_limit: 4\n"), 0o600); err != nil {
 		t.Fatalf("write existing config: %v", err)
 	}
 	runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"),
@@ -149,7 +152,7 @@ func TestRunInstall_ConfigPreflightDryRunReportsMissingManagedConfig(t *testing.
 
 func TestRunInstall_ConfigPreflightDryRunReportsWithoutMutation(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	src := writePreflightConfig(t, "dry-source.yaml", "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n")
+	src := writePreflightConfig(t, "dry-source.yaml", "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n")
 	target := managedPipelockConfigPath(env)
 	runner.on(argvFor(env.pipelockBinary, "check", "--config", src, "--require-build-compatibility"),
 		"Config validation FAILED: parsing config "+src+": max_retries_per_endpoint was removed because it was not enforced; remove it from the config\n",
@@ -175,7 +178,7 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
 		t.Fatalf("write ca export: %v", err)
 	}
-	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\n")
+	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\nforward_proxy:\n  enabled: true\n")
 	if _, statErr := os.Stat(managedPipelockConfigPath(env)); !os.IsNotExist(statErr) {
 		t.Fatalf("managed config exists before fresh install: stat err=%v", statErr)
 	}
@@ -194,7 +197,7 @@ func TestRunInstall_ConfigPreflightAllowsCleanConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read managed config: %v", err)
 	}
-	if string(got) != "mode: balanced\nmetrics_listen: 127.0.0.1:9091\ncontainment:\n  filesystem:\n    mode: enforce\n" {
+	if string(got) != "mode: balanced\nforward_proxy:\n  enabled: true\nmetrics_listen: 127.0.0.1:9091\ncontainment:\n  filesystem:\n    mode: enforce\n" {
 		t.Fatalf("managed config = %q, want the promoted candidate", got)
 	}
 }
@@ -216,7 +219,7 @@ func TestRunInstall_ConfigPreflightNeverMakesTheCandidateLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read seeded config: %v", err)
 	}
-	const badBody = "agents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n"
+	const badBody = "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n"
 	src := writePreflightConfig(t, "bad.yaml", badBody)
 	staged := stagedPipelockConfigPath(env)
 	runner.on(argvFor(env.pipelockBinary, "check", "--config", staged, "--require-build-compatibility"), "Config validation FAILED\n", 1, nil)
@@ -262,7 +265,7 @@ func TestRunInstall_ConfigPreflightRefusesBinaryChangedBeforeInstall(t *testing.
 	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
 		t.Fatalf("write ca export: %v", err)
 	}
-	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\n")
+	src := writePreflightConfig(t, "clean.yaml", "mode: balanced\nforward_proxy:\n  enabled: true\n")
 
 	origChown := env.chown
 	mutated := false
@@ -502,7 +505,7 @@ func writePreflightConfig(t *testing.T, name, body string) string {
 func seedManagedConfig(t *testing.T, env *installEnv) string {
 	t.Helper()
 	target := managedPipelockConfigPath(env)
-	if err := os.WriteFile(target, []byte("mode: balanced\nmetrics_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("mode: balanced\nforward_proxy:\n  enabled: true\nmetrics_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
 		t.Fatalf("write managed config: %v", err)
 	}
 	return target
@@ -541,4 +544,167 @@ func assertSawCall(t *testing.T, runner *fakeRunner, name string, args ...string
 		}
 	}
 	t.Fatalf("missing call %s %s in %+v", name, strings.Join(args, " "), runner.calls)
+}
+
+func TestPreflightPipelockConfigRequiresForwarding(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := seedManagedConfig(t, env)
+	if err := os.WriteFile(path, []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightPipelockConfig(context.Background(), env, installOpts{}, false); err == nil || !strings.Contains(err.Error(), "forward_proxy.enabled") {
+		t.Fatalf("forwarding-disabled config accepted: %v", err)
+	}
+}
+
+func TestRunInstall_ForwardProxyPreflight(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"omitted", "mode: balanced\n", "forward_proxy.enabled: true"},
+		{"null section", "forward_proxy: null\n", "forward_proxy.enabled: true"},
+		{"blank section", "forward_proxy:\n", "forward_proxy.enabled: true"},
+		{"omitted enabled", "forward_proxy: {}\n", "forward_proxy.enabled: true"},
+		{"null enabled", "forward_proxy:\n  enabled: null\n", "forward_proxy.enabled: true"},
+		{"blank enabled", "forward_proxy:\n  enabled:\n", "forward_proxy.enabled: true"},
+		{"false", "forward_proxy:\n  enabled: false\n", "forward_proxy.enabled: true"},
+		{"malformed", "forward_proxy: [\n", "parse config"},
+		{"invalid boolean", "forward_proxy:\n  enabled: definitely\n", "parse config"},
+		{"duplicate", "forward_proxy:\n  enabled: true\n  enabled: false\n", "parse config"},
+		{"true", "forward_proxy:\n  enabled: true\nmetrics_listen: 127.0.0.1:9091\n", ""},
+	}
+	for _, tc := range tests {
+		for _, source := range []bool{false, true} {
+			for _, dryRun := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/source=%t/dry-run=%t", tc.name, source, dryRun), func(t *testing.T) {
+					env, runner, _ := newPreflightInstallEnv(t)
+					if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					managed := seedManagedConfig(t, env)
+					before, err := os.ReadFile(filepath.Clean(managed))
+					if err != nil {
+						t.Fatal(err)
+					}
+					opts := installOpts{dryRun: dryRun}
+					path := managed
+					if source {
+						path = writePreflightConfig(t, "candidate.yaml", tc.body)
+						opts.configSource = path
+					} else {
+						if err := os.WriteFile(managed, []byte(tc.body), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						before = []byte(tc.body)
+					}
+					mutations := 0
+					origWrite, origChmod, origMkdir, origChown := env.writeFile, env.chmod, env.mkdirAll, env.chown
+					env.writeFile = func(p string, b []byte, m os.FileMode) error { mutations++; return origWrite(p, b, m) }
+					env.chmod = func(p string, m os.FileMode) error { mutations++; return origChmod(p, m) }
+					env.mkdirAll = func(p string, m os.FileMode) error { mutations++; return origMkdir(p, m) }
+					env.chown = func(p string, u, g int) error { mutations++; return origChown(p, u, g) }
+					err = runInstall(context.Background(), env, opts)
+					if tc.want == "" {
+						if err != nil {
+							t.Fatalf("enabled config refused: %v", err)
+						}
+						if dryRun && mutations != 0 {
+							t.Fatalf("dry-run mutated %d times", mutations)
+						}
+						return
+					}
+					if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), path) {
+						t.Fatalf("refusal = %v, want %q and %q", err, tc.want, path)
+					}
+					if mutations != 0 || len(runner.calls) != 0 {
+						t.Fatalf("mutated before refusal: writes=%d calls=%+v", mutations, runner.calls)
+					}
+					after, err := os.ReadFile(filepath.Clean(managed))
+					if err != nil || string(after) != string(before) {
+						t.Fatalf("managed config changed: %q, %v", after, err)
+					}
+					if _, err := os.Stat(stagedPipelockConfigPath(env)); !os.IsNotExist(err) {
+						t.Fatalf("staging residue: %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRunInstall_ForwardProxyUnreadable(t *testing.T) {
+	for _, source := range []bool{false, true} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("source=%t/dry-run=%t", source, dryRun), func(t *testing.T) {
+				env, runner, _ := newFakeEnv(t)
+				path := seedManagedConfig(t, env)
+				opts := installOpts{dryRun: dryRun}
+				if source {
+					path = writePreflightConfig(t, "candidate.yaml", "forward_proxy:\n  enabled: true\n")
+					opts.configSource = path
+				}
+				origRead := env.readFile
+				env.readFile = func(p string) ([]byte, error) {
+					if p == path {
+						return nil, os.ErrPermission
+					}
+					return origRead(p)
+				}
+				if err := runInstall(context.Background(), env, opts); !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("unreadable config = %v", err)
+				}
+				if len(runner.calls) != 0 {
+					t.Fatalf("commands before read refusal: %+v", runner.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestRunInstall_ForwardProxyStagedRefusalRollsBack(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	managed := seedManagedConfig(t, env)
+	before, err := os.ReadFile(filepath.Clean(managed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := writePreflightConfig(t, "candidate.yaml", "forward_proxy:\n  enabled: true\n")
+	origRun := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == env.pipelockBinary && len(args) > 0 && args[0] == "check" {
+			// Model a candidate changed after the initial source check.
+			if err := os.WriteFile(stagedPipelockConfigPath(env), []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return origRun(ctx, name, args...)
+	}
+	if err := runInstall(context.Background(), env, installOpts{configSource: src}); err == nil || !strings.Contains(err.Error(), "forward_proxy.enabled") {
+		t.Fatalf("staged refusal = %v", err)
+	}
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+	after, err := os.ReadFile(filepath.Clean(managed))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("rollback changed managed config: %q, %v", after, err)
+	}
+	if _, err := os.Stat(stagedPipelockConfigPath(env)); !os.IsNotExist(err) {
+		t.Fatalf("staged file survived rollback: %v", err)
+	}
+}
+
+func TestContainForwardProxyPreservesFetchOnlyConfig(t *testing.T) {
+	if config.Defaults().ForwardProxy.Enabled {
+		t.Fatal("general defaults enabled forwarding")
+	}
+	for _, body := range []string{"mode: balanced\n", "forward_proxy:\n  enabled: false\n"} {
+		cfg, err := config.LoadBytes([]byte(body))
+		if err != nil {
+			t.Fatalf("fetch-only config rejected: %v", err)
+		}
+		if cfg.ForwardProxy.Enabled {
+			t.Fatal("fetch-only config silently enabled forwarding")
+		}
+	}
 }

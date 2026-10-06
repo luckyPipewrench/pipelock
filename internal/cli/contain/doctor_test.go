@@ -61,6 +61,116 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	return env
 }
 
+func TestDoctorDisabledForwardingRemedy(t *testing.T) {
+	env := newDoctorEnv(t, func([]string) (string, int, error) {
+		return "CONNECT tunnel failed, response 405", 56, nil
+	})
+	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(env.configPath, []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.readFile = os.ReadFile
+	for _, check := range []func(context.Context, *doctorEnv) doctorResult{checkCurlThroughProxy, checkPythonThroughProxy} {
+		res := check(context.Background(), env)
+		if !strings.Contains(res.remediation, "forward_proxy.enabled") {
+			t.Fatalf("ineffective remedy: %+v", res)
+		}
+	}
+}
+
+func TestDoctorForwardProxyAttribution(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		disabled bool
+	}{
+		{"omitted", "mode: balanced\n", true},
+		{"null section", "forward_proxy: null\n", true},
+		{"blank section", "forward_proxy:\n", true},
+		{"null enabled", "forward_proxy:\n  enabled: null\n", true},
+		{"blank enabled", "forward_proxy:\n  enabled:\n", true},
+		{"false", "forward_proxy:\n  enabled: false\n", true},
+		{"true unrelated 405", "forward_proxy:\n  enabled: true\n", false},
+		{"malformed", "forward_proxy: [\n", false},
+		{"invalid boolean", "forward_proxy:\n  enabled: invalid\n", false},
+		{"unknown field", "unknown_field: true\n", false},
+		{"unreadable", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			env := newDoctorEnv(t, func([]string) (string, int, error) {
+				calls++
+				return "CONNECT tunnel failed, response 405\n405", 56, nil
+			})
+			env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+			if tc.name != "unreadable" {
+				if err := os.WriteFile(env.configPath, []byte(tc.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(env.configPath, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			checks := []func(context.Context, *doctorEnv) doctorResult{checkCurlThroughProxy, checkPythonThroughProxy, checkNodeThroughProxy, checkDNSFailure}
+			for _, check := range checks {
+				res := check(context.Background(), env)
+				if strings.Contains(res.remediation, "forward_proxy.enabled: true") != tc.disabled {
+					t.Fatalf("attribution = %+v", res)
+				}
+				if tc.disabled && (res.status != statusFail || res.class != classInfra || !strings.Contains(res.remediation, env.configPath)) {
+					t.Fatalf("disabled forwarding = %+v", res)
+				}
+			}
+			if tc.disabled && calls != 0 {
+				t.Fatalf("disabled config still ran %d probes", calls)
+			}
+			if !tc.disabled && calls != len(checks) {
+				t.Fatalf("unknown/enabled config suppressed probes: %d", calls)
+			}
+		})
+	}
+}
+
+func TestDoctorForwardProxyRemedyOutput(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(strconv.FormatBool(jsonOutput), func(t *testing.T) {
+			env := allPassDoctorEnv(t)
+			env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(env.configPath, []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			if err := runDoctor(cmd, env, doctorOpts{jsonOutput: jsonOutput}); err == nil {
+				t.Fatal("disabled forwarding reported success")
+			}
+			if !jsonOutput {
+				if !strings.Contains(out.String(), "[FAIL] check 2") || !strings.Contains(out.String(), "forward_proxy.enabled: true") {
+					t.Fatalf("text output: %s", out.String())
+				}
+				return
+			}
+			seen := 0
+			for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+				var record doctorRecord
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatal(err)
+				}
+				if record.Check >= 2 && record.Check <= 5 {
+					seen++
+					if record.Status != statusFail || record.Class != classInfra || !strings.Contains(record.Remediation, "forward_proxy.enabled: true") {
+						t.Fatalf("JSON record: %+v", record)
+					}
+				}
+			}
+			if seen != 4 {
+				t.Fatalf("got %d forwarding records", seen)
+			}
+		})
+	}
+}
+
 func TestDoctorVerifyRunFilesystemProfileInputsMatch(t *testing.T) {
 	t.Setenv("DISPLAY", "")
 	t.Setenv("SUDO_USER", "operator")

@@ -472,7 +472,7 @@ func TestRunInstall_SelfPathFallback(t *testing.T) {
 func TestRunInstall_DryRunSucceedsWithoutMutation(t *testing.T) {
 	env, runner, buf := newFakeEnv(t)
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	err := runInstall(context.Background(), env, installOpts{dryRun: true, configSource: src})
@@ -532,7 +532,7 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 		t.Fatalf("write ca export: %v", err)
 	}
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -568,10 +568,10 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	cfgDir := t.TempDir()
 	cfg1 := filepath.Join(cfgDir, "pipelock-1.yaml")
 	cfg2 := filepath.Join(cfgDir, "pipelock-2.yaml")
-	if err := os.WriteFile(cfg1, []byte("mode: balanced\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg1, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write cfg1: %v", err)
 	}
-	if err := os.WriteFile(cfg2, []byte("mode: strict\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg2, []byte("mode: strict\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write cfg2: %v", err)
 	}
 
@@ -2797,7 +2797,7 @@ func TestInstallCmdDryRunSkipsHostPreflightAndPrintsPlan(t *testing.T) {
 	env, _, out := newFakeEnv(t)
 	newContainInstallEnv = func(io.Writer) *installEnv { return env }
 	src := filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.WriteFile(src, []byte("mode: balanced\n"), 0o600); err != nil {
+	if err := os.WriteFile(src, []byte("mode: balanced\nforward_proxy:\n  enabled: true\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

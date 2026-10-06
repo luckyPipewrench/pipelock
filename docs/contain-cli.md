@@ -152,7 +152,7 @@ Flags:
 | `--pipelock-binary` | current process | Pipelock binary to install. Hashed and pinned at install time. |
 | `--config` | (required if not already in place) | Source `pipelock.yaml` copied to `/etc/pipelock/pipelock.yaml`. |
 
-The installed config must set `forward_proxy.enabled: true`. Contained agents reach the internet through Pipelock's forward proxy (`CONNECT` tunnels and absolute-URI requests), and with it off the proxy answers them with `405`. `pipelock init` writes `forward_proxy.enabled: false` for every preset and `contain install` copies the config as it finds it, so set the field in the `--config` file before you install, or edit `/etc/pipelock/pipelock.yaml` and rerun `contain install`. `contain verify` can still pass with the forward proxy off; [`contain doctor`](#pipelock-contain-doctor) is the command that catches it.
+The installed config must set `forward_proxy.enabled: true`. Contained agents reach the internet through Pipelock's forward proxy (`CONNECT` tunnels and absolute-URI requests). `contain install` refuses omitted, null, blank, or false forwarding settings before changing the system, including reinstalls and dry runs, and checks the staged config again before promotion. Set the field in the `--config` file before installing, or edit `/etc/pipelock/pipelock.yaml` before reinstalling without `--config`. General fetch-only configurations and `pipelock init` defaults remain supported. `contain verify` can still pass with the forward proxy off; [`contain doctor`](#pipelock-contain-doctor) diagnoses the runtime configuration.
 
 Install steps run in order; each one is idempotent. If a step fails, install undoes what that attempt changed in reverse order. Rollback restores only files and state changed by the attempt. For a previously loaded containment table, it restores the captured prior contents; if those contents could not be captured, it keeps the loaded table and reports `rollback incomplete`. The error also names any file or unit restore that could not finish and tells the operator to rerun `pipelock contain install` as root.
 
@@ -540,7 +540,7 @@ Checks:
 | 11 | `viewer_rfb_access` (conditional) | Present when `containment.display.backend: xvnc`. The viewer RFB socket group is exact. |
 | 12 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete agent-home viewer access is absent. |
 
-With `forward_proxy.enabled: false`, checks 2 and 3 fail with `CONNECT tunnel failed, response 405` and check 5 reports `unknown` with the same status. The remediation printed for those checks talks about the proxy and the CA bundle and doesn't name the setting. Set `forward_proxy.enabled: true` in `/etc/pipelock/pipelock.yaml`, rerun `contain install`, then rerun `doctor`.
+When the effective managed config confirms disabled forwarding, checks 2–5 fail with a remedy that names `forward_proxy.enabled: true` and the config path. Set that field, rerun `contain install`, then rerun `doctor`. A CONNECT `405` alone does not establish disabled forwarding: if the config enables forwarding or cannot be inspected, doctor preserves the live probe diagnostics rather than attributing the response to that setting.
 
 Checks print a one-line, class-tagged remediation when an operator action or compatibility note is useful; this can accompany either a non-passing result or a PASS that diagnoses expected containment behavior. For example, a proxy-unaware tool produces:
 

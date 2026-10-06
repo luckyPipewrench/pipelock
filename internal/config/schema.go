@@ -1558,9 +1558,14 @@ func (f CrossRequestFragments) ResolvedMaxSessions() int {
 }
 
 // KillSwitch configures the emergency deny-all kill switch.
-// When active, all requests are rejected except health/metrics endpoints
-// and allowlisted IPs (IP allowlist exemptions do not apply during uncertain
-// Conductor apply). Seven activation sources (config, API, Conductor remote
+// When active, all requests are rejected except the exemptions below, which
+// only the HTTP front door honors: health_exempt, metrics_exempt and
+// api_exempt cover Pipelock's own /health, /metrics and /api/v1 paths on a
+// request made to Pipelock itself (never on proxied traffic), and
+// allowlist_ips covers HTTP, forward-proxy and intercepted CONNECT requests by
+// client IP (not during uncertain Conductor apply). MCP transports, the raw
+// reverse proxy and established relay connections ignore every exemption.
+// Seven activation sources (config, API, Conductor remote
 // kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, sentinel
 // file) are OR-composed: any one active means the kill switch is engaged.
 type KillSwitch struct {

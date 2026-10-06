@@ -215,12 +215,18 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 
 	// Budget exceeded participates in the same strongest-action resolution as
-	// scanner findings, then skips raw fallback because the payload is too wide
-	// for another complete pass.
+	// scanner findings. The field-aware walk stopped early, so the leaves it
+	// never visited get one bounded pass over the whole body: injection and
+	// credential findings there block regardless of the configured action, and
+	// a pass that cannot complete blocks. A clean pass keeps the configured
+	// overflow action.
 	if budgetExceeded {
 		result.Clean = false
 		result.BudgetExceeded = true
 		action = config.StrongestAction(action, defaultFindingAction)
+		if a2aOverflowPass(ctx, trimmed, sc, &result) {
+			action = config.StrongestAction(action, config.ActionBlock)
+		}
 	}
 
 	// Pass 2: raw DLP fallback for split-secret detection. It runs whenever the
@@ -273,6 +279,41 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 
 	return result
+}
+
+// a2aOverflowPass inspects a body whose field-aware walk ran out of budget.
+// It extracts every string and key once, in time linear in the size-capped
+// body, and runs response injection and DLP over the joined text. It reports
+// whether a finding must block; an incomplete pass sets result.ScanError,
+// which the caller resolves to block.
+func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, result *A2AScanResult) bool {
+	extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
+	if extracted.Truncated {
+		result.ScanError = "a2a: overflow inspection exceeds maximum nesting depth"
+		return true
+	}
+	if len(extracted.Strings) == 0 {
+		return false
+	}
+	joined := strings.Join(extracted.Strings, "\n")
+	forceBlock := false
+	injectResult := sc.ScanResponse(ctx, joined)
+	if injectResult.Failed() {
+		result.ScanError = injectResult.ScanError
+		return true
+	}
+	if !injectResult.Clean {
+		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+		forceBlock = true
+	}
+	dlpResult := sc.ScanTextForDLP(ctx, joined)
+	if !dlpResult.Clean {
+		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
+		if a2aDLPForcesBlock(dlpResult.Matches) {
+			forceBlock = true
+		}
+	}
+	return forceBlock
 }
 
 func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {

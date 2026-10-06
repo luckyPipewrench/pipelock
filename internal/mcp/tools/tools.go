@@ -1100,6 +1100,30 @@ type compiledToolPattern struct {
 // toolPoisonKeywords is the set of directive keywords checked in tool descriptions.
 const toolPoisonKeywords = `IMPORTANT|CRITICAL|SYSTEM|INSTRUCTION|SECRET|HIDDEN|URGENT`
 
+// handoverRequestFinding names the credential-request wording family. Its
+// patterns sit beside File Exfiltration Directive, which only knows the
+// read/send verb family, so "Provide ~/.aws/credentials" read as benign while
+// "Send ~/.aws/credentials" blocked.
+const handoverRequestFinding = "Credential Request Directive"
+
+// handoverRequestVerb is the base-form imperative a poisoned description uses
+// to ask the agent to hand over secret material. Third-person forms
+// ("provides", "supplies") are deliberately absent: they describe what a
+// service does, not what the agent is told to do. send/read/include stay with
+// the File Exfiltration Directive patterns.
+const handoverRequestVerb = `\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+`
+
+// handoverRequestEnd keeps the credential noun from being the first word of a
+// longer noun phrase ("provide credentials rotation status"): the match must
+// finish at punctuation, the end of the text, or a connective that continues
+// the instruction.
+const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+
+// handoverRequestEndSuffix strips handoverRequestEnd back off a match, so
+// the negation check judges the request itself and not the sentence boundary
+// the pattern had to consume to know the noun phrase was over.
+var handoverRequestEndSuffix = regexp.MustCompile(`(?i)` + handoverRequestEnd + `$`)
+
 // toolPoisonPatterns detect structural indicators of tool description poisoning.
 // These are checked ONLY in tool descriptions to avoid false positives on
 // legitimate response content. Text is Unicode-normalized before matching.
@@ -1204,6 +1228,39 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// does not: a lone determiner reads as scoped and belongs with the
 		// benign transfers.
 		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+(?:of\s+)?(?:the\s+)?){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+	},
+	{
+		name: handoverRequestFinding,
+		// Possessive form: "supply your API key", "share the user's
+		// password". The possessive binds the secret to the agent or its
+		// user, which is what separates a request from documentation of a
+		// service that holds credentials. Modifiers come from a closed list
+		// so "share your thoughts on the secret" cannot reach the noun.
+		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
+			`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+` +
+			`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
+			`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
+			handoverRequestEnd),
+	},
+	{
+		name: handoverRequestFinding,
+		// Bare form: "provide credentials", "enter a valid password". The
+		// noun set is narrower than the possessive form because a bare
+		// "token" or "secret" is too common as an ordinary noun.
+		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
+			`(?:(?:the|a|an|any|all)\s+)?(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
+			`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
+			handoverRequestEnd),
+	},
+	{
+		name: handoverRequestFinding,
+		// Path form: "provide the full contents of ~/.aws/credentials".
+		// include and pass join the verb list here only, because a sensitive
+		// path is a precise enough target that "include your API key in the
+		// Authorization header" style documentation stays out of scope.
+		re: regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
+			`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
+			`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`),
 	},
 }
 
@@ -2074,7 +2131,11 @@ func checkToolPoison(text string) []string {
 			}
 			loc[0] += offset
 			loc[1] += offset
-			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
+			negationSpan := loc
+			if p.name == handoverRequestFinding {
+				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
+			}
+			if (p.name == "File Exfiltration Directive" || p.name == handoverRequestFinding) && isNegatedFileExfiltration(text, negationSpan) {
 				offset = loc[1]
 				continue
 			}

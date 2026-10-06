@@ -66,8 +66,16 @@ func TestFilesystemCanaryScriptGuards(t *testing.T) {
 		{name: "workspace", readOnly: true, op: missing, inode: inode, write: readOnly, ws: missing, secret: missing, want: 13},
 		{name: "secret", readOnly: true, op: missing, inode: inode, write: readOnly, ws: workspace, secret: secret, want: 14},
 	}
+	// The read-only cases need a real read-only mount, so the script can tell
+	// EROFS apart from a permission denial. Without root that takes an
+	// unprivileged user namespace, which some hosts and CI runners disable.
+	// Those cases skip with the reason; the other cases always run.
+	userns := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--mount", "/bin/true").Run()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.readOnly && userns != nil {
+				t.Skipf("unprivileged user namespaces unavailable for the read-only mount: %v", userns)
+			}
 			got := filesystemCanaryScriptExit(t, tc.readOnly, tc.op, tc.inode, tc.write, tc.ws, tc.secret)
 			if got != tc.want {
 				t.Fatalf("exit = %d, want %d", got, tc.want)

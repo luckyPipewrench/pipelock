@@ -99,7 +99,7 @@ func TestFilesystemProfileProperties_EnforceBindsGrantsAndSecrets(t *testing.T) 
 		{Path: "/srv/rw", Mode: workspaceModeReadWrite, AgentUser: "pipelock-agent"},
 		{Path: "/srv/ro", Mode: workspaceModeReadOnly, AgentUser: "pipelock-agent"},
 		{Path: "/srv/other", Mode: workspaceModeReadWrite, AgentUser: "other-agent"},
-		{Path: "/srv/expired", Mode: workspaceModeReadWrite, AgentUser: "pipelock-agent", Expires: "2020-01-01T00:00:00Z"},
+		{Path: "/srv/expired", Mode: workspaceModeReadWrite, AgentUser: "pipelock-agent", Expires: in.Now.Add(-time.Hour).Format(time.RFC3339)},
 	}
 	in.Eval = allowEval("/srv/agent-home", "/srv/rw", "/srv/ro", "/srv/other", "/srv/expired")
 	in.Exists = existsAll(
@@ -171,7 +171,7 @@ func TestFilesystemProfileProperties_Refusals(t *testing.T) {
 		{
 			name: "expired grant is not bound",
 			edit: func(in *filesystemProfileInput) {
-				in.Grants = []workspaceGrant{{Path: "/srv/expired", Mode: workspaceModeReadWrite, Expires: "2020-01-01T00:00:00Z"}}
+				in.Grants = []workspaceGrant{{Path: "/srv/expired", Mode: workspaceModeReadWrite, Expires: in.Now.Add(-time.Hour).Format(time.RFC3339)}}
 				in.Eval = allowEval("/srv/agent-home", "/srv/expired")
 			},
 			want: "",

@@ -91,7 +91,30 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	return scanResponseOpts(line, sc, opts, true)
 }
 
+// incompleteMediaVerdict is the verdict for a response whose media payloads
+// could not all be inspected. It blocks whatever the configured action is: a
+// scan that did not finish certifies nothing, and warn, strip and ask all
+// forward content a finished scan would have judged.
+func incompleteMediaVerdict(id json.RawMessage, reason string) jsonrpc.ScanVerdict {
+	return jsonrpc.ScanVerdict{ID: id, Action: config.ActionBlock, Error: reason}
+}
+
+// oversizedResponseVerdict refuses a direct scan of more bytes than a transport
+// could have framed. Framed messages are already bounded by the transports;
+// this holds the same bound for callers that reach the scanner directly, since
+// the media text allowance is sized from it.
+func oversizedResponseVerdict(line []byte) jsonrpc.ScanVerdict {
+	return jsonrpc.ScanVerdict{
+		ID:     recoverTopLevelJSONRPCID(bytes.TrimSpace(line)),
+		Action: config.ActionBlock,
+		Error:  fmt.Sprintf("response exceeds the %d byte scan limit and was not inspected", transport.MaxLineSize),
+	}
+}
+
 func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
+	if len(line) > transport.MaxLineSize {
+		return oversizedResponseVerdict(line)
+	}
 	trimmed := bytes.TrimSpace(line)
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(trimmed) > 0 && trimmed[0] == '[' {
@@ -123,13 +146,19 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	// An injection-only scan never consults the numeric channel, so it also
 	// skips building one: a message can be megabytes, and walking it a second
 	// time for a channel nobody reads is pure cost.
-	extract := jsonrpc.ExtractTextResult
-	if !includeDLP {
-		extract = jsonrpc.ExtractTextOnlyResult
+	//
+	// One media budget covers every extraction over this response, so splitting
+	// payloads across result, error, params and the envelope cannot reset it.
+	var budget jsonrpc.MediaTextBudget
+	extract := func(raw json.RawMessage) jsonrpc.TextResult {
+		return jsonrpc.ExtractTextResultWithMediaBudget(raw, includeDLP, &budget)
 	}
 	textResult := extract(rpc.Result)
 	if textResult.Truncated {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+	}
+	if textResult.IncompleteReason != "" {
+		return incompleteMediaVerdict(rpc.ID, textResult.IncompleteReason)
 	}
 	text := textResult.Text
 	// Numeric leaves travel on their own channel and are only ever compared
@@ -153,6 +182,9 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			if errData.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 			}
+			if errData.IncompleteReason != "" {
+				return incompleteMediaVerdict(rpc.ID, errData.IncompleteReason)
+			}
 			if errData.Text != "" {
 				text += "\n" + errData.Text
 			}
@@ -162,6 +194,9 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			errText := extract(rpc.Error)
 			if errText.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errText.IncompleteReason != "" {
+				return incompleteMediaVerdict(rpc.ID, errText.IncompleteReason)
 			}
 			if errText.Text != "" {
 				if text != "" {
@@ -180,6 +215,9 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		if paramsText.Truncated {
 			return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 		}
+		if paramsText.IncompleteReason != "" {
+			return incompleteMediaVerdict(rpc.ID, paramsText.IncompleteReason)
+		}
 		if paramsText.Text != "" {
 			if text != "" {
 				text += "\n"
@@ -192,7 +230,10 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	// Every action inspects envelope strings not already owned by the typed
 	// extractor. Resource URIs retain injection coverage without becoming
 	// inbound response-DLP text.
-	envelopeText, resourceURIs, inspectable := responseEnvelopeRemainder(trimmed, rpc)
+	envelopeText, resourceURIs, inspectable := responseEnvelopeRemainder(trimmed, rpc, &budget)
+	if reason := budget.Reason(); reason != "" {
+		return incompleteMediaVerdict(rpc.ID, reason)
+	}
 	if !inspectable {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
@@ -335,7 +376,7 @@ func scanResponseViews(ctx context.Context, sc *scanner.Scanner, opts ResponseSc
 
 // toolsListEnvelopeText returns the visible strings and keys of a tools/list
 // message outside result.tools, which the tool scanner owns.
-func toolsListEnvelopeText(trimmed []byte) (string, bool) {
+func toolsListEnvelopeText(trimmed []byte, budget *jsonrpc.MediaTextBudget) (string, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &envelope); err != nil {
 		return "", false
@@ -353,7 +394,7 @@ func toolsListEnvelopeText(trimmed []byte) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	values := jsonrpc.ExtractVisibleStringsFromJSONResult(encoded)
+	values := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, budget)
 	keys := jsonrpc.ExtractKeysFromJSONResult(encoded)
 	if values.Truncated || keys.Truncated {
 		return "", false
@@ -557,6 +598,9 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 }
 
 func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	if len(line) > transport.MaxLineSize {
+		return oversizedResponseVerdict(line)
+	}
 	trimmed := bytes.TrimSpace(line)
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
@@ -581,6 +625,13 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 
 	var text, toolText, numeric string
 
+	// One media budget covers every extraction over this response; see
+	// scanResponseOpts.
+	var budget jsonrpc.MediaTextBudget
+	extract := func(raw json.RawMessage) jsonrpc.TextResult {
+		return jsonrpc.ExtractTextResultWithMediaBudget(raw, true, &budget)
+	}
+
 	// Scan non-"tools" sibling fields in the result object.
 	// A malicious server can include extra fields alongside tools[].
 	// Keys are sorted for deterministic concatenation order.
@@ -594,17 +645,23 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			sort.Strings(keys)
 			for _, key := range keys {
 				if key == "tools" {
-					extracted := jsonrpc.ExtractTextResult(resultMap[key])
+					extracted := extract(resultMap[key])
 					if extracted.Truncated {
 						return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+					}
+					if extracted.IncompleteReason != "" {
+						return incompleteMediaVerdict(rpc.ID, extracted.IncompleteReason)
 					}
 					toolText = extracted.Text
 					numeric = joinNumericChannel(numeric, extracted.Numeric)
 					continue
 				}
-				siblingText := jsonrpc.ExtractTextResult(resultMap[key])
+				siblingText := extract(resultMap[key])
 				if siblingText.Truncated {
 					return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+				}
+				if siblingText.IncompleteReason != "" {
+					return incompleteMediaVerdict(rpc.ID, siblingText.IncompleteReason)
 				}
 				if siblingText.Text != "" {
 					if text != "" {
@@ -625,18 +682,24 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 				text += "\n"
 			}
 			text += rpcErr.Message
-			errData := jsonrpc.ExtractTextResult(rpcErr.Data)
+			errData := extract(rpcErr.Data)
 			if errData.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errData.IncompleteReason != "" {
+				return incompleteMediaVerdict(rpc.ID, errData.IncompleteReason)
 			}
 			if errData.Text != "" {
 				text += "\n" + errData.Text
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
-			errText := jsonrpc.ExtractTextResult(rpc.Error)
+			errText := extract(rpc.Error)
 			if errText.Truncated {
 				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errText.IncompleteReason != "" {
+				return incompleteMediaVerdict(rpc.ID, errText.IncompleteReason)
 			}
 			if errText.Text != "" {
 				if text != "" {
@@ -650,9 +713,12 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 
 	// Scan params (server notifications can carry payloads).
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
-		paramsText := jsonrpc.ExtractTextResult(rpc.Params)
+		paramsText := extract(rpc.Params)
 		if paramsText.Truncated {
 			return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+		}
+		if paramsText.IncompleteReason != "" {
+			return incompleteMediaVerdict(rpc.ID, paramsText.IncompleteReason)
 		}
 		if paramsText.Text != "" {
 			if text != "" {
@@ -673,7 +739,10 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 
 	// Envelope members outside result, and keys of result's siblings, get the
 	// same inspection as on every other response path.
-	envelopeText, ok := toolsListEnvelopeText(trimmed)
+	envelopeText, ok := toolsListEnvelopeText(trimmed, &budget)
+	if reason := budget.Reason(); reason != "" {
+		return incompleteMediaVerdict(rpc.ID, reason)
+	}
 	if !ok {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}

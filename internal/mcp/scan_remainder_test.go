@@ -66,7 +66,7 @@ func TestResponseEnvelopeRemainderCoverage(t *testing.T) {
 			if err := json.Unmarshal([]byte(body), &rpc); err != nil {
 				t.Fatal(err)
 			}
-			remainder, uris, ok := responseEnvelopeRemainder([]byte(body), rpc)
+			remainder, uris, ok := responseEnvelopeRemainder([]byte(body), rpc, &jsonrpc.MediaTextBudget{})
 			if !ok {
 				t.Fatal("unexpected uninspectable remainder")
 			}
@@ -109,7 +109,7 @@ func TestResponseEnvelopeRemainderDecodedFallback(t *testing.T) {
 	if err := json.Unmarshal(body, &rpc); err != nil {
 		t.Fatal(err)
 	}
-	remainder, _, ok := responseEnvelopeRemainder(body, rpc)
+	remainder, _, ok := responseEnvelopeRemainder(body, rpc, &jsonrpc.MediaTextBudget{})
 	visible := jsonrpc.ExtractVisibleStringsFromJSONResult(rpc.Result).Strings
 	if !ok || len(visible) != 1 || !strings.Contains(remainder, visible[0]) {
 		t.Fatalf("decoded fallback coverage lost: visible=%q remainder=%q ok=%v", visible, remainder, ok)

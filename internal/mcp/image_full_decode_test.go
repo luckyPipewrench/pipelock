@@ -116,10 +116,14 @@ func TestMCPImageFullDecode(t *testing.T) {
 func TestMCPImageOversizedPayloadRemainsVisible(t *testing.T) {
 	// Transports reject messages above MaxLineSize before response scanning.
 	// At the extractor boundary, an oversized media candidate must still fail
-	// closed instead of being classified as opaque.
+	// closed instead of being classified as opaque: the extraction reports that
+	// it did not finish, and a caller blocks rather than scanning a prefix.
 	data := strings.Repeat("A", transport.MaxLineSize+1)
 	result := jsonrpc.ExtractVisibleStringsFromJSONResult(json.RawMessage(fmt.Sprintf(`{"content":[{"type":"image","data":%q}]}`, data)))
-	if !slices.Contains(result.Strings, data) {
-		t.Fatal("oversized media candidate was hidden from text scanning")
+	if result.IncompleteReason == "" {
+		t.Fatal("oversized media candidate was not reported as uninspected")
+	}
+	if slices.Contains(result.Strings, data) || len(result.Strings) != 0 {
+		t.Fatal("an incomplete extraction must not hand back partial text")
 	}
 }

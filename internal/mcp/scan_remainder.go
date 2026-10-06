@@ -15,7 +15,12 @@ import (
 // equality across the message. Identical text in an extension still belongs to
 // the envelope. Resource URIs keep injection coverage on a separate channel;
 // they are not response text for inbound DLP.
-func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse) (string, string, bool) {
+//
+// Media candidates in the envelope draw on the same budget as the typed
+// extractor, so a payload kept out of the typed fields cannot spend a second
+// allowance here. Callers must check budget.Reason() before using the text: an
+// exhausted budget leaves it partial.
+func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *jsonrpc.MediaTextBudget) (string, string, bool) {
 	// Check the complete message before removing any consumed subtrees. In
 	// particular, pruning structuredContent must not relax the depth/key bound.
 	if jsonrpc.ExtractKeysFromJSONResult(raw).Truncated {
@@ -69,7 +74,7 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse) (string, str
 	if err != nil {
 		return "", "", false
 	}
-	values := jsonrpc.ExtractVisibleStringsFromJSONResult(encoded)
+	values := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, budget)
 	keys := jsonrpc.ExtractKeysFromJSONResult(encoded)
 	if values.Truncated || keys.Truncated {
 		return "", "", false
@@ -167,7 +172,16 @@ func removeResponseStringLeaves(value any, mediaCandidate bool) any {
 			if err != nil {
 				return value
 			}
-			visible := jsonrpc.ExtractVisibleStringsFromJSONResult(encoded)
+			// This probe only asks whether the field yields a decoded view; the
+			// envelope extraction that follows is what scans it and spends the
+			// response budget. A probe of its own, so the field is not charged
+			// twice; when it cannot finish, keep the value so that extraction
+			// reaches the same limit and blocks.
+			var probe jsonrpc.MediaTextBudget
+			visible := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, &probe)
+			if visible.IncompleteReason != "" {
+				return value
+			}
 			// A decoded media view is distinct from the raw string consumed
 			// by the arbitrary-JSON fallback. Retain it for envelope scanning.
 			if len(visible.Strings) > 0 && (len(visible.Strings) != 1 || visible.Strings[0] != v) {

@@ -908,9 +908,13 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		{name: "binary media line wrapped", in: media[:32] + "\r\n" + media[32:], want: true},
 		{name: "binary media with terminal line ending", in: media + "\r\n", want: true},
 		{name: "binary media url alphabet", in: base64.RawURLEncoding.EncodeToString(pngIHDRPrefix()), want: true},
+		// The header's own printable bytes read as a run once the NULs between
+		// them are stripped, so this container now yields (harmless) recovered
+		// text instead of reading as opaque. See TestRecognizedContainersStayClean
+		// in the mcp package for the scanner outcome.
 		{name: "riff webp", in: base64.StdEncoding.EncodeToString(append(
 			[]byte("RIFF\x24\x00\x00\x00WEBPVP8 "),
-			[]byte(strings.Repeat("\x00\x01\x02\x03", 6))...)), want: true},
+			[]byte(strings.Repeat("\x00\x01\x02\x03", 6))...)), want: false},
 		{name: "iso base media", in: base64.StdEncoding.EncodeToString(append(
 			[]byte("\x00\x00\x00\x20ftypisom"),
 			[]byte(strings.Repeat("\x00\x01\x02\x03", 6))...)), want: true},
@@ -956,10 +960,16 @@ func TestIsOpaqueMediaPayload(t *testing.T) {
 		// so the decode fails and the value is scanned rather than skipped.
 		// An invalid final quantum remains unreadable after full decoding.
 		{name: "undecodable base64 length", in: unpadded[:61], want: false},
-		// Clean media beyond the former prefix window is now fully inspected.
+		// Media beyond the former prefix window is fully inspected. This fixture
+		// repeats one 4-byte pattern whose UTF-16LE reading is a long run of a
+		// Latin Extended letter between combining marks, so it recovers text
+		// rather than reading as opaque.
 		{name: "large media beyond the old prefix window", in: base64.StdEncoding.EncodeToString(append(
 			pngIHDRPrefix(),
-			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: true},
+			[]byte(strings.Repeat("\x01\x02\x03\x04", 400))...)), want: false},
+		{name: "large media with no readable text in any view", in: base64.StdEncoding.EncodeToString(append(
+			pngIHDRPrefix(),
+			[]byte(strings.Repeat("\xff\xfe\x80\x81", 400))...)), want: true},
 		{name: "png header wrapping a credential", in: base64.StdEncoding.EncodeToString(append(
 			append(pngIHDRPrefix(), bytes.Repeat([]byte{0x01}, 16)...),
 			[]byte("ghp_"+"ABCDEFghijklmnopqrstuvwxyz0123456789")...)), want: false},

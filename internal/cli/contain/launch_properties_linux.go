@@ -57,14 +57,7 @@ func writeLaunchProperties(ctx context.Context, stdout io.Writer, env *probeEnv)
 	if err != nil {
 		return err
 	}
-	env.filesystem = profile
-	if profile.Mode == config.ContainmentFilesystemModeEnforce {
-		status, detail := probeFilesystemConfinement(ctx, env)
-		if status != statusPass {
-			return fmt.Errorf("filesystem confinement canary: %s: %s", status, detail)
-		}
-	}
-	lines, err := containLaunchPropertyLines(in)
+	lines, err := enforcedLaunchPropertyLines(ctx, env, in, profile)
 	if err != nil {
 		return err
 	}
@@ -74,4 +67,20 @@ func writeLaunchProperties(ctx context.Context, stdout io.Writer, env *probeEnv)
 		}
 	}
 	return nil
+}
+
+// enforcedLaunchPropertyLines returns the properties the canary already
+// accepted. A later rebuild can observe a different filesystem, so enforce
+// mode does not call containLaunchPropertyLines again. Off mode still prints
+// only the display-socket bind.
+func enforcedLaunchPropertyLines(ctx context.Context, env *probeEnv, in filesystemProfileInput, profile filesystemProfile) ([]string, error) {
+	env.filesystem = profile
+	if profile.Mode == config.ContainmentFilesystemModeEnforce {
+		status, detail := probeFilesystemConfinement(ctx, env)
+		if status != statusPass {
+			return nil, fmt.Errorf("filesystem confinement canary: %s: %s", status, detail)
+		}
+		return append([]string(nil), profile.Properties...), nil
+	}
+	return containLaunchPropertyLines(in)
 }

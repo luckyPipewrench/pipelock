@@ -158,6 +158,66 @@ func TestNonRootEnforceFilesystemCanarySkipsAndRefusesLaunch(t *testing.T) {
 	}
 }
 
+func TestEnforcedLaunchPropertiesStayOnTheCanaryProfile(t *testing.T) {
+	root := t.TempDir()
+	withFilesystemCanaryRoot(t, root)
+	grant := t.TempDir()
+	moved := t.TempDir()
+	retarget := false
+	in := enforceInput()
+	in.Grants = []workspaceGrant{{Path: grant, Mode: workspaceModeReadWrite, AgentUser: "pipelock-agent"}}
+	in.Eval = func(p string) (string, bool, error) {
+		if p == grant && retarget {
+			return moved, true, nil
+		}
+		return allowEval("/srv/agent-home", grant)(p)
+	}
+	profile, err := filesystemProfileProperties(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		retarget = true
+		return "", 0, nil
+	})
+	lines, err := enforcedLaunchPropertyLines(context.Background(), env, in, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := strings.Join(lines, "\n")
+	if printed != strings.Join(profile.Properties, "\n") || !strings.Contains(printed, grant) || strings.Contains(printed, moved) {
+		t.Fatalf("printed lines:\n%s", printed)
+	}
+	rebuilt, err := containLaunchPropertyLines(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := strings.Join(rebuilt, "\n")
+	if again == printed || !strings.Contains(again, moved) {
+		t.Fatalf("rebuild did not observe the eval change:\n%s", again)
+	}
+
+	off := enforceInput()
+	off.Mode = config.ContainmentFilesystemModeOff
+	off.DisplaySocket = "/tmp/.X11-unix/X99"
+	offProfile, err := filesystemProfileProperties(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	offEnv := filesystemCanaryEnv(func(context.Context, string, ...string) (string, int, error) {
+		called = true
+		return "", 0, nil
+	})
+	offLines, err := enforcedLaunchPropertyLines(context.Background(), offEnv, off, offProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called || strings.Join(offLines, "\n") != "BindReadOnlyPaths=/tmp/.X11-unix/X99" {
+		t.Fatalf("off lines=%v canary=%v", offLines, called)
+	}
+}
+
 func TestLaunchPropertiesMissingConfigNamesInstallRemedy(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "pipelock.yaml")
 	want := missingManagedConfigError(missing).Error()

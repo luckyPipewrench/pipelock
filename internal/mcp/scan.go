@@ -367,6 +367,9 @@ func scanResponseViews(ctx context.Context, sc *scanner.Scanner, opts ResponseSc
 		if view == "" {
 			continue
 		}
+		// Deliberately not ctx: TextDLPResult has no incomplete or error state,
+		// so a scan cut short by cancellation would read as clean. The work is
+		// bounded by the response size limit; finishing it is the safe choice.
 		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view, sc.ScanTextForDLPInbound(context.Background(), view).Matches)
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, matches)
 		droppedDLP = appendUniqueA2ADLPFindings(droppedDLP, lowConfidence)

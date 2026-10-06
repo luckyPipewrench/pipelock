@@ -19,9 +19,17 @@ type responseGate struct {
 	hasFold bool
 	all     []*responseGate
 	any     []*responseGate
+	near    *responseNearGate
 }
 
 func (g *responseGate) matches(content, folded string) bool {
+	return g.matchesWithDistance(content, folded, responseDistanceText(folded))
+}
+
+func (g *responseGate) matchesWithDistance(content, folded, distanceText string) bool {
+	if g.near != nil {
+		return g.near.matches(distanceText)
+	}
 	if g.literal != "" {
 		if !g.hasFold {
 			return strings.Contains(content, g.literal)
@@ -30,14 +38,14 @@ func (g *responseGate) matches(content, folded string) bool {
 	}
 	if g.all != nil {
 		for _, part := range g.all {
-			if !part.matches(content, folded) {
+			if !part.matchesWithDistance(content, folded, distanceText) {
 				return false
 			}
 		}
 		return true
 	}
 	for _, branch := range g.any {
-		if branch.matches(content, folded) {
+		if branch.matchesWithDistance(content, folded, distanceText) {
 			return true
 		}
 	}
@@ -81,6 +89,7 @@ func responseLiteralGate(re *syntax.Regexp) *responseGate {
 			}
 		}
 		flush()
+		parts = append(parts, responseNearGates(re)...)
 		if leading := responseLeadingGate(re); leading != nil {
 			parts = append(parts, leading)
 		}

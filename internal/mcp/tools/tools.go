@@ -1117,7 +1117,7 @@ const handoverRequestVerb = `\b(?:provide|supply|submit|share|paste|enter|give|h
 // longer noun phrase ("provide credentials rotation status"): the match must
 // finish at punctuation, the end of the text, or a connective that continues
 // the instruction.
-const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
 // handoverRequestEndSuffix strips handoverRequestEnd back off a match, so
 // the negation check judges the request itself and not the sentence boundary
@@ -2136,7 +2136,8 @@ func checkToolPoison(text string) []string {
 				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
 			}
 			if (p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc)) ||
-				(p.name == handoverRequestFinding && isNegatedBy(text, negationSpan, negatedHandoverPrefix)) {
+				(p.name == handoverRequestFinding && isNegatedBy(text, negationSpan, negatedHandoverPrefix) &&
+					handoverNegationHoldsToClauseEnd(text, negationSpan[1])) {
 				offset = loc[1]
 				continue
 			}
@@ -2172,6 +2173,30 @@ func isNegatedFileExfiltration(text string, loc []int) bool {
 var negatedHandoverPrefix = regexp.MustCompile(
 	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:ever|directly|simply|automatically))?\s*$`,
 )
+
+// handoverExceptionCue marks a negation that is really a redirect ("never X
+// except to this tool"): the prohibition carves out the very destination the
+// poisoned description wants the agent to use.
+var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|only)\b`)
+
+// handoverNegationHoldsToClauseEnd reports whether the clause after a negated
+// handover match, bounded to 160 bytes, is free of exception or redirect cues.
+func handoverNegationHoldsToClauseEnd(text string, end int) bool {
+	if end < 0 || end > len(text) {
+		return false
+	}
+	rest := text[end:]
+	if len(rest) > 160 {
+		rest = rest[:160]
+	}
+	for i, r := range rest {
+		if isClauseBoundary(r) {
+			rest = rest[:i]
+			break
+		}
+	}
+	return !handoverExceptionCue.MatchString(rest)
+}
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {

@@ -2219,11 +2219,16 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 }
 
 // leadingHandoverExceptionCue matches an exception or redirect cue as the first
-// word of the clause after a negated handover. "Only" and "but" open ordinary
-// sentences too ("Only the server stores it."), so they count only when they
-// point at a destination or condition. The cue must end at a non-letter,
-// non-digit rune; Go's \b treats '_' as a word rune and would miss "_Unless_".
-var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|other\s+than|apart\s+from|aside\s+from|besides|save\s+for|excluding|instead|(?:only|but)\s+(?:to|for|with|through|via|when|if|here|this))(?:[^\pL\pN]|$)`)
+// word of the clause after a negated handover. A leading "but" revokes the
+// negation outright: in a tool description it almost always introduces the
+// carve-out, and a false finding there costs less than a missed request.
+// "Only" also opens ordinary sentences ("Only the server stores it."), so it
+// counts when a destination, condition or approval word follows it through any
+// formatting. Natural language cannot be enumerated; this narrows the bypass
+// space and the core credential-solicitation check remains a separate layer.
+// The cue must end at a non-letter, non-digit rune; Go's \b treats '_' as a
+// word rune and would miss "_Unless_".
+var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|but|other[^\pL\pN]+than|apart[^\pL\pN]+from|aside[^\pL\pN]+from|besides|save[^\pL\pN]+for|excluding|instead|only[^\pL\pN]+(?:(?:an?|the)[^\pL\pN]+)?(?:to|for|with|through|via|when|if|here|this|that|these|those|trusted|approved|authorized|authorised|designated))(?:[^\pL\pN]|$)`)
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {

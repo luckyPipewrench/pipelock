@@ -35,6 +35,7 @@ Each row has a compiled credential-audience host set. Pipelock allows the matchi
 | Groq API Key | `gsk_` + 48+ alphanumeric chars | `*.groq.com` | [Groq API keys](https://console.groq.com/docs/api-keys) |
 | xAI API Key | `xai-` + 80+ token chars | `*.x.ai` | [xAI API reference](https://docs.x.ai/docs/api-reference) |
 | JWT Token | three base64url segments | `release-assets.githubusercontent.com` (URL query of an `https` request only; a path, host, fragment, header, body, or WebSocket frame still blocks) | Observed: `github.com/<owner>/<repo>/releases/download/...` answers 302 to this exact host with a GitHub-issued signed grant in the query |
+| Azure SAS Token | `sig=` + base64 HMAC-SHA256 | GitHub-issued signatures only, in the URL query of an `https` request: beside a valid release grant at `release-assets.githubusercontent.com`; on the attestation bundle storage accounts; and on `productionresultssa0` through `productionresultssa19` for Actions job logs and artifacts. The SAS must be read-only, name one blob, carry every signed field once in its documented format, and be inside its validity window. On those redirects the `rscd` and `rsct` response overrides pass entropy only in the shape GitHub sends. Any other host, path or credential in the URL still blocks | Observed: `gh run view --log`, the job-log API and artifact downloads answer 303 to a results account; the account list is GitHub's meta API `domains.actions` |
 
 ## Intentionally Not Covered By Default
 

@@ -381,6 +381,15 @@ func TestMediaBudgetIsSharedAcrossFieldsAndResetsPerResponse(t *testing.T) {
 	if last.Text != "" {
 		t.Fatalf("exhausted extraction returned partial text of %d bytes", len(last.Text))
 	}
+	// The same eleven fields in one response share one fresh budget, so the
+	// response is refused as a whole rather than each field fitting alone.
+	many := make([][]byte, 11)
+	for i := range many {
+		many[i] = payload
+	}
+	if one := ExtractTextResultWithMediaBudget(mediaJSON(t, many...), false, &MediaTextBudget{}); one.IncompleteReason == "" || one.Text != "" {
+		t.Fatalf("eleven fields in one response fit a fresh budget: reason=%q text=%d bytes", one.IncompleteReason, len(one.Text))
+	}
 	// A later field cannot reset it: once refused, everything after is refused.
 	if after := ExtractTextResultWithMediaBudget(mediaJSON(t, []byte("abcdefghijklmnop")), false, budget); after.IncompleteReason == "" {
 		t.Fatal("budget reset after exhaustion")

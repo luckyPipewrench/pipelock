@@ -71,6 +71,9 @@ func CombinedBundle(systemRoots, ca []byte) ([]byte, error) {
 func WriteBundle(cacheDir string, data []byte) (string, error) {
 	parent := filepath.Join(cacheDir, "pipelock")
 	dir := filepath.Join(parent, "exec-ca")
+	if err := requireCacheRoot(cacheDir); err != nil {
+		return "", err
+	}
 	if err := rejectSymlink(parent); err != nil {
 		return "", err
 	}
@@ -78,6 +81,9 @@ func WriteBundle(cacheDir string, data []byte) (string, error) {
 		return "", fmt.Errorf("create CA cache directory: %w", err)
 	}
 	if err := rejectSymlink(parent); err != nil {
+		return "", err
+	}
+	if err := requirePrivate(parent); err != nil {
 		return "", err
 	}
 	if err := rejectSymlink(dir); err != nil {
@@ -89,11 +95,17 @@ func WriteBundle(cacheDir string, data []byte) (string, error) {
 	if err := rejectSymlink(dir); err != nil {
 		return "", err
 	}
+	if err := requirePrivate(dir); err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(data)
 	path := filepath.Join(dir, hex.EncodeToString(sum[:])+".pem")
 	if existing, err := readRegularFile(path); err == nil {
 		if !bytes.Equal(existing, data) {
 			return "", errors.New("combined CA bundle path does not match its content")
+		}
+		if err := requirePrivate(path); err != nil {
+			return "", err
 		}
 		return path, nil
 	} else if !errors.Is(err, os.ErrNotExist) {

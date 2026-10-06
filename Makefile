@@ -59,7 +59,7 @@ test-runtime-critical:
 # to run the full suite in scoped chunks instead of the single monolithic
 # `go test ./...` invocation that becomes a long pole if reused in one CI step.
 # `make test` stays the canonical full local run.
-TEST_SHARDS := proxy-0 proxy-1 scanner-0 scanner-1 mcp rest-0 rest-1 rest-2
+TEST_SHARDS := proxy-0 proxy-1 scanner-0 scanner-1 mcp-0 mcp-1 rest-0 rest-1 rest-2
 .PHONY: FORCE
 FORCE:
 

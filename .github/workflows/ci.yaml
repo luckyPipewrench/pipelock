@@ -162,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp-0', 'mcp-1', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -236,7 +236,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp-0', 'mcp-1', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -287,7 +287,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp-0', 'mcp-1', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -363,7 +363,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'scanner-0', 'scanner-1', 'mcp-0', 'mcp-1', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

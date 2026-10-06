@@ -330,6 +330,8 @@ class TestTestNameSplit(unittest.TestCase):
             "example.test/pipelock/internal/proxy",
             "example.test/pipelock/internal/proxy/baseline",
             "example.test/pipelock/internal/scanner",
+            "example.test/pipelock/internal/mcp",
+            "example.test/pipelock/internal/mcp/jsonrpc",
         ]
         for tree in TEST_SPLITS:
             expected = [pkg for pkg in packages if package_in_tree(pkg, f"internal/{tree}")]
@@ -434,7 +436,7 @@ class TestTestNameSplit(unittest.TestCase):
             shard_selector("proxy-0", huge)
 
     def test_unsplit_shards_have_no_selector(self) -> None:
-        for shard in ("mcp", "rest-0", "rest-1", "rest-2"):
+        for shard in ("rest-0", "rest-1", "rest-2"):
             self.assertEqual(shard_selector(shard, self.NAMES), "")
         with self.assertRaisesRegex(ValueError, "unknown shard"):
             shard_selector("proxy", self.NAMES)

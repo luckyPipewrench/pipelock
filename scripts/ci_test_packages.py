@@ -57,6 +57,7 @@ HEAVY_TREES = {
 TEST_SPLITS = {
     "proxy": 2,
     "scanner": 2,
+    "mcp": 2,
 }
 REST_SHARDS = ("rest-0", "rest-1", "rest-2")
 

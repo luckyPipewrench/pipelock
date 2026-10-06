@@ -163,7 +163,7 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
 			!registryBearerAllowed(candidate, host, target, surface) &&
-			!attestationBundleSASCandidateAllowed(candidate, host, target, surface, now) {
+			!githubBlobSASCandidateAllowed(candidate, host, target, surface, now) {
 			continue
 		}
 		keep[i] = false
@@ -607,11 +607,11 @@ func attestationBundleSASQueryValid(parsed *url.URL, now time.Time) bool {
 	return expiry.Sub(start) <= attestationBundleSASMaxLifetime && grantValidityWindowValid(start, expiry, now)
 }
 
-func attestationBundleSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
+func githubBlobSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
 	if surface != credentialAudienceURLQuerySurface || candidate.carrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
 		return false
 	}
-	return attestationBundleSASAllowed(host, target, now)
+	return githubBlobSASAllowed(host, target, now)
 }
 
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
@@ -859,6 +859,13 @@ func (s *Scanner) releaseGrantSASQueryValueAllowed(parsed *url.URL, key string) 
 }
 
 func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string, now time.Time) bool {
+	// The response-header overrides are judged on their value as well as their
+	// name. The override check requires the key to appear exactly once, so that
+	// one value is the value being scored.
+	if parsed != nil && (releaseGrantResponseOverrideFormats[key] != nil || actionsResultsOverrideFormats[key] != nil) {
+		values := parsed.Query()[key]
+		return len(values) == 1 && s.releaseGrantResponseOverrideAllowed(parsed, key, values[0], now)
+	}
 	// The name is matched exactly, as the shape check matches it, so a case
 	// alias of a signed field cannot take an exemption meant for the field.
 	if parsed == nil || (!releaseGrantSASSignedParamSet[key] && !attestationBundleSASSignedParamSet[key]) {
@@ -879,9 +886,80 @@ func (s *Scanner) releaseGrantSASQueryValueAllowedAt(parsed *url.URL, key string
 		if releaseGrantSASSignedParamSet[key] && releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String(), now) {
 			return true
 		}
-		if attestationBundleSASSignedParamSet[key] && attestationBundleSASAllowed(host, parsed.String(), now) {
+		if attestationBundleSASSignedParamSet[key] && githubBlobSASAllowed(host, parsed.String(), now) {
 			return true
 		}
+	}
+	return false
+}
+
+// releaseGrantResponseOverrideMaxFilename caps the asset name inside a
+// release redirect's content-disposition override. GitHub publishes no asset
+// name limit; 255 bytes is the longest file name the common filesystems a
+// download is saved to accept, so a longer name is not a download name.
+const releaseGrantResponseOverrideMaxFilename = 255
+
+// releaseGrantResponseOverrideFormats pins the unsigned response-header
+// overrides GitHub's release redirect sends beside the SAS (rscd/rsct and the
+// response-content-disposition/response-content-type mirrors) to the one shape
+// GitHub issues. The content-disposition value is `attachment; filename=<name>`
+// where GitHub's stored asset name keeps only letters, digits and `.`, `_`, `+`,
+// `-` (its docs say asset names are normalized but publish no alphabet; this
+// set is what a live redirect and community reports show). A long asset name
+// scores above the entropy threshold on its own, so without this the redirect
+// for a real asset such as a `.sha256` file is blocked even though DLP allowed
+// the grant. The value is pinned rather than exempted by key: a filename in
+// this alphabet is the only thing the exemption can carry.
+var releaseGrantResponseOverrideFormats = func() map[string]*regexp.Regexp {
+	disposition := regexp.MustCompile(`^attachment; filename=[A-Za-z0-9._+-]{1,` + strconv.Itoa(releaseGrantResponseOverrideMaxFilename) + `}$`)
+	contentType := regexp.MustCompile(`^[a-z]{1,32}/[a-z0-9][a-z0-9.+-]{0,63}$`)
+	return map[string]*regexp.Regexp{
+		"rscd":                         disposition,
+		"response-content-disposition": disposition,
+		"rsct":                         contentType,
+		"response-content-type":        contentType,
+	}
+}()
+
+// releaseGrantHolds reports whether parsed is, whole, a release grant for one
+// of the scanner's ReleaseGrantSAS-carrier patterns: the same predicate
+// releaseGrantSASAllowed gives the DLP and surface decisions.
+func (s *Scanner) releaseGrantHolds(parsed *url.URL, now time.Time) bool {
+	host, ok := canonicalCredentialAudienceDestination(parsed.String())
+	if !ok {
+		return false
+	}
+	patterns := s.dlpPatterns
+	if s.core != nil {
+		patterns = append(append([]*compiledPattern{}, patterns...), s.core.dlpPatterns...)
+	}
+	for _, p := range patterns {
+		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS == 0 {
+			continue
+		}
+		if releaseGrantSASAllowed(p.credentialAudienceHosts, host, parsed.String(), now) {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseGrantResponseOverrideAllowed exempts one of GitHub's response-header
+// override parameters from query-entropy scoring when the whole query is a
+// valid release grant and the value holds the pinned shape. The name is
+// matched exactly and must appear once, so a case alias or a repeated
+// parameter cannot widen what the exemption carries. DLP and every other scan
+// still run on the value.
+func (s *Scanner) releaseGrantResponseOverrideAllowed(parsed *url.URL, key, value string, now time.Time) bool {
+	if parsed == nil || len(parsed.Query()[key]) != 1 {
+		return false
+	}
+	if format := releaseGrantResponseOverrideFormats[key]; format != nil && format.MatchString(value) && s.releaseGrantHolds(parsed, now) {
+		return true
+	}
+	if format := actionsResultsOverrideFormats[key]; format != nil && format.MatchString(value) {
+		host, ok := canonicalCredentialAudienceDestination(parsed.String())
+		return ok && actionsResultsSASAllowed(host, parsed.String(), now)
 	}
 	return false
 }
@@ -987,7 +1065,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// planted in the path or elsewhere cannot ride a genuine grant's query.
 	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierReleaseGrantSAS != 0 {
 		host, hostOK := canonicalCredentialAudienceDestination(parsed.String())
-		bundleSAS := hostOK && attestationBundleSASAllowed(host, parsed.String(), now)
+		bundleSAS := hostOK && githubBlobSASAllowed(host, parsed.String(), now)
 		if !bundleSAS && (len(grants) == 0 || !releaseGrantSASShapeValid(parsed) || !sasValidityWindowValid(parsed.Query(), now)) {
 			return bareURLSurface
 		}
@@ -1460,6 +1538,13 @@ func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.T
 		start, err := time.Parse(time.RFC3339, query.Get("st"))
 		if err == nil && attestationBundleSASQueryValid(parsed, start) {
 			return "GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL", start, true
+		}
+	}
+	if destination.MatchesDomainList(host, githubActionsResultsHosts) && actionsResultsPath(parsed) &&
+		!attestationBundleSASQueryValid(parsed, now) {
+		start, err := time.Parse(time.RFC3339, query.Get("st"))
+		if err == nil && attestationBundleSASQueryValid(parsed, start) {
+			return "GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL", start, true
 		}
 	}
 	return "", time.Time{}, false

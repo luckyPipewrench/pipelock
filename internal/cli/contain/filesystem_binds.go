@@ -142,7 +142,8 @@ func splitCanonicalBind(value string) (string, string, string, error) {
 		return "", "", "", fmt.Errorf("recorded bind %q is not src:dest:option", value)
 	}
 	dest, opt, ok := strings.Cut(rest, ":")
-	if !ok || src == "" || dest == "" || strings.Contains(dest, ":") {
+	// dest is the text before the second colon, so it cannot contain one.
+	if !ok || src == "" || dest == "" {
 		return "", "", "", fmt.Errorf("recorded bind %q is not src:dest:option", value)
 	}
 	return src, dest, opt, nil

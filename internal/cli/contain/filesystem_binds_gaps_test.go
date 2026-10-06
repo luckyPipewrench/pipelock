@@ -26,6 +26,7 @@ func TestParseTypedSystemdBindsRejectsMalformedBodies(t *testing.T) {
 		{name: "blank source", body: `{"type":"a(ssbt)","data":[["","/src",false,0]]}`, want: "missing a path"},
 		{name: "ignore missing", body: `{"type":"a(ssbt)","data":[["/src","/src",true,0]]}`, want: "ignores a missing path"},
 		{name: "unexpected flags", body: `{"type":"a(ssbt)","data":[["/src","/src",false,1]]}`, want: "unexpected flags"},
+		{name: "unknown field", body: `{"type":"a(ssbt)","data":[],"extra":true}`, want: "decode typed systemd binds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -91,6 +92,15 @@ func TestParseSystemdBindShowRejectsQuotedAndTupleShapes(t *testing.T) {
 	}
 	if _, ok := parseSpacedColonBind(`"/src":"/src":norbind`); ok {
 		t.Fatal("quoted spaced form was accepted")
+	}
+	if _, ok := parseSpacedColonBind("not-absolute:norbind"); ok {
+		t.Fatal("relative spaced form was accepted")
+	}
+	if got := unquoteSystemdPath(`"/sr\"c\\dir"`); got != `/sr"c\dir` {
+		t.Fatalf("unquote = %q", got)
+	}
+	if got := unquoteSystemdPath(`/plain`); got != "/plain" {
+		t.Fatalf("plain unquote = %q", got)
 	}
 	if _, _, ok := splitAbsoluteColon("relative"); ok {
 		t.Fatal("relative colon split")

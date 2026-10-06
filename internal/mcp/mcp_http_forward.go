@@ -56,6 +56,25 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason)
 }
 
+// emitTrackedContractRefusedOutcome closes the tracked intent of a request the
+// live upstream contract refused after its intent receipt was written.
+func emitTrackedContractRefusedOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, gate mcpContractGateOutput, reason string, resp []byte, opts MCPProxyOpts) {
+	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+	if !ok {
+		return
+	}
+	emitContractRefusedOutcome(logW, outcome, gate, reason, int64(len(resp)), opts)
+}
+
+// emitContractRefusedOutcome writes the blocked outcome for a call the live
+// upstream contract refused. Notifications are never tracked, so their caller
+// passes the outcome from the input decision directly.
+func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
+	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
+	receiptOpts.Layer = mcpContractReceiptLayer
+	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
+}
+
 func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, reason string, opts MCPProxyOpts) {
 	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
 	if !ok {
@@ -493,13 +512,14 @@ func RunHTTPProxy(
 			// Notifications have no id; JSON-RPC forbids responses to
 			// them. Mirror the kill-switch and input-scan paths above.
 			if isRPCNotification(frame.ID) {
+				emitContractRefusedOutcome(safeLogW, decision.Outcome, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, 0, fwdOpts)
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
-			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_contract", fwdOpts)
+			emitTrackedContractRefusedOutcome(safeLogW, tracker, frame.ID, mcpContractGateOutput{}, mcpContractEvaluationFailedReason, errResp, fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
@@ -508,13 +528,14 @@ func RunHTTPProxy(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
 			}
 			if isRPCNotification(frame.ID) {
+				emitContractRefusedOutcome(safeLogW, decision.Outcome, gate, mcpContractDeniedReason, 0, fwdOpts)
 				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
-			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_contract", fwdOpts)
+			emitTrackedContractRefusedOutcome(safeLogW, tracker, frame.ID, gate, mcpContractDeniedReason, errResp, fwdOpts)
 			continue
 		}
 

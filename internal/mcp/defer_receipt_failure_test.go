@@ -31,10 +31,9 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 		wantSent     bool
 	}{
 		{"recorder healthy", false, config.ActionAllow, []string{deferred.StateResolvedAllow + "/" + deferred.SourceOperator}, true},
-		// The journal accepted the allow before the receipt write failed, so it
-		// keeps that entry and then records the block.
+		// The allow only reaches the journal as final after its receipt is
+		// written, so a failed receipt write leaves the block alone.
 		{"required receipt cannot be written", true, config.ActionBlock, []string{
-			deferred.StateResolvedAllow + "/" + deferred.SourceOperator,
 			deferred.StateResolvedBlock + "/" + deferred.SourceCancel,
 		}, false},
 	}

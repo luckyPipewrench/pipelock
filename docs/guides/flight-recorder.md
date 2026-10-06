@@ -162,6 +162,8 @@ best-effort like every other receipt on this page.
 
 MCP startup requests (`initialize` and `tools/list`) receive correlated intent and outcome receipts. The `notifications/initialized` notification receives a durable forwarding receipt and does not claim a server response. Required recording still blocks forwarding when the recorder fails.
 
+An MCP call can pass the input scan, get its intent receipt, and still be refused before Pipelock sends it. The stdio-to-HTTP bridge and the HTTP listener check the upstream against the live contract for every call, so a contract promoted mid-session can deny one. That call's outcome receipt has `verdict: block` under the intent's action ID, with `layer: mcp_contract` and `status=blocked` in its pattern. Tool calls sent as notifications get the same outcome even though no response goes back. Intent/outcome pairing in the completeness checks matches on action ID and doesn't read the verdict, so a refused call counts as a closed pair, the same as a sent one. The outcome receipt's verdict is the only record of which one it was.
+
 Strict MCP recording currently supports startup, tool calls, and supported A2A methods. Other MCP methods, including resource and prompt operations, can be refused because their receipt identity is not defined. The error message distinguishes that limitation from a recorder failure; replacing the signing key does not add method support. Check the methods your client and server need before enabling strict recording.
 
 Operational notes:

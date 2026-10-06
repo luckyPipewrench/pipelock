@@ -1635,6 +1635,10 @@ A standalone `pipelock mcp proxy` watches its contract store, so promoting a man
 
 Resolution sources include `approval`, `operator`, `authority`, `timeout`, `cancel`, `context`, `restart_recovery`, `kill_switch`, `capacity`, `cascade`, `cascade_limit`, `duplicate_defer_id`, `policy_reload`, `tool_inventory`, and `upstream_contract`.
 
+Pipelock syncs every `deferred-actions.jsonl` entry to disk before acting on it. Releasing an allowed hold takes three steps in order. First a `deferred_held` row with `release_pending: true`, then the signed allow resolution receipt, then a `resolved_allow` row, and only then does the call go out. A hold whose release never reached `resolved_allow` is still pending at the next start, and restart recovery closes it with a block receipt (`resolution_source: restart_recovery`). The journal doesn't store the call's payload, so a recovered hold is never sent. Recovery syncs that receipt before it records the hold as closed. Older Pipelock releases read a `release_pending` row as an ordinary held row, so after a rollback they also close the hold to block.
+
+If the journal accepts the release and the receipt but then can't record `resolved_allow`, the call isn't sent and resolves to block with the reason `release could not be journaled`. Its allow receipt is already on disk, so that hold ends up with two resolution receipts, and `pipelock verify-receipt --clean-report` refuses the chain instead of reporting the call as allowed.
+
 ## MCP Session Binding
 
 Pins tool inventory on the first `tools/list` response. Subsequent tool calls are validated against this baseline. Unknown tools trigger the configured action.

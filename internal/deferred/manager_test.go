@@ -894,8 +894,10 @@ func TestManagerResolveJournalFailureFailsClosed(t *testing.T) {
 				}
 				return
 			}
-			if len(entries) != 2 || entries[1].State != StateResolvedAllow || entries[1].Source != SourceApproval {
-				t.Fatalf("journal after allow = %+v, want held then resolved_allow approval", entries)
+			if len(entries) != 3 ||
+				entries[1].State != StateHeld || !entries[1].ReleasePending || entries[1].Source != SourceApproval ||
+				entries[2].State != StateResolvedAllow || entries[2].Source != SourceApproval {
+				t.Fatalf("journal after allow = %+v, want held, release-pending held, then resolved_allow approval", entries)
 			}
 		})
 	}

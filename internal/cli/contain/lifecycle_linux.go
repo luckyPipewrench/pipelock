@@ -643,11 +643,9 @@ func parseSystemdPathList(value string) ([]string, error) {
 	}
 	out := make([]string, 0, len(tokens))
 	for _, token := range tokens {
-		path := unquoteSystemdPath(token)
-		if path == "" {
-			continue
-		}
-		out = append(out, path)
+		// splitSystemdShowTokens never emits an empty token, and a token it
+		// emits does not still wear the quotes unquoteSystemdPath strips.
+		out = append(out, unquoteSystemdPath(token))
 	}
 	return out, nil
 }

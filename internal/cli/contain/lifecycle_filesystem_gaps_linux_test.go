@@ -35,6 +35,19 @@ func TestLifecycleTypedBindReaderReportsManagerFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("cancelled bind read returned binds")
 	}
+
+	live, liveCancel := context.WithTimeout(context.Background(), testwait.Deadline(3*time.Second))
+	defer liveCancel()
+	binds, readOnly, err := lifecycleSystemdBinds(live, "pipelock-no-such-unit.service")
+	if err != nil {
+		if !strings.Contains(err.Error(), "busctl") && !strings.Contains(err.Error(), "bind") {
+			t.Fatalf("manager err = %v", err)
+		}
+		return
+	}
+	if len(binds) != 0 || len(readOnly) != 0 {
+		t.Fatalf("missing unit returned binds %v %v", binds, readOnly)
+	}
 }
 
 func TestObserveLifecycleBindsRejectsDisplayFallback(t *testing.T) {
@@ -157,6 +170,15 @@ func TestLifecyclePathListsAndShowYes(t *testing.T) {
 	}
 	if lifecycleObservationRetryable(context.Background(), 0) {
 		t.Fatal("context without a deadline was retryable")
+	}
+}
+
+func TestRetryLifecycleTypedObservationStopsWhenNothingWaits(t *testing.T) {
+	err := retryLifecycleTypedObservation(context.Background(), lifecycleBackend{}, 0, func() error {
+		return errLifecycleTypedObservation
+	})
+	if !errors.Is(err, errLifecycleTypedObservation) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

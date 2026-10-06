@@ -1025,7 +1025,7 @@ func newInterceptHandler(
 					action = ic.Config.A2AScanning.Action
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if action == config.ActionAsk || enforcedBlock(ic.Config, action, a2aCoreFloor(a2aHdrResult)) {
+				if action == config.ActionAsk || a2aResultBlocks(ic.Config, action, a2aHdrResult) {
 					switch {
 					case a2aHdrResult.IsAdaptiveNeutral():
 						// Infrastructure errors (DNS timeout on embedded URLs)
@@ -1107,7 +1107,7 @@ func newInterceptHandler(
 					reason = "a2a: request body finding"
 				}
 				recordA2AContentEntropyTelemetry(ic.Logger, ic.Metrics, ic.Profile, actx, action, a2aBodyResult)
-				if action == config.ActionAsk || enforcedBlock(ic.Config, action, a2aCoreFloor(a2aBodyResult)) {
+				if action == config.ActionAsk || a2aResultBlocks(ic.Config, action, a2aBodyResult) {
 					switch {
 					case a2aBodyResult.IsAdaptiveNeutral():
 					case a2aBodyResult.IsConfigMismatch():
@@ -2603,7 +2603,7 @@ func newInterceptHandler(
 					reason = "a2a: response body finding"
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if action == config.ActionAsk || enforcedBlock(ic.Config, action, a2aCoreFloor(a2aRespResult)) {
+				if action == config.ActionAsk || a2aResultBlocks(ic.Config, action, a2aRespResult) {
 					switch {
 					case a2aRespResult.IsAdaptiveNeutral():
 						// Score-neutral: see header-scan path above.

@@ -65,3 +65,42 @@ func TestProxyA2AOverflowKeepsCoreChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyA2AAuditInspectionBound(t *testing.T) {
+	for _, transport := range []string{"forward", "intercept"} {
+		for _, direction := range []string{"request", "response"} {
+			for _, valid := range []bool{false, true} {
+				name := "incomplete"
+				if valid {
+					name = "benign"
+				}
+				t.Run(transport+"/"+direction+"/"+name, func(t *testing.T) {
+					cfg := config.Defaults()
+					cfg.Internal = nil
+					enforce := false
+					cfg.Enforce = &enforce
+					cfg.A2AScanning.Enabled = true
+					cfg.A2AScanning.Action = config.ActionWarn
+					cfg.RequestBodyScanning.Enabled = false
+					cfg.ResponseScanning.Enabled = false
+					body := `{"text":"hello"}`
+					if !valid {
+						body = strings.Repeat(`{"payload":`, 65) + body + strings.Repeat("}", 65)
+					}
+					request, response := body, `{"text":"hello"}`
+					if direction == "response" {
+						request, response = response, body
+					}
+					w, hits, _ := driveProxyA2AHardening(t, transport, request, response, "application/a2a+json", cfg)
+					if valid {
+						if w.Code != http.StatusOK || hits != 1 {
+							t.Fatalf("valid audit traffic refused: status=%d hits=%d", w.Code, hits)
+						}
+					} else if w.Code != http.StatusForbidden || direction == "request" && hits != 0 {
+						t.Fatalf("incomplete inspection released: status=%d hits=%d", w.Code, hits)
+					}
+				})
+			}
+		}
+	}
+}

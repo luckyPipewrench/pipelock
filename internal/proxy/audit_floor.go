@@ -60,3 +60,10 @@ func a2aCoreFloor(result mcp.A2AScanResult) bool {
 	}
 	return false
 }
+
+// a2aResultBlocks keeps inspection failures outside audit-mode policy. Audit
+// can observe a completed policy finding, but cannot authorize an uninspected
+// body. A completed overflow pass still follows its resolved finding action.
+func a2aResultBlocks(cfg *config.Config, action string, result mcp.A2AScanResult) bool {
+	return result.InspectionIncomplete || result.ScanError != "" || enforcedBlock(cfg, action, a2aCoreFloor(result))
+}

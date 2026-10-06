@@ -1115,7 +1115,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason = "a2a: header finding"
 			}
 			p.logger.LogAnomaly(actx, "a2a_header", reason, 0)
-			if enforcedBlock(cfg, action, a2aCoreFloor(hdrResult)) {
+			if a2aResultBlocks(cfg, action, hdrResult) {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
 				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
 				emitForwardReceipt(receipt.EmitOpts{
@@ -1436,7 +1436,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			reason = "a2a: request body finding"
 		}
 		recordA2AContentEntropyTelemetry(p.logger, p.metrics, agentLabel, actx, action, a2aBodyResult)
-		if action == config.ActionAsk || enforcedBlock(cfg, action, a2aCoreFloor(a2aBodyResult)) {
+		if action == config.ActionAsk || a2aResultBlocks(cfg, action, a2aBodyResult) {
 			p.logger.LogBlocked(actx, scannerLabelA2A, reason)
 			blockReason := a2aBodyBlockReason(a2aBodyResult)
 			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
@@ -3026,7 +3026,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					a2aReason = "a2a: response finding"
 				}
 				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
-				if enforcedBlock(cfg, a2aAction, a2aCoreFloor(a2aResult)) {
+				if a2aResultBlocks(cfg, a2aAction, a2aResult) {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
 					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,

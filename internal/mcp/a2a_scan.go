@@ -37,15 +37,16 @@ var ErrCardBaselineCapacity = errors.New("agent card baseline capacity exhausted
 
 // A2AScanResult describes the outcome of scanning A2A protocol traffic.
 type A2AScanResult struct {
-	Clean          bool
-	Action         string
-	Reason         string
-	ScanError      string
-	URLFindings    []scanner.Result        // SSRF/URL scanner findings
-	DLPFindings    []scanner.TextDLPMatch  // DLP pattern matches
-	InjectFindings []scanner.ResponseMatch // injection pattern matches
-	EntropyFinding *contententropy.Finding // opaque high-entropy string leaf
-	BudgetExceeded bool                    // true if walker hit node budget
+	Clean                bool
+	Action               string
+	Reason               string
+	ScanError            string
+	URLFindings          []scanner.Result        // SSRF/URL scanner findings
+	DLPFindings          []scanner.TextDLPMatch  // DLP pattern matches
+	InjectFindings       []scanner.ResponseMatch // injection pattern matches
+	EntropyFinding       *contententropy.Finding // opaque high-entropy string leaf
+	BudgetExceeded       bool                    // true if walker hit node budget
+	InspectionIncomplete bool                    // parser or depth bound prevented complete inspection
 }
 
 // A2AContentEntropyOptions carries the request-body entropy policy into A2A
@@ -100,9 +101,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return A2AScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: "a2a: invalid JSON: empty body",
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               "a2a: invalid JSON: empty body",
+			InspectionIncomplete: true,
 		}
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
@@ -111,9 +113,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			reason = fmt.Sprintf("a2a: duplicate JSON object key: %v", err)
 		}
 		return A2AScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: reason,
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               reason,
+			InspectionIncomplete: true,
 		}
 	}
 
@@ -121,8 +124,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// JSON has already been validated, so this pass needs no decoded values.
 	if a2aJSONExceedsDepth(trimmed) {
 		return A2AScanResult{
-			Action: config.ActionBlock,
-			Reason: "a2a: input exceeds maximum inspectable nesting depth",
+			Action:               config.ActionBlock,
+			Reason:               "a2a: input exceeds maximum inspectable nesting depth",
+			InspectionIncomplete: true,
 		}
 	}
 
@@ -244,9 +248,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
-				Clean:  false,
-				Action: config.ActionBlock,
-				Reason: "a2a: input exceeds maximum inspectable nesting depth",
+				Clean:                false,
+				Action:               config.ActionBlock,
+				Reason:               "a2a: input exceeds maximum inspectable nesting depth",
+				InspectionIncomplete: true,
 			}
 		}
 		texts := extracted.Strings

@@ -2504,7 +2504,7 @@ def _evidence_terms(finding: Finding, context: str) -> list[str]:
     return terms
 
 
-def _definition_end(lines: list[str], anchor: int) -> tuple[int, bool]:
+def _definition_end(lines: list[str], anchor: int, path: str = "") -> tuple[int, bool]:
     """Find a definition's end conservatively, scanning at most sixty lines."""
     first = lines[anchor]
     limit = min(len(lines), anchor + MAX_EVIDENCE_DEFINITION_LINES)
@@ -2539,11 +2539,12 @@ def _definition_end(lines: list[str], anchor: int) -> tuple[int, bool]:
     grouped = re.match(r"\s*(?:const|var)\s*\(", first)
     go_braced = re.match(r"\s*(?:func\b|type\b)", first)
     # A bare `name()` line is a call in Go and Python. It is a shell function
-    # only when its body opener follows on the same or the next line.
+    # only when its body opener follows on the same line, or, in a shell
+    # script, on the next line; in Go a next-line brace is an unrelated block.
     shell_header = re.match(r"\s*(?:function\s+)?[A-Za-z_]\w*\s*\(\s*\)", first)
     shell_body = bool(shell_header) and bool(
         re.match(r"\s*\{", first[shell_header.end():])
-        or (anchor + 1 < limit and re.match(r"\s*\{", lines[anchor + 1]))
+        or (_is_shell_path(path) and anchor + 1 < limit and re.match(r"\s*\{", lines[anchor + 1]))
     )
     braced = go_braced or shell_body
     if not grouped and not braced:
@@ -2626,6 +2627,11 @@ def _definition_pattern(term: str) -> str:
     )
 
 
+def _is_shell_path(path: str) -> bool:
+    """A shell script by extension; an extensionless file is not assumed to be shell."""
+    return path.lower().endswith((".sh", ".bash", ".zsh", ".ksh"))
+
+
 def _evidence_windows(matches: list[tuple[int, str, int, str]]) -> list[tuple[str, list[int]]]:
     """Merge nearby anchors without losing the later hit's context or body."""
     windows: list[tuple[str, list[int]]] = []
@@ -2645,7 +2651,7 @@ def _render_evidence_window(path: str, content: str, anchors: list[int]) -> tupl
     end = min(len(lines), max(anchors) + 4)
     truncated = False
     for line in anchors:
-        definition_end, cut = _definition_end(lines, line - 1)
+        definition_end, cut = _definition_end(lines, line - 1, path)
         end = max(end, definition_end)
         truncated = truncated or cut
     rendered = []

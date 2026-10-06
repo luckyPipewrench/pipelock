@@ -2713,7 +2713,11 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         ):
             with self.subTest(lines=lines):
                 self.assertEqual(pr_review._definition_end(lines, 0), (1, False))
-        self.assertEqual(pr_review._definition_end(["helper()", "{", "  echo hi", "}", "next"], 0), (4, False))
+        next_line_brace = ["helper()", "{", "  echo hi", "}", "next"]
+        self.assertEqual(pr_review._definition_end(next_line_brace, 0, "tools/run.sh"), (4, False))
+        # The same shape in Go is a call followed by an unrelated block.
+        self.assertEqual(pr_review._definition_end(["\thelper()", "\t{", "\t\twork()", "\t}", "}"], 0, "main.go"), (1, False))
+        self.assertEqual(pr_review._definition_end(next_line_brace, 0), (1, False))
         self.assertEqual(pr_review._definition_end(["helper() {", "  echo hi", "}", "next"], 0), (3, False))
 
     def test_nearby_hits_merge_all_context(self) -> None:

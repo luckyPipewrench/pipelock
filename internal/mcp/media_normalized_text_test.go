@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -15,7 +16,6 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -255,19 +255,38 @@ func TestScanResponseReadsTextBehindARecognizedHeaderThatIsOtherwiseInvalid(t *t
 	}
 }
 
-// fillRandom fills b (whose length is a multiple of eight) from a seeded
-// generator, so every run reads the same bytes.
-func fillRandom(rng *rand.Rand, b []byte) {
-	for i := 0; i+8 <= len(b); i += 8 {
-		binary.LittleEndian.PutUint64(b[i:], rng.Uint64())
+// deterministicStream yields uniformly distributed bytes from SHA-256 in
+// counter mode, so every run reads the same corpus without a weak RNG.
+type deterministicStream struct {
+	seed    uint64
+	counter uint64
+}
+
+// fill overwrites b with the next bytes of the stream.
+func (s *deterministicStream) fill(b []byte) {
+	var block [16]byte
+	binary.BigEndian.PutUint64(block[:8], s.seed)
+	for len(b) > 0 {
+		binary.BigEndian.PutUint64(block[8:], s.counter)
+		sum := sha256.Sum256(block[:])
+		b = b[copy(b, sum[:]):]
+		s.counter++
 	}
 }
 
 func realImageFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
+	// A smooth gradient, as real images are, rather than white noise: noise
+	// encodes to base64 that the text-field shape scans as ordinary text, and
+	// whether such text happens to look credential-shaped depends on the seed.
+	// Random bytes are covered separately by the recognized-header tests.
 	img := image.NewNRGBA(image.Rect(0, 0, 48, 48))
-	rng := rand.New(rand.NewPCG(839, 1)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
-	fillRandom(rng, img.Pix)
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 48; x++ {
+			i := img.PixOffset(x, y)
+			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = uint8(x*5), uint8(y*5), uint8((x+y)*2), 0xff
+		}
+	}
 	var pngBuf, jpgBuf, gifBuf bytes.Buffer
 	if err := png.Encode(&pngBuf, img); err != nil {
 		t.Fatal(err)
@@ -331,12 +350,12 @@ func TestRecognizedContainersStayClean(t *testing.T) {
 
 func TestRandomBinaryWithARecognizedHeaderStaysClean(t *testing.T) {
 	sc := testScanner(t)
-	rng := rand.New(rand.NewPCG(839, 6)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
+	stream := &deterministicStream{seed: 839<<8 | 6}
 	headers := map[string][]byte{"png": mediaPNGHeader(), "jpeg": {0xFF, 0xD8, 0xFF, 0xE0}, "gif": []byte("GIF89a")}
 	for name, header := range headers {
 		for i := 0; i < 100; i++ {
 			body := make([]byte, 4096)
-			fillRandom(rng, body)
+			stream.fill(body)
 			verdict := ScanResponse([]byte(makeMediaResponse(base64.StdEncoding.EncodeToString(append(append([]byte{}, header...), body...)))), sc)
 			if !verdict.Clean || verdict.Error != "" {
 				t.Fatalf("%s sample %d was not clean: %+v", name, i, verdict)
@@ -354,7 +373,7 @@ func TestLargeBenignMediaIsDeliveredNotBudgetBlocked(t *testing.T) {
 		t.Skip("large payloads")
 	}
 	sc := testScanner(t)
-	rng := rand.New(rand.NewPCG(839, 7)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
+	stream := &deterministicStream{seed: 839<<8 | 7}
 	for _, tc := range []struct {
 		header string
 		bytes  []byte
@@ -362,7 +381,7 @@ func TestLargeBenignMediaIsDeliveredNotBudgetBlocked(t *testing.T) {
 		for _, mib := range []int{1, 4, 5, 6, 7} {
 			t.Run(fmt.Sprintf("%s %d MiB", tc.header, mib), func(t *testing.T) {
 				body := make([]byte, mib<<20)
-				fillRandom(rng, body)
+				stream.fill(body)
 				msg := []byte(makeMediaResponse(base64.StdEncoding.EncodeToString(append(append([]byte{}, tc.bytes...), body...))))
 				if len(msg) > transport.MaxLineSize {
 					t.Fatalf("fixture is %d bytes, over the transport limit", len(msg))

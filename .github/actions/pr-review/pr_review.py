@@ -2623,15 +2623,15 @@ def _definition_pattern(term: str) -> str:
     """POSIX extended pattern for the line that defines term in Go, Python or shell.
 
     Covers functions, methods, types and classes, Go const/var declarations
-    (including one entry inside a grouped block), and a top-level Python or
-    shell assignment.
+    (including an entry inside a grouped block, with or without a value), and
+    a top-level Python or shell assignment.
     """
     return (
         r"^[[:space:]]*(func([[:space:]]+\([^)]*\))?|type|def|async[[:space:]]+def|class|function|const|var)"
         rf"[[:space:]]+{term}([^A-Za-z0-9_]|$)"
         rf"|^[[:space:]]*{term}[[:space:]]*\(\)[[:space:]]*\{{"
         rf"|^{term}[[:space:]]*(:[^=]*)?=[^=]"
-        rf"|^[[:space:]]+{term}([[:space:]]+[A-Za-z_][A-Za-z0-9_.\[\]*]*)?[[:space:]]*=[^=]"
+        rf"|^[[:space:]]+{term}([[:space:]]+[A-Za-z_][A-Za-z0-9_.\[\]*]*)?[[:space:]]*(=[^=]|$)"
     )
 
 

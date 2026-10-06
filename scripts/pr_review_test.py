@@ -2698,7 +2698,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         for line in ("func helper() {", "func (s *State) helper(x int) {", "def helper(x):", "    async def helper():",
                      "class helper:", "type helper struct {", "helper() {", "function helper {",
                      "const helper = 3", "var helper []string", "helper = build()", "helper: int = 3",
-                     "\thelper = iota", "\thelper string = \"x\""):
+                     "\thelper = iota", "\thelper string = \"x\"", "\thelper string", "\thelper"):
             with self.subTest(line=line):
                 self.assertIsNotNone(pattern.search(line))
         for line in ("x := helper()", "// helper builds", "func helperFor() {", "def helpers():",

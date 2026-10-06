@@ -2666,6 +2666,44 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertIn("helper_test.go:26: }", evidence)
         self.assertEqual(evidence.count("helper_test.go:19:"), 1)
 
+    def test_cross_file_finds_definition_hidden_behind_three_earlier_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            lines = ["package example", ""]
+            lines += [f"func caller{index}() {{ helper() }}" for index in range(3)]
+            lines += [""] * 40
+            lines += ["func helper() string {", '    return "required_override"', "}"]
+            (root / "helper_test.go").write_text("\n".join(lines) + "\n")
+            subprocess.run(["git", "-C", str(root), "add", "helper_test.go"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            finding = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
+            literal, _, _ = pr_review._bounded_git_grep(root, "helper", head)
+            # Positive control: the literal search alone stops before the definition.
+            self.assertFalse(any(":46:" in hit for hit in literal))
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+                pr_review, "_local_review_root", return_value=root
+            ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]):
+                evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
+        self.assertFalse(failed)
+        self.assertIn('helper_test.go:47:     return "required_override"', evidence)
+
+    def test_definition_pattern_matches_definitions_only(self) -> None:
+        pattern = re.compile(
+            pr_review._definition_pattern("helper")
+            .replace("[[:space:]]", r"\s")
+        )
+        for line in ("func helper() {", "func (s *State) helper(x int) {", "def helper(x):", "    async def helper():",
+                     "class helper:", "type helper struct {", "helper() {", "function helper {"):
+            with self.subTest(line=line):
+                self.assertIsNotNone(pattern.search(line))
+        for line in ("x := helper()", "// helper builds", "func helperFor() {", "def helpers():"):
+            with self.subTest(line=line):
+                self.assertIsNone(pattern.search(line))
+        self.assertIsNone(pr_review._IDENTIFIER_TERM.match("two words"))
+
     def test_nearby_hits_merge_all_context(self) -> None:
         matches = [(0, "example.txt", line, "hit") for line in (8, 16, 24)]
         windows = pr_review._evidence_windows(matches)
@@ -2772,8 +2810,14 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             self.assertEqual(read.call_count, 32)
             self.assertIn("use unresolved", evidence)
             self.assertNotIn("helper32.go", evidence)
+            # An unreadable file still contributes its matching line and the
+            # judge still runs; one oversized file must not unjudge every
+            # candidate.
             read.return_value = None
-            self.assertEqual(pr_review.cross_file_evidence(binding, [finding], {}), ("", True))
+            evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
+            self.assertFalse(failed)
+            self.assertIn("helper00.go:1: helper", evidence)
+            self.assertIn("use unresolved", evidence)
             read.return_value = "helper"
             self.assertEqual(pr_review.cross_file_evidence(binding, [finding], {}, max_tokens=1), ("", True))
 

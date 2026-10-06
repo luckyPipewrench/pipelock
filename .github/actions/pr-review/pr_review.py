@@ -2607,6 +2607,17 @@ def _definition_end(lines: list[str], anchor: int) -> tuple[int, bool]:
     return limit, True
 
 
+_IDENTIFIER_TERM = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{2,63}$")
+
+
+def _definition_pattern(term: str) -> str:
+    """POSIX extended pattern for the line that defines term in Go, Python or shell."""
+    return (
+        r"^[[:space:]]*(func([[:space:]]+\([^)]*\))?|type|def|async[[:space:]]+def|class|function)"
+        rf"[[:space:]]+{term}([^A-Za-z0-9_]|$)|^[[:space:]]*{term}[[:space:]]*\(\)[[:space:]]*\{{"
+    )
+
+
 def _evidence_windows(matches: list[tuple[int, str, int, str]]) -> list[tuple[str, list[int]]]:
     """Merge nearby anchors without losing the later hit's context or body."""
     windows: list[tuple[str, list[int]]] = []
@@ -2697,6 +2708,19 @@ def cross_file_evidence(
             )
             if search_failed:
                 return "", True
+            # The literal search keeps the first three hits per file, so a
+            # helper used three times above its definition never shows the
+            # definition. An identifier also gets one definition search,
+            # charged to the same search budget.
+            if _IDENTIFIER_TERM.match(term) and searches < MAX_EVIDENCE_SEARCHES:
+                searches += 1
+                definition_lines, definition_truncated, definition_failed = _bounded_git_grep(
+                    root, _definition_pattern(term), binding.head_sha, extended=True
+                )
+                if definition_failed:
+                    return "", True
+                lines = [*lines, *definition_lines]
+                search_truncated = search_truncated or definition_truncated
             search_output_truncated = search_output_truncated or search_truncated
             for raw in lines:
                 match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
@@ -2723,8 +2747,14 @@ def cross_file_evidence(
     for path, anchors in selected:
         content = _read_local_file(root, path)
         if content is None:
-            return "", True
-        piece, cut = _render_evidence_window(path, content, anchors)
+            # An unreadable file (oversized or binary) still contributes its
+            # matching lines. Returning unavailable here would skip the judge
+            # for every candidate because of one file.
+            texts = {line: text for _, hit_path, line, text in matches if hit_path == path}
+            piece = "\n".join(f"{path}:{line}: {texts.get(line, '')[:500]}" for line in anchors)
+            cut = True
+        else:
+            piece, cut = _render_evidence_window(path, content, anchors)
         truncated = truncated or cut
         if used_tokens + estimate_tokens(piece) > max_tokens:
             rendered.append(piece)
@@ -2746,12 +2776,12 @@ def _reap_process(process: subprocess.Popen[Any]) -> None:
 
 
 def _bounded_git_grep(
-    root: Path, term: str, treeish: str, deadline: float | None = None
+    root: Path, term: str, treeish: str, deadline: float | None = None, extended: bool = False
 ) -> tuple[list[str], bool, bool]:
     """Read repository search output with hard time and byte bounds."""
     try:
         process = subprocess.Popen(  # noqa: S603
-            ["git", "-C", str(root), "grep", "-n", "-I", "-i", "-F", "-m", "3", "-e", term, treeish, "--"],
+            ["git", "-C", str(root), "grep", "-n", "-I", *(["-E"] if extended else ["-i", "-F", "-m", "3"]), "-e", term, treeish, "--"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )

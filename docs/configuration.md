@@ -3509,6 +3509,8 @@ a2a_scanning:
 
 A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. It recognizes Agent Card paths `/.well-known/agent-card.json` and `/extendedAgentCard`, including tenant-prefixed forms such as `/tenant/.well-known/agent-card.json` and `/tenant/extendedAgentCard`. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and evaluates mid-session changes.
 
+A2A JSON inspection has a fixed nesting depth limit of 64, counting the root value at depth zero. Reduce nesting in the upstream payload to resolve a depth-limit refusal. This limit is independent of `redaction.limits.max_depth`; neither `a2a_scanning.action: warn` nor `enforce: false` permits incomplete inspection. Invalid JSON and duplicate object keys also refuse the body. On an event stream, an incomplete scan withholds the affected event and records a `response_scan_error` block; HTTP headers already sent retain the upstream status, so that status alone does not indicate that the event passed inspection.
+
 #### Agent Card drift: what adopts silently, what blocks
 
 An Agent Card carries endpoints and auth by construction (`url`, `provider`, `securitySchemes`, capabilities, skill schemas), so blocking on the bare fact of any change blocks every ordinary vendor description edit — the fastest way to get drift detection turned off. Drift detection instead splits the card into two views and asks what a change introduced.

@@ -1150,6 +1150,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Field-walk the event data payload.
 		eventResult := scanA2ABody(ctx, event, sc, cfg, nil)
 		if !eventResult.Clean {
+			if eventResult.InspectionIncomplete {
+				return fmt.Errorf("%w: %s", ErrSSEStreamScanError, eventResult.Reason)
+			}
 			if eventResult.ScanError != "" {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, eventResult.ScanError)
 			}
@@ -1179,7 +1182,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// to the same detectors that caught per-event data.
 		currentText, currentTruncated := extractTextFromEvent(event)
 		if currentTruncated {
-			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrA2AStreamFinding)
+			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
 		if injectionTail != "" && currentText != "" {
 			combined := injectionTail + " " + currentText

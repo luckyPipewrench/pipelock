@@ -1449,8 +1449,8 @@ func TestScanA2AStream_NonJSONEventFailsClosed(t *testing.T) {
 	r := strings.NewReader(events)
 	var buf bytes.Buffer
 	err := ScanA2AStream(context.Background(), r, &buf, nil, testA2AScanner(t), enabledA2ACfg())
-	if !errors.Is(err, ErrA2AStreamFinding) {
-		t.Fatalf("expected A2A stream finding for non-JSON event, got %v", err)
+	if !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("expected incomplete scan error for non-JSON event, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "invalid JSON") {
 		t.Fatalf("error = %q, want invalid JSON", err.Error())

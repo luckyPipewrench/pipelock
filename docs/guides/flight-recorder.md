@@ -268,6 +268,12 @@ What this does not prove:
 - **A structurally clean directory does not prove continuity.** Sequence and hash checks pass for every chain even when a whole run's evidence is missing.
 - Tamper-resistant completeness across runs needs a signed head commitment that a later run or an outside witness can check. Pipelock does not provide one yet. See [hard limits](../evidence/hard-limits.md#l-restart-continuity-deletion---restart-continuity-deletion).
 
+### Held calls and restart recovery
+
+When a `defer` rule holds an MCP call, Pipelock tracks the hold in `deferred-actions.jsonl` under `flight_recorder.dir` and writes its signed resolution receipt to the chain. It syncs every journal entry to disk before acting on it. Releasing an allowed hold takes three steps in order. First a `deferred_held` row with `release_pending: true`, then the signed allow resolution receipt, then a `resolved_allow` row, and only then does the call go out. A hold whose release never reached `resolved_allow` is still pending at the next start, and restart recovery closes it with a block receipt (`resolution_source: restart_recovery`). The journal doesn't store the call's payload, so a recovered hold is never sent. Recovery syncs that receipt before it records the hold as closed. Older Pipelock releases read a `release_pending` row as an ordinary held row, so after a rollback they also close the hold to block.
+
+If the journal accepts the release and the receipt but then can't confirm `resolved_allow`, the call isn't sent and resolves to block with the reason `release could not be journaled`. Pipelock attempts the corrective block receipt before writing a corrective terminal block row. If both receipts succeed, that hold has two resolution receipts, and `pipelock verify-receipt --clean-report` refuses the chain instead of reporting the call as allowed. A storage error can also leave a complete `resolved_allow` row on disk after its sync reports failure, and restart recovery can't tell from that row whether the call went out. The allow receipt is written before the send, so it records that Pipelock released the call, not that the upstream received it.
+
 ### Key-free evidence capture (`--capture-output`)
 
 Signed action receipts require a signing key. To capture evidence **without** a

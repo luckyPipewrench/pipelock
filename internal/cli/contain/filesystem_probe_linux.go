@@ -271,9 +271,6 @@ func (d *noFollowDir) mkdirExclusive(prefix string, mode uint32) (string, *noFol
 		full := filepath.Join(d.path, name)
 		return name, &noFollowDir{file: os.NewFile(uintptr(fd), full), path: full}, nil
 	}
-	if last == nil {
-		last = errors.New("no name available")
-	}
 	return "", nil, last
 }
 
@@ -307,9 +304,6 @@ func (d *noFollowDir) createExclusiveFile(prefix string, mode uint32, body []byt
 			return "", "", err
 		}
 		return name, strconv.FormatUint(st.Ino, 10), nil
-	}
-	if last == nil {
-		last = errors.New("no name available")
 	}
 	return "", "", last
 }

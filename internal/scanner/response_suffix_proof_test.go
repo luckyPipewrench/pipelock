@@ -155,9 +155,14 @@ func TestResponseSuffixProofPrefilterAndMemo(t *testing.T) {
 func TestResponseSuffixProofRuneOffsets(t *testing.T) {
 	for _, content := range []string{"ASCII", "Key ſecrets 中文", "\xff\xf0\x80\xfe alpha suffix"} {
 		view := suffixProofView(content)
-		view.buildOffsets()
-		view.buildOffsets()
-		if !view.sameOffsets && len(view.offsets) != len(view.folded)+1 {
+		var boundaries, want []int
+		for fi, ci := 0, 0; fi < len(view.folded); {
+			boundaries, want = append(boundaries, fi), append(want, ci)
+			_, fn := utf8.DecodeRuneInString(view.folded[fi:])
+			_, cn := utf8.DecodeRuneInString(view.content[ci:])
+			fi, ci = fi+fn, ci+cn
+		}
+		if !view.contentOffsets(boundaries) || !slices.Equal(boundaries, want) {
 			t.Fatal("folded offsets incomplete")
 		}
 		for pos := 0; pos < len(view.content); {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -57,29 +58,45 @@ func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
 }
 
 // responseFoldView is call-local reversed text used only by serial prefilter
-// proofs; no worker or Scanner retains or shares its offset map.
+// proofs; no worker or Scanner retains or shares it.
 type responseFoldView struct {
 	content, folded string
 	sameOffsets     bool
-	offsets         []int // folded byte -> content byte, built lazily
 }
 
+// folded must be responseSimpleFold(content). Folding picks the lowest code
+// point of an orbit and UTF-8 length never decreases with code point, so no
+// rune grows: equal total length means every rune kept its byte offset.
 func newResponseFoldView(content, folded string) *responseFoldView {
-	return &responseFoldView{content: content, folded: folded, sameOffsets: isASCII(content)}
+	return &responseFoldView{content: content, folded: folded, sameOffsets: len(content) == len(folded)}
 }
 
-func (v *responseFoldView) buildOffsets() {
-	if v.sameOffsets || v.offsets != nil {
-		return
+// contentOffsets rewrites sorted folded byte offsets as content byte offsets
+// in one lockstep walk, using storage proportional to the candidates rather
+// than the body. Folding maps each rune to exactly one rune. An offset that is
+// not a folded-rune boundary, or a fold that disagrees with its text, makes
+// the proof inconclusive.
+func (v *responseFoldView) contentOffsets(sorted []int) bool {
+	if v.sameOffsets {
+		return true
 	}
-	v.offsets = make([]int, 0, len(v.folded)+1)
-	for i, r := range v.content {
-		n := len(responseSimpleFold(string(r)))
-		for range n {
-			v.offsets = append(v.offsets, i)
+	ci, fi := 0, 0
+	for k := 0; k < len(sorted); {
+		// A candidate starts a non-empty anchor, so it maps inside both texts.
+		if sorted[k] < fi || fi >= len(v.folded) || ci >= len(v.content) {
+			return false
 		}
+		if sorted[k] == fi {
+			sorted[k] = ci
+			k++
+			continue
+		}
+		_, cn := utf8.DecodeRuneInString(v.content[ci:])
+		_, fn := utf8.DecodeRuneInString(v.folded[fi:])
+		ci += cn
+		fi += fn
 	}
-	v.offsets = append(v.offsets, len(v.content))
+	return true
 }
 
 const responseSuffixProofMaxCandidateRatio = 32 // one candidate per 32 bytes
@@ -106,24 +123,18 @@ func (p *responseSuffixProof) provesEmpty(v *responseFoldView) bool {
 			}
 		}
 	}
-	if !v.sameOffsets && len(cands) > 0 {
-		v.buildOffsets()
+	slices.Sort(cands)
+	if !v.contentOffsets(cands) {
+		return false
 	}
 	budget := len(content) // total runes the anchored runs may read
 	reader := &responseBudgetReader{}
-	done := make(map[int]struct{}, len(cands))
-	for _, at := range cands {
-		pos := at
-		if !v.sameOffsets {
-			if at > 0 && v.offsets[at] == v.offsets[at-1] {
-				continue // not a folded-rune boundary
-			}
-			pos = v.offsets[at]
+	prev := -1
+	for _, pos := range cands {
+		if pos == prev {
+			continue // several anchors at one position need one run
 		}
-		if _, ok := done[pos]; ok {
-			continue
-		}
-		done[pos] = struct{}{}
+		prev = pos
 		re, from := p.head, 0
 		if pos > 0 {
 			re, from = p.mid, responsePreviousRuneStart(content, pos)
@@ -229,6 +240,16 @@ func reverseResponseSyntax(r *syntax.Regexp) *syntax.Regexp {
 // Decode in the forward direction first: invalid UTF-8 must have exactly the
 // replacement-rune semantics of regexp, including stray continuation bytes.
 func reverseResponseText(s string) string {
+	if utf8.ValidString(s) {
+		out := make([]byte, len(s))
+		for i, w := 0, len(s); i < len(s); {
+			_, n := utf8.DecodeRuneInString(s[i:])
+			w -= n
+			copy(out[w:], s[i:i+n])
+			i += n
+		}
+		return string(out)
+	}
 	r := []rune(s)
 	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
 		r[i], r[j] = r[j], r[i]

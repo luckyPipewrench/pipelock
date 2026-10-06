@@ -71,8 +71,9 @@ func (pf *responsePreFilter) patternsToCheck(content string) []int {
 		// storage; every ineligible or inconclusive proof runs the ordinary matcher.
 		if len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes && i < len(pf.proofs) && pf.proofs[i] != nil {
 			if view == nil {
-				reversed := reverseResponseText(content)
-				view = newResponseFoldView(reversed, responseSimpleFold(reversed))
+				// Folding is per rune and maps invalid bytes to U+FFFD, so the
+				// reversed fold equals the fold of the reversed text.
+				view = newResponseFoldView(reverseResponseText(content), reverseResponseText(folded))
 			}
 			if pf.proofs[i].provesEmpty(view) {
 				continue

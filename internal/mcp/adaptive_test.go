@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -536,14 +535,7 @@ func startListenerProxyWithStore(
 
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	return baseURL, cancel, &logBuf

@@ -370,11 +370,8 @@ func cleanLinuxPath(p string) (string, error) {
 	if !strings.HasPrefix(p, "/") {
 		return "", fmt.Errorf("path %q must be absolute", p)
 	}
-	cleaned := path.Clean(p)
-	if !strings.HasPrefix(cleaned, "/") {
-		return "", fmt.Errorf("path %q must be absolute", p)
-	}
-	return cleaned, nil
+	// path.Clean keeps an absolute slash path absolute.
+	return path.Clean(p), nil
 }
 
 func linuxPathContains(parent, child string) bool {

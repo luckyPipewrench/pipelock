@@ -63,6 +63,17 @@ func releaseGrantSASQuery(jwt, sigSeed string) string {
 		"&sig=" + url.QueryEscape(sig) + "&jwt=" + jwt
 }
 
+// releaseGrantSASQueryWithOverrides is the real redirect query: the SAS and
+// grant plus the four response-header overrides GitHub sends, carrying a long
+// asset name that scores 4.63 on the default 4.50 entropy threshold by itself.
+func releaseGrantSASQueryWithOverrides(jwt, sigSeed string) string {
+	const name = "ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz.sha256"
+	return releaseGrantSASQuery(jwt, sigSeed) +
+		"&rscd=attachment%3B+filename%3D" + name + "&rsct=application%2Foctet-stream" +
+		"&response-content-disposition=attachment%3B%20filename%3D" + name +
+		"&response-content-type=application%2Foctet-stream"
+}
+
 // CONNECT with TLS interception: the release host is dialed at its real name
 // through a local override. Only a query-carried JWT reaches the upstream; a
 // path-carried one, a header-carried one, and a query JWT at another host all
@@ -329,6 +340,17 @@ func TestInterceptTunnel_GitHubReleaseGrantSAS(t *testing.T) {
 			wantAllow: true,
 		},
 		{
+			name:      "allow: long asset name in the response overrides",
+			host:      releaseGrantHost,
+			query:     releaseGrantSASQueryWithOverrides(jwt, "intercept-override-fixture"),
+			wantAllow: true,
+		},
+		{
+			name:  "deny: long asset name on a non-grant host",
+			host:  releaseGrantHost + ".evil.example",
+			query: releaseGrantSASQueryWithOverrides(jwt, "intercept-override-lookalike-fixture"),
+		},
+		{
 			name:      "allow: one hour grant with SAS",
 			host:      releaseGrantHost,
 			query:     releaseGrantSASQuery(releaseGrantJWTForHost(releaseGrantHost, 3600), "intercept-hour-fixture"),
@@ -503,6 +525,17 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 			redirectHost: releaseGrantHost,
 			query:        func() string { return releaseGrantSASQuery(jwt, "fetch-allow-fixture") },
 			wantOK:       true,
+		},
+		{
+			name:         "release storage host, long asset name in the response overrides",
+			redirectHost: releaseGrantHost,
+			query:        func() string { return releaseGrantSASQueryWithOverrides(jwt, "fetch-override-fixture") },
+			wantOK:       true,
+		},
+		{
+			name:         "other host, long asset name in the response overrides",
+			redirectHost: "download.vendor.example",
+			query:        func() string { return releaseGrantSASQueryWithOverrides(jwt, "fetch-override-other-host-fixture") },
 		},
 		{
 			name:         "release storage host, one hour grant with SAS",

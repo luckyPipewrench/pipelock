@@ -396,6 +396,12 @@ With `--dir`, anchoring selects a lone run chain automatically. If the
 directory holds several runs, pass `--session` with the exact run ID; each
 anchor bundle covers one chain.
 
+Before it submits anything, `anchor receipts` checks the checkpoint against the
+anchor state already recorded in the directory. A checkpoint that is already
+anchored, or that conflicts with a recorded one at the same coverage, is refused
+before the backend is contacted. A remote log entry can't be withdrawn, so the
+refusal comes first.
+
 The local backend is deterministic test/development plumbing, not an
 operator-independent witness:
 
@@ -441,6 +447,10 @@ pipelock-verifier independent /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub \
   --rekor-log-key /etc/pipelock/keys/rekor-log.pub
 ```
+
+With `--dir` and no `--session`, `pipelock-verifier independent` reads the session
+the bundle anchored, which is the run ID for a per-run chain. Pass `--session` to
+read a different one.
 
 An anchor bundle covers the receipts that existed when it was made. The live
 chain keeps growing, so `pipelock-verifier independent` recomputes the checkpoint

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/eventcatalog"
+
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
@@ -208,58 +210,17 @@ func normalizeEventAction(value string) string {
 	}
 }
 
-func eventTypeAction(eventType string) string {
-	switch eventType {
-	case EventAllowed:
-		return conventionActionAllow
-	case EventBlocked, EventWSBlocked, EventKillSwitchDeny, EventAirlockDeny, EventSNIMismatch:
-		return conventionActionBlock
-	case EventDLPWarn,
-		EventAddressProtection,
-		EventBodyDLP,
-		EventBodyPromptInjection,
-		EventHeaderDLP,
-		EventTaintDecision,
-		EventAirlockEnter,
-		EventSessionAnomaly,
-		EventMCPUnknownTool,
-		EventResponseScan,
-		EventResponseScanSuppressed,
-		EventError,
-		EventResponseScanExempt,
-		EventWSScan,
-		EventAdaptiveEscalation,
-		EventAdaptiveUpgrade,
-		EventAnomaly,
-		EventTextStego,
-		EventLicenseExpiry,
-		EventRuleBundleDegraded,
-		EventDashboardAuthFailed:
-		return conventionActionWarn
-	case EventRedirect, EventToolRedirect:
-		return EventRedirect
-	case EventForwardHTTP, EventInterceptHTTP:
-		return eventActionForward
-	case EventStartup,
-		EventShutdown,
-		EventAgentListener,
-		EventTunnelClose,
-		EventTunnelOpen,
-		EventWSOpen,
-		EventWSClose,
-		EventAdaptiveRecovery,
-		EventAirlockDeescalate,
-		EventSessionAdmin,
-		EventShieldRewrite,
-		EventConfigReload,
-		EventMediaExposure:
-		return conventionActionAllow
-	case EventAuthorityVerification:
-		return conventionActionAllow
-	default:
-		return ""
+var builtinEventActions = func() map[string]string {
+	actions := make(map[string]string)
+	for _, descriptor := range eventcatalog.Builtins() {
+		if descriptor.Action != "" {
+			actions[descriptor.Name] = descriptor.Action
+		}
 	}
-}
+	return actions
+}()
+
+func eventTypeAction(eventType string) string { return builtinEventActions[eventType] }
 
 // eventDecisionType derives the decision type for filtering. For events that
 // eventTypeAction recognizes, the event type itself wins so spoofed

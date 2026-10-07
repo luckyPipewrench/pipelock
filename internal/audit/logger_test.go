@@ -2890,6 +2890,7 @@ func newLoggerWithEmitter(t *testing.T) (*Logger, *collectingSink) {
 	sink := &collectingSink{}
 	emitter := emit.NewEmitter("test-instance", sink)
 	logger.SetEmitter(emitter)
+	t.Cleanup(logger.Close)
 	t.Cleanup(func() { _ = emitter.Close() })
 	return logger, sink
 }
@@ -3126,6 +3127,7 @@ func TestEmit_WebSocketLifecycleHonorsIncludeAllowedFalse(t *testing.T) {
 	sink := &collectingSink{}
 	emitter := emit.NewEmitter("test", sink)
 	logger.SetEmitter(emitter)
+	t.Cleanup(logger.Close)
 	t.Cleanup(func() { _ = emitter.Close() })
 
 	logger.LogWSOpen("ws://example.com/stream", testClientIP, testReqID, testAgentName)
@@ -3605,6 +3607,7 @@ func TestEmit_LogBlocked_IncludeBlockedFalse(t *testing.T) {
 	sink := &collectingSink{}
 	emitter := emit.NewEmitter("test", sink)
 	logger.SetEmitter(emitter)
+	t.Cleanup(logger.Close)
 	t.Cleanup(func() { _ = emitter.Close() })
 
 	logger.LogBlocked(LogContext{method: testMethodGet, url: "https://evil.com", clientIP: testClientIP, requestID: "req-1"}, ScannerDLP, "secret found")

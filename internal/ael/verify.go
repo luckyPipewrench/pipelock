@@ -23,7 +23,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-const maxVerifyRecordBytes = 1 << 20
+const (
+	maxVerifyRecordBytes = 1 << 20
+	maxVerifyStreamBytes = 256 << 20
+)
+
+var errAELStreamTooLarge = errors.New("native AEL stream exceeds 256 MiB")
 
 // VerifiedHead is the final signed native AEL record, including the close.
 type VerifiedHead struct {
@@ -75,15 +80,19 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 		return VerifiedHead{}, err
 	}
 	defer func() { _ = f.Close() }()
-	if before.Size() > 256<<20 {
-		return VerifiedHead{}, errors.New("native AEL stream exceeds 256 MiB")
+	if before.Size() > maxVerifyStreamBytes {
+		return VerifiedHead{}, errAELStreamTooLarge
 	}
 	r := bufio.NewReaderSize(f, maxVerifyRecordBytes)
 	prev := zeroHash
 	var count uint64
+	var streamBytes int64
 	closed := false
 	for {
-		line, readErr := r.ReadSlice('\n')
+		line, readErr := readBoundedAELLine(r, &streamBytes, maxVerifyStreamBytes)
+		if errors.Is(readErr, errAELStreamTooLarge) {
+			return VerifiedHead{}, readErr
+		}
 		if errors.Is(readErr, bufio.ErrBufferFull) {
 			return VerifiedHead{}, errors.New("native AEL record exceeds limit")
 		}
@@ -153,6 +162,15 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 		finalSeq = count - 1
 	}
 	return VerifiedHead{FinalSeq: finalSeq, FinalHash: prev, RecordCount: count}, nil
+}
+
+func readBoundedAELLine(r *bufio.Reader, total *int64, limit int64) ([]byte, error) {
+	line, err := r.ReadSlice('\n')
+	if int64(len(line)) > limit-*total {
+		return nil, errAELStreamTooLarge
+	}
+	*total += int64(len(line))
+	return line, err
 }
 
 func openRegularAEL(path string) (*os.File, os.FileInfo, error) {

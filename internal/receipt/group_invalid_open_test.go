@@ -9,7 +9,58 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+func TestTornFirstGroupSegmentWithoutOpeningStaysGroupEvidence(t *testing.T) {
+	_, key := generateTestKey(t)
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := OpenInitialReceiptShardSet(EmitterConfig{
+		Recorder: rec, PrivKey: key, ConfigHash: testConfigHash,
+		Principal: testPrincipal, Actor: testActor,
+	}, "proxy", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, _ := set.Opening()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := ReceiptGroupFileName(open.GroupID, "open")
+	if err := os.Remove(filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	for _, shard := range open.Shards {
+		paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
+		if err != nil || len(paths) != 1 {
+			t.Fatalf("first shard paths = %v, %v", paths, err)
+		}
+		f, err := os.OpenFile(paths[0], os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(`{"torn":`); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	present, err := ReceiptGroupEvidencePresent(dir, 0)
+	if err != nil || !present {
+		t.Fatalf("group evidence present = %t, %v", present, err)
+	}
+	summary, err := VerifyReceiptGroups(dir, []string{open.SignerKey}, nil)
+	if err != nil || summary.Invalid == 0 {
+		t.Fatalf("orphaned group summary = %+v, %v", summary, err)
+	}
+}
 
 func TestVerifyReceiptGroupRefusesMissingTrustAndOpening(t *testing.T) {
 	dir := t.TempDir()

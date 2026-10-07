@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
-	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type ReceiptGroupVerdict string
@@ -261,13 +260,10 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 			return nil
 		}
 		path := filepath.Join(filepath.Clean(dir), name)
-		var first recorder.Entry
-		seen := false
-		stop := errors.New("captured first recorder entry")
-		_, _ = recorder.WalkEvidenceFile(path, nil, func(entry recorder.Entry) error {
-			first, seen = entry, true
-			return stop
-		})
+		first, seen, firstErr := firstGroupEvidenceEntry(path)
+		if firstErr != nil {
+			return firstErr
+		}
 		if !seen {
 			// Let the ordinary session verifier classify malformed or empty
 			// legacy files. A gate is only recognized from a parsed first entry.

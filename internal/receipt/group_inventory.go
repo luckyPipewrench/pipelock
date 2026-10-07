@@ -336,13 +336,10 @@ func ReceiptGroupEvidencePresent(dir string, maxEntries int) (bool, error) {
 		if !ok || start != 0 {
 			return nil
 		}
-		stop := errors.New("captured first recorder entry")
-		var first recorder.Entry
-		seen := false
-		_, _ = recorder.WalkEvidenceFile(filepath.Join(filepath.Clean(dir), name), nil, func(entry recorder.Entry) error {
-			first, seen = entry, true
-			return stop
-		})
+		first, seen, firstErr := firstGroupEvidenceEntry(filepath.Join(filepath.Clean(dir), name))
+		if firstErr != nil {
+			return firstErr
+		}
 		// Malformed legacy evidence belongs to the caller's existing damage
 		// report. This inventory check only identifies a readable group gate.
 		if !seen {
@@ -358,6 +355,34 @@ func ReceiptGroupEvidencePresent(dir string, maxEntries int) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// firstGroupEvidenceEntry reads a complete first line even when the final
+// write in the same shard is torn. A normal walk checks the tail before it
+// invokes the visitor, so a torn tail needs the validated complete prefix.
+func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
+	var first recorder.Entry
+	seen := false
+	stop := errors.New("captured first recorder entry")
+	_, err := recorder.WalkEvidenceFile(path, nil, func(entry recorder.Entry) error {
+		first, seen = entry, true
+		return stop
+	})
+	if errors.Is(err, stop) {
+		return first, true, nil
+	}
+	var torn *recorder.TornTailError
+	if errors.As(err, &torn) {
+		_, err = recorder.CaptureTornEvidence(path, recorder.MaxEvidenceReadFileBytes, nil, func(entry recorder.Entry) error {
+			if !seen {
+				first, seen = entry, true
+			}
+			return nil
+		})
+		return first, seen, err
+	}
+	// Other malformed legacy evidence is classified by its normal verifier.
+	return first, seen, nil
 }
 
 func indexAELClaimsForSession(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error) error {

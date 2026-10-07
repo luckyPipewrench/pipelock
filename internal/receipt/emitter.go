@@ -1781,14 +1781,8 @@ func isGroupSessionShards(shards []indexedRecorderShard) bool {
 		if shard.seqStart != 0 {
 			continue
 		}
-		seen, gated := false, false
-		stop := errors.New("captured first recorder entry")
-		_, _ = recorder.WalkEvidenceFile(shard.path, nil, func(entry recorder.Entry) error {
-			seen = true
-			gated = entry.Type == recorder.GroupGateEntryType
-			return stop
-		})
-		return seen && gated
+		first, seen, err := firstGroupEvidenceEntry(shard.path)
+		return err != nil || seen && first.Type == recorder.GroupGateEntryType
 	}
 	return false
 }

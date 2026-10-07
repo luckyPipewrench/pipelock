@@ -385,7 +385,17 @@ func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
 	return first, seen, nil
 }
 
+type groupBatchTorn struct {
+	session string
+	groupID string
+	err     error
+}
+
 func indexAELClaimsForSession(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error) error {
+	return indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID, trusted, addClaim, nil)
+}
+
+func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, onTorn func(groupBatchTorn)) error {
 	var whole *WholeRecorderWalker
 	v1 := NewChainWalker(trusted)
 	var run, signer string
@@ -454,8 +464,12 @@ func indexAELClaimsForSession(dir, session, currentGroupID, predecessorGroupID s
 		return nil
 	})
 	var torn *recorder.TornTailError
-	if err != nil && ((groupID != predecessorGroupID && groupID != currentGroupID && groupID != "") || !errors.As(err, &torn)) {
+	allowBatchTorn := onTorn != nil && groupID != ""
+	if err != nil && ((groupID != predecessorGroupID && groupID != currentGroupID && groupID != "" && !allowBatchTorn) || !errors.As(err, &torn)) {
 		return fmt.Errorf("inventory receipt session %q: %w", session, err)
+	}
+	if err != nil && allowBatchTorn {
+		onTorn(groupBatchTorn{session: session, groupID: groupID, err: fmt.Errorf("inventory receipt session %q: %w", session, err)})
 	}
 	if first || whole.Err() != nil {
 		return fmt.Errorf("inventory receipt session %q is empty or invalid", session)

@@ -97,14 +97,32 @@ func TestReceiptGroupAELMatrix(t *testing.T) {
 	if len(cases) != 116 {
 		t.Fatalf("matrix has %d cells, want 116", len(cases))
 	}
+	compared := 0
 	for _, item := range cases {
 		t.Run(item.Name, func(t *testing.T) {
-			result := VerifyReceiptGroup(filepath.Join(root, "cases", item.Name), item.GroupID, item.TrustedKeys)
+			dir := filepath.Join(root, "cases", item.Name)
+			result := VerifyReceiptGroup(dir, item.GroupID, item.TrustedKeys)
 			if result.Verdict != item.Expected {
 				t.Fatalf("got %s, want %s: %s", result.Verdict, item.Expected, result.Error)
 			}
+			var batched *ReceiptGroupResult
+			_, batchErr := VerifyReceiptGroups(dir, item.TrustedKeys, func(group ReceiptGroupResult) error {
+				if group.GroupID == item.GroupID {
+					batched = &group
+				}
+				return nil
+			})
+			if batchErr == nil {
+				if batched == nil {
+					t.Fatal("directory verifier omitted the group's verdict")
+				}
+				compared++
+				if batched.Verdict != result.Verdict {
+					t.Fatalf("directory verdict %s differs from direct verdict %s: %s", batched.Verdict, result.Verdict, batched.Error)
+				}
+			}
 			if strings.Contains(item.Name, "__torn-early") || strings.Contains(item.Name, "__bad-middle-json") {
-				summary, err := VerifyReceiptGroups(filepath.Join(root, "cases", item.Name), item.TrustedKeys, nil)
+				summary, err := VerifyReceiptGroups(dir, item.TrustedKeys, nil)
 				if err == nil && summary.Invalid == 0 {
 					t.Fatalf("directory mode accepted damaged session: %+v", summary)
 				}
@@ -142,6 +160,9 @@ func TestReceiptGroupAELMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+	if compared == 0 {
+		t.Fatal("directory verifier produced no comparable group verdicts")
 	}
 	if len(controls) != 1 {
 		t.Fatalf("matrix controls = %d, want 1", len(controls))

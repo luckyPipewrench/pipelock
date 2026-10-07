@@ -39,6 +39,27 @@ type ReceiptGroupResult struct {
 // closed shard with bounded per-shard memory. It returns a verdict rather than
 // making an incomplete group look like a valid single session.
 func VerifyReceiptGroup(dir, groupID string, trusted []string) ReceiptGroupResult {
+	return verifyReceiptGroupWithIndex(dir, groupID, trusted, nil)
+}
+
+type groupAELBatchIndex interface {
+	Check(ReceiptGroupOpen, bool) error
+	Close() error
+}
+
+type failedGroupAELBatchIndex struct{ err error }
+
+func (b failedGroupAELBatchIndex) Check(ReceiptGroupOpen, bool) error { return b.err }
+func (b failedGroupAELBatchIndex) Close() error                       { return nil }
+
+func verifyGroupAELWithIndex(dir string, open ReceiptGroupOpen, trusted []string, incomplete bool, index groupAELBatchIndex) error {
+	if index != nil {
+		return index.Check(open, incomplete)
+	}
+	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
+}
+
+func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) ReceiptGroupResult {
 	result := ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
 	if len(trusted) == 0 {
 		result.Error = "receipt group verification requires a trusted signer key"
@@ -88,7 +109,7 @@ func VerifyReceiptGroup(dir, groupID string, trusted []string) ReceiptGroupResul
 			result.Error = err.Error()
 			return result
 		}
-		if err := verifyGroupAELInventoryMode(dir, open, trusted, true); err != nil && !errors.Is(err, errGroupAELOpenTail) && !errors.Is(err, errGroupAELNeighborOpenTail) {
+		if err := verifyGroupAELWithIndex(dir, open, trusted, true, index); err != nil && !errors.Is(err, errGroupAELOpenTail) && !errors.Is(err, errGroupAELNeighborOpenTail) {
 			result.Error = err.Error()
 			return result
 		}
@@ -143,7 +164,7 @@ func VerifyReceiptGroup(dir, groupID string, trusted []string) ReceiptGroupResul
 		result.Error = err.Error()
 		return result
 	}
-	aelErr := verifyGroupAELInventory(dir, open, trusted)
+	aelErr := verifyGroupAELWithIndex(dir, open, trusted, false, index)
 	if aelErr != nil && !errors.Is(aelErr, errGroupAELOpenTail) && !errors.Is(aelErr, errGroupAELNeighborOpenTail) {
 		result.Error = aelErr.Error()
 		return result
@@ -208,8 +229,7 @@ type ReceiptGroupInventoryResult struct {
 // directory fail the inventory. Reports are delivered as they are verified;
 // callers must not present an earlier GROUP_VALID as an overall pass if this
 // function returns an error or a non-valid group count.
-func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (ReceiptGroupInventoryResult, error) {
-	var summary ReceiptGroupInventoryResult
+func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupResult) error) (summary ReceiptGroupInventoryResult, retErr error) {
 	hasGroupEvidence, err := ReceiptGroupEvidencePresent(dir, 0)
 	if err != nil {
 		return summary, err
@@ -293,12 +313,17 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	if err != nil {
 		return summary, err
 	}
+	index, indexErr := newGroupAELBatchIndex(dir, trusted)
+	if indexErr != nil {
+		index = failedGroupAELBatchIndex{err: indexErr}
+	}
+	defer func() { retErr = errors.Join(retErr, index.Close()) }()
 	err = walkInventoryNames(dir, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") || !strings.HasSuffix(name, "-open.json") {
 			return nil
 		}
 		id := name[len("receipt-group-") : len("receipt-group-")+32]
-		result := VerifyReceiptGroup(dir, id, trusted)
+		result := verifyReceiptGroupWithIndex(dir, id, trusted, index)
 		if visit != nil {
 			if visitErr := visit(result); visitErr != nil {
 				return visitErr

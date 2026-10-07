@@ -143,6 +143,7 @@ const (
 	EventConfigReload           = "config_reload"
 	EventRedirect               = "redirect"
 	EventForwardHTTP            = "forward_http"
+	EventInterceptHTTP          = "intercept_http"
 	EventToolRedirect           = "tool_redirect"
 	EventWSBlocked              = "ws_blocked"
 	EventWSScan                 = "ws_scan"
@@ -223,6 +224,7 @@ var EventSeverity = map[string]Severity{
 	EventConfigReload:          SeverityInfo,
 	EventRedirect:              SeverityInfo,
 	EventForwardHTTP:           SeverityInfo,
+	EventInterceptHTTP:         SeverityInfo,
 	EventToolRedirect:          SeverityInfo,
 }
 

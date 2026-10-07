@@ -197,7 +197,7 @@ func normalizeEventAction(value string) string {
 		return conventionActionAsk
 	case EventRedirect, "redirected":
 		return EventRedirect
-	case EventForwardHTTP, eventActionForward, "forwarded":
+	case EventForwardHTTP, EventInterceptHTTP, eventActionForward, "forwarded":
 		return eventActionForward
 	case eventActionStrip, "stripped":
 		return eventActionStrip
@@ -238,7 +238,7 @@ func eventTypeAction(eventType string) string {
 		return conventionActionWarn
 	case EventRedirect, EventToolRedirect:
 		return EventRedirect
-	case EventForwardHTTP:
+	case EventForwardHTTP, EventInterceptHTTP:
 		return eventActionForward
 	case EventStartup,
 		EventShutdown,

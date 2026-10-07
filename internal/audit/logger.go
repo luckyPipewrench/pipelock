@@ -280,6 +280,19 @@ func (e *logEntry) durMS(value time.Duration) *logEntry {
 	return e
 }
 
+// upstreamMS adds the "upstream_ms" wait for an intercepted request.
+func (e *logEntry) upstreamMS(value time.Duration) *logEntry {
+	e.event = e.event.Dur("upstream_ms", value)
+	e.fields["upstream_ms"] = value.Milliseconds()
+	return e
+}
+
+func (e *logEntry) boolField(key string, value bool) *logEntry {
+	e.event = e.event.Bool(key, value)
+	e.fields[key] = value
+	return e
+}
+
 func (e *logEntry) strs(key string, values []string) *logEntry {
 	sanitized := make([]string, len(values))
 	for i, v := range values {
@@ -380,6 +393,7 @@ const (
 	EventTunnelOpen             EventType = "tunnel_open"
 	EventTunnelClose            EventType = "tunnel_close"
 	EventForwardHTTP            EventType = "forward_http"
+	EventInterceptHTTP          EventType = "intercept_http"
 	EventConfigReload           EventType = "config_reload"
 	EventWSOpen                 EventType = "ws_open"
 	EventWSClose                EventType = "ws_close"
@@ -1681,6 +1695,51 @@ func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.
 
 	if l.emitter != nil {
 		l.emitEvent(string(EventTunnelClose), e.fields)
+	}
+}
+
+// InterceptTiming describes where one TLS-intercepted request spent its time.
+// Upstream is zero when the request never reached the destination.
+type InterceptTiming struct {
+	StatusCode      int
+	SizeBytes       int64
+	Duration        time.Duration
+	Upstream        time.Duration
+	ReachedUpstream bool
+	RequestCanceled bool
+}
+
+// LogInterceptHTTP logs one TLS-intercepted request with its timing split.
+// duration_ms is the whole request. upstream_ms is the wait for response
+// headers, starting when the request finished sending, or when the connection
+// was ready if the response arrived before the send was reported complete; it
+// is absent when the request was never sent. The remainder covers request
+// checks, DNS and connecting, sending when upstream_ms does not include it,
+// and reading, scanning and delivering the body. The url field holds the
+// destination only, never a path or query.
+func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
+	if !l.includeAllowed {
+		return
+	}
+	e := newLogEntry(l.zl.Info(), EventInterceptHTTP).
+		str("method", ctx.method).
+		optStr("url", ctx.url).
+		optStr("target", ctx.target).
+		optStr("client_ip", ctx.clientIP).
+		optStr("request_id", ctx.requestID).
+		correlationField(ctx.correlation).
+		agentField(ctx.agent, ctx.agentAuth).
+		intField("status_code", t.StatusCode).
+		int64Field("size_bytes", t.SizeBytes).
+		durMS(t.Duration)
+	if t.ReachedUpstream {
+		e.upstreamMS(t.Upstream)
+	}
+	e.boolField("request_canceled", t.RequestCanceled)
+	e.msg("intercepted request")
+
+	if l.emitter != nil {
+		l.emitEvent(string(EventInterceptHTTP), e.fields)
 	}
 }
 

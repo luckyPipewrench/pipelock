@@ -13,9 +13,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -570,6 +572,32 @@ func newInterceptHandler(
 		}
 		ic.Logger = ic.Logger.WithCorrelation(ic.Correlation)
 		r = r.WithContext(withCorrelation(r.Context(), ic.Correlation))
+
+		// One timing line per intercepted request, on every exit path, so an
+		// operator can split Pipelock's own time from the destination's wait.
+		// The wrapper adds no optional interfaces; code that needs one asks
+		// the server's own writer, so no capability is advertised falsely.
+		serverWriter := w
+		timing := &interceptTimingWriter{ResponseWriter: w}
+		w = timing
+		var upstreamWait time.Duration
+		// Set only when the transport reports the request fully written, so a
+		// DNS, dial, TLS or dial-guard failure records no upstream wait.
+		var reachedUpstream atomic.Bool
+		defer func() {
+			// Destination only. A blocked request's path or query can carry
+			// the very secret its block event redacts, so this line never
+			// records either.
+			timingCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: "https://" + target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
+			ic.Logger.LogInterceptHTTP(timingCtx, audit.InterceptTiming{
+				StatusCode:      timing.finalStatus(r.Context().Err() != nil),
+				SizeBytes:       timing.bytes,
+				Duration:        time.Since(reqStart),
+				Upstream:        upstreamWait,
+				ReachedUpstream: reachedUpstream.Load(),
+				RequestCanceled: r.Context().Err() != nil,
+			})
+		}()
 
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
@@ -1963,7 +1991,38 @@ func newInterceptHandler(
 		}
 
 		// Forward to upstream.
-		resp, err := upstream.RoundTrip(r)
+		// The wait starts when the request is fully written, so dialing,
+		// TLS setup and the request write are not counted as upstream wait.
+		// Offsets from base keep the monotonic clock, so a wall-clock
+		// adjustment during the request cannot distort the wait.
+		base := time.Now()
+		var wroteAt, connAt atomic.Int64
+		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+			GotConn: func(httptrace.GotConnInfo) {
+				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
+			},
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					// A retried request reports a write per attempt; the
+					// wait runs from the first one.
+					wroteAt.CompareAndSwap(0, int64(time.Since(base))+1)
+					reachedUpstream.Store(true)
+				}
+			},
+		})))
+		// The transport reports the write on its own goroutine and can
+		// return a response before that callback runs. A response is proof
+		// the request was sent; the wait then starts at connection ready.
+		start := wroteAt.Load()
+		if err == nil {
+			reachedUpstream.Store(true)
+			if start == 0 {
+				start = connAt.Load()
+			}
+		}
+		if start != 0 && reachedUpstream.Load() {
+			upstreamWait = time.Since(base) - time.Duration(start-1)
+		}
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
 			if errors.As(err, &ssrfErr) {
@@ -2122,7 +2181,7 @@ func newInterceptHandler(
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
 
-			flusher, _ := w.(http.Flusher)
+			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
 			// Findings and incomplete scans keep their evidence below, even
 			// when the client also went away.
@@ -2893,4 +2952,45 @@ func (ic *InterceptContext) baseContext() func(net.Listener) context.Context {
 // withActorAuth attaches an agent-label provenance grade to a context.
 func withActorAuth(parent context.Context, auth envelope.ActorAuth) context.Context {
 	return context.WithValue(parent, ctxKeyAgentAuth, string(auth))
+}
+
+// interceptTimingWriter records the status and body bytes an intercepted
+// request returned to the client, for the per-request timing line.
+type interceptTimingWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (t *interceptTimingWriter) WriteHeader(code int) {
+	// 1xx responses are interim and a final status follows, except 101,
+	// which ends the HTTP exchange.
+	if t.status == 0 && (code >= http.StatusOK || code == http.StatusSwitchingProtocols) {
+		t.status = code
+	}
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *interceptTimingWriter) Write(b []byte) (int, error) {
+	if t.status == 0 {
+		t.status = http.StatusOK
+	}
+	n, err := t.ResponseWriter.Write(b)
+	t.bytes += int64(n)
+	return n, err
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
+}
+
+// finalStatus is the status the client received. A handler that returns
+// without writing gets net/http's implicit 200, unless the client had
+// already gone, in which case nothing was delivered and it stays 0.
+func (t *interceptTimingWriter) finalStatus(clientGone bool) int {
+	if t.status == 0 && !clientGone {
+		return http.StatusOK
+	}
+	return t.status
 }

@@ -48,6 +48,30 @@ var blockEventTypes = map[string]bool{
 	"kill_switch_deny": true,
 }
 
+// timingEventTypes are per-request timing records. They describe requests
+// already counted by their verdict events, so the report neither counts them
+// as traffic nor lists them as security evidence.
+var timingEventTypes = map[string]bool{
+	"intercept_http": true,
+}
+
+// withoutTimingEvents returns events with timing records removed. It copies
+// only when a timing record is present, so the caller's slice is never changed.
+func withoutTimingEvents(events []Event) []Event {
+	for i := range events {
+		if timingEventTypes[events[i].Event] {
+			kept := make([]Event, 0, len(events)-1)
+			for j := range events {
+				if !timingEventTypes[events[j].Event] {
+					kept = append(kept, events[j])
+				}
+			}
+			return kept
+		}
+	}
+	return events
+}
+
 // Event types classified as allowed/informational traffic.
 var allowedEventTypes = map[string]bool{
 	"allowed":      true,
@@ -118,6 +142,10 @@ func Aggregate(events []Event, opts Options) *Report {
 	if title == "" {
 		title = DefaultTitle
 	}
+
+	// Timing records describe requests that verdict events already count.
+	// Drop them once here so no summary, breakdown or evidence view sees them.
+	events = withoutTimingEvents(events)
 
 	r := &Report{
 		Title:     title,

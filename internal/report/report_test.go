@@ -1662,3 +1662,27 @@ func TestSanitizeEventForDisplayDoesNotMutateOriginalSlices(t *testing.T) {
 		t.Fatalf("original BundleRules was mutated: %+v", ev.BundleRules[0])
 	}
 }
+
+func TestAggregate_IgnoresInterceptTiming(t *testing.T) {
+	base := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	verdicts := []Event{
+		{Time: base, Event: "allowed", URL: "https://api.vendor.example/a", ClientIP: "10.0.0.1"},
+		{Time: base.Add(time.Minute), Event: "anomaly", URL: "https://api.vendor.example/b", ClientIP: "10.0.0.1"},
+	}
+	withTiming := append([]Event{}, verdicts...)
+	withTiming = append(withTiming,
+		Event{Time: base.Add(2 * time.Minute), Event: "intercept_http", URL: "https://api.vendor.example", ClientIP: "10.0.0.1"},
+		Event{Time: base.Add(3 * time.Minute), Event: "intercept_http", URL: "https://other.vendor.example", ClientIP: "10.0.0.2", Action: actionBlock},
+	)
+	want := Aggregate(verdicts, Options{})
+	got := Aggregate(withTiming, Options{})
+	got.Generated, want.Generated = time.Time{}, time.Time{}
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("timing records changed the report:\n got %s\nwant %s", gotJSON, wantJSON)
+	}
+	if len(withTiming) != 4 || withTiming[2].Event != "intercept_http" {
+		t.Fatal("Aggregate modified the caller's events")
+	}
+}

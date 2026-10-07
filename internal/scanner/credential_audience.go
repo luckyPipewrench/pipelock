@@ -614,6 +614,18 @@ func githubBlobSASCandidateAllowed(candidate credentialAudienceCandidate, host, 
 	return githubBlobSASAllowed(host, target, now)
 }
 
+// exemptsHost reports whether the operator's exempt_domains skips this pattern
+// for host. A core pattern never honors one. On a pattern with a compiled
+// credential audience an entry the audience already covers is ignored, so the
+// audience's carrier rules still decide that host; an entry outside the
+// audience is honored, because that is the only destination it can change.
+func (p *compiledPattern) exemptsHost(host string) bool {
+	if p.core || len(p.exemptDomains) == 0 || !matchesDomainList(host, p.exemptDomains) {
+		return false
+	}
+	return len(p.credentialAudienceHosts) == 0 || !matchesDomainList(host, p.credentialAudienceHosts)
+}
+
 func (p *compiledPattern) credentialAudienceCarrierRestricted() bool {
 	return p != nil && (p.credentialAudienceAuthorizationOnly || p.credentialAudienceCarrierMask != 0)
 }

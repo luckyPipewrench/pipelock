@@ -578,6 +578,38 @@ func credentialAudienceHostsForPattern(name string) []string {
 	return nil
 }
 
+// builtInAudiencePattern returns the shipped pattern with this exact name when
+// it carries a compiled credential audience. Callers treat the result as
+// read-only.
+func builtInAudiencePattern(name string) (DLPPattern, bool) {
+	for _, pattern := range defaultDLPPatternSet {
+		if len(pattern.CredentialAudienceHosts) > 0 && pattern.Name == name {
+			return pattern, true
+		}
+	}
+	return DLPPattern{}, false
+}
+
+// changedFromBuiltIn names the identity fields in which a same-name pattern
+// differs from the shipped one: the fields whose change costs the pattern its
+// compiled credential audience.
+func changedFromBuiltIn(p, builtIn DLPPattern) []string {
+	var changed []string
+	if p.Regex != builtIn.Regex {
+		changed = append(changed, "regex")
+	}
+	if p.Severity != builtIn.Severity {
+		changed = append(changed, "severity")
+	}
+	if p.Validator != builtIn.Validator {
+		changed = append(changed, "validator")
+	}
+	if p.Action != builtIn.Action {
+		changed = append(changed, "action")
+	}
+	return changed
+}
+
 // AppendDeclaredCredentialAudienceHosts adds operator-named enterprise hosts
 // only onto a pattern that already carries its compiled audience. A redefined
 // pattern whose audience was cleared gets nothing from these lists.

@@ -412,6 +412,8 @@ class TestReleaseArtifacts(unittest.TestCase):
                 gate = steps[position]
                 self.assertIs(gate.get("continue-on-error", False), False)
                 condition = " ".join(gate.get("if", "").split())
+                if condition.startswith("${{") and condition.endswith("}}"):
+                    condition = condition[3:-2].strip()
                 # Accept only this small grammar, never evaluate GitHub expressions.
                 match = re.fullmatch(r"\s*always\(\s*\)\s*&&\s*(.*?)\s*", condition)
                 self.assertIsNotNone(match, "completion gate must always run")
@@ -469,10 +471,13 @@ class TestReleaseArtifacts(unittest.TestCase):
             # The action identity and SHA pinning are fixed; the pinned commit
             # is not, so a routine dependency bump of the action stays green.
             action = "actions/attest-sbom" if "sbom-path" in inputs else "actions/attest-build-provenance"
-            name, _, ref = str(step.get("uses", "")).partition("@")
-            self.assertEqual(name, action)
-            self.assertRegex(ref, r"^[0-9a-f]{40}$", "attestation action must be pinned to a commit SHA")
+            self._assert_action_pin(step, action)
             self.assertEqual(step.get("with"), inputs)
+
+    def _assert_action_pin(self, step: dict, action: str) -> None:
+        name, _, ref = str(step.get("uses", "")).partition("@")
+        self.assertEqual(name.lower(), action)
+        self.assertRegex(ref, r"^[0-9a-fA-F]{40}$", "action must be pinned to a commit SHA")
 
     def test_every_attestation_dependency_is_fail_closed(self) -> None:
         self._assert_attestation_contract(yaml.safe_load(self.workflow))
@@ -515,7 +520,8 @@ class TestReleaseArtifacts(unittest.TestCase):
             "removed action", "dropped producer and term", "bundle missing always",
             "chart job suppression", "chart gate suppression",
             "subject moved with coverage", "mixed-case uncovered producer",
-            "wrong action", "unpinned action",
+            "wrong action", "unpinned action", "wrapped failure only",
+            "wrapped bypass OR", "malformed wrapper",
         ):
             with self.subTest(mutation=label):
                 parsed = copy.deepcopy(original)
@@ -602,6 +608,12 @@ class TestReleaseArtifacts(unittest.TestCase):
                         step for step in steps if step.get("id") == "attest-sbom")["uses"]
                 elif label == "unpinned action":
                     producer["uses"] = "actions/attest-build-provenance@v4"
+                elif label == "wrapped failure only":
+                    gate["if"] = "${{ " + gate["if"].replace("!= 'success'", "== 'failure'") + " }}"
+                elif label == "wrapped bypass OR":
+                    gate["if"] = "${{ " + gate["if"] + " || true }}"
+                elif label == "malformed wrapper":
+                    gate["if"] = "${{ " + gate["if"] + " }"
                 with self.assertRaises(AssertionError):
                     self._assert_attestation_contract(parsed)
 
@@ -620,6 +632,24 @@ class TestReleaseArtifacts(unittest.TestCase):
                 if action.startswith("actions/attest"):
                     step["uses"] = f"{action}@{'0' * 40}"
         self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_accepts_expression_wrappers_and_action_case(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        for job in parsed["jobs"].values():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/attest"):
+                    step["uses"] = step["uses"].upper()
+                if step.get("name", "").startswith("Verify") and "always() &&" in step.get("if", ""):
+                    step["if"] = "${{ " + step["if"].strip() + " }}"
+        self._assert_attestation_contract(parsed)
+
+    def test_action_pins_accept_updates_and_reject_floating_or_wrong_actions(self) -> None:
+        for action in ("actions/attest-build-provenance", "actions/attest-sbom", "docker/login-action"):
+            with self.subTest(action=action):
+                self._assert_action_pin({"uses": f"{action}@{'a' * 40}"}, action)
+                for uses in (f"{action}@v4", f"{action}@{'a' * 39}", f"actions/checkout@{'a' * 40}"):
+                    with self.subTest(uses=uses), self.assertRaises(AssertionError):
+                        self._assert_action_pin({"uses": uses}, action)
 
     def test_attestation_contract_accepts_added_covered_producers(self) -> None:
         original = yaml.safe_load(self.workflow)
@@ -841,10 +871,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         login = promote_step_names.index("Login to GHCR for promotion")
         self.assertLess(login, promote_step_names.index("Promote verified image manifests"))
         login_step = promote["steps"][login]
-        self.assertEqual(
-            login_step["uses"],
-            "docker/login-action@dbcb813823bdd20940b903addbd779551569679f",
-        )
+        self._assert_action_pin(login_step, "docker/login-action")
         self.assertEqual(login_step["with"]["registry"], "ghcr.io")
         download = promote_step_names.index("Download promotion inputs")
         for consumer in (

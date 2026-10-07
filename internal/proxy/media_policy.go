@@ -35,26 +35,77 @@ func isSVGContentType(contentType string) bool {
 	return ok && essence == svgMediaType
 }
 
-// responseHeadersDeclareSVG applies the Fetch standard's "extract a MIME
-// type" to every Content-Type field value: the values are combined and split
-// on commas outside quoted strings, invalid entries and */* are skipped, and
-// the LAST valid essence wins. A client therefore renders
-// "text/plain, image/svg+xml", or two separate Content-Type fields, as SVG
-// even though the first value, which is all Header.Get returns, is inert.
+// responseHeadersDeclareSVG reports whether the browser-visible MIME type of a
+// response is SVG. A client renders "text/plain, image/svg+xml", or two
+// separate Content-Type fields, as SVG even though the first value, which is
+// all Header.Get returns, is inert.
 func responseHeadersDeclareSVG(headers http.Header) bool {
+	essence, ok := shieldMediaTypeEssence(responseMIMEType(headers))
+	return ok && essence == svgMediaType
+}
+
+// responseMIMEType derives the MIME type a browser uses for a response from
+// EVERY Content-Type field value, following the Fetch standard's "extract a
+// MIME type": the values are combined and split on commas outside quoted
+// strings; entries that do not parse and */* are skipped; the LAST valid entry
+// wins. The charset of the winning entry is reset when its essence differs
+// from the previously accepted one and carried forward when the essence is the
+// same but the winner declares none. "text/plain;charset=gbk, text/html" is
+// therefore text/html, while "text/html;charset=gbk, text/html" keeps the gbk
+// charset.
+//
+// A single field value is returned as written so downstream classification of
+// ordinary responses is unchanged. It returns "" when no value parses; callers
+// that must keep the first-value behaviour for that case use
+// responseContentType instead.
+func responseMIMEType(headers http.Header) string {
 	values := headers.Values("Content-Type")
 	if len(values) == 0 {
-		return false
+		return ""
 	}
-	last := ""
-	for _, segment := range splitHeaderValuesOutsideQuotes(values) {
+	segments := splitHeaderValuesOutsideQuotes(values)
+	last, lastEssence, charset := "", "", ""
+	for _, segment := range segments {
 		essence, ok := shieldMediaTypeEssence(segment)
 		if !ok || essence == "*/*" {
 			continue
 		}
-		last = essence
+		own, _ := shieldDeclaredCharset(segment)
+		switch {
+		case essence != lastEssence:
+			charset = own
+		case own != "":
+			charset = own
+		}
+		last, lastEssence = segment, essence
+		if own == "" && charset != "" {
+			// Same essence, no charset of its own: the earlier one is kept.
+			last = strings.TrimFunc(segment, isHTTPSpace) + ";charset=" + charset
+		}
 	}
-	return last == svgMediaType
+	if last == "" {
+		return ""
+	}
+	if len(segments) == 1 {
+		return last
+	}
+	return strings.TrimFunc(last, isHTTPSpace)
+}
+
+// responseContentType is the Content-Type every response-side classifier
+// (Browser Shield, media policy, taint) works from. It is the browser-visible
+// type when one can be derived and otherwise the first raw value, exactly what
+// the classifiers saw before, so an empty or unparseable header keeps its
+// existing handling.
+func responseContentType(headers http.Header) string {
+	if derived := responseMIMEType(headers); derived != "" {
+		return derived
+	}
+	return headers.Get("Content-Type")
+}
+
+func isHTTPSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
 }
 
 func splitHeaderValuesOutsideQuotes(values []string) []string {

@@ -2390,7 +2390,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	responsePromptHit := false
 	defer func() {
-		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "forward_response", responsePromptHit)
+		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), responseContentType(resp.Header), "forward_response", responsePromptHit)
 	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
@@ -2768,7 +2768,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 						Host:              fwdRespHost,
 						Path:              resp.Request.URL.EscapedPath(),
-						ContentType:       resp.Header.Get("Content-Type"),
+						ContentType:       responseContentType(resp.Header),
 						Header:            resp.Header,
 						ContentLength:     resp.ContentLength,
 						SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -2904,7 +2904,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var svgShielded bool
 		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
 		if shieldBlocked == nil {
-			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
+			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShield(respBody, responseContentType(resp.Header), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
 		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -2932,7 +2932,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// media types (audio/video by default, oversized images, disallowed
 		// types). Runs after Browser Shield so HTML responses flow through
 		// unchanged and image responses are handled transport-agnostically.
-		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
+		mediaVerdict := applyMediaPolicy(cfg, responseContentType(resp.Header), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
 		if mediaVerdict.Blocked {

@@ -6313,7 +6313,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	responsePromptHit := false
 	defer func() {
-		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "fetch_response", responsePromptHit)
+		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), responseContentType(resp.Header), "fetch_response", responsePromptHit)
 	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the
@@ -6398,7 +6398,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := resp.Header.Get("Content-Type")
+	contentType := responseContentType(resp.Header)
 	title := ""
 
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
@@ -6438,7 +6438,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = shieldBlocked.info.Layer
 		return
 	}
-	contentType = resp.Header.Get("Content-Type")
+	contentType = responseContentType(resp.Header)
 	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
 	isHTML := validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
 

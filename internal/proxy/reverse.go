@@ -2377,7 +2377,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, resp.Header.Get("Content-Type"), "reverse_response", responsePromptHit)
+				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, responseContentType(resp.Header), "reverse_response", responsePromptHit)
 			}()
 		}
 	}
@@ -2397,7 +2397,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
-	isSVGResponse := isSVGContentType(resp.Header.Get("Content-Type")) || responseHeadersDeclareSVG(resp.Header)
+	isSVGResponse := isSVGContentType(responseContentType(resp.Header)) || responseHeadersDeclareSVG(resp.Header)
 	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
 	blockShieldPartial := func(body []byte, complete bool) bool {
@@ -2424,7 +2424,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if blockShieldPartial(body, complete) {
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
 		}
-		oversizePipeline := detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)
+		oversizePipeline := detectShieldPipelineForResponse(responseContentType(resp.Header), body, resp.Header)
 		if shieldLeavesBodyUnchanged(oversizePipeline) && !isSVGResponse {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
@@ -2472,14 +2472,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
-			if isShieldUTF16Response(body, resp.Header.Get("Content-Type")) {
+			if isShieldUTF16Response(body, responseContentType(resp.Header)) {
 				return blockUninspectable(shieldUTF16ScanHeadBlockReason)
 			}
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
 			scanned := body[:shieldMaxBytes]
-			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
-			summary = partialShieldSummary(summary, scanned, resp.Header.Get("Content-Type"), bodyBytes, shieldMaxBytes)
+			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			summary = partialShieldSummary(summary, scanned, responseContentType(resp.Header), bodyBytes, shieldMaxBytes)
 			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
 				ParentActionID: actionID,
@@ -2502,7 +2502,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 		case config.ShieldOversizeWarn:
 			rp.logger.LogAnomaly(actx, "shield_oversize", reason, 0)
-			summary := partialShieldSummary(nil, body, resp.Header.Get("Content-Type"), bodyBytes, 0)
+			summary := partialShieldSummary(nil, body, responseContentType(resp.Header), bodyBytes, 0)
 			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
 				ParentActionID: actionID,
@@ -2608,7 +2608,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// isBinaryMIME only matches image/audio/video prefixes. The content-
 	// sniffing fallback inside applyMediaPolicy handles the rest, but only
 	// if we enter the branch in the first place.
-	mediaCT := resp.Header.Get("Content-Type")
+	mediaCT := responseContentType(resp.Header)
 	mediaCTCanon := canonicalContentType(mediaCT)
 	mediaCTForPolicy := mediaCT
 	detectedMedia := false
@@ -2799,7 +2799,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
-					ContentType:       resp.Header.Get("Content-Type"),
+					ContentType:       responseContentType(resp.Header),
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -2867,7 +2867,7 @@ responseScanning:
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
-					ContentType:       resp.Header.Get("Content-Type"),
+					ContentType:       responseContentType(resp.Header),
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -3186,7 +3186,7 @@ responseScanning:
 			if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 				Host:              revHost,
 				Path:              resp.Request.URL.EscapedPath(),
-				ContentType:       resp.Header.Get("Content-Type"),
+				ContentType:       responseContentType(resp.Header),
 				Header:            resp.Header,
 				ContentLength:     resp.ContentLength,
 				SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -3327,7 +3327,7 @@ responseScanning:
 			}
 		} else {
 			originalBodyBytes := len(body)
-			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
 			if shieldResult.uninspectableReason != "" {
 				rp.logger.LogBlocked(newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), shieldUninspectableLayer, shieldResult.uninspectableReason)
 				rp.metrics.RecordBlocked(revHost, shieldUninspectableLayer, 0, agent)
@@ -3368,7 +3368,7 @@ responseScanning:
 	}
 	if isSVGResponse {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
+		verdict := applyMediaPolicy(cfg, responseContentType(resp.Header), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
 		if verdict.Blocked && svgRefusal != "" {
 			verdict.BlockReason = svgRefusal
 		}

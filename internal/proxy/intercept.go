@@ -2428,7 +2428,7 @@ func newInterceptHandler(
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              ic.TargetHost,
 					Path:              r.URL.EscapedPath(),
-					ContentType:       resp.Header.Get("Content-Type"),
+					ContentType:       responseContentType(resp.Header),
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: ic.Config.ResponseScanning.SizeExemptDomains,
@@ -2552,7 +2552,7 @@ func newInterceptHandler(
 			var shieldSummary *receipt.ShieldSummary
 			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
 			if shieldBlocked == nil {
-				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShield(respBody, responseContentType(resp.Header), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
 			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
@@ -2582,7 +2582,7 @@ func newInterceptHandler(
 		// Media policy on intercepted TLS responses. Runs after shield so
 		// HTML/JS rewriting happens on the original body and image/audio/
 		// video responses get transport-agnostic enforcement.
-		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: ic.TargetHost})
+		mediaVerdict := applyMediaPolicy(ic.Config, responseContentType(resp.Header), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: ic.TargetHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
 		if mediaVerdict.Blocked {

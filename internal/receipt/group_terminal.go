@@ -19,9 +19,15 @@ func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool,
 	if len(trusted) == 0 {
 		return "", false, errors.New("receipt group terminal discovery requires a trusted signer key")
 	}
-	terminal := ""
-	found := false
-	err := walkInventoryNames(dir, func(name string) error {
+	type openingEntry struct {
+		name string
+		open ReceiptGroupOpen
+		hash string
+	}
+	// Read and verify every opening once; the successor checks below run in
+	// memory so startup cost stays linear in the number of openings.
+	var openings []openingEntry
+	if err := walkInventoryNames(dir, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") || !strings.HasSuffix(name, "-open.json") {
 			return nil
 		}
@@ -29,41 +35,44 @@ func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool,
 		if err != nil {
 			return err
 		}
-		if open.BaseSession != base {
-			return nil
+		openings = append(openings, openingEntry{name: name, open: open, hash: hash})
+		return nil
+	}); err != nil {
+		return "", false, err
+	}
+	successorsOf := make(map[string][]openingEntry, len(openings))
+	for _, entry := range openings {
+		if entry.open.PreviousGroupID != "" {
+			successorsOf[entry.open.PreviousGroupID] = append(successorsOf[entry.open.PreviousGroupID], entry)
+		}
+	}
+	terminal := ""
+	found := false
+	for _, entry := range openings {
+		if entry.open.BaseSession != base {
+			continue
 		}
 		successors := 0
-		if err := walkInventoryNames(dir, func(otherName string) error {
-			if !strings.HasPrefix(otherName, "receipt-group-") || !strings.HasSuffix(otherName, "-open.json") || otherName == name {
-				return nil
+		for _, other := range successorsOf[entry.open.GroupID] {
+			if other.name == entry.name {
+				continue
 			}
-			other, _, err := readTopologicalGroupOpen(dir, otherName, trusted)
-			if err != nil {
-				return err
-			}
-			if other.PreviousGroupID != open.GroupID {
-				return nil
-			}
-			if other.BaseSession != base || other.PreviousOpenManifestSHA256 != hash {
-				return errors.New("receipt group successor refers to a mismatched predecessor")
+			if other.open.BaseSession != base || other.open.PreviousOpenManifestSHA256 != entry.hash {
+				return "", false, errors.New("receipt group successor refers to a mismatched predecessor")
 			}
 			successors++
 			if successors > 1 {
-				return errors.New("receipt group predecessor has multiple successor openings")
+				return "", false, errors.New("receipt group predecessor has multiple successor openings")
 			}
-			return nil
-		}); err != nil {
-			return err
 		}
 		if successors == 0 {
 			if found {
-				return errors.New("receipt group history has more than one terminal group")
+				return "", false, errors.New("receipt group history has more than one terminal group")
 			}
-			terminal, found = open.GroupID, true
+			terminal, found = entry.open.GroupID, true
 		}
-		return nil
-	})
-	return terminal, found, err
+	}
+	return terminal, found, nil
 }
 
 func readTopologicalGroupOpen(dir, name string, trusted []string) (ReceiptGroupOpen, string, error) {

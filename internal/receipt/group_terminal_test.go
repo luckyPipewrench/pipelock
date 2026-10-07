@@ -58,8 +58,14 @@ func TestFindTerminalReceiptGroupRejectsForkAndMismatchedSuccessor(t *testing.T)
 					publishTerminalTestOpen(t, dir, makeSuccessor(strings.Repeat("3", 32), initialHash))
 				}
 			}
-			if id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{initial.SignerKey}); err == nil {
-				t.Fatalf("%s history accepted: terminal=%q found=%v", mode, id, found)
+			want := map[string]string{
+				"disconnected":           "more than one terminal group",
+				"mismatched predecessor": "mismatched predecessor",
+				"fork":                   "multiple successor openings",
+			}[mode]
+			id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{initial.SignerKey})
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s history: terminal=%q found=%v err=%v, want error containing %q", mode, id, found, err, want)
 			}
 		})
 	}

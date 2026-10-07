@@ -122,7 +122,7 @@ func TestNewDurableFileRejectsSymlinkToNonRegularFile(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("/dev/full is a Linux special device")
 	}
-	path := filepath.Join(t.TempDir(), "audit-link")
+	path := filepath.Join(durableAuditTempDir(t), "audit-link")
 	if err := os.Symlink("/dev/full", path); err != nil {
 		t.Fatalf("create audit link: %v", err)
 	}
@@ -139,13 +139,13 @@ func TestNewDurableFileRejectsUnopenablePaths(t *testing.T) {
 		{
 			name: "missing parent",
 			path: func(t *testing.T) string {
-				return filepath.Join(t.TempDir(), "missing", "audit.jsonl")
+				return filepath.Join(durableAuditTempDir(t), "missing", "audit.jsonl")
 			},
 		},
 		{
 			name: "directory instead of file",
 			path: func(t *testing.T) string {
-				return t.TempDir()
+				return durableAuditTempDir(t)
 			},
 		},
 	} {
@@ -161,7 +161,7 @@ func TestNewDurableFileUnsupportedOnNonUnix(t *testing.T) {
 	if DurableAuditFileSupported() {
 		t.Skip("Unix durable audit support boundary")
 	}
-	if _, err := NewDurableFile("json", filepath.Join(t.TempDir(), "audit.jsonl"), false, false); err == nil || !strings.Contains(err.Error(), "unsupported on this platform") {
+	if _, err := NewDurableFile("json", filepath.Join(durableAuditTempDir(t), "audit.jsonl"), false, false); err == nil || !strings.Contains(err.Error(), "unsupported on this platform") {
 		t.Fatalf("NewDurableFile error = %v, want unsupported-platform refusal", err)
 	}
 }
@@ -171,6 +171,17 @@ func requireDurableAuditFile(t *testing.T) {
 	if !DurableAuditFileSupported() {
 		t.Skip("durable lifecycle audit files are unsupported on this platform")
 	}
+}
+
+// durableAuditTempDir gives durable-file fixtures private permissions regardless
+// of the process umask. Tests of unsafe modes set those modes explicitly.
+func durableAuditTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- owner execute permission is required for directory traversal
+		t.Fatalf("secure durable audit fixture directory: %v", err)
+	}
+	return dir
 }
 
 func TestNewReusesExistingFile(t *testing.T) {
@@ -209,7 +220,7 @@ func TestNewDurableFileRejectsFilesystemSyncFailure(t *testing.T) {
 
 func TestNewDurableFileResyncsParentAfterFailedCreation(t *testing.T) {
 	requireDurableAuditFile(t)
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 	originalSync := syncDurableAuditParent
 	var syncCalls int
 	syncDurableAuditParent = func(string) error {
@@ -288,9 +299,9 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 			if tc.inParentDir {
-				path = filepath.Join(t.TempDir(), "audit-parent", "audit.jsonl")
+				path = filepath.Join(durableAuditTempDir(t), "audit-parent", "audit.jsonl")
 			}
 			tc.prepare(t, path)
 			logger, err := NewDurableFile("json", path, false, false)
@@ -306,7 +317,7 @@ func TestNewDurableFileRejectsUnsafeUnixOwnershipAndModes(t *testing.T) {
 
 	if os.Geteuid() == 0 {
 		t.Run("untrusted file owner", func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatalf("write audit file: %v", err)
 			}
@@ -370,7 +381,7 @@ func TestLogCommitmentKeyLifecycle(t *testing.T) {
 
 func TestWriteDurableCommitmentKeyLifecycleSyncsJSONRecord(t *testing.T) {
 	requireDurableAuditFile(t)
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 	logger, err := NewDurableFile("json", path, false, false)
 	if err != nil {
 		t.Fatalf("NewDurableFile: %v", err)
@@ -402,7 +413,7 @@ func TestWriteDurableCommitmentKeyLifecycleSyncsJSONRecord(t *testing.T) {
 
 func TestWriteDurableCommitmentKeyLifecycleInterleavesWithOrdinaryJSONLines(t *testing.T) {
 	requireDurableAuditFile(t)
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 	logger, err := NewDurableFile("json", path, false, false)
 	if err != nil {
 		t.Fatalf("NewDurableFile: %v", err)
@@ -471,7 +482,7 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 	})
 
 	t.Run("closed file handle is refused", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 		logger, err := NewDurableFile("json", path, false, false)
 		if err != nil {
 			t.Fatalf("NewDurableFile: %v", err)
@@ -486,7 +497,7 @@ func TestWriteDurableCommitmentKeyLifecycleFailurePaths(t *testing.T) {
 	})
 
 	t.Run("denied record is warn level", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 		logger, err := NewDurableFile("json", path, false, false)
 		if err != nil {
 			t.Fatalf("NewDurableFile: %v", err)
@@ -530,7 +541,7 @@ func TestRejectDurableFileAliases(t *testing.T) {
 	requireDurableAuditFile(t)
 	newLogger := func(t *testing.T) (*Logger, string) {
 		t.Helper()
-		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 		logger, err := NewDurableFile("json", path, false, false)
 		if err != nil {
 			t.Fatalf("NewDurableFile: %v", err)
@@ -730,7 +741,7 @@ func TestWriteDurableCommitmentKeyLifecycleRejectsDeletedOrRotatedSink(t *testin
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "audit.jsonl")
+			path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 			logger, err := NewDurableFile("json", path, false, false)
 			if err != nil {
 				t.Fatalf("NewDurableFile: %v", err)
@@ -746,7 +757,7 @@ func TestWriteDurableCommitmentKeyLifecycleRejectsDeletedOrRotatedSink(t *testin
 
 func TestWriteDurableCommitmentKeyLifecycleConcurrentAppends(t *testing.T) {
 	requireDurableAuditFile(t)
-	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	path := filepath.Join(durableAuditTempDir(t), "audit.jsonl")
 	const writers = 32
 
 	errs := make(chan error, writers)

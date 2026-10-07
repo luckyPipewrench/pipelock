@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -47,10 +48,36 @@ type EntropyHostExclusion struct {
 }
 
 type entropyHostExclusionYAML struct {
-	Host    string `yaml:"host"`
-	Expires string `yaml:"expires"`
-	Reason  string `yaml:"reason,omitempty"`
-	Owner   string `yaml:"owner,omitempty"`
+	Host    string `yaml:"host" json:"host"`
+	Expires string `yaml:"expires" json:"expires"`
+	Reason  string `yaml:"reason,omitempty" json:"reason,omitempty"`
+	Owner   string `yaml:"owner,omitempty" json:"owner,omitempty"`
+}
+
+// UnmarshalJSON accepts the same string and mapping forms as YAML, retaining
+// mapping provenance so validation cannot turn a missing expiry into a
+// permanent exclusion.
+func (e *EntropyHostExclusion) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || (data[0] != '"' && data[0] != '{') {
+		return fmt.Errorf("content_entropy_exclusions entry must be a host string or a {host, expires, reason, owner} mapping")
+	}
+	if data[0] == '"' {
+		var host string
+		if err := json.Unmarshal(data, &host); err != nil {
+			return fmt.Errorf("content_entropy_exclusions entry: %w", err)
+		}
+		*e = EntropyHostExclusion{Host: host}
+		return nil
+	}
+	var raw entropyHostExclusionYAML
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return fmt.Errorf("content_entropy_exclusions entry: %w", err)
+	}
+	*e = EntropyHostExclusion{Host: raw.Host, Expires: raw.Expires, Reason: raw.Reason, Owner: raw.Owner, mapped: true}
+	return nil
 }
 
 // UnmarshalYAML accepts the bare-string and mapping shapes. A scalar keeps the

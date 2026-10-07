@@ -607,6 +607,9 @@ func canonicalEntropyHostExclusions(entries []EntropyHostExclusion) []EntropyHos
 	out := make([]EntropyHostExclusion, 0, len(entries))
 	for _, e := range entries {
 		e.Host = strings.TrimSuffix(strings.ToLower(e.Host), ".")
+		// Construction and wire decoding can differ only in mapping provenance.
+		// Canonical identity follows the effective temporary form, not its origin.
+		e.mapped = e.temporary()
 		if _, ok := seen[e]; ok {
 			continue
 		}

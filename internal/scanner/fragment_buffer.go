@@ -917,6 +917,12 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
+	// Image excision splices decoded bytes into the scanned text, so match
+	// offsets no longer line up with fragment ranges. Map positions back
+	// through the removed image spans instead.
+	if excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true); len(removed) > 0 {
+		return imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, result.Matches)
+	}
 	complete := completeFragmentOccurrences(ctx, sc, ranges)
 	patternSet := make(map[string]struct{}, len(result.Matches))
 	patternNames := make([]string, 0, len(result.Matches))
@@ -957,7 +963,7 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 			}
 			for _, match := range rawTargets {
 				span := match.Span()
-				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) && spanHoldsRule(ctx, sc, masked, span.ByteStart, span.ByteEnd, match.PatternName) {
 					if maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd) {
 						remasked = true
 					} else {
@@ -966,6 +972,14 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 						matches = append(matches, DLPMatch{PatternName: match.PatternName})
 						crossed = true
 					}
+					continue
+				}
+				if spanIsWithinOneFragment(ranges, span.ByteStart, span.ByteEnd) {
+					// The span claims one request but its bytes do not match
+					// the rule there: the scanner rewrote text before recording
+					// positions. The location is unknown, so report the rule.
+					matches = append(matches, DLPMatch{PatternName: match.PatternName})
+					crossed = true
 					continue
 				}
 				matches = appendCrossFragmentMatch(matches, match, ranges, len(buf))
@@ -1018,6 +1032,117 @@ type fragmentOccurrence struct {
 	end   int
 }
 
+// imageSplicedFragmentMatches attributes joined-window findings after image
+// excision has rewritten the text. Excision only removes byte ranges and
+// appends decoded image bytes after the surrounding text, so a position in the
+// surrounding text maps back to the original exactly. For each rule, a match
+// that maps inside one fragment is blanked in place and the window rescanned,
+// so a whole copy cannot hide a split copy. A match in the decoded image bytes,
+// or one without a raw position, has no original location and is reported.
+func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, decoded string, removed []textByteSpan, ranges []fragmentRange, joined []TextDLPMatch) []DLPMatch {
+	// Scanner spans are in DLP-normalized coordinates. If normalizing the
+	// surrounding text would move bytes, positions cannot be trusted, so
+	// every joined rule is reported without attribution.
+	if normalized, stable := normalizeFragmentForDLP([]byte(excised)); !stable || string(normalized) != excised {
+		return unattributedFragmentMatches(joined)
+	}
+	window := excised
+	if len(decoded) > 0 {
+		window = excised + "\n" + decoded
+	}
+	toOriginal := func(pos int, isEnd bool) int {
+		shift := 0
+		for _, gap := range removed {
+			at := pos + shift
+			if gap.start < at || (!isEnd && gap.start == at) {
+				shift += gap.end - gap.start
+				continue
+			}
+			break
+		}
+		return pos + shift
+	}
+	var matches []DLPMatch
+	reported := make(map[string]struct{})
+	budget := maxImageSpliceRescansTotal
+	for _, first := range joined {
+		name := first.PatternName
+		if _, ok := reported[name]; ok {
+			continue
+		}
+		reported[name] = struct{}{}
+		masked := []byte(window)
+		for attempt := 0; ; attempt++ {
+			// Each single-request copy costs a full rescan. Bound the work and
+			// report the rule rather than loop on attacker-supplied copies.
+			if attempt == maxImageSpliceRescans || budget == 0 {
+				matches = append(matches, DLPMatch{PatternName: name})
+				break
+			}
+			budget--
+			var target *TextDLPMatch
+			for _, m := range sc.ScanTextForDLPQuiet(ctx, string(masked)).Matches {
+				if m.PatternName == name {
+					target = &m
+					break
+				}
+			}
+			if target == nil {
+				break
+			}
+			span := target.Span()
+			if target.Encoded != "" || span.ViewLabel != ViewDLPNormalized || span.ByteStart < 0 || span.ByteStart >= span.ByteEnd || span.ByteEnd > len(excised) {
+				matches = append(matches, DLPMatch{PatternName: name})
+				break
+			}
+			origStart, origEnd := toOriginal(span.ByteStart, false), toOriginal(span.ByteEnd, true)
+			if !spanHoldsRule(ctx, sc, masked, span.ByteStart, span.ByteEnd, name) {
+				// The span does not hold the rule where it points, so its
+				// position cannot name contributors. Report it unattributed.
+				matches = append(matches, DLPMatch{PatternName: name})
+				break
+			}
+			if !spanIsWithinOneFragment(ranges, origStart, origEnd) {
+				matches = append(matches, DLPMatch{
+					PatternName:  name,
+					Contributors: contributorsForSpan(ranges, origStart, origEnd),
+				})
+				break
+			}
+			// Blank only the first byte: the match no longer starts there, but
+			// an overlapping occurrence that crosses a boundary keeps its bytes.
+			if !maskFragmentOccurrence(masked, span.ByteStart, span.ByteStart+1) {
+				matches = append(matches, DLPMatch{PatternName: name})
+				break
+			}
+		}
+	}
+	return matches
+}
+
+// maxImageSpliceRescans bounds per-rule rescans on the image-excision path,
+// and maxImageSpliceRescansTotal bounds them across all rules in one window.
+// Reaching either reports the rule instead of scanning further.
+const (
+	maxImageSpliceRescans      = 8
+	maxImageSpliceRescansTotal = 24
+)
+
+// unattributedFragmentMatches reports each distinct joined rule once with no
+// contributor attribution.
+func unattributedFragmentMatches(joined []TextDLPMatch) []DLPMatch {
+	var matches []DLPMatch
+	seen := make(map[string]struct{})
+	for _, m := range joined {
+		if _, ok := seen[m.PatternName]; ok {
+			continue
+		}
+		seen[m.PatternName] = struct{}{}
+		matches = append(matches, DLPMatch{PatternName: m.PatternName})
+	}
+	return matches
+}
+
 func completeFragmentOccurrences(ctx context.Context, sc *Scanner, ranges []fragmentRange) map[string][]fragmentOccurrence {
 	complete := make(map[string][]fragmentOccurrence)
 	for _, r := range ranges {
@@ -1051,6 +1176,27 @@ func appendCrossFragmentMatch(matches []DLPMatch, match TextDLPMatch, ranges []f
 		PatternName:  match.PatternName,
 		Contributors: contributorsForSpan(ranges, span.ByteStart, span.ByteEnd),
 	})
+}
+
+// spanHoldsRule reports whether the bytes at a scanner span match the rule by
+// themselves. The scanner rewrites text before recording positions (image
+// excision, documentation-placeholder redaction, normalization), so a span can
+// point at the wrong bytes. Only a span that still matches where it points may
+// be treated as one request's own copy; anything else is reported.
+func spanHoldsRule(ctx context.Context, sc *Scanner, buf []byte, start, end int, rule string) bool {
+	if start < 0 || end > len(buf) || start >= end {
+		return false
+	}
+	// The rule must match the whole candidate, not a shorter piece inside it,
+	// or a partial match could stand in for a credential that crosses requests.
+	candidateLen := end - start
+	for _, m := range sc.ScanTextForDLPQuiet(ctx, string(buf[start:end])).Matches {
+		span := m.Span()
+		if m.PatternName == rule && span.ViewLabel == ViewDLPNormalized && span.ByteStart == 0 && span.ByteEnd == candidateLen {
+			return true
+		}
+	}
+	return false
 }
 
 func spanIsWithinOneFragment(ranges []fragmentRange, start, end int) bool {

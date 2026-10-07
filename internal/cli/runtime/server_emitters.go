@@ -54,6 +54,9 @@ func buildServerReceiptShardGroup(template receipt.EmitterConfig, count int, key
 			Sanitize:  proxydecision.SanitizeFromRedactor(template.Recorder.ReceiptRedactor()),
 			Principal: template.Principal, Actor: template.Actor, Session: shard.SessionID,
 		})
+		if v2[i] == nil {
+			return nil, nil, fmt.Errorf("initialize receipt group shard %d v2 emitter", i)
+		}
 	}
 	groupOption, err := proxy.WithReceiptShardSet(shards, v2, onRequiredFailure...)
 	if err != nil {

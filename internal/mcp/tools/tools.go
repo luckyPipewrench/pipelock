@@ -2285,7 +2285,14 @@ func handoverNegationHoldsToClauseEnd(text string, end int) bool {
 const handoverDestinationNoun = `(?:tool|server|function|call|argument|field|parameter|endpoint|input|box)s?`
 
 // handoverDestinationPrep are the prepositions that put a value somewhere.
-const handoverDestinationPrep = `(?:to|with|through|via|into|using|by|in|inside|within|on|onto)`
+// "for" counts only because a destination noun or pronoun must follow it, so
+// "only for this tool" redirects while "only for rotation" does not.
+const handoverDestinationPrep = `(?:to|for|with|through|via|into|using|by|in|inside|within|on|onto)`
+
+// handoverDestinationAsk is a destination asking for the value, which makes a
+// conditional ("only if the server asks", "only when this tool requests it")
+// a redirect rather than a restriction.
+const handoverDestinationAsk = `(?:asks?|asked|requests?|requested|prompts?|prompted|needs?|requires?|wants?)`
 
 // handoverNamedDestination is an optional determiner, at most one qualifier
 // ("first", "next", "MCP") and a destination noun: "this tool", "the first
@@ -2312,6 +2319,7 @@ var handoverRedirect = regexp.MustCompile(`(?i)\b(?:` +
 	`|(?:only|instead)\b\s+(?:[^\s.!?\n]+\s+){0,3}?` +
 	handoverDestinationPrep + `\s+(?:` + handoverNamedDestination + `|` + handoverPronounDestination + `)` +
 	`|(?:only|except|unless|but|instead)\s+(?:(?:in|at|on|to|with)\s+)?(?:here|below)` +
+	`|(?:only|except|unless)\s+(?:if|when|after|once|whenever)\s+(?:` + handoverNamedDestination + `|` + handoverPronounDestination + `|it|they)\s+` + handoverDestinationAsk +
 	`)\b`)
 
 // redirectIndex finds the last destination construction in a text once, so a

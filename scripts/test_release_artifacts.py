@@ -12,6 +12,7 @@ that introduced the drift.
 
 from __future__ import annotations
 
+import copy
 import re
 import unittest
 from pathlib import Path
@@ -359,61 +360,125 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.workflow,
                 )
 
-    def test_every_attestation_dependency_is_fail_closed(self) -> None:
-        proof_gate = self.workflow.index("- name: Verify attestation")
-        attestation_ids = [*ARCHIVE_ATTESTATION_IDS, *INDEX_ATTESTATION_IDS]
-        for attestation_id in attestation_ids:
-            self.assertIn(f"id: {attestation_id}", self.workflow)
-            self.assertIn(f"steps.{attestation_id}.outcome != 'success'", self.workflow)
-            self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
+    def _assert_attestation_contract(self, parsed: dict) -> None:
+        """Discover producers; the next named boundary owns their completion."""
+        boundaries = {
+            "release-build": [
+                "Verify attestation",
+                "Verify Kubernetes image digest bundle attestation",
+            ],
+            "release-attest-chart": ["Verify Helm chart attestation"],
+        }
+        required = {
+            "Verify attestation": {
+                *ARCHIVE_ATTESTATION_IDS, *INDEX_ATTESTATION_IDS, *IMAGE_SBOM_ATTESTATION_IDS,
+                *(f"attest-{name}-{arch}" for name in ATTESTATION_NAMES.values()
+                  for arch in ("amd64", "arm64")),
+            },
+            "Verify Kubernetes image digest bundle attestation": {"attest-release-images"},
+            "Verify Helm chart attestation": {"attest-helm-chart"},
+        }
+        for job_name in boundaries:
+            self.assertIn(job_name, parsed["jobs"])
+        for job_name, job in parsed["jobs"].items():
+            steps = job.get("steps", [])
+            ids = [step["id"] for step in steps if "id" in step]
+            self.assertTrue(all(isinstance(value, str) and re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_-]*", value) for value in ids), "invalid step ID")
+            self.assertEqual(len(ids), len(set(ids)), "duplicate step ID")
+            producers = [i for i, step in enumerate(steps)
+                         if step.get("uses", "").split("@", 1)[0].startswith("actions/attest")]
+            if job_name not in boundaries:
+                self.assertFalse(producers, "attestation producer in an unguarded job")
+                continue
+            self.assertIs(job.get("continue-on-error", False), False)
+            previous = -1
+            covered = set()
+            for name in boundaries[job_name]:
+                positions = [i for i, step in enumerate(steps) if step.get("name") == name]
+                self.assertEqual(len(positions), 1, f"expected one {name} boundary")
+                position = positions[0]
+                self.assertGreater(position, previous, "reordered completion boundaries")
+                group = [i for i in producers if previous < i < position]
+                self.assertTrue(group, "empty completion boundary")
+                expected = []
+                for i in group:
+                    producer = steps[i]
+                    self.assertIn("id", producer, "producer needs an ID")
+                    self.assertIs(producer.get("continue-on-error"), True)
+                    expected.append(producer["id"])
+                self.assertTrue(required[name].issubset(expected),
+                                "required subject moved or removed from its boundary")
+                gate = steps[position]
+                self.assertIs(gate.get("continue-on-error", False), False)
+                condition = " ".join(gate.get("if", "").split())
+                # Accept only this small grammar, never evaluate GitHub expressions.
+                match = re.fullmatch(r"\s*always\(\s*\)\s*&&\s*(.*?)\s*", condition)
+                self.assertIsNotNone(match, "completion gate must always run")
+                terms = match.group(1)
+                if terms.startswith("(") and terms.endswith(")"):
+                    terms = terms[1:-1]
+                elif "||" in terms:
+                    self.fail("OR outcomes must be grouped after always()")
+                found = []
+                for term in terms.split("||"):
+                    outcome = re.fullmatch(
+                        r"\s*steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome\s*!=\s*'success'\s*", term)
+                    self.assertIsNotNone(outcome, "only non-success outcomes may select the gate")
+                    found.append(outcome.group(1))
+                self.assertCountEqual(found, expected, "gate must cover exactly its producers")
+                self._assert_attestation_gate_body(gate)
+                covered.update(group)
+                previous = position
+            self.assertEqual(covered, set(producers), "producer after final completion gate")
+        self._assert_required_attestation_subjects(parsed)
 
+    def _assert_required_attestation_subjects(self, parsed: dict) -> None:
+        # Independent expected subjects prevent discovery shrinking on deletion.
+        expected = {
+            "attest-binaries": {"subject-path": "dist/pipelock_*.tar.gz"},
+            "attest-checksums": {"subject-path": "dist/checksums.txt"},
+            "attest-sbom": {"subject-path": "dist/pipelock_*.tar.gz", "sbom-path": "sbom.cdx.json"},
+            "attest-release-images": {"subject-path": "dist/release-images.json"},
+            "attest-helm-chart": {
+                "subject-name": "ghcr.io/luckypipewrench/charts/pipelock",
+                "subject-digest": "${{ needs.release-promote.outputs.chart_digest }}",
+            },
+        }
         for name, repository in PLATFORM_ARTIFACTS.items():
-            for arch in ("amd64", "arm64"):
-                attestation_id = f"attest-{ATTESTATION_NAMES[name]}-{arch}"
-                attestation_ids.append(attestation_id)
-                self.assertIn(f"id: {attestation_id}", self.workflow)
-                self.assertIn(
-                    f"subject-digest: ${{{{ steps.platform-digests.outputs.{name}_{arch} }}}}",
-                    self.workflow,
-                )
-                self.assertIn(
-                    f"steps.{attestation_id}.outcome != 'success'",
-                    self.workflow,
-                )
-                self.assertLess(self.workflow.index(f"id: {attestation_id}"), proof_gate)
-                sbom_attestation_id = f"{attestation_id}-sbom"
-                self.assertIn(f"id: {sbom_attestation_id}", self.workflow)
-                self.assertLess(self.workflow.index(f"id: {sbom_attestation_id}"), proof_gate)
-                self.assertIn(
-                    f"sbom-{repository.rsplit('/', maxsplit=1)[-1]}-linux-{arch}.cdx.json",
-                    self.workflow,
-                )
+            for suffix, output in [("container", "index"), ("amd64", "amd64"), ("arm64", "arm64")]:
+                identifier = f"attest-{ATTESTATION_NAMES[name]}-{suffix}"
+                inputs = {
+                    "subject-name": repository,
+                    "subject-digest": "${{ steps.platform-digests.outputs." + f"{name}_{output}" + " }}",
+                    "push-to-registry": True,
+                }
+                expected[identifier] = inputs
+                if suffix != "container":
+                    expected[identifier + "-sbom"] = {
+                        **inputs,
+                        "sbom-path": f"sbom-{repository.rsplit('/', 1)[-1]}-linux-{suffix}.cdx.json",
+                    }
+        for identifier, inputs in expected.items():
+            # GitHub's steps context belongs to one job; another job may reuse
+            # an ID without replacing this producer or its outcome.
+            job_name = "release-attest-chart" if identifier == "attest-helm-chart" else "release-build"
+            steps = {step["id"]: step for step in parsed["jobs"][job_name]["steps"] if "id" in step}
+            self.assertIn(identifier, steps, "required attestation subject removed")
+            step = steps[identifier]
+            action = ("actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e"
+                      if "sbom-path" in inputs else
+                      "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8")
+            self.assertEqual(step.get("uses"), action)
+            self.assertEqual(step.get("with"), inputs)
 
-        attestation_ids.extend(IMAGE_SBOM_ATTESTATION_IDS)
+    def test_every_attestation_dependency_is_fail_closed(self) -> None:
+        self._assert_attestation_contract(yaml.safe_load(self.workflow))
 
-        gate_end = self.workflow.index("run: |", proof_gate)
-        normalized_gate = " ".join(self.workflow[proof_gate:gate_end].split())
-        expected_condition = "always() && ( " + " || ".join(
-            f"steps.{attestation_id}.outcome != 'success'"
-            for attestation_id in attestation_ids
-        ) + " )"
-        self.assertIn(expected_condition, normalized_gate)
-        self.assertNotIn("== 'failure'", normalized_gate)
-
-        release_build = yaml.safe_load(self.workflow)["jobs"]["release-build"]
-        self.assertIs(release_build.get("continue-on-error", False), False)
-        verify_steps = [
-            step for step in release_build["steps"]
-            if step.get("name") == "Verify attestation"
-        ]
-        self.assertEqual(len(verify_steps), 1, "expected exactly one main attestation gate")
-        self.assertIs(verify_steps[0].get("continue-on-error", False), False)
-
+    def _assert_attestation_gate_body(self, gate: dict) -> None:
         # The condition alone proves nothing if the step it guards succeeds:
         # the gate's executable body must end the job with a nonzero exit.
-        gate_runs = [script for name, script in self._job_runs("release-build") if name == "Verify attestation"]
-        self.assertEqual(len(gate_runs), 1, "expected exactly one main attestation gate")
-        gate_lines = self._executable_lines(gate_runs[0])
+        gate_lines = self._executable_lines(gate["run"])
         self.assertEqual(gate_lines[-1], "exit 1")
         # No path through the gate may leave successfully. Every `exit`
         # anywhere in a line (after `&&`, `;`, inside `if ... fi`) must carry
@@ -426,13 +491,144 @@ class TestReleaseArtifacts(unittest.TestCase):
         # This guards against an accidental edit to the gate, not a
         # determined attempt to hide a successful exit from a regex.
         exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
-        commands = re.sub(r"\\\n", "", gate_runs[0]).splitlines()
+        commands = re.sub(r"\\\n", "", gate["run"]).splitlines()
         not_failing = [
             line for line in self._executable_lines("\n".join(commands))
             for status in exit_command.findall(re.sub(r"['\"\\]", "", line))
             if not (re.fullmatch(r"[1-9][0-9]{0,2}", status) and int(status) <= 255)
         ]
         self.assertFalse(not_failing)
+
+    def test_attestation_contract_rejects_mutations(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        # Mutate actual workflow structure, not a second model of the checker.
+        for label in (
+            "uncovered producer", "dropped producer", "missing ID", "blank ID",
+            "duplicate producer ID", "nonproducer ID collision", "after gate",
+            "wrong job", "missing term", "failure only", "missing always",
+            "ungrouped OR", "bypass OR", "duplicate term", "gate suppression",
+            "job suppression", "producer suppression", "successful body",
+            "early successful exit", "subject miswire", "digest miswire", "SBOM miswire",
+            "bundle successful body", "chart successful body", "reordered gates",
+            "removed action", "dropped producer and term", "bundle missing always",
+            "chart job suppression", "chart gate suppression",
+            "subject moved with coverage",
+        ):
+            with self.subTest(mutation=label):
+                parsed = copy.deepcopy(original)
+                job = parsed["jobs"]["release-build"]
+                steps = job["steps"]
+                producer = next(step for step in steps if step.get("id") == "attest-binaries")
+                gate = next(step for step in steps if step.get("name") == "Verify attestation")
+                bundle = next(step for step in steps if step.get("name") ==
+                              "Verify Kubernetes image digest bundle attestation")
+                chart_job = parsed["jobs"]["release-attest-chart"]
+                chart_gate = chart_job["steps"][-1]
+                extra = {**copy.deepcopy(producer), "id": "attest-extra"}
+                if label == "uncovered producer":
+                    steps.insert(steps.index(gate), extra)
+                elif label in ("dropped producer", "dropped producer and term"):
+                    steps.remove(producer)
+                    if label.endswith("and term"):
+                        gate["if"] = gate["if"].replace("steps.attest-binaries.outcome != 'success' ||", "")
+                elif label == "missing ID":
+                    del producer["id"]
+                elif label == "blank ID":
+                    producer["id"] = ""
+                elif label == "duplicate producer ID":
+                    steps.insert(steps.index(gate), copy.deepcopy(producer))
+                elif label == "nonproducer ID collision":
+                    steps.insert(0, {"id": producer["id"], "run": "echo duplicate"})
+                elif label == "after gate":
+                    steps.append(extra)
+                elif label == "wrong job":
+                    parsed["jobs"]["release-publish"]["steps"].append(extra)
+                elif label == "missing term":
+                    gate["if"] = gate["if"].replace("steps.attest-binaries.outcome != 'success' ||", "")
+                elif label == "failure only":
+                    gate["if"] = gate["if"].replace("!= 'success'", "== 'failure'")
+                elif label == "missing always":
+                    gate["if"] = gate["if"].replace("always() &&", "")
+                elif label == "ungrouped OR":
+                    gate["if"] = gate["if"].replace("&& (", "&& ").rstrip().removesuffix(")")
+                elif label == "bypass OR":
+                    gate["if"] += " || true"
+                elif label == "duplicate term":
+                    gate["if"] = gate["if"].replace("&& (", "&& (steps.attest-binaries.outcome != 'success' ||")
+                elif label == "gate suppression":
+                    gate["continue-on-error"] = True
+                elif label == "job suppression":
+                    job["continue-on-error"] = True
+                elif label == "producer suppression":
+                    producer["continue-on-error"] = False
+                elif label == "successful body":
+                    gate["run"] = "echo failure\nexit 0"
+                elif label == "early successful exit":
+                    gate["run"] = "exit 0\nexit 1"
+                elif label == "subject miswire":
+                    producer["with"]["subject-path"] = "dist/wrong.txt"
+                elif label == "digest miswire":
+                    next(step for step in steps if step.get("id") == "attest-pipelock-amd64")["with"]["subject-digest"] = "wrong"
+                elif label == "SBOM miswire":
+                    next(step for step in steps if step.get("id") == "attest-sbom")["with"]["sbom-path"] = "wrong"
+                elif label == "bundle successful body":
+                    bundle["run"] = "exit 0"
+                elif label == "chart successful body":
+                    chart_gate["run"] = "exit 0"
+                elif label == "reordered gates":
+                    steps.remove(bundle)
+                    steps.insert(steps.index(gate), bundle)
+                elif label == "removed action":
+                    producer["uses"] = "actions/checkout@different"
+                elif label == "bundle missing always":
+                    bundle["if"] = "steps.attest-release-images.outcome != 'success'"
+                elif label == "chart job suppression":
+                    chart_job["continue-on-error"] = True
+                elif label == "subject moved with coverage":
+                    steps.remove(producer)
+                    steps.insert(steps.index(bundle), producer)
+                    gate["if"] = gate["if"].replace("steps.attest-binaries.outcome != 'success' ||", "")
+                    bundle["if"] = "always() && (steps.attest-release-images.outcome != 'success' || steps.attest-binaries.outcome != 'success')"
+                elif label == "chart gate suppression":
+                    chart_gate["continue-on-error"] = True
+                with self.assertRaises(AssertionError):
+                    self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_accepts_ids_reused_by_another_job(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        parsed["jobs"]["release-publish"]["steps"].append({
+            "id": "attest-binaries", "run": "echo unrelated step",
+        })
+        self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_accepts_added_covered_producers(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        for job_name, gate_name in (
+            ("release-build", "Verify attestation"),
+            ("release-build", "Verify Kubernetes image digest bundle attestation"),
+            ("release-attest-chart", "Verify Helm chart attestation"),
+        ):
+            with self.subTest(boundary=gate_name):
+                parsed = copy.deepcopy(original)
+                steps = parsed["jobs"][job_name]["steps"]
+                gate = next(step for step in steps if step.get("name") == gate_name)
+                steps.insert(steps.index(gate), {
+                    "id": "attest-extra", "uses": "actions/attest-build-provenance@future",
+                    "continue-on-error": True, "with": {"subject-path": "dist/extra.txt"},
+                })
+                outcomes = gate["if"].split("&&", 1)[1].strip().strip("()")
+                gate["if"] = "always() && (" + outcomes + " || steps.attest-extra.outcome != 'success')"
+                self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_accepts_whitespace_and_term_reordering(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        for job in parsed["jobs"].values():
+            for gate in job.get("steps", []):
+                if gate.get("name", "").startswith("Verify") and "always() &&" in gate.get("if", ""):
+                    outcomes = gate["if"].split("&&", 1)[1].strip().strip("()")
+                    terms = outcomes.split("||")
+                    gate["if"] = "  always( )  && (\n" + " ||\n".join(reversed(terms)) + "\n) "
+        self._assert_attestation_contract(parsed)
 
     def test_verified_staging_indexes_promote_only_in_protected_job(self) -> None:
         resolution = self.workflow.index("- name: Resolve release image platform digests")
@@ -791,7 +987,7 @@ class TestReleaseArtifacts(unittest.TestCase):
 
         self.assertIn('release_commit="$(git rev-parse "${GITHUB_REF_NAME}^{}")"', self.workflow)
         self.assertNotIn('-commit "$GITHUB_SHA"', self.workflow)
-        self.assertIn('steps.attest-release-images.outcome != \'success\'', self.workflow)
+        self._assert_attestation_contract(parsed)
         self.assertIn('diff -ru "$candidate_dir/pipelock" "$existing_dir/pipelock"', self.workflow)
         self.assertIn(
             'cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz"',
@@ -864,21 +1060,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             "${{ needs.release-promote.outputs.chart_digest }}",
         )
         self.assertNotIn("push-to-registry", attest["with"])
-        # The gate must both select a failed attestation and exit non-zero.
-        # Matching the condition alone passed with the gate's `exit 1` edited
-        # to `exit 0`, which would leave a failed attestation green.
-        gates = [
-            step
-            for step in attest_job["steps"]
-            if step.get("if") == "always() && steps.attest-helm-chart.outcome != 'success'"
-        ]
-        self.assertEqual(len(gates), 1, "expected one attestation failure gate")
-        gate_lines = self._executable_lines(gates[0]["run"])
-        exit_1_at = gate_lines.index("exit 1")
-        self.assertEqual(exit_1_at, len(gate_lines) - 1, "exit 1 must be the gate's last command")
-        self.assertNotIn("exit 0", gate_lines[:exit_1_at])
-        self.assertNotIn("continue-on-error", gates[0])
-        self.assertTrue(attest.get("continue-on-error"), "the gate reads the attest step's outcome")
+        self._assert_attestation_contract(parsed)
 
         chart_publish = parsed["jobs"]["release-publish-chart"]
         self.assertEqual(chart_publish["needs"], ["release-promote", "release-attest-chart"])

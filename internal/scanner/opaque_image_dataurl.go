@@ -58,6 +58,14 @@ func exciseImagesRetainingDecodedForDLP(text string) string {
 // newline per image); callers that only need the base64 text removed pass false
 // to skip that allocation.
 func stripVerifiedImageDataURLs(text string, retainDecoded bool) (excised, decodedConcat string) {
+	excised, decodedConcat, _ = stripVerifiedImageDataURLSpans(text, retainDecoded)
+	return excised, decodedConcat
+}
+
+// stripVerifiedImageDataURLSpans is stripVerifiedImageDataURLs that also
+// returns the removed byte ranges of text, in order, so a position in the
+// excised text can be mapped back to the original.
+func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, decodedConcat string, removed []textByteSpan) {
 	searchFrom := 0
 	copyFrom := 0
 	var out strings.Builder
@@ -95,6 +103,7 @@ func stripVerifiedImageDataURLs(text string, retainDecoded bool) (excised, decod
 			out.Grow(len(text))
 		}
 		out.WriteString(text[copyFrom:start])
+		removed = append(removed, textByteSpan{start: start, end: payloadEnd})
 		copyFrom = payloadEnd
 		searchFrom = payloadEnd
 		if retainDecoded {
@@ -104,10 +113,10 @@ func stripVerifiedImageDataURLs(text string, retainDecoded bool) (excised, decod
 	}
 
 	if out.Cap() == 0 {
-		return text, ""
+		return text, "", nil
 	}
 	out.WriteString(text[copyFrom:])
-	return out.String(), decoded.String()
+	return out.String(), decoded.String(), removed
 }
 
 func indexDataImagePrefix(text string) int {

@@ -2389,8 +2389,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responsePromptHit := false
+	responseTaintType := responseTaintContentType(resp.Header)
 	defer func() {
-		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), responseContentType(resp.Header), "forward_response", responsePromptHit)
+		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responsePromptHit)
 	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.

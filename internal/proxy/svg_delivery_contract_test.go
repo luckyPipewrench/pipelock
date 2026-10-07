@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
@@ -165,8 +166,10 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 	case "tls interception":
 		upstream := httptest.NewTLSServer(handler)
 		t.Cleanup(upstream.Close)
-		cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 		configure(cfg)
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
 		p, err := New(cfg, logger, sc, m)
 		if err != nil {
 			t.Fatalf("New: %v", err)

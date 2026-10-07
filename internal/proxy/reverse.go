@@ -2365,6 +2365,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// forward proxy, whose SSE scan runs synchronously so its single deferred
 	// observation already reflects the final promptHit.
 	sseHandlesResponseTaint := false
+	responseTaintType := responseTaintContentType(resp.Header)
 	if rp.owner != nil {
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
 			agentAuth := agentAuthFromContext(resp.Request.Context())
@@ -2377,7 +2378,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, responseContentType(resp.Header), "reverse_response", responsePromptHit)
+				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responsePromptHit)
 			}()
 		}
 	}
@@ -2609,6 +2610,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// sniffing fallback inside applyMediaPolicy handles the rest, but only
 	// if we enter the branch in the first place.
 	mediaCT := responseContentType(resp.Header)
+	mediaTypesAgree := responseMIMEEssencesAgree(resp.Header)
 	mediaCTCanon := canonicalContentType(mediaCT)
 	mediaCTForPolicy := mediaCT
 	detectedMedia := false
@@ -2748,7 +2750,19 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				recordReverseOutcome(http.StatusForbidden, int64(len(body)), "media_policy")
 				return nil
 			}
-			if !isMediaType(verdict.MediaType) || isSVGResponse {
+			applyRelabeledContentType(resp.Header, verdict)
+			if verdict.StripResult != nil && verdict.StripResult.Changed() {
+				body = verdict.Body
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				// Clear body-derived validators. Content-MD5
+				// describes a hash of the upstream bytes - stale
+				// after metadata stripping, and a validating client
+				// or intermediary will reject the response.
+				resp.Header.Del("ETag")
+				resp.Header.Del("Digest")
+				resp.Header.Del("Content-MD5")
+			}
+			if !isMediaType(verdict.MediaType) || isSVGResponse || !mediaTypesAgree {
 				// Generic declarations may sniff as text, and SVG is shieldable
 				// even though its MIME type begins with image/. Preserve the
 				// buffered bytes and continue into response scanning and Shield.
@@ -2783,18 +2797,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				goto responseScanning
 			}
 			_ = resp.Body.Close()
-			applyRelabeledContentType(resp.Header, verdict)
-			if verdict.StripResult != nil && verdict.StripResult.Changed() {
-				body = verdict.Body
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-				// Clear body-derived validators. Content-MD5
-				// describes a hash of the upstream bytes - stale
-				// after metadata stripping, and a validating client
-				// or intermediary will reject the response.
-				resp.Header.Del("ETag")
-				resp.Header.Del("Digest")
-				resp.Header.Del("Content-MD5")
-			}
+
 			if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt && len(body) > responseBodyLimit {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
@@ -2837,7 +2840,7 @@ responseScanning:
 	// complete Browser Shield pass and the post-shield media check that can
 	// observe the shield proof. Streaming it here would deliver unsanitised
 	// active content, because isBinaryMIME treats every image/* as opaque.
-	if isBinaryMIME(mediaCT) && !isSVGResponse {
+	if isBinaryMIME(mediaCT) && !isSVGResponse && mediaTypesAgree {
 		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(responseBodyLimit)+1)

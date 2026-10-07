@@ -44,6 +44,11 @@ func TestResponseMIMEType(t *testing.T) {
 		{"charset carried across equal essences", []string{"text/html;charset=gbk, text/html"}, "text/html;charset=gbk"},
 		{"charset carried across equal essences in separate fields", []string{"text/html;charset=gbk", "text/html"}, "text/html;charset=gbk"},
 		{"later charset replaces an earlier one", []string{"text/html;charset=gbk, text/html;charset=utf-8"}, "text/html;charset=utf-8"},
+		{"carry remembers first charset of essence", []string{"text/html;charset=utf-16le, text/html;charset=utf-8, text/html"}, "text/html;charset=utf-16le"},
+		{"quoted semicolon does not declare charset", []string{`text/html;x=";charset=utf-16le", text/html`}, "text/html"},
+		{"empty quoted charset overrides carry for winner", []string{`text/html;charset=utf-16le, text/html;charset=""`}, `text/html;charset=""`},
+		{"empty quoted charset is carried", []string{`text/html;charset="", text/html`}, `text/html;charset=""`},
+		{"unclosed quote spans header fields", []string{`text/plain;x="unterminated`, "text/html"}, `text/plain;x="unterminated, text/html`},
 		{"carry is by essence, case-insensitive", []string{"text/html;charset=gbk, TEXT/HTML"}, "TEXT/HTML;charset=gbk"},
 		{"invalid entry skipped", []string{"bogus, text/html"}, "text/html"},
 		{"invalid trailing entry skipped", []string{"text/html", "bogus"}, "text/html"},
@@ -229,7 +234,7 @@ func TestResponseMIMETypeCarriedCharsetSurvivesMalformedWinner(t *testing.T) {
 	for _, winner := range []string{"text/html;", `text/html; x="unterminated`, "text/html; =bad"} {
 		t.Run(winner, func(t *testing.T) {
 			t.Parallel()
-			derived := responseMIMEType(contentTypeHeaders("text/html;charset=utf-16le, "+winner))
+			derived := responseMIMEType(contentTypeHeaders("text/html;charset=utf-16le, " + winner))
 			declared, _ := shieldDeclaredCharset(derived)
 			if declared != "utf-16le" {
 				t.Fatalf("derived %q declares charset %q, want the carried utf-16le", derived, declared)

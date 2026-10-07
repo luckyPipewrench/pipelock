@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"mime"
 	"net/http"
 	"sync"
 	"time"
@@ -57,7 +56,7 @@ func (t *upstreamBodyStallTransport) RoundTrip(req *http.Request) (*http.Respons
 		return resp, nil
 	}
 	out := detachResponse(resp)
-	if isEventStream(resp.Header.Get("Content-Type")) {
+	if HasSingleSSEContentType(resp.Header) {
 		out.Body = &trailerMergingBody{ReadCloser: &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, src: resp, dst: out}
 		return out, nil
 	}
@@ -107,11 +106,6 @@ func (b *trailerMergingBody) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
-}
-
-func isEventStream(contentType string) bool {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	return err == nil && mediaType == "text/event-stream"
 }
 
 // cancelOnClose releases the request context when the body is closed.

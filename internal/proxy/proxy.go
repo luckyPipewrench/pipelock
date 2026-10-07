@@ -6312,8 +6312,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responsePromptHit := false
+	responseTaintType := responseTaintContentType(resp.Header)
 	defer func() {
-		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), responseContentType(resp.Header), "fetch_response", responsePromptHit)
+		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response", responsePromptHit)
 	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the

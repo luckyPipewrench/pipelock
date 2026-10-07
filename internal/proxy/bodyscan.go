@@ -284,6 +284,9 @@ func matchUnscannablePassthrough(req unscannablePassthroughRequest, entries []co
 		return unscannablePassthroughMatch{}, false
 	}
 	mediaType := responseMediaType(req.ContentType)
+	if len(req.Header.Values("Content-Type")) > 0 && !responseMIMEEssencesAgree(req.Header) {
+		return unscannablePassthroughMatch{}, false
+	}
 	if mediaType == "" || configTextualPassthroughType(mediaType) {
 		return unscannablePassthroughMatch{}, false
 	}

@@ -423,6 +423,14 @@ class TestReleaseArtifacts(unittest.TestCase):
                                      "implicit gate shell requires an Ubuntu runner")
                 else:
                     self.assertIn(shell, ("bash", "sh"), "completion gate must use bash or sh")
+                # Environment settings use the same most-specific precedence.
+                # Startup hooks must not replace the gate's executable body.
+                environment = {
+                    **parsed.get("env", {}), **job.get("env", {}), **gate.get("env", {}),
+                }
+                for variable in ("BASH_ENV", "ENV"):
+                    self.assertEqual(environment.get(variable, ""), "",
+                                     "completion gate must not configure shell startup hooks")
                 condition = " ".join(gate.get("if", "").split())
                 if condition.startswith("${{") and condition.endswith("}}"):
                     condition = condition[3:-2].strip()
@@ -675,6 +683,45 @@ class TestReleaseArtifacts(unittest.TestCase):
             for step in job.get("steps", []):
                 if step.get("name", "").startswith("Verify"):
                     step["shell"] = "sh"
+        self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_checks_effective_gate_environment(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        for job_name, gate_name in (
+            ("release-build", "Verify attestation"),
+            ("release-build", "Verify Kubernetes image digest bundle attestation"),
+            ("release-attest-chart", "Verify Helm chart attestation"),
+        ):
+            for scope in ("step", "job", "workflow"):
+                for variable in ("BASH_ENV", "ENV"):
+                    for value in ("startup.sh", "${{ github.workspace }}/startup.sh", ""):
+                        with self.subTest(boundary=gate_name, scope=scope,
+                                          variable=variable, value=value):
+                            parsed = copy.deepcopy(original)
+                            job = parsed["jobs"][job_name]
+                            gate = next(step for step in job["steps"] if step.get("name") == gate_name)
+                            owner = gate if scope == "step" else job if scope == "job" else parsed
+                            owner.setdefault("env", {})[variable] = value
+                            if value:
+                                with self.assertRaisesRegex(AssertionError, "shell startup hooks"):
+                                    self._assert_attestation_contract(parsed)
+                            else:
+                                self._assert_attestation_contract(parsed)
+
+    def test_attestation_gate_environment_overrides_follow_workflow_precedence(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        parsed.setdefault("env", {}).update({"BASH_ENV": "startup.sh", "ENV": "startup.sh"})
+        for job in parsed["jobs"].values():
+            job.setdefault("env", {}).update({"BASH_ENV": "", "ENV": ""})
+        self._assert_attestation_contract(parsed)
+        for job in parsed["jobs"].values():
+            job["env"].update({"BASH_ENV": "startup.sh", "ENV": "startup.sh"})
+            for step in job.get("steps", []):
+                if step.get("name", "").startswith("Verify"):
+                    step.setdefault("env", {}).update({"BASH_ENV": "", "ENV": ""})
+        self._assert_attestation_contract(parsed)
+        parsed = yaml.safe_load(self.workflow)
+        parsed.setdefault("env", {})["RELEASE_LABEL"] = "v1.2.3"
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_action_pin_bumps(self) -> None:

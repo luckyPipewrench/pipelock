@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,9 +193,29 @@ func TestWebSocketSecurityBoundary_ClientFragmentProtocolViolationsFailClosed(t 
 			tt.send(t, conn)
 			assertWebSocketBoundaryClose(t, conn, ws.StatusProtocolError)
 			assertWebSocketBoundaryBackendReceivedNothing(t, delivered, backendDone)
-			if got := handshakes.Load(); got != 1 {
-				t.Fatalf("backend handshake count = %d, want 1", got)
-			}
+			waitForUpstreamHandshakes(t, handshakes, 1)
 		})
+	}
+}
+
+// waitForUpstreamHandshakes waits until the backend has counted want
+// handshakes. The proxy upgrades the client before it dials upstream, so a
+// successful client dial does not mean the upstream handshake has happened.
+// A count above want fails immediately.
+func waitForUpstreamHandshakes(t *testing.T, handshakes *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := handshakes.Load()
+		if got > want {
+			t.Fatalf("backend handshake count = %d, want %d", got, want)
+		}
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backend handshake count = %d after 5s, want %d", got, want)
+		}
+		runtime.Gosched()
 	}
 }

@@ -93,9 +93,23 @@ func TestFragmentImageSplice(t *testing.T) {
 	})
 
 	t.Run("a whole copy running into a split copy is reported", func(t *testing.T) {
-		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+key[:10]+image[:at], image[at:]+key[10:]), nil, "adjacent")
+		frags := imageSpliceFragments(key+key[:10]+image[:at], image[at:]+key[10:])
+		frags[0].sourceRequestID = []byte("req-1")
+		frags[1].sourceRequestID = []byte("req-2")
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, frags, nil, "adjacent")
 		if !hasAWSKey(got) {
 			t.Fatalf("split copy adjoining a whole copy dropped: %+v", got)
+		}
+		var ids []string
+		for _, m := range got {
+			if m.PatternName == "AWS Access ID" {
+				for _, c := range m.Contributors {
+					ids = append(ids, string(c))
+				}
+			}
+		}
+		if strings.Join(ids, ",") != "req-1,req-2" {
+			t.Fatalf("contributors = %v, want both requests", ids)
 		}
 	})
 

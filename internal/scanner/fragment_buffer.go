@@ -1096,7 +1096,13 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, deco
 				break
 			}
 			origStart, origEnd := toOriginal(span.ByteStart, false), toOriginal(span.ByteEnd, true)
-			if !spanIsWithinOneFragment(ranges, origStart, origEnd) || !spanHoldsRule(ctx, sc, masked, span.ByteStart, span.ByteEnd, name) {
+			if !spanHoldsRule(ctx, sc, masked, span.ByteStart, span.ByteEnd, name) {
+				// The span does not hold the rule where it points, so its
+				// position cannot name contributors. Report it unattributed.
+				matches = append(matches, DLPMatch{PatternName: name})
+				break
+			}
+			if !spanIsWithinOneFragment(ranges, origStart, origEnd) {
 				matches = append(matches, DLPMatch{
 					PatternName:  name,
 					Contributors: contributorsForSpan(ranges, origStart, origEnd),

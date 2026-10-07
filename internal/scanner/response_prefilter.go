@@ -19,7 +19,8 @@ import "github.com/luckyPipewrench/pipelock/internal/config"
 // Conservative: false positives (running regex unnecessarily) are fine.
 // False negatives (skipping regex when keywords exist) are not.
 type responsePreFilter struct {
-	gates []*responseGate
+	gates  []*responseGate
+	proofs []*responseSuffixProof
 
 	// alwaysRun holds indices of patterns with no extractable keyword.
 	// These are always evaluated regardless of content. Typically cheap
@@ -32,7 +33,8 @@ type responsePreFilter struct {
 // and leading alternation groups.
 func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 	pf := &responsePreFilter{
-		gates: make([]*responseGate, len(patterns)),
+		gates:  make([]*responseGate, len(patterns)),
+		proofs: make([]*responseSuffixProof, len(patterns)),
 	}
 
 	for i, p := range patterns {
@@ -42,6 +44,7 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 			tree, err := syntax.Parse(p.re.String(), syntax.Perl)
 			if err == nil {
 				pf.gates[i] = responseLiteralGate(tree)
+				pf.proofs[i] = newResponseSuffixProof(p.re)
 			}
 		}
 		if pf.gates[i] == nil {
@@ -58,11 +61,25 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 func (pf *responsePreFilter) patternsToCheck(content string) []int {
 	folded := responseSimpleFold(content)
 	distanceText := responseDistanceText(folded)
+	var view *responseFoldView
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
-		if gate == nil || gate.matchesWithDistance(content, folded, distanceText) {
-			hits = append(hits, i)
+		if gate != nil && !gate.matchesWithDistance(content, folded, distanceText) {
+			continue
 		}
+		// Small bodies already match cheaply. Bound the additional text and offset
+		// storage; every ineligible or inconclusive proof runs the ordinary matcher.
+		if len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes && i < len(pf.proofs) && pf.proofs[i] != nil {
+			if view == nil {
+				// Folding is per rune and maps invalid bytes to U+FFFD, so the
+				// reversed fold equals the fold of the reversed text.
+				view = newResponseFoldView(reverseResponseText(content), reverseResponseText(folded))
+			}
+			if pf.proofs[i].provesEmpty(view) {
+				continue
+			}
+		}
+		hits = append(hits, i)
 	}
 	return hits
 }

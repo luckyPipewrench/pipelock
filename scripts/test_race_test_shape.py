@@ -211,7 +211,7 @@ class TestRaceTestShape(unittest.TestCase):
                 self.assertIn(flag, command)
 
     def test_unsplit_shard_has_no_test_selector(self) -> None:
-        command = printed_command("--shard", "mcp")
+        command = printed_command("--shard", "rest-0")
 
         self.assertNotIn("-run", command)
         self.assertNotIn("-skip", command)
@@ -341,7 +341,7 @@ env CGO_ENABLED=1 go test -race ./internal/proxy
 
     def test_invalid_selection_fails_before_running_go(self) -> None:
         result = subprocess.run(
-            ["bash", str(RUNNER), "--shard", "mcp", "--packages", "./internal/mcp"],
+            ["bash", str(RUNNER), "--shard", "mcp-0", "--packages", "./internal/mcp"],
             cwd=ROOT,
             text=True,
             capture_output=True,

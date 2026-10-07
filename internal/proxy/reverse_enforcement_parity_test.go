@@ -109,7 +109,9 @@ func TestReverseURLDLPAuditModeRecordsOneNearMiss(t *testing.T) {
 
 	rp, p, upstreamURL := newReverseParityHarness(t, cfg, nil)
 	const clientHost = "10.0.0.33"
-	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	// Non-core credential: audit mode blocks the core floor, so the near-miss
+	// path needs a finding outside it.
+	apiKey := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	rec := reverseParityRequest(t, rp, http.MethodGet, "http://reverse.example/x?token="+apiKey, clientHost+":9000", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("audit-mode URL DLP status = %d, want 200: %s", rec.Code, rec.Body.String())

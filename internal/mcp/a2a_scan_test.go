@@ -1449,8 +1449,8 @@ func TestScanA2AStream_NonJSONEventFailsClosed(t *testing.T) {
 	r := strings.NewReader(events)
 	var buf bytes.Buffer
 	err := ScanA2AStream(context.Background(), r, &buf, nil, testA2AScanner(t), enabledA2ACfg())
-	if !errors.Is(err, ErrA2AStreamFinding) {
-		t.Fatalf("expected A2A stream finding for non-JSON event, got %v", err)
+	if !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("expected incomplete scan error for non-JSON event, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "invalid JSON") {
 		t.Fatalf("error = %q, want invalid JSON", err.Error())
@@ -1739,11 +1739,14 @@ func TestA2aScanToVerdict_WithFindings(t *testing.T) {
 	if v.Action != config.ActionBlock {
 		t.Errorf("action = %q, want block", v.Action)
 	}
-	if len(v.Matches) != 4 {
-		t.Errorf("expected 4 matches, got %d", len(v.Matches))
+	if len(v.Matches) != 3 {
+		t.Errorf("expected 3 response matches, got %d", len(v.Matches))
 	}
-	if v.Matches[3].PatternName != scanner.AuditBodyEntropy {
-		t.Errorf("entropy match pattern = %q, want %q", v.Matches[3].PatternName, scanner.AuditBodyEntropy)
+	if v.Matches[2].PatternName != scanner.AuditBodyEntropy {
+		t.Errorf("entropy match pattern = %q, want %q", v.Matches[2].PatternName, scanner.AuditBodyEntropy)
+	}
+	if len(v.DLPMatches) != 1 || v.DLPMatches[0].PatternName != "aws_key" {
+		t.Errorf("expected the typed DLP match, got %+v", v.DLPMatches)
 	}
 }
 

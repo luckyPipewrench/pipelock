@@ -2190,7 +2190,7 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 	rph := newReceiptProxyHelper(t)
 	proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
 		cfg.Enforce = ptrBool(false)
-		applyRedactionTestProfile(cfg)
+		applyWSRedactionTestProfile(cfg)
 	})
 	defer cleanup()
 
@@ -2199,7 +2199,7 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 		t.Fatalf("dialWSConn: %v", err)
 	}
 
-	secret := redactionE2ESecret()
+	secret := wsRedactionE2ESecret()
 	payload := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
 	if writeErr := wsutil.WriteClientText(conn, payload); writeErr != nil {
 		t.Fatalf("WriteClientText: %v", writeErr)
@@ -2210,7 +2210,7 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("ReadServerData: %v", readErr)
 	}
-	if !strings.Contains(string(data), placeholderAWS) {
+	if !strings.Contains(string(data), wsPlaceholderAnthropic) {
 		t.Fatalf("echoed payload missing redaction placeholder: %q", string(data))
 	}
 
@@ -2229,8 +2229,8 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 	if r.ActionRecord.Redaction.TotalRedactions != 1 {
 		t.Fatalf("total redactions = %d, want 1", r.ActionRecord.Redaction.TotalRedactions)
 	}
-	if got := r.ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)]; got != 1 {
-		t.Fatalf("aws-access-key redactions = %d, want 1", got)
+	if got := r.ActionRecord.Redaction.ByClass[string(redact.ClassAnthropicKey)]; got != 1 {
+		t.Fatalf("anthropic-api-key redactions = %d, want 1", got)
 	}
 }
 

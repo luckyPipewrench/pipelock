@@ -1975,8 +1975,8 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 			_, _ = fmt.Fprint(w, "reached through audit redirect")
 			return
 		}
-		// Redirect to self with a DLP-triggering AWS key in the query
-		http.Redirect(w, r, "/final?key=AKIAIOSFODNN7EXAMPLE", http.StatusFound)
+		// Redirect to self with a DLP-triggering Anthropic API key in the query
+		http.Redirect(w, r, "/final?key="+"sk-ant-"+"IOSFODNN7EXAMPLE1234567890abcdef", http.StatusFound)
 	}))
 	defer backend.Close()
 
@@ -2028,7 +2028,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 			_, _ = fmt.Fprint(w, "should not reach here")
 			return
 		}
-		http.Redirect(w, r, "/final?key=AKIAIOSFODNN7EXAMPLE", http.StatusFound)
+		http.Redirect(w, r, "/final?key="+"sk-ant-"+"IOSFODNN7EXAMPLE1234567890abcdef", http.StatusFound)
 	}))
 	defer backend.Close()
 
@@ -2285,10 +2285,10 @@ func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	// URL with AWS key triggers DLP but audit mode lets it through.
+	// URL with Anthropic API key triggers DLP but audit mode lets it through.
 	// Split-string fake to avoid G101 / pipelock self-scan hits.
-	fakeAWSKey := "AKIA" + "IOSFODNN7EXAMPLE"
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/data?key="+fakeAWSKey, nil)
+	fakeAnthropicKey := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/data?key="+fakeAnthropicKey, nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()

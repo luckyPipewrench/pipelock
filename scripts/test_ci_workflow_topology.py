@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {
-    "proxy-0", "proxy-1", "scanner-0", "scanner-1", "mcp", "rest-0", "rest-1", "rest-2",
+    "proxy-0", "proxy-1", "scanner-0", "scanner-1", "mcp-0", "mcp-1", "rest-0", "rest-1", "rest-2",
 }
 MINORS = ("126", "127")
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"

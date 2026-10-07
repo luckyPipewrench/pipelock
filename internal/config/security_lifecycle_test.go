@@ -257,7 +257,6 @@ func TestReloadReportsSecurityControlsBeingWeakened(t *testing.T) {
 	want := []string{
 		"a2a_scanning.scan_agent_cards",
 		"a2a_scanning.detect_card_drift",
-		"a2a_scanning.session_smuggling_detection",
 		"a2a_scanning.scan_raw_parts",
 		"emit.forwarder.url",
 		"media_policy.enabled",
@@ -271,6 +270,25 @@ func TestReloadReportsSecurityControlsBeingWeakened(t *testing.T) {
 	for _, field := range want {
 		if !got[field] {
 			t.Errorf("missing reload warning for %s", field)
+		}
+	}
+}
+
+// TestValidateReload_ReservedSessionSmugglingRaisesNoWarning pins that the
+// reserved, unenforced session-smuggling setting does not claim on reload
+// that turning it off lowers protection.
+func TestValidateReload_ReservedSessionSmugglingRaisesNoWarning(t *testing.T) {
+	t.Parallel()
+	old := Defaults()
+	old.A2AScanning.Enabled = true
+	old.A2AScanning.SessionSmugglingDetection = true
+	updated := old.Clone()
+	updated.A2AScanning.SessionSmugglingDetection = false
+	updated.A2AScanning.MaxContextMessages = 1
+	updated.A2AScanning.MaxContexts = 1
+	for _, warning := range ValidateReload(old, updated) {
+		if strings.HasPrefix(warning.Field, "a2a_scanning.") {
+			t.Fatalf("reserved A2A setting raised a reload warning: %+v", warning)
 		}
 	}
 }

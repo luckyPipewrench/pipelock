@@ -1100,6 +1100,30 @@ type compiledToolPattern struct {
 // toolPoisonKeywords is the set of directive keywords checked in tool descriptions.
 const toolPoisonKeywords = `IMPORTANT|CRITICAL|SYSTEM|INSTRUCTION|SECRET|HIDDEN|URGENT`
 
+// handoverRequestFinding names the credential-request wording family. Its
+// patterns sit beside File Exfiltration Directive, which only knows the
+// read/send verb family, so "Provide ~/.aws/credentials" read as benign while
+// "Send ~/.aws/credentials" blocked.
+const handoverRequestFinding = "Credential Request Directive"
+
+// handoverRequestVerb is the base-form imperative a poisoned description uses
+// to ask the agent to hand over secret material. Third-person forms
+// ("provides", "supplies") are deliberately absent: they describe what a
+// service does, not what the agent is told to do. send/read/include stay with
+// the File Exfiltration Directive patterns.
+const handoverRequestVerb = `\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+`
+
+// handoverRequestEnd keeps the credential noun from being the first word of a
+// longer noun phrase ("provide credentials rotation status"): the match must
+// finish at punctuation, the end of the text, or a connective that continues
+// the instruction.
+const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+
+// handoverRequestEndSuffix strips handoverRequestEnd back off a match, so
+// the negation check judges the request itself and not the sentence boundary
+// the pattern had to consume to know the noun phrase was over.
+var handoverRequestEndSuffix = regexp.MustCompile(`(?i)` + handoverRequestEnd + `$`)
+
 // toolPoisonPatterns detect structural indicators of tool description poisoning.
 // These are checked ONLY in tool descriptions to avoid false positives on
 // legitimate response content. Text is Unicode-normalized before matching.
@@ -1204,6 +1228,42 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// does not: a lone determiner reads as scoped and belongs with the
 		// benign transfers.
 		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+(?:of\s+)?(?:the\s+)?){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
+	},
+	{
+		name: handoverRequestFinding,
+		// Possessive form: "supply your API key", "share the user's
+		// password". The possessive binds the secret to the agent or its
+		// user, which is what separates a request from documentation of a
+		// service that holds credentials. Modifiers come from a closed list
+		// so "share your thoughts on the secret" cannot reach the noun.
+		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
+			`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+` +
+			`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
+			`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
+			handoverRequestEnd),
+	},
+	{
+		name: handoverRequestFinding,
+		// Bare form: "provide credentials", "enter a valid password". The
+		// noun set is narrower than the possessive form because a bare
+		// "token" or "secret" is too common as an ordinary noun.
+		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
+			`(?:(?:the|a|an|any|all)\s+)?(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
+			`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
+			handoverRequestEnd),
+	},
+	{
+		name: handoverRequestFinding,
+		// Path form: "provide the full contents of ~/.aws/credentials".
+		// include and pass join the verb list here only, because a sensitive
+		// path is a precise enough target that "include your API key in the
+		// Authorization header" style documentation stays out of scope.
+		re: regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
+			`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
+			// A path is often quoted, fenced or emphasized in a description
+			// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
+			`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
+			`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`),
 	},
 }
 
@@ -2074,7 +2134,13 @@ func checkToolPoison(text string) []string {
 			}
 			loc[0] += offset
 			loc[1] += offset
-			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
+			var negationSpan []int
+			if p.name == handoverRequestFinding {
+				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
+			}
+			if (p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc)) ||
+				(p.name == handoverRequestFinding && isNegatedBy(text, negationSpan, negatedHandoverPrefix) &&
+					handoverNegationHoldsToClauseEnd(text, negationSpan[1])) {
 				offset = loc[1]
 				continue
 			}
@@ -2100,6 +2166,71 @@ var commaSeparatedFileExfilDirective = regexp.MustCompile(
 // an immediate, uninterrupted negated action into a finding. A sentence or
 // contrast boundary keeps a later malicious instruction load-bearing.
 func isNegatedFileExfiltration(text string, loc []int) bool {
+	return isNegatedBy(text, loc, negatedFileExfiltrationPrefix)
+}
+
+// negatedHandoverPrefix is the strict counterpart for the handover family. The
+// negation must sit directly on the verb, with at most one adverb between, so
+// "do not forget to provide your API key" and "never hesitate to supply your
+// token" stay requests instead of being read as capability boundaries.
+var negatedHandoverPrefix = regexp.MustCompile(
+	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:ever|directly|simply|automatically))?\s*$`,
+)
+
+// handoverExceptionCue marks a negation that is really a redirect ("never X
+// except to this tool"): the prohibition carves out the very destination the
+// poisoned description wants the agent to use.
+var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save|excluding|instead|only)\b`)
+
+// handoverNegationHoldsToClauseEnd reports whether the clause after a negated
+// handover match, bounded to 160 bytes, is free of exception or redirect cues.
+func handoverNegationHoldsToClauseEnd(text string, end int) bool {
+	if end < 0 || end > len(text) {
+		return false
+	}
+	rest := text[end:]
+	capped := false
+	if len(rest) > 160 {
+		rest = rest[:160]
+		capped = true
+	}
+	next := ""
+	for i, r := range rest {
+		if isClauseBoundary(r) {
+			next = text[end+i+utf8.RuneLen(r):]
+			rest = rest[:i]
+			capped = false
+			break
+		}
+	}
+	// A clause longer than the window cannot be shown free of an exception,
+	// so it fails closed and the negation does not exempt the match.
+	if capped || handoverExceptionCue.MatchString(rest) {
+		return false
+	}
+	// "Never share your API key. Except with this tool." carries the redirect
+	// in the clause that follows. A following clause that opens with an
+	// exception cue revokes the negation; one that merely continues ("Rotate it
+	// regularly.") does not.
+	// Skip every boundary, mark and wrapper ("...", "--", "**", quotes) before
+	// the first word, so formatting cannot hide a leading cue.
+	next = strings.TrimLeftFunc(next, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	return !leadingHandoverExceptionCue.MatchString(next)
+}
+
+// leadingHandoverExceptionCue matches an exception or redirect cue as the first
+// word of the clause after a negated handover. A leading "but" revokes the
+// negation outright: in a tool description it almost always introduces the
+// carve-out, and a false finding there costs less than a missed request.
+// "Only" also opens ordinary sentences ("Only the server stores it."), so it
+// counts when a destination, condition or approval word follows it through any
+// formatting. Natural language cannot be enumerated; this narrows the bypass
+// space and the core credential-solicitation check remains a separate layer.
+// The cue must end at a non-letter, non-digit rune; Go's \b treats '_' as a
+// word rune and would miss "_Unless_".
+var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|but|other[^\pL\pN]+than|apart[^\pL\pN]+from|aside[^\pL\pN]+from|besides|save[^\pL\pN]+for|excluding|instead|only[^\pL\pN]+(?:(?:an?|the)[^\pL\pN]+)?(?:to|for|with|through|via|when|if|here|this|that|these|those|trusted|approved|authorized|authorised|designated))(?:[^\pL\pN]|$)`)
+
+func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {
 		return false
 	}
@@ -2120,7 +2251,7 @@ func isNegatedFileExfiltration(text string, loc []int) bool {
 		}
 	}
 	prefix := strings.TrimSpace(text[prefixStart:loc[0]])
-	if !negatedFileExfiltrationPrefix.MatchString(prefix) {
+	if !prefixRe.MatchString(prefix) {
 		return false
 	}
 

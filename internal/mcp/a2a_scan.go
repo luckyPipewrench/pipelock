@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -37,15 +38,16 @@ var ErrCardBaselineCapacity = errors.New("agent card baseline capacity exhausted
 
 // A2AScanResult describes the outcome of scanning A2A protocol traffic.
 type A2AScanResult struct {
-	Clean          bool
-	Action         string
-	Reason         string
-	ScanError      string
-	URLFindings    []scanner.Result        // SSRF/URL scanner findings
-	DLPFindings    []scanner.TextDLPMatch  // DLP pattern matches
-	InjectFindings []scanner.ResponseMatch // injection pattern matches
-	EntropyFinding *contententropy.Finding // opaque high-entropy string leaf
-	BudgetExceeded bool                    // true if walker hit node budget
+	Clean                bool
+	Action               string
+	Reason               string
+	ScanError            string
+	URLFindings          []scanner.Result        // SSRF/URL scanner findings
+	DLPFindings          []scanner.TextDLPMatch  // DLP pattern matches
+	InjectFindings       []scanner.ResponseMatch // injection pattern matches
+	EntropyFinding       *contententropy.Finding // opaque high-entropy string leaf
+	BudgetExceeded       bool                    // true if walker hit node budget
+	InspectionIncomplete bool                    // parser or depth bound prevented complete inspection
 }
 
 // A2AContentEntropyOptions carries the request-body entropy policy into A2A
@@ -59,8 +61,9 @@ const rollingTailSize = 4096
 
 // ScanA2ARequestBody runs field-aware scanning on an A2A request body.
 // Classifies JSON leaves by field name, routes URLs through SSRF scanner,
-// text/opaque through injection + DLP. Falls back to raw DLP for split-secret
-// detection when the walker completes within budget.
+// every string and key through injection, and text/opaque/secret through DLP.
+// Falls back to raw DLP for split-secret detection when the walker completes
+// within budget.
 func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts ...A2AContentEntropyOptions) A2AScanResult {
 	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
@@ -83,6 +86,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 	result := A2AScanResult{Clean: true}
 	budgetExceeded := false
+	injectionTexts := make(map[string]struct{})
 	var entropyTexts []string
 	var entropyKeys []string
 	action := ""
@@ -98,9 +102,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return A2AScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: "a2a: invalid JSON: empty body",
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               "a2a: invalid JSON: empty body",
+			InspectionIncomplete: true,
 		}
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
@@ -109,9 +114,20 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			reason = fmt.Sprintf("a2a: duplicate JSON object key: %v", err)
 		}
 		return A2AScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: reason,
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               reason,
+			InspectionIncomplete: true,
+		}
+	}
+
+	// The depth bound is independent of the classified walk's node budget.
+	// JSON has already been validated, so this pass needs no decoded values.
+	if a2aJSONExceedsDepth(trimmed) {
+		return A2AScanResult{
+			Action:               config.ActionBlock,
+			Reason:               "a2a: input exceeds maximum inspectable nesting depth",
+			InspectionIncomplete: true,
 		}
 	}
 
@@ -133,6 +149,25 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		default:
 		}
 
+		// Content in every string value and key receives injection scanning,
+		// independently of the field-aware URL, DLP, and entropy checks.
+		// Identical content shares its completed inspection within this body;
+		// field-aware checks still run for each leaf and no state survives a scan.
+		if _, scanned := injectionTexts[value]; !scanned {
+			injectResult := sc.ScanResponse(ctx, value)
+			if injectResult.Failed() {
+				result.Clean = false
+				result.ScanError = injectResult.ScanError
+				return
+			}
+			injectionTexts[value] = struct{}{}
+			if !injectResult.Clean {
+				result.Clean = false
+				result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+				action = config.StrongestAction(action, defaultFindingAction)
+			}
+		}
+
 		switch class {
 		case FieldURL:
 			urlResult := sc.Scan(ctx, value)
@@ -144,40 +179,17 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
 				}
-			}
-
-		case FieldText, FieldOpaque:
-			if entropyOpts != nil {
-				entropyTexts = append(entropyTexts, value)
-			}
-			// Injection scanning
-			injectResult := sc.ScanResponse(ctx, value)
-			if injectResult.Failed() {
-				result.Clean = false
-				result.ScanError = injectResult.ScanError
-				return
-			}
-			if !injectResult.Clean {
-				result.Clean = false
-				result.InjectFindings = append(result.InjectFindings, injectResult.Matches...)
-				action = config.StrongestAction(action, defaultFindingAction)
-			}
-			// DLP scanning
-			dlpResult := sc.ScanTextForDLP(ctx, value)
-			if !dlpResult.Clean {
-				result.Clean = false
-				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
-				if a2aDLPForcesBlock(dlpResult.Matches) {
+				if core, ok := a2aHiddenCoreFloor(sc, value, urlResult); ok {
+					result.URLFindings = append(result.URLFindings, core)
 					action = config.StrongestAction(action, config.ActionBlock)
-				} else {
-					action = config.StrongestAction(action, defaultFindingAction)
 				}
 			}
 
-		case FieldSecret:
+		case FieldText, FieldOpaque, FieldSecret:
 			if entropyOpts != nil {
 				entropyTexts = append(entropyTexts, value)
 			}
+			// DLP scanning
 			dlpResult := sc.ScanTextForDLP(ctx, value)
 			if !dlpResult.Clean {
 				result.Clean = false
@@ -211,13 +223,47 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 	}
 
+	// Text parts form one message to the consumer. Inspect their joined values
+	// without inserting field names between them; per-leaf scanning above still
+	// owns keys and field-aware URL checks. This bounded pass also covers values
+	// beyond the classified walk's node allowance.
+	joinedValues := jsonrpc.ExtractStringsFromJSONResult(body)
+	if joinedValues.Truncated {
+		return A2AScanResult{Action: config.ActionBlock, InspectionIncomplete: true, Reason: "a2a: input exceeds maximum inspectable nesting depth"}
+	}
+	joinedViews := a2aPartTextViews(body)
+	if len(joinedValues.Strings) > 0 {
+		joinedViews = append(joinedViews, strings.Join(joinedValues.Strings, "\n"))
+	}
+	for _, view := range joinedViews {
+		injectResult := sc.ScanResponse(ctx, view)
+		if injectResult.Failed() {
+			result.Clean = false
+			result.ScanError = injectResult.ScanError
+		} else if !injectResult.Clean {
+			result.Clean = false
+			result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+			findingAction := defaultFindingAction
+			if budgetExceeded {
+				findingAction = config.ActionBlock
+			}
+			action = config.StrongestAction(action, findingAction)
+		}
+	}
+
 	// Budget exceeded participates in the same strongest-action resolution as
-	// scanner findings, then skips raw fallback because the payload is too wide
-	// for another complete pass.
+	// scanner findings. The field-aware walk stopped early, so the leaves it
+	// never visited get one bounded pass over the whole body: injection and
+	// credential findings there block regardless of the configured action, and
+	// a pass that cannot complete blocks. A clean pass keeps the configured
+	// overflow action.
 	if budgetExceeded {
 		result.Clean = false
 		result.BudgetExceeded = true
 		action = config.StrongestAction(action, defaultFindingAction)
+		if a2aOverflowPass(ctx, trimmed, sc, &result) {
+			action = config.StrongestAction(action, config.ActionBlock)
+		}
 	}
 
 	// Pass 2: raw DLP fallback for split-secret detection. It runs whenever the
@@ -231,9 +277,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
-				Clean:  false,
-				Action: config.ActionBlock,
-				Reason: "a2a: input exceeds maximum inspectable nesting depth",
+				Clean:                false,
+				Action:               config.ActionBlock,
+				Reason:               "a2a: input exceeds maximum inspectable nesting depth",
+				InspectionIncomplete: true,
 			}
 		}
 		texts := extracted.Strings
@@ -270,6 +317,84 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 
 	return result
+}
+
+// a2aPartTextViews preserves the text sequence of each message or artifact's
+// parts array. Discriminators and other metadata remain in the all-values view
+// but cannot interrupt this view. Separate arrays never share a text sequence.
+// The caller validates JSON and its shared depth bound before this traversal.
+func a2aPartTextViews(body []byte) []string {
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	var views []string
+	var walk func(any, int)
+	walk = func(value any, depth int) {
+		if depth > maxWalkDepth {
+			return
+		}
+		switch v := value.(type) {
+		case []any:
+			for _, child := range v {
+				walk(child, depth+1)
+			}
+		case map[string]any:
+			if parts, ok := v["parts"].([]any); ok {
+				var texts []string
+				for _, part := range parts {
+					if fields, ok := part.(map[string]any); ok {
+						if text, ok := fields["text"].(string); ok && text != "" {
+							texts = append(texts, text)
+						}
+					}
+				}
+				if len(texts) > 1 {
+					views = append(views, strings.Join(texts, "\n"))
+				}
+			}
+			for _, key := range jsonrpc.SortedKeys(v) {
+				walk(v[key], depth+1)
+			}
+		}
+	}
+	walk(parsed, 0)
+	return views
+}
+
+// a2aOverflowPass inspects a body whose field-aware walk ran out of budget.
+// It extracts every string and key once, in time linear in the size-capped
+// body, and runs response injection and DLP over the joined text. It reports
+// whether a finding must block; an incomplete pass sets result.ScanError,
+// which the caller resolves to block.
+func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, result *A2AScanResult) bool {
+	extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
+	if extracted.Truncated {
+		result.ScanError = "a2a: overflow inspection exceeds maximum nesting depth"
+		return true
+	}
+	if len(extracted.Strings) == 0 {
+		return false
+	}
+	joined := strings.Join(extracted.Strings, "\n")
+	forceBlock := false
+	injectResult := sc.ScanResponse(ctx, joined)
+	if injectResult.Failed() {
+		result.ScanError = injectResult.ScanError
+		return true
+	}
+	if !injectResult.Clean {
+		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
+		forceBlock = true
+	}
+	dlpResult := sc.ScanTextForDLP(ctx, joined)
+	if !dlpResult.Clean {
+		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
+		if a2aDLPForcesBlock(dlpResult.Matches) {
+			forceBlock = true
+		}
+	}
+	return forceBlock
 }
 
 func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {
@@ -324,6 +449,17 @@ func a2aURLResultForcesBlock(r scanner.Result) bool {
 	return scanner.IsHostnameExfilResult(r) || scanner.IsCoreCriticalResult(r)
 }
 
+// a2aHiddenCoreFloor returns the core credential finding a URL carries when
+// its scan stopped at an earlier stage, such as the blocklist, and so never
+// reached the core floor.
+func a2aHiddenCoreFloor(sc *scanner.Scanner, uri string, urlResult scanner.Result) (scanner.Result, bool) {
+	if urlResult.Allowed || scanner.IsCoreCriticalResult(urlResult) {
+		return scanner.Result{}, false
+	}
+	core := sc.ScanURLCoreFloor(uri)
+	return core, !core.Allowed
+}
+
 func a2aDefaultAction(cfg *config.A2AScanning) string {
 	if cfg == nil || cfg.Action == "" {
 		return config.ActionWarn
@@ -361,6 +497,10 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 			// carried in a header URI must hard-block regardless of the
 			// configured a2a_scanning.action, matching the body URL leaves.
 			if a2aURLResultForcesBlock(urlResult) {
+				forceBlock = true
+			}
+			if core, ok := a2aHiddenCoreFloor(sc, uri, urlResult); ok {
+				result.URLFindings = append(result.URLFindings, core)
 				forceBlock = true
 			}
 		}
@@ -628,6 +768,16 @@ type AgentCardScanResult struct {
 // ScanAgentCard parses and scans an Agent Card response for skill poisoning
 // and drift detection. Reuses the field walker for URL and injection scanning.
 func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, cfg *config.A2AScanning) AgentCardScanResult {
+	return scanAgentCard(ctx, body, sc, baseline, key, agentCardScanOptions{cfg: cfg, commitBaseline: true})
+}
+
+type agentCardScanOptions struct {
+	cfg            *config.A2AScanning
+	commitBaseline bool
+}
+
+func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, opts agentCardScanOptions) AgentCardScanResult {
+	cfg := opts.cfg
 	if cfg == nil || !cfg.Enabled {
 		return AgentCardScanResult{Clean: true}
 	}
@@ -734,7 +884,7 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// otherwise the baseline keeps what it already trusted, and the result must
 	// not claim an adoption that never happened (the audit event and the
 	// OnCardDriftAdopted callback both read DriftAdopted).
-	if result.Clean {
+	if result.Clean && opts.commitBaseline {
 		driftCommit(true)
 	} else if driftOutcome.adopted || driftOutcome.firstSeen {
 		result.DriftAdopted = false
@@ -1000,6 +1150,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Field-walk the event data payload.
 		eventResult := scanA2ABody(ctx, event, sc, cfg, nil)
 		if !eventResult.Clean {
+			if eventResult.InspectionIncomplete {
+				return fmt.Errorf("%w: %s", ErrSSEStreamScanError, eventResult.Reason)
+			}
 			if eventResult.ScanError != "" {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, eventResult.ScanError)
 			}
@@ -1029,7 +1182,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// to the same detectors that caught per-event data.
 		currentText, currentTruncated := extractTextFromEvent(event)
 		if currentTruncated {
-			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrA2AStreamFinding)
+			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
 		if injectionTail != "" && currentText != "" {
 			combined := injectionTail + " " + currentText

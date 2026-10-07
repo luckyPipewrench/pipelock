@@ -106,7 +106,9 @@ func testHTTPRedactionMatcher() *redact.Matcher {
 
 func waitForHTTPHealth(t *testing.T, baseURL string) {
 	t.Helper()
-	client := &http.Client{Timeout: 250 * time.Millisecond}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 250 * time.Millisecond}
 	testwait.For(t, 3*time.Second, func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
@@ -118,9 +120,26 @@ func waitForHTTPHealth(t *testing.T, baseURL string) {
 		if err != nil {
 			return false
 		}
+		_, readErr := io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		return resp.StatusCode >= 200 && resp.StatusCode < 300
+		return readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 	}, "HTTP listener health at %s", baseURL)
+}
+
+// The server may spend its full five-second grace period draining an accepted
+// connection that has not sent a request. Leave headroom for the forced close
+// and the listener's return instead of racing that deadline.
+func waitForListenerProxyStop(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("RunHTTPListenerProxy: %v", err)
+		}
+	case <-time.After(testwait.Deadline(6 * time.Second)):
+		stack := make([]byte, 1<<20)
+		t.Errorf("timeout waiting for listener proxy to stop\n%s", stack[:runtime.Stack(stack, true)])
+	}
 }
 
 func newTestReceiptEmitter(t *testing.T) (*receipt.Emitter, *recorder.Recorder, string) {
@@ -2802,14 +2821,7 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	return baseURL, cancel, &logBuf
@@ -2836,14 +2848,7 @@ func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyO
 
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	return baseURL, &logBuf
@@ -3326,14 +3331,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	done := make(chan error, 1)
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case runErr := <-done:
-			if runErr != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
@@ -3415,14 +3413,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_DualEmitsV2PolicyHash(t *testing.T
 	done := make(chan error, 1)
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case runErr := <-done:
-			if runErr != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
@@ -3913,11 +3904,7 @@ func TestHTTPListener_ConfiguredSensitiveHeaderDLP(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 func TestMCPListenerHeaderDLP_WhitespaceSplitSensitiveHeader(t *testing.T) {
@@ -4062,14 +4049,7 @@ func TestHTTPListener_RedactsToolCallArguments(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case runErr := <-done:
-			if runErr != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	baseURL := "http://" + addr
@@ -4776,6 +4756,41 @@ func TestHTTPListener_UpstreamError(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_GracefulShutdownNewConnection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(upstream.Close)
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	sc := testScannerForHTTP(t)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, io.Discard, MCPProxyOpts{Scanner: sc})
+	}()
+	// Hold a TCP connection open without sending its first request. A subsequent
+	// health request proves the server has accepted it before cancellation.
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	waitForHTTPHealth(t, "http://"+ln.Addr().String())
+	cancel()
+	waitForListenerProxyStop(t, done)
+	if err := conn.SetReadDeadline(time.Now().Add(testwait.Deadline(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if _, readErr := conn.Read(make([]byte, 1)); !errors.Is(readErr, io.EOF) {
+		t.Errorf("connection after listener shutdown: %v, want EOF", readErr)
+	}
+}
+
 func TestHTTPListener_GracefulShutdown(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -5326,14 +5341,7 @@ func startListenerProxyFull(
 
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	return baseURL, &logBuf
@@ -6525,14 +6533,7 @@ func TestHTTPListener_StoreAdaptive(t *testing.T) {
 	_ = resp.Body.Close()
 
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("RunHTTPListenerProxy: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for listener proxy to stop")
-	}
+	waitForListenerProxyStop(t, done)
 
 	// Verify the recorder was used (clean response forwarded).
 	if rec.cleans == 0 {
@@ -6763,14 +6764,7 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case runErr := <-done:
-			if runErr != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	baseURL := "http://" + addr
@@ -7362,14 +7356,7 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Errorf("RunHTTPListenerProxy: %v", runErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for listener proxy to stop")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
@@ -7403,14 +7390,7 @@ func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case runErr := <-done:
-			if runErr != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 
 	baseURL := "http://" + addr
@@ -8298,11 +8278,7 @@ func TestHTTPListener_A2AHeaderBlock(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 func TestHTTPListener_A2AHeaderBlockReceiptFailureLogsAuditGap(t *testing.T) {
@@ -8369,11 +8345,7 @@ func TestHTTPListener_A2AHeaderBlockReceiptFailureLogsAuditGap(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 // TestHTTPListener_AuthDLPWithAdaptiveSignal exercises the auth header DLP
@@ -8435,11 +8407,7 @@ func TestHTTPListener_AuthDLPWithAdaptiveSignal(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
@@ -8503,11 +8471,7 @@ func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("timeout")
-	}
+	waitForListenerProxyStop(t, done)
 }
 
 // TestNewReverseUpstreamTransport_IgnoresAmbientProxyEnv locks the two

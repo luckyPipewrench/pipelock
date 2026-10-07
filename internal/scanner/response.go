@@ -1629,6 +1629,14 @@ func (s *Scanner) ResponseScanningEnabled() bool {
 	return s.responseEnabled
 }
 
+// ResponseLayerEnabled reports whether the operator enabled the optional
+// response scanning layer. Unlike ResponseScanningEnabled, the core floor does
+// not count: without the layer, ResponseAction is the floor's block, which
+// governs core pattern findings only.
+func (s *Scanner) ResponseLayerEnabled() bool {
+	return s.responseEnabled
+}
+
 // ResponseAction returns the configured response scanning action (strip, warn, block).
 // When main response scanning is disabled but core patterns are active,
 // defaults to "block" - core findings are non-negotiable.

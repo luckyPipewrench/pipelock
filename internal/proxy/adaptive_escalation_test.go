@@ -312,9 +312,9 @@ func TestForwardHTTP_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
 	escalateRec(rec, 1)
 
-	// Send a request with an AWS key in the URL (DLP finding, audit mode = warn).
+	// Send a request with an Anthropic API key in the URL (DLP finding, audit mode = warn).
 	// Build the key at runtime to avoid gosec G101.
-	dlpURL := upstream.URL + "/text?key=" + "AKIA" + "IOSFODNN7EXAMPLE"
+	dlpURL := upstream.URL + "/text?key=" + "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, dlpURL, nil)
 	w := httptest.NewRecorder()
 
@@ -362,7 +362,7 @@ func TestForwardHTTP_Adaptive_HeaderDLPSignal(t *testing.T) {
 
 	// Send a request with a DLP secret in the Authorization header.
 	// Build at runtime to avoid gosec G101.
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 	w := httptest.NewRecorder()
@@ -402,7 +402,7 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 	installForwardTestDialer(p, upstream.Listener.Addr().String())
 
 	client := forwardHTTPClient(t, proxyAddr)
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	requests := []struct {
 		agent string
 	}{
@@ -724,7 +724,7 @@ func TestWebSocket_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// WS URL with a DLP secret. Build at runtime to avoid gosec G101.
-	dlpURL := "ws://127.0.0.1:9999/ws?key=" + "AKIA" + "IOSFODNN7EXAMPLE"
+	dlpURL := "ws://127.0.0.1:9999/ws?key=" + "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url="+dlpURL, nil)
 	w := httptest.NewRecorder()
 
@@ -1242,7 +1242,7 @@ func TestFetch_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// Fetch URL with a DLP secret. Build at runtime to avoid gosec G101.
-	dlpURL := backend.URL + "/text?key=" + "AKIA" + "IOSFODNN7EXAMPLE"
+	dlpURL := backend.URL + "/text?key=" + "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+dlpURL, nil)
 	w := httptest.NewRecorder()
 
@@ -1358,8 +1358,8 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
 	escalateRec(rec, 1)
 
-	// CONNECT to a DLP-matching target (AWS key in host). Build at runtime.
-	dlpHost := "AKIA" + "IOSFODNN7EXAMPLE" + ".example.com:443"
+	// CONNECT to a DLP-matching target (Anthropic API key in host). Build at runtime.
+	dlpHost := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef" + ".example.com:443"
 	conn := dialProxy(t, proxyAddr)
 	defer func() { _ = conn.Close() }()
 
@@ -1579,7 +1579,7 @@ func TestForwardHTTP_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// POST a body containing a DLP secret. Build at runtime to avoid gosec G101.
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := strings.NewReader("key=" + secret)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/upload", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1635,7 +1635,7 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
 
 	// Build the secret at runtime to avoid gosec G101.
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 	w := httptest.NewRecorder()
@@ -1698,7 +1698,7 @@ func TestInterceptTunnel_Adaptive_URLWarnUpgradeToBlock(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// Build a URL with a DLP secret in the path. Build at runtime to avoid gosec G101.
-	dlpPath := "/search?key=" + "AKIA" + "IOSFODNN7EXAMPLE"
+	dlpPath := "/search?key=" + "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	handler := newInterceptHandler(&InterceptContext{
 		TargetHost: "127.0.0.1",
 		TargetPort: "80",
@@ -1765,7 +1765,7 @@ func TestInterceptTunnel_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	escalateRec(rec, 1)
 
 	// Build request body with DLP secret. Build at runtime to avoid gosec G101.
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	body := strings.NewReader("key=" + secret)
 
 	handler := newInterceptHandler(&InterceptContext{

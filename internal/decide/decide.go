@@ -6,6 +6,7 @@ package decide
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -102,6 +103,9 @@ type Evidence struct {
 	Severity string `json:"severity,omitempty"` // critical, high, medium, low
 	Detail   string `json:"detail,omitempty"`   // human-readable detail
 	Action   string `json:"action"`             // block, warn (determines outcome)
+	// core marks a finding from the built-in core credential floor, which
+	// blocks even when enforce is off.
+	core bool
 }
 
 // Decision is the result of evaluating an Action.
@@ -247,12 +251,29 @@ func decideWebFetch(ctx context.Context, cfg *config.Config, sc *scanner.Scanner
 		return Decision{Outcome: Allow}
 	}
 
+	core := scanner.IsCoreCriticalResult(result)
 	evidence := []Evidence{{
 		Scanner:  result.Scanner,
 		Pattern:  result.Reason,
 		Severity: config.SeverityHigh,
 		Action:   config.ActionBlock,
+		core:     core,
 	}}
+	// The URL scan stops at its first failing stage, so check the core floor
+	// directly when an earlier stage refused the URL. Its own evidence entry
+	// names the credential, which is why the request stays denied in audit
+	// mode even though the earlier stage alone would only warn.
+	if !core {
+		if floor := sc.ScanURLCoreFloor(p.URL); !floor.Allowed {
+			evidence = append(evidence, Evidence{
+				Scanner:  floor.Scanner,
+				Pattern:  floor.Reason,
+				Severity: config.SeverityCritical,
+				Action:   config.ActionBlock,
+				core:     true,
+			})
+		}
+	}
 
 	return buildDecision(cfg, evidence)
 }
@@ -371,8 +392,11 @@ func buildDecision(cfg *config.Config, evidence []Evidence) Decision {
 	}
 	summary := strings.Join(parts, ", ")
 
-	// Warn-only findings or enforce=false: allow with advisory message.
-	if strictest == config.ActionWarn || !cfg.EnforceEnabled() {
+	// Warn-only findings or enforce=false: allow with advisory message. Audit
+	// mode never releases the core credential floor, matching every proxy
+	// transport.
+	core := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core })
+	if !core && (strictest == config.ActionWarn || !cfg.EnforceEnabled()) {
 		verb := "warning"
 		if !cfg.EnforceEnabled() {
 			verb = "detected (enforce off)"
@@ -404,6 +428,7 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 			Pattern:  m.PatternName,
 			Severity: m.Severity,
 			Action:   config.ActionBlock, // DLP findings are always block-level
+			core:     scanner.IsCoreCriticalMatch(m),
 		})
 	}
 	return ev

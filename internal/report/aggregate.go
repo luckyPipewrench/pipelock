@@ -48,6 +48,13 @@ var blockEventTypes = map[string]bool{
 	"kill_switch_deny": true,
 }
 
+// timingEventTypes are per-request timing records. They describe requests
+// already counted by their verdict events, so the report neither counts them
+// as traffic nor lists them as security evidence.
+var timingEventTypes = map[string]bool{
+	"intercept_http": true,
+}
+
 // Event types classified as allowed/informational traffic.
 var allowedEventTypes = map[string]bool{
 	"allowed":      true,
@@ -307,6 +314,10 @@ func extractModeFromDetail(detail string) string {
 // classifyEvent updates summary counters based on the event type and action.
 func classifyEvent(ev *Event, s *Summary) {
 	evType := ev.Event
+
+	if timingEventTypes[evType] {
+		return
+	}
 
 	if blockEventTypes[evType] {
 		s.Blocks++
@@ -688,7 +699,7 @@ func buildEvidence(events []Event, maxCount int, redact bool) []Event {
 	for i := range events {
 		ev := &events[i]
 		// Include only security-relevant events (not pure allowed/info traffic).
-		if allowedEventTypes[ev.Event] || ev.Event == eventStartup ||
+		if allowedEventTypes[ev.Event] || timingEventTypes[ev.Event] || ev.Event == eventStartup ||
 			ev.Event == eventShutdown || ev.Event == eventConfigReload {
 			continue
 		}

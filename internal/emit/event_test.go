@@ -115,6 +115,7 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{EventConfigReload, SeverityInfo},
 		{EventRedirect, SeverityInfo},
 		{EventForwardHTTP, SeverityInfo},
+		{EventInterceptHTTP, SeverityInfo},
 		{EventToolRedirect, SeverityInfo},
 		{EventAuthorityVerification, SeverityInfo},
 	}
@@ -176,6 +177,7 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		EventConfigReload:           true,
 		EventRedirect:               true,
 		EventForwardHTTP:            true,
+		EventInterceptHTTP:          true,
 		EventToolRedirect:           true,
 		EventAuthorityVerification:  true,
 	}

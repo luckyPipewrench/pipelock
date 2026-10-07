@@ -73,13 +73,13 @@ on a sink to receive the info events as well.
 
 ### Info (sent only when a sink sets `min_severity: info`)
 
-These go to the local log (except the six events named below when `logging.include_allowed` is `false`), and reach a sink only when that sink's
+These go to the local log (except the seven events named below when `logging.include_allowed` is `false`), and reach a sink only when that sink's
 `min_severity` is `info`. With the default `warn` threshold they stay local. To
 see allowed traffic without turning on info delivery, use Prometheus metrics or
 ship the local logs through a log collector (Promtail, Filebeat, Fluentd).
 
-`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open` and `ws_close`
-are also gated by `logging.include_allowed` (default `true`). When it is
+`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `intercept_http`, `ws_open`
+and `ws_close` are also gated by `logging.include_allowed` (default `true`). When it is
 `false`, they are neither logged nor emitted, whatever `min_severity` says.
 
 | Type | Description | Key Fields |
@@ -92,6 +92,7 @@ are also gated by `logging.include_allowed` (default `true`). When it is
 | `config_reload` | Config file reloaded (also emitted) | `status`, `detail` |
 | `redirect` | HTTP redirect observed before target admission; not proof the target was contacted | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
 | `forward_http` | Forward proxy request completed | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms` |
+| `intercept_http` | TLS-intercepted request finished, allowed or blocked. `upstream_ms` is the wait for the destination's response headers and appears only when the request reached it; the rest of `duration_ms` is Pipelock's own time. `client_canceled` is true when the client gave up first | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms`, `upstream_ms`, `client_canceled` |
 
 > **Note:** Chain detection events (`chain_detection`) are both counted in
 > Prometheus (`pipelock_chain_detections_total`) and emitted to the sinks, at
@@ -240,7 +241,7 @@ Operator lifecycle:
 **Severity filtering:** Events below `min_severity` are silently dropped before
 reaching the sink. Set to `warn` for all security events (recommended), or
 `critical` for emergency alerts only. Setting `info` adds the info-level events
-(`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open`, `ws_close`,
+(`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `intercept_http`, `ws_open`, `ws_close`,
 `config_reload`, `redirect` and the others in the Info table), which can be high
 volume on a busy proxy.
 
@@ -662,8 +663,8 @@ OS hostname.
 **Local logs vs emission.** `logging.include_blocked` only affects local log
 output (stderr/file); a blocked request is emitted to the sinks whether or not
 it is set. `logging.include_allowed` is different: it also gates emission of
-`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `ws_open` and
-`ws_close`, so turning it off removes them from the sinks as well as the log.
+`allowed`, `tunnel_open`, `tunnel_close`, `forward_http`, `intercept_http`, `ws_open`
+and `ws_close`, so turning it off removes them from the sinks as well as the log.
 Whatever those two settings say, a sink only receives events at or above its own
 `min_severity`.
 

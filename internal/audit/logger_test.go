@@ -3294,6 +3294,7 @@ func TestAuditEmitLookupEventsHaveExplicitSeverity(t *testing.T) {
 		EventTunnelOpen:             emit.EventTunnelOpen,
 		EventTunnelClose:            emit.EventTunnelClose,
 		EventForwardHTTP:            emit.EventForwardHTTP,
+		EventInterceptHTTP:          emit.EventInterceptHTTP,
 		EventRedirect:               emit.EventRedirect,
 		EventToolRedirect:           emit.EventToolRedirect,
 		EventConfigReload:           emit.EventConfigReload,

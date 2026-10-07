@@ -571,6 +571,24 @@ func newInterceptHandler(
 		ic.Logger = ic.Logger.WithCorrelation(ic.Correlation)
 		r = r.WithContext(withCorrelation(r.Context(), ic.Correlation))
 
+		// One timing line per intercepted request, on every exit path, so an
+		// operator can split Pipelock's own time from the destination's wait.
+		timing := &interceptTimingWriter{ResponseWriter: w}
+		w = timing
+		var upstreamStart time.Time
+		var upstreamWait time.Duration
+		defer func() {
+			timingCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
+			ic.Logger.LogInterceptHTTP(timingCtx, audit.InterceptTiming{
+				StatusCode:      timing.status,
+				SizeBytes:       timing.bytes,
+				Duration:        time.Since(reqStart),
+				Upstream:        upstreamWait,
+				ReachedUpstream: !upstreamStart.IsZero(),
+				ClientCanceled:  r.Context().Err() != nil,
+			})
+		}()
+
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
 		if ic.Recorder == nil {
@@ -1963,7 +1981,9 @@ func newInterceptHandler(
 		}
 
 		// Forward to upstream.
+		upstreamStart = time.Now()
 		resp, err := upstream.RoundTrip(r)
+		upstreamWait = time.Since(upstreamStart)
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
 			if errors.As(err, &ssrfErr) {
@@ -2883,4 +2903,40 @@ func (ic *InterceptContext) baseContext() func(net.Listener) context.Context {
 // withActorAuth attaches an agent-label provenance grade to a context.
 func withActorAuth(parent context.Context, auth envelope.ActorAuth) context.Context {
 	return context.WithValue(parent, ctxKeyAgentAuth, string(auth))
+}
+
+// interceptTimingWriter records the status and body bytes an intercepted
+// request returned to the client, for the per-request timing line.
+type interceptTimingWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (t *interceptTimingWriter) WriteHeader(code int) {
+	if t.status == 0 {
+		t.status = code
+	}
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *interceptTimingWriter) Write(b []byte) (int, error) {
+	if t.status == 0 {
+		t.status = http.StatusOK
+	}
+	n, err := t.ResponseWriter.Write(b)
+	t.bytes += int64(n)
+	return n, err
+}
+
+// Flush keeps streamed responses streaming through the wrapper.
+func (t *interceptTimingWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
+	return t.ResponseWriter
 }

@@ -1106,6 +1106,7 @@ func TestClassifyEvent_AllPaths(t *testing.T) {
 		{"startup", Event{Event: testEvStartup}, 0, 0, 0, 0},
 		{"allowed", Event{Event: "allowed"}, 0, 0, 1, 0},
 		{"kill_switch_deny", Event{Event: "kill_switch_deny"}, 1, 0, 0, 1},
+		{"intercept_http_timing_only", Event{Event: "intercept_http", Action: actionBlock}, 0, 0, 0, 0},
 	}
 
 	for _, tt := range tests {
@@ -1660,5 +1661,13 @@ func TestSanitizeEventForDisplayDoesNotMutateOriginalSlices(t *testing.T) {
 	}
 	if ev.BundleRules[0].RuleID != bidi || ev.BundleRules[0].Bundle != bidi || ev.BundleRules[0].BundleVersion != bidi {
 		t.Fatalf("original BundleRules was mutated: %+v", ev.BundleRules[0])
+	}
+}
+
+func TestBuildEvidence_SkipsInterceptTiming(t *testing.T) {
+	events := []Event{{Event: "intercept_http"}, {Event: "anomaly"}}
+	got := buildEvidence(events, 10, false)
+	if len(got) != 1 || got[0].Event != "anomaly" {
+		t.Fatalf("evidence = %+v, want only the anomaly", got)
 	}
 }

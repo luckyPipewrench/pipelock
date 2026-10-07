@@ -1996,8 +1996,11 @@ func newInterceptHandler(
 		// Offsets from base keep the monotonic clock, so a wall-clock
 		// adjustment during the request cannot distort the wait.
 		base := time.Now()
-		var wroteAt atomic.Int64
+		var wroteAt, connAt atomic.Int64
 		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+			GotConn: func(httptrace.GotConnInfo) {
+				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
+			},
 			WroteRequest: func(info httptrace.WroteRequestInfo) {
 				if info.Err == nil {
 					// A retried request reports a write per attempt; the
@@ -2007,8 +2010,18 @@ func newInterceptHandler(
 				}
 			},
 		})))
-		if at := wroteAt.Load(); at != 0 {
-			upstreamWait = time.Since(base) - time.Duration(at-1)
+		// The transport reports the write on its own goroutine and can
+		// return a response before that callback runs. A response is proof
+		// the request was sent; the wait then starts at connection ready.
+		start := wroteAt.Load()
+		if err == nil {
+			reachedUpstream.Store(true)
+			if start == 0 {
+				start = connAt.Load()
+			}
+		}
+		if start != 0 && reachedUpstream.Load() {
+			upstreamWait = time.Since(base) - time.Duration(start-1)
 		}
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError

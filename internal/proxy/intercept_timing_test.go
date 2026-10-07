@@ -311,3 +311,26 @@ func TestInterceptTimingWriter_AddsNoOptionalInterfaces(t *testing.T) {
 		t.Fatalf("ResponseController cannot reach the underlying flusher: %v", err)
 	}
 }
+
+// earlyResponseRT answers without ever reporting the request written, as the
+// transport can when the response wins the race with its write callback.
+type earlyResponseRT struct{}
+
+func (earlyResponseRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.GotConn != nil {
+		trace.GotConn(httptrace.GotConnInfo{})
+	}
+	rec := httptest.NewRecorder()
+	_, _ = rec.WriteString("ok")
+	return rec.Result(), nil
+}
+
+func TestInterceptTiming_ResponseBeforeWriteCallbackStillReachedUpstream(t *testing.T) {
+	e, code := runInterceptTiming(t, timingConfig(), earlyResponseRT{}, t.Context(), "https://api.vendor.example/a")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if _, ok := e["upstream_ms"]; !ok {
+		t.Fatalf("upstream_ms missing for a request that got a response: %v", e)
+	}
+}

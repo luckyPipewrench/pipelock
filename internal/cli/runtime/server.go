@@ -137,6 +137,7 @@ type Server struct {
 	proxy                  *proxy.Proxy
 	receiptEmitter         *receipt.Emitter
 	receiptShardSet        *receipt.ReceiptShardSet
+	receiptGroupFailure    atomic.Pointer[error]
 	envelopeEmitter        *envelope.Emitter
 	captureWriter          *capture.Writer
 	mcpListenerBearerToken string
@@ -616,12 +617,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				PostureBinding:      postureResult.Binding,
 				PostureAvailability: string(postureResult.Availability),
 				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
-			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, func(err error) {
-				if cfg.FlightRecorder.RequireReceipts {
-					s.logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
-					_ = s.Shutdown(context.Background())
-				}
-			})
+			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, s.failRequiredReceiptGroup)
 			if groupErr != nil {
 				s.cleanup()
 				return nil, fmt.Errorf("opening receipt shard group: %w", groupErr)
@@ -782,6 +778,29 @@ func (s *Server) Shutdown(_ context.Context) error {
 	s.cancelMu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	return nil
+}
+
+func (s *Server) failRequiredReceiptGroup(err error) {
+	if err == nil {
+		return
+	}
+	live := s.currentConfig()
+	if live == nil || !live.FlightRecorder.RequireReceipts {
+		return
+	}
+	if s.receiptGroupFailure.CompareAndSwap(nil, &err) {
+		if s.logger != nil {
+			s.logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
+		}
+	}
+	_ = s.Shutdown(context.Background())
+}
+
+func (s *Server) requiredReceiptGroupError() error {
+	if failure := s.receiptGroupFailure.Load(); failure != nil {
+		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt group emission failed: %w", *failure)
 	}
 	return nil
 }

@@ -21,6 +21,29 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+func TestRequiredReceiptGroupFailureUsesLiveConfigAndReturnsError(t *testing.T) {
+	failure := errors.New("shard write failed")
+	cfg := config.Defaults()
+	s := &Server{cfg: cfg}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.internalCancel = cancel
+
+	s.failRequiredReceiptGroup(failure)
+	if ctx.Err() != nil || s.requiredReceiptGroupError() != nil {
+		t.Fatal("best-effort failure stopped the server")
+	}
+	live := cfg.Clone()
+	live.FlightRecorder.RequireReceipts = true
+	s.stateMu.Lock()
+	s.cfg = live
+	s.stateMu.Unlock()
+	s.failRequiredReceiptGroup(failure)
+	if ctx.Err() == nil || !errors.Is(s.requiredReceiptGroupError(), failure) {
+		t.Fatalf("required failure did not cancel with its cause: %v", s.requiredReceiptGroupError())
+	}
+}
+
 func TestBuildServerReceiptShardGroupPublishesBoundStartup(t *testing.T) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

@@ -1276,6 +1276,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	readyNotified = true
 	s.markStartupNotified()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
+		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
+			return groupErr
+		}
 		if s.receiptRotationRequested.Load() {
 			return errReceiptGroupKeyRotation
 		}
@@ -1328,6 +1331,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
+	if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
+		return groupErr
+	}
 	if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 		return heartbeatErr
 	}

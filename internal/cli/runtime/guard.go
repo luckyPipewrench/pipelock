@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -153,7 +154,13 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	defer evidence.close()
 	ctx, cancel := signal.NotifyContext(baseCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	evidence.onRequiredFailure = func(error) { cancel() }
+	evidence.onRequiredFailure = func(err error) {
+		if !evidence.require || err == nil {
+			return
+		}
+		evidence.requiredFailure.CompareAndSwap(nil, &err)
+		cancel()
+	}
 	guardReady := make(chan struct{})
 	var guardReadyOnce sync.Once
 
@@ -184,7 +191,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	}
 	declaration := runtimeCfg.Guard
 	configPolicyHash := runtimeCfg.CanonicalPolicyHash()
-	return launchStandalone(sandbox.StandaloneLaunchConfig{
+	launchErr := launchStandalone(sandbox.StandaloneLaunchConfig{
 		Ctx:                     ctx,
 		Command:                 opts.Command,
 		Workspace:               workspace,
@@ -216,6 +223,10 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 			return nil
 		},
 	})
+	if failure := evidence.requiredFailure.Load(); failure != nil {
+		return fmt.Errorf("flight_recorder.require_receipts is enabled but Guard receipt emission failed: %w", *failure)
+	}
+	return launchErr
 }
 
 func resolveGuardExecutable(command []string, workspace string) (string, error) {
@@ -240,6 +251,7 @@ type guardEvidence struct {
 	stderr            io.Writer
 	require           bool
 	onRequiredFailure func(error)
+	requiredFailure   atomic.Pointer[error]
 	activateOnce      sync.Once
 	activateErr       error
 }

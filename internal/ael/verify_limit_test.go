@@ -25,7 +25,7 @@ func TestReadBoundedAELLineCountsGrowthAcrossRecords(t *testing.T) {
 			if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			file, err := os.Open(path)
+			file, err := os.Open(path) // #nosec G304 -- path is inside this test's temporary directory.
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -34,7 +34,7 @@ func TestReadBoundedAELLineCountsGrowthAcrossRecords(t *testing.T) {
 			if err != nil || initial.Size() > tc.limit {
 				t.Fatalf("initial stream size = %v, %v", initial, err)
 			}
-			writer, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+			writer, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- path is inside this test's temporary directory.
 			if err != nil {
 				t.Fatal(err)
 			}

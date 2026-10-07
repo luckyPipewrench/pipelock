@@ -69,7 +69,7 @@ func TestVerifySuccessorRejectsPredecessorCloseHeadDisagreement(t *testing.T) {
 	}
 	closeName, _ := ReceiptGroupFileName(firstOpen.GroupID, "close")
 	closePath := filepath.Join(dir, closeName)
-	raw, err := os.ReadFile(closePath)
+	raw, err := os.ReadFile(closePath) // #nosec G304 -- closePath is under this test's temporary directory.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestVerifySuccessorRejectsPredecessorCloseHeadDisagreement(t *testing.T) {
 	closeDigest := sha256.Sum256(raw)
 	transitionName, _ := ReceiptGroupFileName(secondOpen.GroupID, "transition")
 	transitionPath := filepath.Join(dir, transitionName)
-	transitionRaw, err := os.ReadFile(transitionPath)
+	transitionRaw, err := os.ReadFile(transitionPath) // #nosec G304 -- transitionPath is under this test's temporary directory.
 	if err != nil {
 		t.Fatal(err)
 	}

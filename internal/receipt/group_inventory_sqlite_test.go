@@ -71,11 +71,11 @@ func TestBatchIndexCheckRejectsUnlistedSessionClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
-			if _, err := db.Exec(`CREATE TABLE claims (session TEXT NOT NULL, group_id TEXT NOT NULL)`); err != nil {
+			if _, err := db.ExecContext(context.Background(), `CREATE TABLE claims (session TEXT NOT NULL, group_id TEXT NOT NULL)`); err != nil {
 				t.Fatal(err)
 			}
 			for _, session := range tc.sessions {
-				if _, err := db.Exec(`INSERT INTO claims(session, group_id) VALUES (?, ?)`, session, open.GroupID); err != nil {
+				if _, err := db.ExecContext(context.Background(), `INSERT INTO claims(session, group_id) VALUES (?, ?)`, session, open.GroupID); err != nil {
 					t.Fatal(err)
 				}
 			}

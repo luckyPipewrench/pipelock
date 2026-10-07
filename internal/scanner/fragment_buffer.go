@@ -920,8 +920,8 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	// Image excision splices decoded bytes into the scanned text, so match
 	// offsets no longer line up with fragment ranges. Map positions back
 	// through the removed image spans instead.
-	if exciseImagesRetainingDecodedForDLP(text) != text {
-		return imageSplicedFragmentMatches(ctx, sc, text, ranges, result.Matches)
+	if excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true); len(removed) > 0 {
+		return imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, result.Matches)
 	}
 	complete := completeFragmentOccurrences(ctx, sc, ranges)
 	patternSet := make(map[string]struct{}, len(result.Matches))
@@ -1039,8 +1039,7 @@ type fragmentOccurrence struct {
 // that maps inside one fragment is blanked in place and the window rescanned,
 // so a whole copy cannot hide a split copy. A match in the decoded image bytes,
 // or one without a raw position, has no original location and is reported.
-func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, text string, ranges []fragmentRange, joined []TextDLPMatch) []DLPMatch {
-	excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true)
+func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, decoded string, removed []textByteSpan, ranges []fragmentRange, joined []TextDLPMatch) []DLPMatch {
 	// Scanner spans are in DLP-normalized coordinates. If normalizing the
 	// surrounding text would move bytes, positions cannot be trusted, so
 	// every joined rule is reported without attribution.
@@ -1104,7 +1103,9 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, text string, 
 				})
 				break
 			}
-			if !maskFragmentOccurrence(masked, span.ByteStart, span.ByteEnd) {
+			// Blank only the first byte: the match no longer starts there, but
+			// an overlapping occurrence that crosses a boundary keeps its bytes.
+			if !maskFragmentOccurrence(masked, span.ByteStart, span.ByteStart+1) {
 				matches = append(matches, DLPMatch{PatternName: name})
 				break
 			}

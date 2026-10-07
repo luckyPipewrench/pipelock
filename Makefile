@@ -52,7 +52,7 @@ test-runtime-critical:
 	scripts/run-race-test.sh --packages "./internal/config ./internal/cli ./internal/mcp ./internal/proxy"
 
 # Test shards mirror CI (scripts/ci_test_packages.py): the three heavy package
-# trees (proxy and scanner each split by test name into two sub-shards, and mcp)
+# trees (proxy, scanner and mcp, each split by test name into two sub-shards)
 # plus three balanced rest shards. Their union is the same test set as
 # `make test`. The proxy sub-shards run their two packages sequentially to match
 # CI's peak-memory cap. Use these to reproduce one CI shard locally, or
@@ -67,7 +67,7 @@ FORCE:
 test-shard-%: FORCE
 	scripts/run-race-test.sh --shard $*
 
-# Run one CI-equivalent enterprise shard, e.g. `make test-shard-enterprise-mcp`.
+# Run one CI-equivalent enterprise shard, e.g. `make test-shard-enterprise-mcp-0`.
 test-shard-enterprise-%: FORCE
 	scripts/run-race-test.sh --tags enterprise --shard $*
 

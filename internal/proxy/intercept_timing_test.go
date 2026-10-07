@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -332,5 +334,34 @@ func TestInterceptTiming_ResponseBeforeWriteCallbackStillReachedUpstream(t *test
 	}
 	if _, ok := e["upstream_ms"]; !ok {
 		t.Fatalf("upstream_ms missing for a request that got a response: %v", e)
+	}
+}
+
+// TestInterceptTiming_RealTransportErrorAfterWriteKeepsUpstreamWait uses the
+// standard library transport against a TLS server that reads the whole
+// request and then hangs up. The transport reports the completed write before
+// it returns the error, so the timing line still carries the upstream wait.
+func TestInterceptTiming_RealTransportErrorAfterWriteKeepsUpstreamWait(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	rt := srv.Client().Transport.(*http.Transport).Clone()
+	rt.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	}
+	rt.DisableKeepAlives = true
+	rt.TLSClientConfig.ServerName = "example.com"
+	t.Cleanup(rt.CloseIdleConnections)
+	e, code := runInterceptTiming(t, timingConfig(), rt, t.Context(), "https://api.vendor.example/a")
+	if code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", code)
+	}
+	if _, ok := e["upstream_ms"]; !ok {
+		t.Fatalf("upstream_ms missing after the request was written: %v", e)
 	}
 }

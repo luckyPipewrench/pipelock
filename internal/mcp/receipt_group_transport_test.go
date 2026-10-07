@@ -24,12 +24,57 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+func TestDeferredResolutionKeepsAdmissionShard(t *testing.T) {
+	opts, rec, dir, shards := newMCPTransportReceiptGroup(t)
+	set := opts.ReceiptGroup.Shards
+	_ = set.Admit(receipt.EmitOpts{})
+	intent := set.Admit(receipt.EmitOpts{
+		ActionID: "deferred-shard-action", Verdict: config.ActionDefer,
+		Transport: opts.Transport, Target: "tools/call", PolicyHash: mcpTestPolicyHash,
+	})
+	if intent.ShardIndex != 1 {
+		t.Fatalf("admission shard = %d, want 1", intent.ShardIndex)
+	}
+	if _, err := opts.emitReceiptDecision(MCPDecision{Receipt: intent, RequireReceipt: true}); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if err := EmitDeferredResolutionReceipt(opts, &log, deferred.Resolution{
+		DeferID: intent.ActionID, ParentActionID: intent.ActionID,
+		ShardIndex: intent.ShardIndex, ShardSelected: intent.ShardSelected,
+		FinalDecision: config.ActionBlock, ResolutionSource: deferred.SourceOperator,
+		Target: "tools/call", Method: "tools/call",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, emitter := range set.Emitters() {
+		if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+			t.Fatal(err)
+		}
+		if err := emitter.EmitTranscriptRoot(emitter.Session()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := set.PublishClose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
+	open, _ := set.Opening()
+	if got := receipt.VerifyReceiptGroup(dir, open.GroupID, []string{open.SignerKey}); got.Verdict != receipt.GroupValid {
+		t.Fatalf("group verdict = %+v", got)
+	}
+}
 
 func newMCPTransportReceiptGroup(t *testing.T) (MCPProxyOpts, *recorder.Recorder, string, []receipt.ReceiptGroupShard) {
 	t.Helper()
@@ -65,7 +110,7 @@ func newMCPTransportReceiptGroup(t *testing.T) (MCPProxyOpts, *recorder.Recorder
 	}, rec, dir, opening.Shards
 }
 
-func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, actionID string, wantShard int) {
+func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.ReceiptGroupShard, actionID string) {
 	t.Helper()
 	for i, shard := range shards {
 		paths, err := filepath.Glob(filepath.Join(dir, "evidence-"+shard.SessionID+"-*.jsonl"))
@@ -85,7 +130,7 @@ func assertMCPTransportReceiptShard(t *testing.T, dir string, shards []receipt.R
 				v2++
 			}
 		}
-		if i == wantShard {
+		if i == 1 {
 			if v1 != 2 || v2 != 2 {
 				t.Fatalf("shard %d action %s: v1=%d v2=%d, want paired decision and outcome", i, actionID, v1, v2)
 			}
@@ -124,7 +169,7 @@ func TestMCPStreamOutcomesKeepAdmissionShard(t *testing.T) {
 			if err := rec.Close(); err != nil {
 				t.Fatal(err)
 			}
-			assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID, 1)
+			assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
 		})
 	}
 }
@@ -147,7 +192,7 @@ func TestMCPContractRefusalKeepsAdmissionShard(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID, 1)
+	assertMCPTransportReceiptShard(t, dir, shards, intent.ActionID)
 }
 
 func TestMCPStreamRequiredOutcomeFailureClasses(t *testing.T) {
@@ -413,7 +458,7 @@ func TestMCPWebSocketOutcomeKeepsAdmissionShard(t *testing.T) {
 	if actionID == "" {
 		t.Fatal("missing WebSocket intent")
 	}
-	assertMCPTransportReceiptShard(t, dir, shards, actionID, 1)
+	assertMCPTransportReceiptShard(t, dir, shards, actionID)
 }
 
 func TestMCPGETSSEIncompleteOutcomeUsesSelectedShard(t *testing.T) {

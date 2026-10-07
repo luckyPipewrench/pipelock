@@ -1430,16 +1430,18 @@ func ForwardScannedInput(
 			argDigest := argsDigest(deferToolArgs)
 			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
-				DeferID:    actionID,
-				ActionID:   actionID,
-				Target:     heldToolName,
-				Reason:     reasonStr,
-				Surface:    opts.Transport,
-				Method:     verdict.Method,
-				SizeBytes:  len(heldLine),
-				RulePolicy: policyVerdict.ResolutionPolicy,
-				Payload:    append([]byte(nil), heldLine...),
-				ArgDigest:  argDigest,
+				DeferID:       actionID,
+				ActionID:      actionID,
+				ShardIndex:    receiptShard.ShardIndex,
+				ShardSelected: receiptShard.ShardSelected,
+				Target:        heldToolName,
+				Reason:        reasonStr,
+				Surface:       opts.Transport,
+				Method:        verdict.Method,
+				SizeBytes:     len(heldLine),
+				RulePolicy:    policyVerdict.ResolutionPolicy,
+				Payload:       append([]byte(nil), heldLine...),
+				ArgDigest:     argDigest,
 				Authority: deferred.AuthoritySnapshot{
 					SessionID:         receiptSessionID,
 					SessionIDOriginal: receiptSessionIDOriginal,
@@ -1532,7 +1534,9 @@ func ForwardScannedInput(
 			})
 			if holdErr != nil {
 				errorMessage, emitErr := emitHoldFailureResolution(opts, logW, holdErr, holdFailureResolution{
-					DeferID: actionID,
+					DeferID:       actionID,
+					ShardIndex:    receiptShard.ShardIndex,
+					ShardSelected: receiptShard.ShardSelected,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         receiptSessionID,
 						SessionIDOriginal: receiptSessionIDOriginal,

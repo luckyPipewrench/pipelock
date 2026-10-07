@@ -40,6 +40,8 @@ type DeferredRequest struct {
 	ID                  json.RawMessage
 	IsNotification      bool
 	DeferID             string
+	ShardIndex          int
+	ShardSelected       bool
 	ForwardMessage      []byte
 	ToolName            string
 	BaselineIdentity    string
@@ -220,6 +222,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 			}
 			return
+		}
+		if result.Deferred != nil {
+			result.Deferred.ShardIndex = receiptShard.ShardIndex
+			result.Deferred.ShardSelected = receiptShard.ShardSelected
 		}
 		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
 			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{

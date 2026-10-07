@@ -322,16 +322,18 @@ func RunHTTPProxy(
 			var gateBlock *BlockedRequest
 			receiptSettle := &deferredReceiptSettlement{}
 			holdErr := manager.Hold(deferred.HeldAction{
-				DeferID:    deferredReq.DeferID,
-				ActionID:   deferredReq.DeferID,
-				Target:     deferredReq.ToolName,
-				Reason:     deferredReq.Reason,
-				Surface:    opts.Transport,
-				Method:     deferredReq.Method,
-				SizeBytes:  len(deferredReq.ForwardMessage),
-				RulePolicy: deferredReq.ResolutionPolicy,
-				Payload:    append([]byte(nil), deferredReq.ForwardMessage...),
-				ArgDigest:  deferredReq.ArgDigest,
+				DeferID:       deferredReq.DeferID,
+				ActionID:      deferredReq.DeferID,
+				ShardIndex:    deferredReq.ShardIndex,
+				ShardSelected: deferredReq.ShardSelected,
+				Target:        deferredReq.ToolName,
+				Reason:        deferredReq.Reason,
+				Surface:       opts.Transport,
+				Method:        deferredReq.Method,
+				SizeBytes:     len(deferredReq.ForwardMessage),
+				RulePolicy:    deferredReq.ResolutionPolicy,
+				Payload:       append([]byte(nil), deferredReq.ForwardMessage...),
+				ArgDigest:     deferredReq.ArgDigest,
 				Authority: deferred.AuthoritySnapshot{
 					SessionID:         deferredReq.SessionID,
 					SessionIDOriginal: deferredReq.SessionIDOriginal,
@@ -470,7 +472,9 @@ func RunHTTPProxy(
 			})
 			if holdErr != nil {
 				errorMessage, emitErr := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
-					DeferID: deferredReq.DeferID,
+					DeferID:       deferredReq.DeferID,
+					ShardIndex:    deferredReq.ShardIndex,
+					ShardSelected: deferredReq.ShardSelected,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         deferredReq.SessionID,
 						SessionIDOriginal: deferredReq.SessionIDOriginal,

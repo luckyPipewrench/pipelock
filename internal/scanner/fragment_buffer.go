@@ -1173,8 +1173,12 @@ func spanHoldsRule(ctx context.Context, sc *Scanner, buf []byte, start, end int,
 	if start < 0 || end > len(buf) || start >= end {
 		return false
 	}
+	// The rule must match the whole candidate, not a shorter piece inside it,
+	// or a partial match could stand in for a credential that crosses requests.
+	candidateLen := end - start
 	for _, m := range sc.ScanTextForDLPQuiet(ctx, string(buf[start:end])).Matches {
-		if m.PatternName == rule {
+		span := m.Span()
+		if m.PatternName == rule && span.ViewLabel == ViewDLPNormalized && span.ByteStart == 0 && span.ByteEnd == candidateLen {
 			return true
 		}
 	}

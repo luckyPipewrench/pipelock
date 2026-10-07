@@ -55,3 +55,39 @@ func TestRequiredGroupHeartbeatFailureCancelsAndQuarantinesEveryShard(t *testing
 		}
 	}
 }
+
+func TestRequiredGroupShutdownSealFailureIsReported(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shards, err := receipt.OpenInitialReceiptShardSet(receipt.EmitterConfig{
+		Recorder: rec, PrivKey: key, ConfigHash: strings.Repeat("a", 64), Principal: "local", Actor: "pipelock",
+	}, "proxy", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failures []error
+	stop := startStandaloneReceiptGroupLifecycle(context.Background(), time.Hour, shards, nil, true, func(err error) {
+		failures = append(failures, err)
+	})
+	if len(failures) != 0 {
+		t.Fatalf("healthy start reported failure: %v", failures)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if len(failures) < 3 {
+		t.Fatalf("required shard seals and group close failures were not all reported: %v", failures)
+	}
+	for i, shard := range shards.Emitters() {
+		if shard.HealthError() == nil {
+			t.Fatalf("shard %d stayed healthy after shutdown failure", i)
+		}
+	}
+}

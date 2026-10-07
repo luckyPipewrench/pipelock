@@ -110,8 +110,11 @@ func startStandaloneReceiptLifecycle(
 	return func() {
 		cancel()
 		wg.Wait()
-		if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil && logW != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: receipt shutdown seal failed: %v\n", err)
+		if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil {
+			reportReceiptShutdownFailure(logW, "receipt shutdown seal failed", err, requireReceipts, onRequiredFailure)
+			if requireReceipts {
+				e.MarkUnhealthy(err)
+			}
 		}
 	}
 }
@@ -142,13 +145,28 @@ func startStandaloneReceiptGroupLifecycle(
 		cancel()
 		wg.Wait()
 		for _, shard := range shards.Emitters() {
-			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil && logW != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: receipt shutdown seal failed: %v\n", err)
+			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil {
+				reportReceiptShutdownFailure(logW, "receipt shutdown seal failed", err, requireReceipts, onRequiredFailure)
+				if requireReceipts {
+					shards.MarkUnhealthy(err)
+				}
 			}
 		}
-		if _, err := shards.PublishClose(); err != nil && logW != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: receipt group remains incomplete: %v\n", err)
+		if _, err := shards.PublishClose(); err != nil {
+			reportReceiptShutdownFailure(logW, "receipt group remains incomplete", err, requireReceipts, onRequiredFailure)
+			if requireReceipts {
+				shards.MarkUnhealthy(err)
+			}
 		}
+	}
+}
+
+func reportReceiptShutdownFailure(logW io.Writer, message string, err error, required bool, onRequiredFailure func(error)) {
+	if logW != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: %s: %v\n", message, err)
+	}
+	if required && onRequiredFailure != nil {
+		onRequiredFailure(err)
 	}
 }
 

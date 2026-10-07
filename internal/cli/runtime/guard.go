@@ -223,6 +223,9 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 			return nil
 		},
 	})
+	// Shutdown seals are part of required evidence, so complete them before
+	// deciding whether the child command succeeded.
+	evidence.close()
 	if failure := evidence.requiredFailure.Load(); failure != nil {
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but Guard receipt emission failed: %w", *failure)
 	}

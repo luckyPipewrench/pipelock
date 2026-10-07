@@ -840,7 +840,7 @@ Key-free evidence capture:
   evidence-*.jsonl without requiring a signing key, mirroring
   'pipelock run --capture-output'. Captured tool arguments are DLP-redacted
   unless flight_recorder.redact is set to false.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			dashIdx := cmd.ArgsLenAtDash()
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
 			hasUpstream := upstreamURL != ""
@@ -1364,7 +1364,12 @@ Key-free evidence capture:
 					setRequiredHeartbeatErr,
 				)
 			}
-			defer stopReceiptLifecycle()
+			defer func() {
+				stopReceiptLifecycle()
+				if failure := requiredHeartbeatErr(); failure != nil {
+					runErr = errors.Join(runErr, failure)
+				}
+			}()
 			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 				emitDLPWarn(auditLogger, nil, receiptEmitter, ctx, patternName, severity)
 			})

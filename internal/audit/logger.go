@@ -1710,12 +1710,13 @@ type InterceptTiming struct {
 }
 
 // LogInterceptHTTP logs one TLS-intercepted request with its timing split.
-// duration_ms is the whole request. upstream_ms is the time from handing the
-// request to the upstream transport until response headers arrived or the
-// transport failed; it is absent when no upstream attempt was made or the
-// dial guard refused the destination. The remainder covers request checks,
-// DNS, connecting and sending, and reading, scanning and delivering the body.
-// The url field holds the destination only, never a path or query.
+// duration_ms is the whole request. upstream_ms is the wait for response
+// headers, starting when the request finished sending, or when the connection
+// was ready if the response arrived before the send was reported complete; it
+// is absent when the request was never sent. The remainder covers request
+// checks, DNS and connecting, sending when upstream_ms does not include it,
+// and reading, scanning and delivering the body. The url field holds the
+// destination only, never a path or query.
 func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 	if !l.includeAllowed {
 		return

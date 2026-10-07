@@ -387,7 +387,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 r"[A-Za-z_][A-Za-z0-9_-]*", value) for value in ids), "invalid step ID")
             self.assertEqual(len(ids), len(set(ids)), "duplicate step ID")
             producers = [i for i, step in enumerate(steps)
-                         if step.get("uses", "").split("@", 1)[0].startswith("actions/attest")]
+                         if str(step.get("uses", "")).split("@", 1)[0].lower().startswith("actions/attest")]
             if job_name not in boundaries:
                 self.assertFalse(producers, "attestation producer in an unguarded job")
                 continue
@@ -466,10 +466,12 @@ class TestReleaseArtifacts(unittest.TestCase):
             steps = {step["id"]: step for step in parsed["jobs"][job_name]["steps"] if "id" in step}
             self.assertIn(identifier, steps, "required attestation subject removed")
             step = steps[identifier]
-            action = ("actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e"
-                      if "sbom-path" in inputs else
-                      "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8")
-            self.assertEqual(step.get("uses"), action)
+            # The action identity and SHA pinning are fixed; the pinned commit
+            # is not, so a routine dependency bump of the action stays green.
+            action = "actions/attest-sbom" if "sbom-path" in inputs else "actions/attest-build-provenance"
+            name, _, ref = str(step.get("uses", "")).partition("@")
+            self.assertEqual(name, action)
+            self.assertRegex(ref, r"^[0-9a-f]{40}$", "attestation action must be pinned to a commit SHA")
             self.assertEqual(step.get("with"), inputs)
 
     def test_every_attestation_dependency_is_fail_closed(self) -> None:
@@ -512,7 +514,8 @@ class TestReleaseArtifacts(unittest.TestCase):
             "bundle successful body", "chart successful body", "reordered gates",
             "removed action", "dropped producer and term", "bundle missing always",
             "chart job suppression", "chart gate suppression",
-            "subject moved with coverage",
+            "subject moved with coverage", "mixed-case uncovered producer",
+            "wrong action", "unpinned action",
         ):
             with self.subTest(mutation=label):
                 parsed = copy.deepcopy(original)
@@ -591,6 +594,14 @@ class TestReleaseArtifacts(unittest.TestCase):
                     bundle["if"] = "always() && (steps.attest-release-images.outcome != 'success' || steps.attest-binaries.outcome != 'success')"
                 elif label == "chart gate suppression":
                     chart_gate["continue-on-error"] = True
+                elif label == "mixed-case uncovered producer":
+                    extra["uses"] = extra["uses"].replace("actions/attest", "Actions/Attest")
+                    steps.insert(steps.index(gate), extra)
+                elif label == "wrong action":
+                    producer["uses"] = next(
+                        step for step in steps if step.get("id") == "attest-sbom")["uses"]
+                elif label == "unpinned action":
+                    producer["uses"] = "actions/attest-build-provenance@v4"
                 with self.assertRaises(AssertionError):
                     self._assert_attestation_contract(parsed)
 
@@ -599,6 +610,15 @@ class TestReleaseArtifacts(unittest.TestCase):
         parsed["jobs"]["release-publish"]["steps"].append({
             "id": "attest-binaries", "run": "echo unrelated step",
         })
+        self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_accepts_action_pin_bumps(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        for job in parsed["jobs"].values():
+            for step in job.get("steps", []):
+                action, _, _ = str(step.get("uses", "")).partition("@")
+                if action.startswith("actions/attest"):
+                    step["uses"] = f"{action}@{'0' * 40}"
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_added_covered_producers(self) -> None:

@@ -318,3 +318,28 @@ func TestInterceptTimingWriter_FailedHijackKeepsStatus(t *testing.T) {
 		t.Fatalf("failed hijack recorded as %d", got)
 	}
 }
+
+// retryRT reports two request writes, as a transport retry does.
+type retryRT struct{ gap time.Duration }
+
+func (rt retryRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	trace := httptrace.ContextClientTrace(r.Context())
+	trace.WroteRequest(httptrace.WroteRequestInfo{})
+	select {
+	case <-time.After(rt.gap):
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	trace.WroteRequest(httptrace.WroteRequestInfo{})
+	rec := httptest.NewRecorder()
+	_, _ = rec.WriteString("ok")
+	return rec.Result(), nil
+}
+
+func TestInterceptTiming_RetryKeepsFirstWrite(t *testing.T) {
+	e, _ := runInterceptTiming(t, timingConfig(), retryRT{gap: 150 * time.Millisecond}, t.Context(), "https://api.vendor.example/a")
+	up, ok := e["upstream_ms"].(float64)
+	if !ok || up < 150 {
+		t.Fatalf("upstream_ms = %v, want the wait from the first write (>= 150)", e["upstream_ms"])
+	}
+}

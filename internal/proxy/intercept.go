@@ -1997,7 +1997,9 @@ func newInterceptHandler(
 		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			WroteRequest: func(info httptrace.WroteRequestInfo) {
 				if info.Err == nil {
-					wroteAt.Store(int64(time.Since(base)) + 1)
+					// A retried request reports a write per attempt; the
+					// wait runs from the first one.
+					wroteAt.CompareAndSwap(0, int64(time.Since(base))+1)
 					reachedUpstream.Store(true)
 				}
 			},

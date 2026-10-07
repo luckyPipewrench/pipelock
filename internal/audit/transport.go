@@ -72,8 +72,8 @@ func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 	}
 	e := newLogEntry(l.zl.Info(), EventInterceptHTTP).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
@@ -93,14 +93,15 @@ func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 }
 
 // LogForwardHTTP logs a forward proxy HTTP request (absolute-URI).
+// URL and target fields retain only the destination, never request content.
 func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
@@ -118,10 +119,11 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 
 // LogRedirect logs an observed redirect before target admission. The target
 // may be refused or returned to a forward client without being dispatched.
+// Both URLs retain only the destination because admission has not checked them.
 func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agent string, hop int) {
 	e := newLogEntry(l.zl.Info(), EventRedirect).
-		str("original_url", originalURL).
-		str("redirect_url", redirectURL).
+		str("original_url", dropURLContentSegments(originalURL, false)).
+		str("redirect_url", dropURLContentSegments(redirectURL, false)).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
 		agentField(agent, string(envelope.ActorAuthUnknown)).

@@ -2274,8 +2274,8 @@ func TestLogForwardHTTP_JSONFormat(t *testing.T) {
 	if entry["method"] != testMethodGet {
 		t.Errorf("expected method=GET, got %v", entry["method"])
 	}
-	if entry["url"] != "http://example.com/path" {
-		t.Errorf("expected url=http://example.com/path, got %v", entry["url"])
+	if entry["url"] != "http://example.com" {
+		t.Errorf("expected url=http://example.com, got %v", entry["url"])
 	}
 	statusCode, ok := entry["status_code"].(float64)
 	if !ok || statusCode != 200 {
@@ -4037,8 +4037,8 @@ func TestEmit_LogForwardHTTP(t *testing.T) {
 	if ev.Type != string(EventForwardHTTP) {
 		t.Fatalf("type = %q, want %s", ev.Type, EventForwardHTTP)
 	}
-	if ev.Fields["url"] != "http://example.com/path" {
-		t.Errorf("fields[url] = %v, want http://example.com/path", ev.Fields["url"])
+	if ev.Fields["url"] != "http://example.com" {
+		t.Errorf("fields[url] = %v, want http://example.com", ev.Fields["url"])
 	}
 	if ev.Fields["status_code"] != 200 {
 		t.Errorf("fields[status_code] = %v, want 200", ev.Fields["status_code"])

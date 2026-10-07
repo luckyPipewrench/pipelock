@@ -34,10 +34,10 @@ func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, re
 		}
 		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
-			fields["client_ip"] = clientIP
+			fields["client_ip"] = e.fields["client_ip"]
 		}
 		if requestID != "" {
-			fields["request_id"] = requestID
+			fields["request_id"] = e.fields["request_id"]
 		}
 		l.emitEvent(string(EventSessionAnomaly), fields)
 	}
@@ -59,16 +59,16 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 		// Emit fields: omit client_ip and request_id when empty.
 		fields := map[string]any{
 			"session": e.fields["session"],
-			"from":    from,
-			"to":      to,
+			"from":    e.fields["from"],
+			"to":      e.fields["to"],
 			"score":   score,
 		}
 		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
-			fields["client_ip"] = clientIP
+			fields["client_ip"] = e.fields["client_ip"]
 		}
 		if requestID != "" {
-			fields["request_id"] = requestID
+			fields["request_id"] = e.fields["request_id"]
 		}
 		l.emitEventWithSeverity(emit.EscalationSeverity(to), string(EventAdaptiveEscalation), fields)
 	}
@@ -134,18 +134,18 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 		}
 		fields := map[string]any{
 			"session":          e.fields["session"],
-			"escalation_level": level,
-			"from_action":      fromAction,
-			"to_action":        toAction,
-			"scanner":          scanner,
+			"escalation_level": e.fields["escalation_level"],
+			"from_action":      e.fields["from_action"],
+			"to_action":        e.fields["to_action"],
+			"scanner":          e.fields["scanner"],
 			"severity":         derivedSev,
 		}
 		copyRemediationHint(fields, e.fields)
 		if clientIP != "" {
-			fields["client_ip"] = clientIP
+			fields["client_ip"] = e.fields["client_ip"]
 		}
 		if requestID != "" {
-			fields["request_id"] = requestID
+			fields["request_id"] = e.fields["request_id"]
 		}
 		l.emitEventWithSeverity(sev, string(EventAdaptiveUpgrade), fields)
 	}

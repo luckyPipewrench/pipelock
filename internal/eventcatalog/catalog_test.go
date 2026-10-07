@@ -31,6 +31,9 @@ func TestEveryDeclaredEventHasDescriptor(t *testing.T) {
 			return true
 		}
 		declarations++
+		if len(spec.Values) != 1 {
+			t.Fatalf("%s must declare exactly one literal name", spec.Names[0].Name)
+		}
 		literal, ok := spec.Values[0].(*ast.BasicLit)
 		if !ok {
 			t.Fatalf("%s must declare a literal name", spec.Names[0].Name)

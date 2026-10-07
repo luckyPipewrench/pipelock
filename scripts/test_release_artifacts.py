@@ -413,6 +413,16 @@ class TestReleaseArtifacts(unittest.TestCase):
                                 "required subject moved or removed from its boundary")
                 gate = steps[position]
                 self.assertIs(gate.get("continue-on-error", False), False)
+                # Step settings override job defaults, which override workflow
+                # defaults. A custom shell can ignore even a failing run body.
+                workflow_shell = parsed.get("defaults", {}).get("run", {}).get("shell")
+                job_shell = job.get("defaults", {}).get("run", {}).get("shell", workflow_shell)
+                shell = gate.get("shell", job_shell)
+                if shell is None:
+                    self.assertRegex(str(job.get("runs-on", "")), r"^ubuntu-(latest|[0-9]+\.[0-9]+)(-arm)?$",
+                                     "implicit gate shell requires an Ubuntu runner")
+                else:
+                    self.assertIn(shell, ("bash", "sh"), "completion gate must use bash or sh")
                 condition = " ".join(gate.get("if", "").split())
                 if condition.startswith("${{") and condition.endswith("}}"):
                     condition = condition[3:-2].strip()
@@ -624,6 +634,47 @@ class TestReleaseArtifacts(unittest.TestCase):
         parsed["jobs"]["release-publish"]["steps"].append({
             "id": "attest-binaries", "run": "echo unrelated step",
         })
+        self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_checks_effective_gate_shell(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        for job_name, gate_name in (
+            ("release-build", "Verify attestation"),
+            ("release-build", "Verify Kubernetes image digest bundle attestation"),
+            ("release-attest-chart", "Verify Helm chart attestation"),
+        ):
+            for scope in ("step", "job", "workflow"):
+                for shell in ("bash", "sh", "true {0}"):
+                    with self.subTest(boundary=gate_name, scope=scope, shell=shell):
+                        parsed = copy.deepcopy(original)
+                        job = parsed["jobs"][job_name]
+                        gate = next(step for step in job["steps"] if step.get("name") == gate_name)
+                        if scope == "step":
+                            gate["shell"] = shell
+                        else:
+                            owner = job if scope == "job" else parsed
+                            owner["defaults"] = {"run": {"shell": shell}}
+                        if shell == "true {0}":
+                            with self.assertRaisesRegex(AssertionError, "must use bash or sh"):
+                                self._assert_attestation_contract(parsed)
+                        else:
+                            self._assert_attestation_contract(parsed)
+        parsed = copy.deepcopy(original)
+        parsed["jobs"]["release-build"]["runs-on"] = "windows-latest"
+        with self.assertRaisesRegex(AssertionError, "implicit gate shell"):
+            self._assert_attestation_contract(parsed)
+
+    def test_attestation_gate_shell_overrides_follow_workflow_precedence(self) -> None:
+        parsed = yaml.safe_load(self.workflow)
+        parsed["defaults"] = {"run": {"shell": "true {0}"}}
+        for job in parsed["jobs"].values():
+            job["defaults"] = {"run": {"shell": "bash"}}
+        self._assert_attestation_contract(parsed)
+        for job in parsed["jobs"].values():
+            job["defaults"] = {"run": {"shell": "true {0}"}}
+            for step in job.get("steps", []):
+                if step.get("name", "").startswith("Verify"):
+                    step["shell"] = "sh"
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_action_pin_bumps(self) -> None:

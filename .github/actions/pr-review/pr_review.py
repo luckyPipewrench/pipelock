@@ -2747,9 +2747,12 @@ def cross_file_evidence(
                     root, _definition_pattern(term), binding.head_sha, extended=True
                 )
                 if definition_failed:
-                    return "", True
-                lines = [*lines, *definition_lines]
-                search_truncated = search_truncated or definition_truncated
+                    # The literal hits are still good evidence; mark the
+                    # missing definition instead of discarding them.
+                    search_output_truncated = True
+                else:
+                    lines = [*lines, *definition_lines]
+                    search_truncated = search_truncated or definition_truncated
             search_output_truncated = search_output_truncated or search_truncated
             for raw in lines:
                 match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
@@ -2952,10 +2955,12 @@ def requested_repository_evidence(
                     deadline=evidence_deadline,
                     extended=True,
                 )
-                failed = failed or definition_failed
-                truncated = truncated or definition_truncated
-                known = set(definition_lines)
-                lines = [*definition_lines, *(hit for hit in lines if hit not in known)]
+                if definition_failed:
+                    truncated = True
+                else:
+                    truncated = truncated or definition_truncated
+                    known = set(definition_lines)
+                    lines = [*definition_lines, *(hit for hit in lines if hit not in known)]
             if failed:
                 piece = f"<requested-search-unavailable: {request.search}>"
                 unavailable = True

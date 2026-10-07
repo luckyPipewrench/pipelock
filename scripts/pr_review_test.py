@@ -2726,6 +2726,31 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         # bash's keyword form with no parentheses
         self.assertEqual(pr_review._definition_end(["function helper {", "  echo hi", "}", "next"], 0), (3, False))
 
+    def test_failed_definition_search_keeps_literal_hits(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        finding = pr_review.Finding("medium", "caller.go", 1, "helper incomplete", "missing body", "check helper")
+        hits = [f"{binding.head_sha}:helper.go:1:helper"]
+
+        def grep(root, term, treeish, deadline=None, extended=False):
+            return ([], False, True) if extended else (hits, False, False)
+
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
+            pr_review, "_bounded_git_grep", side_effect=grep
+        ), mock.patch.object(pr_review, "_read_local_file", return_value="helper"), mock.patch.object(
+            pr_review, "_read_commit_file", return_value="helper"
+        ):
+            evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
+            self.assertFalse(failed)
+            self.assertIn("helper.go:1: helper", evidence)
+            self.assertIn("use unresolved", evidence)
+            decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(search="helper"),))}
+            requested, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertTrue(unavailable)
+        self.assertIn("helper.go:1: helper", requested)
+        self.assertNotIn("requested-search-unavailable", requested)
+
     def test_windows_never_merge_backwards(self) -> None:
         windows = pr_review._evidence_windows([(0, "a.go", 100, "x"), (0, "a.go", 10, "y")])
         self.assertEqual(windows, [("a.go", [100]), ("a.go", [10])])

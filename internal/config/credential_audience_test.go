@@ -202,37 +202,6 @@ suppress:
 	}
 }
 
-func TestValidate_CredentialAudienceWideningControlsAreActionable(t *testing.T) {
-	const pattern = "OpenAI API Key"
-	tests := []struct {
-		name      string
-		configure func(*Config)
-		want      string
-	}{
-		{
-			name: "pattern exemption",
-			configure: func(cfg *Config) {
-				for i := range cfg.DLP.Patterns {
-					if cfg.DLP.Patterns[i].Name == pattern {
-						cfg.DLP.Patterns[i].ExemptDomains = []string{"api.attacker.example"}
-					}
-				}
-			},
-			want: "delete dlp.patterns",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := Defaults()
-			tt.configure(cfg)
-			err := cfg.Validate()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
 func TestValidate_CredentialAudienceProperSubsetControlsWarn(t *testing.T) {
 	const pattern = "OpenAI API Key"
 	cfg := Defaults()
@@ -384,34 +353,6 @@ func TestCredentialAudienceDomainContains_Direction(t *testing.T) {
 	}
 }
 
-// A legacy exempt_domains entry on an audience-bearing pattern is tolerated only
-// when it is contained by the compiled audience, and an entry that cannot be
-// validated as a domain must not be treated as contained. That is the
-// fail-closed direction: an unparseable value must never widen an audience.
-func TestCredentialAudienceExemptDomainsSubset_Direction(t *testing.T) {
-	audience := []string{"*.anthropic.com"}
-	tests := []struct {
-		name    string
-		domains []string
-		want    bool
-	}{
-		{"no entries is vacuously contained", nil, true},
-		{"exact apex is contained", []string{"anthropic.com"}, true},
-		{"subdomain is contained", []string{"api.anthropic.com"}, true},
-		{"unrelated host is not contained", []string{"relay.internal.example"}, false},
-		{"lookalike suffix is not contained", []string{"notanthropic.com"}, false},
-		{"one contained and one not is not contained", []string{"api.anthropic.com", "evil.example"}, false},
-		{"an invalid domain is refused rather than assumed", []string{"http://api.anthropic.com/x"}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := credentialAudienceExemptDomainsSubset(tt.domains, audience); got != tt.want {
-				t.Fatalf("credentialAudienceExemptDomainsSubset(%v) = %v, want %v", tt.domains, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
 	var builtIn DLPPattern
 	for _, pattern := range DefaultDLPPatterns() {
@@ -436,7 +377,6 @@ func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
 		"regex edit":      func(p *DLPPattern) { p.Regex += "(?:custom)" },
 		"severity change": func(p *DLPPattern) { p.Severity = SeverityCritical },
 		"warn action":     func(p *DLPPattern) { p.Action = ActionWarn },
-		"broad exemption": func(p *DLPPattern) { p.ExemptDomains = []string{"*.vendor.example"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := builtIn
@@ -448,6 +388,17 @@ func TestJWTCredentialAudience_CompiledQueryOnlyMetadata(t *testing.T) {
 				t.Fatalf("customized JWT pattern kept the compiled audience: %#v", patterns[0])
 			}
 		})
+	}
+	// An operator exempt_domains list is not part of the identity: it changes
+	// where the pattern is skipped, never what it matches, so it keeps the
+	// audience and validation warns about it instead.
+	withExemption := builtIn
+	withExemption.CredentialAudienceHosts, withExemption.CredentialAudienceCarrierMask = nil, 0
+	withExemption.ExemptDomains = []string{"*.vendor.example"}
+	exempted := []DLPPattern{withExemption}
+	markBuiltInCredentialAudienceHosts(exempted)
+	if len(exempted[0].CredentialAudienceHosts) != 1 || exempted[0].CredentialAudienceCarrierMask == 0 {
+		t.Fatalf("an exempt_domains list cost the JWT pattern its audience: %#v", exempted[0])
 	}
 	exact := builtIn
 	exact.CredentialAudienceHosts, exact.CredentialAudienceCarrierMask = nil, 0

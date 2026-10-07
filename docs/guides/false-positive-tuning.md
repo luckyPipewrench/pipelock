@@ -96,11 +96,13 @@ dlp:
         - "*.provider.example"
 ```
 
-Built-in GitHub, GitLab, Slack, and other provider-key patterns cannot use
+Built-in GitHub, GitLab, Slack, and other provider-key patterns do not need
 `exempt_domains`: they carry a compiled audience instead (see
 [Provider-Key DLP Coverage](../security/provider-key-dlp-coverage.md)) and are
-already allowed at their issuer on the documented carrier. This also applies to
-the built-in `JWT Token` pattern: its audience accepts only HTTPS URL queries at
+already allowed at their issuer on the documented carrier. An entry never
+extends that audience. A core pattern refuses it, and for the others an entry
+outside the audience is honored for that host only and warns. The built-in
+`JWT Token` pattern's audience accepts only HTTPS URL queries at
 `release-assets.githubusercontent.com`. A custom pattern
 whose regex also matches a core credential, such as `ghp_[A-Za-z0-9]{36}` for
 `GitHub Token`, is still blocked by the immutable core floor, which never

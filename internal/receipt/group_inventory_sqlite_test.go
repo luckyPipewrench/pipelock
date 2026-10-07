@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,5 +85,41 @@ func TestBatchIndexCheckRejectsUnlistedSessionClaim(t *testing.T) {
 				t.Fatalf("batch membership = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigureScratchSQLiteWrapsSetupFailure(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "claims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = configureScratchSQLite(ctx, db)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "configure scratch inventory database") {
+		t.Fatalf("SQLite setup error = %v, want wrapped cancellation", err)
+	}
+}
+
+func TestBatchIndexRemovesScratchDatabaseAfterSetupFailure(t *testing.T) {
+	scratchParent := t.TempDir()
+	t.Setenv("TMPDIR", scratchParent)
+	setupFailure := errors.New("injected scratch setup failure")
+	index, err := newGroupAELBatchIndexWithConfigure(t.TempDir(), nil, func(ctx context.Context, db *sql.DB) error {
+		if _, err := db.ExecContext(ctx, `CREATE TABLE scratch_probe (id INTEGER)`); err != nil {
+			t.Fatal(err)
+		}
+		return setupFailure
+	})
+	if index != nil || !errors.Is(err, setupFailure) {
+		t.Fatalf("failed SQLite index = %v, %v", index, err)
+	}
+	entries, err := os.ReadDir(scratchParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scratch database remained after setup failure: %v", entries)
 	}
 }

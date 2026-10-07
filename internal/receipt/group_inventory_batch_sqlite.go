@@ -27,6 +27,10 @@ type sqliteGroupAELBatchIndex struct {
 }
 
 func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, error) {
+	return newGroupAELBatchIndexWithConfigure(dir, trusted, configureScratchSQLite)
+}
+
+func newGroupAELBatchIndexWithConfigure(dir string, trusted []string, configure func(context.Context, *sql.DB) error) (groupAELBatchIndex, error) {
 	tmp, err := os.MkdirTemp("", "pipelock-group-inventory-")
 	if err != nil {
 		return nil, err
@@ -37,7 +41,7 @@ func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, er
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := configureScratchSQLite(context.Background(), db); err != nil {
+	if err := configure(context.Background(), db); err != nil {
 		_ = db.Close()
 		_ = os.RemoveAll(tmp)
 		return nil, err

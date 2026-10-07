@@ -913,10 +913,13 @@ func TestWebhookSink_ConcurrentEmitCloseAccountsEveryAcceptedEvent(t *testing.T)
 }
 
 func TestWebhookSink_ErrorStringsRedactWebhookURL(t *testing.T) {
-	// A send failure to an unreachable URL carrying a secret query token must
+	// A send failure for a URL carrying a secret query token must
 	// not leak that token into Stats().LastError or the stderr diagnostics.
 	const canary = "supersecret-canary-token"
-	sink := NewWebhookSink("http://127.0.0.1:0/hook?token=" + canary)
+	sink := NewWebhookSink("https://collector.vendor.example/hook?token=" + canary)
+	sink.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, io.ErrUnexpectedEOF
+	})}
 	defer func() { _ = sink.Close() }()
 
 	err := sink.Emit(context.Background(), Event{
@@ -929,6 +932,9 @@ func TestWebhookSink_ErrorStringsRedactWebhookURL(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	waitWebhookStats(t, sink, func(s WebhookStats) bool { return s.Failed >= 1 })
+	if got := sink.Stats().LastError; !strings.Contains(got, io.ErrUnexpectedEOF.Error()) {
+		t.Fatalf("LastError lost the transport error: %q", got)
+	}
 	if got := sink.Stats().LastError; strings.Contains(got, canary) {
 		t.Fatalf("LastError leaked the webhook URL token: %q", got)
 	}

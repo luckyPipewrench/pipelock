@@ -4,18 +4,19 @@
 package audit
 
 import (
+	"github.com/luckyPipewrench/pipelock/internal/eventcatalog"
 	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
 	// EventDLPWarn is emitted when a warn-mode DLP pattern matches.
 	// The match is informational only - no enforcement action is taken.
-	EventDLPWarn EventType = "dlp_warn"
+	EventDLPWarn EventType = eventcatalog.EventDLPWarn
 	// EventDLPCredentialAudienceAllow records the narrow compiled-in exception
 	// for a provider credential sent to its declared audience.
-	EventDLPCredentialAudienceAllow EventType = "dlp_credential_audience_allow" // #nosec G101 -- audit event identifier, not credential material
-	EventDLPIssuerCookieAllow       EventType = "dlp_issuer_cookie_allow"       // #nosec G101 -- audit event identifier, not credential material
-	EventIssuerQueryAllow           EventType = "entropy_issuer_query_allow"
+	EventDLPCredentialAudienceAllow EventType = eventcatalog.EventDLPCredentialAudienceAllow // #nosec G101 -- audit event identifier, not credential material
+	EventDLPIssuerCookieAllow       EventType = eventcatalog.EventDLPIssuerCookieAllow       // #nosec G101 -- audit event identifier, not credential material
+	EventIssuerQueryAllow           EventType = eventcatalog.EventIssuerQueryAllow
 )
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.

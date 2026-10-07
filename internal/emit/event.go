@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/eventcatalog"
 )
 
 // Severity represents the importance level of an audit event.
@@ -78,7 +80,7 @@ func DefaultInstanceID() string {
 
 // EventAdaptiveUpgrade is the event type emitted when adaptive enforcement
 // changes the action applied to a request (e.g. warn → block).
-const EventAdaptiveUpgrade = "adaptive_upgrade"
+const EventAdaptiveUpgrade = eventcatalog.EventAdaptiveUpgrade
 
 // EventMediaExposure is the event type emitted when a media response
 // (image/audio/video) reaches an agent through the proxy. Fires on both
@@ -86,18 +88,18 @@ const EventAdaptiveUpgrade = "adaptive_upgrade"
 // correlate exposure with downstream sensitive actions. Fields include
 // content_type, source URL, size, and whether the response was forwarded
 // or blocked.
-const EventMediaExposure = "media_exposure"
+const EventMediaExposure = eventcatalog.EventMediaExposure
 
 // EventTextStego is the event type emitted when normalize.ZalgoSuspicious
 // reports excessive combining-mark density on a scanned text response. The
 // text is already neutralized by StripCombiningMarks in the scanner
 // pipeline, so this event is an exposure/provenance signal, not a block
 // trigger. Fields include source URL, density, and a snippet hash.
-const EventTextStego = "text_stego_detected"
+const EventTextStego = eventcatalog.EventTextStego
 
 // EventLicenseExpiry is emitted when the active enterprise license enters a
 // renewal warning band.
-const EventLicenseExpiry = "license_expiry"
+const EventLicenseExpiry = eventcatalog.EventLicenseExpiry
 
 // actionBlock is the action string that indicates a request was blocked.
 // Used internally for severity mapping - block actions map to SeverityCritical.
@@ -105,59 +107,59 @@ const actionBlock = "block"
 
 // EventAnomaly is the event-type key for session anomaly findings (suspicious
 // signal classes that warrant operator review but do not necessarily block).
-const EventAnomaly = "anomaly"
+const EventAnomaly = eventcatalog.EventAnomaly
 
 // EventAdaptiveEscalation is the event-type key for adaptive enforcement
 // escalations (e.g. warn → block transitions on accumulated signal).
-const EventAdaptiveEscalation = "adaptive_escalation"
+const EventAdaptiveEscalation = eventcatalog.EventAdaptiveEscalation
 
 // EventAdaptiveRecovery is the event-type key for adaptive enforcement
 // de-escalations after timer-based or clean-request recovery.
-const EventAdaptiveRecovery = "adaptive_recovery"
+const EventAdaptiveRecovery = eventcatalog.EventAdaptiveRecovery
 
 // Event type constants used as keys in EventSeverity. Pulled into named
 // constants so the test suite and OTLP emitter can reference them by name.
 const (
-	EventStartup                = "startup"
-	EventShutdown               = "shutdown"
-	EventAgentListener          = "agent_listener"
-	EventAllowed                = "allowed"
-	EventKillSwitchDeny         = "kill_switch_deny"
-	EventBlocked                = "blocked"
-	EventDLPWarn                = "dlp_warn"
-	EventAddressProtection      = "address_protection"
-	EventBodyDLP                = "body_dlp"
-	EventBodyPromptInjection    = "body_prompt_injection"
-	EventHeaderDLP              = "header_dlp"
-	EventSNIMismatch            = "sni_mismatch"
-	EventTaintDecision          = "taint_decision"
-	EventAirlockEnter           = "airlock_enter"
-	EventAirlockDeny            = "airlock_deny"
-	EventSessionAnomaly         = "session_anomaly"
-	EventMCPUnknownTool         = "mcp_unknown_tool"
-	EventResponseScan           = "response_scan"
-	EventResponseScanSuppressed = "response_scan_suppressed"
-	EventError                  = "error"
-	EventResponseScanExempt     = "response_scan_exempt"
-	EventTunnelClose            = "tunnel_close"
-	EventConfigReload           = "config_reload"
-	EventRedirect               = "redirect"
-	EventForwardHTTP            = "forward_http"
-	EventInterceptHTTP          = "intercept_http"
-	EventToolRedirect           = "tool_redirect"
-	EventWSBlocked              = "ws_blocked"
-	EventWSScan                 = "ws_scan"
-	EventTunnelOpen             = "tunnel_open"
-	EventWSOpen                 = "ws_open"
-	EventWSClose                = "ws_close"
-	EventAirlockDeescalate      = "airlock_deescalate"
-	EventSessionAdmin           = "session_admin"
-	EventShieldRewrite          = "shield_rewrite"
-	EventRuleBundleDegraded     = "rule_bundle_degraded"
-	EventAuthorityVerification  = "authority_verification"
+	EventStartup                = eventcatalog.EventStartup
+	EventShutdown               = eventcatalog.EventShutdown
+	EventAgentListener          = eventcatalog.EventAgentListener
+	EventAllowed                = eventcatalog.EventAllowed
+	EventKillSwitchDeny         = eventcatalog.EventKillSwitchDeny
+	EventBlocked                = eventcatalog.EventBlocked
+	EventDLPWarn                = eventcatalog.EventDLPWarn
+	EventAddressProtection      = eventcatalog.EventAddressProtection
+	EventBodyDLP                = eventcatalog.EventBodyDLP
+	EventBodyPromptInjection    = eventcatalog.EventBodyPromptInjection
+	EventHeaderDLP              = eventcatalog.EventHeaderDLP
+	EventSNIMismatch            = eventcatalog.EventSNIMismatch
+	EventTaintDecision          = eventcatalog.EventTaintDecision
+	EventAirlockEnter           = eventcatalog.EventAirlockEnter
+	EventAirlockDeny            = eventcatalog.EventAirlockDeny
+	EventSessionAnomaly         = eventcatalog.EventSessionAnomaly
+	EventMCPUnknownTool         = eventcatalog.EventMCPUnknownTool
+	EventResponseScan           = eventcatalog.EventResponseScan
+	EventResponseScanSuppressed = eventcatalog.EventResponseScanSuppressed
+	EventError                  = eventcatalog.EventError
+	EventResponseScanExempt     = eventcatalog.EventResponseScanExempt
+	EventTunnelClose            = eventcatalog.EventTunnelClose
+	EventConfigReload           = eventcatalog.EventConfigReload
+	EventRedirect               = eventcatalog.EventRedirect
+	EventForwardHTTP            = eventcatalog.EventForwardHTTP
+	EventInterceptHTTP          = eventcatalog.EventInterceptHTTP
+	EventToolRedirect           = eventcatalog.EventToolRedirect
+	EventWSBlocked              = eventcatalog.EventWSBlocked
+	EventWSScan                 = eventcatalog.EventWSScan
+	EventTunnelOpen             = eventcatalog.EventTunnelOpen
+	EventWSOpen                 = eventcatalog.EventWSOpen
+	EventWSClose                = eventcatalog.EventWSClose
+	EventAirlockDeescalate      = eventcatalog.EventAirlockDeescalate
+	EventSessionAdmin           = eventcatalog.EventSessionAdmin
+	EventShieldRewrite          = eventcatalog.EventShieldRewrite
+	EventRuleBundleDegraded     = eventcatalog.EventRuleBundleDegraded
+	EventAuthorityVerification  = eventcatalog.EventAuthorityVerification
 	// EventDashboardAuthFailed records a rejected dashboard authentication
 	// attempt without including the credential itself.
-	EventDashboardAuthFailed = "dashboard_auth_failed"
+	EventDashboardAuthFailed = eventcatalog.EventDashboardAuthFailed
 )
 
 // instanceIDFallback is the default instance identifier when hostname lookup fails.
@@ -168,64 +170,16 @@ const networkUDP = "udp"
 
 // EventSeverity maps audit event type strings to their severity level.
 // Severity is hardcoded - users control emission threshold, not event severity.
-var EventSeverity = map[string]Severity{
-	// Critical: needs immediate attention
-	EventKillSwitchDeny: SeverityCritical,
-	// Note: chain_detection, adaptive_escalation, and adaptive_upgrade severity
-	// depends on action, handled by the caller via ChainDetectionSeverity /
-	// EscalationSeverity / UpgradeSeverity helpers.
+var EventSeverity = builtinEventSeverities()
 
-	// Warn: suspicious, worth investigating
-	EventBlocked:                SeverityWarn,
-	EventDLPWarn:                SeverityWarn,
-	EventAddressProtection:      SeverityWarn,
-	EventBodyDLP:                SeverityWarn,
-	EventBodyPromptInjection:    SeverityWarn,
-	EventHeaderDLP:              SeverityWarn,
-	EventSNIMismatch:            SeverityWarn,
-	EventTaintDecision:          SeverityWarn,
-	EventAirlockEnter:           SeverityWarn,
-	EventAirlockDeny:            SeverityWarn,
-	EventAnomaly:                SeverityWarn,
-	EventSessionAnomaly:         SeverityWarn,
-	EventMCPUnknownTool:         SeverityWarn,
-	EventWSBlocked:              SeverityWarn,
-	EventResponseScan:           SeverityWarn,
-	EventResponseScanSuppressed: SeverityWarn,
-	EventWSScan:                 SeverityWarn,
-	// adaptive_escalation: default warn; overridden to Critical if escalating to block
-	EventAdaptiveEscalation: SeverityWarn,
-	// adaptive_upgrade: default warn; overridden to Critical if upgrading to block
-	EventAdaptiveUpgrade: SeverityWarn,
-	EventError:           SeverityWarn, // errors are suspicious
-
-	// Warn: security-relevant operational events
-	EventResponseScanExempt:  SeverityWarn, // scanning was skipped; operators need visibility
-	EventMediaExposure:       SeverityWarn, // media reached agent; provenance signal for taint system
-	EventTextStego:           SeverityWarn, // suspicious combining-mark density; exposure signal
-	EventLicenseExpiry:       SeverityWarn, // overridden by caller with threshold-specific severity
-	EventRuleBundleDegraded:  SeverityWarn, // overridden by caller for startup/reload rejection
-	EventDashboardAuthFailed: SeverityWarn,
-
-	// Info: normal operations
-	EventStartup:               SeverityInfo,
-	EventShutdown:              SeverityInfo,
-	EventAllowed:               SeverityInfo,
-	EventTunnelOpen:            SeverityInfo,
-	EventTunnelClose:           SeverityInfo,
-	EventWSOpen:                SeverityInfo,
-	EventWSClose:               SeverityInfo,
-	EventAgentListener:         SeverityInfo,
-	EventAdaptiveRecovery:      SeverityInfo,
-	EventAirlockDeescalate:     SeverityInfo,
-	EventSessionAdmin:          SeverityInfo,
-	EventAuthorityVerification: SeverityInfo,
-	EventShieldRewrite:         SeverityInfo,
-	EventConfigReload:          SeverityInfo,
-	EventRedirect:              SeverityInfo,
-	EventForwardHTTP:           SeverityInfo,
-	EventInterceptHTTP:         SeverityInfo,
-	EventToolRedirect:          SeverityInfo,
+func builtinEventSeverities() map[string]Severity {
+	severities := make(map[string]Severity)
+	for _, descriptor := range eventcatalog.Builtins() {
+		if descriptor.Severity != "" {
+			severities[descriptor.Name] = ParseSeverity(descriptor.Severity)
+		}
+	}
+	return severities
 }
 
 // ChainDetectionSeverity returns the severity for a chain detection event

@@ -9,7 +9,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +270,20 @@ func eventConstantsFromSource(t *testing.T) map[string]string {
 		t.Fatalf("parse event.go: %v", err)
 	}
 
+	catalogFile, err := parser.ParseFile(token.NewFileSet(), "../eventcatalog/catalog.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalogNames := make(map[string]string)
+	ast.Inspect(catalogFile, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if ok && len(spec.Names) == 1 && len(spec.Values) == 1 {
+			if literal, ok := spec.Values[0].(*ast.BasicLit); ok && literal.Kind == token.STRING {
+				catalogNames[spec.Names[0].Name] = strings.Trim(literal.Value, "\"")
+			}
+		}
+		return true
+	})
 	constants := make(map[string]string)
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -289,14 +302,19 @@ func eventConstantsFromSource(t *testing.T) map[string]string {
 				if i >= len(valueSpec.Values) {
 					t.Fatalf("%s must use an explicit string value", name.Name)
 				}
-				lit, ok := valueSpec.Values[i].(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					t.Fatalf("%s must be a string literal event type", name.Name)
+				selector, ok := valueSpec.Values[i].(*ast.SelectorExpr)
+				if !ok {
+					t.Fatalf("%s must alias the event catalog", name.Name)
 				}
-				value, err := strconv.Unquote(lit.Value)
-				if err != nil {
-					t.Fatalf("unquote %s: %v", name.Name, err)
+				qualifier, ok := selector.X.(*ast.Ident)
+				if !ok || qualifier.Name != "eventcatalog" || selector.Sel.Name != name.Name {
+					t.Fatalf("%s must alias its catalog name", name.Name)
 				}
+				value := catalogNames[name.Name]
+				if value == "" {
+					t.Fatalf("%s has no catalog declaration", name.Name)
+				}
+
 				constants[name.Name] = value
 			}
 		}

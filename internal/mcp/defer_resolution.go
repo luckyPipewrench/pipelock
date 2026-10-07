@@ -46,9 +46,15 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	case deferred.SourceKillSwitch:
 		layer = mcpReceiptLayerKillSwitch
 	}
+	var shard receipt.EmitOpts
+	if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+		shard = opts.ReceiptGroup.Shards.Admit(shard)
+	}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:         opts.receiptEmitter(),
 		V2Emitter:       opts.v2ReceiptEmitter(),
+		Group:           opts.ReceiptGroup,
+		Shard:           shard,
 		PolicyHash:      opts.receiptPolicyHash(),
 		Log:             logW,
 		Transport:       opts.Transport,
@@ -63,9 +69,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		Decision:        taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
 		RequireReceipts: opts.requireReceipts(),
 		RequireReceipt:  true,
-		// A resolution receipt must be on disk before the journal entry that
-		// closes the hold: restart recovery, which writes the journal entry
-		// right after, would otherwise leave a hold closed with no receipt.
+		// A resolution must reach disk before its closing journal entry.
 		Durable:           true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,

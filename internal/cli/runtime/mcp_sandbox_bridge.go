@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -29,12 +30,14 @@ import (
 
 type mcpSandboxBridgeStartOptions struct {
 	Context          context.Context
+	Cancel           context.CancelFunc
 	Config           *config.Config
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
+	ReceiptGroup     *mcp.MCPReceiptGroup
 	EnvelopeEmitter  *envelope.Emitter
 }
 
@@ -42,6 +45,7 @@ type startMCPSandboxBridgeFunc func(mcpSandboxBridgeStartOptions) (*mcpSandboxBr
 
 type mcpSandboxBridgeSetupOptions struct {
 	Context          context.Context
+	Cancel           context.CancelFunc
 	GOOS             string
 	Config           *config.Config
 	KillSwitch       *killswitch.Controller
@@ -49,6 +53,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	Metrics          *metrics.Metrics
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
+	ReceiptGroup     *mcp.MCPReceiptGroup
 	EnvelopeEmitter  *envelope.Emitter
 	Stderr           io.Writer
 	LaunchConfig     *sandbox.LaunchConfig
@@ -79,12 +84,14 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 
 	bridge, err := opts.StartBridge(mcpSandboxBridgeStartOptions{
 		Context:          opts.Context,
+		Cancel:           opts.Cancel,
 		Config:           opts.Config,
 		KillSwitch:       opts.KillSwitch,
 		AuditLogger:      opts.AuditLogger,
 		Metrics:          opts.Metrics,
 		ReceiptEmitter:   opts.ReceiptEmitter,
 		V2ReceiptEmitter: opts.V2ReceiptEmitter,
+		ReceiptGroup:     opts.ReceiptGroup,
 		EnvelopeEmitter:  opts.EnvelopeEmitter,
 	})
 	if err != nil {
@@ -97,6 +104,10 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 }
 
 func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {
+	onRequiredFailure, err := bridgeRequiredReceiptFailure(opts.ReceiptGroup, opts.Config.FlightRecorder.RequireReceipts, opts.Cancel)
+	if err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp("", "pl-mcp-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating MCP sandbox bridge dir: %w", err)
@@ -131,16 +142,21 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 		emitDLPWarn(opts.AuditLogger, opts.Metrics, opts.ReceiptEmitter, ctx, patternName, severity)
 	})
 
-	p, err := proxy.New(
-		egressCfg,
-		opts.AuditLogger,
-		bridge.scanner,
-		opts.Metrics,
+	proxyOptions := []proxy.Option{
 		proxy.WithKillSwitch(opts.KillSwitch),
 		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
 		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
 		proxy.WithEnvelopeEmitter(opts.EnvelopeEmitter),
-	)
+	}
+	if opts.ReceiptGroup != nil {
+		groupOption, groupErr := proxy.WithReceiptShardSet(opts.ReceiptGroup.Shards, opts.ReceiptGroup.V2, onRequiredFailure)
+		if groupErr != nil {
+			bridge.Close()
+			return nil, fmt.Errorf("MCP sandbox bridge receipt group: %w", groupErr)
+		}
+		proxyOptions = append(proxyOptions, groupOption)
+	}
+	p, err := proxy.New(egressCfg, opts.AuditLogger, bridge.scanner, opts.Metrics, proxyOptions...)
 	if err != nil {
 		bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge proxy init: %w", err)
@@ -179,6 +195,16 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	}()
 
 	return bridge, nil
+}
+
+func bridgeRequiredReceiptFailure(group *mcp.MCPReceiptGroup, required bool, cancel context.CancelFunc) (func(error), error) {
+	if group == nil || !required {
+		return nil, nil
+	}
+	if cancel == nil {
+		return nil, fmt.Errorf("MCP sandbox bridge required receipt group has no cancellation callback")
+	}
+	return func(error) { cancel() }, nil
 }
 
 func (b *mcpSandboxBridge) SocketPath() string {

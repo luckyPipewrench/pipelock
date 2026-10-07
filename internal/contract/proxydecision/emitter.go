@@ -278,7 +278,7 @@ func (e *Emitter) ResumeAt(seq uint64, prevHash string) {
 // on a nil receiver. The mutex spans the whole build→sign→hash→persist→advance
 // sequence so concurrent calls produce a well-ordered chain; chain state is
 // advanced only after a successful record, so a failed write leaves the chain
-// at its previous position (mirroring the v1 emitter and the shadow emitter).
+// at its previous position. The v1 emitter advances before persistence.
 func (e *Emitter) Emit(d Decision) error {
 	return e.emit(d, false)
 }
@@ -402,7 +402,13 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		recordErr = e.recorder.Record(entry)
 	}
 	if err := recordErr; err != nil {
-		e.healthErr = err
+		// The recorder rejects an oversized serialized line before opening or
+		// writing a file. It consumed no chain position, so another decision
+		// may still be recorded under this emitter. Durability and other write
+		// failures remain sticky because their on-disk outcome can be uncertain.
+		if !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
+			e.healthErr = err
+		}
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
 	}
 	e.chainPrevHash = rcptHash

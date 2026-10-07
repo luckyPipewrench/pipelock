@@ -1273,7 +1273,7 @@ func extractRawReceiptsJSONLBytes(data []byte) ([]Receipt, error) {
 	line := 0
 	for scanner.Scan() {
 		line++
-		raw := bytes.TrimSpace(scanner.Bytes())
+		raw := []byte(recorder.TrimEntryLine(string(scanner.Bytes())))
 		if len(raw) == 0 {
 			continue
 		}

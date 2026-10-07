@@ -854,7 +854,7 @@ func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request
 	}
 	page, err := d.model.Overview(r.Context(), rawAllowedFromContext(r))
 	if err != nil {
-		http.Error(w, "could not build overview", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not build overview")
 		return
 	}
 	page.Nav = navFromContext(r)
@@ -865,6 +865,14 @@ func (d *dashboardHandler) handleOverview(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)
 	_, _ = w.Write(buf.Bytes())
+}
+
+func writeEvidenceReadError(w http.ResponseWriter, err error, fallback string) {
+	if errors.Is(err, errReceiptGroupNeedsVerification) {
+		http.Error(w, "receipt group evidence requires group verification; run pipelock verify-receipt with --chain set to the evidence directory and --key set to a trusted public key", http.StatusConflict)
+		return
+	}
+	http.Error(w, fallback, http.StatusInternalServerError)
 }
 
 func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -878,7 +886,7 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	sessions, err := d.model.Sessions()
 	if err != nil {
-		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read evidence sessions")
 		return
 	}
 
@@ -1187,7 +1195,7 @@ func (d *dashboardHandler) handleTrustKeys(w http.ResponseWriter, r *http.Reques
 	}
 	page, err := d.model.TrustKeys()
 	if err != nil {
-		http.Error(w, "could not audit trust and keys", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not audit trust and keys")
 		return
 	}
 	page.Nav = navFromContext(r)
@@ -1218,7 +1226,7 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 	selected := rest
 	sessions, err := d.model.Sessions()
 	if err != nil {
-		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
+		writeEvidenceReadError(w, err, "could not read evidence sessions")
 		return
 	}
 	d.render(w, r, sessions, selected, rawAllowedFromContext(r))
@@ -1278,7 +1286,7 @@ func (d *dashboardHandler) render(w http.ResponseWriter, r *http.Request, sessio
 	if selected != "" {
 		evidence, err := d.model.Session(selected)
 		if err != nil {
-			http.Error(w, "could not read selected evidence", http.StatusInternalServerError)
+			writeEvidenceReadError(w, err, "could not read selected evidence")
 			return
 		}
 		// Fail closed: strip destinations and signed payloads in Go before

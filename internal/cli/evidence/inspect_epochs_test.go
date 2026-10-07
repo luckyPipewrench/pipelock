@@ -24,6 +24,28 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
+func TestInspectEpochsRefusesReceiptGroupDirectory(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	artifact := filepath.Join(dir, "receipt-group-"+strings.Repeat("a", 32)+"-open.json")
+	if err := os.WriteFile(artifact, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "epochs.json")
+	err = runInspectEpochs(inspectEpochsOutputCommand(&bytes.Buffer{}), inspectEpochsOptions{
+		receiptDir: dir, sessionID: "proxy", publicKey: hex.EncodeToString(pub), outFile: out,
+	})
+	if err == nil || !strings.Contains(err.Error(), "single-session evidence") {
+		t.Fatalf("epoch inspection accepted group evidence: %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("epoch inspection left output: %v", err)
+	}
+}
+
 func TestInspectEpochsWritesDeterministicPinnedBoundaries(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "recorder")

@@ -196,6 +196,9 @@ func logV2EmitFailure(logger *audit.Logger, opts receipt.EmitOpts, err error) {
 
 // emitV2Receipt dual-emits the v2 proxy_decision for opts on the main proxy.
 func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) error {
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		return p.emitGroupV2Receipt(group, opts, false)
+	}
 	return emitV2(&p.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(p.metrics)
 		logV2EmitFailure(p.logger, opts, err)
@@ -203,8 +206,36 @@ func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) error {
 }
 
 func (p *Proxy) emitRequiredV2Receipt(opts receipt.EmitOpts) error {
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		return p.emitGroupV2Receipt(group, opts, true)
+	}
 	return emitRequiredV2(&p.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(p.metrics)
 		logV2EmitFailure(p.logger, opts, err)
 	})
+}
+
+func (p *Proxy) emitGroupV2Receipt(group *receiptGroupRuntime, opts receipt.EmitOpts, required bool) error {
+	emitter, err := group.v2Emitter(opts)
+	if err == nil {
+		var decision proxydecision.Decision
+		var ok bool
+		decision, ok = v2DecisionFromOpts(opts)
+		if !ok {
+			if !required {
+				return nil
+			}
+			err = errors.New("could not derive v2 receipt decision")
+		} else if required {
+			err = emitter.EmitDurable(decision)
+		} else {
+			err = emitter.Emit(decision)
+		}
+	}
+	if err != nil {
+		recordV2ReceiptEmitFailure(p.metrics)
+		logV2EmitFailure(p.logger, opts, err)
+		return fmt.Errorf("%w: %w", errV2ReceiptEmit, err)
+	}
+	return nil
 }

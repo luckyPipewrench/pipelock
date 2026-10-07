@@ -289,7 +289,7 @@ func TestEmitMCPBlockedOutcomeDurableWhenRequired(t *testing.T) {
 			h := newMCPDecisionReceiptHarness(t)
 			h.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
 			var logs strings.Builder
-			emitMCPBlockedOutcomeReceipt(h.v1, h.v2, &logs, receipt.EmitOpts{
+			emitMCPBlockedOutcomeReceipt(h.v1, h.v2, nil, &logs, receipt.EmitOpts{
 				ActionID: "mcp-blocked-outcome-durable", Transport: transportMCPStdio,
 				Target: mcpAllowedTool, MCPMethod: methodToolsCall, ToolName: mcpAllowedTool,
 				PolicyHash: mcpTestPolicyHash, Layer: mcpContractReceiptLayer,

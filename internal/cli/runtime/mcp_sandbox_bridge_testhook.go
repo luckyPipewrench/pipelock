@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
@@ -29,6 +30,7 @@ type mcpSandboxBridgeStartOptions struct {
 	Metrics          *metrics.Metrics
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
+	ReceiptGroup     *mcp.MCPReceiptGroup
 	EnvelopeEmitter  *envelope.Emitter
 }
 
@@ -36,6 +38,7 @@ type startMCPSandboxBridgeFunc func(mcpSandboxBridgeStartOptions) (*mcpSandboxBr
 
 type mcpSandboxBridgeSetupOptions struct {
 	Context          context.Context
+	Cancel           context.CancelFunc
 	GOOS             string
 	Config           *config.Config
 	KillSwitch       *killswitch.Controller
@@ -43,6 +46,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	Metrics          *metrics.Metrics
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
+	ReceiptGroup     *mcp.MCPReceiptGroup
 	EnvelopeEmitter  *envelope.Emitter
 	Stderr           io.Writer
 	LaunchConfig     *sandbox.LaunchConfig

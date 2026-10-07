@@ -90,7 +90,7 @@ func recordCredentialAudienceAllow(logger *audit.Logger, metric *metrics.Metrics
 // way it covers every other allow receipt. With require_receipts off the
 // returned error is always nil; emission stays best-effort (log + metric),
 // matching the historical behavior.
-func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
+func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
 	if p == nil {
 		return nil
 	}
@@ -105,7 +105,11 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 		}
 		return nil
 	}
-	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
+	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -116,7 +120,7 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 		RequestID: requestID,
 		Agent:     agent,
 		Extension: extension,
-	})
+	}, shard))
 	if requireReceipts && emitErr != nil {
 		return emitErr
 	}
@@ -145,9 +149,17 @@ func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.E
 	if e == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
+	emitV1 := credentialAudienceEmitV1(e, cfg)
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+			emitV1 = group.shards.EmitDurable
+		} else {
+			emitV1 = group.shards.Emit
+		}
+	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		credentialAudienceEmitV1(e, cfg),
+		emitV1,
 		p.emitV2Receipt,
 		p.logReceiptEmissionFailure,
 		func(fallback receipt.EmitOpts) {
@@ -161,17 +173,21 @@ func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.E
 // confirmation failure. It still attempts every allow so the audit log and
 // metrics stay complete even though the request is blocked once any one
 // confirmation fails.
-func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string) error {
+func (p *Proxy) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, transport, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
 	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent); err != nil && firstErr == nil {
+		if err := p.recordCredentialAudienceAllow(cfg, ctx, allow, transport, method, target, requestID, agent, shard); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogContext, allow scanner.CredentialAudienceAllow, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
 	if rp == nil {
 		return nil
 	}
@@ -186,7 +202,11 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 		}
 		return nil
 	}
-	emitErr := rp.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
+	emitErr := rp.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionAllow,
 		Layer:     credentialAudienceReceiptExtensionKey,
@@ -197,7 +217,7 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 		RequestID: requestID,
 		Agent:     agent,
 		Extension: extension,
-	})
+	}, shard))
 	if requireReceipts && emitErr != nil {
 		return emitErr
 	}
@@ -218,10 +238,21 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 	if e == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
+	emitV1 := credentialAudienceEmitV1(e, cfg)
+	if group := rp.receiptGroup(); group != nil {
+		if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+			emitV1 = group.shards.EmitDurable
+		} else {
+			emitV1 = group.shards.Emit
+		}
+	}
 	return emitCredentialAudienceReceiptWithFallback(
 		opts,
-		credentialAudienceEmitV1(e, cfg),
+		emitV1,
 		func(v2Opts receipt.EmitOpts) error {
+			if group := rp.receiptGroup(); group != nil {
+				return rp.owner.emitGroupV2Receipt(group, v2Opts, false)
+			}
 			return emitV2(rp.v2EmitterPtr, v2Opts, func(err error) {
 				recordV2ReceiptEmitFailure(rp.metrics)
 				logV2EmitFailure(rp.logger, v2Opts, err)
@@ -287,10 +318,14 @@ func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts rec
 // recordCredentialAudienceAllows records every distinct allow for the reverse
 // proxy and, when flight_recorder.require_receipts is on, returns the first
 // receipt confirmation failure. See (*Proxy).recordCredentialAudienceAllows.
-func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string) error {
+func (rp *ReverseProxyHandler) recordCredentialAudienceAllows(cfg *config.Config, ctx audit.LogContext, allows []scanner.CredentialAudienceAllow, method, target, requestID, agent string, selected ...receipt.EmitOpts) error {
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
 	var firstErr error
 	for _, allow := range uniqueCredentialAudienceAllows(allows) {
-		if err := rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent); err != nil && firstErr == nil {
+		if err := rp.recordCredentialAudienceAllow(cfg, ctx, allow, method, target, requestID, agent, shard); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

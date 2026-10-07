@@ -10,10 +10,57 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// buildServerReceiptShardGroup is the startup construction path below the
+// public receipt_chains gate. Keeping it callable here lets tests exercise
+// group publication and v1/v2 pairing before that gate is lifted.
+func buildServerReceiptShardGroup(template receipt.EmitterConfig, count int, keyPath string, deferOpen bool, onRequiredFailure ...func(error)) (*receipt.ReceiptShardSet, []proxy.Option, error) {
+	if template.Recorder == nil {
+		return nil, nil, fmt.Errorf("receipt group requires a persistent recorder")
+	}
+	previousID, hasPrevious, err := receipt.FindTerminalReceiptGroup(template.Recorder.Dir(), recorder.DefaultSessionBase)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find previous receipt group: %w", err)
+	}
+	var shards *receipt.ReceiptShardSet
+	if hasPrevious {
+		if deferOpen {
+			shards, err = receipt.PrepareSuccessorReceiptShardSet(template, recorder.DefaultSessionBase, count, 0, previousID)
+		} else {
+			shards, err = receipt.OpenSuccessorReceiptShardSet(template, recorder.DefaultSessionBase, count, 0, previousID)
+		}
+	} else if deferOpen {
+		shards, err = receipt.PrepareInitialReceiptShardSet(template, recorder.DefaultSessionBase, count, 0)
+	} else {
+		shards, err = receipt.OpenInitialReceiptShardSet(template, recorder.DefaultSessionBase, count, 0)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	open, _ := shards.Opening()
+	v2 := make([]*proxydecision.Emitter, open.ShardCount)
+	for i, shard := range open.Shards {
+		v2[i] = proxydecision.NewEmitter(proxydecision.EmitterConfig{
+			Recorder: template.Recorder, Signer: proxydecision.NewKeyedSigner(template.PrivKey),
+			Sanitize:  proxydecision.SanitizeFromRedactor(template.Recorder.ReceiptRedactor()),
+			Principal: template.Principal, Actor: template.Actor, Session: shard.SessionID,
+		})
+	}
+	groupOption, err := proxy.WithReceiptShardSet(shards, v2, onRequiredFailure...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pair receipt shard emitters: %w", err)
+	}
+	return shards, []proxy.Option{
+		proxy.WithSession(open.Shards[open.ProcessShardIndex].SessionID),
+		groupOption,
+		proxy.WithReceiptKeyPath(keyPath),
+	}, nil
+}
 
 // transcriptRootSessionID is the legacy session base. Production code no
 // longer labels anything with it directly: each process acquires its own run
@@ -95,11 +142,22 @@ func (s *Server) liveReceiptEmitterReady() bool {
 // the clean-exit case - a SIGKILL still truncates the tail with no root, which
 // needs an external/periodic anchor (separate, deferred work).
 func (s *Server) sealTranscriptRoot() {
+	if s.receiptShardSet != nil {
+		for _, shard := range s.receiptShardSet.Emitters() {
+			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil && s.logger != nil {
+				s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), err)
+			}
+		}
+		if _, err := s.receiptShardSet.PublishClose(); err != nil && s.logger != nil {
+			s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "receipt_group_close"), err)
+		}
+		return
+	}
 	e := s.liveReceiptEmitter()
 	if e == nil {
 		return
 	}
-	if err := emitSessionCloseAndTranscriptRoot(e, e.Session(), sessionCloseReasonGracefulShutdown); err != nil {
+	if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil {
 		if s.logger != nil {
 			s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), err)
 		}

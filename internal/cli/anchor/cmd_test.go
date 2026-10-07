@@ -26,6 +26,28 @@ import (
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+func TestAnchorReceiptsRefusesGroupedDirectory(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	artifact := filepath.Join(dir, "receipt-group-"+strings.Repeat("a", 32)+"-open.json")
+	if err := os.WriteFile(artifact, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "bundle.json")
+	err = runReceipts(&bytes.Buffer{}, dir, receiptsOptions{
+		keys: []string{hex.EncodeToString(pub)}, output: out, asDir: true, sessionID: "proxy",
+	})
+	if err == nil || !strings.Contains(err.Error(), "grouped evidence") {
+		t.Fatalf("one-chain anchor accepted group evidence: %v", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("group anchor wrote output: %v", err)
+	}
+}
+
 func cliReceiptJSONL(t *testing.T) (path string, keyHex string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

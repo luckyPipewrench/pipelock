@@ -134,7 +134,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
+	selectedReceiptShard := p.admitReceiptShard()
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -259,7 +262,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
-	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
@@ -565,7 +568,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    targetCtx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
 		},
 	}
 	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
@@ -683,7 +686,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowReceipt := receipt.EmitOpts{
+	allowReceipt := withReceiptShard(receipt.EmitOpts{
 		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: "connect",
@@ -691,7 +694,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Target:    connectReceiptTarget,
 		RequestID: requestID,
 		Agent:     agent,
-	}
+	}, selectedReceiptShard)
 	if connectGate.HasContractContext() {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
@@ -727,7 +730,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &ssrfErr) {
 			p.logger.LogBlocked(targetCtx, scanner.ScannerSSRF, ssrfErr.logDetail())
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			if p.emitRecordedReceipt(receipt.EmitOpts{
+			if p.emitRecordedReceipt(withReceiptShard(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     scanner.ScannerSSRF,
@@ -737,7 +740,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				Target:    connectReceiptTarget,
 				RequestID: requestID,
 				Agent:     agent,
-			}) {
+			}, selectedReceiptShard)) {
 				blockreason.SetRecordedReceipt(w.Header(), actionID)
 			}
 			writeBlockedError(w, ssrfErr.blockInfo(), "CONNECT blocked: "+ssrfErr.detail, http.StatusForbidden)
@@ -983,6 +986,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
+	selectedReceiptShard := p.admitReceiptShard()
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -1000,6 +1005,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
@@ -1089,7 +1095,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -1537,7 +1543,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
 			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent)
+				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
 			},
 		}
 		applyContentEntropyConfig(&bodyReq, cfg)
@@ -2023,7 +2029,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
 		},
 	}
 	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
@@ -2126,6 +2132,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
+	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
 	if forwardAirlockSess != nil {
 		ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, forwardAirlockSess.key)
@@ -2201,7 +2208,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	forwardAllowReceipt := withForwardRedaction(receipt.EmitOpts{
+	forwardAllowReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             forwardReceiptVerdict,
 		Layer:               forwardReceiptLayer,
@@ -2220,7 +2227,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		TaintDecision:       forwardTaint.Result.Decision.String(),
 		TaintDecisionReason: forwardTaint.Result.Reason,
 		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-	})
+	}), selectedReceiptShard)
 	if forwardGate.HasContractContext() {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}

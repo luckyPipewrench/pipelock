@@ -259,6 +259,9 @@ func sessionReceiptTail(files []string) (*Receipt, error) {
 			return entry.Type == recorderEntryType
 		})
 		if readErr != nil {
+			if i+1 < len(files) && errors.Is(readErr, recorder.ErrTornTail) {
+				return nil, fmt.Errorf("receipt group session has a torn segment: %s", filepath.Base(files[i]))
+			}
 			return nil, fmt.Errorf("reading evidence file %s: %w", filepath.Base(files[i]), readErr)
 		}
 		if found {

@@ -369,8 +369,12 @@ type MCPProxyOpts struct {
 	// parity with ReceiptEmitter. Nil-safe (no-op when nil).
 	V2ReceiptEmitter   *proxydecision.Emitter
 	V2ReceiptEmitterFn func() *proxydecision.Emitter
-	PolicyHash         string
-	PolicyHashFn       func() string
+	// ReceiptGroup routes N>1 decisions to paired v1/v2 shard writers.
+	// Per-action callers select a shard before emission and retain it for
+	// asynchronous outcomes. Nil preserves the legacy single-chain path.
+	ReceiptGroup *MCPReceiptGroup
+	PolicyHash   string
+	PolicyHashFn func() string
 
 	DeferManager   *deferred.Manager
 	DeferManagerFn func() *deferred.Manager
@@ -722,6 +726,20 @@ func (o MCPProxyOpts) v2ReceiptEmitter() *proxydecision.Emitter {
 		return o.V2ReceiptEmitterFn()
 	}
 	return o.V2ReceiptEmitter
+}
+
+func (o MCPProxyOpts) emitReceiptDecision(d MCPDecision) ([]byte, error) {
+	if o.ReceiptGroup != nil {
+		if o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
+			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)
+		}
+		if o.requireReceipts() && d.Receipt.ActionID != "" {
+			d.RequireReceipt = true
+		}
+		d.RequiredMode = o.requireReceipts()
+		return EmitMCPGroupDecision(*o.ReceiptGroup, nil, d)
+	}
+	return EmitMCPDecision(o.receiptEmitter(), o.v2ReceiptEmitter(), nil, d)
 }
 
 func (o MCPProxyOpts) receiptPolicyHash() string {

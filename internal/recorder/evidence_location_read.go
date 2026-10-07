@@ -37,6 +37,20 @@ func validateEvidenceLocation(location EvidenceLocation) error {
 	return nil
 }
 
+// OpenEvidenceDirectory opens an evidence directory through the platform's
+// secure traversal, including its unsupported-platform access check.
+func OpenEvidenceDirectory(dir string) (*os.File, error) {
+	return openEvidenceLocationDirectory(EvidenceLocation{Root: dir, Dir: dir})
+}
+
+// OpenEvidenceFile opens an evidence artifact through the same directory
+// traversal and regular-file checks as the session evidence reader.
+func OpenEvidenceFile(path string) (*os.File, os.FileInfo, error) {
+	clean := filepath.Clean(path)
+	dir := filepath.Dir(clean)
+	return openEvidenceLocationFile(EvidenceLocation{Root: dir, Dir: dir}, filepath.Base(clean))
+}
+
 func readEvidenceLocationDirectoryEntries(location EvidenceLocation, maxEntries int) ([]os.DirEntry, bool, error) {
 	directory, err := openEvidenceLocationDirectory(location)
 	if err != nil {

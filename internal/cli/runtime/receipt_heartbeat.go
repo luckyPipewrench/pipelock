@@ -110,17 +110,53 @@ func startStandaloneReceiptLifecycle(
 	return func() {
 		cancel()
 		wg.Wait()
-		if err := emitSessionCloseAndTranscriptRoot(e, e.Session(), sessionCloseReasonGracefulShutdown); err != nil && logW != nil {
+		if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil && logW != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: receipt shutdown seal failed: %v\n", err)
 		}
 	}
 }
 
-func emitSessionCloseAndTranscriptRoot(e *receipt.Emitter, sessionID, closeReason string) error {
+func startStandaloneReceiptGroupLifecycle(
+	parent context.Context,
+	interval time.Duration,
+	shards *receipt.ReceiptShardSet,
+	logW io.Writer,
+	requireReceipts bool,
+	onRequiredFailure func(error),
+) func() {
+	if shards == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	var wg sync.WaitGroup
+	for _, shard := range shards.Emitters() {
+		e := shard
+		startReceiptHeartbeat(ctx, &wg, interval, func() *receipt.Emitter { return e }, logW, requireReceipts, func(err error) {
+			shards.MarkUnhealthy(err)
+			if onRequiredFailure != nil {
+				onRequiredFailure(err)
+			}
+		})
+	}
+	return func() {
+		cancel()
+		wg.Wait()
+		for _, shard := range shards.Emitters() {
+			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil && logW != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: receipt shutdown seal failed: %v\n", err)
+			}
+		}
+		if _, err := shards.PublishClose(); err != nil && logW != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: receipt group remains incomplete: %v\n", err)
+		}
+	}
+}
+
+func emitSessionCloseAndTranscriptRoot(e *receipt.Emitter, sessionID string) error {
 	if e == nil {
 		return nil
 	}
-	if err := e.EmitSessionClose(closeReason); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
+	if err := e.EmitSessionClose(sessionCloseReasonGracefulShutdown); err != nil && !errors.Is(err, receipt.ErrChainSealed) {
 		return err
 	}
 	return e.EmitTranscriptRoot(sessionID)

@@ -88,6 +88,9 @@ func TestEmitter_EmitDurable_SyncFailureLeavesReceiptGapNotFork(t *testing.T) {
 	if !errors.Is(err, recorder.ErrDurability) {
 		t.Fatalf("first EmitDurable error = %v, want ErrDurability", err)
 	}
+	if !errors.Is(err, ErrReceiptPostAdvance) {
+		t.Fatalf("first EmitDurable error = %v, want post-advance classification", err)
+	}
 	if got := metrics.snapshot(); len(got) != 1 || got[0] != FailReasonSync {
 		t.Fatalf("emit failure reasons = %v, want [%q]", got, FailReasonSync)
 	}

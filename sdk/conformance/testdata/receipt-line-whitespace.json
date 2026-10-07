@@ -1,0 +1,656 @@
+{
+  "rule": "A newline-terminated line made only of Go unicode.IsSpace code points is skipped; every other newline-terminated line is trimmed at both ends by that exact set and parsed strictly; torn final fragments retain existing handling.",
+  "vectors": [
+    {
+      "name": "u0009-whole",
+      "codepoint": 9,
+      "placement": "whole",
+      "line": "\t",
+      "expected": "skip"
+    },
+    {
+      "name": "u0009-leading",
+      "codepoint": 9,
+      "placement": "leading",
+      "line": "\t{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u0009-trailing",
+      "codepoint": 9,
+      "placement": "trailing",
+      "line": "{}\t",
+      "expected": "parse"
+    },
+    {
+      "name": "u000a-whole",
+      "codepoint": 10,
+      "placement": "whole",
+      "line": "\n",
+      "expected": "skip"
+    },
+    {
+      "name": "u000a-leading",
+      "codepoint": 10,
+      "placement": "leading",
+      "line": "\n{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u000a-trailing",
+      "codepoint": 10,
+      "placement": "trailing",
+      "line": "{}\n",
+      "expected": "parse"
+    },
+    {
+      "name": "u000b-whole",
+      "codepoint": 11,
+      "placement": "whole",
+      "line": "\u000b",
+      "expected": "skip"
+    },
+    {
+      "name": "u000b-leading",
+      "codepoint": 11,
+      "placement": "leading",
+      "line": "\u000b{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u000b-trailing",
+      "codepoint": 11,
+      "placement": "trailing",
+      "line": "{}\u000b",
+      "expected": "parse"
+    },
+    {
+      "name": "u000c-whole",
+      "codepoint": 12,
+      "placement": "whole",
+      "line": "\f",
+      "expected": "skip"
+    },
+    {
+      "name": "u000c-leading",
+      "codepoint": 12,
+      "placement": "leading",
+      "line": "\f{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u000c-trailing",
+      "codepoint": 12,
+      "placement": "trailing",
+      "line": "{}\f",
+      "expected": "parse"
+    },
+    {
+      "name": "u000d-whole",
+      "codepoint": 13,
+      "placement": "whole",
+      "line": "\r",
+      "expected": "skip"
+    },
+    {
+      "name": "u000d-leading",
+      "codepoint": 13,
+      "placement": "leading",
+      "line": "\r{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u000d-trailing",
+      "codepoint": 13,
+      "placement": "trailing",
+      "line": "{}\r",
+      "expected": "parse"
+    },
+    {
+      "name": "u0020-whole",
+      "codepoint": 32,
+      "placement": "whole",
+      "line": " ",
+      "expected": "skip"
+    },
+    {
+      "name": "u0020-leading",
+      "codepoint": 32,
+      "placement": "leading",
+      "line": " {}",
+      "expected": "parse"
+    },
+    {
+      "name": "u0020-trailing",
+      "codepoint": 32,
+      "placement": "trailing",
+      "line": "{} ",
+      "expected": "parse"
+    },
+    {
+      "name": "u0085-whole",
+      "codepoint": 133,
+      "placement": "whole",
+      "line": "\u0085",
+      "expected": "skip"
+    },
+    {
+      "name": "u0085-leading",
+      "codepoint": 133,
+      "placement": "leading",
+      "line": "\u0085{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u0085-trailing",
+      "codepoint": 133,
+      "placement": "trailing",
+      "line": "{}\u0085",
+      "expected": "parse"
+    },
+    {
+      "name": "u00a0-whole",
+      "codepoint": 160,
+      "placement": "whole",
+      "line": "\u00a0",
+      "expected": "skip"
+    },
+    {
+      "name": "u00a0-leading",
+      "codepoint": 160,
+      "placement": "leading",
+      "line": "\u00a0{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u00a0-trailing",
+      "codepoint": 160,
+      "placement": "trailing",
+      "line": "{}\u00a0",
+      "expected": "parse"
+    },
+    {
+      "name": "u1680-whole",
+      "codepoint": 5760,
+      "placement": "whole",
+      "line": "\u1680",
+      "expected": "skip"
+    },
+    {
+      "name": "u1680-leading",
+      "codepoint": 5760,
+      "placement": "leading",
+      "line": "\u1680{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u1680-trailing",
+      "codepoint": 5760,
+      "placement": "trailing",
+      "line": "{}\u1680",
+      "expected": "parse"
+    },
+    {
+      "name": "u2000-whole",
+      "codepoint": 8192,
+      "placement": "whole",
+      "line": "\u2000",
+      "expected": "skip"
+    },
+    {
+      "name": "u2000-leading",
+      "codepoint": 8192,
+      "placement": "leading",
+      "line": "\u2000{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2000-trailing",
+      "codepoint": 8192,
+      "placement": "trailing",
+      "line": "{}\u2000",
+      "expected": "parse"
+    },
+    {
+      "name": "u2001-whole",
+      "codepoint": 8193,
+      "placement": "whole",
+      "line": "\u2001",
+      "expected": "skip"
+    },
+    {
+      "name": "u2001-leading",
+      "codepoint": 8193,
+      "placement": "leading",
+      "line": "\u2001{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2001-trailing",
+      "codepoint": 8193,
+      "placement": "trailing",
+      "line": "{}\u2001",
+      "expected": "parse"
+    },
+    {
+      "name": "u2002-whole",
+      "codepoint": 8194,
+      "placement": "whole",
+      "line": "\u2002",
+      "expected": "skip"
+    },
+    {
+      "name": "u2002-leading",
+      "codepoint": 8194,
+      "placement": "leading",
+      "line": "\u2002{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2002-trailing",
+      "codepoint": 8194,
+      "placement": "trailing",
+      "line": "{}\u2002",
+      "expected": "parse"
+    },
+    {
+      "name": "u2003-whole",
+      "codepoint": 8195,
+      "placement": "whole",
+      "line": "\u2003",
+      "expected": "skip"
+    },
+    {
+      "name": "u2003-leading",
+      "codepoint": 8195,
+      "placement": "leading",
+      "line": "\u2003{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2003-trailing",
+      "codepoint": 8195,
+      "placement": "trailing",
+      "line": "{}\u2003",
+      "expected": "parse"
+    },
+    {
+      "name": "u2004-whole",
+      "codepoint": 8196,
+      "placement": "whole",
+      "line": "\u2004",
+      "expected": "skip"
+    },
+    {
+      "name": "u2004-leading",
+      "codepoint": 8196,
+      "placement": "leading",
+      "line": "\u2004{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2004-trailing",
+      "codepoint": 8196,
+      "placement": "trailing",
+      "line": "{}\u2004",
+      "expected": "parse"
+    },
+    {
+      "name": "u2005-whole",
+      "codepoint": 8197,
+      "placement": "whole",
+      "line": "\u2005",
+      "expected": "skip"
+    },
+    {
+      "name": "u2005-leading",
+      "codepoint": 8197,
+      "placement": "leading",
+      "line": "\u2005{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2005-trailing",
+      "codepoint": 8197,
+      "placement": "trailing",
+      "line": "{}\u2005",
+      "expected": "parse"
+    },
+    {
+      "name": "u2006-whole",
+      "codepoint": 8198,
+      "placement": "whole",
+      "line": "\u2006",
+      "expected": "skip"
+    },
+    {
+      "name": "u2006-leading",
+      "codepoint": 8198,
+      "placement": "leading",
+      "line": "\u2006{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2006-trailing",
+      "codepoint": 8198,
+      "placement": "trailing",
+      "line": "{}\u2006",
+      "expected": "parse"
+    },
+    {
+      "name": "u2007-whole",
+      "codepoint": 8199,
+      "placement": "whole",
+      "line": "\u2007",
+      "expected": "skip"
+    },
+    {
+      "name": "u2007-leading",
+      "codepoint": 8199,
+      "placement": "leading",
+      "line": "\u2007{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2007-trailing",
+      "codepoint": 8199,
+      "placement": "trailing",
+      "line": "{}\u2007",
+      "expected": "parse"
+    },
+    {
+      "name": "u2008-whole",
+      "codepoint": 8200,
+      "placement": "whole",
+      "line": "\u2008",
+      "expected": "skip"
+    },
+    {
+      "name": "u2008-leading",
+      "codepoint": 8200,
+      "placement": "leading",
+      "line": "\u2008{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2008-trailing",
+      "codepoint": 8200,
+      "placement": "trailing",
+      "line": "{}\u2008",
+      "expected": "parse"
+    },
+    {
+      "name": "u2009-whole",
+      "codepoint": 8201,
+      "placement": "whole",
+      "line": "\u2009",
+      "expected": "skip"
+    },
+    {
+      "name": "u2009-leading",
+      "codepoint": 8201,
+      "placement": "leading",
+      "line": "\u2009{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2009-trailing",
+      "codepoint": 8201,
+      "placement": "trailing",
+      "line": "{}\u2009",
+      "expected": "parse"
+    },
+    {
+      "name": "u200a-whole",
+      "codepoint": 8202,
+      "placement": "whole",
+      "line": "\u200a",
+      "expected": "skip"
+    },
+    {
+      "name": "u200a-leading",
+      "codepoint": 8202,
+      "placement": "leading",
+      "line": "\u200a{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u200a-trailing",
+      "codepoint": 8202,
+      "placement": "trailing",
+      "line": "{}\u200a",
+      "expected": "parse"
+    },
+    {
+      "name": "u2028-whole",
+      "codepoint": 8232,
+      "placement": "whole",
+      "line": "\u2028",
+      "expected": "skip"
+    },
+    {
+      "name": "u2028-leading",
+      "codepoint": 8232,
+      "placement": "leading",
+      "line": "\u2028{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2028-trailing",
+      "codepoint": 8232,
+      "placement": "trailing",
+      "line": "{}\u2028",
+      "expected": "parse"
+    },
+    {
+      "name": "u2029-whole",
+      "codepoint": 8233,
+      "placement": "whole",
+      "line": "\u2029",
+      "expected": "skip"
+    },
+    {
+      "name": "u2029-leading",
+      "codepoint": 8233,
+      "placement": "leading",
+      "line": "\u2029{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u2029-trailing",
+      "codepoint": 8233,
+      "placement": "trailing",
+      "line": "{}\u2029",
+      "expected": "parse"
+    },
+    {
+      "name": "u202f-whole",
+      "codepoint": 8239,
+      "placement": "whole",
+      "line": "\u202f",
+      "expected": "skip"
+    },
+    {
+      "name": "u202f-leading",
+      "codepoint": 8239,
+      "placement": "leading",
+      "line": "\u202f{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u202f-trailing",
+      "codepoint": 8239,
+      "placement": "trailing",
+      "line": "{}\u202f",
+      "expected": "parse"
+    },
+    {
+      "name": "u205f-whole",
+      "codepoint": 8287,
+      "placement": "whole",
+      "line": "\u205f",
+      "expected": "skip"
+    },
+    {
+      "name": "u205f-leading",
+      "codepoint": 8287,
+      "placement": "leading",
+      "line": "\u205f{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u205f-trailing",
+      "codepoint": 8287,
+      "placement": "trailing",
+      "line": "{}\u205f",
+      "expected": "parse"
+    },
+    {
+      "name": "u3000-whole",
+      "codepoint": 12288,
+      "placement": "whole",
+      "line": "\u3000",
+      "expected": "skip"
+    },
+    {
+      "name": "u3000-leading",
+      "codepoint": 12288,
+      "placement": "leading",
+      "line": "\u3000{}",
+      "expected": "parse"
+    },
+    {
+      "name": "u3000-trailing",
+      "codepoint": 12288,
+      "placement": "trailing",
+      "line": "{}\u3000",
+      "expected": "parse"
+    },
+    {
+      "name": "u001c-whole",
+      "codepoint": 28,
+      "placement": "whole",
+      "line": "\u001c",
+      "expected": "reject"
+    },
+    {
+      "name": "u001c-leading",
+      "codepoint": 28,
+      "placement": "leading",
+      "line": "\u001c{}",
+      "expected": "reject"
+    },
+    {
+      "name": "u001c-trailing",
+      "codepoint": 28,
+      "placement": "trailing",
+      "line": "{}\u001c",
+      "expected": "reject"
+    },
+    {
+      "name": "u001d-whole",
+      "codepoint": 29,
+      "placement": "whole",
+      "line": "\u001d",
+      "expected": "reject"
+    },
+    {
+      "name": "u001d-leading",
+      "codepoint": 29,
+      "placement": "leading",
+      "line": "\u001d{}",
+      "expected": "reject"
+    },
+    {
+      "name": "u001d-trailing",
+      "codepoint": 29,
+      "placement": "trailing",
+      "line": "{}\u001d",
+      "expected": "reject"
+    },
+    {
+      "name": "u001e-whole",
+      "codepoint": 30,
+      "placement": "whole",
+      "line": "\u001e",
+      "expected": "reject"
+    },
+    {
+      "name": "u001e-leading",
+      "codepoint": 30,
+      "placement": "leading",
+      "line": "\u001e{}",
+      "expected": "reject"
+    },
+    {
+      "name": "u001e-trailing",
+      "codepoint": 30,
+      "placement": "trailing",
+      "line": "{}\u001e",
+      "expected": "reject"
+    },
+    {
+      "name": "u001f-whole",
+      "codepoint": 31,
+      "placement": "whole",
+      "line": "\u001f",
+      "expected": "reject"
+    },
+    {
+      "name": "u001f-leading",
+      "codepoint": 31,
+      "placement": "leading",
+      "line": "\u001f{}",
+      "expected": "reject"
+    },
+    {
+      "name": "u001f-trailing",
+      "codepoint": 31,
+      "placement": "trailing",
+      "line": "{}\u001f",
+      "expected": "reject"
+    },
+    {
+      "name": "ufeff-whole",
+      "codepoint": 65279,
+      "placement": "whole",
+      "line": "\ufeff",
+      "expected": "reject"
+    },
+    {
+      "name": "ufeff-leading",
+      "codepoint": 65279,
+      "placement": "leading",
+      "line": "\ufeff{}",
+      "expected": "reject"
+    },
+    {
+      "name": "ufeff-trailing",
+      "codepoint": 65279,
+      "placement": "trailing",
+      "line": "{}\ufeff",
+      "expected": "reject"
+    },
+    {
+      "name": "u200b-whole",
+      "codepoint": 8203,
+      "placement": "whole",
+      "line": "\u200b",
+      "expected": "reject"
+    },
+    {
+      "name": "u200b-leading",
+      "codepoint": 8203,
+      "placement": "leading",
+      "line": "\u200b{}",
+      "expected": "reject"
+    },
+    {
+      "name": "u200b-trailing",
+      "codepoint": 8203,
+      "placement": "trailing",
+      "line": "{}\u200b",
+      "expected": "reject"
+    }
+  ]
+}

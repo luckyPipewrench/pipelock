@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -51,7 +52,7 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 	var previous *recorder.Entry
 	var priorReceipt *Receipt
 	var priorV2 *contractreceipt.EvidenceReceipt
-	for _, file := range files {
+	for i, file := range files {
 		err := recorder.ValidateEvidenceFile(file, func(next recorder.Entry) error {
 			if err := validateTailEntry(next, session, signerKeys); err != nil {
 				return err
@@ -102,6 +103,9 @@ func checkSessionTailLocked(rec *recorder.Recorder, session string, signerKeys [
 			return nil
 		})
 		if err != nil {
+			if i+1 < len(files) && errors.Is(err, recorder.ErrTornTail) {
+				return fmt.Errorf("receipt group session has a torn segment: %s", filepath.Base(file))
+			}
 			return fmt.Errorf("validating evidence file %s: %w", file, err)
 		}
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -113,6 +114,13 @@ func runInspectEpochs(cmd *cobra.Command, opts inspectEpochsOptions) error {
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	grouped, err := receipt.ReceiptGroupEvidencePresent(location.Dir, 0)
+	if err != nil {
+		return fmt.Errorf("inspect receipt group evidence: %w", err)
+	}
+	if grouped {
+		return errors.New("epoch inspection requires single-session evidence; verify the complete receipt group with verify-receipt --chain")
+	}
 	names, err := inspectEpochSourceNames(location, opts.sessionID)
 	if err != nil {
 		return err

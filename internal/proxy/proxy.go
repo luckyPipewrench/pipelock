@@ -148,6 +148,9 @@ const (
 	// its exact admitted HTTPS destination. CheckRedirect refuses a replay to
 	// any other route because 307/308 preserve the already-scanned body.
 	ctxKeyEntropyWarnRoute
+	// ctxKeyReceiptShard carries one admission-time choice through reverse
+	// response and error callbacks, which run outside the request handler.
+	ctxKeyReceiptShard
 
 	// ctxKeySSRFDialScanSnapshot carries the DNS answers from an allowed
 	// scanner SSRF pass into the later dial-time re-resolution. The safe
@@ -637,6 +640,7 @@ type Proxy struct {
 	recoveredSession     atomic.Pointer[string]                // fresh run session adopted after torn-tail recovery; overrides session
 	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
 	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
+	receiptGroupPtr      atomic.Pointer[receiptGroupRuntime]   // paired per-shard emitters; nil uses the legacy single chain
 	receiptKeyPath       string                                // active signing key path, for reload comparison
 	receiptKeysMu        sync.Mutex                            // guards receiptKeysHeld
 	receiptKeysHeld      []string                              // hex public keys this process has loaded to sign receipts
@@ -1090,7 +1094,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				result = currentScanner.Scan(redirectScanCtx, redirectURL)
 			}
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
-			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName); err != nil {
+			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
 				return blockedErr
@@ -1192,7 +1196,8 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				Agent:       agentName,
 				AuditCtx:    newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName}),
 				Emit: func(opts receipt.EmitOpts) error {
-					return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, currentCfg.CanonicalPolicyHash()))
+					// The outer handler also records the final block on this shard.
+					return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, receiptShardFromContext(req.Context())), currentCfg.CanonicalPolicyHash()))
 				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
@@ -1650,18 +1655,34 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 		return nil
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
-	if err := e.EmitDurable(opts); err != nil {
+	var err error
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		err = group.shards.EmitDurable(opts)
+	} else {
+		err = e.EmitDurable(opts)
+	}
+	if err != nil {
 		p.logReceiptChannelBroken(opts, err)
+		if group := p.receiptGroupPtr.Load(); group != nil {
+			selected, selectErr := group.shards.SelectedEmitter(opts)
+			if errors.Is(err, receipt.ErrReceiptPostAdvance) || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(err)
+			}
+		}
 		// v1 stays authoritative: skip v2 when v1 failed to record, so a
 		// proxy_decision never outlives its action_receipt sibling.
 		return err
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	if err := p.emitRequiredV2Receipt(opts); err != nil {
-		if markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
-			return errors.Join(err, markerErr)
+		markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
+		if group := p.receiptGroupPtr.Load(); group != nil {
+			selected, selectErr := group.v2Emitter(opts)
+			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(errors.Join(err, markerErr))
+			}
 		}
-		return err
+		return errors.Join(err, markerErr)
 	}
 	return nil
 }
@@ -1698,12 +1719,30 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	if e == nil {
 		return
 	}
-	if err := e.Emit(opts); err != nil {
+	var err error
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		err = group.shards.Emit(opts)
+	} else {
+		err = e.Emit(opts)
+	}
+	if err != nil {
 		p.logReceiptChannelBroken(opts, err)
+		if group := p.receiptGroupPtr.Load(); group != nil {
+			selected, selectErr := group.shards.SelectedEmitter(opts)
+			if errors.Is(err, receipt.ErrReceiptPostAdvance) || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(err)
+			}
+		}
 		return
 	}
 	if err := p.emitV2Receipt(opts); err != nil {
-		_ = p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+		markerErr := p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+		if group := p.receiptGroupPtr.Load(); group != nil {
+			selected, selectErr := group.v2Emitter(opts)
+			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(errors.Join(err, markerErr))
+			}
+		}
 	}
 }
 
@@ -1711,7 +1750,13 @@ func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter
 	if e == nil {
 		return nil
 	}
-	if err := e.Emit(opts); err != nil {
+	var err error
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		err = group.shards.Emit(opts)
+	} else {
+		err = e.Emit(opts)
+	}
+	if err != nil {
 		p.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record, so a
 		// proxy_decision never outlives its action_receipt sibling.
@@ -1754,6 +1799,14 @@ func emitReceiptFailureMarkerWithLogger(e *receipt.Emitter, opts receipt.EmitOpt
 }
 
 func (p *Proxy) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) error {
+	if group := p.receiptGroupPtr.Load(); group != nil {
+		marker := receiptEmissionFailureMarkerOpts(opts, pattern, verdict)
+		if err := group.shards.EmitDurable(marker); err != nil {
+			p.logReceiptEmissionFailure(marker, err)
+			return err
+		}
+		return nil
+	}
 	return emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, p.logReceiptEmissionFailure)
 }
 
@@ -5088,6 +5141,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
+	selectedReceiptShard := p.admitReceiptShard()
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -5105,6 +5159,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// it only at fetch time would report "unknown" for each event on the way.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
@@ -5225,7 +5280,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
@@ -5883,7 +5938,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Agent:     agent,
 		AuditCtx:  actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
 		},
 	}); rpRes.Block {
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
@@ -5996,6 +6051,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
+	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)
 	if fetchAirlockSess != nil {
 		ctx = context.WithValue(ctx, ctxKeyRedirectAirlockSession, fetchAirlockSess.key)
@@ -6077,7 +6133,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// CONNECT / WebSocket / MCP). Every field here is request-side, so the
 	// pre-egress receipt is identical to the terminal one below; the terminal
 	// emit is skipped when require_receipts is on to avoid a duplicate.
-	fetchAllowReceipt := receipt.EmitOpts{
+	fetchAllowReceipt := withReceiptShard(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             fetchReceiptVerdict,
 		Layer:               fetchReceiptLayer,
@@ -6096,7 +6152,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		TaintDecision:       fetchTaint.Result.Decision.String(),
 		TaintDecisionReason: fetchTaint.Result.Reason,
 		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
-	}
+	}, selectedReceiptShard)
 	if fetchGate.HasContractContext() {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}

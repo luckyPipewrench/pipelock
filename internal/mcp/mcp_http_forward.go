@@ -42,7 +42,7 @@ func emitRequestScopedTimeout(
 			if wErr := writer.WriteMessage(resp); wErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 			}
-			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, "error", int64(len(resp)), "response_timeout")
+			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
 		}
 	}
 	_, _ = fmt.Fprintln(logW, logMessage)
@@ -53,7 +53,7 @@ func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json
 	if !ok {
 		return
 	}
-	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason)
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason, opts.requireReceipts())
 }
 
 // emitTrackedContractRefusedOutcome closes the tracked intent of a request the
@@ -72,7 +72,7 @@ func emitTrackedContractRefusedOutcome(logW io.Writer, tracker *RequestTracker, 
 func emitContractRefusedOutcome(logW io.Writer, outcome TrackedRequestOutcome, gate mcpContractGateOutput, reason string, bytesTransferred int64, opts MCPProxyOpts) {
 	receiptOpts := mcpWithContractReceipt(outcome.Receipt, gate)
 	receiptOpts.Layer = mcpContractReceiptLayer
-	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
+	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, receiptOpts, bytesTransferred, reason, opts.requireReceipts())
 }
 
 func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, reason string, opts MCPProxyOpts) {
@@ -80,7 +80,7 @@ func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id js
 	if !ok {
 		return
 	}
-	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, "incomplete", -1, reason)
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 }
 
 func consumeTrackedRequestOutcome(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {

@@ -97,6 +97,17 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if opts.output == "" {
 		return fmt.Errorf("--out is required")
 	}
+	evidenceDir, err := receiptDirectory(target, opts.asDir)
+	if err != nil {
+		return err
+	}
+	grouped, err := receipt.ReceiptGroupEvidencePresent(evidenceDir, 0)
+	if err != nil {
+		return fmt.Errorf("inspect receipt group evidence: %w", err)
+	}
+	if grouped {
+		return fmt.Errorf("cannot anchor one receipt chain from grouped evidence; verify the complete group with verify-receipt --chain")
+	}
 
 	receipts, sessionID, err := extractReceipts(target, opts)
 	if err != nil {

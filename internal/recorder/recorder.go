@@ -160,19 +160,25 @@ type Recorder struct {
 	observer       EntryObserver
 	metrics        MetricsSink
 
-	mu             sync.Mutex
-	seq            uint64
-	prevHash       string
-	writer         *bufio.Writer
-	file           *os.File
-	runPresence    *os.File
-	ceremonyLock   *os.File
-	ceremonyDir    os.FileInfo
-	evidenceDir    os.FileInfo
-	fileEntryCount int
-	fileSeqStart   uint64
-	fileGeneration uint64
-	sessionID      string
+	mu              sync.Mutex
+	groupMu         sync.Mutex
+	groupSessions   map[string]*SessionState
+	groupOrder      []string
+	groupOwner      *os.File
+	legacyStarted   bool
+	groupFinalizing bool
+	seq             uint64
+	prevHash        string
+	writer          *bufio.Writer
+	file            *os.File
+	runPresence     *os.File
+	ceremonyLock    *os.File
+	ceremonyDir     os.FileInfo
+	evidenceDir     os.FileInfo
+	fileEntryCount  int
+	fileSeqStart    uint64
+	fileGeneration  uint64
+	sessionID       string
 	// recoveryPredecessor survives reload staging failures until publication.
 	recoveryPredecessor string
 
@@ -369,6 +375,15 @@ func (r *Recorder) Dir() string {
 	return r.cfg.Dir
 }
 
+// SigningKeyHex identifies the key used for this recorder's checkpoints.
+// A group opener must match it to the opening-manifest signer.
+func (r *Recorder) SigningKeyHex() string {
+	if r == nil || len(r.privKey) != ed25519.PrivateKeySize {
+		return ""
+	}
+	return hex.EncodeToString(r.privKey.Public().(ed25519.PublicKey))
+}
+
 // SetObserver installs an optional post-write observer for newly recorded
 // entries. It is intended for durable audit fan-out that must see the same
 // recorder v2 entries written locally.
@@ -385,18 +400,28 @@ func (r *Recorder) SetObserver(observer EntryObserver) {
 // SessionID, Type, Transport, Summary, and Detail. Sequence, Timestamp,
 // PrevHash, Hash, and Version are set by the recorder.
 func (r *Recorder) Record(e Entry) error {
-	return r.record(e, nil)
+	return r.record(e, nil, nil)
 }
 
 // RecordWithReceiptScan writes a receipt after checking that its detail is
 // byte-identical to a successful preflight scan. A missing scan is performed
 // before taking the recorder lock.
 func (r *Recorder) RecordWithReceiptScan(e Entry, scan *ReceiptScan) error {
-	return r.record(e, scan)
+	return r.record(e, scan, nil)
 }
 
-func (r *Recorder) record(e Entry, scan *ReceiptScan) error {
+// RecordWithReceiptScanPreAdvance invokes advance only after the exact
+// serialized recorder line has passed its deterministic size check. The
+// callback runs under the recorder lock immediately before the write attempt.
+func (r *Recorder) RecordWithReceiptScanPreAdvance(e Entry, scan *ReceiptScan, advance func()) error {
+	return r.record(e, scan, advance)
+}
+
+func (r *Recorder) record(e Entry, scan *ReceiptScan, advance func()) error {
 	if r.nop {
+		if advance != nil {
+			advance()
+		}
 		return nil
 	}
 	var err error
@@ -404,11 +429,21 @@ func (r *Recorder) record(e Entry, scan *ReceiptScan) error {
 	if err != nil {
 		return err
 	}
+	r.groupMu.Lock()
+	if r.groupSessions == nil {
+		r.legacyStarted = true
+		r.groupMu.Unlock()
+		return r.recordPrepared(e, scan, advance)
+	}
+	defer r.groupMu.Unlock()
+	return r.withGroupSessionLocked(e.SessionID, func() error { return r.recordPrepared(e, scan, advance) })
+}
 
+func (r *Recorder) recordPrepared(e Entry, scan *ReceiptScan, advance func()) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	written, err := r.prepareAndWriteEntryWithScanLocked(e, true, scan)
+	written, err := r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, true, scan, advance)
 	if err != nil {
 		return err
 	}
@@ -431,17 +466,25 @@ func (r *Recorder) record(e Entry, scan *ReceiptScan) error {
 // RecordDurable writes an entry and returns success only after File.Sync has
 // confirmed the file generation that contains the entry.
 func (r *Recorder) RecordDurable(e Entry) error {
-	return r.recordDurable(e, nil)
+	return r.recordDurable(e, nil, nil)
 }
 
 // RecordDurableWithReceiptScan is the durable counterpart of
 // RecordWithReceiptScan. It preserves the normal batching and sync path.
 func (r *Recorder) RecordDurableWithReceiptScan(e Entry, scan *ReceiptScan) error {
-	return r.recordDurable(e, scan)
+	return r.recordDurable(e, scan, nil)
 }
 
-func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan) error {
+// RecordDurableWithReceiptScanPreAdvance is the durable pre-advance path.
+func (r *Recorder) RecordDurableWithReceiptScanPreAdvance(e Entry, scan *ReceiptScan, advance func()) error {
+	return r.recordDurable(e, scan, advance)
+}
+
+func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan, advance func()) error {
 	if r.nop {
+		if advance != nil {
+			advance()
+		}
 		return nil
 	}
 	var err error
@@ -449,9 +492,19 @@ func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan) error {
 	if err != nil {
 		return err
 	}
+	r.groupMu.Lock()
+	if r.groupSessions == nil {
+		r.legacyStarted = true
+		r.groupMu.Unlock()
+		return r.recordDurablePrepared(e, scan, advance)
+	}
+	defer r.groupMu.Unlock()
+	return r.withGroupSessionLocked(e.SessionID, func() error { return r.recordDurablePrepared(e, scan, advance) })
+}
 
+func (r *Recorder) recordDurablePrepared(e Entry, scan *ReceiptScan, advance func()) error {
 	r.mu.Lock()
-	written, err := r.prepareAndWriteEntryWithScanLocked(e, false, scan)
+	written, err := r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, false, scan, advance)
 	if err != nil {
 		r.mu.Unlock()
 		return err
@@ -553,6 +606,10 @@ func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, erro
 }
 
 func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan *ReceiptScan) (Entry, error) {
+	return r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, notify, scan, nil)
+}
+
+func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify bool, scan *ReceiptScan, advance func()) (Entry, error) {
 	if r.closed {
 		return Entry{}, fmt.Errorf("recorder is closed")
 	}
@@ -572,6 +629,9 @@ func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan
 	}
 	if r.sessionID == "" {
 		if err := r.resumeSessionLocked(e.SessionID); err != nil {
+			if advance != nil {
+				advance()
+			}
 			return Entry{}, fmt.Errorf("recorder: resume chain state: %w", err)
 		}
 	}
@@ -593,7 +653,7 @@ func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
-	if e.Type == recorderTypeReceipt || e.Type == recorderTypeEvidenceReceipt {
+	if e.Type == recorderTypeReceipt || e.Type == recorderTypeEvidenceReceipt || e.Type == GroupGateEntryType {
 		var err error
 		e.Detail, err = r.checkedReceiptDetail(e.Detail, scan)
 		if err != nil {
@@ -610,6 +670,12 @@ func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan
 		}
 		escrowPath, err := r.writeEscrow(rawJSON)
 		if err != nil {
+			// A storage failure here is not a deterministic input reject.
+			// Consume the signed chain position so a later retry cannot
+			// present a clean chain after uncertain escrow persistence.
+			if advance != nil {
+				advance()
+			}
 			return Entry{}, fmt.Errorf("write raw escrow: %w", err)
 		}
 		e.RawRef = filepath.Base(escrowPath)
@@ -622,12 +688,25 @@ func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan
 	// Raw escrow preserves the exact detail passed to the recorder for
 	// forensic replay.
 	if r.cfg.Redact && r.redactFn != nil {
-		if e.Type != recorderTypeReceipt && e.Type != recorderTypeEvidenceReceipt {
+		if e.Type != recorderTypeReceipt && e.Type != recorderTypeEvidenceReceipt && e.Type != GroupGateEntryType {
 			e.Detail = r.redactDetail(e.Detail)
 		}
 	}
 
 	e.Hash = ComputeHash(e)
+	if advance != nil {
+		// Match writeEntryBounded's exact json.Marshal payload before the
+		// signed receipt chain consumes its next position. The callback does
+		// not change e, so the subsequent write serializes the same entry.
+		data, err := json.Marshal(e)
+		if err != nil {
+			return Entry{}, fmt.Errorf("marshaling entry: %w", err)
+		}
+		if len(data) > MaxEntryLineBytes {
+			return Entry{}, fmt.Errorf("%w: %w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, ErrSerializedEntryTooLarge, MaxEntryLineBytes)
+		}
+		advance()
+	}
 
 	if err := r.writeEntryBounded(e, notify); err != nil {
 		return Entry{}, fmt.Errorf("writing entry: %w", err)
@@ -830,7 +909,15 @@ func (r *Recorder) Close() error {
 	// caller that shutdown has finished. Once covers the whole operation,
 	// including cleanup, without preventing durable writes from completing.
 	r.closeOnce.Do(func() {
-		r.closeErr = r.close()
+		r.groupMu.Lock()
+		if r.groupSessions != nil {
+			defer r.groupMu.Unlock()
+			r.closeErr = r.closeGroup()
+		} else {
+			r.legacyStarted = true
+			r.groupMu.Unlock()
+			r.closeErr = r.close()
+		}
 	})
 	return r.closeErr
 }
@@ -1326,7 +1413,7 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 		return fmt.Errorf("marshaling entry: %w", err)
 	}
 	if len(data) > MaxEntryLineBytes {
-		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+		return fmt.Errorf("%w: %w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, ErrSerializedEntryTooLarge, MaxEntryLineBytes)
 	}
 	lineBytes := int64(len(data)) + int64(len("\n"))
 	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
@@ -1357,7 +1444,7 @@ func (r *Recorder) writeEntryBounded(e Entry, notify bool) error {
 
 func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 	if len(data) > MaxEntryLineBytes {
-		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+		return fmt.Errorf("%w: %w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, ErrSerializedEntryTooLarge, MaxEntryLineBytes)
 	}
 	if r.writer.Buffered() != 0 {
 		return errors.New("recorder: evidence writer buffer is not empty before record")
@@ -1390,7 +1477,7 @@ func (r *Recorder) writeEntryData(data []byte, e Entry, notify bool) error {
 
 func (r *Recorder) ensureEntryCapacityLocked(sessionID string, seq uint64, lineBytes int64) error {
 	if lineBytes > int64(MaxEntryLineBytes+len("\n")) {
-		return fmt.Errorf("%w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, MaxEntryLineBytes)
+		return fmt.Errorf("%w: %w: serialized evidence entry exceeds %d-byte recorder entry limit", ErrEvidenceReadLimitExceeded, ErrSerializedEntryTooLarge, MaxEntryLineBytes)
 	}
 	if err := r.ensureFile(sessionID, seq); err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)

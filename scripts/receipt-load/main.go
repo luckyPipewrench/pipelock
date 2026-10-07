@@ -42,6 +42,7 @@ const fakeToken = "ghp_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type result struct {
 	Mode                 string         `json:"mode"`
+	ReceiptChains        int            `json:"receipt_chains"`
 	Requests             int            `json:"requests"`
 	Concurrency          int            `json:"concurrency"`
 	Seconds              float64        `json:"seconds"`
@@ -85,9 +86,10 @@ func main() {
 	n := flag.Int("requests", 1000000, "requests per mode")
 	concurrency := flag.Int("concurrency", 128, "concurrent clients")
 	modes := flag.String("modes", "off,best,required", "comma-separated modes")
+	chains := flag.Int("chains", 1, "number of signed receipt chains (1 to 32)")
 	flag.Parse()
-	if *out == "" || *n < 1 || *concurrency < 1 {
-		log.Fatal("--out, positive --requests, and positive --concurrency are required")
+	if *out == "" || *n < 1 || *concurrency < 1 || *chains < 1 || *chains > 32 {
+		log.Fatal("--out, positive --requests, positive --concurrency, and --chains from 1 to 32 are required")
 	}
 	absBinary, err := filepath.Abs(*binary)
 	if err != nil {
@@ -117,7 +119,7 @@ func main() {
 		if mode != "off" && mode != "best" && mode != "required" {
 			log.Fatalf("invalid mode %q", mode)
 		}
-		if err := run(ctx, absBinary, *out, mode, *n, *concurrency, listener.Addr().String(), &sinkCount); err != nil {
+		if err := run(ctx, absBinary, *out, mode, *n, *concurrency, *chains, listener.Addr().String(), &sinkCount); err != nil {
 			log.Fatalf("%s: %v", mode, err)
 		}
 	}
@@ -134,8 +136,12 @@ func localCommand(ctx context.Context, binary string, args ...string) *exec.Cmd 
 	return cmd
 }
 
-func run(ctx context.Context, binary, out, mode string, n, concurrency int, sinkAddr string, sinkCount *atomic.Int64) error {
-	dir := filepath.Join(out, mode)
+func run(ctx context.Context, binary, out, mode string, n, concurrency, chains int, sinkAddr string, sinkCount *atomic.Int64) error {
+	dirName := mode
+	if chains > 1 {
+		dirName = fmt.Sprintf("chains-%d-%s", chains, mode)
+	}
+	dir := filepath.Join(out, dirName)
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		return err
 	}
@@ -182,6 +188,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 	}
 	fr["enabled"] = mode != "off"
 	fr["require_receipts"] = mode == "required"
+	fr["receipt_chains"] = chains
 	data, err = yaml.Marshal(cfg)
 	if err != nil {
 		return err
@@ -322,7 +329,7 @@ func run(ctx context.Context, binary, out, mode string, n, concurrency int, sink
 		return fmt.Errorf("proxy did not shut down cleanly: %w", err)
 	}
 	stopped = true
-	r := result{Mode: mode, Requests: n, Concurrency: concurrency, Seconds: end.Sub(start).Seconds(), SinkRequests: sinkCount.Load() - sinkBefore, RSSStartBytes: startSample.rss, RSSEndBytes: endSample.rss, RSSPeakBytes: peakRSS.Load()}
+	r := result{Mode: mode, ReceiptChains: chains, Requests: n, Concurrency: concurrency, Seconds: end.Sub(start).Seconds(), SinkRequests: sinkCount.Load() - sinkBefore, RSSStartBytes: startSample.rss, RSSEndBytes: endSample.rss, RSSPeakBytes: peakRSS.Load()}
 	r.StatusCounts = make(map[int]int)
 	r.ResponseSamples = make(map[int]string)
 	for i, body := range bodies {

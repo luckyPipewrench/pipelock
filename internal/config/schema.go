@@ -1836,6 +1836,7 @@ type BudgetConfig struct {
 type FlightRecorder struct {
 	Enabled                    bool                         `yaml:"enabled"`
 	Dir                        string                       `yaml:"dir"`
+	ReceiptChains              int                          `yaml:"receipt_chains" json:"-"`               // independent signed receipt chains (0=legacy default of 1; restart-only)
 	CheckpointInterval         int                          `yaml:"checkpoint_interval"`                   // entries between signed checkpoints (default 1000)
 	RetentionDays              int                          `yaml:"retention_days"`                        // auto-expire raw sidecars after N days (0=forever)
 	Redact                     bool                         `yaml:"redact"`                                // DLP on evidence before commit (default true)
@@ -1852,6 +1853,14 @@ type FlightRecorder struct {
 	Completeness               FlightRecorderCompleteness   `yaml:"completeness" json:"-"`                 // restart-only evidence completeness knobs
 	EvidenceHealth             FlightRecorderEvidenceHealth `yaml:"evidence_health" json:"-"`              // process-local evidence health monitoring
 	Anchor                     FlightRecorderAnchor         `yaml:"anchor" json:"-"`                       // optional runtime receipt-chain anchoring
+}
+
+// ReceiptChainCount resolves the legacy omitted/zero setting to one chain.
+func (f FlightRecorder) ReceiptChainCount() int {
+	if f.ReceiptChains == 0 {
+		return 1
+	}
+	return f.ReceiptChains
 }
 
 // EvidenceProvenance configures the private operator-owned material needed to

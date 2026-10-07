@@ -54,6 +54,16 @@ func TestVerifyEpochPinBindsExactPinAndCurrentSource(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "evidence-proxy-0.jsonl")); err != nil {
 		t.Fatalf("preflight mutated source: %v", err)
 	}
+	artifact := filepath.Join(dir, "receipt-group-"+strings.Repeat("a", 32)+"-open.json")
+	if err := os.WriteFile(artifact, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runVerifyEpochPin(inspectEpochsOutputCommand(&bytes.Buffer{}), valid); err == nil || !strings.Contains(err.Error(), "single-session evidence") {
+		t.Fatalf("epoch pin accepted group evidence: %v", err)
+	}
+	if err := os.Remove(artifact); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("wrong digest", func(t *testing.T) {
 		opts := valid

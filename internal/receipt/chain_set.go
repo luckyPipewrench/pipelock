@@ -58,6 +58,9 @@ type BaseVerifyOptions struct {
 	// is the evidence doctor's mode: the doctor takes no trusted keys, so
 	// judging key trust there would flag every honest key change.
 	LinksOnly bool
+	// ExcludeReceiptGroupSessions leaves gated shard runs to the signed group
+	// verifier instead of classifying each shard as an independent restart.
+	ExcludeReceiptGroupSessions bool
 }
 
 // BaseChain is one chain of a base: a run session or the legacy base session.
@@ -154,6 +157,17 @@ func (r BaseReport) Unlinked() []string {
 // verdict over a partial session list would present missing chains as absent.
 func ResolveBaseSessions(dir, base string) ([]string, error) {
 	ix, err := indexRecorderFiles(dir)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	return baseSessions(ix, base), nil
+}
+
+// ResolveBaseSessionsExcludingReceiptGroups lists only legacy sessions. A
+// grouped shard is verified as part of its signed group and cannot be treated
+// as an independent passing run.
+func ResolveBaseSessionsExcludingReceiptGroups(dir, base string) ([]string, error) {
+	ix, err := indexRecorderFilesExcludingReceiptGroups(dir)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
@@ -431,7 +445,13 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 // successor listed in Unlinked, which is not a finding (see Unlinked).
 func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	report := BaseReport{Base: base}
-	ix, err := indexRecorderFiles(dir)
+	var ix evidenceIndex
+	var err error
+	if opts.ExcludeReceiptGroupSessions {
+		ix, err = indexRecorderFilesExcludingReceiptGroups(dir)
+	} else {
+		ix, err = indexRecorderFiles(dir)
+	}
 	if err != nil {
 		return report, fmt.Errorf("listing sessions: %w", err)
 	}
@@ -628,7 +648,7 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 	// live recorders whose active shard grows; it makes no full-verification
 	// claim, so it does not refuse a directory that changed while it read.
 	if !opts.LinksOnly {
-		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, addChanged); err != nil {
+		if err := checkShardSetUnchanged(dir, base, ix, sessions, links, data, addChanged, opts.ExcludeReceiptGroupSessions); err != nil {
 			return report, err
 		}
 	}
@@ -886,8 +906,14 @@ var errEvidenceChangedDuring = errors.New("evidence changed during verification"
 // This is best-effort detection for a recorder that should not be written
 // while it is verified. A same-size in-place rewrite of a shard by a process
 // with write access to dir can still go unseen.
-func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string)) error {
-	final, err := indexRecorderFiles(dir)
+func checkShardSetUnchanged(dir, base string, ix evidenceIndex, sessions []string, links []chainLinkRecord, data map[string]*baseChainData, add func(kind, session, detail string), excludeGroups bool) error {
+	var final evidenceIndex
+	var err error
+	if excludeGroups {
+		final, err = indexRecorderFilesExcludingReceiptGroups(dir)
+	} else {
+		final, err = indexRecorderFiles(dir)
+	}
 	if err != nil {
 		return fmt.Errorf("re-listing sessions after verification: %w", err)
 	}

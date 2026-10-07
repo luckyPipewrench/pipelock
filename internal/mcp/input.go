@@ -450,9 +450,9 @@ func ForwardScannedInput(
 			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				recordAdaptiveSignal(session.SignalBlock)
-				if pendingActionID != "" && receiptEmitter != nil {
+				if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil) {
 					layer, pattern, severity := contentScanAttribution(originalVerdict)
-					if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+					if _, emitErr := opts.emitReceiptDecision(MCPDecision{
 						Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  pendingActionID,
 							Verdict:   config.ActionBlock,
@@ -494,9 +494,9 @@ func ForwardScannedInput(
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
-			if pendingActionID != "" && receiptEmitter != nil {
+			if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil) {
 				layer, pattern, severity := redactionBlockAttribution(redactErr)
-				if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+				if _, emitErr := opts.emitReceiptDecision(MCPDecision{
 					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 						ActionID:         pendingActionID,
 						Verdict:          config.ActionBlock,
@@ -683,6 +683,9 @@ func ForwardScannedInput(
 		receiptLayerOverride := ""
 		receiptPatternOverride := ""
 		receiptSeverityOverride := ""
+		// Keep the admission choice for the later response outcome. Blocked
+		// requests also choose once when their first receipt is emitted.
+		var receiptShard receipt.EmitOpts
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
@@ -695,9 +698,14 @@ func ForwardScannedInput(
 				layer, pattern, severity = receiptLayerOverride, receiptPatternOverride, receiptSeverityOverride
 			}
 			requireReceipts := opts.requireReceipts()
+			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil && !receiptShard.ShardSelected {
+				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
+			}
 			receiptOpts := mcpToolReceiptOpts{
 				Emitter:           receiptEmitter,
 				V2Emitter:         v2ReceiptEmitter,
+				Group:             opts.ReceiptGroup,
+				Shard:             receiptShard,
 				PolicyHash:        policyHash,
 				Log:               logW,
 				Transport:         opts.Transport,
@@ -1105,6 +1113,8 @@ func ForwardScannedInput(
 					PolicyHash:          policyHash,
 				})
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
+				outcomeReceipt.ShardIndex = receiptShard.ShardIndex
+				outcomeReceipt.ShardSelected = receiptShard.ShardSelected
 				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt, Method: verdict.Method})
 			} else if isTrackableRequest(fwdLine, verdict.ID) {
 				tracker.TrackRequest(verdict.ID, verdict.Method)

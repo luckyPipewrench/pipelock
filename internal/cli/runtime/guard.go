@@ -153,6 +153,7 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	defer evidence.close()
 	ctx, cancel := signal.NotifyContext(baseCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	evidence.onRequiredFailure = func(error) { cancel() }
 	guardReady := make(chan struct{})
 	var guardReadyOnce sync.Once
 
@@ -229,16 +230,18 @@ func resolveGuardExecutable(command []string, workspace string) (string, error) 
 }
 
 type guardEvidence struct {
-	proxyOptions []proxy.Option
-	recorder     *recorder.Recorder
-	stop         func()
-	emitter      *receipt.Emitter
-	ctx          context.Context
-	heartbeat    time.Duration
-	stderr       io.Writer
-	require      bool
-	activateOnce sync.Once
-	activateErr  error
+	proxyOptions      []proxy.Option
+	recorder          *recorder.Recorder
+	stop              func()
+	emitter           *receipt.Emitter
+	shards            *receipt.ReceiptShardSet
+	ctx               context.Context
+	heartbeat         time.Duration
+	stderr            io.Writer
+	require           bool
+	onRequiredFailure func(error)
+	activateOnce      sync.Once
+	activateErr       error
 }
 
 func (e *guardEvidence) close() {
@@ -247,9 +250,11 @@ func (e *guardEvidence) close() {
 	}
 	if e.stop != nil {
 		e.stop()
+		e.stop = nil
 	}
 	if e.recorder != nil {
 		_ = e.recorder.Close()
+		e.recorder = nil
 	}
 }
 
@@ -264,8 +269,17 @@ func (e *guardEvidence) activate(proof guardfs.ExecutionProof) error {
 }
 
 func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
-	e.emitter.UpdateConfigHash(proof.ConfigPolicyHash)
-	if err := emitStartupSessionOpen(e.emitter); err != nil {
+	if e.require && e.onRequiredFailure == nil {
+		return errors.New("required Guard receipt heartbeat has no failure cancellation callback")
+	}
+	var openErr error
+	if e.shards != nil {
+		openErr = e.shards.Activate(proof.ConfigPolicyHash)
+	} else {
+		e.emitter.UpdateConfigHash(proof.ConfigPolicyHash)
+		openErr = emitStartupSessionOpen(e.emitter)
+	}
+	if err := openErr; err != nil {
 		if e.require {
 			return fmt.Errorf("emitting Guard session_open receipt: %w", err)
 		}
@@ -287,7 +301,11 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 		}
 		_, _ = fmt.Fprintf(e.stderr, "  Receipts: ERROR - Guard pre-exec enforcement could not be emitted: %v\n", err)
 	}
-	e.stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, nil)
+	if e.shards != nil {
+		e.stop = startStandaloneReceiptGroupLifecycle(e.ctx, e.heartbeat, e.shards, e.stderr, e.require, e.onRequiredFailure)
+	} else {
+		e.stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, e.onRequiredFailure)
+	}
 	return nil
 }
 
@@ -336,12 +354,18 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		return nil, fmt.Errorf("creating Guard flight recorder: %w", err)
 	}
 	evidence.recorder = rec
-	runSession, err := acquireRunSession(rec)
-	if err != nil {
-		evidence.close()
-		return nil, err
+	var runSession string
+	if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+		runSession, err = acquireRunSession(rec)
+		if err != nil {
+			evidence.close()
+			return nil, err
+		}
 	}
-	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec), proxy.WithSession(runSession))
+	evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithRecorder(rec))
+	if runSession != "" {
+		evidence.proxyOptions = append(evidence.proxyOptions, proxy.WithSession(runSession))
+	}
 
 	postureResult, err := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
 		ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
@@ -352,6 +376,24 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 	if err != nil {
 		evidence.close()
 		return nil, fmt.Errorf("loading Guard posture binding: %w", err)
+	}
+	if cfg.FlightRecorder.ReceiptChainCount() > 1 {
+		shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
+			Recorder: rec, PrivKey: privateKey, ConfigHash: cfg.CanonicalPolicyHash(),
+			Principal: "local", Actor: "pipelock", Metrics: m,
+			PostureBinding:      postureResult.Binding,
+			PostureAvailability: string(postureResult.Availability),
+			HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+		}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, true)
+		if groupErr != nil {
+			evidence.close()
+			return nil, fmt.Errorf("opening Guard receipt shard group: %w", groupErr)
+		}
+		evidence.shards = shards
+		evidence.emitter = shards.ProcessEmitter()
+		evidence.proxyOptions = append(evidence.proxyOptions, groupOpts...)
+		_, _ = fmt.Fprintf(stderr, "  Recorder: %s (Guard receipt group armed; awaiting child enforcement proof)\n", cfg.FlightRecorder.Dir)
+		return evidence, nil
 	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder: rec, PrivKey: privateKey, ConfigHash: cfg.CanonicalPolicyHash(),

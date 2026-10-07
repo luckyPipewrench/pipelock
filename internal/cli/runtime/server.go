@@ -136,6 +136,7 @@ type Server struct {
 	ksAPI                  *killswitch.APIHandler
 	proxy                  *proxy.Proxy
 	receiptEmitter         *receipt.Emitter
+	receiptShardSet        *receipt.ReceiptShardSet
 	envelopeEmitter        *envelope.Emitter
 	captureWriter          *capture.Writer
 	mcpListenerBearerToken string
@@ -209,6 +210,9 @@ type Server struct {
 	// cancel itself does not synchronously deadlock on Start's defers.
 	cancelMu       sync.Mutex
 	internalCancel context.CancelFunc
+	// Set before cancellation for multi-chain key-file rotation. Start returns
+	// a distinct error after its normal listener drain and group close.
+	receiptRotationRequested atomic.Bool
 
 	// conductorApplyMu serializes ApplyConductorPolicyBundle so the
 	// stage -> reload -> activate sequence is atomic. Concurrent applies
@@ -580,12 +584,16 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 		runFlightRecorderExpiryOnce(rec, opts.Stderr, opts.expiry())
 		s.recorder = rec
-		runSession, sessErr := acquireRunSession(rec)
-		if sessErr != nil {
-			s.cleanup()
-			return nil, sessErr
+		var runSession string
+		if cfg.FlightRecorder.ReceiptChainCount() == 1 {
+			var sessErr error
+			runSession, sessErr = acquireRunSession(rec)
+			if sessErr != nil {
+				s.cleanup()
+				return nil, sessErr
+			}
 		}
-		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec), proxy.WithSession(runSession))
+		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
 		postureResult, bindErr := posturebinding.LoadRuntimeForReceipts(posturebinding.RuntimeReceiptOptions{
 			ReceiptSigningEnabled:      cfg.FlightRecorder.SigningKeyPath != "",
 			RequireContainmentEvidence: cfg.FlightRecorder.RequireContainmentEvidence,
@@ -597,67 +605,96 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			return nil, fmt.Errorf("loading posture binding: %w", bindErr)
 		}
 
-		// Action receipt emitter: ConfigHash uses cfg.Hash() (raw YAML
-		// bytes) because the receipt is a point-in-time audit
-		// fingerprint of the loaded configuration file. Two deployments
-		// that happened to produce the same effective policy through
-		// different YAML should still be distinguishable in a forensic
-		// trail. Envelope attestation (below) uses the policy-semantic
-		// hash because its contract is the opposite - identical
-		// effective policy should produce identical envelope ph
-		// regardless of YAML formatting.
-		s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-			Recorder:            rec,
-			PrivKey:             recPrivKey,
-			ConfigHash:          cfg.Hash(),
-			Principal:           "local",
-			Actor:               "pipelock",
-			Metrics:             m,
-			PostureBinding:      postureResult.Binding,
-			PostureAvailability: string(postureResult.Availability),
-			HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
-			Session:             runSession,
-		})
-		if s.receiptEmitter != nil {
-			// Loud, one-time startup signal when the chain could not be
-			// resumed. Without this an init failure was only an error log on
-			// each Emit (to a formerly root-only file), silent to operators.
-			// A non-nil InitError means every Emit will fail until resolved,
-			// so name the cause and the remediation here.
-			if initErr := s.receiptEmitter.InitError(); initErr != nil {
-				_, _ = io.WriteString(opts.Stderr, receiptResumeFailureNotice(initErr))
-			} else {
-				if openErr := emitStartupSessionOpen(s.receiptEmitter); openErr != nil {
-					if cfg.FlightRecorder.RequireReceipts {
-						s.cleanup()
-						return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but session_open receipt could not be emitted: %w", openErr)
-					}
-					_, _ = fmt.Fprintf(opts.Stderr,
-						"  Receipts: ERROR - session_open could not be emitted: %v\n"+
-							"            Receipt emission for this run is UNVERIFIED until resolved.\n",
-						openErr)
-				}
-				proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))
-				if cfg.FlightRecorder.SigningKeyPath != "" {
-					proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
-				}
-				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
+		if cfg.FlightRecorder.ReceiptChainCount() > 1 {
+			if len(recPrivKey) == 0 {
+				s.cleanup()
+				return nil, errors.New("multiple receipt chains require a signing key")
 			}
+			shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
+				Recorder: rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
+				Principal: "local", Actor: "pipelock", Metrics: m,
+				PostureBinding:      postureResult.Binding,
+				PostureAvailability: string(postureResult.Availability),
+				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+			}, cfg.FlightRecorder.ReceiptChainCount(), cfg.FlightRecorder.SigningKeyPath, false, func(err error) {
+				if cfg.FlightRecorder.RequireReceipts {
+					s.logger.LogError(audit.NewMethodLogContext("RECEIPT"), fmt.Errorf("required receipt group failed: %w", err))
+					_ = s.Shutdown(context.Background())
+				}
+			})
+			if groupErr != nil {
+				s.cleanup()
+				return nil, fmt.Errorf("opening receipt shard group: %w", groupErr)
+			}
+			s.receiptShardSet = shards
+			s.receiptEmitter = shards.ProcessEmitter()
+			opening, _ := shards.Opening()
+			proxyOpts = append(proxyOpts, groupOpts...)
+			_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: %d signed chains opened\n", opening.ShardCount)
+		} else {
+			proxyOpts = append(proxyOpts, proxy.WithSession(runSession))
+			// Action receipt emitter: ConfigHash uses cfg.Hash() (raw YAML
+			// bytes) because the receipt is a point-in-time audit
+			// fingerprint of the loaded configuration file. Two deployments
+			// that happened to produce the same effective policy through
+			// different YAML should still be distinguishable in a forensic
+			// trail. Envelope attestation (below) uses the policy-semantic
+			// hash because its contract is the opposite - identical
+			// effective policy should produce identical envelope ph
+			// regardless of YAML formatting.
+			s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
+				Recorder:            rec,
+				PrivKey:             recPrivKey,
+				ConfigHash:          cfg.Hash(),
+				Principal:           "local",
+				Actor:               "pipelock",
+				Metrics:             m,
+				PostureBinding:      postureResult.Binding,
+				PostureAvailability: string(postureResult.Availability),
+				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
+				Session:             runSession,
+			})
+			if s.receiptEmitter != nil {
+				// Loud, one-time startup signal when the chain could not be
+				// resumed. Without this an init failure was only an error log on
+				// each Emit (to a formerly root-only file), silent to operators.
+				// A non-nil InitError means every Emit will fail until resolved,
+				// so name the cause and the remediation here.
+				if initErr := s.receiptEmitter.InitError(); initErr != nil {
+					_, _ = io.WriteString(opts.Stderr, receiptResumeFailureNotice(initErr))
+				} else {
+					if openErr := emitStartupSessionOpen(s.receiptEmitter); openErr != nil {
+						if cfg.FlightRecorder.RequireReceipts {
+							s.cleanup()
+							return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but session_open receipt could not be emitted: %w", openErr)
+						}
+						_, _ = fmt.Fprintf(opts.Stderr,
+							"  Receipts: ERROR - session_open could not be emitted: %v\n"+
+								"            Receipt emission for this run is UNVERIFIED until resolved.\n",
+							openErr)
+					}
+					proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))
+					if cfg.FlightRecorder.SigningKeyPath != "" {
+						proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
+					}
+					_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
+				}
 
-			// v2 proxy_decision emitter: dual-emitted alongside the v1 action
-			// receipt on every proxy decision, signed with the same key and
-			// gated on the same receipt intent (no separate flag). Sanitizes
-			// targets with the recorder's redactor (#676) before signing.
-			if v2Emitter := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-				Recorder:  rec,
-				Signer:    proxydecision.NewKeyedSigner(recPrivKey),
-				Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-				Principal: "local",
-				Actor:     "pipelock",
-				Session:   runSession,
-			}); v2Emitter != nil {
-				proxyOpts = append(proxyOpts, proxy.WithV2ReceiptEmitter(v2Emitter))
-				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: v2 proxy_decision dual-emit enabled\n")
+				// v2 proxy_decision emitter: dual-emitted alongside the v1 action
+				// receipt on every proxy decision, signed with the same key and
+				// gated on the same receipt intent (no separate flag). Sanitizes
+				// targets with the recorder's redactor (#676) before signing.
+				if v2Emitter := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+					Recorder:  rec,
+					Signer:    proxydecision.NewKeyedSigner(recPrivKey),
+					Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+					Principal: "local",
+					Actor:     "pipelock",
+					Session:   runSession,
+				}); v2Emitter != nil {
+					proxyOpts = append(proxyOpts, proxy.WithV2ReceiptEmitter(v2Emitter))
+					_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: v2 proxy_decision dual-emit enabled\n")
+				}
 			}
 		}
 

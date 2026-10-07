@@ -96,6 +96,11 @@ const (
 // receipt altogether.
 var ErrExtensionMerge = errors.New("receipt extension merge failed")
 
+// ErrReceiptPostAdvance means the v1 chain position was consumed before its
+// recorder write finished. A required group must stop admissions because the
+// missing position cannot be safely retried on another shard.
+var ErrReceiptPostAdvance = errors.New("receipt chain advanced before persistence failed")
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
@@ -113,6 +118,7 @@ type Emitter struct {
 	beforeChainLockForTest func()
 	runNonce               string
 	nativeAEL              *aelpkg.Emitter
+	groupBinding           *ReceiptGroupBinding
 
 	// session is the recorder session ID this emitter records under. It
 	// defaults to recorderSessionID for callers that do not set
@@ -232,6 +238,9 @@ type EmitterConfig struct {
 	// Empty (every fresh start, where the session was just minted) accepts no
 	// rotation.
 	PriorSignerKeys []string
+	// GroupBinding identifies this emitter's already published opening
+	// manifest. It is nil for the legacy single-chain path.
+	GroupBinding *ReceiptGroupBinding
 }
 
 // PostureBinding carries the signed posture-capsule fields that session_open
@@ -278,6 +287,14 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
 		return e
 	}
+	if cfg.GroupBinding != nil {
+		binding := *cfg.GroupBinding
+		if err := validateEmitterGroupBinding(binding, session, cfg.PrivKey); err != nil {
+			e.initErr = err
+			return e
+		}
+		e.groupBinding = &binding
+	}
 	e.initErr = e.resumeChain()
 	if e.initErr != nil {
 		return e
@@ -297,6 +314,22 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	return e
 }
 
+func validateEmitterGroupBinding(binding ReceiptGroupBinding, session string, key ed25519.PrivateKey) error {
+	base, ok := RunSessionBase(session)
+	if !ok || !groupRunSession(base, binding.SessionID) || binding.SessionID != session ||
+		!groupHex(binding.GroupID, 32) || binding.ShardIndex < 0 || binding.ShardIndex >= 32 ||
+		!groupHex(binding.OpenManifestSHA256, 64) ||
+		binding.SignerKey != hex.EncodeToString(key.Public().(ed25519.PublicKey)) ||
+		(binding.PreviousGroupID == "") != (binding.PreviousOpenManifestSHA256 == "") {
+		return errors.New("invalid receipt group binding for emitter session")
+	}
+	if binding.PreviousGroupID != "" &&
+		(!groupHex(binding.PreviousGroupID, 32) || !groupHex(binding.PreviousOpenManifestSHA256, 64) || binding.PreviousGroupID == binding.GroupID) {
+		return errors.New("invalid receipt group predecessor binding")
+	}
+	return nil
+}
+
 // linkPredecessor runs once, after this emitter's first receipt was recorded.
 // When the emitter owns a brand-new run session, it
 // publishes a signed link file continuing the most recent finished chain of
@@ -313,6 +346,9 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 // The caller holds chainMu, including during construction; callbacks update
 // chainLink and recoverySeal under that same lock.
 func (e *Emitter) linkPredecessor() {
+	if e.groupBinding != nil {
+		return
+	}
 	predecessor := e.recorder.RecoveryPredecessor()
 	if (predecessor == "" && (e.hasPriorTail || e.chainSeq != 1)) || e.recorder.Dir() == "" {
 		return
@@ -442,6 +478,10 @@ func (e *Emitter) SignerKeyHex() string {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
+	// ShardIndex is selected once at admission and copied into later outcome,
+	// failure-marker, and v2 emissions. It is runtime-only, never signed JSON.
+	ShardIndex            int
+	ShardSelected         bool
 	ActionID              string
 	ParentActionID        string
 	Verdict               string
@@ -550,6 +590,7 @@ func (e *Emitter) EmitSessionOpen() error {
 				PostureSignerKeyID:   e.postureBinding.SignerKeyID,
 				ContainmentNonce:     e.postureBinding.ContainmentNonce,
 				ContainedUID:         e.postureBinding.ContainedUID,
+				GroupBinding:         e.groupBinding,
 			},
 		},
 	})
@@ -839,23 +880,6 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		return fmt.Errorf("validating signed receipt for recording: %w", err)
 	}
 
-	// Advance chain state BEFORE persist. Record may write the entry
-	// and then fail on checkpoint/rotation. If we left chain state
-	// unchanged, the next Emit would reuse the same prev_hash/seq,
-	// forking the chain. Advancing first means a failed Record
-	// leaves a gap (missing entry) rather than a fork (duplicate link),
-	// which is fail-closed: verify-chain detects gaps but not forks.
-	e.chainPrevHash = receiptHash
-	if e.chainSeq == 0 {
-		e.chainStart = ar.Timestamp
-	}
-	e.chainEnd = ar.Timestamp
-	e.chainSeq++
-	// The transition marker was bound into the receipt just signed; clear it
-	// so it is never re-stamped onto a later receipt (which would falsely
-	// claim a second segment boundary). Cleared with the rest of the
-	// advance-before-persist state for the same fork-avoidance reason.
-	e.pendingTransition = nil
 	openControl := isSessionOpenControl(sessionControl)
 	closeControl := isSessionCloseControl(sessionControl)
 
@@ -867,13 +891,31 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
 	}
+	advanced := false
+	advance := func() {
+		// The recorder calls this after the exact line passes its size
+		// check, immediately before writing. Any later failure leaves a
+		// detectable gap rather than reusing this receipt chain position.
+		advanced = true
+		e.chainPrevHash = receiptHash
+		if e.chainSeq == 0 {
+			e.chainStart = ar.Timestamp
+		}
+		e.chainEnd = ar.Timestamp
+		e.chainSeq++
+		e.pendingTransition = nil
+	}
 	var recordErr error
 	if durable {
-		recordErr = e.recorder.RecordDurableWithReceiptScan(entry, &scan)
+		recordErr = e.recorder.RecordDurableWithReceiptScanPreAdvance(entry, &scan, advance)
 	} else {
-		recordErr = e.recorder.RecordWithReceiptScan(entry, &scan)
+		recordErr = e.recorder.RecordWithReceiptScanPreAdvance(entry, &scan, advance)
 	}
 	if recordErr != nil {
+		if !advanced {
+			e.recordFailure(FailReasonRecord)
+			return fmt.Errorf("recording receipt before chain advance: %w", recordErr)
+		}
 		// A failed first write may leave no successor chain at all. Never
 		// claim its predecessor; later attempts have advanced chain state
 		// and cannot make this failed first position valid.
@@ -908,7 +950,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		} else {
 			e.recordFailure(FailReasonRecord)
 		}
-		return emitErr
+		return fmt.Errorf("%w: %w", ErrReceiptPostAdvance, emitErr)
 	}
 	if !e.linked {
 		e.linked = true
@@ -1622,6 +1664,12 @@ func recorderFiles(dir, session string) ([]string, error) {
 // evidenceIndex maps each session to its evidence shard paths, in chain order.
 type evidenceIndex map[string][]string
 
+type indexedRecorderShard struct {
+	path     string
+	base     string
+	seqStart uint64
+}
+
 // sessions returns every session in the index, sorted.
 func (ix evidenceIndex) sessions() []string {
 	out := make([]string, 0, len(ix))
@@ -1650,6 +1698,17 @@ func (ix evidenceIndex) files(session string) ([]string, error) {
 // read ceiling guards query paths that would otherwise present a partial view
 // as complete, while this index must see every shard to be correct at all.
 func indexRecorderFiles(dir string) (evidenceIndex, error) {
+	return indexRecorderFilesWithGroupFilter(dir, false)
+}
+
+// indexRecorderFilesExcludingReceiptGroups filters each session before adding
+// it to the legacy index. A disk-backed name spool keeps historical group
+// filenames out of Go heap while retaining complete directory coverage.
+func indexRecorderFilesExcludingReceiptGroups(dir string) (evidenceIndex, error) {
+	return indexRecorderFilesExcludingGroupsSpill(dir)
+}
+
+func indexRecorderFilesWithGroupFilter(dir string, excludeGroups bool) (evidenceIndex, error) {
 	dirEntries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
@@ -1661,12 +1720,20 @@ func indexRecorderFiles(dir string) (evidenceIndex, error) {
 	// session's shard to this one: for session "s", "evidence-s-evil-999.jsonl"
 	// satisfies the prefix but belongs to session "s-evil". Both now go through
 	// recorder.ParseEvidenceFilename so there is one definition of membership.
-	type shard struct {
-		path     string
-		base     string
-		seqStart uint64
+	bySession := make(map[string][]indexedRecorderShard)
+	currentSession := ""
+	var currentShards []indexedRecorderShard
+	flush := func() {
+		if currentSession == "" || len(currentShards) == 0 {
+			return
+		}
+		if excludeGroups && isGroupSessionShards(currentShards) {
+			currentSession, currentShards = "", nil
+			return
+		}
+		bySession[currentSession] = append(bySession[currentSession], currentShards...)
+		currentSession, currentShards = "", nil
 	}
-	bySession := make(map[string][]shard)
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
@@ -1679,12 +1746,17 @@ func indexRecorderFiles(dir string) (evidenceIndex, error) {
 		if !ok {
 			continue
 		}
-		bySession[parsedSession] = append(bySession[parsedSession], shard{
+		if currentSession != "" && currentSession != parsedSession {
+			flush()
+		}
+		currentSession = parsedSession
+		currentShards = append(currentShards, indexedRecorderShard{
 			path:     filepath.Join(filepath.Clean(dir), name),
 			base:     name,
 			seqStart: seqStart,
 		})
 	}
+	flush()
 	ix := make(evidenceIndex, len(bySession))
 	for session, shards := range bySession {
 		// Total order: sort.Slice is not stable, so break seqStart ties on
@@ -1702,4 +1774,21 @@ func indexRecorderFiles(dir string) (evidenceIndex, error) {
 		ix[session] = files
 	}
 	return ix, nil
+}
+
+func isGroupSessionShards(shards []indexedRecorderShard) bool {
+	for _, shard := range shards {
+		if shard.seqStart != 0 {
+			continue
+		}
+		seen, gated := false, false
+		stop := errors.New("captured first recorder entry")
+		_, _ = recorder.WalkEvidenceFile(shard.path, nil, func(entry recorder.Entry) error {
+			seen = true
+			gated = entry.Type == recorder.GroupGateEntryType
+			return stop
+		})
+		return seen && gated
+	}
+	return false
 }

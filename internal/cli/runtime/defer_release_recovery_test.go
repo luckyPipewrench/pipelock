@@ -79,7 +79,7 @@ func TestRecoverDeferredActionsClosesInterruptedRelease(t *testing.T) {
 
 	receiptsDir := filepath.Join(dir, "receipts")
 	var log bytes.Buffer
-	if err := recoverDeferredActions(manager, manager.JournalPath(), recoveryEmitter(t, receiptsDir, nil), nil, runtimeTestPolicyHash, &log); err != nil {
+	if err := recoverDeferredActions(manager, manager.JournalPath(), recoveryEmitter(t, receiptsDir, nil), nil, nil, runtimeTestPolicyHash, &log); err != nil {
 		t.Fatalf("recoverDeferredActions: %v", err)
 	}
 	if log.Len() != 0 {
@@ -110,7 +110,7 @@ func TestRecoverDeferredActionsKeepsHoldWhenReceiptNotDurable(t *testing.T) {
 		return errors.New("injected sync failure")
 	})
 	var log bytes.Buffer
-	err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, runtimeTestPolicyHash, &log)
+	err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, nil, runtimeTestPolicyHash, &log)
 	if err == nil {
 		t.Fatal("recoverDeferredActions succeeded with an unsynced recovery receipt")
 	}

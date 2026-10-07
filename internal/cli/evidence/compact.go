@@ -112,6 +112,13 @@ func runCompact(cmd *cobra.Command, opts compactOptions) error {
 		return fmt.Errorf("lock stopped evidence directory: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	grouped, err := hasReceiptGroupArtifacts(location.Dir)
+	if err != nil {
+		return err
+	}
+	if grouped {
+		return errors.New("compaction of a signed receipt group is not supported; preserve the complete directory and verify it with verify-receipt --chain")
+	}
 	sourceNames, err := compactStreamNames(location, opts.sessionID)
 	if err != nil {
 		return err

@@ -494,7 +494,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 // config snapshot; under require_receipts every path that cannot durably
 // record the allow returns an error the caller must treat as fail-closed.
 // With require_receipts off it always returns nil (best-effort).
-func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind) error {
+func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext, target, requestID, agent, method string, kind issuerQueryKind, selected ...receipt.EmitOpts) error {
 	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	fail := func(err error) error {
 		if requireReceipts {
@@ -517,12 +517,16 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
 	extension := []byte(`{"entropy_issuer_query_allow":"` + string(kind) + `"}`)
-	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
+	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
 		Transport: "intercept", Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
-	})
+	}, shard))
 	if emitErr != nil {
 		return fail(emitErr)
 	}

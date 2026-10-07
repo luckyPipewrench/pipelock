@@ -811,6 +811,70 @@ func TestEmit_RecorderErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestEmitSerializedSizeRejectDoesNotPoisonChain(t *testing.T) {
+	rec := &captureRecorder{err: recorder.ErrSerializedEntryTooLarge}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	if err := em.Emit(validDecision()); !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
+		t.Fatalf("size rejection = %v", err)
+	}
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("deterministic size rejection poisoned emitter: %v", err)
+	}
+	if seq, prev := em.ChainState(); seq != 0 || prev != recorder.GenesisHash {
+		t.Fatalf("size rejection advanced chain to %d, %s", seq, prev)
+	}
+	rec.err = nil
+	if err := em.Emit(validDecision()); err != nil {
+		t.Fatalf("valid receipt after size rejection: %v", err)
+	}
+	if seq, _ := em.ChainState(); seq != 1 {
+		t.Fatalf("chain after valid receipt = %d, want 1", seq)
+	}
+
+	readLimit := &captureRecorder{err: recorder.ErrEvidenceReadLimitExceeded}
+	em, _, _ = newTestEmitter(t, readLimit, nil)
+	if err := em.Emit(validDecision()); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("read-limit error = %v", err)
+	}
+	if !errors.Is(em.HealthError(), recorder.ErrEvidenceReadLimitExceeded) {
+		t.Fatalf("uncertain read-limit error was not sticky: %v", em.HealthError())
+	}
+}
+
+func TestEmitRecorderRejectsOversizedLineBeforeV2Advance(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	session, err := recorder.AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	em := NewEmitter(EmitterConfig{
+		Recorder: rec, Signer: NewKeyedSigner(key), Session: session,
+		Principal: "local", Actor: "pipelock",
+	})
+	tooLarge := validDecision()
+	tooLarge.Target = "https://api.vendor.example/" + strings.Repeat("x", recorder.MaxEntryLineBytes)
+	if err := em.Emit(tooLarge); !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
+		t.Fatalf("oversized live recorder entry = %v", err)
+	}
+	if err := em.HealthError(); err != nil {
+		t.Fatalf("oversized entry poisoned v2 emitter: %v", err)
+	}
+	if seq, _ := em.ChainState(); seq != 0 {
+		t.Fatalf("oversized entry advanced v2 chain to %d", seq)
+	}
+	if err := em.Emit(validDecision()); err != nil {
+		t.Fatalf("valid v2 receipt after size rejection: %v", err)
+	}
+}
+
 var errTestRecorder = &recorderError{"boom"}
 
 type recorderError struct{ msg string }

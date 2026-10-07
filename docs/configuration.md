@@ -1989,8 +1989,17 @@ Emergency deny-all with seven independent activation sources: `enabled`,
 `sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor
 stale-bundle detection, and uncertain Conductor apply. Any one active denies
 normal traffic (OR-composed) except for configured exemptions (`health_exempt`,
-`metrics_exempt`, `api_exempt`, `allowlist_ips`); `allowlist_ips` is not
-consulted during uncertain Conductor apply. The three Conductor-driven sources
+`metrics_exempt`, `api_exempt`, `allowlist_ips`). Exemptions are honored only on
+the HTTP front door: the three endpoint exemptions cover requests made to
+Pipelock's own `/health` and `/metrics` paths and its kill-switch and session
+admin routes under `/api/v1` (on the main port only when the API has no
+separate port), never a forward-proxy
+or CONNECT request that happens to name those paths on another host, and
+`allowlist_ips` matches the client address of HTTP, forward-proxy and
+intercepted CONNECT requests. MCP transports (stdio, the stdio-to-HTTP bridge
+and the HTTP listener), the reverse proxy and established relay or WebSocket
+connections ignore every exemption. `allowlist_ips` is not consulted during
+uncertain Conductor apply. The three Conductor-driven sources
 are activated by the enterprise follower runtime. See [Kill Switch](../README.md#operability)
 for operational details. Activation blocks every deferred (`action: defer`)
 tool call held on MCP stdio or the stdio-to-HTTP bridge that has not yet
@@ -2019,10 +2028,10 @@ kill_switch:
 | `message` | `"Emergency deny-all active"` | No | Rejection message |
 | `health_exempt` | `true` | No | /health bypasses kill switch |
 | `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
-| `api_exempt` | `true` | No | /api/v1/* bypasses kill switch |
+| `api_exempt` | `true` | No | The kill switch and session admin routes under `/api/v1` on the main port bypass it; other `/api/v1` routes do not. Ignored when `api_listen` is set |
 | `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
-| `allowlist_ips` | `[]` | No | IPs always allowed through |
+| `allowlist_ips` | `[]` | No | Client IPs or CIDRs exempt on the HTTP front door (not MCP, reverse proxy or relay paths; not during uncertain Conductor apply) |
 
 **Port isolation:** When `api_listen` is set, the kill switch, session, adaptive, and baseline admin APIs run on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch, resetting their own sessions, or ratifying their own behavioral baseline.
 
@@ -4206,8 +4215,8 @@ pipelock keygen agent-b
 pipelock signing roster build \
   --root /etc/pipelock/keys/fleet-root.json \
   --include id=activation-primary,key=/etc/pipelock/keys/activation.json,purpose=contract-activation-signing,role=operator \
-  --include id=compile-agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
-  --include id=compile-agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
   --data-class internal \
   --out /etc/pipelock/roster.json
 

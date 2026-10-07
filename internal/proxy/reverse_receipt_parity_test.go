@@ -277,6 +277,7 @@ func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 	v1 := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
 		PrivKey:    priv,
@@ -358,6 +359,7 @@ func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 	v1 := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
 		PrivKey:    priv,

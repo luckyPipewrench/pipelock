@@ -158,6 +158,7 @@ func newTestReceiptEmitter(t *testing.T) (*receipt.Emitter, *recorder.Recorder, 
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 	return receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
 		PrivKey:    priv,

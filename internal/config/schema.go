@@ -1558,9 +1558,16 @@ func (f CrossRequestFragments) ResolvedMaxSessions() int {
 }
 
 // KillSwitch configures the emergency deny-all kill switch.
-// When active, all requests are rejected except health/metrics endpoints
-// and allowlisted IPs (IP allowlist exemptions do not apply during uncertain
-// Conductor apply). Seven activation sources (config, API, Conductor remote
+// When active, all requests are rejected except the exemptions below, which
+// only the HTTP front door honors: health_exempt, metrics_exempt and
+// api_exempt cover Pipelock's own /health and /metrics paths and its
+// kill-switch and session admin routes under /api/v1 (on the main port only
+// when the API has no separate port) on a request made to Pipelock itself
+// (never on proxied traffic), and
+// allowlist_ips covers HTTP, forward-proxy and intercepted CONNECT requests by
+// client IP (not during uncertain Conductor apply). MCP transports, the raw
+// reverse proxy and established relay connections ignore every exemption.
+// Seven activation sources (config, API, Conductor remote
 // kill, Conductor stale bundle, uncertain Conductor apply, SIGUSR1, sentinel
 // file) are OR-composed: any one active means the kill switch is engaged.
 type KillSwitch struct {
@@ -1569,7 +1576,7 @@ type KillSwitch struct {
 	Message       string   `yaml:"message"`
 	HealthExempt  *bool    `yaml:"health_exempt"`
 	MetricsExempt *bool    `yaml:"metrics_exempt"`
-	APIExempt     *bool    `yaml:"api_exempt"` // exempt /api/v1/* from kill switch (default true)
+	APIExempt     *bool    `yaml:"api_exempt"` // exempt kill-switch and session admin routes under /api/v1 (default true)
 	APIToken      string   `yaml:"api_token"`
 	APIListen     string   `yaml:"api_listen"` // separate listen address for kill switch API (e.g. "0.0.0.0:9090")
 	AllowlistIPs  []string `yaml:"allowlist_ips"`

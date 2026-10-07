@@ -42,6 +42,9 @@ type ToolDef struct {
 	unknown      map[string]json.RawMessage
 }
 
+// toolDefKnownFields are the ToolDef keys decoded into struct fields.
+var toolDefKnownFields = []string{"name", "title", "description", "inputSchema", "outputSchema", "annotations", "_meta"}
+
 func (t *ToolDef) UnmarshalJSON(data []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -49,6 +52,15 @@ func (t *ToolDef) UnmarshalJSON(data []byte) error {
 	}
 	unknown := make(map[string]json.RawMessage)
 	for field, value := range fields {
+		// encoding/json fills struct fields from keys that differ only in case,
+		// and the last duplicate wins. A key like "Description" next to
+		// "description" could therefore hide the exact key's text from the scan.
+		// Refuse the alias instead of choosing between the two.
+		for _, known := range toolDefKnownFields {
+			if field != known && strings.EqualFold(field, known) {
+				return fmt.Errorf("tool definition key %q aliases %q", field, known)
+			}
+		}
 		switch field {
 		case "name", "title", "description", "inputSchema", "outputSchema", "annotations", "_meta":
 		default:
@@ -2052,37 +2064,72 @@ func collectStringLeaves(v interface{}, result *[]string, depth int) {
 // as a tools/list response - the response scanner must skip general injection
 // scanning regardless of whether there are tools to scan for poisoning.
 func isToolsListResult(result json.RawMessage) bool {
+	return ClassifyToolsListResult(result) == ToolsListValid
+}
+
+// ToolsListShape classifies a JSON-RPC result by its "tools" field.
+type ToolsListShape int
+
+const (
+	// ToolsListAbsent means the result has no "tools" field, so it is not a
+	// tools/list result.
+	ToolsListAbsent ToolsListShape = iota
+	// ToolsListValid means "tools" is an array whose elements are all objects
+	// (an empty array is valid). The tool scanner can read it.
+	ToolsListValid
+	// ToolsListMalformed means "tools" is present but is not an array of
+	// objects (null, a scalar, an object, or an array with a non-object
+	// element). The tool scanner cannot read it, so it must not be treated as
+	// scanned or clean.
+	ToolsListMalformed
+)
+
+// toolsListKey is the result field that carries tool definitions.
+const toolsListKey = "tools"
+
+// ToolsListMalformedDetail is the operator-facing reason reported for a
+// malformed tools field.
+const ToolsListMalformedDetail = "tools/list result tools field is not an array of objects"
+
+// ClassifyToolsListResult is the single classifier for the tools field of a
+// JSON-RPC result. The proxy and the offline scanner both use it so they agree
+// on which responses carry tool definitions the tool scanner cannot read.
+func ClassifyToolsListResult(result json.RawMessage) ToolsListShape {
 	if len(result) == 0 || string(result) == jsonrpc.Null {
-		return false
+		return ToolsListAbsent
 	}
-	var probe struct {
-		Tools json.RawMessage `json:"tools"`
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(result, &fields); err != nil {
+		return ToolsListAbsent
 	}
-	if err := json.Unmarshal(result, &probe); err != nil {
-		return false
+	// encoding/json matches struct keys case-insensitively, so the downstream
+	// decoder would read "Tools" as the tools array. A key that matches only
+	// after case folding is an alias the exact lookup would miss: treat it as
+	// malformed rather than guess which key the decoder prefers.
+	for key := range fields {
+		if key != toolsListKey && strings.EqualFold(key, toolsListKey) {
+			return ToolsListMalformed
+		}
 	}
-	// json.RawMessage("null") is non-nil in Go - must check string value.
-	// Only treat as tools/list if tools is a JSON array (including empty []).
-	// A string or object in the tools field is malformed and must NOT suppress
-	// general response scanning - otherwise an attacker hides injection there.
-	trimmed := bytes.TrimSpace(probe.Tools)
+	raw, ok := fields[toolsListKey]
+	if !ok {
+		return ToolsListAbsent
+	}
+	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return false
+		return ToolsListMalformed
 	}
-	// Verify array elements are JSON objects. An array of strings like
-	// ["Ignore previous instructions"] would bypass general scanning
-	// since tryParseToolsList returns nil but IsToolsList would be true.
 	var elems []json.RawMessage
-	if err := json.Unmarshal(probe.Tools, &elems); err != nil {
-		return false
+	if err := json.Unmarshal(trimmed, &elems); err != nil {
+		return ToolsListMalformed
 	}
 	for _, elem := range elems {
 		e := bytes.TrimSpace(elem)
 		if len(e) == 0 || e[0] != '{' {
-			return false
+			return ToolsListMalformed
 		}
 	}
-	return true
+	return ToolsListValid
 }
 
 func tryParseToolsList(result json.RawMessage) []ToolDef {
@@ -2295,6 +2342,18 @@ func hasContrastBoundary(text string) bool {
 // definition hashes for rug pull (drift) detection.
 // Batch responses (JSON arrays) are detected and each element scanned individually.
 func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
+	return ScanToolsForMethod(line, sc, cfg, "")
+}
+
+// methodToolsList is the JSON-RPC method whose response carries tool definitions.
+const methodToolsList = "tools/list"
+
+// ScanToolsForMethod is ScanTools with the JSON-RPC method of the matching
+// request when the caller tracked it. A response to a known non-tools/list
+// method whose "tools" field is malformed is not a discovery response and is
+// left to general response scanning; with no method, or tools/list, a malformed
+// "tools" field fails closed.
+func ScanToolsForMethod(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, method string) ToolScanResult {
 	if cfg == nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
@@ -2303,14 +2362,15 @@ func ScanTools(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanRe
 	// Trim so a leading-whitespace array is not treated as an unparseable
 	// single object, which would return Clean and skip per-element scanning.
 	if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 && trimmed[0] == '[' {
+		// Batch elements do not carry a per-element tracked method.
 		return scanToolsBatch(trimmed, sc, cfg)
 	}
 
-	return scanToolsSingle(line, sc, cfg)
+	return scanToolsSingle(line, sc, cfg, method)
 }
 
 // scanToolsSingle scans a single JSON-RPC 2.0 response for tool poisoning.
-func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
+func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, method string) ToolScanResult {
 	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
@@ -2319,8 +2379,18 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 	// Check if this is a tools/list response at all (even with empty tools array).
 	// This ensures the general response scanner skips tools/list responses
 	// regardless of whether there are tool definitions to scan for poisoning.
-	if !isToolsListResult(rpc.Result) {
+	switch ClassifyToolsListResult(rpc.Result) {
+	case ToolsListAbsent:
 		return ToolScanResult{IsToolsList: false, Clean: true}
+	case ToolsListMalformed:
+		if method != "" && method != methodToolsList {
+			return ToolScanResult{IsToolsList: false, Clean: true}
+		}
+		// A tools field the tool scanner cannot read is not a clean inventory.
+		// Forwarding it would skip every tool-specific check, so reject it the
+		// same way as a tool definition that cannot be parsed. The drift
+		// baseline and session binding are left untouched.
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: ToolsListMalformedDetail, RPCID: rpc.ID}
 	}
 
 	tools, err := parseToolsList(rpc.Result)
@@ -2533,7 +2603,7 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	isToolsList := false
 
 	for _, elem := range batch {
-		r := scanToolsSingle(elem, sc, cfg)
+		r := scanToolsSingle(elem, sc, cfg, "")
 		if r.IsToolsList {
 			isToolsList = true
 			if firstID == nil && len(r.RPCID) > 0 {

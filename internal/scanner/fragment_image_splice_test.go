@@ -170,3 +170,40 @@ func TestFragmentDocExampleRedactionShift(t *testing.T) {
 		}
 	}
 }
+
+// The joined scan already found a rule. If the first rescan cannot find it
+// again, or the scan is cancelled, the rule must still be reported.
+func TestImageSplicedFallbackKeepsJoinedFinding(t *testing.T) {
+	sc := imageSpliceScanner(t)
+	image := dataURLForPNGBytes(t, randomPNG(t, 21))
+	at := len(image) / 2
+	frags := imageSpliceFragments("plain "+image[:at], image[at:]+" text")
+	var buf []byte
+	var ranges []fragmentRange
+	for _, f := range frags {
+		start := len(buf)
+		buf = append(buf, f.data...)
+		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: f.data, fragment: f})
+	}
+	excised, decoded, removed := stripVerifiedImageDataURLSpans(string(buf), true)
+	if len(removed) == 0 {
+		t.Fatal("fixture: image was not excised")
+	}
+	joined := []TextDLPMatch{{PatternName: "AWS Access ID"}}
+
+	t.Run("first rescan misses", func(t *testing.T) {
+		got := imageSplicedFragmentMatches(context.Background(), sc, excised, decoded, removed, ranges, joined)
+		if !hasAWSKey(got) {
+			t.Fatalf("joined finding dropped when the rescan missed: %+v", got)
+		}
+	})
+
+	t.Run("cancelled scan", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		got := imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, joined)
+		if !hasAWSKey(got) {
+			t.Fatalf("joined finding dropped on a cancelled scan: %+v", got)
+		}
+	})
+}

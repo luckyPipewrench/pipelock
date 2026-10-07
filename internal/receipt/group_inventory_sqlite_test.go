@@ -49,3 +49,40 @@ func TestClaimInsertErrorReportsDuplicateRun(t *testing.T) {
 		t.Fatal("unrelated insert error was rewritten")
 	}
 }
+
+func TestBatchIndexCheckRejectsUnlistedSessionClaim(t *testing.T) {
+	open := ReceiptGroupOpen{GroupID: strings.Repeat("1", 32), Shards: []ReceiptGroupShard{
+		{SessionID: "proxy.run." + strings.Repeat("a", 32)},
+		{SessionID: "proxy.run." + strings.Repeat("b", 32)},
+	}}
+	for _, tc := range []struct {
+		name     string
+		sessions []string
+		want     string
+	}{
+		{"complete", []string{open.Shards[0].SessionID, open.Shards[1].SessionID}, ""},
+		{"foreign", []string{open.Shards[0].SessionID, "proxy.run." + strings.Repeat("c", 32)}, "outside signed shard membership"},
+		{"duplicate", []string{open.Shards[0].SessionID, open.Shards[0].SessionID}, "duplicate claims"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "claims.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if _, err := db.Exec(`CREATE TABLE claims (session TEXT NOT NULL, group_id TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			for _, session := range tc.sessions {
+				if _, err := db.Exec(`INSERT INTO claims(session, group_id) VALUES (?, ?)`, session, open.GroupID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			index := &sqliteGroupAELBatchIndex{db: db}
+			err = index.Check(open, false)
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("batch membership = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

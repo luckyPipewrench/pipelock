@@ -159,12 +159,29 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 	if err != nil {
 		return err
 	}
-	var groupClaims int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM claims WHERE group_id = ?`, open.GroupID).Scan(&groupClaims); err != nil {
+	membership := newGroupAELMembership(open)
+	groupRows, err := db.QueryContext(ctx, `SELECT session FROM claims WHERE group_id = ?`, open.GroupID)
+	if err != nil {
 		return err
 	}
-	if groupClaims > len(open.Shards) || !incomplete && groupClaims != len(open.Shards) {
-		return fmt.Errorf("receipt group native AEL claims = %d, want %d", groupClaims, len(open.Shards))
+	for groupRows.Next() {
+		var session string
+		if err := groupRows.Scan(&session); err != nil {
+			_ = groupRows.Close()
+			return err
+		}
+		if err := membership.Add(session); err != nil {
+			_ = groupRows.Close()
+			return err
+		}
+	}
+	err = groupRows.Err()
+	_ = groupRows.Close()
+	if err != nil {
+		return err
+	}
+	if err := membership.Finish(incomplete); err != nil {
+		return err
 	}
 	if openTail {
 		return errGroupAELOpenTail

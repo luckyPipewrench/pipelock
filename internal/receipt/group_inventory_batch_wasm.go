@@ -16,7 +16,7 @@ import (
 
 type wasmGroupAELBatchIndex struct {
 	claims         map[string]wasmGroupAELClaim
-	counts         map[string]int
+	sessions       map[string][]string
 	tailCounts     map[string]int
 	totalOpenTails int
 	torn           []groupBatchTorn
@@ -24,7 +24,7 @@ type wasmGroupAELBatchIndex struct {
 
 func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, error) {
 	index := &wasmGroupAELBatchIndex{
-		claims: make(map[string]wasmGroupAELClaim), counts: make(map[string]int),
+		claims: make(map[string]wasmGroupAELClaim), sessions: make(map[string][]string),
 		tailCounts: make(map[string]int),
 	}
 	evidenceNames := make(map[wasmEvidenceNameKey]string)
@@ -52,7 +52,7 @@ func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, er
 				return fmt.Errorf("duplicate signed native AEL run %q", run)
 			}
 			index.claims[run] = wasmGroupAELClaim{session: session, groupID: groupID, signer: signer, completed: completed}
-			index.counts[groupID]++
+			index.sessions[groupID] = append(index.sessions[groupID], session)
 			return nil
 		}, index.addTorn)
 	}); err != nil {
@@ -108,9 +108,14 @@ func (index *wasmGroupAELBatchIndex) Check(open ReceiptGroupOpen, incomplete boo
 			return torn.err
 		}
 	}
-	claims := index.counts[open.GroupID]
-	if claims > len(open.Shards) || !incomplete && claims != len(open.Shards) {
-		return fmt.Errorf("receipt group native AEL claims = %d, want %d", claims, len(open.Shards))
+	membership := newGroupAELMembership(open)
+	for _, session := range index.sessions[open.GroupID] {
+		if err := membership.Add(session); err != nil {
+			return err
+		}
+	}
+	if err := membership.Finish(incomplete); err != nil {
+		return err
 	}
 	if index.tailCounts[open.GroupID] > 0 {
 		return errGroupAELOpenTail

@@ -57,7 +57,7 @@ func (index *sqliteGroupAELBatchIndex) Close() error {
 func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error {
 	ctx := context.Background()
 	for _, query := range []string{
-		`CREATE TABLE claims (run TEXT PRIMARY KEY, group_id TEXT NOT NULL, signer TEXT NOT NULL, completed INTEGER NOT NULL)`,
+		`CREATE TABLE claims (run TEXT PRIMARY KEY, session TEXT NOT NULL, group_id TEXT NOT NULL, signer TEXT NOT NULL, completed INTEGER NOT NULL)`,
 		`CREATE TABLE runs (run TEXT PRIMARY KEY)`,
 		`CREATE TABLE evidence_names (session TEXT NOT NULL, seq TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session, seq))`,
 	} {
@@ -89,8 +89,8 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error
 		if !ok || seq != 0 {
 			return nil
 		}
-		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, _, groupID, signer string, completed bool) error {
-			_, err := index.db.ExecContext(ctx, `INSERT INTO claims(run, group_id, signer, completed) VALUES (?, ?, ?, ?)`, run, groupID, signer, completed)
+		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, session, groupID, signer string, completed bool) error {
+			_, err := index.db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
 			return claimInsertError(err, run)
 		}, index.addTorn)
 	}); err != nil {
@@ -159,12 +159,29 @@ func (index *sqliteGroupAELBatchIndex) Check(open ReceiptGroupOpen, incomplete b
 			return torn.err
 		}
 	}
-	var claims int
-	if err := index.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM claims WHERE group_id = ?`, open.GroupID).Scan(&claims); err != nil {
+	membership := newGroupAELMembership(open)
+	rows, err := index.db.QueryContext(context.Background(), `SELECT session FROM claims WHERE group_id = ?`, open.GroupID)
+	if err != nil {
 		return err
 	}
-	if claims > len(open.Shards) || !incomplete && claims != len(open.Shards) {
-		return fmt.Errorf("receipt group native AEL claims = %d, want %d", claims, len(open.Shards))
+	for rows.Next() {
+		var session string
+		if err := rows.Scan(&session); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := membership.Add(session); err != nil {
+			_ = rows.Close()
+			return err
+		}
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if err := membership.Finish(incomplete); err != nil {
+		return err
 	}
 	if index.openTailCounts[open.GroupID] > 0 {
 		return errGroupAELOpenTail

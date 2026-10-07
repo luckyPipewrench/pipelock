@@ -30,6 +30,40 @@ type groupInventoryFingerprint struct {
 	rootCount, aelCount, aelTreeCount uint64
 }
 
+// groupAELMembership checks the signed session owner of each native AEL claim.
+// Group IDs and counts alone cannot establish that every opened shard is present.
+type groupAELMembership struct {
+	groupID string
+	allowed map[string]struct{}
+	seen    map[string]struct{}
+}
+
+func newGroupAELMembership(open ReceiptGroupOpen) groupAELMembership {
+	m := groupAELMembership{groupID: open.GroupID, allowed: make(map[string]struct{}, len(open.Shards)), seen: make(map[string]struct{}, len(open.Shards))}
+	for _, shard := range open.Shards {
+		m.allowed[shard.SessionID] = struct{}{}
+	}
+	return m
+}
+
+func (m groupAELMembership) Add(session string) error {
+	if _, ok := m.allowed[session]; !ok {
+		return fmt.Errorf("receipt group native AEL claim session %q is outside signed shard membership", session)
+	}
+	if _, duplicate := m.seen[session]; duplicate {
+		return fmt.Errorf("receipt group native AEL session %q has duplicate claims", session)
+	}
+	m.seen[session] = struct{}{}
+	return nil
+}
+
+func (m groupAELMembership) Finish(incomplete bool) error {
+	if len(m.seen) > len(m.allowed) || !incomplete && len(m.seen) != len(m.allowed) {
+		return fmt.Errorf("receipt group native AEL claims = %d, want %d", len(m.seen), len(m.allowed))
+	}
+	return nil
+}
+
 // fingerprintGroupDirectory streams directory entries in fixed batches. The
 // XOR accumulator is order-independent because Readdirnames has no stable
 // order; each name, mode, size, and modification time is SHA-256 separated.

@@ -70,7 +70,7 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 	}); err != nil {
 		return err
 	}
-	groupClaims := 0
+	membership := newGroupAELMembership(open)
 	openTail := false
 	neighborOpenTail := false
 	if err := walkInventoryNames(filepath.Join(dir, "ael"), func(name string) error {
@@ -86,7 +86,9 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 			return fmt.Errorf("native AEL run %q has no signed session owner", name)
 		}
 		if claim.groupID == open.GroupID {
-			groupClaims++
+			if err := membership.Add(claim.session); err != nil {
+				return err
+			}
 		}
 		if !claim.completed {
 			if _, err := ael.VerifyPresentRun(dir, name, claim.signer); err != nil {
@@ -113,8 +115,8 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 			return fmt.Errorf("native AEL run %q claimed by a signed session_open is missing", run)
 		}
 	}
-	if groupClaims > len(open.Shards) || !incomplete && groupClaims != len(open.Shards) {
-		return fmt.Errorf("receipt group native AEL claims = %d, want %d", groupClaims, len(open.Shards))
+	if err := membership.Finish(incomplete); err != nil {
+		return err
 	}
 	if openTail {
 		return errGroupAELOpenTail

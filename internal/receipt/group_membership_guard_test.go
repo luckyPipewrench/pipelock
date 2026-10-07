@@ -4,6 +4,8 @@
 package receipt
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +14,110 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+func TestVerifySuccessorRejectsPredecessorCloseHeadDisagreement(t *testing.T) {
+	_, key := generateTestKey(t)
+	dir := t.TempDir()
+	newRecorder := func() *recorder.Recorder {
+		t.Helper()
+		rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	config := func(rec *recorder.Recorder) EmitterConfig {
+		return EmitterConfig{Recorder: rec, PrivKey: key, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor}
+	}
+	seal := func(set *ReceiptShardSet) {
+		t.Helper()
+		for _, emitter := range set.Emitters() {
+			if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+				t.Fatal(err)
+			}
+			if err := emitter.EmitTranscriptRoot(emitter.Session()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := set.PublishClose(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstRecorder := newRecorder()
+	first, err := OpenInitialReceiptShardSet(config(firstRecorder), "proxy", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal(first)
+	if err := firstRecorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	firstOpen, firstHash := first.Opening()
+	secondRecorder := newRecorder()
+	second, err := OpenSuccessorReceiptShardSet(config(secondRecorder), "proxy", 2, 0, firstOpen.GroupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal(second)
+	if err := secondRecorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	secondOpen, secondHash := second.Opening()
+	trusted := []string{firstOpen.SignerKey}
+	if got := VerifyReceiptGroup(dir, secondOpen.GroupID, trusted); got.Verdict != GroupValid {
+		t.Fatalf("valid control = %+v", got)
+	}
+	closeName, _ := ReceiptGroupFileName(firstOpen.GroupID, "close")
+	closePath := filepath.Join(dir, closeName)
+	raw, err := os.ReadFile(closePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCloseDigest := sha256.Sum256(raw)
+	closed, err := UnmarshalReceiptGroupClose(raw, firstOpen, firstHash, trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Shards[0].FinalChainHash = strings.Repeat("0", 64)
+	closed, err = SignReceiptGroupClose(closed, firstOpen, firstHash, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(closePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	closeDigest := sha256.Sum256(raw)
+	transitionName, _ := ReceiptGroupFileName(secondOpen.GroupID, "transition")
+	transitionPath := filepath.Join(dir, transitionName)
+	transitionRaw, err := os.ReadFile(transitionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition, err := UnmarshalReceiptGroupTransition(transitionRaw, secondOpen, firstOpen, secondHash, firstHash, hex.EncodeToString(originalCloseDigest[:]), trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transition.PreviousCloseManifestSHA256 = hex.EncodeToString(closeDigest[:])
+	transition, err = SignReceiptGroupTransition(transition, secondOpen, firstOpen, secondHash, firstHash, transition.PreviousCloseManifestSHA256, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRaw, err = json.Marshal(transition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transitionPath, transitionRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := VerifyReceiptGroup(dir, secondOpen.GroupID, trusted)
+	if got.Verdict != GroupInvalid || !strings.Contains(got.Error, "differs from signed close") {
+		t.Fatalf("mismatched signed predecessor evidence accepted: %+v", got)
+	}
+}
 
 func TestVerifyReceiptGroupRejectsDeletedShardEvidence(t *testing.T) {
 	_, key := generateTestKey(t)

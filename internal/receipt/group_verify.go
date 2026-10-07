@@ -378,8 +378,10 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 	}
 	oldCloseName, _ := ReceiptGroupFileName(predecessor.GroupID, "close")
 	oldCloseHash := ""
+	var predecessorClose ReceiptGroupClose
 	if oldCloseBytes, err := readBoundedGroupFile(dir, oldCloseName); err == nil {
-		if _, err := UnmarshalReceiptGroupClose(oldCloseBytes, predecessor, oldHash, trusted); err != nil {
+		predecessorClose, err = UnmarshalReceiptGroupClose(oldCloseBytes, predecessor, oldHash, trusted)
+		if err != nil {
 			return err
 		}
 		digest := sha256.Sum256(oldCloseBytes)
@@ -401,6 +403,10 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 	}
 	for i, claim := range transition.Predecessors {
 		if oldCloseHash != "" {
+			signed := predecessorClose.Shards[i]
+			if claim.ShardIndex != signed.ShardIndex || claim.SessionID != signed.SessionID || claim.FinalChainSeq != signed.FinalChainSeq || claim.FinalChainHash != signed.FinalChainHash {
+				return fmt.Errorf("receipt group predecessor shard %d differs from signed close", i)
+			}
 			head, err := VerifyGroupShardHead(dir, predecessor, oldHash, i)
 			if err != nil || claim.ShardIndex != i || claim.SessionID != head.SessionID || claim.FinalChainSeq != head.FinalChainSeq || claim.FinalChainHash != head.FinalChainHash || claim.RecoverySealSHA256 != "" {
 				return fmt.Errorf("receipt group predecessor shard %d differs from transition", i)

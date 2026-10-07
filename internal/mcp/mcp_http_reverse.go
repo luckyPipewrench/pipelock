@@ -90,6 +90,14 @@ type mcpListenerBlockDecision struct {
 	target          string
 	receiptSeverity string
 	mutateReceipt   func(receipt.EmitOpts) receipt.EmitOpts
+	// intent, when it has an action ID, is the allowed intent already written
+	// for this call. The refusal is then recorded as that intent's blocked
+	// outcome under the same action ID, so the chain ties the block to the call
+	// instead of holding an allow intent next to an unrelated block.
+	intent receipt.EmitOpts
+	// outcomeReason is the reason recorded in that blocked outcome; empty uses
+	// pattern. Free-text detail belongs in the receipt's other fields.
+	outcomeReason string
 }
 
 // newReverseUpstreamTransport builds the HTTP transport the MCP HTTP listener
@@ -653,6 +661,12 @@ func RunHTTPListenerProxy(
 				Transport: requestBaseOpts.Transport,
 				Target:    dec.target,
 			})
+			if dec.intent.ActionID != "" {
+				actionID = dec.intent.ActionID
+				receiptOpts = mcpOutcomeReceiptOpts(dec.intent, mcpOutcomeStatusBlocked, -1, firstNonEmpty(dec.outcomeReason, dec.pattern))
+				receiptOpts.Verdict = config.ActionBlock
+				receiptOpts.Layer = dec.layer
+			}
 			if dec.mutateReceipt != nil {
 				receiptOpts = dec.mutateReceipt(receiptOpts)
 			}
@@ -663,6 +677,9 @@ func RunHTTPListenerProxy(
 				if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
+					// A blocked outcome closes an intent written durably under
+					// required recording; sync it the same way.
+					Durable: requestBaseOpts.requireReceipts() && dec.intent.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
 				} else if emitter != nil || v2Emitter != nil {
@@ -789,17 +806,20 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("upstream resolves to a cloud metadata endpoint")))
 			return true
 		}
-		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts) bool {
+		// intent is the call's allowed intent when the input scan wrote one; it
+		// is zero for GET and DELETE, which have none.
+		blockedByUpstreamContract := func(rpcID json.RawMessage, gateOpts MCPProxyOpts, intent receipt.EmitOpts) bool {
 			if gate, gateErr := evaluateMCPUpstreamGateForMethod(r.Context(), upstreamURL, r.Method, gateOpts); gateErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
 				emitListenerBlockDecision(mcpListenerBlockDecision{
 					reason:          blockreason.ParseError,
 					headerSeverity:  blockreason.SeverityCritical,
 					retry:           blockreason.RetryNone,
-					layer:           "mcp_contract",
-					pattern:         "contract_upstream_evaluation_failed",
+					layer:           mcpContractReceiptLayer,
+					pattern:         mcpContractEvaluationFailedReason,
 					target:          "mcp:contract:upstream",
 					receiptSeverity: config.SeverityHigh,
+					intent:          intent,
 				})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -811,13 +831,15 @@ func RunHTTPListenerProxy(
 					reason:          mcpContractBlockReason(gate),
 					headerSeverity:  blockreason.SeverityCritical,
 					retry:           blockreason.RetryNone,
-					layer:           "mcp_contract",
-					pattern:         firstNonEmpty(gate.Reason, "contract_upstream_denied"),
+					layer:           mcpContractReceiptLayer,
+					pattern:         firstNonEmpty(gate.Reason, mcpContractDeniedReason),
 					target:          "mcp:contract:upstream",
 					receiptSeverity: config.SeverityHigh,
 					mutateReceipt: func(opts receipt.EmitOpts) receipt.EmitOpts {
 						return mcpWithContractReceipt(opts, gate)
 					},
+					intent:        intent,
+					outcomeReason: mcpContractDeniedReason,
 				})
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
@@ -963,7 +985,7 @@ func RunHTTPListenerProxy(
 					return
 				}
 			}
-			if blockedByUpstreamContract(nil, requestBaseOpts) {
+			if blockedByUpstreamContract(nil, requestBaseOpts, receipt.EmitOpts{}) {
 				return
 			}
 			if blockedByForwardedHeaderDLP() {
@@ -1114,7 +1136,7 @@ func RunHTTPListenerProxy(
 					return
 				}
 			}
-			if blockedByUpstreamContract(nil, requestBaseOpts) {
+			if blockedByUpstreamContract(nil, requestBaseOpts, receipt.EmitOpts{}) {
 				return
 			}
 			if blockedByForwardedHeaderDLP() {
@@ -1589,7 +1611,7 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		if blockedByUpstreamContract(frame.ID, scanOpts) {
+		if blockedByUpstreamContract(frame.ID, scanOpts, decision.Outcome.Receipt) {
 			return
 		}
 		// Build upstream request with passthrough headers.

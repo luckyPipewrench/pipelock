@@ -410,6 +410,15 @@ func mcpContractBlockReason(gate mcpContractGateOutput) blockreason.Reason {
 	return blockreason.ParseError
 }
 
+// Receipt attribution for calls the live upstream contract gate refuses. The
+// layer matches the listener's contract block decision; the reasons separate a
+// denial from a gate that could not be evaluated.
+const (
+	mcpContractReceiptLayer           = "mcp_contract"
+	mcpContractDeniedReason           = "contract_upstream_denied"
+	mcpContractEvaluationFailedReason = "contract_upstream_evaluation_failed"
+)
+
 func mcpWithContractReceipt(opts receipt.EmitOpts, gate mcpContractGateOutput) receipt.EmitOpts {
 	if gate.Resolved == nil && gate.ActiveManifestHash == "" && gate.ContractHash == "" {
 		return opts

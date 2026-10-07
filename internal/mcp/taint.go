@@ -316,26 +316,28 @@ func taintApprovalReason(decision taintDecision) string {
 }
 
 type mcpToolReceiptOpts struct {
-	Emitter           *receipt.Emitter
-	V2Emitter         *proxydecision.Emitter
-	PolicyHash        string
-	Log               io.Writer
-	Transport         string
-	RedactionProfile  string
-	ActionID          string
-	ParentActionID    string
-	MCPMethod         string
-	ToolName          string
-	Target            string
-	Verdict           string
-	Layer             string
-	Pattern           string
-	Severity          string
-	Decision          taintDecision
-	Report            *redact.Report
-	ContractGate      *mcpContractGateOutput
-	RequireReceipts   bool
-	RequireReceipt    bool
+	Emitter          *receipt.Emitter
+	V2Emitter        *proxydecision.Emitter
+	PolicyHash       string
+	Log              io.Writer
+	Transport        string
+	RedactionProfile string
+	ActionID         string
+	ParentActionID   string
+	MCPMethod        string
+	ToolName         string
+	Target           string
+	Verdict          string
+	Layer            string
+	Pattern          string
+	Severity         string
+	Decision         taintDecision
+	Report           *redact.Report
+	ContractGate     *mcpContractGateOutput
+	RequireReceipts  bool
+	RequireReceipt   bool
+	// Durable writes the receipt fsync-confirmed regardless of verdict.
+	Durable           bool
 	DecisionPhase     string
 	DeferID           string
 	ResolutionPolicy  string
@@ -398,6 +400,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	if _, err := EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, MCPDecision{
 		Receipt:        emitOpts,
 		RequireReceipt: opts.RequireReceipt,
+		Durable:        opts.Durable,
 	}); err != nil {
 		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
 		// RequireReceipt escalates v1 or v2 decision-receipt failures to a

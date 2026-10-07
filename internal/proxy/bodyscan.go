@@ -473,13 +473,15 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 	return false
 }
 
-const jwtTokenPatternName = "JWT Token"
-
-// headerDLPDecision resolves request-header enforcement after scanning. A
-// direct JWT match in Cookie is warning-only because JWT session cookies are
-// ordinary browser authentication state. The exception is deliberately
-// narrow: transformed/encoded JWT findings, JWTs in any other header, and any
-// additional credential pattern retain their normal enforcement.
+// headerDLPDecision resolves request-header enforcement after scanning. Every
+// header finding, including an unencoded JWT in Cookie, follows the configured
+// header action. The one automatic exception for browser session cookies is the
+// issuer-bound omission applied during scanning: a cookie an intercepted HTTPS
+// origin issued to this identity and that returns to that origin never reaches
+// this function as a finding. There is deliberately no fallback that downgrades
+// a JWT cookie to a warning when issuance evidence is missing, because TLS
+// interception ships off and that fallback would reopen the hole for every
+// preset.
 func headerDLPDecision(result *BodyScanResult, cfg *config.Config) (string, bool) {
 	if result == nil {
 		return "", false
@@ -488,26 +490,11 @@ func headerDLPDecision(result *BodyScanResult, cfg *config.Config) (string, bool
 	if action == "" && cfg != nil {
 		action = cfg.RequestBodyScanning.Action
 	}
-	if jwtOnlyCookieHeader(result) {
-		return config.ActionWarn, false
-	}
 	hardBlock := shouldHardBlockRequestDLP(result.DLPMatches, cfg)
 	if hardBlock {
 		action = config.ActionBlock
 	}
 	return action, hardBlock
-}
-
-func jwtOnlyCookieHeader(result *BodyScanResult) bool {
-	if result == nil || !strings.EqualFold(result.HeaderName, "Cookie") || len(result.DLPMatches) == 0 {
-		return false
-	}
-	for _, match := range result.DLPMatches {
-		if match.PatternName != jwtTokenPatternName || match.Encoded != "" {
-			return false
-		}
-	}
-	return true
 }
 
 // bodyBlockCause names the body finding that blocks the request on its own.

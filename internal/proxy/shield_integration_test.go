@@ -503,7 +503,7 @@ func TestProxy_ApplyShield_RecordsCappedAdaptiveSignals(t *testing.T) {
 	if sm == nil {
 		t.Fatal("expected session manager")
 	}
-	sess := sm.GetOrCreate(sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthUnknown))
+	sess := sm.GetOrCreate(sessionKeyFor(nil, "agent-a", "127.0.0.1", envelope.ActorAuthUnknown))
 	want := float64(browserShieldAdaptiveSignalCap) * session.SignalPoints[session.SignalShieldRewrite]
 	if got := sess.ThreatScore(); got != want {
 		t.Fatalf("threat score = %v, want capped shield score %v", got, want)
@@ -549,7 +549,7 @@ func TestProxy_ApplyShield_ExemptAdaptiveDomainSkipsSignals(t *testing.T) {
 	// applyShield records under the folded key. A literal name-keyed lookup
 	// would create a fresh empty session and pass this assertion without ever
 	// reading the session that handled the request.
-	sess := sm.GetOrCreate(sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthUnknown))
+	sess := sm.GetOrCreate(sessionKeyFor(nil, "agent-a", "127.0.0.1", envelope.ActorAuthUnknown))
 	if got := sess.ThreatScore(); got != 0 {
 		t.Fatalf("threat score = %v, want 0 for adaptive exempt domain", got)
 	}

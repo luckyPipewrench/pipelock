@@ -713,7 +713,7 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // blocks return earlier, so without this a run of blocked reverse DLP requests
 // leaves the scoped adaptive score at zero and a caller probing URL- or
 // header-embedded secrets never escalates. It reuses the same helper, session
-// key (sessionKeyFor(agent, clientIP, actorAuth)) and upstream-host scope the end-of-handler
+// key (sessionKeyFor(cfg, agent, clientIP, actorAuth)) and upstream-host scope the end-of-handler
 // recording uses, so a blocked request records exactly once: it returns before
 // that later recording, never reaching it. A nil owner has no session manager
 // (matching the guard on the end-of-handler recording), and
@@ -784,7 +784,7 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 	if sm == nil {
 		return nil
 	}
-	key := sessionKeyFor(agent, clientIP, actorAuth)
+	key := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 	rec := sm.GetOrCreate(key)
 	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
@@ -1290,7 +1290,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions,
 			requestSignalRecorders[0], requestSignalRecorders[1],
-			rp.owner.airlockSessionForIdentity(agent, clientIP, resolvedIdentity.Auth))
+			rp.owner.airlockSessionForIdentity(cfg, agent, clientIP, resolvedIdentity.Auth))
 		for _, airlockSess := range retainedAirlockSessions {
 			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(rp.upstream.Hostname()))
 			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
@@ -1362,7 +1362,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// block_all: deny ALL traffic (including clean) when the session sits at
 		// an escalation level whose adaptive action resolves to block.
 		if sessionResult.Level > 0 && decide.UpgradeAction("", sessionResult.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 			recordAdaptiveUpgrade(rp.logger, rp.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionResult.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, adaptiveSessionDeny)
@@ -1390,7 +1390,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// introduced by a prior response on ANY transport is visible here.
 		var reverseTaintRec session.Recorder
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
-			sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, actorAuth))
+			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, actorAuth))
 			if sess == nil {
 				rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), sessionCapacityLayer, session.ErrCapacity.Error())
 				emitReverseReceipt(receipt.EmitOpts{
@@ -1472,7 +1472,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// feed body data; reverse can, so the forward HTTP path is the analog).
 		// extractOutboundPayloads re-wraps r.Body so the forwarded request still
 		// carries it to the upstream.
-		ceeSession := responseTaintSessionKey(agent, clientIP, actorAuth)
+		ceeSession := responseTaintSessionKey(cfg, agent, clientIP, actorAuth)
 		var ceePartitionKey []byte
 		if fb := rp.owner.FragmentBufferPtr().Load(); fb != nil {
 			ceePartitionKey = fb.PartitionKey()
@@ -2369,7 +2369,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	if rp.owner != nil {
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
 			agentAuth := agentAuthFromContext(resp.Request.Context())
-			if sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuth(agentAuth))); sess != nil {
+			if sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, envelope.ActorAuth(agentAuth))); sess != nil {
 				responseTaintRec = sess
 			} else if cfg.Taint.Enabled {
 				return session.ErrCapacity

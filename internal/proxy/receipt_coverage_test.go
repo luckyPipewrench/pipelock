@@ -1347,12 +1347,35 @@ func TestReceiptCoverage_ForwardHeaderDLPEmitsReceipt(t *testing.T) {
 	}
 }
 
-func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
+// jwtCookieActionCases are the two configured header actions a JWT-only Cookie
+// must follow: it is denied under block and forwarded with warn evidence under
+// warn, the same as the token in any other header.
+var jwtCookieActionCases = []struct {
+	action       string
+	wantStatus   int
+	wantUpstream bool
+}{
+	{config.ActionBlock, http.StatusForbidden, false},
+	{config.ActionWarn, http.StatusOK, true},
+}
+
+func TestInterceptJWTSessionCookieFollowsActionAndRecordsEvidence(t *testing.T) {
+	for _, tc := range jwtCookieActionCases {
+		t.Run(tc.action, func(t *testing.T) {
+			runInterceptJWTSessionCookie(t, tc.action, tc.wantStatus, tc.wantUpstream)
+		})
+	}
+}
+
+func runInterceptJWTSessionCookie(t *testing.T, action string, wantStatus int, wantUpstream bool) {
+	t.Helper()
 	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
 		"." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" +
 		"." + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 
+	var upstreamHit atomic.Bool
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit.Store(true)
 		if got := r.Header.Get("Cookie"); got != "session="+jwt {
 			t.Errorf("Cookie = %q, want JWT session cookie", got)
 		}
@@ -1364,7 +1387,7 @@ func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	cfg.Mode = config.ModeStrict
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.ScanHeaders = true
-	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.Action = action
 	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Cookie"}
 	cfg.APIAllowlist = []string{upstream.Listener.Addr().(*net.TCPAddr).IP.String()}
@@ -1391,15 +1414,26 @@ func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	}
 	req.Header.Set("Cookie", "session="+jwt)
 	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != wantStatus {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+		t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, wantStatus, body)
 	}
 	_ = resp.Body.Close()
+	if upstreamHit.Load() != wantUpstream {
+		t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), wantUpstream)
+	}
 
-	recorded := rph.requireReceipt(t, "dlp_header")
-	if recorded.ActionRecord.Verdict != config.ActionWarn || !strings.Contains(recorded.ActionRecord.Pattern, "JWT Token") {
-		t.Fatalf("receipt verdict/pattern = %q/%q, want warn JWT evidence", recorded.ActionRecord.Verdict, recorded.ActionRecord.Pattern)
+	// A denial and a warning are recorded under different receipt layers.
+	layer := "dlp_header"
+	if action == config.ActionBlock {
+		layer = "header_dlp"
+	}
+	recorded := rph.requireReceipt(t, layer)
+	if recorded.ActionRecord.Verdict != action {
+		t.Fatalf("receipt verdict = %q, want %s", recorded.ActionRecord.Verdict, action)
+	}
+	if action == config.ActionWarn && !strings.Contains(recorded.ActionRecord.Pattern, "JWT Token") {
+		t.Fatalf("warn receipt pattern = %q, want JWT evidence", recorded.ActionRecord.Pattern)
 	}
 
 	logger.Close()
@@ -1412,11 +1446,22 @@ func TestInterceptJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	}
 }
 
-func TestFetchJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
+func TestFetchJWTSessionCookieFollowsActionAndRecordsEvidence(t *testing.T) {
+	for _, tc := range jwtCookieActionCases {
+		t.Run(tc.action, func(t *testing.T) {
+			runFetchJWTSessionCookie(t, tc.action, tc.wantStatus, tc.wantUpstream)
+		})
+	}
+}
+
+func runFetchJWTSessionCookie(t *testing.T, action string, wantStatus int, wantUpstream bool) {
+	t.Helper()
 	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
 		"." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" +
 		"." + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	var upstreamHit atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
 		_, _ = io.WriteString(w, "ok")
 	}))
 	t.Cleanup(upstream.Close)
@@ -1427,7 +1472,7 @@ func TestFetchJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 		cfg.APIAllowlist = []string{"127.0.0.1"}
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.ScanHeaders = true
-		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.Action = action
 		cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
 		cfg.RequestBodyScanning.SensitiveHeaders = []string{"Cookie"}
 	})
@@ -1436,13 +1481,21 @@ func TestFetchJWTSessionCookieWarnsAndRecordsEvidence(t *testing.T) {
 	req.Header.Set("Cookie", "session="+jwt)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != wantStatus {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, wantStatus, rec.Body.String())
+	}
+	if upstreamHit.Load() != wantUpstream {
+		t.Fatalf("upstream hit = %v, want %v", upstreamHit.Load(), wantUpstream)
 	}
 
+	// The receipt names the finding differently for a denial than a warning.
+	wantPattern := "request_header_secret"
+	if action == config.ActionBlock {
+		wantPattern = "request header contains secret"
+	}
 	recorded := rph.requireReceipt(t, "dlp_header")
-	if recorded.ActionRecord.Verdict != config.ActionWarn || recorded.ActionRecord.Pattern != "request_header_secret" {
-		t.Fatalf("receipt verdict/pattern = %q/%q, want warn header evidence", recorded.ActionRecord.Verdict, recorded.ActionRecord.Pattern)
+	if recorded.ActionRecord.Verdict != action || recorded.ActionRecord.Pattern != wantPattern {
+		t.Fatalf("receipt verdict/pattern = %q/%q, want %s/%q", recorded.ActionRecord.Verdict, recorded.ActionRecord.Pattern, action, wantPattern)
 	}
 }
 

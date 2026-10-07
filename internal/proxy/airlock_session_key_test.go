@@ -76,8 +76,8 @@ func setupDrainedRecoveredSession(t *testing.T, p *Proxy, agent string) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(responseTaintSessionKey(agent, ip, envelope.ActorAuthSelfDeclared))
-	profileSess := sm.GetOrCreate(sessionKeyFor(agent, ip, envelope.ActorAuthUnknown))
+	sess := sm.GetOrCreate(responseTaintSessionKey(nil, agent, ip, envelope.ActorAuthSelfDeclared))
+	profileSess := sm.GetOrCreate(sessionKeyFor(nil, agent, ip, envelope.ActorAuthUnknown))
 	if sess == nil {
 		t.Fatal("expected a session for the raw key")
 	}
@@ -130,7 +130,7 @@ func setupForcedScopedDrain(t *testing.T, p *Proxy, agent, clientIP, host string
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
+	sess := sm.GetOrCreate(responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared))
 	changed, _, to := sess.AirlockForScope(adaptiveScopeForHost(host)).ForceSetTierWithProvenance(
 		config.AirlockTierDrain, airlockTriggerManual, airlockSourceAdminAPI,
 	)
@@ -194,8 +194,8 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnFetchAndForward(t *tes
 // This locks the "unchanged for anonymous" half of the change.
 func TestAirlockAdmission_AnonymousAgentUnchanged(t *testing.T) {
 	// Anonymous keys are equal on both derivations by construction.
-	rawKey := sessionKeyFor(agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
-	ceeKey := responseTaintSessionKey(agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
+	rawKey := sessionKeyFor(nil, agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
+	ceeKey := responseTaintSessionKey(nil, agentAnonymous, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
 	if rawKey != ceeKey {
 		t.Fatalf("test setup invalid: anonymous raw key %q must equal CEE-safe key %q", rawKey, ceeKey)
 	}
@@ -267,8 +267,8 @@ func TestAirlockAdmission_SelfDeclaredNamedAgent_RefusedOnRedirect(t *testing.T)
 	)
 
 	// Adaptive and CEE state deliberately share the folded key for this identity.
-	rawKey := sessionKeyFor(agent, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
-	ceeKey := responseTaintSessionKey(agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
+	rawKey := sessionKeyFor(nil, agent, airlockSessionKeyClientIP, envelope.ActorAuthUnknown)
+	ceeKey := responseTaintSessionKey(nil, agent, airlockSessionKeyClientIP, envelope.ActorAuthSelfDeclared)
 	if rawKey != ceeKey {
 		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
@@ -340,7 +340,7 @@ func TestAirlockAdmissionKeyMatchesWriterKey(t *testing.T) {
 	)
 	p, _, _ := redirectPolicyTestProxy(t)
 	sm := p.sessionMgrPtr.Load()
-	if sess := p.airlockSessionForIdentity(agent, ip, envelope.ActorAuthSelfDeclared); sess != nil {
+	if sess := p.airlockSessionForIdentity(nil, agent, ip, envelope.ActorAuthSelfDeclared); sess != nil {
 		t.Fatalf("lookup-only admission created a session: %+v", sess)
 	}
 
@@ -349,15 +349,15 @@ func TestAirlockAdmissionKeyMatchesWriterKey(t *testing.T) {
 		auth    envelope.ActorAuth
 		wantKey string
 	}{
-		{"bound", envelope.ActorAuthBound, sessionKeyFor(agent, ip, envelope.ActorAuthBound)},
-		{"config-default", envelope.ActorAuthConfigDefault, sessionKeyFor(agent, ip, envelope.ActorAuthConfigDefault)},
+		{"bound", envelope.ActorAuthBound, sessionKeyFor(nil, agent, ip, envelope.ActorAuthBound)},
+		{"config-default", envelope.ActorAuthConfigDefault, sessionKeyFor(nil, agent, ip, envelope.ActorAuthConfigDefault)},
 		{"matched", envelope.ActorAuthMatched, ip},
 		{"self-declared", envelope.ActorAuthSelfDeclared, ip},
 	}
 	for _, g := range grades {
 		t.Run(g.name, func(t *testing.T) {
 			sm.GetOrCreate(g.wantKey)
-			if got := p.airlockSessionForIdentity(agent, ip, g.auth); got == nil || got.key != g.wantKey {
+			if got := p.airlockSessionForIdentity(nil, agent, ip, g.auth); got == nil || got.key != g.wantKey {
 				t.Fatalf("grade %s: admission session = %+v, want key %q", g.name, got, g.wantKey)
 			}
 		})
@@ -394,7 +394,7 @@ func TestAirlockAdmission_TLSIntercept_RefusedOnScopedDrain(t *testing.T) {
 	// and a fail-open is a genuine admission, not an adaptive block masking it.
 	// This drives drain through the real escalation bridge (recordSessionActivity).
 	setupDrainedRecoveredSession(t, p, agent)
-	sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
+	sess := sm.GetOrCreate(responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared))
 	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 		t.Fatalf("precondition: scope %q tier = %q, want drain", scope, got)
 	}
@@ -501,8 +501,8 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	)
 
 	// The teardown reader and adaptive writer must use one folded key.
-	rawKey := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
-	ceeKey := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
+	rawKey := sessionKeyFor(nil, agent, clientIP, envelope.ActorAuthUnknown)
+	ceeKey := responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared)
 	if rawKey != ceeKey {
 		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
@@ -557,7 +557,7 @@ func TestAirlockCancel_ConnectTunnel_TornDownOnScopedEscalation(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("precondition: tunnel relay never delivered the probe byte")
 	}
-	sess := sm.SessionByKey(responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared))
+	sess := sm.SessionByKey(responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared))
 	if sess == nil {
 		t.Fatal("CONNECT did not materialize the bounded airlock session for teardown registration")
 	}
@@ -614,8 +614,8 @@ func TestAirlockCancel_TLSInterceptTunnel_TornDownOnScopedDrain(t *testing.T) {
 	)
 
 	// The interception reader and adaptive writer must use one folded key.
-	rawKey := sessionKeyFor(agent, clientIP, envelope.ActorAuthUnknown)
-	ceeKey := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
+	rawKey := sessionKeyFor(nil, agent, clientIP, envelope.ActorAuthUnknown)
+	ceeKey := responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared)
 	if rawKey != ceeKey {
 		t.Fatalf("test setup invalid: adaptive key %q must equal CEE-safe key %q for a self-declared named agent", rawKey, ceeKey)
 	}
@@ -709,7 +709,7 @@ func TestForceSetAirlockTier_AppliesToEveryScope(t *testing.T) {
 		clientIP = airlockSessionKeyClientIP
 		host     = airlockSessionKeyTarget
 	)
-	key := responseTaintSessionKey(agent, clientIP, envelope.ActorAuthSelfDeclared)
+	key := responseTaintSessionKey(nil, agent, clientIP, envelope.ActorAuthSelfDeclared)
 	scope := adaptiveScopeForHost(host)
 
 	t.Run("release_to_none_clears_scoped_drain", func(t *testing.T) {

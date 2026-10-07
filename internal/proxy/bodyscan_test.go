@@ -711,18 +711,21 @@ func TestRequestDLPPatternControlsAcrossTransports(t *testing.T) {
 	})
 }
 
-func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
+func TestHeaderDLPDecisionJWTSessionCookieFollowsConfiguredAction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Mode = config.ModeStrict
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 
 	jwt := scanner.TextDLPMatch{PatternName: "JWT Token", Severity: config.SeverityCritical}
-	// A JWT recovered from an encoding layer is not an ordinary session cookie.
-	// The narrow warning exists because a site's own session cookie looks like
-	// a JWT; a token someone base64-wrapped inside one does not have that
-	// excuse, so it keeps the hard block.
+	// A JWT in Cookie follows the configured header action like any other
+	// finding. The only automatic exception for session cookies is the
+	// issuer-bound omission, which removes the pair before a decision is made.
 	encodedJWT := jwt
 	encodedJWT.Encoded = "base64"
+	// A warn-level match is not hard-blocked regardless of severity, so it
+	// shows the configured action being honored rather than the critical floor.
+	softJWT := jwt
+	softJWT.Warn = true
 	aws := scanner.TextDLPMatch{PatternName: "AWS Access ID", Severity: config.SeverityCritical}
 
 	tests := []struct {
@@ -736,9 +739,29 @@ func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
 			wantAction: "",
 		},
 		{
-			name: "JWT in Cookie warns",
+			name: "JWT in Cookie follows a configured block",
+			result: &BodyScanResult{
+				Action:     config.ActionBlock,
+				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "JWT in Cookie with no result action takes the config action",
 			result: &BodyScanResult{
 				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "JWT in Cookie follows a configured warn",
+			result: &BodyScanResult{
+				Action:     config.ActionWarn,
+				DLPMatches: []scanner.TextDLPMatch{softJWT},
 				HeaderName: "Cookie",
 			},
 			wantAction: config.ActionWarn,

@@ -166,7 +166,7 @@ func interceptRecordFinding(ic *InterceptContext, sig session.SignalType, scanne
 	if !ic.Config.AdaptiveEnforcement.Enabled {
 		return
 	}
-	sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	var m *metrics.Metrics
 	if ic.Proxy != nil {
 		m = ic.Proxy.metrics
@@ -647,7 +647,7 @@ func newInterceptHandler(
 				sm = ic.Proxy.sessionMgrPtr.Load()
 			}
 			if sm != nil {
-				sess := sm.GetOrCreate(sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth))
+				sess := sm.GetOrCreate(sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth))
 				if sess == nil {
 					capacityCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{
 						Method: r.Method, TargetURL: target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent,
@@ -851,7 +851,7 @@ func newInterceptHandler(
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			strings.HasPrefix(urlResult.Reason, "high entropy query param ") {
 			if store := ic.issuerQueryStore(); store != nil {
-				session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
 				// a cross-host OAuth callback outranks a same-host issue.
@@ -1009,7 +1009,7 @@ func newInterceptHandler(
 				effectiveAction = decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
 			}
 			if effectiveAction == config.ActionBlock {
-				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+				sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
 				if ic.Proxy != nil {
 					m = ic.Proxy.metrics
@@ -1392,7 +1392,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics
@@ -1541,7 +1541,7 @@ func newInterceptHandler(
 			if issuerStore := ic.issuerCookieStore(); issuerStore != nil {
 				var allowances []issuerCookieAllowance
 				scanHeaders, allowances = issuerCookieScanHeaders(r.Context(), r.Header, ic.Scanner, issuerStore,
-					sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now())
+					sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth), r.URL, time.Now())
 				// Under require_receipts every allow must be durably recorded
 				// before forwarding; nothing has been written to w yet.
 				var issuerAllowErr error
@@ -1618,7 +1618,7 @@ func newInterceptHandler(
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				escalatedBlock := action == config.ActionBlock && originalAction != config.ActionBlock
 				if action != originalAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var metricSet *metrics.Metrics
 					if ic.Proxy != nil {
 						metricSet = ic.Proxy.metrics
@@ -1672,7 +1672,7 @@ func newInterceptHandler(
 		// request has full body, headers, and URL available for entropy and
 		// fragment analysis. When p is non-nil, resolve CEE objects per-request
 		// so hot-reloads during long-lived CONNECT tunnels use fresh state.
-		sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
+		sessionKey := ceeSessionKey(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 		partitionJSON := ceeJSONBodyPartitioningEnabled(ic.Config)
 		var partitionKey []byte
 		if ic.Proxy != nil {
@@ -1707,7 +1707,8 @@ func newInterceptHandler(
 			if ceeCfg.Enabled {
 				admission = ceeAdmission{
 					Result: ceeAdmit(r.Context(), ceeAdmitOptions{
-						ActorAuth: ic.ActorAuth, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, BodyFragmentLeaves: outboundPayloads.bodyFragmentLeaves, KeyPayload: keys,
+						IdentityConfig: ic.Config,
+						ActorAuth:      ic.ActorAuth, Outbound: outbound, BodyFragmentPayloads: outboundPayloads.bodyFragmentPayloads, BodyFragmentLeaves: outboundPayloads.bodyFragmentLeaves, KeyPayload: keys,
 						PathPayload: paths, TargetURL: r.URL.String(), Agent: ic.Agent,
 						ClientIP: ic.ClientIP, RequestID: ic.RequestID, Config: ceeCfg,
 						Entropy: ic.EntropyTracker, Fragments: ic.FragmentBuffer,
@@ -1824,7 +1825,7 @@ func newInterceptHandler(
 			interceptMetrics = ic.Proxy.metrics
 		}
 		_, _, _ = trySessionRecovery(ic.Recorder, &ic.Config.AdaptiveEnforcement, adaptiveRecoveryContext{
-			sessionKey: sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth),
+			sessionKey: sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth),
 			reason:     adaptiveRecoveryTimer,
 			clientIP:   ic.ClientIP,
 			requestID:  ic.RequestID,
@@ -1836,7 +1837,7 @@ func newInterceptHandler(
 		// session is at an escalation level with block_all=true.
 		level := interceptEscalationLevel(ic)
 		if ic.Recorder != nil && decide.UpgradeAction("", level, &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+			sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			var m *metrics.Metrics
 			if ic.Proxy != nil {
 				m = ic.Proxy.metrics
@@ -2806,7 +2807,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
-					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics

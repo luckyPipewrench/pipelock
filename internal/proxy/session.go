@@ -2302,8 +2302,8 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 // request would land in, and a self-declared or forged header folds the same
 // way a self-declared request's traffic does - it can never read or be
 // mistaken for a bound bucket.
-func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string, auth envelope.ActorAuth) AdaptiveWhoami {
-	key := sessionKeyFor(agent, clientIP, auth)
+func (sm *SessionManager) AdaptiveWhoami(cfg *config.Config, clientIP, agent string, auth envelope.ActorAuth) AdaptiveWhoami {
+	key := sessionKeyFor(cfg, agent, clientIP, auth)
 	out := AdaptiveWhoami{
 		ClientIP:        clientIP,
 		Agent:           agent,

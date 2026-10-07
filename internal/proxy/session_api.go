@@ -169,6 +169,12 @@ type SessionAPIHandler struct {
 	// nil: NewSessionAPIHandler defaults it to the same no-registry fallback
 	// reverse.go uses when no richer Edition is wired in.
 	resolveAgentIdentity func(*http.Request) edition.AgentIdentity
+
+	// stateConfig returns the live config whose default_agent_identity decides
+	// which bucket a header-carrying request's state is keyed to, so whoami
+	// reports the same session_key real traffic from this caller lands in. Nil
+	// (or a nil result) reports the unprojected key.
+	stateConfig func() *config.Config
 }
 
 // SessionAPIOptions configures a SessionAPIHandler. Using an options struct
@@ -193,6 +199,11 @@ type SessionAPIOptions struct {
 	// Nil defaults to edition.ResolveAgentIdentity(r, nil, "", false), the
 	// same no-registry fallback reverse.go uses without a richer Edition.
 	ResolveAgentIdentity func(*http.Request) edition.AgentIdentity
+
+	// Config returns the live proxy config. Whoami uses it to apply the same
+	// default-identity state projection as proxied traffic. Nil reports the
+	// declared identity's own key.
+	Config func() *config.Config
 }
 
 // NewSessionAPIHandler creates a session API handler from the given options.
@@ -218,6 +229,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 		},
 		authFailures:         authlimit.NewDefault(),
 		resolveAgentIdentity: opts.ResolveAgentIdentity,
+		stateConfig:          opts.Config,
 	}
 	if h.resolveAgentIdentity == nil {
 		h.resolveAgentIdentity = func(r *http.Request) edition.AgentIdentity {
@@ -1515,11 +1527,15 @@ func (h *SessionAPIHandler) HandleAdaptiveWhoami(w http.ResponseWriter, r *http.
 	// header can never upgrade to Bound, and a genuinely bound request can
 	// never be reported as self-declared.
 	id := h.resolveAgentIdentity(r)
+	var stateCfg *config.Config
+	if h.stateConfig != nil {
+		stateCfg = h.stateConfig()
+	}
 	h.logSessionAdmin("adaptive_whoami", clientIP, "", "ok", http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
 	// SessionKey is a deterministic identity hash for adaptive scoring, not a secret -
 	// it's the operator-facing identifier in the public adaptive API surface.
-	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, id.Name, id.Auth)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
+	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(stateCfg, clientIP, id.Name, id.Auth)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
 }
 
 // airlockCfgFromManager fetches the active airlock config from the manager

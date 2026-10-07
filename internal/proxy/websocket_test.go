@@ -1773,7 +1773,7 @@ func TestWSProxyInjectionWarn_ContaminatesSessionBeforeSensitiveAction(t *testin
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	sess := sm.GetOrCreate(ceeSessionKey(agent, "127.0.0.1", envelope.ActorAuthSelfDeclared))
+	sess := sm.GetOrCreate(ceeSessionKey(nil, agent, "127.0.0.1", envelope.ActorAuthSelfDeclared))
 	if risk := sess.RiskSnapshot(); !risk.Contaminated {
 		t.Fatal("WebSocket injection finding left the session falsely clean")
 	}
@@ -1835,7 +1835,7 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 				t.Fatalf("read response: %v", err)
 			}
 
-			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
+			sess := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(nil, agentAnonymous, "127.0.0.1", envelope.ActorAuthUnknown))
 			risk := sess.RiskSnapshot()
 			if risk.Contaminated != tt.wantTainted {
 				t.Fatalf("contaminated = %v, want %v", risk.Contaminated, tt.wantTainted)
@@ -1854,7 +1854,7 @@ func TestWSRelayResponseTaint_ReResolvesEvictedSession(t *testing.T) {
 	})
 	defer cleanup()
 
-	key := ceeSessionKey("named-agent", "127.0.0.1", envelope.ActorAuthSelfDeclared)
+	key := ceeSessionKey(nil, "named-agent", "127.0.0.1", envelope.ActorAuthSelfDeclared)
 	relay := &wsRelay{
 		proxy:           p,
 		cfg:             p.CurrentConfig(),
@@ -2517,7 +2517,7 @@ func TestWSProxyHeaderDLPSessionAnomalyBlocksHandshake(t *testing.T) {
 		t.Fatalf("pre-lock status = %d, want %d", first.StatusCode, http.StatusSwitchingProtocols)
 	}
 	_ = first.Body.Close()
-	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "127.0.0.1", envelope.ActorAuthSelfDeclared))
+	lockHTTPBaseline(t, sm, sessionKeyFor(nil, "agent-a", "127.0.0.1", envelope.ActorAuthSelfDeclared))
 
 	resp := requestWSHandshake(t, proxyAddr, backendAddr, http.Header{
 		AgentHeader: []string{"agent-a"},

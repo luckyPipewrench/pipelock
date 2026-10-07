@@ -17,7 +17,7 @@ func TestFindTerminalReceiptGroupRejectsForkAndMismatchedSuccessor(t *testing.T)
 			initial, _, _ := testGroupOpen(t, key)
 			initialHash := publishTerminalTestOpen(t, dir, initial)
 			if mode == "single" {
-				id, found, err := FindTerminalReceiptGroup(dir, "proxy")
+				id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{initial.SignerKey})
 				if err != nil || !found || id != initial.GroupID {
 					t.Fatalf("terminal = %q, %v, %v", id, found, err)
 				}
@@ -58,10 +58,28 @@ func TestFindTerminalReceiptGroupRejectsForkAndMismatchedSuccessor(t *testing.T)
 					publishTerminalTestOpen(t, dir, makeSuccessor(strings.Repeat("3", 32), initialHash))
 				}
 			}
-			if id, found, err := FindTerminalReceiptGroup(dir, "proxy"); err == nil {
+			if id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{initial.SignerKey}); err == nil {
 				t.Fatalf("%s history accepted: terminal=%q found=%v", mode, id, found)
 			}
 		})
+	}
+}
+
+func TestFindTerminalReceiptGroupRequiresConfiguredSigner(t *testing.T) {
+	dir := t.TempDir()
+	trustedKey := testGroupKey(t)
+	foreignKey := testGroupKey(t)
+	foreign, _, _ := testGroupOpen(t, foreignKey)
+	publishTerminalTestOpen(t, dir, foreign)
+	trusted, _, _ := testGroupOpen(t, trustedKey)
+	if _, _, err := FindTerminalReceiptGroup(dir, "proxy", nil); err == nil {
+		t.Fatal("terminal discovery accepted no trusted key")
+	}
+	if id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{trusted.SignerKey}); err == nil {
+		t.Fatalf("foreign opening affected terminal discovery: id=%q found=%v", id, found)
+	}
+	if id, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{foreign.SignerKey}); err != nil || !found || id != foreign.GroupID {
+		t.Fatalf("configured signer rejected: id=%q found=%v err=%v", id, found, err)
 	}
 }
 
@@ -81,14 +99,14 @@ func publishTerminalTestOpen(t *testing.T, dir string, open ReceiptGroupOpen) st
 func TestReadTopologicalGroupOpenRejectsUnsafeInput(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"bad", "receipt-group-" + strings.Repeat("1", 32) + "-close.json"} {
-		if _, _, err := readTopologicalGroupOpen(dir, name); err == nil {
+		if _, _, err := readTopologicalGroupOpen(dir, name, []string{"key"}); err == nil {
 			t.Fatalf("non-opening name %q accepted", name)
 		}
 	}
 	key := testGroupKey(t)
 	open, _, _ := testGroupOpen(t, key)
 	name, _ := ReceiptGroupFileName(open.GroupID, "open")
-	if _, _, err := readTopologicalGroupOpen(dir, name); err == nil {
+	if _, _, err := readTopologicalGroupOpen(dir, name, []string{open.SignerKey}); err == nil {
 		t.Fatal("missing opening accepted")
 	}
 }

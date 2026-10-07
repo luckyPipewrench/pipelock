@@ -6,7 +6,6 @@ package receipt
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,14 +15,17 @@ import (
 // successor opening. It streams names and uses repeated passes rather than
 // retaining every historical group in memory. Startup happens once, so this
 // bounded-memory O(groups²) search is preferable to an unbounded index.
-func FindTerminalReceiptGroup(dir, base string) (string, bool, error) {
+func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool, error) {
+	if len(trusted) == 0 {
+		return "", false, errors.New("receipt group terminal discovery requires a trusted signer key")
+	}
 	terminal := ""
 	found := false
 	err := walkInventoryNames(dir, func(name string) error {
 		if !strings.HasPrefix(name, "receipt-group-") || !strings.HasSuffix(name, "-open.json") {
 			return nil
 		}
-		open, hash, err := readTopologicalGroupOpen(dir, name)
+		open, hash, err := readTopologicalGroupOpen(dir, name, trusted)
 		if err != nil {
 			return err
 		}
@@ -35,7 +37,7 @@ func FindTerminalReceiptGroup(dir, base string) (string, bool, error) {
 			if !strings.HasPrefix(otherName, "receipt-group-") || !strings.HasSuffix(otherName, "-open.json") || otherName == name {
 				return nil
 			}
-			other, _, err := readTopologicalGroupOpen(dir, otherName)
+			other, _, err := readTopologicalGroupOpen(dir, otherName, trusted)
 			if err != nil {
 				return err
 			}
@@ -64,7 +66,7 @@ func FindTerminalReceiptGroup(dir, base string) (string, bool, error) {
 	return terminal, found, err
 }
 
-func readTopologicalGroupOpen(dir, name string) (ReceiptGroupOpen, string, error) {
+func readTopologicalGroupOpen(dir, name string, trusted []string) (ReceiptGroupOpen, string, error) {
 	if err := validateGroupArtifactFileName(name); err != nil || !strings.HasSuffix(name, "-open.json") {
 		return ReceiptGroupOpen{}, "", fmt.Errorf("invalid receipt group opening name %q", name)
 	}
@@ -72,11 +74,7 @@ func readTopologicalGroupOpen(dir, name string) (ReceiptGroupOpen, string, error
 	if err != nil {
 		return ReceiptGroupOpen{}, "", err
 	}
-	var advertised ReceiptGroupOpen
-	if err := json.Unmarshal(raw, &advertised); err != nil {
-		return ReceiptGroupOpen{}, "", err
-	}
-	open, err := UnmarshalReceiptGroupOpen(raw, []string{advertised.SignerKey})
+	open, err := UnmarshalReceiptGroupOpen(raw, trusted)
 	if err != nil || name != "receipt-group-"+open.GroupID+"-open.json" {
 		return ReceiptGroupOpen{}, "", errors.New("receipt group opening identity or signature is invalid")
 	}

@@ -20,7 +20,11 @@ func buildMCPReceiptGroup(template receipt.EmitterConfig, count int) (*mcp.MCPRe
 	if template.Recorder == nil || len(template.PrivKey) == 0 {
 		return nil, errors.New("MCP receipt group requires a signed recorder")
 	}
-	previousID, hasPrevious, err := receipt.FindTerminalReceiptGroup(template.Recorder.Dir(), recorder.DefaultSessionBase)
+	trusted, err := receipt.TrustedGroupSignerKeys(template)
+	if err != nil {
+		return nil, err
+	}
+	previousID, hasPrevious, err := receipt.FindTerminalReceiptGroup(template.Recorder.Dir(), recorder.DefaultSessionBase, trusted)
 	if err != nil {
 		return nil, fmt.Errorf("find previous MCP receipt group: %w", err)
 	}

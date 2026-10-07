@@ -23,7 +23,11 @@ func buildServerReceiptShardGroup(template receipt.EmitterConfig, count int, key
 	if template.Recorder == nil {
 		return nil, nil, fmt.Errorf("receipt group requires a persistent recorder")
 	}
-	previousID, hasPrevious, err := receipt.FindTerminalReceiptGroup(template.Recorder.Dir(), recorder.DefaultSessionBase)
+	trusted, err := receipt.TrustedGroupSignerKeys(template)
+	if err != nil {
+		return nil, nil, err
+	}
+	previousID, hasPrevious, err := receipt.FindTerminalReceiptGroup(template.Recorder.Dir(), recorder.DefaultSessionBase, trusted)
 	if err != nil {
 		return nil, nil, fmt.Errorf("find previous receipt group: %w", err)
 	}

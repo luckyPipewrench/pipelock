@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,6 +58,21 @@ type receiptGroupPredecessor struct {
 	incomplete bool
 }
 
+// TrustedGroupSignerKeys is the signer set supplied by the running configuration.
+func TrustedGroupSignerKeys(template EmitterConfig) ([]string, error) {
+	if len(template.PrivKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("receipt group requires a signing key")
+	}
+	trusted := []string{hex.EncodeToString(template.PrivKey.Public().(ed25519.PublicKey))}
+	for _, key := range template.PriorSignerKeys {
+		if !groupSigner(key) {
+			return nil, errors.New("receipt group prior signer key is invalid")
+		}
+		trusted = append(trusted, key)
+	}
+	return trusted, nil
+}
+
 // OpenSuccessorReceiptShardSet starts a new signed group after verifying the
 // predecessor's complete close or its signed prefix. An incomplete predecessor
 // remains incomplete, and its successor cannot admit traffic before the
@@ -78,21 +92,25 @@ func prepareSuccessorReceiptShardSet(template EmitterConfig, base string, count,
 	if template.Recorder == nil {
 		return nil, errors.New("receipt group successor requires a persistent recorder")
 	}
-	terminal, found, err := FindTerminalReceiptGroup(template.Recorder.Dir(), base)
+	trusted, err := TrustedGroupSignerKeys(template)
+	if err != nil {
+		return nil, err
+	}
+	terminal, found, err := FindTerminalReceiptGroup(template.Recorder.Dir(), base, trusted)
 	if err != nil {
 		return nil, err
 	}
 	if !found || terminal != previousGroupID {
 		return nil, errors.New("receipt group predecessor changed before successor publication")
 	}
-	previous, err := loadClosedGroupPredecessor(template.Recorder.Dir(), previousGroupID)
+	previous, err := loadClosedGroupPredecessor(template.Recorder.Dir(), previousGroupID, trusted)
 	if err != nil {
 		return nil, err
 	}
 	return openReceiptShardSet(template, base, count, processIndex, deferOpen, previous)
 }
 
-func loadClosedGroupPredecessor(dir, groupID string) (*receiptGroupPredecessor, error) {
+func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receiptGroupPredecessor, error) {
 	name, err := ReceiptGroupFileName(groupID, "open")
 	if err != nil {
 		return nil, err
@@ -101,29 +119,19 @@ func loadClosedGroupPredecessor(dir, groupID string) (*receiptGroupPredecessor, 
 	if err != nil {
 		return nil, err
 	}
-	var advertised ReceiptGroupOpen
-	if err := json.Unmarshal(raw, &advertised); err != nil {
-		return nil, err
-	}
-	open, err := UnmarshalReceiptGroupOpen(raw, []string{advertised.SignerKey})
+	open, err := UnmarshalReceiptGroupOpen(raw, trusted)
 	if err != nil {
 		return nil, err
 	}
-	trusted := []string{open.SignerKey}
 	if open.PreviousGroupID != "" {
 		priorName, _ := ReceiptGroupFileName(open.PreviousGroupID, "open")
 		priorRaw, err := readBoundedGroupFile(dir, priorName)
 		if err != nil {
 			return nil, err
 		}
-		var priorAdvertised ReceiptGroupOpen
-		if err := json.Unmarshal(priorRaw, &priorAdvertised); err != nil {
+		if _, err := UnmarshalReceiptGroupOpen(priorRaw, trusted); err != nil {
 			return nil, err
 		}
-		if _, err := UnmarshalReceiptGroupOpen(priorRaw, []string{priorAdvertised.SignerKey}); err != nil {
-			return nil, err
-		}
-		trusted = append(trusted, priorAdvertised.SignerKey)
 	}
 	verified := VerifyReceiptGroup(dir, groupID, trusted)
 	if verified.Verdict != GroupValid && verified.Verdict != GroupIncomplete {
@@ -207,7 +215,11 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 	if err := rec.AcquireGroupSessions(sessions); err != nil {
 		return nil, fmt.Errorf("acquire receipt group sessions: %w", err)
 	}
-	terminal, found, err := FindTerminalReceiptGroup(rec.Dir(), base)
+	trusted, err := TrustedGroupSignerKeys(template)
+	if err != nil {
+		return nil, err
+	}
+	terminal, found, err := FindTerminalReceiptGroup(rec.Dir(), base, trusted)
 	if err != nil {
 		return nil, fmt.Errorf("recheck receipt group predecessor under ownership: %w", err)
 	}

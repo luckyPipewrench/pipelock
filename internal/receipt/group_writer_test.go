@@ -521,11 +521,14 @@ func TestOpenSuccessorReceiptShardSetBindsClosedPredecessor(t *testing.T) {
 		return rec
 	}
 	config := func(rec *recorder.Recorder, key ed25519.PrivateKey) EmitterConfig {
-		return EmitterConfig{Recorder: rec, PrivKey: key, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor}
+		return EmitterConfig{
+			Recorder: rec, PrivKey: key, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor,
+			PriorSignerKeys: []string{fmt.Sprintf("%x", firstKey.Public()), fmt.Sprintf("%x", secondKey.Public())},
+		}
 	}
 	assertTerminal := func(want string) {
 		t.Helper()
-		got, found, err := FindTerminalReceiptGroup(dir, "proxy")
+		got, found, err := FindTerminalReceiptGroup(dir, "proxy", []string{fmt.Sprintf("%x", firstKey.Public()), fmt.Sprintf("%x", secondKey.Public()), fmt.Sprintf("%x", thirdKey.Public())})
 		if err != nil || !found || got != want {
 			t.Fatalf("terminal group = %q found=%v err=%v; want %q", got, found, err, want)
 		}

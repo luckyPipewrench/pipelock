@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
@@ -17,6 +18,7 @@ import (
 // SessionState is the mutable chain/file/checkpoint state of one acquired
 // receipt shard. The directory ceremony and signer remain on Recorder.
 type SessionState struct {
+	writeMu             sync.Mutex
 	sessionID           string
 	seq                 uint64
 	prevHash            string
@@ -58,6 +60,7 @@ func (r *Recorder) saveSessionStateLocked(state *SessionState) {
 }
 
 func (r *Recorder) loadSessionStateLocked(state *SessionState) {
+	r.activeGroupState = state
 	r.sessionID = state.sessionID
 	r.seq = state.seq
 	r.prevHash = state.prevHash
@@ -77,6 +80,7 @@ func (r *Recorder) loadSessionStateLocked(state *SessionState) {
 }
 
 func (r *Recorder) clearSessionStateLocked() {
+	r.activeGroupState = nil
 	r.sessionID = ""
 	r.seq = 0
 	r.prevHash = GenesisHash
@@ -270,6 +274,14 @@ func (r *Recorder) FinalizeGroupSessions() error {
 	if r == nil || r.nop {
 		return errors.New("recorder: no persistent group to finalize")
 	}
+	r.groupMu.Lock()
+	if r.groupClosing {
+		r.groupMu.Unlock()
+		return errors.New("recorder: receipt group is already closing")
+	}
+	r.groupClosing = true
+	r.groupMu.Unlock()
+	r.groupWrites.Wait()
 	r.groupMu.Lock()
 	defer r.groupMu.Unlock()
 	r.mu.Lock()

@@ -14,7 +14,53 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestGroupedDurableWritesSyncDifferentShardsConcurrently(t *testing.T) {
+	r, _, _ := newGroupRecorder(t)
+	sessions := groupSessionIDs(t, 2)
+	if err := r.AcquireGroupSessions(sessions); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	r.fileSync = func(f *os.File) error {
+		started <- f.Name()
+		<-release
+		return f.Sync()
+	}
+	results := make(chan error, 2)
+	for _, session := range sessions {
+		go func(session string) {
+			results <- r.RecordDurable(Entry{SessionID: session, Type: "test", Summary: "parallel durable write"})
+		}(session)
+	}
+	concurrent := true
+	for range sessions {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			concurrent = false
+		}
+		if !concurrent {
+			break
+		}
+	}
+	unblock()
+	for range sessions {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.fileSync = (*os.File).Sync
+	if !concurrent {
+		t.Fatal("different receipt shards did not reach File.Sync concurrently")
+	}
+}
 
 func newGroupRecorder(t *testing.T) (*Recorder, ed25519.PrivateKey, string) {
 	t.Helper()

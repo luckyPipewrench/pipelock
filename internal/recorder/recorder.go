@@ -132,6 +132,7 @@ var ErrDurability = errors.New("recorder durability confirmation failed")
 
 type durableBatch struct {
 	file           *os.File
+	owner          *SessionState
 	generation     uint64
 	leaderAssigned bool
 	syncing        bool
@@ -163,24 +164,27 @@ type Recorder struct {
 	mu      sync.Mutex
 	groupMu sync.Mutex
 	// recordLockHook is a test seam for proving Record entered the ownership lock.
-	recordLockHook  func()
-	groupSessions   map[string]*SessionState
-	groupOrder      []string
-	groupOwner      *os.File
-	legacyStarted   bool
-	groupFinalizing bool
-	seq             uint64
-	prevHash        string
-	writer          *bufio.Writer
-	file            *os.File
-	runPresence     *os.File
-	ceremonyLock    *os.File
-	ceremonyDir     os.FileInfo
-	evidenceDir     os.FileInfo
-	fileEntryCount  int
-	fileSeqStart    uint64
-	fileGeneration  uint64
-	sessionID       string
+	recordLockHook   func()
+	groupSessions    map[string]*SessionState
+	activeGroupState *SessionState
+	groupClosing     bool
+	groupWrites      sync.WaitGroup
+	groupOrder       []string
+	groupOwner       *os.File
+	legacyStarted    bool
+	groupFinalizing  bool
+	seq              uint64
+	prevHash         string
+	writer           *bufio.Writer
+	file             *os.File
+	runPresence      *os.File
+	ceremonyLock     *os.File
+	ceremonyDir      os.FileInfo
+	evidenceDir      os.FileInfo
+	fileEntryCount   int
+	fileSeqStart     uint64
+	fileGeneration   uint64
+	sessionID        string
 	// recoveryPredecessor survives reload staging failures until publication.
 	recoveryPredecessor string
 
@@ -440,7 +444,18 @@ func (r *Recorder) record(e Entry, scan *ReceiptScan, advance func()) error {
 		r.groupMu.Unlock()
 		return r.recordPrepared(e, scan, advance)
 	}
+	state := r.groupSessions[e.SessionID]
+	r.groupMu.Unlock()
+	if state == nil {
+		return fmt.Errorf("recorder: session %q is not an acquired group member", e.SessionID)
+	}
+	state.writeMu.Lock()
+	defer state.writeMu.Unlock()
+	r.groupMu.Lock()
 	defer r.groupMu.Unlock()
+	if r.groupClosing {
+		return errors.New("recorder: receipt group is closing")
+	}
 	return r.withGroupSessionLocked(e.SessionID, func() error { return r.recordPrepared(e, scan, advance) })
 }
 
@@ -503,16 +518,63 @@ func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan, advance func()) err
 		r.groupMu.Unlock()
 		return r.recordDurablePrepared(e, scan, advance)
 	}
+	state := r.groupSessions[e.SessionID]
+	r.groupMu.Unlock()
+	if state == nil {
+		return fmt.Errorf("recorder: session %q is not an acquired group member", e.SessionID)
+	}
+	state.writeMu.Lock()
+	defer state.writeMu.Unlock()
+	r.groupMu.Lock()
+	if r.groupClosing {
+		r.groupMu.Unlock()
+		return errors.New("recorder: receipt group is closing")
+	}
+	var pending durableWrite
+	err = r.withGroupSessionLocked(e.SessionID, func() error {
+		var writeErr error
+		pending, writeErr = r.prepareDurableWrite(e, scan, advance)
+		return writeErr
+	})
+	if err == nil {
+		r.groupWrites.Add(1)
+	}
+	r.groupMu.Unlock()
+	if err != nil {
+		return err
+	}
+	defer r.groupWrites.Done()
+	if err := r.confirmDurableWrite(pending); err != nil {
+		return err
+	}
+	r.groupMu.Lock()
 	defer r.groupMu.Unlock()
-	return r.withGroupSessionLocked(e.SessionID, func() error { return r.recordDurablePrepared(e, scan, advance) })
+	return r.withGroupSessionLocked(e.SessionID, func() error { return r.finishDurableWrite(pending.written) })
 }
 
 func (r *Recorder) recordDurablePrepared(e Entry, scan *ReceiptScan, advance func()) error {
+	pending, err := r.prepareDurableWrite(e, scan, advance)
+	if err != nil {
+		return err
+	}
+	if err := r.confirmDurableWrite(pending); err != nil {
+		return err
+	}
+	return r.finishDurableWrite(pending.written)
+}
+
+type durableWrite struct {
+	written     Entry
+	generation  uint64
+	reservation durableReservation
+}
+
+func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
 	r.mu.Lock()
 	written, err := r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, false, scan, advance)
 	if err != nil {
 		r.mu.Unlock()
-		return err
+		return durableWrite{}, err
 	}
 
 	r.prevHash = written.Hash
@@ -523,16 +585,22 @@ func (r *Recorder) recordDurablePrepared(e Entry, scan *ReceiptScan, advance fun
 	generation := r.fileGeneration
 	reservation := r.enqueueDurabilityLocked(generation, written.Sequence, r.lastEntryOffsetLocked(written))
 	r.mu.Unlock()
+	return durableWrite{written: written, generation: generation, reservation: reservation}, nil
+}
 
-	if reservation.leader {
-		r.runDurabilitySync(reservation.batch)
+func (r *Recorder) confirmDurableWrite(pending durableWrite) error {
+	if pending.reservation.leader {
+		r.runDurabilitySync(pending.reservation.batch)
 	}
-	if err := r.waitDurability(reservation.batch, generation, written.Sequence); err != nil {
+	if err := r.waitDurability(pending.reservation.batch, pending.generation, pending.written.Sequence); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (r *Recorder) finishDurableWrite(written Entry) error {
 	r.mu.Lock()
-	err = r.runPostRecordMaintenanceLocked()
+	err := r.runPostRecordMaintenanceLocked()
 	r.mu.Unlock()
 	if err != nil {
 		return err
@@ -821,6 +889,7 @@ func (r *Recorder) enqueueDurabilityLocked(generation, seq uint64, offset int64)
 	if batch == nil || batch.syncing || batch.generation != generation {
 		batch = &durableBatch{
 			file:       r.file,
+			owner:      r.activeGroupState,
 			generation: generation,
 			done:       make(chan struct{}),
 		}
@@ -861,9 +930,16 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 			}
 		}
 		if syncStarted {
-			r.durableSyncing = false
+			r.setDurableSyncingLocked(batch.owner, false)
 		}
-		if r.durableBatch == batch {
+		if batch.owner != nil {
+			if batch.owner.durableBatch == batch {
+				batch.owner.durableBatch = nil
+				if r.activeGroupState == batch.owner {
+					r.durableBatch = nil
+				}
+			}
+		} else if r.durableBatch == batch {
 			r.durableBatch = nil
 		}
 		close(batch.done)
@@ -872,14 +948,14 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 	}()
 
 	r.mu.Lock()
-	for r.durableSyncing {
+	for r.durableSyncingForLocked(batch.owner) {
 		r.durableCond.Wait()
 	}
 	batch.syncing = true
 	// Keep syncStarted adjacent to durableSyncing. There must be no panicking
 	// operation between these two assignments, or panic recovery could leave
 	// later durable syncs waiting forever on durableSyncing.
-	r.durableSyncing = true
+	r.setDurableSyncingLocked(batch.owner, true)
 	syncStarted = true
 	r.mu.Unlock()
 
@@ -890,9 +966,13 @@ func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) e
 	<-batch.done
 
 	r.mu.Lock()
-	r.durablePending[generation]--
-	if r.durablePending[generation] <= 0 {
-		delete(r.durablePending, generation)
+	pending := r.durablePending
+	if batch.owner != nil {
+		pending = batch.owner.durablePending
+	}
+	pending[generation]--
+	if pending[generation] <= 0 {
+		delete(pending, generation)
 	}
 	r.durableCond.Broadcast()
 	r.mu.Unlock()
@@ -901,6 +981,23 @@ func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) e
 		return fmt.Errorf("%w: file generation %d seq %d: %w", ErrDurability, generation, seq, batch.err)
 	}
 	return nil
+}
+
+func (r *Recorder) durableSyncingForLocked(owner *SessionState) bool {
+	if owner != nil {
+		return owner.durableSyncing
+	}
+	return r.durableSyncing
+}
+
+func (r *Recorder) setDurableSyncingLocked(owner *SessionState, syncing bool) {
+	if owner != nil {
+		owner.durableSyncing = syncing
+		if r.activeGroupState != owner {
+			return
+		}
+	}
+	r.durableSyncing = syncing
 }
 
 // Close flushes and closes the recorder, writing a final checkpoint.
@@ -916,6 +1013,10 @@ func (r *Recorder) Close() error {
 	r.closeOnce.Do(func() {
 		r.groupMu.Lock()
 		if r.groupSessions != nil {
+			r.groupClosing = true
+			r.groupMu.Unlock()
+			r.groupWrites.Wait()
+			r.groupMu.Lock()
 			defer r.groupMu.Unlock()
 			r.closeErr = r.closeGroup()
 		} else {

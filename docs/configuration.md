@@ -1991,7 +1991,9 @@ stale-bundle detection, and uncertain Conductor apply. Any one active denies
 normal traffic (OR-composed) except for configured exemptions (`health_exempt`,
 `metrics_exempt`, `api_exempt`, `allowlist_ips`). Exemptions are honored only on
 the HTTP front door: the three endpoint exemptions cover requests made to
-Pipelock's own `/health`, `/metrics` and `/api/v1/*` paths, never a forward-proxy
+Pipelock's own `/health` and `/metrics` paths and its kill-switch and session
+admin routes under `/api/v1` (on the main port only when the API has no
+separate port), never a forward-proxy
 or CONNECT request that happens to name those paths on another host, and
 `allowlist_ips` matches the client address of HTTP, forward-proxy and
 intercepted CONNECT requests. MCP transports (stdio, the stdio-to-HTTP bridge

@@ -169,8 +169,3 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		l.emitEvent(string(EventWSScan), e.fields)
 	}
 }
-
-// LogSessionAnomaly logs a session behavioral anomaly detection.
-// copyRemediationHint copies remediation_hint from a log entry's fields into an
-// external-emitter fields map when the entry set one, so the emitted event and
-// the structured log carry the same operator guidance.

@@ -8,6 +8,7 @@ import (
 	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// LogSessionAnomaly logs a session behavioral anomaly detection.
 func (l *Logger) LogSessionAnomaly(sessionKey, anomalyType, detail, clientIP, requestID string, score float64) {
 	technique := TechniqueForScanner("session_anomaly")
 

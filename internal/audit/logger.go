@@ -1021,6 +1021,9 @@ func (l *Logger) LogAgentListener(addr, agent string) {
 	}
 }
 
+// copyRemediationHint copies remediation_hint from a log entry's fields into an
+// external-emitter fields map when the entry set one, so the emitted event and
+// the structured log carry the same operator guidance.
 func copyRemediationHint(dst, src map[string]any) {
 	if hint, ok := src["remediation_hint"]; ok {
 		dst["remediation_hint"] = hint

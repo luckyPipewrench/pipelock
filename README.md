@@ -372,7 +372,7 @@ pipelock contain run -- claude-code
 
 ### Operability
 
-- **Kill switch:** seven independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic, with endpoint and IP exemptions in the controller; IP allowlist exemptions do not apply during uncertain Conductor apply.
+- **Kill switch:** seven independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic. Endpoint and IP exemptions apply only to HTTP requests, never to MCP transports, the reverse proxy or established relays, and the IP allowlist is ignored during uncertain Conductor apply.
 - **Scan API:** programmatic scanning for `url`, `dlp`, `prompt_injection`, and `tool_call` verdicts with bearer token auth, per-token rate limiting, structured findings, and Prometheus metrics. See [docs/scan-api.md](docs/scan-api.md).
 - **Filesystem sentinel:** watches agent working directories for secrets written to disk and attributes writes to the MCP subprocess lineage on Linux. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
 - **Event emission:** forwards audit events to SIEMs, webhook receivers, syslog, CEF, OTLP, and metrics outputs without blocking the proxy hot path. See [docs/guides/siem-integration.md](docs/guides/siem-integration.md).

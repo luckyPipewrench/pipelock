@@ -722,6 +722,7 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPathPreservesLiveEmitter(t *testing.T)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	startCfgPath := filepath.Join(keyDir, "start.yaml")
 	startYAML := fmt.Sprintf(`mode: balanced
@@ -876,6 +877,7 @@ func TestProxy_ReloadSessionOpenEmitFailurePreservesLiveEmitter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	startCfgPath := filepath.Join(keyDir, "start.yaml")
 	startYAML := fmt.Sprintf(`mode: balanced
@@ -1201,6 +1203,7 @@ func TestProxy_ReloadSameSigningKeyReusesEmitterSoStaleHeartbeatCannotFork(t *te
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
@@ -1825,6 +1828,7 @@ func TestProxy_ReceiptEmission_ForwardResponseSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,
@@ -1943,6 +1947,7 @@ func TestProxy_ReceiptEmission_ForwardSizeExemptResponseScanBlock(t *testing.T) 
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,

@@ -284,6 +284,7 @@ func newCoverageEmitter(t *testing.T, dir string) (*receipt.Emitter, *recorder.R
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	t.Cleanup(func() { _ = rec.Close() })
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,

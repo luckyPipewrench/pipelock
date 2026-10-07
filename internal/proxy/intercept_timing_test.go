@@ -4,12 +4,10 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -30,6 +28,7 @@ import (
 type slowRT struct {
 	delay   time.Duration
 	reached chan struct{}
+	wrote   chan struct{}
 }
 
 func (s *slowRT) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -38,6 +37,9 @@ func (s *slowRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
 		trace.WroteRequest(httptrace.WroteRequestInfo{})
+	}
+	if s.wrote != nil {
+		close(s.wrote)
 	}
 	select {
 	case <-time.After(s.delay):
@@ -118,8 +120,8 @@ func TestInterceptTiming_AllowedSplitsUpstreamWait(t *testing.T) {
 	if total < up {
 		t.Fatalf("duration_ms %v < upstream_ms %v", total, up)
 	}
-	if e["client_canceled"] != false {
-		t.Fatalf("client_canceled = %v", e["client_canceled"])
+	if e["request_canceled"] != false {
+		t.Fatalf("request_canceled = %v", e["request_canceled"])
 	}
 }
 
@@ -146,14 +148,14 @@ func TestInterceptTiming_BlockedBeforeUpstreamHasNoUpstreamWait(t *testing.T) {
 
 func TestInterceptTiming_ClientCancelWhileUpstreamWaits(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	rt := &slowRT{delay: time.Minute, reached: make(chan struct{})}
+	rt := &slowRT{delay: time.Minute, reached: make(chan struct{}), wrote: make(chan struct{})}
 	go func() {
-		<-rt.reached
+		<-rt.wrote
 		time.AfterFunc(100*time.Millisecond, cancel)
 	}()
 	e, _ := runInterceptTiming(t, timingConfig(), rt, ctx, "https://api.vendor.example/slow")
-	if e["client_canceled"] != true {
-		t.Fatalf("client_canceled = %v, want true", e["client_canceled"])
+	if e["request_canceled"] != true {
+		t.Fatalf("request_canceled = %v, want true", e["request_canceled"])
 	}
 	up, ok := e["upstream_ms"].(float64)
 	if !ok || up < 100 {
@@ -232,43 +234,11 @@ func TestInterceptTimingWriter_Status(t *testing.T) {
 	}
 }
 
-// hijackRecorder is a recorder whose connection can be taken over.
-type hijackRecorder struct{ *httptest.ResponseRecorder }
-
-func (hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	client, server := net.Pipe()
-	_ = client.Close()
-	return server, bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server)), nil
-}
-
 func TestInterceptTimingWriter_CommittedStatuses(t *testing.T) {
 	w := &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
 	w.WriteHeader(http.StatusSwitchingProtocols)
 	if got := w.finalStatus(false); got != http.StatusSwitchingProtocols {
 		t.Fatalf("101 recorded as %d", got)
-	}
-
-	w = &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
-	w.Flush()
-	if got := w.finalStatus(true); got != http.StatusOK {
-		t.Fatalf("flush then cancel recorded as %d, want 200", got)
-	}
-}
-
-func TestInterceptTimingWriter_Hijack(t *testing.T) {
-	plain := &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
-	if _, _, err := plain.Hijack(); !errors.Is(err, http.ErrNotSupported) {
-		t.Fatalf("hijack on a writer without support: err = %v", err)
-	}
-	w := &interceptTimingWriter{ResponseWriter: hijackRecorder{httptest.NewRecorder()}}
-	var _ http.Hijacker = w
-	conn, _, err := w.Hijack()
-	if err != nil {
-		t.Fatalf("hijack passthrough failed: %v", err)
-	}
-	_ = conn.Close()
-	if got := w.finalStatus(false); got != http.StatusSwitchingProtocols {
-		t.Fatalf("hijacked status %d, want 101", got)
 	}
 }
 
@@ -295,27 +265,12 @@ func (s slowHeadersRT) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestInterceptTiming_UpstreamWaitExcludesSetup(t *testing.T) {
-	e, _ := runInterceptTiming(t, timingConfig(), slowHeadersRT{setup: 300 * time.Millisecond, wait: 50 * time.Millisecond}, t.Context(), "https://api.vendor.example/a")
+	e, _ := runInterceptTiming(t, timingConfig(), slowHeadersRT{setup: 2 * time.Second, wait: 20 * time.Millisecond}, t.Context(), "https://api.vendor.example/a")
 	up, ok := e["upstream_ms"].(float64)
-	if !ok || up < 50 || up >= 300 {
-		t.Fatalf("upstream_ms = %v, want the post-write wait only (50..300)", e["upstream_ms"])
-	}
-}
-
-// failingHijacker supports hijacking but fails to take the connection.
-type failingHijacker struct{ *httptest.ResponseRecorder }
-
-func (failingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return nil, nil, errors.New("hijack failed")
-}
-
-func TestInterceptTimingWriter_FailedHijackKeepsStatus(t *testing.T) {
-	w := &interceptTimingWriter{ResponseWriter: failingHijacker{httptest.NewRecorder()}}
-	if _, _, err := w.Hijack(); err == nil {
-		t.Fatal("hijack error was not propagated")
-	}
-	if got := w.finalStatus(true); got == http.StatusSwitchingProtocols {
-		t.Fatalf("failed hijack recorded as %d", got)
+	// The 2s setup must not leak into upstream_ms; the gap leaves ample
+	// scheduler slack while still catching a timer started before setup.
+	if !ok || up < 20 || up >= 2000 {
+		t.Fatalf("upstream_ms = %v, want the post-write wait only (20..2000)", e["upstream_ms"])
 	}
 }
 
@@ -341,5 +296,18 @@ func TestInterceptTiming_RetryKeepsFirstWrite(t *testing.T) {
 	up, ok := e["upstream_ms"].(float64)
 	if !ok || up < 150 {
 		t.Fatalf("upstream_ms = %v, want the wait from the first write (>= 150)", e["upstream_ms"])
+	}
+}
+
+func TestInterceptTimingWriter_AddsNoOptionalInterfaces(t *testing.T) {
+	var w http.ResponseWriter = &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	if _, ok := w.(http.Flusher); ok {
+		t.Fatal("wrapper advertises http.Flusher")
+	}
+	if _, ok := w.(http.Hijacker); ok {
+		t.Fatal("wrapper advertises http.Hijacker")
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Fatalf("ResponseController cannot reach the underlying flusher: %v", err)
 	}
 }

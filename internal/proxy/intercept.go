@@ -575,6 +575,9 @@ func newInterceptHandler(
 
 		// One timing line per intercepted request, on every exit path, so an
 		// operator can split Pipelock's own time from the destination's wait.
+		// The wrapper adds no optional interfaces; code that needs one asks
+		// the server's own writer, so no capability is advertised falsely.
+		serverWriter := w
 		timing := &interceptTimingWriter{ResponseWriter: w}
 		w = timing
 		var upstreamWait time.Duration
@@ -592,7 +595,7 @@ func newInterceptHandler(
 				Duration:        time.Since(reqStart),
 				Upstream:        upstreamWait,
 				ReachedUpstream: reachedUpstream.Load(),
-				ClientCanceled:  r.Context().Err() != nil,
+				RequestCanceled: r.Context().Err() != nil,
 			})
 		}()
 
@@ -2165,7 +2168,7 @@ func newInterceptHandler(
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
 
-			flusher, _ := w.(http.Flusher)
+			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
 			// Findings and incomplete scans keep their evidence below, even
 			// when the client also went away.
@@ -2962,31 +2965,6 @@ func (t *interceptTimingWriter) Write(b []byte) (int, error) {
 	n, err := t.ResponseWriter.Write(b)
 	t.bytes += int64(n)
 	return n, err
-}
-
-// Flush keeps streamed responses streaming through the wrapper.
-func (t *interceptTimingWriter) Flush() {
-	// Flushing an unwritten response commits net/http's implicit 200.
-	if t.status == 0 {
-		t.status = http.StatusOK
-	}
-	if f, ok := t.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// Hijack passes connection takeover through to the underlying writer, so the
-// wrapper never hides a capability the server's writer has.
-func (t *interceptTimingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	h, ok := t.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, http.ErrNotSupported
-	}
-	conn, rw, err := h.Hijack()
-	if err == nil && t.status == 0 {
-		t.status = http.StatusSwitchingProtocols
-	}
-	return conn, rw, err
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.

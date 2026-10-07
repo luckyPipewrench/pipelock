@@ -1706,7 +1706,7 @@ type InterceptTiming struct {
 	Duration        time.Duration
 	Upstream        time.Duration
 	ReachedUpstream bool
-	ClientCanceled  bool
+	RequestCanceled bool
 }
 
 // LogInterceptHTTP logs one TLS-intercepted request with its timing split.
@@ -1734,7 +1734,7 @@ func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 	if t.ReachedUpstream {
 		e.upstreamMS(t.Upstream)
 	}
-	e.boolField("client_canceled", t.ClientCanceled)
+	e.boolField("request_canceled", t.RequestCanceled)
 	e.msg("intercepted request")
 
 	if l.emitter != nil {

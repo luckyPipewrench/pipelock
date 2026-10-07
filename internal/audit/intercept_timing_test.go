@@ -52,7 +52,7 @@ func TestLogInterceptHTTP(t *testing.T) {
 		},
 		{
 			name:         "client gave up while waiting upstream",
-			timing:       InterceptTiming{Duration: 20 * time.Second, Upstream: 19 * time.Second, ReachedUpstream: true, ClientCanceled: true},
+			timing:       InterceptTiming{Duration: 20 * time.Second, Upstream: 19 * time.Second, ReachedUpstream: true, RequestCanceled: true},
 			wantUpstream: float64(19000),
 			wantCanceled: true,
 		},
@@ -89,8 +89,8 @@ func TestLogInterceptHTTP(t *testing.T) {
 			} else if tt.wantUpstream != nil && got != tt.wantUpstream {
 				t.Errorf("upstream_ms = %v, want %v", got, tt.wantUpstream)
 			}
-			if e["client_canceled"] != tt.wantCanceled {
-				t.Errorf("client_canceled = %v, want %v", e["client_canceled"], tt.wantCanceled)
+			if e["request_canceled"] != tt.wantCanceled {
+				t.Errorf("request_canceled = %v, want %v", e["request_canceled"], tt.wantCanceled)
 			}
 		})
 	}

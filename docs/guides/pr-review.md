@@ -43,6 +43,15 @@ also checks out the captured head for the judge, then searches that checkout for
 the consumers and tests related to each candidate. A same-file hunk isn't enough
 to verify a cross-file claim.
 
+Search hits carry surrounding source lines. Nearby hits in the same file share
+a window that includes each hit's context; definition hits also include the body,
+up to 60 lines from the definition. An identifier also gets one search for the
+line that defines it, from the same search budget, because the literal search keeps
+only the first three hits per file. Literal searches requested by the judge use
+the same windows. The existing search, window, token, request, and time limits
+still apply. A file too large to read still contributes its matching lines. Omitted code and failed reads are marked so the judge leaves a
+premise unresolved when the supplied evidence cannot decide it.
+
 The reusable workflow builds the comparison from shallow checkouts of the exact
 head and GitHub-reported merge base. This avoids both the compare API's 300-file
 ceiling and an unbounded full-history fetch. If it can't produce the exact diff,

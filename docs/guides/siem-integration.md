@@ -92,7 +92,7 @@ and `ws_close` are also gated by `logging.include_allowed` (default `true`). Whe
 | `config_reload` | Config file reloaded (also emitted) | `status`, `detail` |
 | `redirect` | HTTP redirect observed before target admission; not proof the target was contacted | `original_url`, `redirect_url`, `client_ip`, `request_id`, `hop` |
 | `forward_http` | Forward proxy request completed | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms` |
-| `intercept_http` | TLS-intercepted request finished, allowed or blocked. `upstream_ms` is the wait for the destination's response headers and appears only when the request reached it; the rest of `duration_ms` is Pipelock's own time. `client_canceled` is true when the client gave up first | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms`, `upstream_ms`, `client_canceled` |
+| `intercept_http` | TLS-intercepted request finished, allowed or blocked. `url` is the destination only, never a path or query. `upstream_ms` is the wait for the destination's response headers and appears only when the request was sent; the rest of `duration_ms` covers Pipelock's checks before sending and reading, scanning and delivering the response body. `client_canceled` is true when the client gave up first | `method`, `url`, `client_ip`, `request_id`, `status_code`, `size_bytes`, `duration_ms`, `upstream_ms`, `client_canceled` |
 
 > **Note:** Chain detection events (`chain_detection`) are both counted in
 > Prometheus (`pipelock_chain_detections_total`) and emitted to the sinks, at

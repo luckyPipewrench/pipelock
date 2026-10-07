@@ -575,16 +575,19 @@ func newInterceptHandler(
 		// operator can split Pipelock's own time from the destination's wait.
 		timing := &interceptTimingWriter{ResponseWriter: w}
 		w = timing
-		var upstreamStart time.Time
 		var upstreamWait time.Duration
+		reachedUpstream := false
 		defer func() {
-			timingCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
+			// Destination only. A blocked request's path or query can carry
+			// the very secret its block event redacts, so this line never
+			// records either.
+			timingCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: "https://" + target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
 			ic.Logger.LogInterceptHTTP(timingCtx, audit.InterceptTiming{
 				StatusCode:      timing.status,
 				SizeBytes:       timing.bytes,
 				Duration:        time.Since(reqStart),
 				Upstream:        upstreamWait,
-				ReachedUpstream: !upstreamStart.IsZero(),
+				ReachedUpstream: reachedUpstream,
 				ClientCanceled:  r.Context().Err() != nil,
 			})
 		}()
@@ -1981,12 +1984,15 @@ func newInterceptHandler(
 		}
 
 		// Forward to upstream.
-		upstreamStart = time.Now()
+		upstreamStart := time.Now()
 		resp, err := upstream.RoundTrip(r)
 		upstreamWait = time.Since(upstreamStart)
+		reachedUpstream = true
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
 			if errors.As(err, &ssrfErr) {
+				// The dial guard refused the destination; nothing was sent.
+				reachedUpstream = false
 				ic.Logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

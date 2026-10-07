@@ -55,6 +55,23 @@ var timingEventTypes = map[string]bool{
 	"intercept_http": true,
 }
 
+// withoutTimingEvents returns events with timing records removed. It copies
+// only when a timing record is present, so the caller's slice is never changed.
+func withoutTimingEvents(events []Event) []Event {
+	for i := range events {
+		if timingEventTypes[events[i].Event] {
+			kept := make([]Event, 0, len(events)-1)
+			for j := range events {
+				if !timingEventTypes[events[j].Event] {
+					kept = append(kept, events[j])
+				}
+			}
+			return kept
+		}
+	}
+	return events
+}
+
 // Event types classified as allowed/informational traffic.
 var allowedEventTypes = map[string]bool{
 	"allowed":      true,
@@ -125,6 +142,10 @@ func Aggregate(events []Event, opts Options) *Report {
 	if title == "" {
 		title = DefaultTitle
 	}
+
+	// Timing records describe requests that verdict events already count.
+	// Drop them once here so no summary, breakdown or evidence view sees them.
+	events = withoutTimingEvents(events)
 
 	r := &Report{
 		Title:     title,
@@ -314,10 +335,6 @@ func extractModeFromDetail(detail string) string {
 // classifyEvent updates summary counters based on the event type and action.
 func classifyEvent(ev *Event, s *Summary) {
 	evType := ev.Event
-
-	if timingEventTypes[evType] {
-		return
-	}
 
 	if blockEventTypes[evType] {
 		s.Blocks++
@@ -699,7 +716,7 @@ func buildEvidence(events []Event, maxCount int, redact bool) []Event {
 	for i := range events {
 		ev := &events[i]
 		// Include only security-relevant events (not pure allowed/info traffic).
-		if allowedEventTypes[ev.Event] || timingEventTypes[ev.Event] || ev.Event == eventStartup ||
+		if allowedEventTypes[ev.Event] || ev.Event == eventStartup ||
 			ev.Event == eventShutdown || ev.Event == eventConfigReload {
 			continue
 		}

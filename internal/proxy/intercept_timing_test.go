@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -150,5 +151,36 @@ func TestInterceptTiming_ClientCancelWhileUpstreamWaits(t *testing.T) {
 	up, ok := e["upstream_ms"].(float64)
 	if !ok || up < 100 {
 		t.Fatalf("upstream_ms = %v, want the wait until cancel", e["upstream_ms"])
+	}
+}
+
+// dialRefusedRT reports what the dial guard returns for a refused destination.
+type dialRefusedRT struct{}
+
+func (dialRefusedRT) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, &ssrfDialBlockError{reason: blockreason.SSRFPrivateIP, detail: "test refusal"}
+}
+
+func TestInterceptTiming_DialRefusedHasNoUpstreamWait(t *testing.T) {
+	e, code := runInterceptTiming(t, timingConfig(), dialRefusedRT{}, t.Context(), "https://api.vendor.example/health")
+	if code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", code)
+	}
+	if _, ok := e["upstream_ms"]; ok {
+		t.Fatalf("upstream_ms present for a dial the guard refused: %v", e)
+	}
+}
+
+func TestInterceptTiming_URLIsDestinationOnly(t *testing.T) {
+	cfg := timingConfig()
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"api.vendor.example"}
+	secret := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	e, _ := runInterceptTiming(t, cfg, &slowRT{}, t.Context(), "https://api.vendor.example/upload/"+secret+"?token="+secret)
+	if e["url"] != "https://api.vendor.example:443" {
+		t.Fatalf("url = %v, want destination only", e["url"])
+	}
+	raw, _ := json.Marshal(e)
+	if bytes.Contains(raw, []byte(secret)) || bytes.Contains(raw, []byte("/upload")) {
+		t.Fatalf("timing line carries request path or query: %s", raw)
 	}
 }

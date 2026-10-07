@@ -1222,6 +1222,7 @@ Key-free evidence capture:
 					Principal:           "local",
 					Actor:               "pipelock",
 					Metrics:             mcpMetrics,
+					PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
 					PostureBinding:      postureResult.Binding,
 					PostureAvailability: string(postureResult.Availability),
 					HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),

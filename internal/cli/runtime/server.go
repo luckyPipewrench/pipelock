@@ -614,6 +614,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
 				Recorder: rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
 				Principal: "local", Actor: "pipelock", Metrics: m,
+				PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
 				PostureBinding:      postureResult.Binding,
 				PostureAvailability: string(postureResult.Availability),
 				HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),

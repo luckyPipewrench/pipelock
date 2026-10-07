@@ -396,6 +396,7 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
 			Recorder: rec, PrivKey: privateKey, ConfigHash: cfg.CanonicalPolicyHash(),
 			Principal: "local", Actor: "pipelock", Metrics: m,
+			PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
 			PostureBinding:      postureResult.Binding,
 			PostureAvailability: string(postureResult.Availability),
 			HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),

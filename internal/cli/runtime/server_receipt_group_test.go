@@ -178,6 +178,10 @@ func TestReceiptGroupKeyFileRotationClosesBeforeRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
 	template.Recorder, template.PrivKey = restarted, newKey
+	if _, _, err := buildServerReceiptShardGroup(template, 2, keyPath, false); err == nil || !strings.Contains(err.Error(), "receipt group opening identity or signature is invalid") {
+		t.Fatalf("untrusted predecessor accepted: %v", err)
+	}
+	template.PriorSignerKeys = []string{oldOpen.SignerKey}
 	successor, _, err := buildServerReceiptShardGroup(template, 2, keyPath, false)
 	if err != nil {
 		t.Fatal(err)

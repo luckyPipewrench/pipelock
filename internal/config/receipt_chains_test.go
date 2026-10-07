@@ -71,3 +71,31 @@ func TestActiveMultiChainRemainsUnavailable(t *testing.T) {
 		t.Fatalf("multi-chain recorder with anchor accepted: %v", err)
 	}
 }
+
+func TestReceiptGroupPriorSignerKeysValidation(t *testing.T) {
+	valid := strings.Repeat("ab", 32)
+	for name, keys := range map[string][]string{
+		"valid":     {valid},
+		"malformed": {"not-a-key"},
+		"uppercase": {strings.ToUpper(valid)},
+		"duplicate": {valid, valid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.FlightRecorder.ReceiptGroupPriorSignerKeys = keys
+			err := cfg.Validate()
+			if name == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				clone := cfg.Clone()
+				clone.FlightRecorder.ReceiptGroupPriorSignerKeys[0] = strings.Repeat("cd", 32)
+				if cfg.FlightRecorder.ReceiptGroupPriorSignerKeys[0] != valid {
+					t.Fatal("clone shares prior signer key backing slice")
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "flight_recorder.receipt_group_prior_signer_keys") {
+				t.Fatalf("validation error = %v", err)
+			}
+		})
+	}
+}

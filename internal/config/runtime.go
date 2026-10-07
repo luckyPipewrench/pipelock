@@ -294,6 +294,9 @@ func (c *Config) Clone() *Config {
 	if c.FlightRecorder.PostureSignerPublicKey != nil {
 		clone.FlightRecorder.PostureSignerPublicKey = append([]byte(nil), c.FlightRecorder.PostureSignerPublicKey...)
 	}
+	if c.FlightRecorder.ReceiptGroupPriorSignerKeys != nil {
+		clone.FlightRecorder.ReceiptGroupPriorSignerKeys = append([]string(nil), c.FlightRecorder.ReceiptGroupPriorSignerKeys...)
+	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
 	if c.DLP.GitHubEnterpriseHosts != nil {

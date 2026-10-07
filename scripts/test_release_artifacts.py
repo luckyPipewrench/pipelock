@@ -406,6 +406,8 @@ class TestReleaseArtifacts(unittest.TestCase):
                     producer = steps[i]
                     self.assertIn("id", producer, "producer needs an ID")
                     self.assertIs(producer.get("continue-on-error"), True)
+                    action = str(producer["uses"]).partition("@")[0].lower()
+                    self._assert_action_pin(producer, action)
                     expected.append(producer["id"])
                 self.assertTrue(required[name].issubset(expected),
                                 "required subject moved or removed from its boundary")
@@ -662,13 +664,19 @@ class TestReleaseArtifacts(unittest.TestCase):
                 parsed = copy.deepcopy(original)
                 steps = parsed["jobs"][job_name]["steps"]
                 gate = next(step for step in steps if step.get("name") == gate_name)
-                steps.insert(steps.index(gate), {
-                    "id": "attest-extra", "uses": "actions/attest-build-provenance@future",
+                producer = {
+                    "id": "attest-extra", "uses": f"actions/attest-build-provenance@{'b' * 40}",
                     "continue-on-error": True, "with": {"subject-path": "dist/extra.txt"},
-                })
+                }
+                steps.insert(steps.index(gate), producer)
                 outcomes = gate["if"].split("&&", 1)[1].strip().strip("()")
                 gate["if"] = "always() && (" + outcomes + " || steps.attest-extra.outcome != 'success')"
                 self._assert_attestation_contract(parsed)
+                for ref in ("v4", "future", "b" * 39, ""):
+                    with self.subTest(unpinned_ref=ref):
+                        producer["uses"] = "actions/attest-build-provenance" + (f"@{ref}" if ref else "")
+                        with self.assertRaisesRegex(AssertionError, "pinned to a commit SHA"):
+                            self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_whitespace_and_term_reordering(self) -> None:
         parsed = yaml.safe_load(self.workflow)

@@ -1636,7 +1636,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 }
 
 func applyWebSocketContentEntropyConfig(req *BodyScanRequest, cfg *config.Config) {
-	applyContentEntropyConfig(req, cfg, cfg.WebSocketProxy.ContentEntropyExclusions)
+	applyContentEntropyConfig(req, cfg, config.ActiveEntropyExclusionHosts(cfg.WebSocketProxy.ContentEntropyExclusions, time.Now()))
 	// HTTP route exceptions must never become WebSocket frame exceptions if a
 	// future caller starts supplying a ws/wss or normalized HTTPS scheme. A
 	// frame has no request method or declared content type for an exact route

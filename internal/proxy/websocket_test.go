@@ -144,7 +144,7 @@ func TestWebSocketClientMessageBody_ContentEntropy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testScannerConfig()
 			cfg.WebSocketProxy.Enabled = true
-			cfg.WebSocketProxy.ContentEntropyExclusions = tt.wsExclusion
+			cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions(tt.wsExclusion...)
 			cfg.TrustedDomains = tt.trusted
 			cfg.RequestBodyScanning.ContentEntropyEnabled = true
 			cfg.RequestBodyScanning.ContentEntropyAction = tt.action

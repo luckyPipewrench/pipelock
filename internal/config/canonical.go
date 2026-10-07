@@ -284,11 +284,11 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)
 	view.FetchProxy.Monitoring.SubdomainEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.SubdomainEntropyExclusions)
 	view.FetchProxy.Monitoring.QueryEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.QueryEntropyExclusions)
-	view.RequestBodyScanning.ContentEntropyExclusions = canonicalHostSet(view.RequestBodyScanning.ContentEntropyExclusions)
+	view.RequestBodyScanning.ContentEntropyExclusions = canonicalEntropyHostExclusions(view.RequestBodyScanning.ContentEntropyExclusions)
 	view.RequestBodyScanning.TrustedHosts = canonicalHostSet(view.RequestBodyScanning.TrustedHosts)
 	view.RequestBodyScanning.ContentEntropyWarnRoutes = canonicalRequestBodyEntropyWarnRoutes(view.RequestBodyScanning.ContentEntropyWarnRoutes)
 	view.RequestBodyScanning.SigV4CredentialRoutes = canonicalRequestBodySigV4CredentialRoutes(view.RequestBodyScanning.SigV4CredentialRoutes)
-	view.WebSocketProxy.ContentEntropyExclusions = canonicalHostSet(view.WebSocketProxy.ContentEntropyExclusions)
+	view.WebSocketProxy.ContentEntropyExclusions = canonicalEntropyHostExclusions(view.WebSocketProxy.ContentEntropyExclusions)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = canonicalHostSet(view.Redaction.AllowlistUnparseable)
 	} else {
@@ -458,8 +458,8 @@ func canonicalRequestBodyEntropyWarnRoutes(entries []RequestBodyEntropyWarnRoute
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		return a.Host+"\x00"+a.Path+"\x00"+strings.Join(a.Methods, "\x00")+"\x00"+strings.Join(a.ContentTypes, "\x00")+"\x00"+a.Owner+"\x00"+a.Reason+"\x00"+a.Expires <
-			b.Host+"\x00"+b.Path+"\x00"+strings.Join(b.Methods, "\x00")+"\x00"+strings.Join(b.ContentTypes, "\x00")+"\x00"+b.Owner+"\x00"+b.Reason+"\x00"+b.Expires
+		return a.Host+"\x00"+a.Path+"\x00"+a.PathPrefix+"\x00"+strings.Join(a.Methods, "\x00")+"\x00"+strings.Join(a.ContentTypes, "\x00")+"\x00"+a.Owner+"\x00"+a.Reason+"\x00"+a.Expires <
+			b.Host+"\x00"+b.Path+"\x00"+b.PathPrefix+"\x00"+strings.Join(b.Methods, "\x00")+"\x00"+strings.Join(b.ContentTypes, "\x00")+"\x00"+b.Owner+"\x00"+b.Reason+"\x00"+b.Expires
 	})
 	return out
 }
@@ -596,6 +596,30 @@ func sortedCopy(s []string) []string {
 // canonicalHostSet returns a sorted, lowercase copy of a set-like host or host
 // pattern list. Host matching is case-insensitive, so case-only edits cannot
 // represent a different effective policy or change its canonical hash.
+// canonicalEntropyHostExclusions is canonicalHostSet for entries that may carry
+// an expiry. Plain entries reduce to exactly what canonicalHostSet produced, so
+// the policy hash of a config that has none of the mapping form is unchanged.
+func canonicalEntropyHostExclusions(entries []EntropyHostExclusion) []EntropyHostExclusion {
+	if len(entries) == 0 {
+		return nil
+	}
+	seen := make(map[EntropyHostExclusion]struct{}, len(entries))
+	out := make([]EntropyHostExclusion, 0, len(entries))
+	for _, e := range entries {
+		e.Host = strings.TrimSuffix(strings.ToLower(e.Host), ".")
+		if _, ok := seen[e]; ok {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		return a.Host+"\x00"+a.Expires+"\x00"+a.Owner+"\x00"+a.Reason < b.Host+"\x00"+b.Expires+"\x00"+b.Owner+"\x00"+b.Reason
+	})
+	return out
+}
+
 func canonicalHostSet(s []string) []string {
 	if len(s) == 0 {
 		return nil

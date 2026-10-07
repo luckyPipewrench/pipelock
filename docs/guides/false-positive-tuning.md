@@ -180,11 +180,25 @@ selecting a blocking preset (strict/hostile presets already block):
   expiring `request_body_scanning.content_entropy_warn_routes` entry. The
   entropy finding remains visible while DLP, prompt injection, address, body
   size, and redirect checks keep their normal actions.
+- **Route with a random path segment:** when a service issues a per-request
+  path (a bot-challenge POST under `/cdn-cgi/challenge/<random>`, say) and the
+  body is form, JSON, or text, an exact `path` cannot name it and an exact route
+  refuses text content types. Use `path_prefix` on the same entry type
+  instead, for example `path_prefix: /cdn-cgi/challenge/` with
+  `content_types: [application/x-www-form-urlencoded, application/json]`. It
+  matches on a path-segment boundary and still requires a reason, owner, and an
+  `expires` date within 90 days. A credential or injection phrase inside that
+  textual body is still caught; only the entropy finding is downgraded.
 - **WebSocket:** use `websocket_proxy.content_entropy_exclusions` for a
   WebSocket-only endpoint. Route warning entries do not affect WebSocket or
   A2A entropy scanning.
 - **Broader:** a host in `request_body_scanning.content_entropy_exclusions`
-  skips request-body entropy across every path on that host. If the host is
+  skips request-body entropy across every path on that host. Write it as a
+  mapping (`- host: api.vendor.example`, `expires: "<date within 90 days>"`,
+  optional `reason` and `owner`) when it is a stopgap: the entry stops applying
+  after that date and fails validation once expired, while a plain host string
+  stays permanent. `websocket_proxy.content_entropy_exclusions` takes the same
+  two shapes. If the host is
   fully trusted, `trusted_domains` covers it for
   entropy and other destination-trust checks at once.
 - **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`

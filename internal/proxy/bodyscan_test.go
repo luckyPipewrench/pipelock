@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -224,7 +225,7 @@ func TestScanRequestBody_ContentEntropy(t *testing.T) {
 			host: "uploads.vendor.example",
 			body: fmt.Sprintf(`{"blob":%q}`, opaqueHighEntropyBodyValue()),
 			modify: func(cfg *config.Config) {
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions("uploads.vendor.example")
 			},
 			wantHit: false,
 		},
@@ -331,7 +332,7 @@ func TestScanRequestBody_ContentEntropyWarnDoesNotHidePromptInjectionBlock(t *te
 		ContentEntropyThreshold:  cfg.RequestBodyScanning.ContentEntropyThreshold,
 		ContentEntropyMinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		ContentEntropyTrusted:    cfg.TrustedDomains,
-		ContentEntropyExclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		ContentEntropyExclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 	})
 
 	if result.Clean {
@@ -373,7 +374,7 @@ func TestScanRequestBody_DLPWarnDoesNotHideEntropyBlock(t *testing.T) {
 		ContentEntropyThreshold:  cfg.RequestBodyScanning.ContentEntropyThreshold,
 		ContentEntropyMinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		ContentEntropyTrusted:    cfg.TrustedDomains,
-		ContentEntropyExclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		ContentEntropyExclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 	})
 
 	if result.Clean {

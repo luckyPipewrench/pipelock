@@ -3319,7 +3319,7 @@ func a2aContentEntropyOptions(host string, cfg *config.Config) mcp.A2AContentEnt
 		MinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		Host:       host,
 		Trusted:    cfg.TrustedDomains,
-		Exclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		Exclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 		Separator:  bodyDLPJoinSeparator,
 	}
 }

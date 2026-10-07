@@ -201,7 +201,7 @@ func TestEntropyOnlyIsAdaptiveExemptWithOrWithoutWarnRoute(t *testing.T) {
 func TestWebSocketContentEntropyConfigExplicitlyDropsHTTPWarnRoutes(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []config.RequestBodyEntropyWarnRoute{entropyWarnRoute()}
-	cfg.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example"}
+	cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions("stream.vendor.example")
 	req := BodyScanRequest{Scheme: "https"}
 	applyWebSocketContentEntropyConfig(&req, cfg)
 	if req.ContentEntropyWarnRoutes != nil {

@@ -322,7 +322,18 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = false
 				cfg.RequestBodyScanning.ContentEntropyEnabled = true
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.enabled=false",
+			wantNextSubstr:   "enable request_body_scanning",
+		},
+		{
+			name: "body content entropy exemption with expiry inert when body scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []config.EntropyHostExclusion{{Host: testExemptHost, Expires: "2099-01-01"}}
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "request_body_scanning.enabled=false",
@@ -333,7 +344,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = true
 				cfg.RequestBodyScanning.ContentEntropyEnabled = false
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "request_body_scanning.content_entropy_enabled=false",
@@ -345,7 +356,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 				off := false
 				cfg.WebSocketProxy.Enabled = true
 				cfg.WebSocketProxy.ScanTextFrames = &off
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "websocket_proxy.scan_text_frames=false",
@@ -357,7 +368,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 				cfg.WebSocketProxy.Enabled = true
 				cfg.RequestBodyScanning.Enabled = false
 				cfg.RequestBodyScanning.ContentEntropyEnabled = true
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "request_body_scanning.enabled=false",
@@ -369,7 +380,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 				cfg.WebSocketProxy.Enabled = true
 				cfg.RequestBodyScanning.Enabled = true
 				cfg.RequestBodyScanning.ContentEntropyEnabled = false
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "request_body_scanning.content_entropy_enabled=false",
@@ -380,9 +391,9 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = true
 				cfg.RequestBodyScanning.ContentEntropyEnabled = true
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{testExemptHost}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions(testExemptHost)
 				cfg.WebSocketProxy.Enabled = true
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"ws." + testExemptHost}
+				cfg.WebSocketProxy.ContentEntropyExclusions = config.EntropyHostExclusions("ws." + testExemptHost)
 			},
 			wantWarn: 0,
 		},

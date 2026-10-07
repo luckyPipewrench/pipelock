@@ -1988,15 +1988,20 @@ func newInterceptHandler(
 		}
 
 		// Forward to upstream.
-		upstreamStart := time.Now()
+		// The wait starts when the request is fully written, so dialing,
+		// TLS setup and the request write are not counted as upstream wait.
+		var wroteAt atomic.Int64
 		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			WroteRequest: func(info httptrace.WroteRequestInfo) {
 				if info.Err == nil {
+					wroteAt.Store(time.Now().UnixNano())
 					reachedUpstream.Store(true)
 				}
 			},
 		})))
-		upstreamWait = time.Since(upstreamStart)
+		if at := wroteAt.Load(); at != 0 {
+			upstreamWait = time.Since(time.Unix(0, at))
+		}
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
 			if errors.As(err, &ssrfErr) {
@@ -2937,8 +2942,9 @@ type interceptTimingWriter struct {
 }
 
 func (t *interceptTimingWriter) WriteHeader(code int) {
-	// 1xx responses are interim; the final status follows.
-	if t.status == 0 && code >= http.StatusOK {
+	// 1xx responses are interim and a final status follows, except 101,
+	// which ends the HTTP exchange.
+	if t.status == 0 && (code >= http.StatusOK || code == http.StatusSwitchingProtocols) {
 		t.status = code
 	}
 	t.ResponseWriter.WriteHeader(code)
@@ -2955,9 +2961,26 @@ func (t *interceptTimingWriter) Write(b []byte) (int, error) {
 
 // Flush keeps streamed responses streaming through the wrapper.
 func (t *interceptTimingWriter) Flush() {
+	// Flushing an unwritten response commits net/http's implicit 200.
+	if t.status == 0 {
+		t.status = http.StatusOK
+	}
 	if f, ok := t.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack passes connection takeover through to the underlying writer, so the
+// wrapper never hides a capability the server's writer has.
+func (t *interceptTimingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := t.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	if t.status == 0 {
+		t.status = http.StatusSwitchingProtocols
+	}
+	return h.Hijack()
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.

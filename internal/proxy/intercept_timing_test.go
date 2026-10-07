@@ -4,10 +4,12 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -227,5 +229,75 @@ func TestInterceptTimingWriter_Status(t *testing.T) {
 	w.WriteHeader(http.StatusTeapot)
 	if got := w.finalStatus(false); got != http.StatusTeapot {
 		t.Fatalf("status %d, want final status after 1xx", got)
+	}
+}
+
+// hijackRecorder is a recorder whose connection can be taken over.
+type hijackRecorder struct{ *httptest.ResponseRecorder }
+
+func (hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	client, server := net.Pipe()
+	_ = client.Close()
+	return server, bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server)), nil
+}
+
+func TestInterceptTimingWriter_CommittedStatuses(t *testing.T) {
+	w := &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	w.WriteHeader(http.StatusSwitchingProtocols)
+	if got := w.finalStatus(false); got != http.StatusSwitchingProtocols {
+		t.Fatalf("101 recorded as %d", got)
+	}
+
+	w = &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	w.Flush()
+	if got := w.finalStatus(true); got != http.StatusOK {
+		t.Fatalf("flush then cancel recorded as %d, want 200", got)
+	}
+}
+
+func TestInterceptTimingWriter_Hijack(t *testing.T) {
+	plain := &interceptTimingWriter{ResponseWriter: httptest.NewRecorder()}
+	if _, _, err := plain.Hijack(); !errors.Is(err, http.ErrNotSupported) {
+		t.Fatalf("hijack on a writer without support: err = %v", err)
+	}
+	w := &interceptTimingWriter{ResponseWriter: hijackRecorder{httptest.NewRecorder()}}
+	var _ http.Hijacker = w
+	conn, _, err := w.Hijack()
+	if err != nil {
+		t.Fatalf("hijack passthrough failed: %v", err)
+	}
+	_ = conn.Close()
+	if got := w.finalStatus(false); got != http.StatusSwitchingProtocols {
+		t.Fatalf("hijacked status %d, want 101", got)
+	}
+}
+
+// slowHeadersRT reports the request written, then waits before answering.
+type slowHeadersRT struct{ setup, wait time.Duration }
+
+func (s slowHeadersRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-time.After(s.setup):
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
+		trace.WroteRequest(httptrace.WroteRequestInfo{})
+	}
+	select {
+	case <-time.After(s.wait):
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	rec := httptest.NewRecorder()
+	_, _ = rec.WriteString("ok")
+	return rec.Result(), nil
+}
+
+func TestInterceptTiming_UpstreamWaitExcludesSetup(t *testing.T) {
+	e, _ := runInterceptTiming(t, timingConfig(), slowHeadersRT{setup: 300 * time.Millisecond, wait: 50 * time.Millisecond}, t.Context(), "https://api.vendor.example/a")
+	up, ok := e["upstream_ms"].(float64)
+	if !ok || up < 50 || up >= 300 {
+		t.Fatalf("upstream_ms = %v, want the post-write wait only (50..300)", e["upstream_ms"])
 	}
 }

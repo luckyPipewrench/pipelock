@@ -92,6 +92,13 @@ func TestFragmentImageSplice(t *testing.T) {
 		}
 	})
 
+	t.Run("a whole copy running into a split copy is reported", func(t *testing.T) {
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+key[:10]+image[:at], image[at:]+key[10:]), nil, "adjacent")
+		if !hasAWSKey(got) {
+			t.Fatalf("split copy adjoining a whole copy dropped: %+v", got)
+		}
+	})
+
 	t.Run("image without a secret stays clean", func(t *testing.T) {
 		if got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(image[:at], image[at:]), nil, "clean"); len(got) != 0 {
 			t.Fatalf("clean image produced matches: %+v", got)

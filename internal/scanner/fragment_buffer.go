@@ -918,8 +918,8 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
 	// Image excision splices decoded bytes into the scanned text, so match
-	// offsets no longer line up with fragment ranges. Attribute by value
-	// instead of by position.
+	// offsets no longer line up with fragment ranges. Map positions back
+	// through the removed image spans instead.
 	if exciseImagesRetainingDecodedForDLP(text) != text {
 		return imageSplicedFragmentMatches(ctx, sc, text, ranges, result.Matches)
 	}
@@ -1065,6 +1065,7 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, text string, 
 	}
 	var matches []DLPMatch
 	reported := make(map[string]struct{})
+	budget := maxImageSpliceRescansTotal
 	for _, first := range joined {
 		name := first.PatternName
 		if _, ok := reported[name]; ok {
@@ -1075,10 +1076,11 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, text string, 
 		for attempt := 0; ; attempt++ {
 			// Each single-request copy costs a full rescan. Bound the work and
 			// report the rule rather than loop on attacker-supplied copies.
-			if attempt == maxImageSpliceRescans {
+			if attempt == maxImageSpliceRescans || budget == 0 {
 				matches = append(matches, DLPMatch{PatternName: name})
 				break
 			}
+			budget--
 			var target *TextDLPMatch
 			for _, m := range sc.ScanTextForDLPQuiet(ctx, string(masked)).Matches {
 				if m.PatternName == name {
@@ -1111,8 +1113,13 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, text string, 
 	return matches
 }
 
-// maxImageSpliceRescans bounds per-rule rescans on the image-excision path.
-const maxImageSpliceRescans = 8
+// maxImageSpliceRescans bounds per-rule rescans on the image-excision path,
+// and maxImageSpliceRescansTotal bounds them across all rules in one window.
+// Reaching either reports the rule instead of scanning further.
+const (
+	maxImageSpliceRescans      = 8
+	maxImageSpliceRescansTotal = 24
+)
 
 // unattributedFragmentMatches reports each distinct joined rule once with no
 // contributor attribution.

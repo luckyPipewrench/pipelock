@@ -13,9 +13,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -576,18 +578,20 @@ func newInterceptHandler(
 		timing := &interceptTimingWriter{ResponseWriter: w}
 		w = timing
 		var upstreamWait time.Duration
-		reachedUpstream := false
+		// Set only when the transport reports the request fully written, so a
+		// DNS, dial, TLS or dial-guard failure records no upstream wait.
+		var reachedUpstream atomic.Bool
 		defer func() {
 			// Destination only. A blocked request's path or query can carry
 			// the very secret its block event redacts, so this line never
 			// records either.
 			timingCtx := newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: "https://" + target, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent})
 			ic.Logger.LogInterceptHTTP(timingCtx, audit.InterceptTiming{
-				StatusCode:      timing.status,
+				StatusCode:      timing.finalStatus(r.Context().Err() != nil),
 				SizeBytes:       timing.bytes,
 				Duration:        time.Since(reqStart),
 				Upstream:        upstreamWait,
-				ReachedUpstream: reachedUpstream,
+				ReachedUpstream: reachedUpstream.Load(),
 				ClientCanceled:  r.Context().Err() != nil,
 			})
 		}()
@@ -1985,14 +1989,17 @@ func newInterceptHandler(
 
 		// Forward to upstream.
 		upstreamStart := time.Now()
-		resp, err := upstream.RoundTrip(r)
+		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					reachedUpstream.Store(true)
+				}
+			},
+		})))
 		upstreamWait = time.Since(upstreamStart)
-		reachedUpstream = true
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
 			if errors.As(err, &ssrfErr) {
-				// The dial guard refused the destination; nothing was sent.
-				reachedUpstream = false
 				ic.Logger.LogBlocked(actx, scanner.ScannerSSRF, ssrfErr.logDetail())
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
 				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
@@ -2930,7 +2937,8 @@ type interceptTimingWriter struct {
 }
 
 func (t *interceptTimingWriter) WriteHeader(code int) {
-	if t.status == 0 {
+	// 1xx responses are interim; the final status follows.
+	if t.status == 0 && code >= http.StatusOK {
 		t.status = code
 	}
 	t.ResponseWriter.WriteHeader(code)
@@ -2955,4 +2963,14 @@ func (t *interceptTimingWriter) Flush() {
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (t *interceptTimingWriter) Unwrap() http.ResponseWriter {
 	return t.ResponseWriter
+}
+
+// finalStatus is the status the client received. A handler that returns
+// without writing gets net/http's implicit 200, unless the client had
+// already gone, in which case nothing was delivered and it stays 0.
+func (t *interceptTimingWriter) finalStatus(clientGone bool) int {
+	if t.status == 0 && !clientGone {
+		return http.StatusOK
+	}
+	return t.status
 }

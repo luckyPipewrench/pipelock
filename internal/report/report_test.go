@@ -1677,7 +1677,6 @@ func TestAggregate_IgnoresInterceptTiming(t *testing.T) {
 	want := Aggregate(verdicts, Options{})
 	got := Aggregate(withTiming, Options{})
 	got.Generated, want.Generated = time.Time{}, time.Time{}
-	got.TimeRange, want.TimeRange = TimeRange{}, TimeRange{}
 	gotJSON, _ := json.Marshal(got)
 	wantJSON, _ := json.Marshal(want)
 	if string(gotJSON) != string(wantJSON) {

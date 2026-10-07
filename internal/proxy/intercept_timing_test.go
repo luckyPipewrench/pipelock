@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,6 +33,9 @@ type slowRT struct {
 func (s *slowRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	if s.reached != nil {
 		close(s.reached)
+	}
+	if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
+		trace.WroteRequest(httptrace.WroteRequestInfo{})
 	}
 	select {
 	case <-time.After(s.delay):
@@ -182,5 +187,45 @@ func TestInterceptTiming_URLIsDestinationOnly(t *testing.T) {
 	raw, _ := json.Marshal(e)
 	if bytes.Contains(raw, []byte(secret)) || bytes.Contains(raw, []byte("/upload")) {
 		t.Fatalf("timing line carries request path or query: %s", raw)
+	}
+}
+
+// failRT fails the round trip, optionally after reporting the request written.
+type failRT struct{ wrote bool }
+
+func (f failRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	if trace := httptrace.ContextClientTrace(r.Context()); f.wrote && trace != nil && trace.WroteRequest != nil {
+		trace.WroteRequest(httptrace.WroteRequestInfo{})
+	}
+	return nil, errors.New("transport failure")
+}
+
+func TestInterceptTiming_UpstreamWaitFollowsRequestWrite(t *testing.T) {
+	before, code := runInterceptTiming(t, timingConfig(), failRT{}, t.Context(), "https://api.vendor.example/a")
+	if code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", code)
+	}
+	if _, ok := before["upstream_ms"]; ok {
+		t.Fatalf("upstream_ms present for a failure before the request was written: %v", before)
+	}
+	after, _ := runInterceptTiming(t, timingConfig(), failRT{wrote: true}, t.Context(), "https://api.vendor.example/a")
+	if _, ok := after["upstream_ms"]; !ok {
+		t.Fatalf("upstream_ms missing for a failure after the request was written: %v", after)
+	}
+}
+
+func TestInterceptTimingWriter_Status(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &interceptTimingWriter{ResponseWriter: rec}
+	if got := w.finalStatus(false); got != http.StatusOK {
+		t.Fatalf("no write, client present: status %d, want implicit 200", got)
+	}
+	if got := w.finalStatus(true); got != 0 {
+		t.Fatalf("no write, client gone: status %d, want 0", got)
+	}
+	w.WriteHeader(http.StatusEarlyHints)
+	w.WriteHeader(http.StatusTeapot)
+	if got := w.finalStatus(false); got != http.StatusTeapot {
+		t.Fatalf("status %d, want final status after 1xx", got)
 	}
 }

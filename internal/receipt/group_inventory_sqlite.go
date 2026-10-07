@@ -81,10 +81,7 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 		}
 		return indexAELClaimsForSession(dir, session, currentGroupID, open.PreviousGroupID, trusted, func(run, session, groupID, signer string, completed bool) error {
 			_, err := db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
-			if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: claims.run") {
-				return fmt.Errorf("duplicate signed native AEL run %q", run)
-			}
-			return err
+			return claimInsertError(err, run)
 		})
 	}); err != nil {
 		return err
@@ -173,4 +170,14 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 		return errGroupAELNeighborOpenTail
 	}
 	return nil
+}
+
+// claimInsertError maps a duplicate native AEL run claim to its own error.
+// Two signed session openings naming one run is a duplicate claim, not an
+// ambiguous evidence sequence start.
+func claimInsertError(err error, run string) error {
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: claims.run") {
+		return fmt.Errorf("duplicate signed native AEL run %q", run)
+	}
+	return err
 }

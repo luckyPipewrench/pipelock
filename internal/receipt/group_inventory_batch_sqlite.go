@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
@@ -87,10 +86,7 @@ func (index *sqliteGroupAELBatchIndex) build(dir string, trusted []string) error
 		}
 		return indexAELClaimsForSessionBatch(dir, session, "", "", trusted, func(run, _, groupID, signer string, completed bool) error {
 			_, err := index.db.ExecContext(ctx, `INSERT INTO claims(run, group_id, signer, completed) VALUES (?, ?, ?, ?)`, run, groupID, signer, completed)
-			if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: claims.run") {
-				return fmt.Errorf("duplicate signed native AEL run %q", run)
-			}
-			return err
+			return claimInsertError(err, run)
 		}, index.addTorn)
 	}); err != nil {
 		return err

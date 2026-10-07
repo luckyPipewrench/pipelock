@@ -408,6 +408,8 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.assertIs(producer.get("continue-on-error"), True)
                     action = str(producer["uses"]).partition("@")[0].lower()
                     self._assert_action_pin(producer, action)
+                    self.assertEqual(producer.get("env", {}).get("NODE_OPTIONS"), "",
+                                     "producer must explicitly clear Node startup options")
                     expected.append(producer["id"])
                 self.assertTrue(required[name].issubset(expected),
                                 "required subject moved or removed from its boundary")
@@ -423,14 +425,11 @@ class TestReleaseArtifacts(unittest.TestCase):
                                      "implicit gate shell requires an Ubuntu runner")
                 else:
                     self.assertIn(shell, ("bash", "sh"), "completion gate must use bash or sh")
-                # Environment settings use the same most-specific precedence.
-                # Startup hooks must not replace the gate's executable body.
-                environment = {
-                    **parsed.get("env", {}), **job.get("env", {}), **gate.get("env", {}),
-                }
+                # Step-level empty values override both YAML inheritance and
+                # environment file updates from earlier steps at runtime.
                 for variable in ("BASH_ENV", "ENV"):
-                    self.assertEqual(environment.get(variable, ""), "",
-                                     "completion gate must not configure shell startup hooks")
+                    self.assertEqual(gate.get("env", {}).get(variable), "",
+                                     "completion gate must explicitly clear shell startup hooks")
                 condition = " ".join(gate.get("if", "").split())
                 if condition.startswith("${{") and condition.endswith("}}"):
                     condition = condition[3:-2].strip()
@@ -505,7 +504,8 @@ class TestReleaseArtifacts(unittest.TestCase):
     def _assert_attestation_gate_body(self, gate: dict) -> None:
         # The condition alone proves nothing if the step it guards succeeds:
         # the gate's executable body must end the job with a nonzero exit.
-        gate_lines = self._executable_lines(gate["run"])
+        script = re.sub(r"\\\n", "", gate["run"])
+        gate_lines = self._executable_lines(script)
         self.assertEqual(gate_lines[-1], "exit 1")
         # No path through the gate may leave successfully. Every `exit`
         # anywhere in a line (after `&&`, `;`, inside `if ... fi`) must carry
@@ -518,13 +518,29 @@ class TestReleaseArtifacts(unittest.TestCase):
         # This guards against an accidental edit to the gate, not a
         # determined attempt to hide a successful exit from a regex.
         exit_command = re.compile(r"(?:^|[;&|({\s])exit\b\s*([^\s;&|)}#]*)")
-        commands = re.sub(r"\\\n", "", gate["run"]).splitlines()
         not_failing = [
-            line for line in self._executable_lines("\n".join(commands))
+            line for line in gate_lines
             for status in exit_command.findall(re.sub(r"['\"\\]", "", line))
             if not (re.fullmatch(r"[1-9][0-9]{0,2}", status) and int(status) <= 255)
         ]
         self.assertFalse(not_failing)
+
+    def test_attestation_contract_joins_gate_continuations_before_final_command_check(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        for job_name, gate_name in (
+            ("release-build", "Verify attestation"),
+            ("release-build", "Verify Kubernetes image digest bundle attestation"),
+            ("release-attest-chart", "Verify Helm chart attestation"),
+        ):
+            with self.subTest(boundary=gate_name):
+                parsed = copy.deepcopy(original)
+                gate = next(step for step in parsed["jobs"][job_name]["steps"]
+                            if step.get("name") == gate_name)
+                gate["run"] = "echo failure " + "\\\nexit 1"
+                with self.assertRaises(AssertionError):
+                    self._assert_attestation_contract(parsed)
+                gate["run"] = "echo failure\nexi" + "\\\nt 1"
+                self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_rejects_mutations(self) -> None:
         original = yaml.safe_load(self.workflow)
@@ -702,11 +718,47 @@ class TestReleaseArtifacts(unittest.TestCase):
                             gate = next(step for step in job["steps"] if step.get("name") == gate_name)
                             owner = gate if scope == "step" else job if scope == "job" else parsed
                             owner.setdefault("env", {})[variable] = value
-                            if value:
+                            if scope == "step" and value:
                                 with self.assertRaisesRegex(AssertionError, "shell startup hooks"):
                                     self._assert_attestation_contract(parsed)
                             else:
                                 self._assert_attestation_contract(parsed)
+
+    def test_attestation_contract_requires_step_runtime_environment_overrides(self) -> None:
+        original = yaml.safe_load(self.workflow)
+        for job_name, job in original["jobs"].items():
+            for index, step in enumerate(job.get("steps", [])):
+                if str(step.get("uses", "")).lower().startswith("actions/attest"):
+                    variables = ("NODE_OPTIONS",)
+                elif step.get("name") in (
+                    "Verify attestation", "Verify Kubernetes image digest bundle attestation",
+                    "Verify Helm chart attestation",
+                ):
+                    variables = ("BASH_ENV", "ENV")
+                else:
+                    continue
+                for variable in variables:
+                    for value in (None, "startup.sh", "${{ env.STARTUP_OPTIONS }}"):
+                        with self.subTest(job=job_name, step=step.get("id", step.get("name")),
+                                          variable=variable, value=value):
+                            parsed = copy.deepcopy(original)
+                            env = parsed["jobs"][job_name]["steps"][index]["env"]
+                            if value is None:
+                                del env[variable]
+                                # A default cannot replace the runtime override.
+                                parsed.setdefault("env", {})[variable] = ""
+                            else:
+                                env[variable] = value
+                            with self.assertRaisesRegex(AssertionError, "explicitly clear"):
+                                self._assert_attestation_contract(parsed)
+        parsed = copy.deepcopy(original)
+        parsed.setdefault("env", {})["NODE_OPTIONS"] = "--require ./startup.cjs"
+        for job in parsed["jobs"].values():
+            job.setdefault("env", {})["NODE_OPTIONS"] = "--require ./startup.cjs"
+        parsed["jobs"]["release-build"]["steps"].insert(0, {
+            "run": 'echo BASH_ENV=startup.sh >> "$GITHUB_ENV"',
+        })
+        self._assert_attestation_contract(parsed)
 
     def test_attestation_gate_environment_overrides_follow_workflow_precedence(self) -> None:
         parsed = yaml.safe_load(self.workflow)
@@ -764,6 +816,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 gate = next(step for step in steps if step.get("name") == gate_name)
                 producer = {
                     "id": "attest-extra", "uses": f"actions/attest-build-provenance@{'b' * 40}",
+                    "env": {"NODE_OPTIONS": ""},
                     "continue-on-error": True, "with": {"subject-path": "dist/extra.txt"},
                 }
                 steps.insert(steps.index(gate), producer)

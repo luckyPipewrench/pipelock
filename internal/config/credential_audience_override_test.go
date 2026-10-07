@@ -249,3 +249,22 @@ func TestHostilePresetCustomizationStillWarns(t *testing.T) {
 		t.Fatal("customized preset suppressed dropped-audience warning")
 	}
 }
+
+// A declared GitLab host is part of the GitLab CI Job Token audience the
+// scanner enforces, so an exemption naming it is redundant, not a widening.
+func TestValidate_ExemptionOnDeclaredEnterpriseHostIsInsideAudience(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.GitLabHosts = []string{"gitlab.vendor.example"}
+	for i := range cfg.DLP.Patterns {
+		if cfg.DLP.Patterns[i].Name == "GitLab CI Job Token" {
+			cfg.DLP.Patterns[i].ExemptDomains = []string{"gitlab.vendor.example"}
+		}
+	}
+	warnings := warningsFor(t, cfg)
+	if !hasFieldWarning(warnings, ".exempt_domains", "gitlab.vendor.example", "redundant subset") {
+		t.Fatalf("declared host was not treated as inside the audience: %+v", warnings)
+	}
+	if hasFieldWarning(warnings, ".exempt_domains", "outside the compiled credential audience") {
+		t.Fatalf("declared host reported as a widening: %+v", warnings)
+	}
+}

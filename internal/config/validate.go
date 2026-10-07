@@ -1546,9 +1546,12 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 		// second is a widening the operator is entitled to choose, so it warns
 		// and the config loads, as the suppress and disable_patterns widenings do.
 		if len(p.ExemptDomains) > 0 && len(p.CredentialAudienceHosts) > 0 && warnings != nil {
+			// The scanner's audience includes declared enterprise hosts, so
+			// classify against the same set it enforces.
+			audienceHosts := AppendDeclaredCredentialAudienceHosts(p.Name, p.CredentialAudienceHosts, c.DLP.GitHubEnterpriseHosts, c.DLP.GitLabHosts)
 			var inside, outside []string
 			for _, domain := range p.ExemptDomains {
-				if credentialAudienceDomainSubset([]string{domain}, p.CredentialAudienceHosts) {
+				if credentialAudienceDomainSubset([]string{domain}, audienceHosts) {
 					inside = append(inside, domain)
 				} else {
 					outside = append(outside, domain)
@@ -1564,7 +1567,7 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 			if len(outside) > 0 {
 				*warnings = append(*warnings, Warning{
 					Field:   field,
-					Message: fmt.Sprintf("%s %v is outside the compiled credential audience %v for %q: the pattern is skipped for those destinations, so the credential can leave for a host its vendor does not own", field, outside, p.CredentialAudienceHosts, p.Name),
+					Message: fmt.Sprintf("%s %v is outside the compiled credential audience %v for %q: the pattern is skipped for those destinations, so the credential can leave for a host its vendor does not own", field, outside, audienceHosts, p.Name),
 				})
 			}
 		}

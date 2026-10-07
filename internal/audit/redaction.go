@@ -93,6 +93,8 @@ func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTar
 // the path as well unless keepPath is set. A value that does not parse as an
 // absolute URL is parsed as a schemeless authority, so CONNECT destinations
 // survive while opaque payloads and malformed destinations are redacted.
+// Ambiguous single-label host:port text is redacted except for localhost;
+// callers can use an explicit URL or //authority for other single-label hosts.
 func dropURLContentSegments(raw string, keepPath bool) string {
 	if raw == "" {
 		return ""
@@ -100,8 +102,17 @@ func dropURLContentSegments(raw string, keepPath bool) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		u, err = url.Parse("//" + raw)
+		if err == nil && u.Port() != "" && !strings.Contains(u.Hostname(), ".") &&
+			!strings.Contains(u.Hostname(), ":") && !strings.EqualFold(u.Hostname(), "localhost") {
+			return "[redacted-url]"
+		}
 	}
 	if err != nil || !validAuditAuthority(u) {
+		return "[redacted-url]"
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "", "http", "https", "ws", "wss":
+	default:
 		return "[redacted-url]"
 	}
 	out := u.Host

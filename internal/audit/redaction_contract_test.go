@@ -18,6 +18,12 @@ func TestDropURLContentSegmentsRejectsInvalidDestinations(t *testing.T) {
 		want string
 	}{
 		{"data:payloadcanary", "[redacted-url]"},
+		{"data:123", "[redacted-url]"},
+		{"mailto:123", "[redacted-url]"},
+		{"payloadcanary:123", "[redacted-url]"},
+		{"payloadcanary://api.vendor.example", "[redacted-url]"},
+		{"data://api.vendor.example", "[redacted-url]"},
+		{"http:123", "[redacted-url]"},
 		{"mailto:payloadcanary", "[redacted-url]"},
 		{"javascript:payloadcanary", "[redacted-url]"},
 		{"https:///payloadcanary", "[redacted-url]"},
@@ -38,9 +44,15 @@ func TestDropURLContentSegmentsRejectsInvalidDestinations(t *testing.T) {
 		{"https://api.vendor.example/%zz", "[redacted-url]"},
 		{"api.vendor.example:443", "api.vendor.example:443"},
 		{"localhost:8080", "localhost:8080"},
+		{"service:8080", "[redacted-url]"},
+		{"//service:8080", "service:8080"},
+		{"http://service:8080", "http://service:8080"},
+		{"HTTPS://api.vendor.example", "https://api.vendor.example"},
 		{"192.0.2.1:443", "192.0.2.1:443"},
 		{"[2001:db8::1]:443", "[2001:db8::1]:443"},
 		{"https://[2001:db8::1]:443", "https://[2001:db8::1]:443"},
+		{"ws://api.vendor.example", "ws://api.vendor.example"},
+		{"wss://api.vendor.example", "wss://api.vendor.example"},
 		{"api.vendor.example.", "api.vendor.example."},
 		{"https://user:payloadcanary@api.vendor.example", "https://api.vendor.example"},
 		{"user:payloadcanary@api.vendor.example", "api.vendor.example"},
@@ -86,6 +98,8 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 		for _, input := range []struct{ raw, want string }{
 			{raw, destination},
 			{"data:payloadcanary", "[redacted-url]"},
+			{"data:123", "[redacted-url]"},
+			{"payloadcanary://api.vendor.example", "[redacted-url]"},
 			{"api.vendor.example:443/" + canary + "?token=" + canary, "api.vendor.example:443"},
 		} {
 			t.Run(tt.name+"/"+input.raw, func(t *testing.T) {

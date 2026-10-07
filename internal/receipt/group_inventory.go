@@ -128,11 +128,29 @@ func fingerprintDirectory(dir string) ([32]byte, uint64, error) {
 		return fingerprint, 0, err
 	}
 	defer func() { _ = f.Close() }()
+	return fingerprintOpenedDirectory(dir, f)
+}
+
+func fingerprintOpenedDirectory(dir string, f *os.File) ([32]byte, uint64, error) {
+	var fingerprint [32]byte
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fingerprint, 0, err
+	}
+	defer func() { _ = root.Close() }()
+	pinned, err := f.Stat()
+	if err != nil {
+		return fingerprint, 0, err
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil || !os.SameFile(pinned, rootInfo) {
+		return fingerprint, 0, errors.New("receipt group inventory directory changed while opening")
+	}
 	var count uint64
 	for {
 		names, readErr := f.Readdirnames(128)
 		for _, name := range names {
-			info, err := os.Lstat(filepath.Join(filepath.Clean(dir), name))
+			info, err := root.Lstat(name)
 			if err != nil {
 				return fingerprint, count, err
 			}

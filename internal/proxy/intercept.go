@@ -1990,17 +1990,20 @@ func newInterceptHandler(
 		// Forward to upstream.
 		// The wait starts when the request is fully written, so dialing,
 		// TLS setup and the request write are not counted as upstream wait.
+		// Offsets from base keep the monotonic clock, so a wall-clock
+		// adjustment during the request cannot distort the wait.
+		base := time.Now()
 		var wroteAt atomic.Int64
 		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			WroteRequest: func(info httptrace.WroteRequestInfo) {
 				if info.Err == nil {
-					wroteAt.Store(time.Now().UnixNano())
+					wroteAt.Store(int64(time.Since(base)) + 1)
 					reachedUpstream.Store(true)
 				}
 			},
 		})))
 		if at := wroteAt.Load(); at != 0 {
-			upstreamWait = time.Since(time.Unix(0, at))
+			upstreamWait = time.Since(base) - time.Duration(at-1)
 		}
 		if err != nil {
 			var ssrfErr *ssrfDialBlockError
@@ -2977,10 +2980,11 @@ func (t *interceptTimingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
-	if t.status == 0 {
+	conn, rw, err := h.Hijack()
+	if err == nil && t.status == 0 {
 		t.status = http.StatusSwitchingProtocols
 	}
-	return h.Hijack()
+	return conn, rw, err
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.

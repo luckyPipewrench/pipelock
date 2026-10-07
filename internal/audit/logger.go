@@ -1713,8 +1713,8 @@ type InterceptTiming struct {
 // duration_ms is the whole request. upstream_ms is the time from handing the
 // request to the upstream transport until response headers arrived or the
 // transport failed; it is absent when no upstream attempt was made or the
-// dial guard refused the destination. The remainder covers request checks
-// before sending plus reading, scanning and delivering the response body.
+// dial guard refused the destination. The remainder covers request checks,
+// DNS, connecting and sending, and reading, scanning and delivering the body.
 // The url field holds the destination only, never a path or query.
 func (l *Logger) LogInterceptHTTP(ctx LogContext, t InterceptTiming) {
 	if !l.includeAllowed {

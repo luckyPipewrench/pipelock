@@ -301,3 +301,20 @@ func TestInterceptTiming_UpstreamWaitExcludesSetup(t *testing.T) {
 		t.Fatalf("upstream_ms = %v, want the post-write wait only (50..300)", e["upstream_ms"])
 	}
 }
+
+// failingHijacker supports hijacking but fails to take the connection.
+type failingHijacker struct{ *httptest.ResponseRecorder }
+
+func (failingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, errors.New("hijack failed")
+}
+
+func TestInterceptTimingWriter_FailedHijackKeepsStatus(t *testing.T) {
+	w := &interceptTimingWriter{ResponseWriter: failingHijacker{httptest.NewRecorder()}}
+	if _, _, err := w.Hijack(); err == nil {
+		t.Fatal("hijack error was not propagated")
+	}
+	if got := w.finalStatus(true); got == http.StatusSwitchingProtocols {
+		t.Fatalf("failed hijack recorded as %d", got)
+	}
+}

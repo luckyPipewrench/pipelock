@@ -71,9 +71,18 @@ func TestFragmentImageSplice(t *testing.T) {
 
 	t.Run("blanking one rule does not hide another rule's split", func(t *testing.T) {
 		ssn := "123" + "-45-" + "6789"
-		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+" "+ssn+" ", key[:4]+image[:at], image[at:]+key[4:]), nil, "rules")
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+" "+ssn+" ", key[:4]+image[:at], image[at:]+key[4:]+" "+ssn[:6], ssn[6:]+" end"), nil, "rules")
 		if !hasAWSKey(got) {
 			t.Fatalf("split key lost when another rule is present: %+v", got)
+		}
+		splitSSN := false
+		for _, m := range got {
+			if m.PatternName == "Social Security Number" {
+				splitSSN = true
+			}
+		}
+		if !splitSSN {
+			t.Fatalf("split SSN lost while the key rule was processed: %+v", got)
 		}
 	})
 

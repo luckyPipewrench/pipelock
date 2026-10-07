@@ -52,7 +52,7 @@ func openEvidenceLocationDirectory(location EvidenceLocation) (*os.File, error) 
 			return nil, fmt.Errorf("stat evidence root: %w", err)
 		}
 	}
-	file, err := os.Open(current)
+	file, err := os.Open(filepath.Clean(current))
 	if err != nil {
 		return nil, fmt.Errorf("open evidence location: %w", err)
 	}
@@ -84,7 +84,7 @@ func openEvidenceLocationFile(location EvidenceLocation, name string) (*os.File,
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("%w: evidence file is symlinked or non-regular", ErrEvidenceRefused)
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, nil, fmt.Errorf("open evidence file %q: %w", name, err)
 	}

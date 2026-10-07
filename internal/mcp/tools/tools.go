@@ -2322,9 +2322,67 @@ var handoverRedirect = regexp.MustCompile(`(?i)\b(?:` +
 	`|(?:only|except|unless)\s+(?:if|when|after|once|whenever)\s+(?:` + handoverNamedDestination + `|` + handoverPronounDestination + `|it|they)\s+` + handoverDestinationAsk +
 	`)\b`)
 
-// redirectIndex finds the last destination construction in a text once, so a
-// negated request is checked against the rest of the description in O(1)
-// instead of rescanning it for every negated match.
+// handoverBenignPurpose names a use or lifecycle restriction on a secret that
+// does not send it anywhere: rotation, expiry, audit, an environment, or
+// keeping it in the user's own store.
+var handoverBenignPurpose = regexp.MustCompile(`(?i)\b(?:` + handoverBenignPurposeWords + `)\b`)
+
+const handoverBenignPurposeWords = `rotat\pL*|expir\pL*|audit\pL*|testing|debugging|development|production|staging|logging|monitoring|keychain|vault|yourself|revok\pL*|renew\pL*|compromised|leaked|lost\s+access`
+
+// handoverPlacePhrase is a prepositional phrase that could name where a secret
+// goes. In a benign clause every such phrase must itself be a benign purpose
+// ("for rotation", "in production", "in the OS keychain"); any other place
+// ("in the chat", "through the settings page") may be a destination.
+var handoverPlacePhrase = regexp.MustCompile(`(?i)\b(?:to|in|into|inside|within|on|onto|via|through|with|using|at|for|by)\s+`)
+
+// handoverBenignPlace is a place phrase whose first few words reach a benign purpose.
+var handoverBenignPlace = regexp.MustCompile(`(?i)^(?:\S+\s+){0,2}?(?:` + handoverBenignPurposeWords + `)\b`)
+
+// handoverPlacesBenign reports whether every place phrase in a clause names a
+// benign purpose. Each preposition is judged on the text after it on its own,
+// so one benign phrase cannot swallow a following place ("for rotation in the
+// support channel").
+func handoverPlacesBenign(clause string) bool {
+	for _, m := range handoverPlacePhrase.FindAllStringIndex(clause, -1) {
+		if !handoverBenignPlace.MatchString(clause[m[1]:]) {
+			return false
+		}
+	}
+	return true
+}
+
+// handoverStorageStatement is "only the server stores it": a statement about
+// who holds the secret, not an instruction to hand it over.
+var handoverStorageStatement = regexp.MustCompile(`(?i)^only\s+(?:(?:the|this|our|its)\s+)?\pL+(?:\s+\pL+)?\s+(?:stores?|reads?|holds?|keeps?|sees?|manages?|handles?)\s+(?:it|them)\s*$`)
+
+// handoverInstructionVerb is any verb that would put the secret somewhere. An
+// exception clause carrying one is never benign, whatever purpose it names, so
+// "only for rotation, paste it in a note" still revokes the negation.
+var handoverInstructionVerb = regexp.MustCompile(`(?i)\b(?:send|paste|put|attach|mention|share|give|provide|include|enter|submit|type|write|add|post|forward|upload|copy|insert|place|supply|hand|pass|reply|respond|tell)\b`)
+
+// handoverClauseEnd ends an exception clause at a sentence or line boundary.
+// Commas do not end it, so a comma cannot split a benign lead from a redirect.
+var handoverClauseEnd = regexp.MustCompile(`[.!?;\n]`)
+
+// handoverBenignClause reports whether an exception clause, read with the
+// sentence it sits in, restricts a secret without redirecting it.
+func handoverBenignClause(sentence, clause string) bool {
+	if handoverRedirect.MatchString(clause) || handoverInstructionVerb.MatchString(clause) || !handoverPlacesBenign(clause) {
+		return false
+	}
+	return handoverBenignPurpose.MatchString(sentence) || handoverStorageStatement.MatchString(clause)
+}
+
+// redirectIndex finds, once per text, the last exception clause that revokes a
+// negated request, so each negated match is checked against the rest of the
+// description in O(1) instead of rescanning it.
+//
+// The rule fails closed. An exception cue (only, except, unless, but, instead,
+// other than, ...) anywhere after the negation revokes it unless the cue's
+// clause names no destination and is wholly a benign restriction. Destinations
+// cannot be enumerated ("only for the support agent", "only in a note", "only
+// in your next message"), so an unrecognized clause costs a finding rather
+// than admitting a redirect.
 type redirectIndex struct {
 	text string
 	done bool
@@ -2333,13 +2391,30 @@ type redirectIndex struct {
 
 func newRedirectIndex(text string) *redirectIndex { return &redirectIndex{text: text, last: -1} }
 
-// after reports whether a destination construction ends after offset end.
+// after reports whether a revoking exception clause ends after offset end.
 func (r *redirectIndex) after(end int) bool {
 	if !r.done {
 		r.done = true
 		for _, m := range handoverRedirect.FindAllStringIndex(r.text, -1) {
 			if m[1] > r.last {
 				r.last = m[1]
+			}
+		}
+		for _, m := range handoverExceptionCue.FindAllStringIndex(r.text, -1) {
+			clauseEnd := len(r.text)
+			if b := handoverClauseEnd.FindStringIndex(r.text[m[0]:]); b != nil {
+				clauseEnd = m[0] + b[0]
+			}
+			sentenceStart := 0
+			if b := handoverClauseEnd.FindAllStringIndex(r.text[:m[0]], -1); len(b) > 0 {
+				sentenceStart = b[len(b)-1][1]
+			}
+			clause := strings.TrimSpace(r.text[m[0]:clauseEnd])
+			sentence := r.text[sentenceStart:clauseEnd]
+			if !handoverBenignClause(sentence, clause) {
+				if clauseEnd > r.last {
+					r.last = clauseEnd
+				}
 			}
 		}
 	}

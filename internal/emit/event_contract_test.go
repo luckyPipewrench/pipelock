@@ -6,6 +6,8 @@ package emit
 import (
 	"context"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/eventcatalog"
 )
 
 func TestBuiltinEventCompatibility(t *testing.T) {
@@ -70,6 +72,22 @@ func TestBuiltinEventCompatibility(t *testing.T) {
 		{"ws_close", SeverityInfo, true, "allow"},
 		{"ws_open", SeverityInfo, true, "allow"},
 		{"ws_scan", SeverityWarn, true, "warn"},
+	}
+	expected := make(map[string]bool, len(tests))
+	for _, tt := range tests {
+		if expected[tt.name] {
+			t.Fatalf("duplicate compatibility expectation %q", tt.name)
+		}
+		expected[tt.name] = true
+	}
+	for _, descriptor := range eventcatalog.Builtins() {
+		if !expected[descriptor.Name] {
+			t.Errorf("missing compatibility expectation for %q", descriptor.Name)
+		}
+		delete(expected, descriptor.Name)
+	}
+	for name := range expected {
+		t.Errorf("compatibility expectation without catalog event %q", name)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

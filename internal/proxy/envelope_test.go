@@ -835,7 +835,9 @@ func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
 
-	fakeToken := "ghp_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+	// Non-core credential: audit mode blocks the core floor (GitHub Token), so
+	// the warn verdict needs a finding outside it.
+	fakeToken := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
 	reqBody := fmt.Sprintf(`{"token":"%s"}`, fakeToken)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/test", strings.NewReader(reqBody))
 	if err != nil {

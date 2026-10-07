@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
@@ -23,18 +24,18 @@ import (
 type FieldClass int
 
 const (
-	// FieldURL routes through scanner.Scan() (SSRF + scheme + blocklist + DLP).
+	// FieldURL routes through scanner.Scan() (SSRF + scheme + blocklist + DLP)
+	// and scanner.ScanResponse() (injection).
 	FieldURL FieldClass = iota
 	// FieldText routes through scanner.ScanResponse() (injection) + ScanTextForDLP().
 	FieldText
-	// FieldSecret routes through scanner.ScanTextForDLP() with high severity.
+	// FieldSecret routes through injection and DLP scanning.
 	FieldSecret
 	// FieldOpaque routes through scanner.ScanResponse() (injection) + ScanTextForDLP().
 	// Same scanners as FieldText but lower classification confidence.
 	FieldOpaque
-	// FieldKeyEntropy emits JSON object keys for content-entropy scanning only.
-	// The A2A scanner intentionally does not run prompt-injection or DLP on
-	// every structural key, but opaque data can be hidden in keys.
+	// FieldKeyEntropy emits every JSON object key for injection and
+	// content-entropy scanning, independently of its field classification.
 	FieldKeyEntropy
 	// FieldBudgetExceeded signals the walker hit its node budget. Caller should
 	// fail closed - the payload is too wide for classified scanning.
@@ -48,6 +49,8 @@ const (
 	// maxWalkNodes bounds total leaves visited to prevent CPU exhaustion
 	// on wide payloads. When exceeded, walker emits FieldBudgetExceeded.
 	maxWalkNodes = 10000
+	// maxWalkPathBytes bounds diagnostic path allocation at every node.
+	maxWalkPathBytes = 512
 )
 
 // Canonical URL, text, and secret field name lists are in init() below,
@@ -196,9 +199,9 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 
 	case []interface{}:
 		for i, item := range val {
-			elemPath := path + "[]"
+			elemPath := appendA2APath(path, "", "[]")
 			if i == 0 {
-				elemPath = path + "[0]"
+				elemPath = appendA2APath(path, "", "[0]")
 			}
 			walkValue(item, elemPath, parentKey, nodeCount, depth+1, emit)
 			if *nodeCount >= maxWalkNodes {
@@ -222,20 +225,19 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 				return
 			}
 
-			childPath := path
-			if childPath == "" {
-				childPath = k
-			} else {
-				childPath = path + "." + k
+			separator := "."
+			if path == "" {
+				separator = ""
 			}
+			childPath := appendA2APath(path, separator, k)
 
 			// Emit the key itself as a leaf - keys can be URLs or secrets.
-			// Also emit every key to the entropy-only class so A2A content
-			// entropy covers key surfaces without a second JSON parse.
-			emit(childPath+"@key", k, FieldKeyEntropy)
+			// Every key receives content inspection without a second JSON parse.
+			keyPath := appendA2APath(childPath, "", "@key")
+			emit(keyPath, k, FieldKeyEntropy)
 			keyClass := classifyKeyAsLeaf(k)
 			if keyClass >= 0 {
-				emit(childPath+"@key", k, keyClass)
+				emit(keyPath, k, keyClass)
 			}
 
 			// Recurse into the value with this key as context.
@@ -249,6 +251,73 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 	case nil:
 		// JSON null - nothing to scan.
 	}
+}
+
+// appendA2APath preserves ordinary paths verbatim. Long paths retain an
+// ancestor prefix and the current field suffix, with explicit truncation.
+// Bounds are applied before concatenation, including array and key markers.
+func appendA2APath(path, separator, field string) string {
+	const marker = "..."
+	if len(path)+len(separator)+len(field) <= maxWalkPathBytes {
+		return path + separator + field
+	}
+	if len(field) > maxWalkPathBytes/2 {
+		prefix := field[:maxWalkPathBytes/4]
+		for !utf8.ValidString(prefix) {
+			prefix = prefix[:len(prefix)-1]
+		}
+		suffix := field[len(field)-(maxWalkPathBytes/4-len(marker)):]
+		for !utf8.ValidString(suffix) {
+			suffix = suffix[1:]
+		}
+		field = prefix + marker + suffix
+	}
+	if len(path)+len(separator)+len(field) <= maxWalkPathBytes {
+		return path + separator + field
+	}
+	prefix := path[:maxWalkPathBytes-len(marker)-len(separator)-len(field)]
+	for !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix + marker + separator + field
+}
+
+// a2aJSONExceedsDepth checks validated JSON without allocating paths or leaf
+// values. The root value is at depth zero, matching the extraction walker;
+// an empty container at the limit is inspectable, while its children are not.
+func a2aJSONExceedsDepth(body []byte) bool {
+	depth := 0
+	inString, escaped := false, false
+	for _, c := range body {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '}', ']':
+			depth--
+		case ' ', '\t', '\r', '\n', ':', ',':
+			continue
+		default:
+			if depth > maxWalkDepth {
+				return true
+			}
+			switch c {
+			case '{', '[':
+				depth++
+			case '"':
+				inString = true
+			}
+		}
+	}
+	return false
 }
 
 // classifyLeafValue classifies a string value based on its parent field name
@@ -272,13 +341,13 @@ func classifyLeafValue(parentKey, value string) FieldClass {
 }
 
 // classifyKeyAsLeaf classifies an object key when emitted as a leaf.
-// Returns -1 if the key should not be emitted (not interesting).
+// Returns -1 if no additional field-aware check is needed.
 func classifyKeyAsLeaf(key string) FieldClass {
 	if isURILike(key) {
 		return FieldURL
 	}
-	// Don't emit boring keys - only emit keys that look like URIs or secrets.
-	// Regular field names are structural, not attacker content.
+	// Every key already receives injection and entropy inspection. URI and
+	// secret keys also receive their field-aware checks.
 	if normalizedSecretFields[normalizeFieldName(key)] {
 		return FieldSecret
 	}

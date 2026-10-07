@@ -1098,7 +1098,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			*req = *req.WithContext(withAllowedSSRFDialScanSnapshot(redirectScanCtx, currentScanner, req.URL.Hostname(), effectiveURLPort(req.URL), result))
 			if !result.Allowed {
 				actx := redirectAuditCtx
-				if currentCfg.EnforceEnabled() {
+				if urlResultBlocks(currentCfg, currentScanner, redirectURL, result) {
 					// Preserve the originating scanner label (SSRF,
 					// DLP, blocklist, …) in the typed block error so
 					// receipts, metrics, and /fetch hints can tell
@@ -5349,7 +5349,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
-		if cfg.EnforceEnabled() {
+		if urlResultBlocks(cfg, sc, targetURL, result) {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			emitFetchReceipt(receipt.EmitOpts{

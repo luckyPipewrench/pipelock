@@ -77,6 +77,13 @@ func fakeAPIKey() string {
 	return "AKIA" + "IOSFODNN7EXAMPLE"
 }
 
+// fakeNonCoreAPIKey returns a critical credential that is outside the core
+// floor (Anthropic API Key), so audit-mode tests can observe it without the
+// core-credential block that applies to fakeAPIKey (AWS Access ID).
+func fakeNonCoreAPIKey() string {
+	return "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+}
+
 func TestScanRequestBodyCanceledScanIsNotInjection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -3248,7 +3255,7 @@ func TestForwardProxy_BodyScan_WarnMode(t *testing.T) {
 	})
 	defer cleanup()
 
-	body := `{"key": "` + fakeAPIKey() + `"}`
+	body := `{"key": "` + fakeNonCoreAPIKey() + `"}`
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/test", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -3618,7 +3625,7 @@ func TestFetchHandler_HeaderDLPMetricUsesProfileLabel(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	req.Header.Set(AgentHeader, "arbitrary-attacker-chosen-name")
-	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+	req.Header.Set("Authorization", "Bearer "+fakeNonCoreAPIKey())
 	w := httptest.NewRecorder()
 
 	p.handleFetch(w, req)
@@ -3660,7 +3667,7 @@ func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 	}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
-	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+	req.Header.Set("Authorization", "Bearer "+fakeNonCoreAPIKey())
 	w := httptest.NewRecorder()
 
 	p.handleFetch(w, req)

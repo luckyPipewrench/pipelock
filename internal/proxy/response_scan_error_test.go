@@ -414,6 +414,59 @@ func TestSSEScanErrorUsesErrorEvidenceAfterHeadersCommitted(t *testing.T) {
 	}
 }
 
+func TestA2ASSEInspectionBoundsUseErrorEvidence(t *testing.T) {
+	for _, transport := range []string{"forward", "intercept"} {
+		for name, body := range map[string]string{
+			"depth":     strings.Repeat(`{"payload":`, 65) + `{"text":"hello"}` + strings.Repeat("}", 65),
+			"duplicate": `{"text":"hello","text":"goodbye"}`,
+			"invalid":   `{"text":`,
+		} {
+			t.Run(transport+"/"+name, func(t *testing.T) {
+				cfg := testScannerConfig()
+				cfg.Internal = nil
+				cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+				cfg.DLP.ScanEnv = false
+				enforce := false
+				cfg.Enforce = &enforce
+				cfg.A2AScanning.Enabled = true
+				cfg.A2AScanning.Action = config.ActionWarn
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+				cfg.FlightRecorder.RequireReceipts = true
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				m := metrics.New()
+				p, err := New(cfg, audit.NewNop(), sc, m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(p.Close)
+				rph := newReceiptProxyHelperWithMetrics(t, m)
+				p.receiptEmitterPtr.Store(rph.emitter)
+				rt := forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: " + body + "\n\n")), Request: r}, nil
+				})
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/message", strings.NewReader(`{"text":"hello"}`))
+				req.Header.Set("Content-Type", "application/a2a+json")
+				w := httptest.NewRecorder()
+				if transport == "forward" {
+					p.client = &http.Client{Transport: rt}
+					p.handleForwardHTTP(w, req)
+					assertMetricsContain(t, m, `pipelock_scanner_hits_total{agent="_default",scanner="response_scan_error"} 1`)
+				} else {
+					h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: m, ClientIP: "192.0.2.1", RequestID: "a2a-inspection-error", Proxy: p}, rt)
+					h.ServeHTTP(w, req)
+					assertMetricsContain(t, m, `pipelock_tls_response_blocked_total{reason="response_scan_error"} 1`)
+				}
+				if w.Code != http.StatusOK || w.Body.Len() != 0 {
+					t.Fatal("incomplete event changed committed status or released bytes")
+				}
+				assertCommittedSSEScanErrorEvidence(t, rph)
+			})
+		}
+	}
+}
+
 func assertCommittedSSEScanErrorEvidence(t *testing.T, rph *receiptProxyHelper) {
 	t.Helper()
 	var errorReceipt, outcome receipt.Receipt

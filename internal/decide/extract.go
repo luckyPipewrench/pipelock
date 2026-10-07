@@ -9,11 +9,13 @@ package decide
 import (
 	"encoding/json"
 	"sort"
+
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 )
 
 const (
 	// maxExtractDepth prevents stack overflow on deeply nested JSON.
-	maxExtractDepth = 64
+	maxExtractDepth = extract.MaxExtractDepth
 	// maxExtractStrings caps the number of extracted strings to bound memory.
 	maxExtractStrings = 2048
 	// maxExtractBytes caps the total extracted text to 1 MiB.

@@ -59,6 +59,30 @@ func applyRedactionTestProfile(cfg *config.Config) {
 	}
 }
 
+// wsRedactionE2ESecret builds a non-core provider key for WebSocket redaction
+// tests. WebSocket frames have no trusted-host carve-out, and audit mode blocks
+// a core credential (such as an AWS access key) even when it is redactable, so
+// WebSocket redaction coverage uses a credential outside the core floor.
+func wsRedactionE2ESecret() string {
+	return "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+}
+
+// wsPlaceholderAnthropic is the placeholder the Anthropic key class emits.
+const wsPlaceholderAnthropic = "<pl:" + string(redact.ClassAnthropicKey) + ":1>"
+
+// applyWSRedactionTestProfile enables a minimal redaction config matching
+// only ClassAnthropicKey, a non-core class.
+func applyWSRedactionTestProfile(cfg *config.Config) {
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAnthropicKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+}
+
 func applyProviderSecretRedactionTestProfile(cfg *config.Config) {
 	cfg.Redaction = redact.Config{
 		Enabled:        true,
@@ -108,6 +132,9 @@ func TestForwardProxy_Redaction_RewritesJSONBody(t *testing.T) {
 		enforceFalse := false
 		cfg.Enforce = &enforceFalse
 		applyRedactionTestProfile(cfg)
+		// Audit mode blocks a core credential even when fully redacted,
+		// unless the destination is a trusted request-body host.
+		cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 	})
 	defer cleanup()
 
@@ -193,6 +220,9 @@ func TestReverseProxy_Redaction_RewritesJSONBody(t *testing.T) {
 	enforceFalse := false
 	cfg.Enforce = &enforceFalse
 	applyRedactionTestProfile(cfg)
+	// Audit mode blocks a core credential even when fully redacted, unless
+	// the destination is a trusted request-body host.
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, "127.0.0.1")
 
 	var receivedBody atomic.Value
 	upstream := func(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +268,13 @@ func TestInterceptTunnel_Redaction_RewritesJSONBody(t *testing.T) {
 	enforceFalse := false
 	cfg.Enforce = &enforceFalse
 	applyRedactionTestProfile(cfg)
+	// Audit mode blocks a core credential even when fully redacted, unless
+	// the destination is a trusted request-body host.
+	trustedHost, _, err := net.SplitHostPort(upstream.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split upstream addr: %v", err)
+	}
+	cfg.RequestBodyScanning.TrustedHosts = append(cfg.RequestBodyScanning.TrustedHosts, trustedHost)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(func() { sc.Close() })
 	proxy := testInterceptRedactProxy(t, cfg)

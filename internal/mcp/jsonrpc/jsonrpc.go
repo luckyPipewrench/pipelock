@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -144,9 +145,13 @@ type ScanVerdict struct {
 // ExtractStringsResult is the bounded recursive extraction result. Truncated is
 // true when the JSON contains content beyond maxExtractDepth and a caller should
 // fail closed rather than make a decision from partial strings.
+// IncompleteReason is non-empty when media inspection ran out of budget; it is
+// a separate signal from Truncated and has the same consequence: the strings
+// are partial and the caller must block.
 type ExtractStringsResult struct {
-	Strings   []string
-	Truncated bool
+	Strings          []string
+	Truncated        bool
+	IncompleteReason string
 }
 
 // ExtractKeysResult is the bounded recursive JSON-key extraction result.
@@ -160,6 +165,9 @@ type ExtractKeysResult struct {
 type TextResult struct {
 	Text      string
 	Truncated bool
+	// IncompleteReason is non-empty when media inspection ran out of budget.
+	// Text is then empty: a caller must block rather than scan a prefix.
+	IncompleteReason string
 	// Numeric carries every numeric leaf of the result, in deterministic
 	// traversal order, joined by commas. It is a separate channel from Text
 	// on purpose: numbers never enter the prompt-injection or pattern-DLP
@@ -188,7 +196,7 @@ func ExtractText(raw json.RawMessage) string {
 // ExtractTextResult extracts text content and reports uninspectable depth in
 // the complete JSON value.
 func ExtractTextResult(raw json.RawMessage) TextResult {
-	return extractTextResult(raw, true)
+	return extractTextResult(raw, true, nil)
 }
 
 // ExtractTextOnlyResult is ExtractTextResult without the numeric channel. An
@@ -196,10 +204,21 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 // megabytes, so walking the document a second time to build a channel nobody
 // reads is pure cost.
 func ExtractTextOnlyResult(raw json.RawMessage) TextResult {
-	return extractTextResult(raw, false)
+	return extractTextResult(raw, false, nil)
 }
 
-func extractTextResult(raw json.RawMessage, includeNumeric bool) TextResult {
+// ExtractTextResultWithMediaBudget is ExtractTextResult drawing on a media
+// budget the caller shares across every extraction over one response, so text
+// recovered from media in separate fields is bounded together. includeNumeric
+// selects the numeric channel as ExtractTextResult and ExtractTextOnlyResult do.
+func ExtractTextResultWithMediaBudget(raw json.RawMessage, includeNumeric bool, budget *MediaTextBudget) TextResult {
+	return extractTextResult(raw, includeNumeric, budget)
+}
+
+func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTextBudget) TextResult {
+	if budget == nil {
+		budget = &MediaTextBudget{}
+	}
 	if len(raw) == 0 || string(raw) == Null {
 		return TextResult{}
 	}
@@ -241,18 +260,22 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool) TextResult {
 			// encoded media. A plaintext secret or instruction under
 			// content[].data must be scanned, same as structuredContent.
 			for _, field := range []string{block.Data, block.Blob, block.Raw} {
-				texts = appendVisibleMediaField(texts, field)
+				texts = appendVisibleMediaField(texts, field, budget)
 			}
 			if block.Resource != nil {
-				texts = appendVisibleMediaField(texts, block.Resource.Blob)
+				texts = appendVisibleMediaField(texts, block.Resource.Blob, budget)
 			}
 		}
 		// structuredContent is rendered to the agent alongside content blocks.
 		// Extract its text even when the typed content fast path succeeds, while
 		// skipping only value-shaped opaque media.
-		structured := ExtractVisibleStringsFromJSONResult(tr.StructuredContent)
+		structured := extractVisibleStrings(tr.StructuredContent, budget)
 		if structured.Truncated {
 			return TextResult{Truncated: true}
+		}
+		// Budget exhaustion in any field above leaves partial text; withhold it.
+		if reason := budget.Reason(); reason != "" {
+			return TextResult{IncompleteReason: reason}
 		}
 		texts = append(texts, structured.Strings...)
 		keys := ExtractKeysFromJSONResult(tr.StructuredContent)
@@ -329,6 +352,20 @@ func ExtractNumericLeaves(raw json.RawMessage) string {
 // a record as a payload. Skipping by key name alone dropped every string
 // inside {"data":{...}} and let a plaintext secret reach the client unscanned.
 func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
+	return extractVisibleStrings(raw, nil)
+}
+
+// ExtractVisibleStringsFromJSONResultWithMediaBudget is
+// ExtractVisibleStringsFromJSONResult drawing on a media budget shared across
+// one response; see ExtractTextResultWithMediaBudget.
+func ExtractVisibleStringsFromJSONResultWithMediaBudget(raw json.RawMessage, budget *MediaTextBudget) ExtractStringsResult {
+	return extractVisibleStrings(raw, budget)
+}
+
+func extractVisibleStrings(raw json.RawMessage, budget *MediaTextBudget) ExtractStringsResult {
+	if budget == nil {
+		budget = &MediaTextBudget{}
+	}
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return ExtractStringsResult{}
@@ -342,10 +379,13 @@ func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResu
 			truncated = true
 			return
 		}
+		if budget.Reason() != "" {
+			return
+		}
 		switch val := v.(type) {
 		case string:
 			if mediaCandidate {
-				result = appendVisibleMediaField(result, val)
+				result = appendVisibleMediaField(result, val, budget)
 			} else {
 				result = append(result, val)
 			}
@@ -364,6 +404,9 @@ func ExtractVisibleStringsFromJSONResult(raw json.RawMessage) ExtractStringsResu
 		}
 	}
 	extract(parsed, 0, false)
+	if reason := budget.Reason(); reason != "" {
+		return ExtractStringsResult{Truncated: truncated, IncompleteReason: reason}
+	}
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
 }
 
@@ -380,18 +423,21 @@ func isOpaqueMCPMediaField(key string) bool {
 	}
 }
 
-// appendVisibleMediaField appends visible text from a media candidate. Clean
-// encoded media stays out of text scans; suspicious decoded runs are scanned.
-func appendVisibleMediaField(texts []string, field string) []string {
-	if field == "" {
+// appendVisibleMediaField appends visible text from a media candidate. Encoded
+// media with no readable text in any decoded view stays out of text scans; text
+// recovered from a recognized container is scanned in place of its base64
+// spelling. When the shared budget runs out the candidate contributes nothing
+// and the budget records why: the caller must block, not scan what remains.
+func appendVisibleMediaField(texts []string, field string, budget *MediaTextBudget) []string {
+	if field == "" || budget.Reason() != "" {
 		return texts
 	}
-	opaque, printable := classifyMediaPayload(field)
-	if opaque {
+	opaque, recovered := classifyMediaPayload(field, budget)
+	if budget.Reason() != "" || opaque {
 		return texts
 	}
-	if printable != "" {
-		return append(texts, printable)
+	if recovered != "" {
+		return append(texts, recovered)
 	}
 	return append(texts, field)
 }
@@ -425,8 +471,9 @@ var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
 // magic prefix followed by text cannot.
 const pngIHDREnd = 33
 
-// minSmuggledTextRun is the shortest ASCII run after a media header that
-// warrants text scanning. It is inspected across the whole bounded payload.
+// minSmuggledTextRun is the shortest run of text recovered from a recognized
+// media payload that warrants scanning, in scalars of the view that read it. It
+// applies across the whole bounded payload, header bytes included.
 const minSmuggledTextRun = 12
 
 // maxFtypBoxSize rejects an ISO-BMFF size field that cannot be a real ftyp
@@ -453,19 +500,26 @@ var riffForms = [][]byte{
 // and resource-blob fields as base64 strings, so a declared-base64 payload
 // carrying a real container is the form the exclusion was written for.
 //
-// Failure direction: malformed, oversized, or unrecognized values are scanned
-// as raw text. A recognized container with printable runs scans those decoded
-// runs directly. A base64-encoded credential has no container signature and
-// is scanned. Unlisted media may still produce false positives on binary noise.
+// Failure direction: malformed or unrecognized values are scanned as raw text.
+// A recognized container is read in every text encoding the scanner could be
+// handed (see normalizedMediaText) and the text found is scanned in place of
+// the payload. A value past the message size limit, or text that exhausts the
+// response's media budget, is not guessed at: the budget records it and the
+// caller blocks. A base64-encoded credential has no container signature and is
+// scanned. Unlisted media may still produce false positives on binary noise.
 func isOpaqueMediaPayload(s string) bool {
-	opaque, _ := classifyMediaPayload(s)
-	return opaque
+	var budget MediaTextBudget
+	opaque, _ := classifyMediaPayload(s, &budget)
+	return opaque && budget.Reason() == ""
 }
 
-// classifyMediaPayload returns decoded printable runs for suspicious media.
-// Callers scan those runs as plain text, so encoded text past the old prefix
-// window cannot be hidden without reintroducing false hits on binary base64.
-func classifyMediaPayload(s string) (bool, string) {
+// classifyMediaPayload reports whether s is encoded media with no readable text
+// and otherwise returns the text recovered from it. A recognized header only
+// nominates the value; it never decides what is inspected, because a forged
+// header costs an attacker nothing, so the whole decoded value is read.
+//
+// Budget exhaustion is reported on budget, not in the return values.
+func classifyMediaPayload(s string, budget *MediaTextBudget) (bool, string) {
 	payload := s
 	if strings.HasPrefix(s, "data:") {
 		declared, ok := base64DataURLPayload(s)
@@ -476,7 +530,10 @@ func classifyMediaPayload(s string) (bool, string) {
 		}
 		payload = declared
 	}
-	if len(payload) > transport.MaxLineSize {
+	if len(payload) > MaxMediaTextBytes {
+		// Transports refuse a message this large before it reaches a scanner;
+		// a direct caller that hands one over has not been inspected in full.
+		budget.exhaust()
 		return false, ""
 	}
 	if !isBase64MediaRun(payload) {
@@ -486,39 +543,20 @@ func classifyMediaPayload(s string) (bool, string) {
 	if !ok {
 		return false, ""
 	}
-	rest, ok := mediaPayloadAfterHeader(decoded)
-	if !ok {
+	if _, ok := mediaPayloadAfterHeader(decoded); !ok {
 		return false, ""
 	}
-	if hasPrintableASCIIRun(rest, minSmuggledTextRun) {
-		return false, printableASCIIRuns(rest, minSmuggledTextRun)
+	recovered := normalizedMediaText(decoded, budget)
+	if budget.Reason() != "" {
+		return false, ""
 	}
-	return true, ""
+	return recovered == "", recovered
 }
 
-func printableASCIIRuns(b []byte, n int) string {
-	var out strings.Builder
-	start := -1
-	for i, c := range b {
-		if c >= 0x20 && c <= 0x7e {
-			if start < 0 {
-				start = i
-			}
-			continue
-		}
-		if start >= 0 && i-start >= n {
-			out.Write(b[start:i])
-			out.WriteByte('\n')
-		}
-		start = -1
-	}
-	if start >= 0 && len(b)-start >= n {
-		out.Write(b[start:])
-	}
-	return out.String()
-}
-
-// mediaPayloadAfterHeader reports the bytes after a validated media header.
+// mediaPayloadAfterHeader reports whether decoded opens with a recognized media
+// header, and the bytes after it. Recognition only nominates the value as
+// media; callers must read all of decoded, because the header's own bytes (a
+// PNG's IHDR span, an ftyp box) are attacker-controlled too.
 // Failure direction: a payload that does not prove its header is scanned.
 func mediaPayloadAfterHeader(decoded []byte) ([]byte, bool) {
 	if rest, ok := pngPayloadAfterIHDR(decoded); ok {
@@ -582,21 +620,6 @@ func ftypPayloadAfterBox(decoded []byte) ([]byte, bool) {
 		return nil, true
 	}
 	return decoded[size:], true
-}
-
-func hasPrintableASCIIRun(b []byte, n int) bool {
-	run := 0
-	for _, c := range b {
-		if c >= 0x20 && c <= 0x7e {
-			run++
-			if run >= n {
-				return true
-			}
-			continue
-		}
-		run = 0
-	}
-	return false
 }
 
 // base64DataURLPayload returns the payload of a data URL that explicitly
@@ -716,7 +739,7 @@ func SortedKeys(m map[string]interface{}) []string {
 
 // maxExtractDepth limits recursion in ExtractStringsFromJSON to prevent stack
 // overflow from maliciously deeply-nested JSON.
-const maxExtractDepth = 64
+const maxExtractDepth = extract.MaxExtractDepth
 
 // MaxExtractDepth exports the extraction depth bound so callers that gate a
 // subtree before it is re-extracted from a higher root can derive their own

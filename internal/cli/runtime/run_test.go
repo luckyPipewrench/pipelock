@@ -997,6 +997,10 @@ fetch_proxy:
 request_body_scanning:
   enabled: true
   action: warn
+  # A redacted core credential is forwarded only to a trusted host, in audit
+  # mode as in enforce mode; the loopback test upstreams are that host.
+  trusted_hosts:
+    - 127.0.0.1
 mcp_input_scanning:
   enabled: true
   action: warn

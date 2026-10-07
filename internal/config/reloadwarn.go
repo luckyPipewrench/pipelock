@@ -399,12 +399,8 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			})
 		}
 	}
-	if old.A2AScanning.SessionSmugglingDetection && !updated.A2AScanning.SessionSmugglingDetection {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "a2a_scanning.session_smuggling_detection",
-			Message: "A2A session smuggling detection disabled",
-		})
-	}
+	// session_smuggling_detection is reserved and not enforced, so turning it
+	// off lowers no protection and raises no warning.
 	if old.A2AScanning.ScanRawParts && !updated.A2AScanning.ScanRawParts {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "a2a_scanning.scan_raw_parts",

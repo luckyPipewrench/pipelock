@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -88,14 +87,7 @@ func startA2AReceiptListener(t *testing.T, upstreamURL string, opts MCPProxyOpts
 
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("RunHTTPListenerProxy: %v", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("timeout waiting for listener proxy to stop")
-		}
+		waitForListenerProxyStop(t, done)
 	})
 	return baseURL
 }

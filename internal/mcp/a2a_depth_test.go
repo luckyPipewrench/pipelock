@@ -191,7 +191,11 @@ func TestA2AStreamDepthParity(t *testing.T) {
 				w := httptest.NewRecorder()
 				err := ScanA2AStream(context.Background(), strings.NewReader("data: "+string(body)+"\n\n"), w, w, sc, cfg)
 				if text == a2aDepthInjection || depth > extract.MaxExtractDepth {
-					if !errors.Is(err, ErrA2AStreamFinding) || w.Body.Len() != 0 {
+					want := ErrA2AStreamFinding
+					if depth > extract.MaxExtractDepth {
+						want = ErrSSEStreamScanError
+					}
+					if !errors.Is(err, want) || w.Body.Len() != 0 {
 						t.Fatalf("event must be withheld: err=%v body=%s", err, w.Body.String())
 					}
 				} else if err != nil || !bytes.Contains(w.Body.Bytes(), body) {

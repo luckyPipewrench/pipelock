@@ -42,12 +42,23 @@ func unlockEvidenceAppend(_ *os.File) error { return errEvidenceFileAccessUnsupp
 
 func unlockEvidenceFile(_ *os.File) error { return errEvidenceFileAccessUnsupported }
 
-// An archive snapshot cannot have an attached recorder process. A required
-// lock marker therefore proves the captured run was closed before packaging;
-// missing markers still fail in the caller before this probe.
-func tryLockEvidenceFileForExpiry(f *os.File) (bool, error) {
-	if _, err := f.Stat(); err != nil {
-		return false, err
+// tryLockEvidenceFileForExpiry refuses exclusive ownership: this target has no
+// platform lock, so expiry and ceremony callers must not proceed.
+func tryLockEvidenceFileForExpiry(_ *os.File) (bool, error) {
+	return false, errEvidenceFileAccessUnsupported
+}
+
+// snapshotWriterGone answers the writer-presence probe for a mounted browser
+// archive. An archive snapshot cannot have an attached recorder process, so a
+// required lock marker proves the captured run was closed before packaging;
+// missing markers still fail in the caller before this probe. Without the
+// browser mount the probe fails closed.
+func snapshotWriterGone(f *os.File) (bool, bool, error) {
+	if err := validateEvidenceFileAccess(); err != nil {
+		return false, true, err
 	}
-	return true, nil
+	if _, err := f.Stat(); err != nil {
+		return false, true, err
+	}
+	return true, true, nil
 }

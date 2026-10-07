@@ -230,7 +230,9 @@ func receiptGroupArchiveFiles(bundle []byte, groupID string) (map[string][]byte,
 	selected := make(map[string][]byte)
 	for _, name := range archiveDirs {
 		if strings.HasPrefix(name, root) {
-			selected[strings.TrimPrefix(name, root)] = nil
+			if relative := strings.TrimPrefix(name, root); relative != "" {
+				selected[relative] = nil
+			}
 		}
 	}
 	for name, data := range all {

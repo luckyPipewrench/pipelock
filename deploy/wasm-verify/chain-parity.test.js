@@ -3,7 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
-const { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } = require("node:fs");
+const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 const { after, before, test } = require("node:test");
@@ -306,6 +306,25 @@ if (!isMainThread) {
     assert.equal(middleGarbage.valid, false, middleGarbage.error);
   });
 
+  test("receipt group archive skips its root directory entry", async () => {
+    const fixture = path.join(repoRoot, "sdk/verifiers/python/tests/fixtures/receipt-groups.zip");
+    const script = [
+      "import io, sys, zipfile",
+      "out = io.BytesIO()",
+      "with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(out, 'w') as target:",
+      "    target.writestr('group-valid/', b'')",
+      "    for name in source.namelist():",
+      "        if name.startswith('group-valid/'):",
+      "            target.writestr(name, source.read(name))",
+      "sys.stdout.buffer.write(out.getvalue())",
+    ].join("\n");
+    const archive = execFileSync("python3", ["-c", script, fixture]);
+    const groupID = "a6c9a32034a3e0467360c6800a82b0e6";
+    const key = "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9";
+    const result = await verifyGroupBytes(archive, groupID, [key]);
+    assert.equal(result.verdict, "GROUP_VALID", result.error);
+  });
+
   async function verifyFixture(name, mode) {
     const tc = cases.find((candidate) => candidate.name === name);
     assert.ok(tc, `missing test case ${name}`);
@@ -324,9 +343,57 @@ if (!isMainThread) {
     worker.postMessage({ id, bytes: Uint8Array.from(bytes), keys, mode });
     return result;
   }
+
+  async function verifyGroupBytes(bytes, groupID, keys) {
+    const id = nextID++;
+    const result = new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+    });
+    worker.postMessage({ id, bytes: Uint8Array.from(bytes), groupID, keys, mode: "uint8array" });
+    return result;
+  }
 }
 
 async function runWasmWorker() {
+  const hostFS = require("node:fs");
+  const syncCall = (callback, fn) => {
+    try {
+      callback(null, fn());
+    } catch (error) {
+      callback(error);
+    }
+  };
+  // Go's JS filesystem waits for callbacks before returning from a syscall/js
+  // event. Node's async fs callbacks cannot run until that event returns.
+  globalThis.fs = {
+    ...hostFS,
+    mkdir: (name, mode, cb) => syncCall(cb, () => hostFS.mkdirSync(name, { mode })),
+    open: (name, flags, mode, cb) => syncCall(cb, () => hostFS.openSync(name, flags, mode)),
+    close: (fd, cb) => syncCall(cb, () => hostFS.closeSync(fd)),
+    fstat: (fd, cb) => syncCall(cb, () => hostFS.fstatSync(fd)),
+    stat: (name, cb) => syncCall(cb, () => hostFS.statSync(name)),
+    lstat: (name, cb) => syncCall(cb, () => hostFS.lstatSync(name)),
+    readdir: (name, cb) => syncCall(cb, () => hostFS.readdirSync(name)),
+    unlink: (name, cb) => syncCall(cb, () => hostFS.unlinkSync(name)),
+    rmdir: (name, cb) => syncCall(cb, () => hostFS.rmdirSync(name)),
+    fsync: (fd, cb) => syncCall(cb, () => hostFS.fsyncSync(fd)),
+    read: (fd, buffer, offset, length, position, cb) => syncCall(cb, () => hostFS.readSync(fd, buffer, offset, length, position)),
+    write: (fd, buffer, offset, length, position, cb) => syncCall(cb, () => hostFS.writeSync(fd, buffer, offset, length, position)),
+  };
+  globalThis.pipelockMountReceiptGroup = (root, entries) => {
+    for (const [name, data] of Object.entries(entries)) {
+      if (!name) {
+        throw new Error("empty receipt group mount entry");
+      }
+      const target = path.join(root, name);
+      if (data === null) {
+        mkdirSync(target, { recursive: true, mode: 0o750 });
+      } else {
+        mkdirSync(path.dirname(target), { recursive: true, mode: 0o750 });
+        writeFileSync(target, Buffer.from(data), { mode: 0o600 });
+      }
+    }
+  };
   require(workerData.wasmExec);
   const go = new globalThis.Go();
   const wasm = readFileSync(workerData.wasm);
@@ -338,7 +405,9 @@ async function runWasmWorker() {
     try {
       const bytes = new Uint8Array(message.bytes);
       const input = wasmInput(bytes, message.mode);
-      const result = globalThis.pipelockVerifyChain(input, message.keys);
+      const result = message.groupID
+        ? globalThis.pipelockVerifyReceiptGroup(input, message.groupID, message.keys)
+        : globalThis.pipelockVerifyChain(input, message.keys);
       parentPort.postMessage({
         id: message.id,
         result: JSON.parse(JSON.stringify(result)),

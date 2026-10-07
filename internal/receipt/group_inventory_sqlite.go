@@ -82,7 +82,7 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 		return indexAELClaimsForSession(dir, session, currentGroupID, open.PreviousGroupID, trusted, func(run, session, groupID, signer string, completed bool) error {
 			_, err := db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
 			if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: claims.run") {
-				return fmt.Errorf("%w: duplicate signed native AEL run %q", evidencename.ErrAmbiguousSeqStart, run)
+				return fmt.Errorf("duplicate signed native AEL run %q", run)
 			}
 			return err
 		})

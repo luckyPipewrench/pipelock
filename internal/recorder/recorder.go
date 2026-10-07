@@ -160,8 +160,10 @@ type Recorder struct {
 	observer       EntryObserver
 	metrics        MetricsSink
 
-	mu              sync.Mutex
-	groupMu         sync.Mutex
+	mu      sync.Mutex
+	groupMu sync.Mutex
+	// recordLockHook is a test seam for proving Record entered the ownership lock.
+	recordLockHook  func()
 	groupSessions   map[string]*SessionState
 	groupOrder      []string
 	groupOwner      *os.File
@@ -430,6 +432,9 @@ func (r *Recorder) record(e Entry, scan *ReceiptScan, advance func()) error {
 		return err
 	}
 	r.groupMu.Lock()
+	if r.recordLockHook != nil {
+		r.recordLockHook()
+	}
 	if r.groupSessions == nil {
 		r.legacyStarted = true
 		r.groupMu.Unlock()

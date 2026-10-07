@@ -188,18 +188,26 @@ func TestRecorderGroupFDCountAtThirtyTwo(t *testing.T) {
 func TestRecorderGroupOwnerSelectionWaitsForAcquisition(t *testing.T) {
 	r, _, _ := newGroupRecorder(t)
 	sessions := groupSessionIDs(t, 2)
-	r.groupMu.Lock()
+	entered := make(chan bool, 1)
+	r.recordLockHook = func() {
+		if r.groupMu.TryLock() {
+			r.groupMu.Unlock()
+			entered <- false
+			return
+		}
+		entered <- true
+	}
+	r.recordLockHook()
+	if <-entered {
+		t.Fatal("ownership-lock check passed without the lock")
+	}
 	result := make(chan error, 1)
 	go func() {
 		result <- r.Record(Entry{SessionID: sessions[0], Type: "test", Summary: "before acquisition"})
 	}()
-	select {
-	case err := <-result:
-		r.groupMu.Unlock()
-		t.Fatalf("record bypassed the ownership lock: %v", err)
-	default:
+	if !<-entered {
+		t.Fatal("Record reached ownership selection without holding groupMu")
 	}
-	r.groupMu.Unlock()
 	if err := <-result; err != nil {
 		t.Fatal(err)
 	}

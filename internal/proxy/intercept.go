@@ -602,6 +602,13 @@ func newInterceptHandler(
 		if ic.Proxy != nil {
 			ic.receiptShard = ic.Proxy.admitReceiptShard()
 		}
+		if !ic.Proxy.stateIdentityConfigCurrent(ic.Config, ic.ActorAuth) {
+			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}), "identity_reload", stateIdentityReloadReason)
+			ic.Metrics.RecordTLSRequestBlocked("identity_reload")
+			_ = interceptEmitReceipt(ic, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: "intercept", Method: r.Method, Target: target, RequestID: ic.RequestID, Agent: ic.Agent})
+			writeBlockedError(w, blockInfoFor(blockreason.CrossRequestDeny, "identity_reload"), stateIdentityReloadReason, http.StatusForbidden)
+			return
+		}
 		reqStart := time.Now()
 		// Inner request headers are visible here after TLS termination, so
 		// the inner request's own tag wins over the CONNECT request's. The

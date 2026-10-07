@@ -64,3 +64,20 @@ func newCEEIdentity(cfg *config.Config, agent, clientIP string, auth envelope.Ac
 	agent, auth = stateIdentity(cfg, agent, auth)
 	return identitykey.NewCEEIdentity(agent, clientIP, auth)
 }
+
+const stateIdentityReloadReason = "identity configuration changed; reconnect to use the current state bucket"
+
+// stateIdentityConfigCurrent fences connection-scoped policy snapshots when
+// a reload changes their identity boundary. CEE resolves live config while
+// intercepted tunnels and WebSocket relays retain admission-time recorders.
+// Reconnecting replaces both together rather than mixing two state buckets.
+func (p *Proxy) stateIdentityConfigCurrent(cfg *config.Config, auth envelope.ActorAuth) bool {
+	if p == nil || cfg == nil || auth == envelope.ActorAuthBound {
+		return true
+	}
+	live := p.cfgPtr.Load()
+	if live == nil {
+		return cfg.DefaultAgentIdentity == ""
+	}
+	return cfg.DefaultAgentIdentity == live.DefaultAgentIdentity && cfg.BindDefaultAgentIdentity == live.BindDefaultAgentIdentity
+}

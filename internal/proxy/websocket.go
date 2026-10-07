@@ -2426,6 +2426,19 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	return false
 }
 
+func (r *wsRelay) blockIdentityReload() bool {
+	if r.proxy.stateIdentityConfigCurrent(r.cfg, r.actorAuth) {
+		return false
+	}
+	r.terminalOnce.Do(func() {
+		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{Target: r.targetURL, Scanner: "identity_reload", Reason: stateIdentityReloadReason, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth)})
+		_ = r.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent})
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, stateIdentityReloadReason)
+		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, stateIdentityReloadReason)
+	})
+	return true
+}
+
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
@@ -2436,6 +2449,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	redactionEnabled := r.redaction != nil && r.redaction.required
 
 	for {
+		if r.blockIdentityReload() {
+			blocked = true
+			return
+		}
 		select {
 		case <-ctx.Done():
 			// ctx is canceled when the sibling relay goroutine returns, an
@@ -2557,6 +2574,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if _, err := io.ReadFull(r.clientConn, payload); err != nil {
 				return
 			}
+		}
+
+		if r.blockIdentityReload() {
+			blocked = true
+			return
 		}
 
 		// Unmask client frames (clients must mask per RFC 6455).
@@ -2926,6 +2948,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 
 	for {
+		if r.blockIdentityReload() {
+			blocked = true
+			return
+		}
 		select {
 		case <-ctx.Done():
 			// See clientToUpstream: cooperative cancellation is not a
@@ -3069,6 +3095,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				_ = r.clientConn.Close()
 				return
 			}
+		}
+
+		if r.blockIdentityReload() {
+			blocked = true
+			return
 		}
 
 		// Server frames should not be masked, but unmask if they are.

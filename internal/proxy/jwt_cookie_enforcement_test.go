@@ -252,6 +252,51 @@ func TestJWTCookieHeaderDLPDecisionHasNoCookieSpecialCase(t *testing.T) {
 	}
 }
 
+func TestJWTCookieSeverityFloorAndHeaderModes(t *testing.T) {
+	for _, mode := range []string{config.HeaderModeSensitive, config.HeaderModeAll} {
+		for _, critical := range []bool{false, true} {
+			cfg := config.Defaults()
+			jwtHeaderScanConfig(cfg, config.ActionWarn)
+			cfg.RequestBodyScanning.HeaderMode = mode
+			for i := range cfg.DLP.Patterns {
+				if cfg.DLP.Patterns[i].Name == "JWT Token" && critical {
+					cfg.DLP.Patterns[i].Severity = config.SeverityCritical
+				}
+			}
+			sc := scanner.MustNew(cfg)
+			result := scanRequestHeaders(t.Context(), jwtCookieHeaders(), cfg, sc)
+			if result == nil || len(result.DLPMatches) == 0 {
+				t.Fatal("JWT positive control did not match")
+			}
+			action, hard := headerDLPDecision(result, cfg)
+			if hard != critical || (critical && action != config.ActionBlock) || (!critical && action != config.ActionWarn) {
+				t.Fatalf("mode=%s critical=%v: action=%s hard=%v", mode, critical, action, hard)
+			}
+			cfg.RequestBodyScanning.PatternActions = map[string]string{"JWT Token": config.ActionWarn}
+			action, hard = headerDLPDecision(result, cfg)
+			if action != config.ActionWarn || hard {
+				t.Fatalf("pattern override: action=%s hard=%v", action, hard)
+			}
+			sc.Close()
+		}
+	}
+}
+
+func TestJWTCookieWebSocketNotForwarded(t *testing.T) {
+	backend, cleanupBackend := wsEchoServer(t)
+	t.Cleanup(cleanupBackend)
+	addr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
+		jwtHeaderScanConfig(cfg, config.ActionBlock)
+		cfg.WebSocketProxy.ForwardCookies = false
+	})
+	t.Cleanup(cleanup)
+	resp := requestWSHandshake(t, addr, backend, jwtCookieHeaders())
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("dropped cookie blocked handshake: %d", resp.StatusCode)
+	}
+}
+
 // TestJWTCookieIssuerBoundOmissionIsTheOnlyException is the positive control for
 // the rule above. Under a configured block, a JWT session cookie that an
 // intercepted HTTPS origin issued to this identity is returned to that origin

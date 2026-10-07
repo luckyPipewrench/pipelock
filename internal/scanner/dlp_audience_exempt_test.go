@@ -63,6 +63,15 @@ func TestScan_SameNameAzureSASWithExemptionKeepsReleaseGrantAudience(t *testing.
 	if r := s.Scan(context.Background(), "https://"+otherSASHost+"/blob?"+sasOnly); !r.Allowed {
 		t.Fatalf("exempt host blocked: scanner=%s reason=%s", r.Scanner, r.Reason)
 	}
+	// A signature split across query values reaches the query-subsequence
+	// scan; the exemption must apply there too, and only for the named host.
+	split := "first=sig=" + strings.Repeat("A", 20) + "&decoy=JUNK&last=" + strings.Repeat("A", 23) + "="
+	if r := s.Scan(context.Background(), "https://"+otherSASHost+"/blob?"+split); !r.Allowed {
+		t.Fatalf("reassembled SAS blocked on exempt host: scanner=%s reason=%s", r.Scanner, r.Reason)
+	}
+	if r := s.Scan(context.Background(), "https://other.vendor.example/blob?"+split); r.Allowed {
+		t.Fatal("reassembled SAS allowed on a host that is not exempt")
+	}
 	for _, target := range []string{
 		"https://other.vendor.example/blob?" + sasOnly,
 		"https://" + otherSASHost + ".evil.example/blob?" + sasOnly,
@@ -78,6 +87,10 @@ func TestScan_SameNameAzureSASWithExemptionKeepsReleaseGrantAudience(t *testing.
 func TestScan_ExemptionInsideAudienceIsIgnored(t *testing.T) {
 	t.Parallel()
 	s := scannerFromOverride(t, githubReleaseAssetsHost)
+	split := "first=sig=" + strings.Repeat("A", 20) + "&decoy=JUNK&last=" + strings.Repeat("A", 23) + "="
+	if r := s.Scan(context.Background(), "https://"+githubReleaseAssetsHost+"/github-production-release-asset/1/asset?"+split); r.Allowed {
+		t.Fatal("an audience-host exemption allowed a reassembled SAS with no release grant")
+	}
 	sasOnly := "sp=r&sig=" + url.QueryEscape(releaseGrantSASSig("inside-fixture"))
 	if r := s.Scan(context.Background(), "https://"+githubReleaseAssetsHost+"/github-production-release-asset/1/asset?"+sasOnly); r.Allowed {
 		t.Fatal("an exemption for the audience host opened a SAS with no release grant")
@@ -94,7 +107,10 @@ func TestScan_ExemptionInsideAudienceIsIgnored(t *testing.T) {
 // warning exists to explain.
 func TestScan_SameNameAzureSASWithChangedRegexLosesAudience(t *testing.T) {
 	t.Parallel()
-	yaml := strings.Replace(azureSASOverrideBase, "severity: high", "severity: medium", 1) + "        - " + otherSASHost + "\n"
+	yaml := strings.Replace(azureSASOverrideBase, `[A-Za-z0-9+/]{43}=)'`, `[A-Za-z0-9+/]{43}=|\bsv=zz\b)'`, 1) + "        - " + otherSASHost + "\n"
+	if !strings.Contains(yaml, `sv=zz`) {
+		t.Fatal("fixture did not change the regex")
+	}
 	cfg, err := config.LoadBytes([]byte(yaml))
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)

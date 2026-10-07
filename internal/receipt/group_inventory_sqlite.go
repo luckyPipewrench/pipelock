@@ -39,6 +39,9 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 	ctx := context.Background()
+	if err := configureScratchSQLite(ctx, db); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `CREATE TABLE claims (run TEXT PRIMARY KEY, session TEXT NOT NULL, group_id TEXT NOT NULL, signer TEXT NOT NULL, completed INTEGER NOT NULL)`); err != nil {
 		return err
 	}
@@ -180,4 +183,15 @@ func claimInsertError(err error, run string) error {
 		return fmt.Errorf("duplicate signed native AEL run %q", run)
 	}
 	return err
+}
+
+// configureScratchSQLite turns off durable writes for a temporary index that is
+// rebuilt from evidence on every verification and deleted afterwards.
+func configureScratchSQLite(ctx context.Context, db *sql.DB) error {
+	for _, pragma := range []string{`PRAGMA journal_mode=OFF`, `PRAGMA synchronous=OFF`} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure scratch inventory database: %w", err)
+		}
+	}
+	return nil
 }

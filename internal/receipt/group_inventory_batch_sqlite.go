@@ -37,6 +37,11 @@ func newGroupAELBatchIndex(dir string, trusted []string) (groupAELBatchIndex, er
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	if err := configureScratchSQLite(context.Background(), db); err != nil {
+		_ = db.Close()
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
 	index := &sqliteGroupAELBatchIndex{db: db, tmp: tmp, openTailCounts: make(map[string]int)}
 	if err := index.build(dir, trusted); err != nil {
 		_ = index.Close()

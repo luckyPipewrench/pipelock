@@ -249,9 +249,27 @@ mod filename_vector_tests {
         let first = parse_evidence_filename(names[0].as_str().unwrap());
         let second = parse_evidence_filename(names[1].as_str().unwrap());
         assert!(first.is_some());
-        assert_eq!(
-            first, second,
-            "duplicate sequence must be rejected by the index"
+        assert_eq!(first, second, "the vector names must parse to one start");
+
+        // The index, not the parser, must refuse the pair: drive it through a
+        // real directory holding both files.
+        let dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-duplicate-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name.as_str().unwrap()), b"").unwrap();
+        }
+        let err = super::indexed_session_files(&dir).unwrap_err();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            err.contains("ambiguous evidence shard sequence start"),
+            "duplicate sequence must be rejected by the index: {err}"
         );
     }
 }

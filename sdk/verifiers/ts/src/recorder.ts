@@ -21,6 +21,7 @@ import {
 
 const actionReceiptType = "action_receipt";
 const evidenceReceiptType = "evidence_receipt";
+const groupGateEntryType = "receipt_group_v1";
 
 // Receipt-chain mode: the known non-receipt operational entry types that
 // extraction legitimately skips. Any entry whose type is outside the union of
@@ -28,9 +29,6 @@ const evidenceReceiptType = "evidence_receipt";
 // skipped, so a file mixing a valid chain with an unknown record type cannot be
 // reported as a valid receipt subsequence.
 const skippableEntryTypes = new Set([
-  // Group mode validates this first-entry gate against the signed opening
-  // before accepting either receipt chain.
-  "receipt_group_v1",
   "checkpoint",
   "transcript_root",
   "decision",
@@ -48,27 +46,35 @@ export interface ParsedRecorderLine extends RecorderLine {
   entry: RecorderEntry;
 }
 
-export function readEntryLines(
-  file: string,
-  directoryChild = false,
-  allowTorn = true,
-): ParsedRecorderLine[] {
-  const raw = readVerifierBytes(file, directoryChild);
-  if (!allowTorn && raw.length > 0 && raw[raw.length - 1] !== 0x0a) {
-    throw new InvalidError("receipt group session has a torn segment");
-  }
-  const end = raw.lastIndexOf(0x0a);
-  const text = decodeUTF8(raw.subarray(0, end + 1), "evidence jsonl");
+export function readEntryLines(file: string, directoryChild = false): ParsedRecorderLine[] {
+  const text = decodeUTF8(readVerifierBytes(file, directoryChild), "evidence jsonl");
   return parseEntryLinesText(text);
 }
 
-// parseEntryLinesText parses an already-decoded recorder shard. Recovery
-// verification uses it only for the LF-terminated prefix whose raw bytes are
-// independently bound by a recovery seal.
+// EntryLinesPrefix is the LF-terminated prefix of one shard plus whether a
+// final unterminated fragment follows it. Receipt-group verification needs the
+// split because Go's session walker delivers every complete line and then
+// reports the fragment as a torn tail; the fragment is never evidence.
+export interface EntryLinesPrefix {
+  lines: ParsedRecorderLine[];
+  torn: boolean;
+}
+
+export function readEntryLinesPrefix(file: string, directoryChild = false): EntryLinesPrefix {
+  const raw = readVerifierBytes(file, directoryChild);
+  const torn = raw.length > 0 && raw[raw.length - 1] !== 0x0a;
+  const end = raw.lastIndexOf(0x0a);
+  const text = decodeUTF8(raw.subarray(0, end + 1), "evidence jsonl");
+  return { lines: parseEntryLinesText(text), torn };
+}
+
+// parseEntryLinesText parses an already-decoded recorder shard, including an
+// unterminated final line. Recovery verification uses it for the LF-terminated
+// prefix whose raw bytes are independently bound by a recovery seal.
 export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
   const entries: ParsedRecorderLine[] = [];
   const lines = text.split("\n");
-  for (let i = 0; i < lines.length - 1; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const line = trimGoSpace(lines[i] ?? "");
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
@@ -178,13 +184,19 @@ export function extractTypedReceipts(file: string): ExtractedReceipts {
 }
 
 // extractTypedFromEntries splits already-read recorder entries into the two
-// receipt chains, refusing any entry type it does not know.
-export function extractTypedFromEntries(entries: readonly RecorderEntry[]): ExtractedReceipts {
+// receipt chains, refusing any entry type it does not know. The receipt group
+// gate is skipped only when the caller is a group verifier, which validates it
+// against the signed opening; everywhere else it is an unknown entry type.
+export function extractTypedFromEntries(
+  entries: readonly RecorderEntry[],
+  allowGroupGate = false,
+): ExtractedReceipts {
   const extracted: ExtractedReceipts = { action: [], evidence: [] };
   for (const entry of entries) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
     if (!isReceipt) {
       if (entry.type !== undefined && skippableEntryTypes.has(entry.type)) continue;
+      if (allowGroupGate && entry.type === groupGateEntryType) continue;
       throw new InvalidError(
         `unexpected recorder entry type "${String(entry.type)}" at seq ${String(entry.seq)}`,
       );

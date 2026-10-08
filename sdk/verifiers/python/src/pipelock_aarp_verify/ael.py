@@ -73,6 +73,15 @@ def _read_regular(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
     return raw, before
 
 
+def _same_int(value: Any, want: int) -> bool:
+    """Match Go's typed integer decode: a JSON bool or float is not the integer."""
+    return type(value) is int and value == want
+
+
+def _is_int(value: Any) -> bool:
+    return type(value) is int
+
+
 def _json(raw: bytes, name: str) -> Any:
     try:
         text = raw.decode("utf-8", errors="strict")
@@ -187,12 +196,12 @@ def verify_ael_run(
             raise AELVerificationError("native AEL has records after close")
         record = _verify_ael_line(line, pub)
         if (
-            record.get("v") != 1
+            not _same_int(record.get("v"), 1)
             or record.get("run") != run
             or record.get("recorder") != "pipelock"
             or record.get("key") != key_id
             or record.get("prev") != previous
-            or record.get("seq") != count
+            or not _same_int(record.get("seq"), count)
             or not isinstance(record.get("ts"), str)
         ):
             raise AELVerificationError(
@@ -238,8 +247,8 @@ def _validate_record(record: dict[str, Any], seq: int, prev: str) -> None:
         allowed = base | {"hmax", "htol"}
         if (
             seq != 0
-            or not isinstance(record.get("hmax"), int)
-            or not isinstance(record.get("htol"), int)
+            or not _is_int(record.get("hmax"))
+            or not _is_int(record.get("htol"))
             or record["hmax"] < 0
             or record["htol"] < 0
             or record["htol"] > record["hmax"]
@@ -251,16 +260,19 @@ def _validate_record(record: dict[str, Any], seq: int, prev: str) -> None:
         if (
             not isinstance(event, dict)
             or set(event) != {"class", "dir", "id"}
-            or not event.get("class")
-            or not event.get("id")
-            or event.get("dir") not in {"in", "out", "internal"}
+            or not isinstance(event.get("class"), str)
+            or not isinstance(event.get("id"), str)
+            or not isinstance(event.get("dir"), str)
+            or not event["class"]
+            or not event["id"]
+            or event["dir"] not in {"in", "out", "internal"}
         ):
             raise AELVerificationError("invalid native AEL activity")
     elif kind == "heartbeat":
         allowed = base
     elif kind == "close":
         allowed = base | {"count", "head"}
-        if record.get("count") != seq + 1 or record.get("head") != prev:
+        if not _same_int(record.get("count"), seq + 1) or record.get("head") != prev:
             raise AELVerificationError("native AEL close head or count differs")
     else:
         raise AELVerificationError("unknown native AEL record type")

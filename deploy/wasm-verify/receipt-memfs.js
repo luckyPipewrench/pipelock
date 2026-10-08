@@ -106,10 +106,6 @@
 			const length = writeOutput(fd, buffer, 0, buffer.length);
 			return length;
 		},
-		write(fd, buffer, offset, length, position, cb) {
-			if (position !== null) return callback(cb, error("EINVAL"));
-			writeOutput(fd, buffer, offset, length, cb);
-		},
 		open(path, flags, _mode, cb) {
 			path = normalize(path);
 			const directory = (flags & fs.constants.O_DIRECTORY) !== 0;
@@ -168,7 +164,15 @@
 			if (position === null) h.position += count;
 			cb(null, count, buffer);
 		},
+		// One write for every descriptor: Go's runtime writes stdout and stderr
+		// through the callback form, and a second definition later in this
+		// literal would otherwise shadow the first and answer EBADF.
 		write(fd, buffer, offset, length, position, cb) {
+			if (fd === 1 || fd === 2) {
+				if (position !== null) return callback(cb, error("EINVAL"));
+				writeOutput(fd, buffer, offset, length, cb);
+				return;
+			}
 			const h = handles.get(fd);
 			const data = h && files.get(h.path);
 			if (!h || !data) return callback(cb, error("EBADF"));

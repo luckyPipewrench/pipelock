@@ -619,7 +619,6 @@ async function verifyGroupAt(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       // Do not promote absent close to success; still validate any successor claim and inventory.
-      await verifyTransitionInventory(open, result.open_manifest_sha256, trusted);
       await verifySuccessorTransitionInventory(open, result.open_manifest_sha256, "", trusted);
       await verifyAELInventory(open, trusted, true);
       checkDirectoryIdentity(rootStart, aelStart, before);
@@ -650,7 +649,6 @@ async function verifyGroupAt(
     }
     if (open.previous_group_id)
       await verifyPredecessorTransition(open, result.open_manifest_sha256, trusted);
-    await verifyTransitionInventory(open, result.open_manifest_sha256, trusted);
     await verifySuccessorTransitionInventory(
       open,
       result.open_manifest_sha256,
@@ -697,9 +695,13 @@ function checkDirectoryIdentity(
 
 async function verifyShard(open: GroupOpen, openHash: string, index: number): Promise<GroupHead> {
   const shard = open.shards[index] as GroupShard;
-  const evidence = readSessionEvidence(".", shard.session_id),
+  const evidence = readSessionEvidence(".", shard.session_id, "prefix"),
     lines = evidence.lines,
     typed = evidence.typed;
+  // A signed close covers the whole shard, so an unterminated final write is
+  // invalid here, as in Go's session walker.
+  if (evidence.torn)
+    throw new Error(`reading ${shard.session_id}: torn JSONL tail after the last complete entry`);
   if (!lines.length) throw new Error(`receipt group shard ${index} is empty`);
   const binding = {
     group_id: open.group_id,
@@ -858,31 +860,6 @@ async function verifyPredecessorTransition(
   await verifySuccessorTransitionInventory(old, sha(oldBytes), closeHash, trusted, false);
 }
 
-async function verifyTransitionInventory(
-  open: GroupOpen,
-  openHash: string,
-  trusted: Set<string>,
-): Promise<void> {
-  for (const name of readdirSync(".")) {
-    if (!name.startsWith("receipt-group-") || !name.endsWith("-transition.json")) continue;
-    const rawBytes = readChild(name),
-      raw = strictObject(rawBytes, transitionFields, "group transition");
-    if (raw.new_group_id !== open.group_id) continue;
-    const id = name.slice(14, 46);
-    if (id !== open.group_id) throw new Error("transition filename does not match successor ID");
-    if (!open.previous_group_id) throw new Error("transition has no predecessor opening");
-    const oldBytes = readChild(`receipt-group-${open.previous_group_id}-open.json`),
-      old = parseOpen(oldBytes);
-    let priorCloseHash = "";
-    try {
-      priorCloseHash = sha(readChild(`receipt-group-${open.previous_group_id}-close.json`));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    await verifyTransition(raw, open, old, openHash, sha(oldBytes), priorCloseHash, trusted);
-  }
-}
-
 async function verifySuccessorTransitionInventory(
   open: GroupOpen,
   openHash: string,
@@ -937,54 +914,12 @@ async function verifyAELInventory(
     const parsed = parseEvidenceFilename(name);
     if (parsed && parsed.seqStart === 0n) sessions.add(parsed.session);
   }
-  const recoveredPredecessors = new Map<
-    string,
-    { run: string; signer: string; completed: boolean }
-  >();
-  if (open.previous_group_id) {
-    const tr = strictObject(
-      readChild(`receipt-group-${open.group_id}-transition.json`),
-      transitionFields,
-      "group transition",
-    );
-    const predecessorBytes = readChild(`receipt-group-${open.previous_group_id}-open.json`),
-      predecessor = parseOpen(predecessorBytes);
-    for (const rawClaim of tr.predecessors as unknown[]) {
-      const claim = object(rawClaim, "transition predecessor");
-      if (typeof claim.recovery_seal_sha256 === "string" && claim.recovery_seal_sha256 !== "") {
-        const session = str(claim.session_id, "predecessor session"),
-          sealBytes = readChild(`chain-link-${session}.json`, 64 * 1024);
-        const recovered = await recoveredAELRun(
-          predecessor,
-          safeValue(claim.shard_index),
-          object(parseJSONStrict(decodeUTF8(sealBytes, "recovery seal")), "recovery seal"),
-          sealBytes,
-        );
-        recoveredPredecessors.set(session, { ...recovered, signer: predecessor.signer_key });
-      }
-    }
-  }
   const claims = new Map<
     string,
     { session: string; groupID: string; signer: string; completed: boolean }
   >();
   for (const session of sessions) {
-    let evidence;
-    try {
-      evidence = readSessionEvidence(".", session);
-    } catch (err) {
-      const run = recoveredPredecessors.get(session);
-      if (run) {
-        claims.set(run.run, {
-          session,
-          groupID: open.previous_group_id,
-          signer: run.signer,
-          completed: run.completed,
-        });
-        continue;
-      }
-      throw err;
-    }
+    const evidence = readSessionEvidence(".", session, "prefix");
     const lines = evidence.lines;
     if (!lines.length)
       throw new Error(`inventory receipt session ${JSON.stringify(session)} is empty`);
@@ -1020,6 +955,18 @@ async function verifyAELInventory(
         throw new Error("receipt group gate is not owned by a signed opening");
       signer = owner.signer_key;
     }
+    // Go tolerates an unterminated final write only for a legacy session, the
+    // predecessor group, or (while the group is still open) this group; the
+    // complete prefix is then what the inventory verifies.
+    if (
+      evidence.torn &&
+      claimedGroup !== "" &&
+      !(incomplete && claimedGroup === open.group_id) &&
+      claimedGroup !== open.previous_group_id
+    )
+      throw new Error(
+        `inventory receipt session ${JSON.stringify(session)}: torn JSONL tail in another receipt group`,
+      );
     const outer = verifyRecorderChain(lines);
     if (outer) throw new Error(`inventory receipt session ${JSON.stringify(session)}: ${outer}`);
     const receipts = evidence.typed.action;
@@ -1194,7 +1141,10 @@ async function recoveredAELRun(
     goJSONMarshal(prefix[0]?.entry.detail) !== goJSONMarshal(binding)
   )
     throw new Error("recovery predecessor prefix does not match group gate");
-  const typed = extractTypedFromEntries(prefix.map((line) => line.entry));
+  const typed = extractTypedFromEntries(
+    prefix.map((line) => line.entry),
+    true,
+  );
   const v1 = await verifyChain(typed.action, predecessor.signer_key);
   const last = typed.action[typed.action.length - 1];
   if (
@@ -1310,8 +1260,11 @@ async function verifyUnsealedPredecessor(
   openHash: string,
   claim: GroupPredecessor,
 ): Promise<void> {
-  const evidence = readSessionEvidence(".", claim.session_id),
+  const evidence = readSessionEvidence(".", claim.session_id, "prefix"),
     lines = evidence.lines;
+  // A torn predecessor tail is only attachable through a recovery seal.
+  if (evidence.torn)
+    throw new Error(`receipt group predecessor shard ${claim.shard_index} lacks a recovery seal`);
   const binding = {
     group_id: open.group_id,
     shard_index: claim.shard_index,
@@ -1401,7 +1354,9 @@ async function verifyRecoverySeal(
     throw new Error("recovery seal signature verification failed");
   const pred = predecessor.shards[claim.shard_index] as GroupShard,
     succ = successor.shards[claim.shard_index % successor.shards.length] as GroupShard;
-  const successorEvidence = readSessionEvidence(".", succ.session_id);
+  const successorEvidence = readSessionEvidence(".", succ.session_id, "prefix");
+  if (successorEvidence.torn)
+    throw new Error(`reading ${succ.session_id}: torn JSONL tail after the last complete entry`);
   const firstReceipt = successorEvidence.typed.action[0];
   const successorOpenHash = firstReceipt ? receiptHash(firstReceipt) : "";
   const damagedShard = readChild(str(raw.shard, "recovery seal shard"), 8 << 20);

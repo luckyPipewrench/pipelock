@@ -44,6 +44,9 @@ GROUP_INCOMPLETE = "GROUP_INCOMPLETE"
 GROUP_INVALID = "GROUP_INVALID"
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_GROUP_ARTIFACT = re.compile(
+    r"^receipt-group-[0-9a-f]{32}-(?:open|close|transition)\.json$"
+)
 _MAX_ARTIFACT = 128 * 1024
 _MAX_LINE = 1 << 20
 _DOMAINS = {
@@ -51,6 +54,11 @@ _DOMAINS = {
     "close": "pipelock/receipt-group-close/v1",
     "transition": "pipelock/receipt-group-transition/v1",
 }
+
+
+def _same_int(value: Any, want: int) -> bool:
+    """Match Go's typed integer decode: a JSON bool or float is not the integer."""
+    return type(value) is int and value == want
 
 
 def _go_blank_line(text: str) -> bool:
@@ -280,7 +288,7 @@ def _require_canonical_utc(value: Any, field: str) -> None:
 
 def _validate_open(opening: dict[str, Any], group_id: str) -> None:
     if (
-        opening.get("version") != 1
+        not _same_int(opening.get("version"), 1)
         or opening.get("kind") != "receipt_group_open"
         or opening.get("group_id") != group_id
         or not _HEX32.fullmatch(group_id)
@@ -317,7 +325,7 @@ def _validate_open(opening: dict[str, Any], group_id: str) -> None:
         _ordered(shard, _OPEN_SHARD_FIELDS)
         sid = shard["session_id"]
         if (
-            shard["shard_index"] != index
+            not _same_int(shard["shard_index"], index)
             or not isinstance(sid, str)
             or not re.fullmatch(re.escape(base) + r"\.run\.[0-9a-f]{32}", sid)
             or sid in seen
@@ -354,7 +362,7 @@ def _validate_close(
 ) -> None:
     _verify_signature(closed, "close", trusted)
     if (
-        closed.get("version") != 1
+        not _same_int(closed.get("version"), 1)
         or closed.get("kind") != "receipt_group_close"
         or closed.get("status") != "complete"
         or closed.get("group_id") != opening["group_id"]
@@ -375,7 +383,7 @@ def _validate_close(
     for index, shard in enumerate(shards):
         _ordered(shard, _CLOSE_SHARD_FIELDS)
         if (
-            shard.get("shard_index") != index
+            not _same_int(shard.get("shard_index"), index)
             or shard.get("session_id") != opening["shards"][index]["session_id"]
         ):
             raise GroupVerificationError(
@@ -434,7 +442,7 @@ def _validate_predecessor_claim(
         raise GroupVerificationError(
             f"receipt group transition predecessor shard {index} seal digest is invalid"
         )
-    if claim["shard_index"] != index or claim["session_id"] != session:
+    if not _same_int(claim["shard_index"], index) or claim["session_id"] != session:
         raise GroupVerificationError(
             "receipt group transition has mismatched predecessor shard"
         )
@@ -523,7 +531,7 @@ def _session_evidence_paths(directory: Path, session: str) -> list[tuple[int, Pa
 
 def _read_session_evidence(
     directory: Path, session: str, recovered: bool, include_bytes: bool = False
-) -> tuple[list[tuple[int, Path]], list[bytes], list[dict[str, Any]]]:
+) -> tuple[list[tuple[int, Path]], list[bytes], list[dict[str, Any]], bool]:
     paths = _session_evidence_paths(directory, session)
     if not paths:
         raise GroupVerificationError("receipt session evidence is missing")
@@ -532,6 +540,7 @@ def _read_session_evidence(
     entries: list[dict[str, Any]] = []
     parts: list[bytes] = []
     prior = "genesis"
+    session_torn = False
     for file_index, (start, path) in enumerate(paths):
         if path.stat().st_size > 128 * 1024 * 1024 or start != len(entries):
             raise GroupVerificationError("receipt session inventory sequence mismatch")
@@ -541,8 +550,6 @@ def _read_session_evidence(
             stream = io.BytesIO(part)
         else:
             stream = path.open("rb")
-        before_count = len(entries)
-        torn = False
         with stream:
             for line in stream:
                 if len(line) > _MAX_LINE:
@@ -551,7 +558,7 @@ def _read_session_evidence(
                     )
                 if not line.endswith(b"\n"):
                     if recovered and file_index + 1 == len(paths):
-                        torn = True
+                        session_torn = True
                         break
                     raise GroupVerificationError(
                         "receipt group session has a torn segment"
@@ -570,7 +577,7 @@ def _read_session_evidence(
                 if (
                     not isinstance(entry, dict)
                     or entry.get("session_id") != session
-                    or entry.get("seq") != len(entries)
+                    or not _same_int(entry.get("seq"), len(entries))
                     or entry.get("prev_hash") != prior
                 ):
                     raise GroupVerificationError(
@@ -587,11 +594,11 @@ def _read_session_evidence(
                         "receipt shard session inventory recorder hash mismatch"
                     )
                 entries.append(entry)
-        if len(entries) == before_count and not torn:
-            raise GroupVerificationError("empty receipt session inventory file")
+        # An empty file is no entries, as in Go's session walker; only a
+        # session with no entries at all is invalid.
     if not entries:
         raise GroupVerificationError("empty receipt session inventory file")
-    return paths, parts, entries
+    return paths, parts, entries, session_torn
 
 
 def _verify_shard(
@@ -602,14 +609,15 @@ def _verify_shard(
     claimed: dict[str, Any] | None,
     incomplete: bool = False,
     allow_torn: bool = False,
+    open_group: bool = False,
 ) -> dict[str, Any]:
     member = opening["shards"][index]
     session_id = member["session_id"]
-    paths, parts, _ = _read_session_evidence(directory, session_id, allow_torn, True)
+    paths, parts, _, _ = _read_session_evidence(directory, session_id, allow_torn, True)
     raw_file = b"".join(parts)
     if len(raw_file) > 128 * 1024 * 1024:
         raise GroupVerificationError("receipt group shard is oversized")
-    torn = not parts[-1].endswith(b"\n")
+    torn = bool(parts[-1]) and not parts[-1].endswith(b"\n")
     if torn and not allow_torn:
         raise GroupVerificationError("receipt group shard has a torn tail")
     complete_bytes = raw_file
@@ -619,14 +627,14 @@ def _verify_shard(
     if torn:
         last_boundary = parts[-1].rfind(b"\n") + 1
         suffix = parts[-1][last_boundary:]
-        if not suffix or b"\x00" in suffix:
+        if not open_group and (not suffix or b"\x00" in suffix):
             raise GroupVerificationError("receipt group shard has an invalid torn tail")
         parse_bytes = raw_file[: len(raw_file) - len(suffix)]
         if len(suffix) > _MAX_LINE:
             raise GroupVerificationError("receipt group torn tail exceeds line limit")
         damage_offset = last_boundary
         complete_bytes = raw_file[: len(raw_file) - len(suffix)]
-        if not complete_bytes.endswith(b"\n"):
+        if complete_bytes and not complete_bytes.endswith(b"\n"):
             raise GroupVerificationError(
                 "receipt group torn prefix has no complete line"
             )
@@ -651,7 +659,7 @@ def _verify_shard(
         if (
             not isinstance(entry, dict)
             or entry.get("session_id") != session_id
-            or entry.get("seq") != len(rows)
+            or not _same_int(entry.get("seq"), len(rows))
             or entry.get("prev_hash") != prior
         ):
             raise GroupVerificationError(
@@ -681,7 +689,7 @@ def _verify_shard(
     entries = [row[0] for row in rows]
     if torn:
         complete_record_count = len(rows)
-    if len(entries) < 3:
+    if len(entries) < 3 and not open_group:
         raise GroupVerificationError(
             f"receipt group shard {index} lacks gate and session open"
         )
@@ -701,9 +709,10 @@ def _verify_shard(
         raise GroupVerificationError(
             f"receipt group shard {index} gate differs from manifest"
         )
-    if entries[1].get("type") != "checkpoint" or entries[1].get("prev_hash") != entries[
-        0
-    ].get("hash"):
+    if len(entries) > 1 and (
+        entries[1].get("type") != "checkpoint"
+        or entries[1].get("prev_hash") != entries[0].get("hash")
+    ):
         raise GroupVerificationError(
             f"receipt group shard {index} gate is not checkpointed"
         )
@@ -716,6 +725,9 @@ def _verify_shard(
                     f"receipt group shard {index} signed receipt chain failed: "
                     f"{result.get('error', 'invalid')}"
                 )
+    if open_group and not action:
+        # Go's open-group inventory checks the gate and signed chains only.
+        return {}
     if not action:
         raise GroupVerificationError("group shard has no signed v1 session open")
     first_control = action[0].get("action_record", {}).get("session_control", {})
@@ -742,7 +754,9 @@ def _verify_shard(
         == "session_close"
     ]
     roots = [e for e in entries if e.get("type") == "transcript_root"]
-    if incomplete and (torn or (not closes and not roots)):
+    if incomplete:
+        if open_group:
+            return {}
         if not action:
             raise GroupVerificationError(
                 "group predecessor lacks a signed receipt tail"
@@ -828,10 +842,11 @@ def _verify_shard(
         not isinstance(close, dict)
         or not isinstance(root, dict)
         or root.get("session_id") != session_id
-        or root.get("final_seq") != tail_seq
+        or not isinstance(tail_seq, int)
+        or not _same_int(root.get("final_seq"), tail_seq)
         or root.get("root_hash") != tail_hash
-        or root.get("receipt_count") != receipt_count
-        or close.get("receipt_count") != receipt_count
+        or not _same_int(root.get("receipt_count"), receipt_count)
+        or not _same_int(close.get("receipt_count"), receipt_count)
     ):
         raise GroupVerificationError("shard transcript root differs from signed close")
     actual = {
@@ -887,7 +902,7 @@ def _verify_successor_transition(
     )
     _verify_signature(transition, "transition", trusted)
     if (
-        transition.get("version") != 1
+        not _same_int(transition.get("version"), 1)
         or transition.get("kind") != "receipt_group_transition"
         or transition.get("signer_key") != opening["signer_key"]
         or transition.get("new_group_id") != opening["group_id"]
@@ -1073,7 +1088,6 @@ def _verify_ael_inventory(
 ) -> tuple[bool, bool]:
     """Every native run must have a signed session opening in this directory."""
     claims: dict[str, tuple[str, str, bool, str]] = {}
-    recovered_sessions: set[str] = set()
     if opening["previous_group_id"]:
         predecessor, _ = _strict_artifact(
             directory / f"receipt-group-{opening['previous_group_id']}-open.json",
@@ -1081,16 +1095,13 @@ def _verify_ael_inventory(
         )
         _verify_signature(predecessor, "open", trusted)
         _validate_open(predecessor, opening["previous_group_id"])
-        recovered_sessions = {member["session_id"] for member in predecessor["shards"]}
     sessions: set[str] = set()
     for path in directory.glob("evidence-*.jsonl"):
         parsed = _parse_evidence_filename(path.name)
         if parsed is not None:
             sessions.add(parsed[0])
     for session in sorted(sessions):
-        _, _, entries = _read_session_evidence(
-            directory, session, incomplete or session in recovered_sessions
-        )
+        _, _, entries, session_torn = _read_session_evidence(directory, session, True)
         gate = (
             entries[0].get("detail")
             if entries[0].get("type") == "receipt_group_v1"
@@ -1128,6 +1139,16 @@ def _verify_ael_inventory(
             ):
                 raise GroupVerificationError(
                     "receipt group gate is not owned by a signed opening"
+                )
+        if session_torn and gate is not None:
+            # Go tolerates an unterminated final write for a legacy session,
+            # the predecessor group, and this group while it is still open.
+            owner = gate["group_id"]
+            if owner != opening["previous_group_id"] and not (
+                incomplete and owner == opening["group_id"]
+            ):
+                raise GroupVerificationError(
+                    "receipt group session has a torn tail in another group"
                 )
         signed_open_seen = False
         for entry in entries:
@@ -1282,6 +1303,13 @@ def verify_receipt_group(
                 "receipt group AEL path is not a real directory"
             )
         before = _inventory(root)
+        for artifact in root.iterdir():
+            if artifact.name.startswith(
+                "receipt-group-"
+            ) and not _GROUP_ARTIFACT.fullmatch(artifact.name):
+                raise GroupVerificationError(
+                    f"unknown receipt group artifact {artifact.name!r}"
+                )
         opening, open_raw = _strict_artifact(
             root / f"receipt-group-{group_id}-open.json", "open"
         )
@@ -1308,7 +1336,14 @@ def verify_receipt_group(
                 if not _session_evidence_paths(root, session_id):
                     continue  # The writer may have crashed before opening this shard.
                 _verify_shard(
-                    root, opening, open_hash, i, None, incomplete=True, allow_torn=True
+                    root,
+                    opening,
+                    open_hash,
+                    i,
+                    None,
+                    incomplete=True,
+                    allow_torn=True,
+                    open_group=True,
                 )
             result.update(
                 {

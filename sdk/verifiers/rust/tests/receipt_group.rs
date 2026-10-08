@@ -410,3 +410,144 @@ fn cli_group_mode_exits_nonzero_for_incomplete_group() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["verdict"], "GROUP_INCOMPLETE");
 }
+
+const MUTATION_VECTORS: &str = include_str!("../../receipt-group-mutation-vectors.json");
+const DUPLICATE_RUN_FIXTURE: &[u8] =
+    include_bytes!("../../fixtures/receipt-group-duplicate-ael-run.zip");
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn apply_mutation(dir: &std::path::Path, op: &Value) {
+    let target = dir.join(op["file"].as_str().unwrap());
+    let arg = op["arg"].as_str().unwrap_or("");
+    match op["op"].as_str().unwrap() {
+        "create" => fs::write(&target, arg).unwrap(),
+        "delete" => fs::remove_file(&target).unwrap(),
+        kind => {
+            let mut bytes = fs::read(&target).unwrap();
+            match kind {
+                "append" => {
+                    for pair in arg.as_bytes().chunks(2) {
+                        let digits = std::str::from_utf8(pair).unwrap();
+                        bytes.push(u8::from_str_radix(digits, 16).unwrap());
+                    }
+                }
+                "bom" => bytes.splice(0..0, [0xef, 0xbb, 0xbf]).for_each(drop),
+                "empty" => bytes.clear(),
+                "strip_final_newline" => {
+                    assert_eq!(bytes.pop(), Some(b'\n'));
+                }
+                "truncate_half" => bytes.truncate(bytes.len() / 2),
+                "drop_last_line" => {
+                    while bytes.last() == Some(&b'\n') {
+                        bytes.pop();
+                    }
+                    match bytes.iter().rposition(|b| *b == b'\n') {
+                        Some(cut) => bytes.truncate(cut + 1),
+                        None => {
+                            bytes.clear();
+                            bytes.push(b'\n');
+                        }
+                    }
+                }
+                other => panic!("unknown mutation {other}"),
+            }
+            fs::write(&target, bytes).unwrap();
+        }
+    }
+}
+
+// Every verdict in the vector file was produced by the Go CLI on the same
+// mutated directory.
+#[test]
+fn shared_mutation_vectors_match_the_go_verdict() {
+    let vectors: Value = serde_json::from_str(MUTATION_VECTORS).unwrap();
+    let vectors = vectors.as_array().unwrap();
+    assert_eq!(vectors.len(), 23);
+    let cases_root = fixture_from("cases", MATRIX_FIXTURE);
+    let scratch = cases_root.parent().unwrap().join("mutated");
+    for item in vectors {
+        let name = item["name"].as_str().unwrap();
+        let dir = scratch.join(name);
+        copy_tree(&cases_root.join(item["case"].as_str().unwrap()), &dir);
+        for op in item["ops"].as_array().unwrap() {
+            apply_mutation(&dir, op);
+        }
+        let keys = item["trusted_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let report = verify_receipt_group(&dir, item["group_id"].as_str().unwrap(), &keys);
+        assert_eq!(
+            report.verdict,
+            item["expected"].as_str().unwrap(),
+            "{name}: {report:?}"
+        );
+        if let Some(want) = item["error_contains"].as_str() {
+            assert!(
+                report.error.as_deref().unwrap_or("").contains(want),
+                "{name}: {report:?}"
+            );
+        }
+    }
+}
+
+// A closed group whose two shards both sign a session_open for one native AEL
+// run. Asserting the message makes the test fail if the duplicate guard is
+// removed, because the orphaned second run is then reported as unowned.
+#[test]
+fn duplicate_signed_native_ael_run_is_rejected_end_to_end() {
+    let group = fixture_from("duplicate-ael-run", DUPLICATE_RUN_FIXTURE);
+    let (id, keys) = trust(&group);
+    let report = verify_receipt_group(&group, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+    assert!(
+        report
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("duplicate signed native AEL run"),
+        "{report:?}"
+    );
+}
+
+// Go reads only the python copy, so a drifted copy elsewhere would silently
+// exercise different bytes.
+#[test]
+fn shared_group_fixtures_are_byte_identical_across_language_directories() {
+    let copies: [(&str, [&[u8]; 3]); 2] = [
+        (
+            "receipt-groups-matrix.zip.gz",
+            [
+                include_bytes!("../../python/tests/fixtures/receipt-groups-matrix.zip.gz"),
+                include_bytes!("../../ts/tests/fixtures/receipt-groups-matrix.zip.gz"),
+                include_bytes!("fixtures/receipt-groups-matrix.zip.gz"),
+            ],
+        ),
+        (
+            "receipt-groups.zip",
+            [
+                include_bytes!("../../python/tests/fixtures/receipt-groups.zip"),
+                include_bytes!("../../ts/tests/fixtures/receipt-groups.zip"),
+                include_bytes!("fixtures/receipt-groups.zip"),
+            ],
+        ),
+    ];
+    for (name, [python, ts, rust]) in copies {
+        assert!(python == ts, "{name}: ts copy differs from python copy");
+        assert!(python == rust, "{name}: rust copy differs from python copy");
+    }
+}

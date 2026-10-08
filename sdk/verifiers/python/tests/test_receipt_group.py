@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -435,3 +437,130 @@ def test_transition_filename_must_match_signed_successor(tmp_path: Path) -> None
     result = verify_receipt_group(copied, SUCCESSOR_ID, SUCCESSOR_KEYS)
     assert result["verdict"] == GROUP_INVALID
     assert "transition" in result["error"]
+
+
+MUTATION_VECTORS = Path(__file__).parents[2] / "receipt-group-mutation-vectors.json"
+DUPLICATE_RUN_FIXTURE = (
+    Path(__file__).parents[2] / "fixtures" / "receipt-group-duplicate-ael-run.zip"
+)
+
+
+def _apply_mutation(directory: Path, op: dict) -> None:
+    target = directory / op["file"]
+    kind = op["op"]
+    if kind == "create":
+        target.write_text(op.get("arg", ""))
+        return
+    if kind == "delete":
+        target.unlink()
+        return
+    data = target.read_bytes()
+    if kind == "append":
+        data += bytes.fromhex(op["arg"])
+    elif kind == "bom":
+        data = b"\xef\xbb\xbf" + data
+    elif kind == "empty":
+        data = b""
+    elif kind == "strip_final_newline":
+        assert data.endswith(b"\n")
+        data = data[:-1]
+    elif kind == "truncate_half":
+        data = data[: len(data) // 2]
+    elif kind == "drop_last_line":
+        data = b"\n".join(data.rstrip(b"\n").split(b"\n")[:-1]) + b"\n"
+    else:
+        raise AssertionError(f"unknown mutation {kind}")
+    target.write_bytes(data)
+
+
+def test_shared_mutation_vectors_match_the_go_verdict(tmp_path: Path) -> None:
+    """Every verdict was produced by the Go CLI on the same mutated directory."""
+    vectors = json.loads(MUTATION_VECTORS.read_text())
+    assert len(vectors) == 23
+    with zipfile.ZipFile(
+        io.BytesIO(gzip.decompress(MATRIX_FIXTURES.read_bytes()))
+    ) as archive:
+        archive.extractall(tmp_path / "matrix")
+    for item in vectors:
+        directory = tmp_path / "mutated" / item["name"]
+        shutil.copytree(tmp_path / "matrix" / "cases" / item["case"], directory)
+        for op in item["ops"]:
+            _apply_mutation(directory, op)
+        result = verify_receipt_group(directory, item["group_id"], item["trusted_keys"])
+        assert result["verdict"] == item["expected"], (item["name"], result)
+        if item.get("error_contains"):
+            assert item["error_contains"] in result.get("error", ""), item["name"]
+
+
+def test_unknown_receipt_group_artifact_is_invalid(tmp_path: Path) -> None:
+    """Go, TS and Rust refuse a stray receipt-group-* file; so does Python."""
+    with zipfile.ZipFile(FIXTURES) as archive:
+        archive.extractall(tmp_path)
+    directory = tmp_path / "group-valid"
+    assert (
+        verify_receipt_group(directory, GROUP_ID, TRUSTED_KEYS)["verdict"]
+        == GROUP_VALID
+    )
+    (directory / "receipt-group-zz.json").write_text("{}")
+    result = verify_receipt_group(directory, GROUP_ID, TRUSTED_KEYS)
+    assert result["verdict"] == GROUP_INVALID
+    assert "unknown receipt group artifact" in result["error"]
+    (directory / "receipt-group-zz.json").unlink()
+    (directory / f"receipt-group-{GROUP_ID.upper()}-open.json").write_text("{}")
+    assert (
+        verify_receipt_group(directory, GROUP_ID, TRUSTED_KEYS)["verdict"]
+        == GROUP_INVALID
+    )
+
+
+def test_duplicate_signed_native_ael_run_is_rejected_end_to_end(tmp_path: Path) -> None:
+    """A Go-produced closed group whose two shards sign one native AEL run.
+
+    The message is asserted so the test fails if the guard is removed: the
+    orphaned second run would then be reported as unowned instead.
+    """
+    with zipfile.ZipFile(DUPLICATE_RUN_FIXTURE) as archive:
+        archive.extractall(tmp_path)
+    directory = tmp_path / "duplicate-ael-run"
+    trust = json.loads((directory / "trust.json").read_text())
+    result = verify_receipt_group(directory, trust["group_id"], trust["trusted_keys"])
+    assert result["verdict"] == GROUP_INVALID, result
+    assert "duplicate signed native AEL run" in result["error"], result
+
+
+def test_shared_group_fixtures_are_byte_identical_across_language_directories() -> None:
+    """Go reads only the python copy; other copies must be the same bytes."""
+    languages = Path(__file__).parents[2]
+    for name in ("receipt-groups-matrix.zip.gz", "receipt-groups.zip"):
+        reference = hashlib.sha256(
+            (languages / "python" / "tests" / "fixtures" / name).read_bytes()
+        ).hexdigest()
+        for language in ("ts", "rust", "python"):
+            copy = languages / language / "tests" / "fixtures" / name
+            assert hashlib.sha256(copy.read_bytes()).hexdigest() == reference, (
+                language,
+                name,
+            )
+
+
+def test_group_manifest_integers_reject_json_booleans() -> None:
+    """Go decodes version and shard_index as integers; True is not 1."""
+    from pipelock_aarp_verify.group import _validate_open
+
+    with zipfile.ZipFile(FIXTURES) as archive:
+        opening = json.loads(
+            archive.read(f"group-valid/receipt-group-{GROUP_ID}-open.json")
+        )
+    _validate_open(opening, GROUP_ID)
+    for mutate in (
+        lambda value: value.__setitem__("version", True),
+        lambda value: value.__setitem__("version", 1.0),
+        lambda value: value["shards"][1].__setitem__("shard_index", True),
+    ):
+        forged = json.loads(json.dumps(opening))
+        mutate(forged)
+        try:
+            _validate_open(forged, GROUP_ID)
+        except GroupVerificationError:
+            continue
+        raise AssertionError("boolean or float integer field was accepted")

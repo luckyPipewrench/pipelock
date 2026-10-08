@@ -24,6 +24,7 @@ import {
   extractTypedFromEntries,
   parseEntryLinesText,
   readEntryLines,
+  readEntryLinesPrefix,
   type ExtractedReceipts,
   type ParsedRecorderLine,
 } from "./recorder.js";
@@ -35,7 +36,7 @@ import {
   type RotationEndorsement,
 } from "./rotation.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
+import { InvalidError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
 import { blankAfterGoTrim } from "./line-space.js";
 export { blankAfterGoTrim } from "./line-space.js";
 
@@ -452,25 +453,60 @@ export function resolveBaseSessions(dir: string, base: string): string[] {
 // verification failure, never a usage error.
 export class EvidenceRefusedError extends Error {}
 
+// SessionTail selects how a session's final unterminated write is treated.
+// "whole" is the ordinary evidence reader: the fragment is parsed like any
+// other line, so a torn tail is a parse failure. "prefix" is the receipt group
+// reader, where Go's session walker delivers every complete line and then
+// reports the fragment as a torn tail the caller must classify.
+export type SessionTail = "whole" | "prefix";
+
+interface SessionLinesRead {
+  lines: ParsedRecorderLine[];
+  torn: boolean;
+}
+
+function checkLineSession(l: ParsedRecorderLine, file: string, session: string): void {
+  if (l.entry.session_id !== session) {
+    throw new EvidenceRefusedError(
+      `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
+    );
+  }
+}
+
 // readSessionLines reads every recorder entry of one session in shard order.
 // Like Go's session reader (internal/recorder/query.go), it refuses an entry
 // whose session_id is not the session its file name claims: a file named for
 // run X that holds run Y's entries is not run X's evidence.
-function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLine[] {
+function readSessionLines(
+  ix: EvidenceIndex,
+  session: string,
+  tail: SessionTail = "whole",
+): SessionLinesRead {
   const out: ParsedRecorderLine[] = [];
   const files = indexFiles(ix, session);
+  let torn = false;
   for (let i = 0; i < files.length; i++) {
     const file = files[i] as string;
-    for (const l of readEntryLines(file, evidenceDirectoryActive, i + 1 === files.length)) {
-      if (l.entry.session_id !== session) {
-        throw new EvidenceRefusedError(
-          `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
-        );
+    if (tail === "whole") {
+      for (const l of readEntryLines(file, evidenceDirectoryActive)) {
+        checkLineSession(l, file, session);
+        out.push(l);
       }
+      continue;
+    }
+    const read = readEntryLinesPrefix(file, evidenceDirectoryActive);
+    for (const l of read.lines) {
+      checkLineSession(l, file, session);
       out.push(l);
     }
+    if (!read.torn) continue;
+    // A later segment may hold authenticated entries, so only the last
+    // segment's fragment is a recoverable final write.
+    if (i + 1 < files.length)
+      throw new InvalidError(`receipt group session has a torn segment: ${path.basename(file)}`);
+    torn = true;
   }
-  return out;
+  return { lines: out, torn };
 }
 
 // checkFileEntrySessions applies the session rule to one evidence file read on
@@ -505,12 +541,28 @@ export function checkFileEntrySessions(name: string, lines: ParsedRecorderLine[]
 export interface SessionEvidence {
   lines: ParsedRecorderLine[];
   typed: ExtractedReceipts;
+  // torn is true only for tail "prefix": the final shard ends in an
+  // unterminated fragment that is not part of lines.
+  torn: boolean;
 }
 
-// readSessionEvidence reads one session of dir with the refusals above.
-export function readSessionEvidence(dir: string, session: string): SessionEvidence {
-  const lines = readSessionLines(indexRecorderFiles(dir), session);
-  return { lines, typed: extractTypedFromEntries(lines.map((l) => l.entry)) };
+// readSessionEvidence reads one session of dir with the refusals above. Only a
+// receipt group caller passes tail "prefix"; it also accepts the group gate
+// entry, which every other reader treats as an unknown entry type.
+export function readSessionEvidence(
+  dir: string,
+  session: string,
+  tail: SessionTail = "whole",
+): SessionEvidence {
+  const read = readSessionLines(indexRecorderFiles(dir), session, tail);
+  return {
+    lines: read.lines,
+    typed: extractTypedFromEntries(
+      read.lines.map((l) => l.entry),
+      tail === "prefix",
+    ),
+    torn: read.torn,
+  };
 }
 
 // readSessionReceipts returns the receipts of one session in shard order, as
@@ -1363,7 +1415,7 @@ async function verifyRecoveryBinding(
       // A complete JSON value must be one known recorder entry, including
       // checkpoints. Validate its schema, outer chain and any embedded receipt
       // signature before the seal can attach.
-      const candidate = parseEntryLinesText(`${suffixText}\n`);
+      const candidate = parseEntryLinesText(suffixText);
       if (candidate.length !== 1) {
         throw new Error("missing-newline tail is not one recorder entry");
       }
@@ -1391,9 +1443,7 @@ async function verifyRecoveryBinding(
   if (sequenceErr !== undefined) throw new Error(`recovery prefix sequence: ${sequenceErr}`);
   const fullLines = [...lines];
   if (tailKind === "missing_newline") {
-    const candidate = parseEntryLinesText(
-      `${decodeUTF8(tailContent, "recovery seal final record")}\n`,
-    )[0];
+    const candidate = parseEntryLinesText(decodeUTF8(tailContent, "recovery seal final record"))[0];
     if (candidate === undefined || candidate.entry.session_id !== seal.predecessor_session) {
       throw new Error("recovery final record session mismatch");
     }
@@ -1589,7 +1639,7 @@ function loadBaseChain(
   const s = d.chain.session;
   let lines: ParsedRecorderLine[];
   try {
-    lines = readSessionLines(ix, s);
+    lines = readSessionLines(ix, s).lines;
   } catch (err) {
     d.chain.error = (err as Error).message;
     add(FindingCorruptChain, s, d.chain.error);

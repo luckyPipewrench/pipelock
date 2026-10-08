@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { gunzipSync, inflateRawSync } from "node:zlib";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -424,5 +425,171 @@ test("CLI group mode prints the group verdict and exits nonzero when incomplete"
     assert.equal((JSON.parse(result.stdout) as { verdict: string }).verdict, "GROUP_INCOMPLETE");
   } finally {
     rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+interface MutationOp {
+  file: string;
+  op: string;
+  arg?: string;
+}
+interface MutationVector {
+  name: string;
+  case: string;
+  note: string;
+  ops: MutationOp[];
+  expected: string;
+  error_contains?: string;
+  group_id: string;
+  trusted_keys: string[];
+}
+function applyMutation(dir: string, op: MutationOp): void {
+  const target = join(dir, op.file);
+  if (op.op === "create") return writeFileSync(target, op.arg ?? "");
+  if (op.op === "delete") return rmSync(target);
+  const bytes = readFileSync(target);
+  let next: Buffer;
+  switch (op.op) {
+    case "append":
+      next = Buffer.concat([bytes, Buffer.from(op.arg ?? "", "hex")]);
+      break;
+    case "bom":
+      next = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]);
+      break;
+    case "empty":
+      next = Buffer.alloc(0);
+      break;
+    case "strip_final_newline":
+      assert.equal(bytes[bytes.length - 1], 0x0a);
+      next = bytes.subarray(0, bytes.length - 1);
+      break;
+    case "truncate_half":
+      next = bytes.subarray(0, Math.floor(bytes.length / 2));
+      break;
+    case "drop_last_line": {
+      const lines = bytes.toString("utf8").replace(/\n+$/u, "").split("\n");
+      next = Buffer.from(`${lines.slice(0, -1).join("\n")}\n`);
+      break;
+    }
+    default:
+      assert.fail(`unknown mutation ${op.op}`);
+  }
+  writeFileSync(target, next);
+}
+
+// Every verdict in the vector file was produced by the Go CLI on the same
+// mutated directory, so this pins TS to Go for torn tails, BOMs, emptied
+// segments, deleted transitions and unknown artifacts.
+test("shared mutation vectors match the Go verdict", async () => {
+  const vectors = JSON.parse(
+    readFileSync(resolve(root, "../receipt-group-mutation-vectors.json"), "utf8"),
+  ) as MutationVector[];
+  assert.equal(vectors.length, 23);
+  const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-mutation-"));
+  try {
+    for (const item of vectors) {
+      const dir = join(temp, item.name);
+      cpSync(join(matrixFixtures, "cases", item.case), dir, { recursive: true });
+      for (const op of item.ops) applyMutation(dir, op);
+      const result = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
+      assert.doesNotMatch(result.error ?? "", /ENOENT/u, item.name);
+      if (item.error_contains) assert.ok(result.error?.includes(item.error_contains), item.name);
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("a group shard file is not a skippable receipt chain outside group mode", () => {
+  const dir = join(matrixFixtures, "cases", "shard__intact__present");
+  const shard = "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl";
+  const trusted = (
+    JSON.parse(readFileSync(join(dir, "trust.json"), "utf8")) as { trusted_keys: string[] }
+  ).trusted_keys[0] as string;
+  const single = runCLI(["chain", join(dir, shard), "--key", trusted]);
+  assert.notEqual(single.status, 0, `${single.stdout}\n${single.stderr}`);
+  assert.doesNotMatch(single.stdout, /CHAIN VALID/u);
+  const asDir = runCLI(["chain", dir, "--dir", "--key", trusted]);
+  assert.notEqual(asDir.status, 0, `${asDir.stdout}\n${asDir.stderr}`);
+});
+
+// Legacy directory and single-file verification keep their origin/main
+// behavior: an unterminated final fragment is a failure, never silently dropped.
+test("legacy chain --dir and single-file verification reject a torn final fragment", () => {
+  const parity = resolve(root, "../../conformance/testdata/parity/rotated");
+  const keyHex = readFileSync(join(parity, "signer-key.hex"), "utf8").trim();
+  const shard = "evidence-proxy.run.da660e29de374fd065cf1a12b3abde7b-0.jsonl";
+  const temp = mkdtempSync(join(tmpdir(), "ts-legacy-torn-"));
+  try {
+    const intact = join(temp, "intact");
+    cpSync(parity, intact, { recursive: true });
+    const args = (target: string, dir: boolean): string[] => [
+      "chain",
+      target,
+      ...(dir ? ["--dir"] : []),
+      "--key",
+      keyHex,
+      "--rotation-endorsement",
+      join(intact, "rotation-endorsement.json"),
+    ];
+    const ok = runCLI(args(intact, true));
+    assert.equal(ok.status, 0, `${ok.stdout}\n${ok.stderr}`);
+    const torn = join(temp, "torn");
+    cpSync(parity, torn, { recursive: true });
+    writeFileSync(join(torn, shard), `${readFileSync(join(torn, shard), "utf8")}{"torn":`);
+    const dirResult = runCLI(args(torn, true));
+    assert.equal(dirResult.status, 1, `${dirResult.stdout}\n${dirResult.stderr}`);
+    assert.match(dirResult.stdout, /result:\s+INVALID/u);
+    const fileResult = runCLI(args(join(torn, shard), false));
+    assert.notEqual(fileResult.status, 0, `${fileResult.stdout}\n${fileResult.stderr}`);
+    assert.doesNotMatch(fileResult.stdout, /CHAIN VALID/u);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("leading BOM is rejected by the strict UTF-8 decoder", async () => {
+  const { decodeUTF8 } = await import("../src/util.js");
+  assert.throws(
+    () => JSON.parse(decodeUTF8(Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d]), "x")),
+    SyntaxError,
+  );
+  assert.equal(decodeUTF8(Buffer.from("{}"), "x"), "{}");
+});
+
+// A closed group whose two shards both sign a session_open for one native AEL
+// run. The fixture is Go-produced; Go, TS, Rust and Python all report the
+// duplicate-run error. Asserting the message (not just INVALID) makes the test
+// fail if the guard is removed, because the orphaned second run would then be
+// reported as "no signed session owner" instead.
+test("duplicate signed native AEL run is rejected end to end", async () => {
+  const dir = join(fixtureRoot, "duplicate-run");
+  extractFixtureArchive(
+    readFileSync(resolve(root, "../fixtures/receipt-group-duplicate-ael-run.zip")),
+    dir,
+  );
+  const group = join(dir, "duplicate-ael-run");
+  const trust = JSON.parse(readFileSync(join(group, "trust.json"), "utf8")) as {
+    group_id: string;
+    trusted_keys: string[];
+  };
+  const result = await verifyReceiptGroup(group, trust.group_id, trust.trusted_keys);
+  assert.equal(result.verdict, "GROUP_INVALID", JSON.stringify(result));
+  assert.match(result.error ?? "", /duplicate signed native AEL run "[0-9a-f]{32}"/u);
+});
+
+// Go reads only the python copy of the shared fixtures, so a drifted copy in
+// another language directory would silently test different bytes.
+test("shared group fixtures are byte-identical across language directories", () => {
+  const sha = (file: string): string =>
+    createHash("sha256")
+      .update(readFileSync(resolve(root, file)))
+      .digest("hex");
+  for (const name of ["receipt-groups-matrix.zip.gz", "receipt-groups.zip"]) {
+    const reference = sha(`../python/tests/fixtures/${name}`);
+    for (const language of ["ts", "rust", "python"]) {
+      assert.equal(sha(`../${language}/tests/fixtures/${name}`), reference, `${language}/${name}`);
+    }
   }
 });

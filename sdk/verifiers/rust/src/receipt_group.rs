@@ -489,13 +489,16 @@ fn verify_signed<T: Serialize>(
 }
 
 // Group decisions must see the entire recorder session, including a close
-// written after rotation. Filename starts and the recorder chain are checked
-// together so an omitted or reordered segment cannot masquerade as an open tail.
-fn read_group_session_lines(
+// written after rotation. Go's session walker delivers every complete line and
+// then reports an unterminated final fragment as a torn tail, so the fragment
+// is never evidence: this returns the terminated prefix and whether a fragment
+// followed it. Only the last segment may be torn, and only when the caller
+// allows it. An empty segment is an empty file, not a torn write.
+fn read_group_session(
     dir: &Path,
     session: &str,
     allow_torn: bool,
-) -> Result<Vec<RecorderLine>, String> {
+) -> Result<(Vec<RecorderLine>, bool), String> {
     let index = indexed_session_files(dir)?;
     let files = index
         .get(session)
@@ -504,16 +507,13 @@ fn read_group_session_lines(
         return Err("receipt group session evidence is missing".into());
     }
     let mut lines = Vec::new();
+    let mut torn = false;
     for (file_index, path) in files.iter().enumerate() {
-        let name = path
-            .file_name()
-            .ok_or("invalid evidence file name")?
-            .to_string_lossy();
-        let (_, start) = parse_evidence_filename(&name).ok_or("invalid evidence file name")?;
         let raw = read_regular(path, crate::util::MAX_VERIFIER_INPUT_BYTES)?;
-        let complete = if raw.ends_with(b"\n") {
+        let complete = if raw.is_empty() || raw.ends_with(b"\n") {
             raw.as_slice()
         } else if allow_torn && file_index + 1 == files.len() {
+            torn = true;
             let end = raw
                 .iter()
                 .rposition(|byte| *byte == b'\n')
@@ -524,16 +524,18 @@ fn read_group_session_lines(
         };
         let text = std::str::from_utf8(complete).map_err(|e| e.to_string())?;
         let part = read_entry_lines_text(text).map_err(|e| e.to_string())?;
-        if part.is_empty()
-            && allow_torn
-            && file_index + 1 == files.len()
-            && !raw.ends_with(b"\n")
-            && start == lines.len() as u64
-        {
+        if part.is_empty() {
+            // Go reads an empty file or a lone torn fragment as no entries.
             continue;
         }
-        if part.is_empty()
-            || part[0].entry.get("seq").and_then(Value::as_u64) != Some(start)
+        let (_, start) = parse_evidence_filename(
+            &path
+                .file_name()
+                .ok_or("invalid evidence file name")?
+                .to_string_lossy(),
+        )
+        .ok_or("invalid evidence file name")?;
+        if part[0].entry.get("seq").and_then(Value::as_u64) != Some(start)
             || start != lines.len() as u64
         {
             return Err("receipt group session segment sequence mismatch".into());
@@ -554,7 +556,15 @@ fn read_group_session_lines(
     ) {
         return Err(format!("receipt group session recorder chain: {err}"));
     }
-    Ok(lines)
+    Ok((lines, torn))
+}
+
+fn read_group_session_lines(
+    dir: &Path,
+    session: &str,
+    allow_torn: bool,
+) -> Result<Vec<RecorderLine>, String> {
+    read_group_session(dir, session, allow_torn).map(|(lines, _)| lines)
 }
 
 fn verify_shard(
@@ -1029,9 +1039,7 @@ fn verify_ael_inventory(
     }
     // A directory may contain predecessor and legacy sessions as well as the
     // group being checked. Index their signed openings before checking runs.
-    let recovered_sessions: BTreeSet<String> = if open.previous_group_id.is_empty() {
-        BTreeSet::new()
-    } else {
+    if !open.previous_group_id.is_empty() {
         let raw = bounded_read(
             dir,
             &format!("receipt-group-{}-open.json", open.previous_group_id),
@@ -1045,19 +1053,12 @@ fn verify_ael_inventory(
             &predecessor.signer_key,
             trusted,
         )?;
-        predecessor
-            .shards
-            .into_iter()
-            .map(|shard| shard.session_id)
-            .collect()
-    };
+    }
     let mut owners = BTreeMap::new();
     for session in indexed_session_files(dir)?.keys() {
-        let lines = read_group_session_lines(
-            dir,
-            session,
-            incomplete || recovered_sessions.contains(session),
-        )?;
+        // Go tolerates an unterminated final write only for a legacy session,
+        // the predecessor group, or (while the group is open) this group.
+        let (lines, torn) = read_group_session(dir, session, true)?;
         if lines.is_empty() {
             return Err("empty receipt session inventory file".into());
         }
@@ -1102,6 +1103,18 @@ fn verify_ael_inventory(
         } else {
             None
         };
+        if torn {
+            let owner_group = gate
+                .and_then(|value| value.get("group_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !owner_group.is_empty()
+                && owner_group != open.previous_group_id
+                && !(incomplete && owner_group == open.group_id)
+            {
+                return Err("receipt group session has a torn tail in another group".into());
+            }
+        }
         let mut signed_open_seen = false;
         for line in &lines {
             let entry = &line.entry;

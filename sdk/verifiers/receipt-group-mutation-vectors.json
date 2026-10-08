@@ -1,0 +1,395 @@
+[
+ {
+  "name": "closed-shard-torn-fragment",
+  "case": "shard__intact__present",
+  "note": "torn tail on a closed shard is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "append",
+    "arg": "7b22746f726e223a"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "closed-shard-nul-padding",
+  "case": "shard__intact__present",
+  "note": "NUL padding on a closed shard is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "append",
+    "arg": "0000"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "closed-shard-bom",
+  "case": "shard__intact__present",
+  "note": "a leading BOM is rejected like Go",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "bom",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "closed-shard-missing-final-newline",
+  "case": "shard__intact__present",
+  "note": "an unterminated final record on a closed shard is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "strip_final_newline",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "close-manifest-bom",
+  "case": "shard__intact__present",
+  "note": "a BOM before the close manifest JSON is rejected",
+  "ops": [
+   {
+    "file": "receipt-group-a6c9a32034a3e0467360c6800a82b0e6-close.json",
+    "op": "bom",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "open-shard-torn-fragment",
+  "case": "shard__intact__absent",
+  "note": "an open group tolerates a torn final fragment",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "append",
+    "arg": "7b22746f726e223a"
+   }
+  ],
+  "expected": "GROUP_INCOMPLETE",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "open-shard-nul-padding",
+  "case": "shard__intact__absent",
+  "note": "an open group tolerates NUL padding",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "append",
+    "arg": "0000"
+   }
+  ],
+  "expected": "GROUP_INCOMPLETE",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "open-shard-dropped-final-line",
+  "case": "shard__intact__absent",
+  "note": "an open group tolerates a dropped final line",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "drop_last_line",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INCOMPLETE",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "open-shard-bom",
+  "case": "shard__intact__absent",
+  "note": "a BOM is rejected even in an open group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.1806d08396effa4a8f31e45aa8165c84-0.jsonl",
+    "op": "bom",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "legacy-sibling-torn-fragment",
+  "case": "non-shard-legacy__intact__present",
+  "note": "a torn sibling legacy session does not invalidate the group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.bcd2a45393d714f3564a61b362c9c5e7-0.jsonl",
+    "op": "append",
+    "arg": "7b22746f726e223a"
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "1554d7bab48a6f2fcc41fb51f4c471bc",
+  "trusted_keys": [
+   "780c9679ae05814f90c8e5dd7dd3e8ddddc1832255e61fca92443fcea774076f"
+  ]
+ },
+ {
+  "name": "legacy-sibling-nul-padding",
+  "case": "non-shard-legacy__intact__present",
+  "note": "a NUL-padded sibling legacy session does not invalidate the group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.bcd2a45393d714f3564a61b362c9c5e7-0.jsonl",
+    "op": "append",
+    "arg": "0000"
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "1554d7bab48a6f2fcc41fb51f4c471bc",
+  "trusted_keys": [
+   "780c9679ae05814f90c8e5dd7dd3e8ddddc1832255e61fca92443fcea774076f"
+  ]
+ },
+ {
+  "name": "legacy-sibling-missing-final-newline",
+  "case": "non-shard-legacy__intact__present",
+  "note": "an unterminated sibling legacy record does not invalidate the group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.bcd2a45393d714f3564a61b362c9c5e7-0.jsonl",
+    "op": "strip_final_newline",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "1554d7bab48a6f2fcc41fb51f4c471bc",
+  "trusted_keys": [
+   "780c9679ae05814f90c8e5dd7dd3e8ddddc1832255e61fca92443fcea774076f"
+  ]
+ },
+ {
+  "name": "legacy-sibling-truncated",
+  "case": "non-shard-legacy__intact__present",
+  "note": "a truncated sibling legacy session does not invalidate the group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.bcd2a45393d714f3564a61b362c9c5e7-0.jsonl",
+    "op": "truncate_half",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "1554d7bab48a6f2fcc41fb51f4c471bc",
+  "trusted_keys": [
+   "780c9679ae05814f90c8e5dd7dd3e8ddddc1832255e61fca92443fcea774076f"
+  ]
+ },
+ {
+  "name": "recovery-predecessor-final-segment-emptied",
+  "case": "rotation__recovery__intact",
+  "note": "an emptied predecessor final segment under a recovery seal is no entries",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.66f5df3b958ba5672685b6d8f8e55680-3.jsonl",
+    "op": "empty",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "90be2ccd46019fa40e821c51edcc1a5e",
+  "trusted_keys": [
+   "aa05785b69cf72b531d72e7fa26b4314f1a050ed818a002e0aff3051afda99b8"
+  ]
+ },
+ {
+  "name": "recovery-predecessor-final-segment-line-dropped",
+  "case": "rotation__recovery__intact",
+  "note": "a dropped final line of a sealed predecessor keeps its signed head",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.66f5df3b958ba5672685b6d8f8e55680-3.jsonl",
+    "op": "drop_last_line",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "90be2ccd46019fa40e821c51edcc1a5e",
+  "trusted_keys": [
+   "aa05785b69cf72b531d72e7fa26b4314f1a050ed818a002e0aff3051afda99b8"
+  ]
+ },
+ {
+  "name": "predecessor-final-segment-emptied-head-differs",
+  "case": "predecessor__intact__present",
+  "note": "an emptied predecessor segment that loses its signed head is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.55e88175dc0c3e5bf8899633303f596c-0.jsonl",
+    "op": "empty",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "4019d02209a5049341740ae6ebc3bb73",
+  "trusted_keys": [
+   "0b6aafa66e405fcb3e92401f39f187c9acf387f5f69257859f56decc5017d0bc"
+  ]
+ },
+ {
+  "name": "predecessor-final-segment-line-dropped",
+  "case": "predecessor__intact__present",
+  "note": "a dropped final line of the incomplete predecessor keeps its signed head",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.55e88175dc0c3e5bf8899633303f596c-0.jsonl",
+    "op": "drop_last_line",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_VALID",
+  "group_id": "4019d02209a5049341740ae6ebc3bb73",
+  "trusted_keys": [
+   "0b6aafa66e405fcb3e92401f39f187c9acf387f5f69257859f56decc5017d0bc"
+  ]
+ },
+ {
+  "name": "predecessor-final-segment-missing-newline",
+  "case": "predecessor__intact__present",
+  "note": "an unterminated predecessor record needs a recovery seal",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.55e88175dc0c3e5bf8899633303f596c-0.jsonl",
+    "op": "strip_final_newline",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "4019d02209a5049341740ae6ebc3bb73",
+  "trusted_keys": [
+   "0b6aafa66e405fcb3e92401f39f187c9acf387f5f69257859f56decc5017d0bc"
+  ]
+ },
+ {
+  "name": "incomplete-group-transition-deleted",
+  "case": "predecessor__intact__absent",
+  "note": "a deleted transition leaves an incomplete group incomplete",
+  "ops": [
+   {
+    "file": "receipt-group-4019d02209a5049341740ae6ebc3bb73-transition.json",
+    "op": "delete",
+    "arg": ""
+   }
+  ],
+  "expected": "GROUP_INCOMPLETE",
+  "group_id": "4019d02209a5049341740ae6ebc3bb73",
+  "trusted_keys": [
+   "0b6aafa66e405fcb3e92401f39f187c9acf387f5f69257859f56decc5017d0bc"
+  ]
+ },
+ {
+  "name": "unknown-group-artifact-closed",
+  "case": "shard__intact__present",
+  "note": "an unknown receipt-group artifact is invalid",
+  "ops": [
+   {
+    "file": "receipt-group-zz.json",
+    "op": "create",
+    "arg": "{}"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "unknown-group-artifact-open",
+  "case": "shard__intact__absent",
+  "note": "an unknown receipt-group artifact is invalid even without a close",
+  "ops": [
+   {
+    "file": "receipt-group-zz.json",
+    "op": "create",
+    "arg": "{}"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a6c9a32034a3e0467360c6800a82b0e6",
+  "trusted_keys": [
+   "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9"
+  ]
+ },
+ {
+  "name": "closed-shard-nonfinal-segment-unterminated",
+  "case": "rotation__shard__span-rotation__intact__present",
+  "note": "a valid-JSON but unterminated non-final segment is a torn segment",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.70ec1e686f6601d7b51730d3449965ab-3.jsonl",
+    "op": "strip_final_newline",
+    "arg": ""
+   }
+  ],
+  "error_contains": "torn segment",
+  "expected": "GROUP_INVALID",
+  "group_id": "d18b4ebf14e586051d632b28a08670b7",
+  "trusted_keys": [
+   "1aaea7096d31f52ba505f814967375c1d14bc84237b97f6399316e3376b00371"
+  ]
+ },
+ {
+  "name": "open-shard-nonfinal-segment-unterminated",
+  "case": "rotation__shard__span-rotation__intact__absent",
+  "note": "a torn non-final segment is invalid even in an open group",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.70ec1e686f6601d7b51730d3449965ab-3.jsonl",
+    "op": "strip_final_newline",
+    "arg": ""
+   }
+  ],
+  "error_contains": "torn segment",
+  "expected": "GROUP_INVALID",
+  "group_id": "d18b4ebf14e586051d632b28a08670b7",
+  "trusted_keys": [
+   "1aaea7096d31f52ba505f814967375c1d14bc84237b97f6399316e3376b00371"
+  ]
+ }
+]

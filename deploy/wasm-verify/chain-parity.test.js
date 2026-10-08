@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const {
   existsSync,
   mkdtempSync,
@@ -13,6 +13,7 @@ const {
 } = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { after, before, test } = require("node:test");
 const {
   isMainThread,
@@ -658,6 +659,116 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     assert.equal(unsupported.verdict, "GROUP_INCOMPLETE");
     assert.equal(unsupported.valid, false);
     assert.match(unsupported.error || "", /host verifier/u);
+  });
+
+  // Go's js/wasm runtime writes stdout and stderr through the callback form of
+  // fs.write. The memory filesystem used to define write() twice, and the later
+  // definition answered EBADF for descriptors 1 and 2.
+  test("memory filesystem routes callback-style stdout and stderr writes", async () => {
+    const lines = { out: [], err: [] };
+    const context = vm.createContext({
+      console: {
+        log: (line) => lines.out.push(line),
+        error: (line) => lines.err.push(line),
+      },
+      TextDecoder,
+      Uint8Array,
+      Math,
+      Number,
+      String,
+      Map,
+      Set,
+      Object,
+      Error,
+    });
+    context.globalThis = context;
+    context.fs = {
+      constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_EXCL: -1, O_TRUNC: -1, O_APPEND: -1, O_DIRECTORY: -1 },
+    };
+    vm.runInContext(
+      readFileSync(path.join(__dirname, "receipt-memfs.js"), "utf8"),
+      context,
+    );
+    const call = (fd, text, position = null) =>
+      new Promise((resolve) => {
+        const bytes = new TextEncoder().encode(text);
+        context.fs.write(fd, bytes, 0, bytes.length, position, (err, n) =>
+          resolve({ err, n }),
+        );
+      });
+    assert.deepEqual(await call(1, "out line\n"), { err: null, n: 9 });
+    assert.deepEqual(await call(2, "err line\n"), { err: null, n: 9 });
+    assert.deepEqual(lines, { out: ["out line"], err: ["err line"] });
+    assert.equal((await call(1, "x", 0)).err.code, "EINVAL");
+    assert.equal((await call(99, "x")).err.code, "EBADF");
+    // File descriptors still reach the in-memory file path.
+    const opened = await new Promise((resolve) =>
+      context.fs.open("/f", 0, 0, (err, fd) => resolve({ err, fd })),
+    );
+    assert.equal(opened.err?.code, "ENOENT");
+    const created = await new Promise((resolve) =>
+      context.fs.open("/f", 64 | 1, 0o600, (err, fd) => resolve({ err, fd })),
+    );
+    assert.equal(created.err, null);
+    assert.deepEqual(await call(created.fd, "file bytes"), { err: null, n: 10 });
+    assert.deepEqual(lines, { out: ["out line"], err: ["err line"] });
+  });
+
+  // The oracle unpacks an archive into a temporary root. A hostile entry name
+  // must not write outside it, a hostile size must not fill the disk, and a
+  // refusal must not leave the temporary root behind.
+  test("group oracle refuses hostile archive entries and cleans up", () => {
+    const sandbox = mkdtempSync(path.join(tempRoot, "pipelock-oracle-sandbox-"));
+    try {
+      const hostile = [
+        ["parent-segment", "../pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["nested-parent", "a/../../pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["absolute", "/pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["backslash", "a\\..\\pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["oversized", "group-valid/large.bin", 33 << 20, /larger than/u],
+      ];
+      for (const [label, entry, size, message] of hostile) {
+        const archive = path.join(sandbox, `${label}.zip`);
+        execFileSync("python3", [
+          "-c",
+          `
+import sys, zipfile
+name, size = sys.argv[2], sys.argv[3]
+data = b"x" * int(size)
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr(zipfile.ZipInfo(name), data)
+`,
+          archive,
+          entry,
+          String(size),
+        ]);
+        const run = spawnSync(
+          "go",
+          ["run", "./deploy/wasm-verify/group_oracle.go", archive],
+          {
+            cwd: repoRoot,
+            env: { ...process.env, TMPDIR: sandbox },
+            encoding: "utf8",
+          },
+        );
+        assert.notEqual(run.status, 0, `${label}: oracle accepted the archive`);
+        assert.match(run.stderr, message, label);
+        assert.equal(
+          existsSync(path.join(sandbox, "pipelock-oracle-escape.txt")),
+          false,
+          `${label}: entry escaped the fixture root`,
+        );
+        assert.deepEqual(
+          readdirSync(sandbox).filter((name) =>
+            name.startsWith("pipelock-group-oracle-"),
+          ),
+          [],
+          `${label}: temporary root was left behind`,
+        );
+      }
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   async function verifyFixture(name, mode) {

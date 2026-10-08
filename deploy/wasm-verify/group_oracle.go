@@ -9,7 +9,9 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,47 +34,87 @@ type groupCase struct {
 	Error    string                      `json:"error,omitempty"`
 }
 
+const (
+	maxFixtureEntries    = 4096
+	maxFixtureEntryBytes = 32 << 20
+	maxFixtureTotalBytes = 128 << 20
+)
+
 func main() {
-	if len(os.Args) != 2 {
-		fatalf("fixture ZIP path required")
-	}
-	data, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		fatalf("read fixture ZIP: %v", err)
-	}
-	root, err := os.MkdirTemp("", "pipelock-group-oracle-")
-	if err != nil {
-		fatalf("create fixture root: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(root) }()
-	if err := unpackFixture(data, root); err != nil {
-		fatalf("unpack fixture: %v", err)
-	}
-	cases, err := verifyFixtureDirectories(root)
-	if err != nil {
-		fatalf("verify fixture: %v", err)
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(cases); err != nil {
-		fatalf("encode oracle output: %v", err)
+	if err := run(os.Args); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
+// run owns the temporary root so every failure path removes it. Exiting from
+// the middle of main would skip the deferred cleanup.
+func run(args []string) error {
+	if len(args) != 2 {
+		return errors.New("fixture ZIP path required")
+	}
+	data, err := os.ReadFile(args[1])
+	if err != nil {
+		return fmt.Errorf("read fixture ZIP: %w", err)
+	}
+	root, err := os.MkdirTemp("", "pipelock-group-oracle-")
+	if err != nil {
+		return fmt.Errorf("create fixture root: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+	if err := unpackFixture(data, root); err != nil {
+		return fmt.Errorf("unpack fixture: %w", err)
+	}
+	cases, err := verifyFixtureDirectories(root)
+	if err != nil {
+		return fmt.Errorf("verify fixture: %w", err)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(cases); err != nil {
+		return fmt.Errorf("encode oracle output: %w", err)
+	}
+	return nil
+}
+
+// safeArchiveName accepts only a relative, slash-separated path whose every
+// segment is a plain name. A ".." segment passes path.Clean when it leads the
+// path, and filepath.Join would then resolve it outside the root.
+func safeArchiveName(name string) bool {
+	trimmed := strings.TrimSuffix(name, "/")
+	if trimmed == "" || strings.ContainsAny(name, "\\\x00") || strings.HasPrefix(name, "/") || filepath.VolumeName(name) != "" {
+		return false
+	}
+	for _, segment := range strings.Split(trimmed, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return path.Clean(trimmed) == trimmed
+}
+
 func unpackFixture(data []byte, root string) error {
-	r, err := zip.NewReader(strings.NewReader(string(data)), int64(len(data)))
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
 	}
+	if len(r.File) > maxFixtureEntries {
+		return fmt.Errorf("archive has %d entries, limit %d", len(r.File), maxFixtureEntries)
+	}
+	cleanRoot := filepath.Clean(root)
 	seen := make(map[string]struct{}, len(r.File))
+	var total int64
 	for _, file := range r.File {
 		name := file.Name
-		if name == "" || strings.ContainsAny(name, "\\\x00") || strings.HasPrefix(name, "/") || path.Clean(strings.TrimSuffix(name, "/")) != strings.TrimSuffix(name, "/") {
+		if !safeArchiveName(name) {
 			return fmt.Errorf("unsafe archive path %q", name)
 		}
 		if _, ok := seen[name]; ok {
 			return fmt.Errorf("duplicate archive path %q", name)
 		}
 		seen[name] = struct{}{}
-		target := filepath.Join(root, filepath.FromSlash(name))
+		target := filepath.Join(cleanRoot, filepath.FromSlash(name))
+		if rel, err := filepath.Rel(cleanRoot, target); err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("archive path %q escapes the fixture root", name)
+		}
 		if file.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0o700); err != nil {
 				return err
@@ -82,6 +124,9 @@ func unpackFixture(data []byte, root string) error {
 		if !file.Mode().IsRegular() {
 			return fmt.Errorf("non-regular archive path %q", name)
 		}
+		if file.UncompressedSize64 > maxFixtureEntryBytes {
+			return fmt.Errorf("archive path %q is larger than %d bytes", name, maxFixtureEntryBytes)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
@@ -89,13 +134,21 @@ func unpackFixture(data []byte, root string) error {
 		if err != nil {
 			return err
 		}
-		contents, readErr := io.ReadAll(reader)
+		// The declared size is attacker-controlled; bound the real read too.
+		contents, readErr := io.ReadAll(io.LimitReader(reader, maxFixtureEntryBytes+1))
 		closeErr := reader.Close()
 		if readErr != nil {
 			return readErr
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+		if int64(len(contents)) > maxFixtureEntryBytes {
+			return fmt.Errorf("archive path %q is larger than %d bytes", name, maxFixtureEntryBytes)
+		}
+		total += int64(len(contents))
+		if total > maxFixtureTotalBytes {
+			return fmt.Errorf("archive contents exceed %d bytes", maxFixtureTotalBytes)
 		}
 		if err := os.WriteFile(target, contents, 0o600); err != nil {
 			return err
@@ -148,9 +201,4 @@ func readFile(name string) []byte {
 		panic(err)
 	}
 	return data
-}
-
-func fatalf(format string, args ...any) {
-	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
-	os.Exit(1)
 }

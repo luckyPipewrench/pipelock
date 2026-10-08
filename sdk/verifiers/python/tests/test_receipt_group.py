@@ -685,3 +685,70 @@ def test_group_manifest_integers_reject_json_booleans() -> None:
         except GroupVerificationError:
             continue
         raise AssertionError("boolean or float integer field was accepted")
+
+
+def _fifo_swap_deadline(monkeypatch, tmp_path: Path, module_path_cls=Path):
+    """Return a FIFO path whose lstat reports a regular file.
+
+    This models a path swapped to a FIFO after the membership check: the check
+    passes, so only O_NONBLOCK plus the descriptor fstat keep the open from
+    hanging the verifier forever.
+    """
+    import os
+    import signal
+
+    regular = tmp_path / "regular"
+    regular.write_bytes(b"x\n")
+    fifo = tmp_path / "swapped"
+    os.mkfifo(fifo)
+    real_lstat = Path.lstat
+
+    def fake_lstat(self, *args, **kwargs):
+        return real_lstat(regular if self == fifo else self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+    def on_alarm(_signum, _frame):
+        raise AssertionError("verifier blocked opening a FIFO")
+
+    old = signal.signal(signal.SIGALRM, on_alarm)
+    signal.setitimer(signal.ITIMER_REAL, 5)
+    return fifo, lambda: (
+        signal.setitimer(signal.ITIMER_REAL, 0),
+        signal.signal(signal.SIGALRM, old),
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="FIFOs are POSIX only")
+def test_fifo_swapped_into_evidence_paths_fails_closed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from pipelock_aarp_verify import ael, group, recovery
+
+    fifo, restore = _fifo_swap_deadline(monkeypatch, tmp_path)
+    try:
+        with pytest.raises(GroupVerificationError):
+            group._open_evidence_file(fifo)
+        with pytest.raises(GroupVerificationError):
+            group._strict_artifact(fifo, "open")
+        with pytest.raises(recovery.RecoverySealError):
+            recovery._read_regular(fifo, 1024)
+        with pytest.raises(AELVerificationError):
+            ael._read_regular(fifo, 1024)
+    finally:
+        restore()
+
+
+def test_shared_go_sealed_recovery_tail_kinds_verify(tmp_path: Path) -> None:
+    archive_path = (
+        Path(__file__).parents[2] / "fixtures" / "receipt-group-recovery-tails.zip"
+    )
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(tmp_path)
+        cases = json.loads(archive.read("cases.json"))
+    assert len(cases) == 3
+    for case in cases:
+        result = verify_receipt_group(
+            tmp_path / "cases" / case["name"], case["group_id"], case["trusted_keys"]
+        )
+        assert result["verdict"] == case["expected"], (case["name"], result)

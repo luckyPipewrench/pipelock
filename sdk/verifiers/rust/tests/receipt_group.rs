@@ -688,3 +688,36 @@ fn shared_group_fixtures_are_byte_identical_across_language_directories() {
         assert!(python == rust, "{name}: rust copy differs from python copy");
     }
 }
+
+// A recovery seal covers the final segment's unterminated tail; Go seals NUL
+// padding after a fragment, NUL padding alone and a valid final record that
+// lacks only its newline, so every verifier must accept them.
+#[test]
+fn shared_go_sealed_recovery_tail_kinds_verify() {
+    const TAILS: &[u8] = include_bytes!("../../fixtures/receipt-group-recovery-tails.zip");
+    let cases_root = fixture_from("cases", TAILS);
+    let cases: Value =
+        serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
+            .unwrap();
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 3);
+    for item in cases {
+        let name = item["name"].as_str().unwrap();
+        let keys = item["trusted_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let report = verify_receipt_group(
+            &cases_root.join(name),
+            item["group_id"].as_str().unwrap(),
+            &keys,
+        );
+        assert_eq!(
+            report.verdict,
+            item["expected"].as_str().unwrap(),
+            "{name}: {report:?}"
+        );
+    }
+}

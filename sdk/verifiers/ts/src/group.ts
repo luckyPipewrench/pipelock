@@ -10,6 +10,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readSync,
   readdirSync,
   statSync,
@@ -370,10 +371,15 @@ function readChild(name: string, max = 128 * 1024): Buffer {
   const before = lstatSync(name, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink())
     throw new Error(`artifact ${name} is not a regular file`);
-  const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = fstatSync(fd, { bigint: true });
-    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size > BigInt(max))
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.size > BigInt(max)
+    )
       throw new Error(`artifact ${name} changed or exceeds size limit`);
     const data = readBoundedArtifactBytes(
       name,
@@ -408,8 +414,9 @@ function existsNoFollow(name: string): boolean {
 // Read only the bytes up to and including the first newline, never more than
 // max. The probe needs the first recorder line, not the whole shard.
 export function readFirstLine(name: string, max: number): Buffer {
-  const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
+    if (!fstatSync(fd).isFile()) throw new Error(`artifact ${name} is not a regular file`);
     const chunks: Buffer[] = [];
     let total = 0;
     while (total < max) {
@@ -1190,9 +1197,8 @@ async function recoveredAELRun(
   if (
     raw.length !== safeNumber(seal.shard_size, "recovery shard size") ||
     sha(raw) !== seal.shard_sha256 ||
-    offset <= 0 ||
     offset >= raw.length ||
-    raw[offset - 1] !== 0x0a
+    (offset > 0 && raw[offset - 1] !== 0x0a)
   )
     throw new Error("recovery seal shard prefix is invalid");
   const shardInfo = predecessor.shards[index] as GroupShard;
@@ -1351,13 +1357,38 @@ async function verifyTransition(
   }
 }
 
+// PROC_PID_INIT_INO from the Linux kernel's include/linux/proc_ns.h
+// (0xEFFFFFFC): the fixed inode of the initial PID namespace, which is what
+// readlink /proc/self/ns/pid reports on a procfs mounted in that namespace.
+const INIT_PID_NAMESPACE_LINK = "pid:[4026531836]";
+
+let readPidNamespaceLink = (): string => readlinkSync("/proc/self/ns/pid");
+
+// Test seam: replace the namespace probe, or pass undefined to restore it.
+export function setPidNamespaceProbeForTest(probe: (() => string) | undefined): void {
+  readPidNamespaceLink = probe ?? ((): string => readlinkSync("/proc/self/ns/pid"));
+}
+
+// The kernel filters /proc/locks by the PID namespace of the procfs mount, so
+// absence from it proves no writer only when that procfs is the initial PID
+// namespace's; in a container a host writer's lock is simply not listed.
+function procLocksIsConclusive(): boolean {
+  try {
+    return readPidNamespaceLink() === INIT_PID_NAMESPACE_LINK;
+  } catch {
+    return false;
+  }
+}
+
 // requirePredecessorWriterGone mirrors Go's EvidenceRunWriterGone for a
 // predecessor with no signed close: the run's lifetime lock file must exist and
 // no live writer may hold it. A writer advertises itself with a shared flock,
 // which Node cannot probe directly, so Linux is answered from /proc/locks (any
 // lock on the lock file's inode counts as a live writer, a superset of Go's
 // flock probe). A missing lock file, or a platform with no way to read lock
-// state, cannot prove the writer exited and fails closed, as Go does.
+// state, or whose /proc/locks is namespace-filtered (a verifier outside the
+// initial PID namespace), cannot prove the writer exited and fails closed, as
+// Go does.
 function requirePredecessorWriterGone(session: string, index: number): void {
   const fail = (why: string): never => {
     throw new Error(
@@ -1383,6 +1414,10 @@ function requirePredecessorWriterGone(session: string, index: number): void {
     if (err instanceof Error && err.message.startsWith("incomplete predecessor shard")) throw err;
     return fail(`opening evidence file for writer probe: ${(err as Error).message}`);
   }
+  if (!procLocksIsConclusive())
+    return fail(
+      "cannot prove predecessor writer is gone: /proc/locks is filtered by the PID namespace and this verifier is not in the initial one; verify with the Go, Rust or Python verifier",
+    );
   let locks: string;
   try {
     locks = readFileSync("/proc/locks", "utf8");

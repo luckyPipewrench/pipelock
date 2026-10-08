@@ -51,7 +51,9 @@ def _read_regular(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
             raise AELVerificationError("native AEL artifact is not a regular file")
         if before.st_size > limit:
             raise AELVerificationError("native AEL artifact exceeds size limit")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
         fd = os.open(path, flags)
         try:
             opened = os.fstat(fd)

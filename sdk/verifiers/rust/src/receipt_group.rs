@@ -49,7 +49,7 @@ pub(crate) fn receipt_group_evidence_present(dir: &Path) -> Result<bool, String>
             // The legacy verifier reports invalid shard files in its normal verdict.
             continue;
         }
-        let file = fs::File::open(entry.path()).map_err(|e| e.to_string())?;
+        let file = open_checked_regular(&entry.path(), &metadata)?;
         let mut reader = BufReader::new(file.take((1 << 20) + 1));
         let mut first = Vec::new();
         reader
@@ -1903,12 +1903,41 @@ fn bounded_read(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
     read_regular(&p, MAX_GROUP_FILE)
 }
 
+/// Open a path already checked with `symlink_metadata` without following a
+/// symlink or blocking on a FIFO swapped in after the check (Go opens evidence
+/// with O_NONBLOCK and O_NOFOLLOW), then require the descriptor to be the same
+/// regular file as the checked path.
+fn open_checked_regular(path: &Path, before: &fs::Metadata) -> Result<fs::File, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| e.to_string())?;
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    if !opened.is_file() {
+        return Err("evidence artifact is not a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != before.dev() || opened.ino() != before.ino() {
+            return Err("evidence artifact changed during open".into());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = before;
+    Ok(file)
+}
+
 fn read_regular(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !before.is_file() || before.file_type().is_symlink() || before.len() > max {
         return Err("evidence artifact is not a bounded regular file".into());
     }
-    let raw = read_bounded_stream(fs::File::open(path).map_err(|e| e.to_string())?, max)?;
+    let raw = read_bounded_stream(open_checked_regular(path, &before)?, max)?;
     let after = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !after.is_file()
         || after.file_type().is_symlink()
@@ -2096,5 +2125,48 @@ mod canonical_time_vectors {
         ] {
             assert!(!canonical_time(bad), "{bad}");
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // A path swapped to a FIFO after the regular-file check must fail closed
+    // promptly instead of blocking the verifier on the open.
+    #[test]
+    fn fifo_swapped_in_after_the_check_fails_closed_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("plk-fifo-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let regular = dir.join("regular");
+        fs::write(&regular, b"x\n").unwrap();
+        let fifo = dir.join("swapped");
+        let c = CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: c is a valid NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let checked = fs::symlink_metadata(&regular).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_checked_regular(&path, &checked).map(|_| ()));
+        });
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("open blocked on a FIFO");
+        assert!(outcome.is_err());
+        let (tx, rx) = mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_regular(&path, 1024));
+        });
+        // read_regular's own lstat refuses the FIFO outright.
+        assert!(rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("read blocked on a FIFO")
+            .is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

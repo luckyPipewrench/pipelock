@@ -80,6 +80,11 @@ def test_session_evidence_total_is_bounded_before_the_next_file_is_read(
     monkeypatch.setattr(
         group_module, "_session_evidence_paths", lambda *_: [(0, first), (1, second)]
     )
+    monkeypatch.setattr(
+        group_module,
+        "_open_evidence_file",
+        lambda shard: io.BytesIO(shard.read_bytes()),
+    )
     with pytest.raises(GroupVerificationError, match="oversized"):
         _read_session_evidence(tmp_path, "s", False, True)
     assert first.reads == 1
@@ -95,6 +100,11 @@ def test_session_evidence_within_the_total_bound_still_reads_every_file(
     second = _FakeShard("evidence-s-1.jsonl", 60 * MIB, second_line, True)
     monkeypatch.setattr(
         group_module, "_session_evidence_paths", lambda *_: [(0, first), (1, second)]
+    )
+    monkeypatch.setattr(
+        group_module,
+        "_open_evidence_file",
+        lambda shard: io.BytesIO(shard.read_bytes()),
     )
     _, parts, entries, _ = _read_session_evidence(tmp_path, "s", False, True)
     assert len(parts) == 2 and len(entries) == 2

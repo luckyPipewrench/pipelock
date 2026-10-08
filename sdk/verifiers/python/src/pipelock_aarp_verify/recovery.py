@@ -199,7 +199,10 @@ def _read_regular(path: Path, limit: int) -> bytes:
             raise RecoverySealError(
                 "recovery seal artifact is not a bounded regular file"
             )
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
         try:
             opened = os.fstat(fd)
             if not os.path.samestat(before, opened):
@@ -227,7 +230,10 @@ def require_writer_gone(directory: Path, session: str) -> None:
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode):
             raise RecoverySealError("predecessor writer lock is not a regular file")
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
     except OSError as exc:
         raise RecoverySealError("cannot prove predecessor writer is gone") from exc
     try:

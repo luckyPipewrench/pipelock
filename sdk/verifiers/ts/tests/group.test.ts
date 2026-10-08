@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   truncateSync,
   writeFileSync,
@@ -24,6 +25,7 @@ import {
   duplicateSignedAELRunError,
   readBoundedArtifactBytes,
   readFirstLine,
+  setPidNamespaceProbeForTest,
   receiptGroupEvidencePresent,
   verifyReceiptGroup,
 } from "../src/group.js";
@@ -144,6 +146,11 @@ extractFixtureArchive(
 extractFixtureArchive(
   readFileSync(resolve(root, "tests/fixtures/receipt-groups-v2.zip")),
   v2Fixtures,
+);
+const tailFixtures = join(fixtureRoot, "tails");
+extractFixtureArchive(
+  readFileSync(resolve(root, "../fixtures/receipt-group-recovery-tails.zip")),
+  tailFixtures,
 );
 test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
@@ -641,6 +648,31 @@ test("group evidence probe reads only the first recorder line", () => {
   }
 });
 
+test(
+  "readFirstLine refuses a FIFO without blocking",
+  { skip: process.platform === "win32" },
+  () => {
+    const dir = mkdtempSync(join(tmpdir(), "ts-fifo-"));
+    try {
+      const fifo = join(dir, "swapped");
+      assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+      // Without O_NONBLOCK this open blocks forever; the child gets a deadline.
+      const probe = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import { readFirstLine } from ${JSON.stringify(new URL("../src/group.js", import.meta.url).href)};try{readFirstLine(${JSON.stringify(fifo)},100);process.exit(0)}catch{process.exit(3)}`,
+        ],
+        { timeout: 10_000 },
+      );
+      assert.equal(probe.status, 3, `${probe.signal} ${probe.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("readFirstLine stops at the first newline and at its bound", () => {
   const dir = mkdtempSync(join(tmpdir(), "ts-first-line-"));
   try {
@@ -657,13 +689,26 @@ test("readFirstLine stops at the first newline and at its bound", () => {
   }
 });
 
+function inInitPidNamespace(): boolean {
+  try {
+    return readlinkSync("/proc/self/ns/pid") === "pid:[4026531836]";
+  } catch {
+    return false;
+  }
+}
+
 // A live writer holds a shared flock on its run's lifetime lock. Linking a
 // crashed predecessor (unsealed or sealed) needs that lock gone: a held lock is
 // a still-growing chain, so verification must refuse it until the writer exits.
 // Node cannot take an flock itself, so a child process plays the writer.
 test(
   "a predecessor whose writer lock is held is invalid until the writer exits",
-  { skip: process.platform !== "linux" || spawnSync("python3", ["--version"]).status !== 0 },
+  {
+    skip:
+      process.platform !== "linux" ||
+      !inInitPidNamespace() ||
+      spawnSync("python3", ["--version"]).status !== 0,
+  },
   async () => {
     const cases = JSON.parse(readFileSync(join(v2Fixtures, "cases.json"), "utf8")) as Array<{
       name: string;
@@ -707,6 +752,61 @@ test(
     }
   },
 );
+
+// A recovery seal covers the final segment's unterminated tail. Go seals NUL
+// padding after a fragment, NUL padding alone, and a valid final record that
+// lacks only its newline (damage offset 0 when the segment holds one record);
+// every verifier must accept what Go accepts.
+test("shared Go-sealed recovery tail kinds verify", async () => {
+  const cases = JSON.parse(readFileSync(join(tailFixtures, "cases.json"), "utf8")) as Array<{
+    name: string;
+    group_id: string;
+    trusted_keys: string[];
+    expected: string;
+  }>;
+  assert.equal(cases.length, 3);
+  for (const item of cases) {
+    const result = await verifyReceiptGroup(
+      join(tailFixtures, "cases", item.name),
+      item.group_id,
+      item.trusted_keys,
+    );
+    assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
+  }
+});
+
+// /proc/locks is filtered by the procfs mount's PID namespace, so a verifier in
+// a container cannot see a host writer's lock. Outside the initial namespace the
+// probe must fail closed even for an otherwise valid unsealed predecessor.
+test("a predecessor probe outside the initial PID namespace fails closed", () => {
+  const name = "v2-successor-unsealed-predecessor";
+  const cases = JSON.parse(readFileSync(join(v2Fixtures, "cases.json"), "utf8")) as Array<{
+    name: string;
+    group_id: string;
+    trusted_keys: string[];
+  }>;
+  const item = cases.find((c) => c.name === name);
+  assert.ok(item, name);
+  const dir = join(v2Fixtures, "cases", name);
+  return (async () => {
+    try {
+      setPidNamespaceProbeForTest(() => "pid:[4026532999]");
+      const contained = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(contained.verdict, "GROUP_INVALID", JSON.stringify(contained));
+      assert.match(contained.error ?? "", /initial one; verify with the Go, Rust or Python/u);
+      setPidNamespaceProbeForTest(() => {
+        throw new Error("no /proc/self/ns/pid");
+      });
+      const unreadable = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(unreadable.verdict, "GROUP_INVALID", JSON.stringify(unreadable));
+      setPidNamespaceProbeForTest(() => "pid:[4026531836]");
+      const init = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(init.verdict, "GROUP_VALID", JSON.stringify(init));
+    } finally {
+      setPidNamespaceProbeForTest(undefined);
+    }
+  })();
+});
 
 // Go reads only the python copy of the shared fixtures, so a drifted copy in
 // another language directory would silently test different bytes.

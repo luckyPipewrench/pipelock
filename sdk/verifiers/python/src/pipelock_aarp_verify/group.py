@@ -12,7 +12,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -97,7 +97,10 @@ def _strict_artifact(path: Path, kind: str) -> tuple[dict[str, Any], bytes]:
             or info.st_size > _MAX_ARTIFACT
         ):
             raise GroupVerificationError("invalid receipt group artifact file")
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
         try:
             opened = os.fstat(fd)
             if not os.path.samestat(info, opened):
@@ -540,6 +543,35 @@ def _session_evidence_paths(directory: Path, session: str) -> list[tuple[int, Pa
     return paths
 
 
+def _open_evidence_file(path: Path) -> BinaryIO:
+    """Open an evidence shard without blocking on a swapped-in FIFO.
+
+    The path is lstat-checked, opened O_NOFOLLOW|O_NONBLOCK, and the descriptor
+    must be the same regular file; a path swapped to a FIFO, device or symlink
+    after the membership check fails closed instead of hanging the verifier.
+    """
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise GroupVerificationError(
+                "receipt session has unexpected file membership"
+            )
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+    except OSError as exc:
+        raise GroupVerificationError(f"read receipt session evidence: {exc}") from exc
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
+            raise GroupVerificationError("receipt session evidence changed during open")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _read_session_evidence(
     directory: Path, session: str, recovered: bool, include_bytes: bool = False
 ) -> tuple[list[tuple[int, Path]], list[bytes], list[dict[str, Any]], bool]:
@@ -563,11 +595,12 @@ def _read_session_evidence(
             total += size
             if total > 128 * 1024 * 1024:
                 raise GroupVerificationError("receipt group shard is oversized")
-            part = path.read_bytes()
+            with _open_evidence_file(path) as source:
+                part = source.read()
             parts.append(part)
             stream = io.BytesIO(part)
         else:
-            stream = path.open("rb")
+            stream = _open_evidence_file(path)
         with stream:
             for line in stream:
                 if len(line) > _MAX_LINE:
@@ -669,7 +702,7 @@ def _verify_shard(
     if torn:
         last_boundary = parts[-1].rfind(b"\n") + 1
         suffix = parts[-1][last_boundary:]
-        if not open_group and (not suffix or b"\x00" in suffix):
+        if not open_group and (not suffix or b"\x00" in suffix.rstrip(b"\x00")):
             raise GroupVerificationError("receipt group shard has an invalid torn tail")
         parse_bytes = raw_file[: len(raw_file) - len(suffix)]
         if len(suffix) > _MAX_LINE:

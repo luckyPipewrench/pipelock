@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
@@ -34,6 +35,19 @@ type WSClient struct {
 	closed    atomic.Bool
 }
 
+// redactDialURL drops the parts of an upstream URL that can carry a
+// credential (user info, query and fragment) before it reaches an error.
+func redactDialURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 // NewWSClient establishes a WebSocket connection to the given URL and returns
 // a WSClient. The connection is established using gobwas/ws.Dial with the
 // provided context for timeout/cancellation.
@@ -48,7 +62,7 @@ func NewWSClientWithDialer(ctx context.Context, rawURL string, dialContext func(
 	dialer := ws.Dialer{NetDial: dialContext}
 	conn, br, _, err := dialer.Dial(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("ws dial %s: %w", rawURL, err)
+		return nil, fmt.Errorf("ws dial %s: %w", redactDialURL(rawURL), err)
 	}
 	var reader io.Reader = conn
 	if br != nil {

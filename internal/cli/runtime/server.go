@@ -99,6 +99,12 @@ type ServerOpts struct {
 type Server struct {
 	opts ServerOpts
 
+	// ackKeyRevokedFor is the running configuration whose acknowledgment key
+	// was found unavailable or changed after a failed reload. Its
+	// acknowledgments refuse; a successfully reloaded configuration is a
+	// different value and is unaffected.
+	ackKeyRevokedFor atomic.Pointer[config.Config]
+
 	runtimeMode        config.RuntimeMode
 	hasMCPListen       bool
 	apiOnSeparatePort  bool

@@ -288,6 +288,9 @@ func (c *Config) Clone() *Config {
 			clone.LicenseDisabledAgents[name] = append([]string(nil), listeners...)
 		}
 	}
+	if c.MCPToolScanning.AcknowledgmentKeyBytes != nil {
+		clone.MCPToolScanning.AcknowledgmentKeyBytes = append([]byte(nil), c.MCPToolScanning.AcknowledgmentKeyBytes...)
+	}
 	if c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey != nil {
 		clone.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = append([]byte(nil), c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey...)
 	}

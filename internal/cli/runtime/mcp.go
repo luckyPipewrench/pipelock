@@ -899,9 +899,6 @@ Key-free evidence capture:
 				bindingInputs.ChildEnv = extraEnv
 			}
 			serverBinding := mcpServerBinding(bindingInputs)
-			if serverName != "" {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: server %q transport binding sha256 %s (for mcp_tool_scanning.acknowledged_findings[].server_binding_sha256)\n", serverName, serverBinding)
-			}
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
@@ -992,6 +989,9 @@ Key-free evidence capture:
 			dowAgentName := resolvedMCPDoWAgentName(agentName, resolved.Name, found)
 			cfg = resolved.Config
 			bootSC.Close() // done with bootstrap scanner
+			if err := ackKeyWithheldFromChild(cfg.MCPToolScanning.AcknowledgmentKey, extraEnv); err != nil {
+				return err
+			}
 
 			// Set up Sentry error reporting
 			sentryClient, sentryErr := plsentry.Init(cfg, cliutil.Version)
@@ -1086,7 +1086,7 @@ Key-free evidence capture:
 					NewToolAdmission:       cfg.MCPToolScanning.NewToolAdmission,
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
-					CredentialAcks:         cfg.MCPToolScanning.AcknowledgedFindings,
+					CredentialAcks:         tools.NewCredentialAckSet(cfg.MCPToolScanning.AcknowledgedFindings, cfg.MCPToolScanning.AcknowledgmentKeyBytes),
 				}
 				resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
 				if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&
@@ -1494,7 +1494,7 @@ Key-free evidence capture:
 
 				// HTTP reverse proxy mode: --listen + --upstream.
 				if hasListen && isWSUpstream {
-					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", RedactEndpoint(upstreamURL))
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -1551,7 +1551,7 @@ Key-free evidence capture:
 					listenerOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						listenAddr, upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1604,7 +1604,7 @@ Key-free evidence capture:
 					wsOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1661,7 +1661,7 @@ Key-free evidence capture:
 				httpOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-					upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+					RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 						return heartbeatErr

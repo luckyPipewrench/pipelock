@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -37,6 +38,20 @@ const (
 
 var proxyAckBinding = tools.ServerBindingDigest("upstream", "https://vault.example/mcp")
 
+// proxyAckKey is a synthetic acknowledgment key; no deployment key exists
+// in tests.
+var proxyAckKey = []byte("synthetic-acknowledgment-key-proxy-0123456")
+
+// proxyKeyedBinding computes the keyed binding independently of the code
+// under test, from the published v1 construction.
+func proxyKeyedBinding(digest string) string {
+	id := hmac.New(sha256.New, proxyAckKey)
+	_, _ = id.Write([]byte("pipelock-mcp-ack-key-id-v1"))
+	mac := hmac.New(sha256.New, proxyAckKey)
+	_, _ = mac.Write([]byte("pipelock-mcp-ack-binding-v1\x00" + digest))
+	return "hmac-sha256-v1:" + hex.EncodeToString(id.Sum(nil)[:8]) + ":" + hex.EncodeToString(mac.Sum(nil))
+}
+
 func proxyAckHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
@@ -55,12 +70,12 @@ func proxyAckEntry(t *testing.T) config.MCPAcknowledgedFinding {
 		t.Fatal(err)
 	}
 	return config.MCPAcknowledgedFinding{
-		Server:              proxyAckServer,
-		ServerBindingSHA256: proxyAckBinding,
-		Tool:                "store_secret",
-		Finding:             config.MCPAckFindingRequestDirective,
-		FamilyRevision:      2,
-		ToolSHA256:          proxyAckHash(string(canonical)),
+		Server:            proxyAckServer,
+		ServerBindingHMAC: proxyKeyedBinding(proxyAckBinding),
+		Tool:              "store_secret",
+		Finding:           config.MCPAckFindingRequestDirective,
+		FamilyRevision:    2,
+		ToolSHA256:        proxyAckHash(string(canonical)),
 		Occurrences: []config.MCPAckOccurrence{{
 			Field:           "/inputSchema/properties/key/description",
 			FieldTextSHA256: proxyAckHash(proxyAckKeyDesc),
@@ -82,7 +97,7 @@ func forwardToolsListWithAcks(t *testing.T, action, binding string, rec *mockRec
 		Scanner: testScannerWithAction(t, config.ActionWarn),
 		ToolCfg: &tools.ToolScanConfig{
 			Action:         action,
-			CredentialAcks: acks,
+			CredentialAcks: tools.NewCredentialAckSet(acks, proxyAckKey),
 			Now:            func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) },
 		},
 		Transport:     transportMCPStdio,
@@ -175,7 +190,7 @@ func TestHTTPTransportsCarryAcknowledgmentBinding(t *testing.T) {
 					Scanner: testScannerWithAction(t, config.ActionWarn),
 					ToolCfg: &tools.ToolScanConfig{
 						Action:         tc.action,
-						CredentialAcks: []config.MCPAcknowledgedFinding{proxyAckEntry(t)},
+						CredentialAcks: tools.NewCredentialAckSet([]config.MCPAcknowledgedFinding{proxyAckEntry(t)}, proxyAckKey),
 						Now:            func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) },
 					},
 					ServerName:    proxyAckServer,
@@ -201,7 +216,7 @@ func TestHTTPListenerAcknowledgmentFollowsReload(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	clock := func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) }
 	withAcks := func(acks ...config.MCPAcknowledgedFinding) *tools.ToolScanConfig {
-		return &tools.ToolScanConfig{Action: config.ActionBlock, CredentialAcks: acks, Now: clock}
+		return &tools.ToolScanConfig{Action: config.ActionBlock, CredentialAcks: tools.NewCredentialAckSet(acks, proxyAckKey), Now: clock}
 	}
 	var current atomic.Pointer[tools.ToolScanConfig]
 	current.Store(withAcks(proxyAckEntry(t)))
@@ -282,7 +297,7 @@ func ackOpts(t *testing.T, acks ...config.MCPAcknowledgedFinding) MCPProxyOpts {
 		Scanner: testScannerWithAction(t, config.ActionWarn),
 		ToolCfg: &tools.ToolScanConfig{
 			Action:         config.ActionBlock,
-			CredentialAcks: acks,
+			CredentialAcks: tools.NewCredentialAckSet(acks, proxyAckKey),
 			Now:            func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) },
 		},
 		Transport:     transportMCPStdio,

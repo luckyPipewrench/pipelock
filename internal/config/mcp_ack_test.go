@@ -4,6 +4,9 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +17,12 @@ var ackTestNow = time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC)
 func validAck() MCPAcknowledgedFinding {
 	hex64 := strings.Repeat("ab", 32)
 	return MCPAcknowledgedFinding{
-		Server:              "vault",
-		ServerBindingSHA256: hex64,
-		Tool:                "request_secret",
-		Finding:             MCPAckFindingRequestDirective,
-		FamilyRevision:      1,
-		ToolSHA256:          hex64,
+		Server:            "vault",
+		ServerBindingHMAC: MCPAckBindingHMACPrefix + strings.Repeat("0f", 8) + ":" + hex64,
+		Tool:              "request_secret",
+		Finding:           MCPAckFindingRequestDirective,
+		FamilyRevision:    1,
+		ToolSHA256:        hex64,
 		Occurrences: []MCPAckOccurrence{{
 			Field: "/inputSchema/properties/key/description", FieldTextSHA256: hex64,
 			Pattern: 0, Ordinal: 0, Start: 0, End: 19, MatchSHA256: hex64,
@@ -49,7 +52,18 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 	}{
 		{"missing server", func(e *MCPAcknowledgedFinding) { e.Server = " " }, "server is required"},
 		{"control in server", func(e *MCPAcknowledgedFinding) { e.Server = "vault\u200b" }, "server is required"},
-		{"bad binding", func(e *MCPAcknowledgedFinding) { e.ServerBindingSHA256 = "abc" }, "server_binding_sha256"},
+		{"bad binding", func(e *MCPAcknowledgedFinding) { e.ServerBindingHMAC = "abc" }, "server_binding_hmac"},
+		{"unkeyed binding", func(e *MCPAcknowledgedFinding) { e.ServerBindingHMAC = hex64 }, "server_binding_hmac"},
+		{"uppercase binding", func(e *MCPAcknowledgedFinding) {
+			e.ServerBindingHMAC = strings.ToUpper(e.ServerBindingHMAC)
+		}, "server_binding_hmac"},
+		{"short key id", func(e *MCPAcknowledgedFinding) {
+			e.ServerBindingHMAC = MCPAckBindingHMACPrefix + "0f:" + hex64
+		}, "server_binding_hmac"},
+		{"other scheme version", func(e *MCPAcknowledgedFinding) {
+			e.ServerBindingHMAC = "hmac-sha256-v2:" + strings.Repeat("0f", 8) + ":" + hex64
+		}, "server_binding_hmac"},
+		{"legacy unkeyed field", func(e *MCPAcknowledgedFinding) { e.LegacyServerBindingSHA256 = hex64 }, "no longer accepted"},
 		{"missing tool", func(e *MCPAcknowledgedFinding) { e.Tool = "" }, "tool is required"},
 		{"other finding", func(e *MCPAcknowledgedFinding) { e.Finding = "File Exfiltration Directive" }, "not supported"},
 		{"missing revision", func(e *MCPAcknowledgedFinding) { e.FamilyRevision = 0 }, "family_revision"},
@@ -149,6 +163,8 @@ func TestValidateMCPToolScanningWarnsWhenAcksAreInert(t *testing.T) {
 	cfg.MCPToolScanning.Enabled = false
 	cfg.MCPToolScanning.AcknowledgedFindings = []MCPAcknowledgedFinding{validAck()}
 	cfg.MCPToolScanning.AcknowledgedFindings[0].Expires = time.Now().UTC().AddDate(0, 0, 30).Format("2006-01-02")
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
+	cfg.MCPToolScanning.AcknowledgmentKey = "${PIPELOCK_TEST_ACK_KEY}"
 	var warnings []Warning
 	if err := cfg.validateMCPToolScanning(&warnings); err != nil {
 		t.Fatal(err)
@@ -224,5 +240,110 @@ func TestValidMCPAckPointerBoundaries(t *testing.T) {
 	}
 	if _, err := ParseMCPAckExpiry("2026-12-01T25:00:00Z"); err == nil {
 		t.Error("impossible timestamp accepted")
+	}
+}
+
+// testAckKey is a synthetic acknowledgment key. No deployment key is used.
+const testAckKey = "synthetic-acknowledgment-key-0123456789"
+
+func TestMCPAcknowledgmentKeyResolution(t *testing.T) {
+	dir := t.TempDir()
+	writeKey := func(name, content string, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	good := writeKey("good.key", testAckKey+"\n", 0o600)
+	open := writeKey("open.key", testAckKey, 0o644)
+	short := writeKey("short.key", "too-short", 0o600)
+	link := filepath.Join(dir, "link.key")
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
+	t.Setenv("PIPELOCK_TEST_ACK_SHORT", "short")
+
+	tests := []struct {
+		name    string
+		source  string
+		entries bool
+		wantErr string
+	}{
+		{"entries without key", "", true, "requires mcp_tool_scanning.acknowledgment_key"},
+		{"literal key", testAckKey, true, "literal key"},
+		{"unset env", "${PIPELOCK_TEST_ACK_UNSET}", true, "empty"},
+		{"empty env name", "${}", true, "literal key"},
+		{"short env", "${PIPELOCK_TEST_ACK_SHORT}", true, "at least 32"},
+		{"short file", "file:" + short, true, "at least 32"},
+		{"group-readable file", "file:" + open, true, "0o600"},
+		{"symlinked file", "file:" + link, true, "symlink"},
+		{"relative file", "file:relative.key", true, "absolute"},
+		{"missing file", "file:" + filepath.Join(dir, "absent.key"), true, "not found"},
+		{"env key", "${PIPELOCK_TEST_ACK_KEY}", true, ""},
+		{"file key", "file:" + good, true, ""},
+		{"key without entries", "${PIPELOCK_TEST_ACK_KEY}", false, ""},
+		{"neither", "", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.MCPToolScanning.Enabled = true
+			cfg.MCPToolScanning.Action = ActionWarn
+			cfg.MCPToolScanning.AcknowledgmentKey = tt.source
+			cfg.MCPToolScanning.AcknowledgmentKeyBytes = []byte("stale pinned bytes from an earlier load")
+			if tt.entries {
+				e := validAck()
+				e.Expires = time.Now().UTC().AddDate(0, 0, 30).Format("2006-01-02")
+				cfg.MCPToolScanning.AcknowledgedFindings = []MCPAcknowledgedFinding{e}
+			}
+			err := cfg.validateMCPToolScanning(nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				if strings.Contains(err.Error(), testAckKey) {
+					t.Fatalf("error exposes the key: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := testAckKey
+			if tt.source == "" {
+				want = ""
+			}
+			if string(cfg.MCPToolScanning.AcknowledgmentKeyBytes) != want {
+				t.Fatalf("pinned key = %q, want %q", cfg.MCPToolScanning.AcknowledgmentKeyBytes, want)
+			}
+		})
+	}
+}
+
+// The pinned key never leaves through the configuration's JSON form, and a
+// clone owns its own copy.
+func TestMCPAcknowledgmentKeyIsPinnedPrivately(t *testing.T) {
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
+	cfg := Defaults()
+	cfg.MCPToolScanning.AcknowledgmentKey = "${PIPELOCK_TEST_ACK_KEY}"
+	if err := cfg.validateMCPToolScanning(nil); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(enc), testAckKey) || strings.Contains(string(enc), "PIPELOCK_TEST_ACK_KEY") {
+		t.Fatalf("configuration JSON carries the key or its source: %s", enc)
+	}
+	clone := cfg.Clone()
+	clone.MCPToolScanning.AcknowledgmentKeyBytes[0] ^= 0xff
+	if string(cfg.MCPToolScanning.AcknowledgmentKeyBytes) != testAckKey {
+		t.Fatal("clone shares the pinned key with the original")
 	}
 }

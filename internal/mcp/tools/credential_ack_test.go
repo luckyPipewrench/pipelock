@@ -5,6 +5,7 @@ package tools
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,22 @@ const (
 )
 
 var ackTestBinding = ServerBindingDigest("upstream", "https://vault.example/mcp")
+
+// ackTestKey is a synthetic acknowledgment key; no deployment key exists in
+// tests.
+var ackTestKey = []byte("synthetic-acknowledgment-key-0123456789")
+
+// testKeyedBinding computes the keyed binding independently of the code
+// under test, from the published v1 construction.
+func testKeyedBinding(key []byte, digest string) string {
+	id := hmac.New(sha256.New, key)
+	_, _ = id.Write([]byte("pipelock-mcp-ack-key-id-v1"))
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("pipelock-mcp-ack-binding-v1\x00" + digest))
+	return "hmac-sha256-v1:" + hex.EncodeToString(id.Sum(nil)[:8]) + ":" + hex.EncodeToString(mac.Sum(nil))
+}
+
+var ackTestBindingHMAC = testKeyedBinding(ackTestKey, ackTestBinding)
 
 var ackTestNow = time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC)
 
@@ -54,12 +71,12 @@ func ackForTool(t *testing.T, raw string) config.MCPAcknowledgedFinding {
 	}
 	h := func(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
 	return config.MCPAcknowledgedFinding{
-		Server:              ackTestServer,
-		ServerBindingSHA256: ackTestBinding,
-		Tool:                "store_secret",
-		Finding:             config.MCPAckFindingRequestDirective,
-		FamilyRevision:      credentialRequestFamilyRevision,
-		ToolSHA256:          h(string(canonical)),
+		Server:            ackTestServer,
+		ServerBindingHMAC: ackTestBindingHMAC,
+		Tool:              "store_secret",
+		Finding:           config.MCPAckFindingRequestDirective,
+		FamilyRevision:    credentialRequestFamilyRevision,
+		ToolSHA256:        h(string(canonical)),
 		Occurrences: []config.MCPAckOccurrence{{
 			Field:           "/inputSchema/properties/key/description",
 			FieldTextSHA256: h(ackTestKeyDesc),
@@ -76,7 +93,7 @@ func ackForTool(t *testing.T, raw string) config.MCPAcknowledgedFinding {
 func ackScanConfig(acks ...config.MCPAcknowledgedFinding) *ToolScanConfig {
 	return (&ToolScanConfig{
 		Action:         config.ActionWarn,
-		CredentialAcks: acks,
+		CredentialAcks: NewCredentialAckSet(acks, ackTestKey),
 		Now:            func() time.Time { return ackTestNow },
 	}).WithServer(ackTestServer, ackTestBinding)
 }
@@ -147,7 +164,7 @@ func TestScanToolsAcknowledgmentScope(t *testing.T) {
 			e := ackForTool(t, raw)
 			cfg := ackScanConfig()
 			cfg = mutate(&e, cfg)
-			cfg.CredentialAcks = []config.MCPAcknowledgedFinding{e}
+			cfg.CredentialAcks = NewCredentialAckSet([]config.MCPAcknowledgedFinding{e}, ackTestKey)
 			r := ScanTools(toolsListLine(raw), testScanner(t), cfg)
 			m, ok := credentialMatch(r)
 			if r.Clean || !ok || m.CredentialAck != "" || r.CredentialAckApplied() {
@@ -171,7 +188,7 @@ func TestScanToolsStaleAcknowledgmentRefuses(t *testing.T) {
 		{"expired", base, func(e *config.MCPAcknowledgedFinding, _ *ToolScanConfig) { e.Expires = "2026-10-07" }, CredentialAckExpired},
 		{"no configured binding", base, func(_ *config.MCPAcknowledgedFinding, c *ToolScanConfig) { c.ServerBindingSHA256 = "" }, CredentialAckBindingMismatch},
 		{"other binding", base, func(e *config.MCPAcknowledgedFinding, _ *ToolScanConfig) {
-			e.ServerBindingSHA256 = ServerBindingDigest("upstream", "https://elsewhere.example/mcp")
+			e.ServerBindingHMAC = testKeyedBinding(ackTestKey, ServerBindingDigest("upstream", "https://elsewhere.example/mcp"))
 		}, CredentialAckBindingMismatch},
 		{"revision changed", base, func(e *config.MCPAcknowledgedFinding, _ *ToolScanConfig) { e.FamilyRevision++ }, CredentialAckRevisionChanged},
 		{"provenance member changed", ackTestTool(`{"com.pipelock/provenance":{"sig":"abd"}}`), nil, CredentialAckToolChanged},
@@ -194,7 +211,7 @@ func TestScanToolsStaleAcknowledgmentRefuses(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&e, cfg)
 			}
-			cfg.CredentialAcks = []config.MCPAcknowledgedFinding{e}
+			cfg.CredentialAcks = NewCredentialAckSet([]config.MCPAcknowledgedFinding{e}, ackTestKey)
 			r := ScanTools(toolsListLine(tt.raw), testScanner(t), cfg)
 			m, ok := credentialMatch(r)
 			if r.Clean || !ok || m.CredentialAck != tt.outcome || !r.CredentialAckRefused() {
@@ -339,6 +356,9 @@ func TestUpstreamBindingDigestBindsEverySelector(t *testing.T) {
 
 func candidateToEntry(t *testing.T, c *CredentialAckCandidate) config.MCPAcknowledgedFinding {
 	t.Helper()
+	if c.ServerBindingHMAC != ackTestBindingHMAC {
+		t.Fatalf("candidate binding = %q, want the keyed binding %q", c.ServerBindingHMAC, ackTestBindingHMAC)
+	}
 	e := c.entry()
 	// clock-literal-ok: paired with the injected test clock (2026-10-08)
 	e.Owner, e.Reason, e.Expires = "platform team", "reviewed", "2026-12-01"
@@ -358,8 +378,20 @@ func TestCredentialAckCandidateRoundTrips(t *testing.T) {
 	}
 	var log bytes.Buffer
 	LogToolFindings(&log, 1, r)
-	if !strings.Contains(log.String(), `"server_binding_sha256":"`+ackTestBinding+`"`) || strings.Contains(log.String(), ackTestKeyDesc) {
+	if !strings.Contains(log.String(), `"server_binding_hmac":"`+ackTestBindingHMAC+`"`) || strings.Contains(log.String(), ackTestKeyDesc) {
 		t.Fatalf("candidate log line wrong or leaks field text: %s", log.String())
+	}
+	// The exact transport digest is an unkeyed hash over transport
+	// credentials, so neither the log line nor the exported match may carry
+	// it, and neither may the key.
+	exported, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"log": log.String(), "json": string(exported)} {
+		if strings.Contains(strings.ToLower(out), ackTestBinding) || strings.Contains(out, string(ackTestKey)) {
+			t.Fatalf("%s output carries the binding digest or key: %s", name, out)
+		}
 	}
 	e := candidateToEntry(t, m.CredentialAckCandidate)
 	// Validate through the real config path. Its expiry check uses the wall
@@ -370,10 +402,12 @@ func TestCredentialAckCandidateRoundTrips(t *testing.T) {
 	full.MCPToolScanning.Enabled = true
 	full.MCPToolScanning.Action = config.ActionBlock
 	full.MCPToolScanning.AcknowledgedFindings = []config.MCPAcknowledgedFinding{valid}
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", string(ackTestKey))
+	full.MCPToolScanning.AcknowledgmentKey = "${PIPELOCK_TEST_ACK_KEY}"
 	if err := full.Validate(); err != nil {
 		t.Fatalf("candidate does not validate as configuration: %v", err)
 	}
-	cfg.CredentialAcks = []config.MCPAcknowledgedFinding{e}
+	cfg.CredentialAcks = NewCredentialAckSet([]config.MCPAcknowledgedFinding{e}, ackTestKey)
 	r2 := ScanTools(toolsListLine(raw), testScanner(t), cfg)
 	if !r2.Clean || !r2.CredentialAckApplied() {
 		t.Fatalf("candidate did not acknowledge its tool: %+v", r2)
@@ -707,7 +741,7 @@ func TestRefusedAcknowledgmentBlocksEveryPromotionPath(t *testing.T) {
 		stale := ackForTool(t, ackTestTool(`{}`))
 		// clock-literal-ok: deliberately expired relative to the injected test clock
 		stale.Expires = "2026-10-07"
-		cfg.CredentialAcks = []config.MCPAcknowledgedFinding{stale}
+		cfg.CredentialAcks = NewCredentialAckSet([]config.MCPAcknowledgedFinding{stale}, ackTestKey)
 		r := ScanTools(toolsListLine(other, ackTestTool(`{}`)), testScanner(t), cfg)
 		if !r.CredentialAckRefused() {
 			t.Fatal("stale entry for a new tool was not refused")
@@ -882,4 +916,62 @@ func TestRefusedAcknowledgmentPromotesNoSiblingKind(t *testing.T) {
 			t.Fatal("block mode with no entry stopped promoting a clean new sibling")
 		}
 	})
+}
+
+// The keyed binding is stable for one key across process restarts, changes
+// with the key, reports a rotation distinctly, and refuses under every action
+// once revoked, with no candidate offered. Revocation reaches every copy of
+// the configuration because they share one set.
+func TestCredentialAckKeyLifecycle(t *testing.T) {
+	raw := ackTestTool(`{}`)
+	entry := ackForTool(t, raw)
+	outcome := func(set *CredentialAckSet, action string) (ToolScanMatch, bool) {
+		cfg := &ToolScanConfig{Action: action, CredentialAcks: set, Now: func() time.Time { return ackTestNow }}
+		r := ScanTools(toolsListLine(raw), testScanner(t), cfg.WithServer(ackTestServer, ackTestBinding))
+		m, _ := credentialMatch(r)
+		return m, r.Clean
+	}
+
+	restarted := NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, append([]byte(nil), ackTestKey...))
+	if m, clean := outcome(restarted, config.ActionBlock); !clean || m.CredentialAck != "" && m.CredentialAck != CredentialAckAcknowledged {
+		t.Fatalf("same key after restart did not apply: %+v", m)
+	}
+
+	rotatedKey := []byte("synthetic-acknowledgment-key-rotated-0123456")
+	for name, tc := range map[string]struct {
+		set  *CredentialAckSet
+		want string
+	}{
+		"rotated key":   {NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, rotatedKey), CredentialAckBindingKeyChanged},
+		"short key":     {NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, []byte("short")), CredentialAckBindingMismatch},
+		"no key at all": {NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, nil), CredentialAckBindingMismatch},
+	} {
+		for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+			m, clean := outcome(tc.set, action)
+			if clean || m.CredentialAck != tc.want {
+				t.Errorf("%s under %s: clean=%v outcome=%q, want refused %q", name, action, clean, m.CredentialAck, tc.want)
+			}
+			// After a rotation the candidate is the regeneration route, keyed
+			// with the new key; with no usable key nothing is offered.
+			if name == "rotated key" {
+				if m.CredentialAckCandidate == nil || m.CredentialAckCandidate.ServerBindingHMAC != testKeyedBinding(rotatedKey, ackTestBinding) {
+					t.Errorf("rotated key under %s: candidate = %+v, want one keyed with the rotated key", action, m.CredentialAckCandidate)
+				}
+			} else if m.CredentialAckCandidate != nil {
+				t.Errorf("%s under %s offered a candidate with no usable key", name, action)
+			}
+		}
+	}
+
+	shared := NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, ackTestKey)
+	base := &ToolScanConfig{Action: config.ActionWarn, CredentialAcks: shared, Now: func() time.Time { return ackTestNow }}
+	copied := base.WithServer(ackTestServer, ackTestBinding)
+	shared.Revoke()
+	shared.Revoke() // idempotent
+	r := ScanTools(toolsListLine(raw), testScanner(t), copied)
+	if m, _ := credentialMatch(r); r.Clean || m.CredentialAck != CredentialAckBindingMismatch || m.CredentialAckCandidate != nil {
+		t.Fatalf("revoked set still applied through a copy: %+v", m)
+	}
+	var nilSet *CredentialAckSet
+	nilSet.Revoke() // a nil set is a no-op, not a panic
 }

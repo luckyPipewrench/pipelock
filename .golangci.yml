@@ -73,6 +73,12 @@ linters:
       - path: internal/mcp/fdexec_linux\.go
         linters: [gosec]
         text: "G103|G204"
+      # The acknowledgment-key reload test loosens its synthetic key file to
+      # 0644 to prove a group-readable key is refused and revokes every
+      # acknowledgment. The file is in the test's own temporary directory.
+      - path: internal/cli/runtime/server_ack_listener_test\.go
+        linters: [gosec]
+        text: "G302"
       # The MCP stdio proxy launches the server command the operator names
       # after `pipelock mcp proxy --` (args[ArgsLenAtDash():] in
       # internal/cli/runtime/mcp.go), directly or through the descriptor

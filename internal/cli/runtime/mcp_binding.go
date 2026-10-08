@@ -58,6 +58,35 @@ func mcpServerBinding(in mcpBindingInputs) string {
 	return tools.ServerBindingDigest("transport-v2", parts...)
 }
 
+// ackKeyWithheldFromChild refuses a launch that would hand the MCP server
+// the acknowledgment key. The child receives only the fixed system variables
+// and the overrides the operator names, so a dedicated key variable is not
+// inherited; this refuses the two ways it could still arrive: an override
+// that names it (--env, a bare --env passthrough, or a carrier), and a key
+// variable that is itself one of the system variables every child receives.
+// A server that held the key could compute the binding of any transport and
+// test guesses against other servers' credentials in a shared configuration.
+func ackKeyWithheldFromChild(keySource string, childEnv []string) error {
+	name, ok := strings.CutPrefix(keySource, "${")
+	if !ok {
+		return nil
+	}
+	name, ok = strings.CutSuffix(name, "}")
+	if !ok || name == "" {
+		return nil
+	}
+	if mcp.IsSafeEnvKey(name) {
+		return fmt.Errorf("mcp_tool_scanning.acknowledgment_key names %s, which every MCP server process receives; use a dedicated variable or a file", name)
+	}
+	for _, entry := range childEnv {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, name) {
+			return fmt.Errorf("the MCP server environment would include %s, the acknowledgment key; remove it from --env and environment carriers", name)
+		}
+	}
+	return nil
+}
+
 // buildChildExtraEnv resolves the child-environment overrides once: the
 // carrier-resolved entries, then each --env entry, with a bare KEY taking the
 // host value through lookup. The same list is bound and passed to the child.

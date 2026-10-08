@@ -197,9 +197,11 @@ type ToolScanConfig struct {
 	ExtraPoison []*ExtraPoisonPattern
 
 	// CredentialAcks are the operator's acknowledgments of Credential
-	// Request Directive findings. They apply only to the configured server
-	// named by ServerName and bound by ServerBindingSHA256.
-	CredentialAcks      []config.MCPAcknowledgedFinding
+	// Request Directive findings and the key their bindings are checked
+	// with. They apply only to the configured server named by ServerName
+	// whose exact transport digest, ServerBindingSHA256, keys to the
+	// entry's server_binding_hmac. The digest itself is never exported.
+	CredentialAcks      *CredentialAckSet
 	ServerName          string
 	ServerBindingSHA256 string
 	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.

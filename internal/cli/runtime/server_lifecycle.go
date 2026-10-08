@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"io"
@@ -545,10 +546,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Config: %s (hot-reload enabled%s; rejected security downgrades require restart)\n", s.opts.ConfigFile, ReloadSignalHint())
 	}
 	if s.hasMCPListen {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP:    http://%s -> %s\n", s.opts.MCPListen, s.opts.MCPUpstream)
-		if s.opts.MCPServerName != "" {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP server %q transport binding sha256 %s (for mcp_tool_scanning.acknowledged_findings[].server_binding_sha256)\n", s.opts.MCPServerName, mcpRunListenerBinding(s.opts.MCPUpstream))
-		}
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP:    http://%s -> %s\n", s.opts.MCPListen, RedactEndpoint(s.opts.MCPUpstream))
 	}
 	if cfg.ReverseProxy.Enabled {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
@@ -902,6 +900,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			if current != cachedMCPToolSource {
 				cachedMCPToolCfg = buildMCPToolCfg(current, extraPoison, mcpToolBaseline)
 				cachedMCPToolSource = current
+			}
+			if cachedMCPToolCfg != nil && s.ackKeyRevokedFor.Load() == current {
+				cachedMCPToolCfg.CredentialAcks.Revoke()
 			}
 			return cachedMCPToolCfg
 		}
@@ -1397,6 +1398,7 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	}
 	if err != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
+		s.revokeUnavailableAckKey()
 	}
 	if notifySystemd {
 		sdNotifyReloadComplete(s.opts.Stderr, err)
@@ -1405,6 +1407,28 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	// delivered config so reload tests can block on the event instead of polling
 	// stderr on a deadline.
 	fireReloadCompletedHook()
+}
+
+// revokeUnavailableAckKey runs after a reload fails. A failed reload keeps
+// the running configuration, including its pinned acknowledgment key, so a
+// key file that was deleted, truncated, loosened or rotated would otherwise
+// go on validating acknowledgments. The key source is resolved again; unless
+// it still yields the pinned bytes, the key is revoked for this running
+// configuration: an atomic mark the listener's tool configuration checks, so
+// revocation publishes nothing and cannot fail. Every acknowledgment then
+// refuses until a reload succeeds with a usable key. Nothing else in the
+// running configuration changes.
+func (s *Server) revokeUnavailableAckKey() {
+	cur := s.proxy.CurrentConfig()
+	if cur == nil || len(cur.MCPToolScanning.AcknowledgmentKeyBytes) == 0 {
+		return
+	}
+	key, err := config.ResolveMCPAckKey(cur.MCPToolScanning.AcknowledgmentKey)
+	if err == nil && hmac.Equal(key, cur.MCPToolScanning.AcknowledgmentKeyBytes) {
+		return
+	}
+	s.ackKeyRevokedFor.Store(cur)
+	_, _ = fmt.Fprintln(s.opts.Stderr, "pipelock: mcp_tool_scanning.acknowledgment_key is unavailable or changed and the reload failed; every acknowledgment refuses until a reload succeeds")
 }
 
 func preferFileSentryRuntimeError(startErr, fileSentryErr error) error {

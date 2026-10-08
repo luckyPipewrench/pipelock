@@ -86,7 +86,7 @@ func buildMCPToolCfg(
 		NewToolAdmission:       cfg.MCPToolScanning.NewToolAdmission,
 		ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 		ExtraPoison:            extraPoison,
-		CredentialAcks:         cfg.MCPToolScanning.AcknowledgedFindings,
+		CredentialAcks:         tools.NewCredentialAckSet(cfg.MCPToolScanning.AcknowledgedFindings, cfg.MCPToolScanning.AcknowledgmentKeyBytes),
 	}
 	resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
 	if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/contract/privacy"
 )
 
 // MaxMCPAckHorizon bounds how far ahead an acknowledgment may expire. It
@@ -47,10 +49,17 @@ type MCPAcknowledgedFinding struct {
 	// Server is the operator-supplied server name. An upstream's own
 	// serverInfo.name is a self-report and is never consulted.
 	Server string `yaml:"server"`
-	// ServerBindingSHA256 is the digest of the configured transport binding
-	// (subprocess launch identity or upstream URL) printed at startup, so a
-	// name reused for a different destination invalidates the entry.
-	ServerBindingSHA256 string `yaml:"server_binding_sha256"`
+	// ServerBindingHMAC is the keyed transport binding,
+	// "hmac-sha256-v1:<key id>:<mac>", so a name reused for a different
+	// destination, credential, header or environment invalidates the entry.
+	// It is keyed with mcp_tool_scanning.acknowledgment_key because an
+	// unkeyed digest of the transport would let anyone who reads the
+	// configuration test a guessed credential offline.
+	ServerBindingHMAC string `yaml:"server_binding_hmac"`
+	// LegacyServerBindingSHA256 is the unkeyed field this replaced. It is
+	// read only so that a configuration still carrying it is refused with a
+	// pointer to the keyed form instead of being silently ignored.
+	LegacyServerBindingSHA256 string `yaml:"server_binding_sha256" json:"-"`
 	// Tool is the exact raw tool name.
 	Tool string `yaml:"tool"`
 	// Finding is the built-in finding being acknowledged.
@@ -241,8 +250,11 @@ func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, now time.
 		if !mcpAckPlainText(e.Server) {
 			return fmt.Errorf("%s.server is required (the configured server name), at most %d bytes, without control characters", field, maxMCPAckText)
 		}
-		if !validMCPAckHex(strings.ToLower(e.ServerBindingSHA256)) {
-			return fmt.Errorf("%s.server_binding_sha256 must be 64 hex characters (printed at proxy startup)", field)
+		if e.LegacyServerBindingSHA256 != "" {
+			return fmt.Errorf("%s.server_binding_sha256 is no longer accepted: it was an unkeyed digest of transport credentials; set mcp_tool_scanning.acknowledgment_key and copy server_binding_hmac from the candidate the proxy logs", field)
+		}
+		if !ValidMCPAckBindingHMAC(e.ServerBindingHMAC) {
+			return fmt.Errorf("%s.server_binding_hmac must be %s<16 hex key id>:<64 hex>, as logged in the acknowledgment candidate", field, MCPAckBindingHMACPrefix)
 		}
 		if !mcpAckPlainText(e.Tool) {
 			return fmt.Errorf("%s.tool is required, at most %d bytes, without control characters", field, maxMCPAckText)
@@ -282,6 +294,59 @@ func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, now time.
 		seen[k] = i
 	}
 	return nil
+}
+
+// MCPAckBindingHMACPrefix names the keyed binding scheme and its version.
+const MCPAckBindingHMACPrefix = "hmac-sha256-v1:"
+
+// MinMCPAckKeyBytes is the shortest acknowledgment key accepted: a key short
+// enough to guess would restore the offline test the key exists to prevent.
+const MinMCPAckKeyBytes = 32
+
+// ValidMCPAckBindingHMAC reports whether v has the keyed binding form
+// "hmac-sha256-v1:<16 lowercase hex key id>:<64 lowercase hex mac>".
+func ValidMCPAckBindingHMAC(v string) bool {
+	rest, ok := strings.CutPrefix(v, MCPAckBindingHMACPrefix)
+	if !ok {
+		return false
+	}
+	keyID, mac, ok := strings.Cut(rest, ":")
+	return ok && len(keyID) == 16 && validLowerHex(keyID) && len(mac) == 64 && validLowerHex(mac)
+}
+
+func validLowerHex(v string) bool {
+	for _, r := range v {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return v != ""
+}
+
+// ResolveMCPAckKey resolves the acknowledgment key source exactly as
+// configuration load does. The runtime uses it to recheck a pinned key after
+// a reload fails, so a key that is gone or rotated stops being honored.
+func ResolveMCPAckKey(source string) ([]byte, error) {
+	return resolveMCPAckKey(source)
+}
+
+// resolveMCPAckKey resolves the acknowledgment key source. Only an
+// environment reference or an absolute file reference is accepted; the
+// resolver refuses symlinks and files readable by group or others.
+func resolveMCPAckKey(source string) ([]byte, error) {
+	const field = "mcp_tool_scanning.acknowledgment_key"
+	isEnv := strings.HasPrefix(source, "${") && strings.HasSuffix(source, "}") && len(source) > 3
+	if !isEnv && !strings.HasPrefix(source, "file:") {
+		return nil, fmt.Errorf("%s must be \"${ENV_VAR}\" or \"file:/absolute/path\"; a literal key in the configuration would be readable by everyone who can read the entries it protects", field)
+	}
+	key, err := privacy.LoadSalt(source)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	if len(key) < MinMCPAckKeyBytes {
+		return nil, fmt.Errorf("%s resolves to %d bytes; at least %d are required", field, len(key), MinMCPAckKeyBytes)
+	}
+	return key, nil
 }
 
 // ValidateMCPAcknowledgedFinding checks one entry exactly as configuration

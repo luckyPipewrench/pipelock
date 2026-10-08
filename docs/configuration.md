@@ -1531,16 +1531,23 @@ A Credential Request Directive finding refuses the whole `tools/list` under `act
 
 An acknowledgment covers one finding in one tool from one configured server. It lifts only that finding. Every other finding on the tool and every other gate still applies. It doesn't say the text is harmless, only that someone reviewed this tool's complete content. Pipelock compares the whole definition after normalizing it to canonical JSON, so reordering object members doesn't change it and any other edit does.
 
-To get the values, run the proxy with `--server-name`. At startup Pipelock prints the server's transport binding digest. When a tool raises the finding and each match sits wholly within one field, Pipelock logs a one-line JSON entry to copy after you've reviewed the tool. Add `owner`, `reason` and `expires` to it. The entry holds digests and field pointers, never field text. No entry is offered when a match spans two fields, sits in a name, title, output schema or metadata, or when there are more than 64 matches, and the finding keeps enforcing.
+Acknowledgments need a key. Each entry is tied to the server's transport, and that transport often carries credentials (URL user info, headers, child environment). An unkeyed hash of those would let anyone who can read the configuration or the logs test a guessed credential offline, so Pipelock keys the binding with a secret you hold outside the configuration:
+
+1. Generate a separate random key of at least 32 bytes, used for nothing else, for example `head -c 32 /dev/urandom | base64 > /etc/pipelock/ack-binding.key` followed by `chmod 600` on it. Length alone isn't enough: the key must come from a cryptographic random source. A guessable key would let a configuration reader confirm a guess against the key ID and then recompute bindings.
+2. Point `mcp_tool_scanning.acknowledgment_key` at it, as `file:/absolute/path` (a regular file, mode 0600 or stricter, not a symlink) or `${ENV_VAR}`. A literal key in the configuration is refused, since it would be readable by everyone who can read the entries it protects. Any configuration with `acknowledged_findings` and no usable key is refused at load. There is no unkeyed fallback.
+3. Run the proxy with `--server-name`. When a tool raises the finding and each match sits wholly within one field, Pipelock logs a one-line JSON entry to copy after you've reviewed the tool. Add `owner`, `reason` and `expires` to it. The entry holds the keyed binding, digests and field pointers, never field text, the key or the unkeyed transport digest. No entry is offered when a match spans two fields, sits in a name, title, output schema or metadata, or when there are more than 64 matches, or when no usable key is configured, and the finding keeps enforcing.
+
+The keyed binding has the form `hmac-sha256-v1:<key id>:<mac>`. The key ID is derived from the key and names which key an entry was written under, so a rotated key is reported as `binding_key_changed` rather than as a different server.
 
 ```yaml pipelock-fragment
 # pipelock-fragment-id: mcp-acknowledged-findings
 mcp_tool_scanning:
   enabled: true
   action: block
+  acknowledgment_key: "file:/etc/pipelock/ack-binding.key"
   acknowledged_findings:
     - server: vault
-      server_binding_sha256: <printed at startup>
+      server_binding_hmac: <from the logged entry>
       tool: store_secret
       finding: Credential Request Directive
       family_revision: 2
@@ -1563,6 +1570,7 @@ An entry stops applying when any of these change:
 - The tool definition: every member, including `_meta` and any provenance it carries, the text of a field holding a match, or the set of matches.
 - The detector's patterns. A maintainer raises `family_revision` by hand whenever the patterns change, and a test that pins the pattern sources fails until they do. Pipelock doesn't bump it automatically. After a release with a new revision, every entry for the finding goes stale. Review the tool again and add the entry Pipelock logs for the new revision.
 - The transport binding: the upstream URL (scheme, host, user info, path, the query exactly as written, fragment) or the subprocess command, the upstream headers Pipelock sends, and the child environment you set with `--env`, `--env-carrier`, `--env-file-carrier` and `--env-unset`. Rotating a credential held in one of those headers or variables changes the binding too.
+- The acknowledgment key. Rotating it invalidates every entry; copy the entries Pipelock logs under the new key.
 - The expiry. `expires` is required: a UTC timestamp ending in `Z` at most 180 days ahead, or a `YYYY-MM-DD` date at most 180 days ahead that holds through the end of that UTC day. It's checked on every scan.
 
 An entry that exists for the server and tool but no longer matches refuses the `tools/list` under every action, `warn` included, and the log names the reason. With no entry, the finding follows `action` as usual, so removing an entry under `warn` goes back to warning.
@@ -1571,8 +1579,9 @@ Limits worth knowing:
 
 - Environment the server inherits without you naming it isn't part of the binding.
 - A tool definition that isn't valid UTF-8, or has any text that decodes to the replacement character U+FFFD (including a literal one), can't be acknowledged. Different encodings of it would look identical after decoding, so no entry is offered and its findings keep enforcing.
-- The binding digest is printed. If a header or variable it covers holds a short or guessable secret, the digest can be guessed offline, so use high-entropy tokens there.
-- `pipelock mcp proxy` reads its configuration once per session. Revoking an entry there takes a restart, though expiry still applies right away. The HTTP listener under `pipelock run` applies changes on the next `tools/list`.
+- Anyone who holds the key and can read the configuration can still test guesses against a binding. The key belongs to Pipelock alone: keep it out of reach of MCP server processes, out of the configuration and log readership, and don't reuse a signing key or a transport credential for it. An MCP server process receives only a fixed set of system variables plus the overrides you name, so a dedicated key variable isn't passed to it, and `pipelock mcp proxy` refuses to start when an `--env` override or environment carrier names the key variable, or when the key variable is one of those system variables (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TZ`, `TMPDIR`, `SHELL`). A key file is protected only by file permissions: a server process running as the same user can read it unless process isolation specifically denies access to the key file, or the server runs as another account that also lacks read access to it. Don't assume a sandbox or read-only mount blocks the read on its own. A key held in Pipelock's own environment is not readable by a same-user server through `/proc` on Linux, where `pipelock mcp proxy` marks itself non-dumpable before starting the server; on other platforms Pipelock has no such protection, so there a same-user server may be able to read Pipelock's environment.
+- `pipelock mcp proxy` reads its configuration and key once per session. Revoking an entry or rotating or removing the key there takes a restart, though expiry still applies right away.
+- The HTTP listener under `pipelock run` applies a changed configuration on the next `tools/list`. Pipelock rereads the key when the configuration reloads, which happens when the configuration file changes or on `SIGHUP`; changing only the key file doesn't trigger it. If a reload fails while the key is gone, unreadable, too short, readable by others or different, the running configuration is kept for everything else, but every acknowledgment refuses until a reload succeeds with a usable key.
 - An acknowledged `tools/list` passes tool scanning with the finding present, and it's forwarded only if every later check passes too. Tool scanning logs it, captures it as warned and receipts it with an allow verdict, and it earns no adaptive-enforcement credit.
 
 ## MCP Tool Policy

@@ -136,7 +136,7 @@ fragment_expected_error() {
         mcp-session-binding) echo "mcp_session_binding.enabled requires mcp_tool_scanning.enabled" ;;
         adaptive-enforcement) echo "adaptive_enforcement.enabled requires session_profiling.enabled" ;;
         mcp-drift-reset-authority) echo "listener drift reset authority public key" ;;
-        mcp-acknowledged-findings) echo "server_binding_sha256 must be 64 hex characters" ;;
+        mcp-acknowledged-findings) echo "server_binding_hmac must be" ;;
         license-path-precedence) echo "unmarshal errors" ;;
         license-complete-reference | license-container-layout | license-activation) echo "license" ;;
         trusted-rule-key) echo "public_key must be exactly 64 hex chars" ;;

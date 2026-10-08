@@ -5,6 +5,7 @@ package tools
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -36,6 +38,7 @@ const (
 	CredentialAckAcknowledged       = "acknowledged"
 	CredentialAckExpired            = "expired"
 	CredentialAckBindingMismatch    = "binding_mismatch"
+	CredentialAckBindingKeyChanged  = "binding_key_changed"
 	CredentialAckRevisionChanged    = "revision_changed"
 	CredentialAckToolChanged        = "tool_changed"
 	CredentialAckUnattributable     = "unattributable"
@@ -43,8 +46,8 @@ const (
 	CredentialAckFieldChanged       = "field_changed"
 )
 
-// ServerBindingDigest returns the digest an operator copies into an
-// acknowledgment's server_binding_sha256. kind names the transport
+// ServerBindingDigest returns the digest an acknowledgment's
+// server_binding_sha256 must equal. kind names the transport
 // ("subprocess" or "upstream") and parts are its identity: the launch command
 // and arguments, or the upstream URL. Each part is length-prefixed so no two
 // different part lists share a digest.
@@ -68,9 +71,10 @@ func ServerBindingDigest(kind string, parts ...string) string {
 // case-insensitive), user info, an opaque part, the escaped path, whether an
 // empty query was written ("/mcp?" is a different request target from
 // "/mcp"), the raw query exactly as written including parameter order, and the
-// fragment. Only the digest is
-// ever printed, so credentials in the URL never reach a log. A URL that does
-// not parse is bound by its exact bytes.
+// fragment. The digest is unkeyed: anyone holding it can test a guessed
+// credential offline, so it is not confidential and is never written to
+// logs or candidates. Not printing the raw bytes does not protect a short
+// or guessable secret. A URL that does not parse is bound by its exact bytes.
 func UpstreamBindingDigest(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -81,6 +85,79 @@ func UpstreamBindingDigest(raw string) string {
 		userinfo = u.User.String()
 	}
 	return ServerBindingDigest("upstream", strings.ToLower(u.Scheme), strings.ToLower(u.Host), userinfo, u.Opaque, u.EscapedPath(), strconv.FormatBool(u.ForceQuery), u.RawQuery, u.EscapedFragment())
+}
+
+// CredentialAckSet is the configured acknowledgments together with the
+// deployment key their bindings are keyed with. Keeping both in one value
+// means a configuration copied for one transport cannot carry the entries
+// without the key; a set with no usable key matches nothing.
+type CredentialAckSet struct {
+	Entries []config.MCPAcknowledgedFinding
+	key     []byte
+	keyID   string
+	revoked atomic.Bool
+}
+
+// Revoke stops the set's key from validating any entry, permanently. Every
+// configuration copy shares the set, so revocation reaches all of them at
+// once and cannot fail. A later configuration builds a new set.
+func (s *CredentialAckSet) Revoke() {
+	if s != nil {
+		s.revoked.Store(true)
+	}
+}
+
+const (
+	ackBindingDomainV1    = "pipelock-mcp-ack-binding-v1"
+	ackIdentifierDomainV1 = "pipelock-mcp-ack-key-id-v1"
+)
+
+// NewCredentialAckSet pairs entries with the pinned acknowledgment key. A
+// key shorter than config.MinMCPAckKeyBytes is dropped, so every entry
+// refuses rather than being checked with a guessable key.
+func NewCredentialAckSet(entries []config.MCPAcknowledgedFinding, key []byte) *CredentialAckSet {
+	if len(entries) == 0 && len(key) == 0 {
+		return nil
+	}
+	set := &CredentialAckSet{Entries: entries}
+	if len(key) >= config.MinMCPAckKeyBytes {
+		set.key = append([]byte(nil), key...)
+		mac := hmac.New(sha256.New, set.key)
+		_, _ = mac.Write([]byte(ackIdentifierDomainV1))
+		set.keyID = hex.EncodeToString(mac.Sum(nil)[:8])
+	}
+	return set
+}
+
+// keyedBinding returns the exported form of an exact transport digest:
+// hmac-sha256-v1:<key id>:<HMAC-SHA256 over the domain and the digest>. It
+// returns "" with no key or no digest, which no entry can equal.
+func (s *CredentialAckSet) keyedBinding(digest string) string {
+	if s == nil || len(s.key) == 0 || digest == "" || s.revoked.Load() {
+		return ""
+	}
+	mac := hmac.New(sha256.New, s.key)
+	_, _ = mac.Write([]byte(ackBindingDomainV1))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(strings.ToLower(digest)))
+	return config.MCPAckBindingHMACPrefix + s.keyID + ":" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// bindingOutcome compares an entry's keyed binding with the transport's.
+// An entry written under another key reports the rotation; any other
+// difference is a binding mismatch. Both refuse.
+func (s *CredentialAckSet) bindingOutcome(entryBinding, digest string) string {
+	want := s.keyedBinding(digest)
+	if want == "" {
+		return CredentialAckBindingMismatch
+	}
+	if !strings.HasPrefix(entryBinding, config.MCPAckBindingHMACPrefix+s.keyID+":") {
+		return CredentialAckBindingKeyChanged
+	}
+	if !hmac.Equal([]byte(entryBinding), []byte(want)) {
+		return CredentialAckBindingMismatch
+	}
+	return ""
 }
 
 // WithServer returns a copy of c bound to the configured server name and
@@ -296,7 +373,10 @@ func findCredentialAck(cfg *ToolScanConfig, toolName string) (config.MCPAcknowle
 	if cfg == nil || cfg.ServerName == "" {
 		return config.MCPAcknowledgedFinding{}, false
 	}
-	for _, e := range cfg.CredentialAcks {
+	if cfg.CredentialAcks == nil {
+		return config.MCPAcknowledgedFinding{}, false
+	}
+	for _, e := range cfg.CredentialAcks.Entries {
 		if e.Server == cfg.ServerName && e.Tool == toolName && e.Finding == config.MCPAckFindingRequestDirective {
 			return e, true
 		}
@@ -312,8 +392,8 @@ func evaluateCredentialAck(entry config.MCPAcknowledgedFinding, cfg *ToolScanCon
 	if !config.MCPAckActive(entry, now) {
 		return CredentialAckExpired
 	}
-	if cfg.ServerBindingSHA256 == "" || !strings.EqualFold(entry.ServerBindingSHA256, cfg.ServerBindingSHA256) {
-		return CredentialAckBindingMismatch
+	if outcome := cfg.CredentialAcks.bindingOutcome(entry.ServerBindingHMAC, cfg.ServerBindingSHA256); outcome != "" {
+		return outcome
 	}
 	if entry.FamilyRevision != credentialRequestFamilyRevision {
 		return CredentialAckRevisionChanged
@@ -380,15 +460,16 @@ func (r ToolScanResult) CredentialAckApplied() bool {
 // occurrences. It is offered only when every occurrence is attributable and
 // the configured server name and binding are known. It carries digests and
 // field pointers, never field text. Owner, reason and expiry are left for the
-// operator to supply.
+// operator to supply. The binding is the keyed form only: the exact
+// transport digest is never exported.
 type CredentialAckCandidate struct {
-	Server              string                    `json:"server"`
-	ServerBindingSHA256 string                    `json:"server_binding_sha256"`
-	Tool                string                    `json:"tool"`
-	Finding             string                    `json:"finding"`
-	FamilyRevision      int                       `json:"family_revision"`
-	ToolSHA256          string                    `json:"tool_sha256"`
-	Occurrences         []CredentialAckOccurrence `json:"occurrences"`
+	Server            string                    `json:"server"`
+	ServerBindingHMAC string                    `json:"server_binding_hmac"`
+	Tool              string                    `json:"tool"`
+	Finding           string                    `json:"finding"`
+	FamilyRevision    int                       `json:"family_revision"`
+	ToolSHA256        string                    `json:"tool_sha256"`
+	Occurrences       []CredentialAckOccurrence `json:"occurrences"`
 }
 
 // CredentialAckOccurrence is one occurrence in a candidate.
@@ -424,7 +505,7 @@ func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialReq
 // only an operator can supply.
 func (c *CredentialAckCandidate) entry() config.MCPAcknowledgedFinding {
 	e := config.MCPAcknowledgedFinding{
-		Server: c.Server, ServerBindingSHA256: c.ServerBindingSHA256, Tool: c.Tool, Finding: c.Finding,
+		Server: c.Server, ServerBindingHMAC: c.ServerBindingHMAC, Tool: c.Tool, Finding: c.Finding,
 		FamilyRevision: c.FamilyRevision, ToolSHA256: c.ToolSHA256,
 	}
 	for _, o := range c.Occurrences {
@@ -437,7 +518,11 @@ func (c *CredentialAckCandidate) entry() config.MCPAcknowledgedFinding {
 }
 
 func buildCredentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialRequestAttribution) *CredentialAckCandidate {
-	if cfg == nil || cfg.ServerName == "" || cfg.ServerBindingSHA256 == "" || !att.Attributable || len(att.Occurrences) == 0 {
+	if cfg == nil || cfg.ServerName == "" || !att.Attributable || len(att.Occurrences) == 0 {
+		return nil
+	}
+	binding := cfg.CredentialAcks.keyedBinding(cfg.ServerBindingSHA256)
+	if binding == "" {
 		return nil
 	}
 	digest, ok := completeToolDigest(tool)
@@ -445,12 +530,12 @@ func buildCredentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credenti
 		return nil
 	}
 	c := &CredentialAckCandidate{
-		Server:              cfg.ServerName,
-		ServerBindingSHA256: cfg.ServerBindingSHA256,
-		Tool:                tool.Name,
-		Finding:             config.MCPAckFindingRequestDirective,
-		FamilyRevision:      credentialRequestFamilyRevision,
-		ToolSHA256:          digest,
+		Server:            cfg.ServerName,
+		ServerBindingHMAC: binding,
+		Tool:              tool.Name,
+		Finding:           config.MCPAckFindingRequestDirective,
+		FamilyRevision:    credentialRequestFamilyRevision,
+		ToolSHA256:        digest,
 	}
 	for _, o := range att.Occurrences {
 		text, ok := toolFieldText(tool, o.Pointer)

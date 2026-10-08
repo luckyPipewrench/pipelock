@@ -20,6 +20,6 @@ mcp_tool_policy:
 
 `arg_source` accepts only `patch_targets` and requires `arg_pattern`. Add `arg_key` to scope structured path values alongside the parsed patch targets. Pipelock still inspects patch headers regardless of their argument key; descriptions and replacement content outside matching keys are excluded. Calls without patch headers use the scoped values. If a rule omits `action`, it inherits `mcp_tool_policy.action`.
 
-Built-in credential destination rules cover recognized file writes, edits, moves, copies and patches. They inspect target fields and patch headers, preserving each preset's configured credential action. Ordinary `.env` writes and document content that mentions a credential path remain allowed by these rules. Custom tool names, custom credential locations and a remote server's filesystem aliases need operator-specific rules or filesystem containment.
+Built-in credential destination rules cover recognized file writes, edits, moves, copies and patches, including NTFS stream destinations. They inspect target fields and patch headers, preserving each preset's configured credential action. Ordinary `.env` writes and document content that mentions a credential path remain allowed by these rules. Custom tool names, custom credential locations and a remote server's filesystem aliases need operator-specific rules or filesystem containment.
 
 See the [MCP development listener guide](mcp-inspector-front.md) for a reverse proxy example and the [false-positive tuning guide](false-positive-tuning.md) for DLP warn-mode patterns.

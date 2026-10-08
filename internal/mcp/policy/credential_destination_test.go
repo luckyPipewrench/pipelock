@@ -15,6 +15,43 @@ import (
 
 const fileMutationRuleName = "Credential File Write"
 
+func TestCredentialDestinationFileStreams(t *testing.T) {
+	for _, preset := range []string{"built-in", "audit", "balanced", "claude-code", "cursor", "generic-agent", "hostile-model", "strict"} {
+		t.Run(preset, func(t *testing.T) {
+			cfg := config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()}
+			if preset != "built-in" {
+				loaded, err := config.Load(filepath.Join("..", "..", "..", "configs", preset+".yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg = loaded.MCPToolPolicy
+			}
+			pc := New(cfg)
+			wantAction := effectiveRuleAction(t, cfg, "Credential File Access")
+			for _, path := range []string{`.ssh\config`, `.ssh\rc`, `.aws\credentials`, `.aws\config`, `.kube\config`, `.docker\config.json`, `.netrc`} {
+				for _, stream := range []string{"::$DATA", ":fixture"} {
+					target := `C:\Users\demo\` + path + stream
+					for _, call := range []struct {
+						tool string
+						args map[string]any
+					}{
+						{"write_file", map[string]any{"path": target, "content": "fixture"}},
+						{"edit_block", map[string]any{"file_path": target, "old_string": "old", "new_string": "new"}},
+						{"move_file", map[string]any{"source": "notes.txt", "destination": target}},
+						{"copy_file", map[string]any{"source": "notes.txt", "destination": target}},
+						{"apply_patch", map[string]any{"path": target, "content": "fixture"}},
+					} {
+						assertPolicyCall(t, pc, call.tool, call.args, fileMutationRuleName, wantAction)
+					}
+				}
+			}
+			for _, path := range []string{`.kube\config.example::$DATA`, `.docker\config.json.example:fixture`, `notes.txt::$DATA`} {
+				assertPolicyAllowed(t, pc, "write_file", map[string]any{"path": `C:\Users\demo\` + path, "content": "fixture"})
+			}
+		})
+	}
+}
+
 func TestCredentialDestinationPolicyParity(t *testing.T) {
 	for _, preset := range []string{"built-in", "audit", "balanced", "claude-code", "cursor", "generic-agent", "hostile-model", "strict"} {
 		t.Run(preset, func(t *testing.T) {

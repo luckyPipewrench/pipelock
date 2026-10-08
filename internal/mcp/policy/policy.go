@@ -1550,7 +1550,7 @@ const (
 	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
 	// Credential control files can affect later authentication or command
 	// execution. Dotenv files remain writable for ordinary application setup.
-	credentialWritePathPattern = `(?:^|[\\/])\.ssh[\\/]` + sshKeyNamePattern + `|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/])`
+	credentialWritePathPattern = `(?:^|[\\/])\.ssh[\\/]` + sshKeyNamePattern + `|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:])`
 	fileTargetKeyPattern       = `(?i)^(path|file_?path|file|filename|target_?file)$`
 	fileDestinationKeyPattern  = `(?i)^(destination|destination_?path|dest|new_?path|target|target_?path)$`
 )

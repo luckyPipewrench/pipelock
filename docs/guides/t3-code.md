@@ -104,9 +104,26 @@ as the wrong path. Preserve its verdict and exact binary/revision identities.
 Pipelock auto-enables MCP input, tool-definition, and tool-policy scanning when
 no explicit configuration overrides them. The tested default actions were
 input `block`, response `block`, tool definitions `warn`, and tool policy
-`warn`. If you add `--config` to the wrapper, validate that configuration and
-repeat the allow/deny checks. Do not silently disable scanning to fix a tool
-discovery failure. See [false-positive tuning](false-positive-tuning.md).
+`warn`. The routing checks above do not establish each scanner's behavior.
+Send scanner-specific MCP probes through the wrapper and check the results:
+
+- An ordinary capabilities call succeeds.
+- A tool argument containing a synthetic credential is refused by input DLP
+  with `dlp_match`, before the upstream tool executes.
+- A tool definition matching a tool-scanning rule produces the expected warning.
+- A call matching a tool-policy rule produces the configured policy decision.
+- A tool response matching a response-scanning rule is blocked before its
+  content reaches the provider.
+
+Use synthetic fixtures, never real credentials. Exercise tool-definition,
+tool-policy, and response probes against a disposable test MCP server through
+the same wrapper and configuration; do not alter a live T3 tool or execute a
+dangerous operation to trigger a rule. A warning is not a block. Preserve the
+matched rule, configured action, and observed result for each check.
+
+If you add `--config` to the wrapper, validate that configuration and repeat
+these probes against its expected actions. Do not silently disable scanning
+to fix a tool discovery failure. See [false-positive tuning](false-positive-tuning.md).
 
 ## Troubleshooting
 

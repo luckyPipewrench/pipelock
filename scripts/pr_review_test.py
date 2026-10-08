@@ -6742,7 +6742,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                         {0: pr_review.JudgeDecision("unresolved", reason="definition needed", requests=[pr_review.EvidenceRequest(search="GuardValue")])},
                         owners={0: owner}, records={owner: record})
                 self.assertEqual(incomplete, cut or failed)
-                self.assertEqual(bool(record.requested_proofs), not (cut or failed))
+                self.assertEqual(any(record.requested_proofs), not (cut or failed))
                 self.assertEqual("<requested-search-truncated>" in text, cut or failed)
 
     def test_synthesis_http_failure_still_judges_collected_candidates(self):
@@ -7104,14 +7104,20 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
 
     def test_requested_fact_must_reach_the_repair_prompt(self):
         candidate = self.candidate(line=1)
-        for scenario in ("failed", "exhausted", "no-matches", "path", "path-header", "mixed", "omitted", "already-owned", "unseen-line"):
+        for scenario in ("failed", "exhausted", "no-matches", "path", "path-header", "mixed", "mixed-read-failure", "joint-one-failed", "owned-plus-undelivered", "both-delivered", "omitted", "already-owned", "unseen-line"):
             for verdict in ("keep", "drop"):
                 with self.subTest(scenario=scenario, verdict=verdict):
                     requests = [{"search": "ConsumerValidate"}]
-                    if scenario in {"path", "path-header", "mixed", "omitted"}:
+                    if scenario in {"path", "path-header", "mixed", "mixed-read-failure", "both-delivered", "joint-one-failed", "omitted"}:
                         requests = [{"path": "consumer.go", "line": 1}]
-                    if scenario == "mixed":
+                    if scenario in {"mixed", "mixed-read-failure"}:
                         requests.insert(0, {"path": "missing.go", "line": 1})
+                    if scenario == "both-delivered":
+                        requests.append({"path": "other.go", "line": 1})
+                    if scenario == "joint-one-failed":
+                        requests.append({"search": "ConsumerValidate"})
+                    if scenario == "owned-plus-undelivered":
+                        requests.insert(0, {"path": candidate.path, "line": 1})
                     if scenario in {"already-owned", "unseen-line"}:
                         requests = [{"path": candidate.path, "line": 1 if scenario == "already-owned" else 900}]
                     first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer required", "requests": requests}]}
@@ -7125,18 +7131,69 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                         pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
                     ), mock.patch.object(pr_review, "_read_commit_file", side_effect=read), mock.patch.object(
                         pr_review, "cross_file_evidence", return_value=("", False)
-                    ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, scenario == "failed")), mock.patch.object(
+                    ), mock.patch.object(pr_review, "_path_absent_at", return_value=scenario == "mixed"), mock.patch.object(
+                        pr_review, "_bounded_git_grep", return_value=([], False, scenario in {"failed", "joint-one-failed", "owned-plus-undelivered"})
+                    ), mock.patch.object(
                         pr_review, "MAX_JUDGE_EVIDENCE_REQUESTS", 0 if scenario in {"exhausted", "already-owned", "unseen-line"} else 8
                     ), mock.patch.object(pr_review, "MAX_REQUESTED_EVIDENCE_TOKENS", 1 if scenario == "omitted" else 2000), mock.patch.object(
                         pr_review, "call_model", side_effect=[first, repaired]
                     ) as model:
                         result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
-                    missing = scenario in {"failed", "exhausted", "omitted", "unseen-line"}
+                    missing = scenario in {"failed", "exhausted", "omitted", "unseen-line", "mixed-read-failure", "joint-one-failed", "owned-plus-undelivered"}
                     self.assertEqual(result[4], [candidate] if missing else [])
                     self.assertEqual(result[0], [candidate] if not missing and verdict == "keep" else [])
                     self.assertEqual(model.call_count, 2)
                     if missing:
                         self.assertIn("still missing", options.evidence[pr_review.candidate_identifier(candidate)].reason)
+
+    def test_path_absence_requires_successful_literal_tree_lookup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            init_git_fixture(root)
+            (root / "present.go").write_text("package example\n")
+            (root / "[special].go").write_text("package example\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+            for revision, path, seconds, absent in (
+                ("HEAD", "missing.go", 10, True),
+                ("HEAD", "present.go", 10, False),
+                ("HEAD", "[special].go", 10, False),
+                ("HEAD", "*.go", 10, True),
+                ("bad-revision", "missing.go", 10, False),
+                ("HEAD", "missing.go", -1, False),
+            ):
+                with self.subTest(revision=revision, path=path, seconds=seconds):
+                    self.assertEqual(pr_review._path_absent_at(root, revision, path, time.monotonic() + seconds), absent)
+            for error in (OSError("read failed"), subprocess.TimeoutExpired("git", 1), ValueError("invalid path")):
+                with mock.patch.object(pr_review.subprocess, "run", side_effect=error):
+                    self.assertFalse(pr_review._path_absent_at(root, "HEAD", "missing.go", time.monotonic() + 10))
+
+    def test_automatic_searches_reserve_requested_search_allowance(self):
+        candidate = self.candidate()
+        owner = pr_review.candidate_identifier(candidate)
+        budget = pr_review.EvidenceBudget()
+        record = pr_review.CandidateEvidence(owner)
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(
+            pr_review, "_evidence_terms", return_value=["Alpha", "Beta", "Gamma", "Delta"]
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, False)) as search:
+            pr_review.cross_file_evidence(self.binding, [candidate], {}, budget=budget)
+            self.assertEqual(search.call_count, pr_review.MAX_EVIDENCE_SEARCHES // 2)
+            decision = pr_review.JudgeDecision("unresolved", requests=[pr_review.EvidenceRequest(search="DecidingGuard")])
+            text, incomplete = pr_review.requested_repository_evidence(self.binding, {0: decision}, budget=budget, owners={0: owner}, records={owner: record})
+            self.assertFalse(incomplete)
+            self.assertIn("<no matches>", text)
+            self.assertTrue(record.requested_proofs[0])
+            self.assertTrue(any(call.args[1] == "DecidingGuard" for call in search.call_args_list))
+            budget.searches = pr_review.MAX_EVIDENCE_SEARCHES
+            decision = pr_review.JudgeDecision("unresolved", requests=[pr_review.EvidenceRequest(search="UnsearchedGuard")])
+            text, incomplete = pr_review.requested_repository_evidence(self.binding, {0: decision}, budget=budget, owners={0: owner}, records={owner: record})
+            self.assertTrue(incomplete)
+            self.assertNotIn("<no matches>", text)
+            self.assertIn("<requested-search-incomplete-or-not-run>", text)
+            self.assertEqual(record.requested_proofs, [[]])
+            self.assertLessEqual(search.call_count, pr_review.MAX_EVIDENCE_SEARCHES)
 
     def test_schema_repair_uses_exactly_one_spare_call(self):
         state, progress, phases = self.run_discovery(5, None)

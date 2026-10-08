@@ -352,7 +352,7 @@ class CandidateEvidence:
     retrieval: str = "not-requested"
     verdict: str = "not-admitted"
     locations: list[tuple[str, str, int, int]] = field(default_factory=list)
-    requested_proofs: list[str] = field(default_factory=list)
+    requested_proofs: list[list[str]] = field(default_factory=list)
 
 
 @dataclass
@@ -954,6 +954,7 @@ def build_judge_prompt(
         "Use unresolved only when the decisive fact is outside the repository or the prompt explicitly says required evidence was omitted or unavailable. "
         "On the first pass, if repository evidence could decide the premise but was not supplied, return unresolved and request the missing evidence. "
         "Each request must contain either a repository-relative path (plus an optional positive line) or one literal search string. Do not request commands or tests. "
+        "Request only facts each required to decide; an unanswered request keeps the candidate unresolved. A confirmed absent path or complete search with no matches is an answer. "
         "On the final targeted recheck, requests must be empty: decide from the expanded evidence or name the external, unavailable or omitted fact still required. "
         "An unresolved reason must name that missing external or omitted evidence. Unresolved candidates are withheld and require human verification rather than becoming actionable findings. "
         "Return JSON only: {\"findings\":[{\"index\":integer,\"verdict\":\"keep|drop|unresolved\",\"reason\":\"short\",\"requests\":[{\"path\":\"relative/path\",\"line\":integer|null}|{\"search\":\"literal\"}]}]}. "
@@ -2873,10 +2874,10 @@ def _cached_evidence_read(root: Path, binding: PullBinding, path: str, budget: E
     return budget.contents[key]
 
 
-def _cached_evidence_search(root: Path, term: str, binding: PullBinding, budget: EvidenceBudget, deadline: float, *, extended: bool = False) -> tuple[list[str], bool, bool]:
+def _cached_evidence_search(root: Path, term: str, binding: PullBinding, budget: EvidenceBudget, deadline: float, *, extended: bool = False, reserve: int = 0) -> tuple[list[str], bool, bool]:
     key = (term, extended)
     if key not in budget.searched:
-        if budget.searches >= MAX_EVIDENCE_SEARCHES:
+        if budget.searches >= MAX_EVIDENCE_SEARCHES - reserve:
             return [], True, False
         budget.searches += 1
         budget.searched[key] = _bounded_git_grep(root, term, treeish=binding.head_sha, deadline=deadline, extended=extended, all_hits=True)
@@ -2905,38 +2906,36 @@ def cross_file_evidence(
     hits: list[list[tuple[int, str, int, str]]] = [[] for _ in candidates]
     cuts = [False for _ in candidates]
     failures = [False for _ in candidates]
-    # Round-robin terms let a large first claim share the search allowance.
-    for turn in range(max((len(items) for items in terms), default=0)):
-        for index, finding in enumerate(candidates):
-            if turn >= len(terms[index]):
+    # Round-robin literal terms first; definition expansion must not consume
+    # the allowance before later terms or the judge's explicit requests.
+    searches = [(index, items[turn])
+                for turn in range(max((len(items) for items in terms), default=0))
+                for index, items in enumerate(terms) if turn < len(items)]
+    jobs = [(index, term, False) for index, term in searches]
+    jobs.extend((index, _definition_pattern(term), True) for index, term in searches if _IDENTIFIER_TERM.match(term))
+    for index, term, extended in jobs:
+        finding = candidates[index]
+        lines, cut, failed = _cached_evidence_search(root, term, binding, budget, evidence_deadline, extended=extended, reserve=MAX_EVIDENCE_SEARCHES // 2)
+        cuts[index] |= cut
+        failures[index] |= failed
+        supplied = _context_ranges(contexts.get(_context_key(finding, candidates), ""))
+        seen = {(path, line) for _, path, line, _ in hits[index]}
+        per_path: dict[str, int] = {}
+        for raw in lines:
+            match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
+            if match is None:
+                cuts[index] = True
                 continue
-            term = terms[index][turn]
-            lines, cut, failed = _cached_evidence_search(root, term, binding, budget, evidence_deadline)
-            cuts[index] |= cut
-            failures[index] |= failed
-            if _IDENTIFIER_TERM.match(term):
-                definitions, cut, failed = _cached_evidence_search(root, _definition_pattern(term), binding, budget, evidence_deadline, extended=True)
-                lines = [*definitions, *lines]
-                cuts[index] |= cut
-                failures[index] |= failed
-            supplied = _context_ranges(contexts.get(_context_key(finding, candidates), ""))
-            seen = {(path, line) for _, path, line, _ in hits[index]}
-            per_path: dict[str, int] = {}
-            for raw in lines:
-                match = re.match(rf"{re.escape(binding.head_sha)}:([^:]+):(\d+):(.*)", raw)
-                if match is None:
-                    cuts[index] = True
-                    continue
-                path, number, text = match.groups()
-                line = int(number)
-                if (path, line) in seen or (path == finding.path and any(start <= line <= end for start, end in supplied)):
-                    continue
-                if per_path.get(path, 0) >= 3:
-                    cuts[index] = True
-                    continue
-                per_path[path] = per_path.get(path, 0) + 1
-                seen.add((path, line))
-                hits[index].append((0, path, line, text))
+            path, number, text = match.groups()
+            line = int(number)
+            if (path, line) in seen or (path == finding.path and any(start <= line <= end for start, end in supplied)):
+                continue
+            if per_path.get(path, 0) >= 3:
+                cuts[index] = True
+                continue
+            per_path[path] = per_path.get(path, 0) + 1
+            seen.add((path, line))
+            hits[index].append((0, path, line, text))
     rendered: list[str] = []
     omitted = False
     allowance = max(0, max_tokens // max(1, len(candidates)))
@@ -3067,6 +3066,21 @@ def _bounded_change_summaries(
     return retained, False
 
 
+def _path_absent_at(root: Path, revision: str, path: str, deadline: float) -> bool:
+    """Prove absence without confusing a failed or oversized blob read with it."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "--literal-pathspecs", "-C", str(root), "ls-tree", "-z", "--name-only", revision, "--", path],
+            capture_output=True, check=False, timeout=min(10, remaining),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0 and result.stdout == b""
+
+
 def requested_repository_evidence(
     binding: PullBinding,
     decisions: dict[int, JudgeDecision],
@@ -3085,6 +3099,10 @@ def requested_repository_evidence(
     evidence_deadline = min(deadline or float("inf"), time.monotonic() + MAX_REQUESTED_EVIDENCE_SECONDS)
     root = _local_review_root(binding.head_sha, binding.correlation, evidence_deadline)
     rendered: dict[int, list[str]] = {index: [] for index in pending}
+    for index in pending:
+        record = (records or {}).get((owners or {}).get(index, str(index)))
+        if record is not None:
+            record.requested_proofs.clear()
     unavailable = False
     for turn in range(MAX_REQUESTS_PER_CANDIDATE):
         for index, wanted in pending.items():
@@ -3092,6 +3110,9 @@ def requested_repository_evidence(
                 continue
             owner = (owners or {}).get(index, str(index))
             record = (records or {}).get(owner)
+            proofs: list[str] = []
+            if record is not None:
+                record.requested_proofs.append(proofs)
             if root is None or budget.requests >= MAX_JUDGE_EVIDENCE_REQUESTS or time.monotonic() >= evidence_deadline:
                 rendered[index].append("<requested-repository-evidence-unavailable-or-exhausted>")
                 unavailable = True
@@ -3107,6 +3128,12 @@ def requested_repository_evidence(
                 if content is None:
                     piece = f"<requested-path-unavailable: {request.path}>"
                     failed = True
+                    if budget.reads < MAX_JUDGE_CONTEXT_FETCHES:
+                        budget.reads += 1
+                        if _path_absent_at(root, binding.head_sha, request.path, evidence_deadline):
+                            piece = f"<path-absent-at-reviewed-commit: {request.path}>"
+                            proofs.append(piece)
+                            failed = False
                 else:
                     context = _line_context(content, request.line, max_tokens=min(700, max_tokens // len(pending)))
                     labelled = re.sub(r"(?m)^(\d+): ", lambda match: f"{request.path}:{match[1]}: ", context)
@@ -3140,7 +3167,8 @@ def requested_repository_evidence(
                         context, extra_cut = _render_evidence_window(path, content, anchors)
                         pieces.append(context)
                         cut |= extra_cut
-                piece = f"REQUESTED LITERAL SEARCH {request.search!r}\n" + ("\n".join(pieces) or "<no matches>")
+                empty = "<requested-search-incomplete-or-not-run>" if cut or failed else "<no matches>"
+                piece = f"REQUESTED LITERAL SEARCH {request.search!r}\n" + ("\n".join(pieces) or empty)
                 if cut:
                     piece += "\n<requested-search-truncated>"
                 if failed:
@@ -3149,9 +3177,9 @@ def requested_repository_evidence(
             unavailable |= failed or cut
             if record is not None:
                 if not failed:
-                    record.requested_proofs.extend(re.findall(r"(?m)^[^<>\n]+:\d+: .+$", piece))
+                    proofs.extend(re.findall(r"(?m)^[^<>\n]+:\d+: .+$", piece))
                     if not cut and request.search is not None and not matches:
-                        record.requested_proofs.append(piece)
+                        proofs.append(piece)
                 if failed or cut:
                     record.retrieval = "unavailable-or-truncated"
                 elif record.retrieval in {"not-requested", "retrieved"}:
@@ -3285,7 +3313,8 @@ def judge_findings(
         # a fixed small pool into unusable candidate slices. Retrieval limits
         # remain shared, and serialized escaping is checked below.
         evidence_budget = min(6_000, headroom - requested_budget)
-        evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=evidence_budget, budget=shared, deadline=retrieval_deadline)
+        automatic_deadline = min(retrieval_deadline, retrieval_started + shared.seconds_remaining / 2)
+        evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=evidence_budget, budget=shared, deadline=automatic_deadline)
         if unavailable:
             evidence += "\n<some-candidate-repository-evidence-unavailable>"
         requested = ""
@@ -3338,16 +3367,15 @@ def judge_findings(
     pending = [index for index in available if index not in decisions or decisions[index].verdict == "unresolved"]
     # An explicit request declares missing evidence. Already supplied head
     # locations can satisfy a repeated path request, but not an unseen line.
-    asked: dict[int, bool] = {}
+    asked: dict[int, list[bool]] = {}
     for index, decision in decisions.items():
         if decision.verdict == "unresolved" and decision.requests:
             record = options.evidence[candidate_identifier(candidates[index])]
-            asked[index] = any(
+            asked[index] = [any(
                 request.path == path and revision == binding.head_sha
                 and (request.line is None or start <= request.line <= end)
-                for request in decision.requests
                 for path, revision, start, end in record.locations
-            )
+            ) for request in decision.requests]
     feedback = {primary[local]: codes for local, codes in primary_validation.by_index.items() if local < len(primary)}
     if primary_validation.counts and not feedback:
         feedback = {index: set(primary_validation.counts) for index in primary}
@@ -3392,7 +3420,10 @@ def judge_findings(
             supplied_code = bool(re.search(r"(?m)^[^<>\n]+:\d+: ", own_evidence))
             if record.source in {"unavailable", "changed-hunk-fallback", "file-start-fallback"} and not supplied_code and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Candidate path or anchor was unavailable; decisive repository evidence is still missing.")
-            elif index in asked and not asked[index] and not any(proof in own_evidence for proof in record.requested_proofs) and decision.verdict in {"keep", "drop"}:
+            elif index in asked and not all(
+                owned or (slot < len(record.requested_proofs) and any(proof in own_evidence for proof in record.requested_proofs[slot]))
+                for slot, owned in enumerate(asked[index])
+            ) and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Repository evidence the first pass required was not supplied; that fact is still missing.")
             record.verdict, record.reason = decision.verdict, decision.reason or "Decisive evidence was not classified."
             if decision.verdict == "keep":

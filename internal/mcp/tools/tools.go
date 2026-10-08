@@ -2600,8 +2600,16 @@ func uninspectableBatchElement(elem json.RawMessage) (ToolScanResult, bool) {
 	case ToolsListMalformed:
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: ToolsListMalformedDetail, RPCID: rpc.ID}, true
 	}
-	if _, err := parseToolsList(rpc.Result); err != nil {
+	defs, err := parseToolsList(rpc.Result)
+	if err != nil {
 		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: "tools/list result is not a complete tool inventory", RPCID: rpc.ID}, true
+	}
+	// A definition can parse and still be refused before scanning: oversized
+	// agent-visible text, a schema nested past the depth bound, or an opaque
+	// media payload. Those refusals happen inside the scan, after earlier
+	// elements have already been recorded, so they are checked here too.
+	if detail := uninspectableToolDefinition(defs); detail != "" {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: detail, RPCID: rpc.ID}, true
 	}
 	return ToolScanResult{}, false
 }

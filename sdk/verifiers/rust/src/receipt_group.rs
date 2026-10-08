@@ -2139,8 +2139,12 @@ mod tests {
     // promptly instead of blocking the verifier on the open.
     #[test]
     fn fifo_swapped_in_after_the_check_fails_closed_without_blocking() {
-        let dir = std::env::temp_dir().join(format!("plk-fifo-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("plk-fifo-{}-{nonce}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
         let regular = dir.join("regular");
         fs::write(&regular, b"x\n").unwrap();
         let fifo = dir.join("swapped");

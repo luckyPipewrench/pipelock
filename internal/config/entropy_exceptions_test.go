@@ -561,3 +561,27 @@ websocket_proxy:
 		}
 	}
 }
+
+// A whitespace-only value in the unused field counts as absent, so the route is
+// accepted; validation must also clear it, or the runtime matcher, which needs
+// the unused field empty, would leave the accepted exception inert.
+func TestValidateEntropyWarnRouteClearsWhitespaceAlternateField(t *testing.T) {
+	prefix := prefixRoute(prefixRoutePrefix)
+	prefix.Path = " \t"
+	exact := prefixRoute("")
+	exact.Path = "/v1/files"
+	exact.PathPrefix = "  "
+	exact.ContentTypes = []string{contentTypeOctet}
+	exact.Host = "other.vendor.example"
+	cfg := warnRouteConfig(prefix, exact)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	routes := cfg.RequestBodyScanning.ContentEntropyWarnRoutes
+	if routes[0].Path != "" || routes[0].PathPrefix == "" {
+		t.Fatalf("prefix route = path %q prefix %q, want path cleared", routes[0].Path, routes[0].PathPrefix)
+	}
+	if routes[1].PathPrefix != "" || routes[1].Path != "/v1/files" {
+		t.Fatalf("exact route = path %q prefix %q, want prefix cleared", routes[1].Path, routes[1].PathPrefix)
+	}
+}

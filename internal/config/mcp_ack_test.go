@@ -195,3 +195,14 @@ func TestValidateReloadReportsAcknowledgmentChanges(t *testing.T) {
 		t.Fatal("unchanged acknowledgments reported a change")
 	}
 }
+
+func TestValidateMCPAcknowledgedFindingMatchesListValidation(t *testing.T) {
+	if err := ValidateMCPAcknowledgedFinding(validAck(), ackTestNow); err != nil {
+		t.Fatalf("valid entry refused: %v", err)
+	}
+	bad := validAck()
+	bad.Owner = ""
+	if err := ValidateMCPAcknowledgedFinding(bad, ackTestNow); err == nil || !strings.Contains(err.Error(), "owner is required") {
+		t.Fatalf("err = %v, want the owner refusal", err)
+	}
+}

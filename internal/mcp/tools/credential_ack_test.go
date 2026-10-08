@@ -469,3 +469,34 @@ func TestUnsupportedCandidateWithStaleEntryUnderWarn(t *testing.T) {
 		t.Fatalf("diagnostic not truthful: %s", log.String())
 	}
 }
+
+func TestToolFieldTextRefusesUnresolvablePointers(t *testing.T) {
+	tool := mustTool(t, `{"name":"f","description":"d","inputSchema":{"enum":["a","b"],"n":3,"o":{"k":"v"}}}`)
+	for ptr, want := range map[string]string{
+		"/description":        "d",
+		"/inputSchema/enum/1": "b",
+		"/inputSchema/o/k":    "v",
+	} {
+		if got, ok := toolFieldText(tool, ptr); !ok || got != want {
+			t.Errorf("%s = %q,%v, want %q", ptr, got, ok, want)
+		}
+	}
+	for _, ptr := range []string{
+		"description",          // no leading slash
+		"/missing",             // no such member
+		"/inputSchema/enum/2",  // index past the end
+		"/inputSchema/enum/-1", // negative index
+		"/inputSchema/enum/01", // non-canonical index
+		"/inputSchema/enum/x",  // non-numeric index
+		"/inputSchema/n",       // not a string
+		"/inputSchema/o",       // object, not a string
+		"/description/deeper",  // descends into a string
+	} {
+		if _, ok := toolFieldText(tool, ptr); ok {
+			t.Errorf("%s resolved", ptr)
+		}
+	}
+	if _, ok := toolFieldText(ToolDef{Name: "built in code"}, "/description"); ok {
+		t.Error("a definition without received bytes resolved a field")
+	}
+}

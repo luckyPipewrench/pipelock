@@ -310,7 +310,7 @@ completeness evidence, an unpinned non-empty chain without
 
 ### Receipt groups with multiple chains
 
-The signed group format and Go verifiers are included here, but configuration still rejects `flight_recorder.receipt_chains > 1`. Operator enablement follows when the TypeScript, Rust, and Python verifiers support groups.
+Set `flight_recorder.receipt_chains` to 2–32 to enable signed receipt groups. The Go, TypeScript, Rust, and in-repository Python verifiers check the complete group with pinned signer keys. The default of one chain keeps the existing single-chain format.
 
 With `flight_recorder.receipt_chains > 1`, one process writes several independent run sessions. A signed group opening lists their exact session IDs and signer. Each shard has its own signed `session_open`, action and evidence receipts, `session_close`, transcript root, and final checkpoint. The signed group close names every final shard head. A restarted process writes a new group and a signed transition to its predecessor.
 

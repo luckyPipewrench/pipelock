@@ -1130,18 +1130,21 @@ const handoverRequestFinding = "Credential Request Directive"
 // blockquote ">" or table cell "|"), optionally after please, kindly, must, you
 // must, you should and similar. "The client can request your API key" and
 // "The server will ask for your API key" describe what a service does, so a
-// modal or third-person subject keeps them out. The lead-in is part of the
-// match, so a match for these two verbs begins at the clause boundary.
-const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[*_\x60#>|-])\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+)*`
+// modal or third-person subject keeps them out. Emphasis and code markers
+// ("**", "_", a backtick) may open the clause but are not a boundary
+// themselves, so "The server will **request your API key**" keeps its modal
+// subject. The lead-in is part of the match, so a match for these two verbs
+// begins at the clause boundary.
+const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[#>|-])\s*[*_\x60]{0,3}\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+)*`
 
 const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+)`
 
 // handoverRequestEnd keeps the credential noun from being the first word of a
 // longer noun phrase ("provide credentials rotation status"): the match must
-// finish at punctuation, the end of the text, a Markdown closer (a table cell
-// "|", emphasis "*" or a code backtick), or a connective that continues the
-// instruction.
-const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’|*\x60]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+// finish at punctuation, the end of the text, a table cell "|", or a
+// connective that continues the instruction, after any closing emphasis or
+// code markers.
+const handoverRequestEnd = `[*_\x60]{0,3}(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or

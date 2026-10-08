@@ -50,6 +50,7 @@ _GROUP_ARTIFACT = re.compile(
 )
 _MAX_ARTIFACT = 128 * 1024
 _MAX_LINE = 1 << 20
+_MAX_SHARD_BYTES = 128 * 1024 * 1024
 _DOMAINS = {
     "open": "pipelock/receipt-group-open/v1",
     "close": "pipelock/receipt-group-close/v1",
@@ -624,20 +625,23 @@ def _read_session_evidence(
     total = 0
     for file_index, (start, path) in enumerate(paths):
         size = path.stat().st_size
-        if size > 128 * 1024 * 1024 or start != len(entries):
+        if size > _MAX_SHARD_BYTES or start != len(entries):
             raise GroupVerificationError("receipt session inventory sequence mismatch")
+        # Read at most one byte past the remaining budget, counting the bytes
+        # actually read: a file that grows after the stat above cannot exhaust
+        # memory, and no line is longer than the bounded buffer it came from.
+        budget = _MAX_SHARD_BYTES - total if include_bytes else _MAX_SHARD_BYTES
+        if size > budget:
+            raise GroupVerificationError("receipt group shard is oversized")
+        with _open_evidence_file(path) as source:
+            part = source.read(budget + 1)
+        if len(part) > budget:
+            raise GroupVerificationError("receipt group shard is oversized")
         if include_bytes:
-            # Bound the running total before the next file is read into
-            # memory; _verify_shard applies the same limit to the joined bytes.
-            total += size
-            if total > 128 * 1024 * 1024:
-                raise GroupVerificationError("receipt group shard is oversized")
-            with _open_evidence_file(path) as source:
-                part = source.read()
+            # _verify_shard applies the same limit to the joined bytes.
+            total += max(size, len(part))
             parts.append(part)
-            stream = io.BytesIO(part)
-        else:
-            stream = _open_evidence_file(path)
+        stream = io.BytesIO(part)
         with stream:
             for line in stream:
                 if len(line) > _MAX_LINE:
@@ -728,7 +732,7 @@ def _verify_shard(
     session_id = member["session_id"]
     paths, parts, _, _ = _read_session_evidence(directory, session_id, allow_torn, True)
     raw_file = b"".join(parts)
-    if len(raw_file) > 128 * 1024 * 1024:
+    if len(raw_file) > _MAX_SHARD_BYTES:
         raise GroupVerificationError("receipt group shard is oversized")
     torn = bool(parts[-1]) and not parts[-1].endswith(b"\n")
     if torn and not allow_torn:

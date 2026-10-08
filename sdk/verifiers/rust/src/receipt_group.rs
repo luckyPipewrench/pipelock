@@ -1540,15 +1540,15 @@ fn require_writer_gone(dir: &Path, session: &str, index: usize) -> Result<(), St
             "incomplete predecessor shard {index}: probe receipt group predecessor writer: {why}"
         ))
     };
-    match fs::symlink_metadata(&path) {
-        Ok(meta) if meta.file_type().is_file() => {}
+    let checked = match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => meta,
         Ok(_) => return fail("predecessor writer lock is not a regular file".into()),
         Err(err) => return fail(format!("opening evidence file for writer probe: {err}")),
-    }
+    };
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let file = match fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -1557,6 +1557,16 @@ fn require_writer_gone(dir: &Path, session: &str, index: usize) -> Result<(), St
             Ok(file) => file,
             Err(err) => return fail(format!("opening evidence file for writer probe: {err}")),
         };
+        // The lock must be the regular file checked above, not one swapped in
+        // before the open: a probe of another inode proves nothing.
+        match file.metadata() {
+            Ok(opened)
+                if opened.file_type().is_file()
+                    && opened.dev() == checked.dev()
+                    && opened.ino() == checked.ino() => {}
+            Ok(_) => return fail("predecessor writer lock changed during open".into()),
+            Err(err) => return fail(format!("probing evidence writer lock: {err}")),
+        }
         let fd = file.as_raw_fd();
         // SAFETY: fd is a valid descriptor owned by `file` for this whole call.
         if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {

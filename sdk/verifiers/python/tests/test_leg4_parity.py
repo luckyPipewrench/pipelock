@@ -225,3 +225,47 @@ def test_session_open_null_group_binding_is_an_ungrouped_session() -> None:
     _validate_session_open(dict(base, group_binding=None))
     with pytest.raises(ReceiptError):
         _validate_session_open(dict(base, group_binding=[]))
+
+
+class _GrowingSource(io.BytesIO):
+    """A file that grew after its stat: read() returns more than stat said."""
+
+    def __init__(self, content: bytes) -> None:
+        super().__init__(content)
+        self.requested: list[int] = []
+
+    def read(self, size: int | None = -1) -> bytes:
+        self.requested.append(-1 if size is None else size)
+        return super().read(size)
+
+
+@pytest.mark.parametrize("include_bytes", [True, False])
+def test_session_evidence_read_is_bounded_when_a_file_grows_after_stat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, include_bytes: bool
+) -> None:
+    line, _ = _recorder_line("s", 0, "genesis")
+    shard = _FakeShard("evidence-s-0.jsonl", len(line), line, True)
+    grown = _GrowingSource(line + b"x" * 4096)
+    monkeypatch.setattr(group_module, "_MAX_SHARD_BYTES", 1024)
+    monkeypatch.setattr(
+        group_module, "_session_evidence_paths", lambda *_: [(0, shard)]
+    )
+    monkeypatch.setattr(group_module, "_open_evidence_file", lambda _path: grown)
+    with pytest.raises(GroupVerificationError, match="oversized"):
+        _read_session_evidence(tmp_path, "s", False, include_bytes)
+    assert grown.requested and all(0 <= n <= 1025 for n in grown.requested)
+
+
+def test_writer_probe_refuses_a_lock_swapped_before_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = tmp_path / "writer-s.lock"
+    checked.write_bytes(b"")
+    swapped = tmp_path / "other.lock"
+    swapped.write_bytes(b"")
+    real_open = recovery.os.open
+    monkeypatch.setattr(
+        recovery.os, "open", lambda _path, flags, *a: real_open(swapped, flags, *a)
+    )
+    with pytest.raises(recovery.RecoverySealError, match="changed during open"):
+        recovery.require_writer_gone(tmp_path, "s")

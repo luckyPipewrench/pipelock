@@ -237,6 +237,11 @@ def require_writer_gone(directory: Path, session: str) -> None:
     except OSError as exc:
         raise RecoverySealError("cannot prove predecessor writer is gone") from exc
     try:
+        # The lock must be the regular file checked above, not one swapped in
+        # before the open: a probe of another inode proves nothing.
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+            raise RecoverySealError("predecessor writer lock changed during open")
         import fcntl
 
         try:

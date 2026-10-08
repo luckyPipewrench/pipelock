@@ -628,3 +628,108 @@ func TestScanToolsStaleEntryRefusesWhenTextBecomesEmpty(t *testing.T) {
 		}
 	}
 }
+
+// A response a stale acknowledgment refuses must not become the drift
+// baseline, under warn as under block. Otherwise a later scan would compare
+// against a definition the agent never received and miss its change.
+func TestRefusedAcknowledgmentDoesNotPromoteDriftBaseline(t *testing.T) {
+	reviewed := ackTestTool(`{}`)
+	changed := `{"name":"store_secret","description":"Stores secrets for later use.","inputSchema":{"type":"object","properties":{"key":{"type":"string","description":"The key name to store."},"extra":{"type":"string"}}},"_meta":{}}`
+	baseline := NewToolBaseline()
+	entry := ackForTool(t, reviewed)
+	cfg := ackScanConfig(entry)
+	cfg.Action = config.ActionWarn
+	cfg.DetectDrift = true
+	cfg.Baseline = baseline
+
+	if r := ScanTools(toolsListLine(reviewed), testScanner(t), cfg); !r.Clean {
+		t.Fatalf("acknowledged definition not accepted: %+v", r.Matches)
+	}
+	baseline.mu.Lock()
+	reviewedHash := baseline.hashes["store_secret"]
+	baseline.mu.Unlock()
+	if reviewedHash == "" {
+		t.Fatal("acknowledged definition did not establish the baseline")
+	}
+
+	if r := ScanTools(toolsListLine(changed), testScanner(t), cfg); r.Clean || !r.CredentialAckRefused() {
+		t.Fatalf("changed definition not refused: clean=%v refused=%v", r.Clean, r.CredentialAckRefused())
+	}
+	baseline.mu.Lock()
+	afterHash := baseline.hashes["store_secret"]
+	baseline.mu.Unlock()
+	if afterHash != reviewedHash {
+		t.Fatal("a refused definition replaced the drift baseline")
+	}
+
+	// The operator removes the stale entry and tightens to block. The changed
+	// definition must still be measured against the reviewed one.
+	tight := ackScanConfig()
+	tight.Action = config.ActionBlock
+	tight.DetectDrift = true
+	tight.Baseline = baseline
+	r := ScanTools(toolsListLine(changed), testScanner(t), tight)
+	drift := false
+	for _, m := range r.Matches {
+		drift = drift || m.DriftDetected
+	}
+	if r.Clean || !drift {
+		t.Fatalf("change since the reviewed definition was not reported as drift: clean=%v matches=%+v", r.Clean, r.Matches)
+	}
+}
+
+func baselineHash(b *ToolBaseline, name string) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	h, ok := b.hashes[name]
+	return h, ok
+}
+
+// The new-tool and accepted-change promotion paths follow the same rule as a
+// changed definition: a refused acknowledgment keeps the definition out of
+// the baseline.
+func TestRefusedAcknowledgmentBlocksEveryPromotionPath(t *testing.T) {
+	t.Run("new tool", func(t *testing.T) {
+		baseline := NewToolBaseline()
+		cfg := ackScanConfig()
+		cfg.Action = config.ActionWarn
+		cfg.DetectDrift = true
+		cfg.Baseline = baseline
+		other := `{"name":"other_tool","description":"Lists files.","inputSchema":{}}`
+		if r := ScanTools(toolsListLine(other), testScanner(t), cfg); !r.Clean {
+			t.Fatalf("baseline not established: %+v", r.Matches)
+		}
+		stale := ackForTool(t, ackTestTool(`{}`))
+		stale.Expires = "2026-10-07"
+		cfg.CredentialAcks = []config.MCPAcknowledgedFinding{stale}
+		r := ScanTools(toolsListLine(other, ackTestTool(`{}`)), testScanner(t), cfg)
+		if !r.CredentialAckRefused() {
+			t.Fatal("stale entry for a new tool was not refused")
+		}
+		if _, ok := baselineHash(baseline, "store_secret"); ok {
+			t.Fatal("a refused new tool entered the drift baseline")
+		}
+	})
+	t.Run("accepted change", func(t *testing.T) {
+		baseline := NewToolBaseline()
+		reviewed := ackTestTool(`{}`)
+		cfg := ackScanConfig(ackForTool(t, reviewed))
+		cfg.Action = config.ActionWarn
+		cfg.DetectDrift = true
+		cfg.Baseline = baseline
+		if r := ScanTools(toolsListLine(reviewed), testScanner(t), cfg); !r.Clean {
+			t.Fatalf("reviewed definition not accepted: %+v", r.Matches)
+		}
+		before, _ := baselineHash(baseline, "store_secret")
+		// Only descriptive text is added, which drift would accept, but the
+		// complete definition no longer matches the entry.
+		extended := strings.Replace(reviewed, ackTestDesc, ackTestDesc+" Values are stored encrypted.", 1)
+		r := ScanTools(toolsListLine(extended), testScanner(t), cfg)
+		if !r.CredentialAckRefused() {
+			t.Fatalf("extended definition not refused: %+v", r.Matches)
+		}
+		if after, _ := baselineHash(baseline, "store_secret"); after != before {
+			t.Fatal("a refused accepted-change definition replaced the drift baseline")
+		}
+	})
+}

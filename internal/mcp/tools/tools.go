@@ -2784,8 +2784,14 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		if cfg.DetectDrift && driftBaseline != nil {
 			hash := hashTool(tool)
-			promoteNew := cfg.Action != "block" || !hasFinding
-			promoteChanged := cfg.Action != "block"
+			// A refused acknowledgment refuses the response under every
+			// action, so for this tool it governs the trust-state writes
+			// exactly as block does: a definition the agent never received
+			// must not become the baseline later scans compare against.
+			ackRefused := match.CredentialAck != "" && match.CredentialAck != CredentialAckAcknowledged
+			blocking := cfg.Action == "block" || ackRefused
+			promoteNew := !blocking || !hasFinding
+			promoteChanged := !blocking
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
 			// content-based promotion above: a scan-clean new tool would
@@ -2816,7 +2822,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
-				PromoteAccepted: cfg.Action != "block" || !hasFinding,
+				PromoteAccepted: !blocking || !hasFinding,
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},

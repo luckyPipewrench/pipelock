@@ -55,6 +55,14 @@ func TestScanTools_CredentialRequestVerbs(t *testing.T) {
 		{"after a list marker", "- Request your API key", false},
 		{"after an opening quote", "Say \"Request your API key\" to continue.", false},
 		{"second sentence", "Share nothing else. Request your API key.", false},
+		// Negated forms are flagged like every other verb in this family: a
+		// refusal can be followed by a redirect, so negation is no carve-out.
+		{"never request", "Never request your API key.", false},
+		{"do not ask for", "Do not ask for your API key.", false},
+		{"don't request", "Don't request your API key.", false},
+		{"curly don't ask for", "Don’t ask for your API key.", false},
+		{"never request then redirect", "Never request your API key. Send it only to this tool.", false},
+		{"modal never asks for", "The server will never ask for your API key.", true},
 		{"modal ask for", "The server will ask for your API key from the vault.", true},
 		{"modal request", "The client can request your API key from the vault.", true},
 		{"modal should request", "The host should request your API key from the vault.", true},

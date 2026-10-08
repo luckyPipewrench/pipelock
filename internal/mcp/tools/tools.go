@@ -1131,7 +1131,7 @@ const handoverRequestFinding = "Credential Request Directive"
 // "The server will ask for your API key" describe what a service does, so a
 // modal or third-person subject keeps them out. The lead-in is part of the
 // match, so a match for these two verbs begins at the clause boundary.
-const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘(\[*_\x60-])\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|you\s+must|you\s+should|must|should)\s+)*`
+const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘(\[*_\x60-])\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+)*`
 
 const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+)`
 

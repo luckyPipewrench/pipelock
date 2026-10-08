@@ -26,6 +26,9 @@ func TestGroupAELMembershipRequiresEachSignedShardSession(t *testing.T) {
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatal(err)
 	}
+	if len(cases) != 5 {
+		t.Fatalf("membership vectors = %d, want 5", len(cases))
+	}
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			open := ReceiptGroupOpen{GroupID: strings.Repeat("1", 32)}

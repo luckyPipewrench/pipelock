@@ -1000,11 +1000,20 @@ async function verifyAELInventory(
   trusted: Set<string>,
   incomplete: boolean,
 ): Promise<"own" | "neighbor" | undefined> {
-  const sessions = new Set<string>();
+  // Every session in the directory is inventoried, not only those with a
+  // sequence-0 file: a session whose files all start later would otherwise
+  // never be checked against the pinned keys, as Go, Rust and Python do.
+  const firstSeq = new Map<string, bigint>();
   for (const name of readdirSync(".")) {
     const parsed = parseEvidenceFilename(name);
-    if (parsed && parsed.seqStart === 0n) sessions.add(parsed.session);
+    if (!parsed) continue;
+    const seen = firstSeq.get(parsed.session);
+    if (seen === undefined || parsed.seqStart < seen) firstSeq.set(parsed.session, parsed.seqStart);
   }
+  for (const [session, seq] of firstSeq)
+    if (seq !== 0n)
+      throw new Error(`receipt session inventory ${JSON.stringify(session)} starts after genesis`);
+  const sessions = new Set(firstSeq.keys());
   const claims = new Map<
     string,
     { session: string; groupID: string; signer: string; completed: boolean }

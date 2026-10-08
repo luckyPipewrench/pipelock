@@ -1700,7 +1700,10 @@ fn verify_recovery_seal(
             "recovery seal binding or header invalid for shard {index}"
         ));
     }
-    if !trusted.iter().any(|k| k == &seal.successor_signer_key) {
+    if !trusted
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(&seal.successor_signer_key))
+    {
         return Err("recovery seal signer is not trusted".into());
     }
     let claim = &tr.predecessors[index];

@@ -617,6 +617,34 @@ test("shared v2 group corpus matches the Go verdict", async () => {
   }
 });
 
+// A session whose files all start after sequence 0 must still be inventoried
+// and refused, as Go, Rust and Python do, not silently skipped.
+test("an inventory session that starts after genesis is refused", async () => {
+  const cases = JSON.parse(readFileSync(join(v2Fixtures, "cases.json"), "utf8")) as Array<{
+    name: string;
+    group_id: string;
+    trusted_keys: string[];
+    expected: string;
+  }>;
+  const valid = cases.find((item) => item.expected === "GROUP_VALID");
+  assert.ok(valid, "corpus has a valid case");
+  const dir = mkdtempSync(join(tmpdir(), "ts-group-late-session-"));
+  try {
+    cpSync(join(v2Fixtures, "cases", valid.name), dir, { recursive: true });
+    const control = await verifyReceiptGroup(dir, valid.group_id, valid.trusted_keys);
+    assert.equal(control.verdict, "GROUP_VALID", JSON.stringify(control));
+    writeFileSync(
+      join(dir, "evidence-legacy.run.0123456789abcdef0123456789abcdef-5.jsonl"),
+      '{"type":"decision"}\n',
+    );
+    const result = await verifyReceiptGroup(dir, valid.group_id, valid.trusted_keys);
+    assert.equal(result.verdict, "GROUP_INVALID", JSON.stringify(result));
+    assert.match(String(result.error ?? ""), /starts after genesis/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The legacy directory probe needs the first recorder line, not the shard. A
 // gate on the first line of an oversized shard is still a group gate, and a
 // first line longer than the 1 MiB record bound is left to the legacy walker.

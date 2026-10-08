@@ -141,8 +141,12 @@ fn fixture_from(name: &str, bytes: &[u8]) -> Fixture {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // Parallel tests can read the same clock value; a process-wide counter keeps
+    // every extraction root unique.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!(
-        "pipelock-rust-group-{}-{stamp}-{}",
+        "pipelock-rust-group-{}-{stamp}-{serial}-{}",
         std::process::id(),
         name.replace('/', "-")
     ));

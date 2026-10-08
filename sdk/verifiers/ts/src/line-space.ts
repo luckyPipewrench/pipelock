@@ -7,18 +7,20 @@ export const goSpaceCodePoints = [
   0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
 ] as const;
 
+// Every Go space is a single UTF-16 unit and none is a surrogate, so scanning
+// code units is exact: a surrogate half is never a space, and lines are not
+// copied into per-character arrays on the verification path.
 const goSpace = new Set<number>(goSpaceCodePoints);
-const isGoSpace = (ch: string): boolean => goSpace.has(ch.codePointAt(0) ?? -1);
 
 export function blankAfterGoTrim(value: string): boolean {
-  return [...value].every(isGoSpace);
+  for (let i = 0; i < value.length; i++) if (!goSpace.has(value.charCodeAt(i))) return false;
+  return true;
 }
 
 export function trimGoSpace(value: string): string {
-  const chars = [...value];
   let start = 0;
-  let end = chars.length;
-  while (start < end && isGoSpace(chars[start]!)) start++;
-  while (end > start && isGoSpace(chars[end - 1]!)) end--;
-  return chars.slice(start, end).join("");
+  let end = value.length;
+  while (start < end && goSpace.has(value.charCodeAt(start))) start++;
+  while (end > start && goSpace.has(value.charCodeAt(end - 1))) end--;
+  return value.slice(start, end);
 }

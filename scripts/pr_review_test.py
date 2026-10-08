@@ -6481,7 +6481,40 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             incomplete_reasons=["repair did not finish"], candidate_evidence=options.evidence)
         text = pr_review.render_status(self.binding, "default", [], progress, "partial", [])
         self.assertIn(record.reason, text)
+        self.assertIn(candidate.title, text)
+        self.assertEqual(pr_review.derive_state(progress), "partial")
         self.assertEqual([phase for phase, _ in captured], ["judge", "judge-repair"])
+
+    def test_changed_hunk_fallback_requires_candidate_owned_repository_code(self):
+        candidate = self.candidate(900)
+        sibling = self.candidate(1, path="sibling.go")
+        diff = "diff --git a/sample.go b/sample.go\n--- a/sample.go\n+++ b/sample.go\n@@ -1 +1 @@\n-old\n+GuardValue()\n"
+        units, _ = pr_review.parse_diff(diff)
+        for content in (None, "short file\n"):
+            for verdict in ("keep", "drop"):
+                for owner in (None, sibling, candidate):
+                    with self.subTest(content=content, verdict=verdict, owner=owner):
+                        options = pr_review.JudgeOptions(units=units)
+                        evidence = "" if owner is None else f"CANDIDATE {pr_review.candidate_identifier(owner)} REPOSITORY EVIDENCE\nsample.go:900: deciding code\n"
+                        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                            pr_review, "fetch_file_context", return_value=content
+                        ), mock.patch.object(pr_review, "cross_file_evidence", return_value=(evidence, False)), mock.patch.object(
+                            pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                        ):
+                            result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
+                        record = options.evidence[pr_review.candidate_identifier(candidate)]
+                        self.assertEqual(record.source, "changed-hunk-fallback")
+                        if owner is candidate:
+                            self.assertEqual(record.verdict, verdict)
+                            self.assertEqual(result[4], [])
+                            self.assertEqual(result[0], [candidate] if verdict == "keep" else [])
+                        else:
+                            self.assertEqual(record.verdict, "unresolved")
+                            self.assertEqual(result[0], [])
+                            self.assertEqual(result[4], [candidate])
+                            progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1,
+                                unverified_candidates=result[4], candidate_evidence=options.evidence)
+                            self.assertEqual(pr_review.derive_state(progress), "inconclusive")
 
     def test_unreadable_sibling_cannot_suppress_or_dismiss_candidates(self):
         good, missing = self.candidate(), self.candidate(1, "absent.go")
@@ -6686,7 +6719,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             prompt = pr_review.build_review_prompt(pr_review.classify_units([source, *other]), chunk)
             self.assertLessEqual(pr_review.serialized_prompt_tokens(*prompt, "default", "review-chunk"), pr_review.FAST_INPUT_TOKEN_BUDGET)
 
-    def run_discovery(self, count, failure, *, spare=True, fail_phase="review-chunk-1"):
+    def run_discovery(self, count, failure, *, spare=True, fail_phase="review-chunk-1", judge_verdict="keep"):
         diff = "".join(f"diff --git a/{n}.go b/{n}.go\n--- a/{n}.go\n+++ b/{n}.go\n@@ -1 +1 @@\n-old\n+new\n" for n in range(count))
         phases = []
         raw_candidate = {"severity": "medium", "path": "0.go", "line": 1, "title": "retained claim", "why": "premise", "fix": "repair", "needs_verification": False}
@@ -6699,7 +6732,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             if phase == "cross-file-synthesis":
                 return {"findings": []}
             if phase.startswith("judge"):
-                return {"findings": [{"index": item["index"], "verdict": "keep", "reason": "deciding code supplied"} for item in json.loads(user)["candidates"]]}
+                return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied"} for item in json.loads(user)["candidates"]]}
             index = int(phase.split("-")[2]) - 1
             return {"findings": [], "changes": [{"path": f"{index}.go", "summary": "changed"}]}
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
@@ -6747,6 +6780,71 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         self.assertTrue(any("provider refused the configured credential" in reason for reason in progress.incomplete_reasons))
         self.assertFalse(any("unexpected" in reason for reason in progress.incomplete_reasons))
         self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+
+    def test_discovery_refusal_preserves_previously_gathered_candidates(self):
+        for phase in ("review-chunk-2", "review-chunk-1-schema-repair"):
+            with self.subTest(phase=phase):
+                state, progress, phases = self.run_discovery(
+                    2, pr_review.ProviderConfigurationError("refused"), fail_phase=phase)
+                self.assertEqual(state, "failed")
+                self.assertEqual(phases[-1], phase)
+                self.assertNotIn("judge", phases)
+                self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+                rendered = pr_review.render_status(self.binding, "default", [], progress, state, [])
+                self.assertIn("retained claim", rendered)
+                self.assertIn("provider refused the configured credential", rendered)
+
+    def test_judge_repair_refusal_is_failed_and_keeps_candidates(self):
+        state, progress, phases = self.run_discovery(
+            2, pr_review.ProviderConfigurationError("refused"), fail_phase="judge-repair", judge_verdict="unresolved")
+        self.assertEqual(phases[-2:], ["judge", "judge-repair"])
+        self.assertEqual(state, "failed")
+        self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+        self.assertTrue(any("provider refused the configured credential" in reason for reason in progress.incomplete_reasons))
+
+    def test_small_evidence_slices_disclose_each_omitted_candidate(self):
+        candidates = [self.candidate(line=n + 1) for n in range(30)]
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", return_value=[]):
+            for count in (1, 30):
+                with self.subTest(count=count):
+                    text, incomplete = pr_review.cross_file_evidence(self.binding, candidates[:count], {}, max_tokens=700)
+                    self.assertEqual(incomplete, count == 30)
+                    self.assertLessEqual(pr_review.estimate_tokens(text), 700)
+                    for candidate in candidates[:count]:
+                        self.assertIn(f"CANDIDATE {pr_review.candidate_identifier(candidate)} ", text)
+                    self.assertIn("<evidence-omitted>" if count == 30 else "<no additional matches>", text)
+            text, incomplete = pr_review.cross_file_evidence(self.binding, candidates, {}, max_tokens=1)
+            self.assertTrue(incomplete)
+            self.assertLessEqual(pr_review.estimate_tokens(text), 1)
+
+    def test_deleted_evidence_uses_diff_old_side_for_content_and_locations(self):
+        candidate = self.candidate(1)
+        diff = "diff --git a/sample.go b/sample.go\n--- a/sample.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-GuardValue()\n"
+        units, _ = pr_review.parse_diff(diff)
+        for merge_base in ("d" * 40, ""):
+            with self.subTest(merge_base=merge_base):
+                old_side = merge_base or self.binding.base_sha
+                options = pr_review.JudgeOptions(units=units)
+                def read(_root, revision, _path, _deadline):
+                    if revision == old_side:
+                        return "GuardValue()\nold_side_only()\n"
+                    return None if revision == self.binding.head_sha else "wrong_revision()\n"
+                with mock.patch.dict(pr_review.os.environ, {
+                    "REVIEWED_REPOSITORY_PATH": "/reviewed", "REVIEWED_MERGE_BASE_SHA": merge_base,
+                }), mock.patch.object(pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")), mock.patch.object(
+                    pr_review, "_read_commit_file", side_effect=read
+                ) as fetch, mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                    pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "drop", "reason": "decided"}]}
+                ):
+                    pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
+                record = options.evidence[pr_review.candidate_identifier(candidate)]
+                self.assertIn("old_side_only()", record.context)
+                self.assertNotIn("wrong_revision()", record.context)
+                self.assertTrue(record.locations)
+                self.assertEqual({location[1] for location in record.locations}, {old_side})
+                self.assertEqual([call.args[1] for call in fetch.call_args_list], [self.binding.head_sha, old_side])
 
     def test_salvage_from_a_failed_response_and_its_repair_is_judged_once(self):
         diff = "".join(f"diff --git a/{n}.go b/{n}.go\n--- a/{n}.go\n+++ b/{n}.go\n@@ -1 +1 @@\n-old\n+new\n" for n in range(2))

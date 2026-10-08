@@ -2894,6 +2894,7 @@ def cross_file_evidence(
                 seen.add((path, line))
                 hits[index].append((0, path, line, text))
     rendered: list[str] = []
+    omitted = False
     allowance = max(0, max_tokens // max(1, len(candidates)))
     for index, finding in enumerate(candidates):
         pieces: list[str] = []
@@ -2915,11 +2916,18 @@ def cross_file_evidence(
                 break
         if failures[index]:
             pieces.append("<candidate-search-unavailable>")
-        text = f"CANDIDATE {candidate_identifier(finding)} REPOSITORY EVIDENCE\n" + ("\n".join(pieces) or "<no additional matches>")
-        text, _ = _bounded_evidence(text, allowance, cuts[index] or failures[index])
+        header = f"CANDIDATE {candidate_identifier(finding)} REPOSITORY EVIDENCE\n"
+        if estimate_tokens(header + EVIDENCE_TRUNCATED) > allowance:
+            # Never clip away ownership or silently turn missing evidence into
+            # whitespace. The outer bound still enforces the shared budget.
+            text = f"CANDIDATE {candidate_identifier(finding)} <evidence-omitted>"
+            omitted = True
+        else:
+            text = header + ("\n".join(pieces) or "<no additional matches>")
+            text, _ = _bounded_evidence(text, allowance, cuts[index] or failures[index])
         rendered.append(text)
-    evidence, _ = _bounded_evidence("\n\n".join(rendered), max_tokens, False)
-    return evidence, any(failures) or not evidence
+    evidence, cut = _bounded_evidence("\n\n".join(rendered), max_tokens, False)
+    return evidence, omitted or cut or any(failures) or not evidence.strip()
 
 
 def _reap_process(process: subprocess.Popen[Any]) -> None:
@@ -3174,11 +3182,12 @@ def judge_findings(
             shared.contents[key] = content
         content = shared.contents[key]
         context, source = _candidate_context(finding, content, options.units, context_cap)
+        old_side = os.environ.get("REVIEWED_MERGE_BASE_SHA") or binding.base_sha
         if source == "deleted-diff" and root is not None:
-            base_key = (binding.base_sha, finding.path)
+            base_key = (old_side, finding.path)
             if base_key not in shared.contents and shared.reads < MAX_JUDGE_CONTEXT_FETCHES:
                 shared.reads += 1
-                shared.contents[base_key] = _read_commit_file(root, binding.base_sha, finding.path, retrieval_deadline)
+                shared.contents[base_key] = _read_commit_file(root, old_side, finding.path, retrieval_deadline)
             base = shared.contents.get(base_key)
             if base is not None:
                 base_context = _line_context(base, finding.line, max(80, context_cap // 2))
@@ -3186,7 +3195,7 @@ def judge_findings(
                 context = _bounded_evidence("BASE CONTENT (deleted at head)\n" + base_context + "\n" + diff_context, context_cap, False)[0]
         record.context, record.source = context, source
         record.ranges = _context_ranges(context)
-        record.locations = [(finding.path, binding.base_sha if source == "deleted-diff" else binding.head_sha, start, end) for start, end in record.ranges]
+        record.locations = [(finding.path, old_side if source == "deleted-diff" else binding.head_sha, start, end) for start, end in record.ranges]
         available.append(index)
     shared.seconds_remaining = max(0, shared.seconds_remaining - (time.monotonic() - reads_started))
 
@@ -3288,6 +3297,9 @@ def judge_findings(
                         decisions[index] = local_decisions[local]
                     else:
                         decisions.pop(index, None)
+            except ProviderConfigurationError as exc:
+                validation.reject(judge_error_code(exc))
+                raise
             except ReviewError as exc:
                 validation.reject(judge_error_code(exc))
                 for index in repair:
@@ -3303,12 +3315,12 @@ def judge_findings(
         record = options.evidence[candidate_identifier(finding)]
         decision = decisions.get(index)
         if decision is not None:
-            # A missing path with no supplied deciding code cannot be dismissed.
+            # Missing head context cannot be settled from a fallback hunk alone.
             # Decisive repository excerpts remain usable even if other reads fail.
             owner_sections = re.split(r"(?=CANDIDATE )", evidence_by_index.get(index, ""))
             own_evidence = "\n".join(section for section in owner_sections if section.startswith(f"CANDIDATE {record.identifier} "))
             supplied_code = bool(re.search(r"(?m)^[^<>\n]+:\d+: ", own_evidence))
-            if record.source == "unavailable" and not supplied_code and decision.verdict in {"keep", "drop"}:
+            if record.source in {"unavailable", "changed-hunk-fallback"} and not supplied_code and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Candidate path or anchor was unavailable; decisive repository evidence is still missing.")
             record.verdict, record.reason = decision.verdict, decision.reason or "Decisive evidence was not classified."
             if decision.verdict == "keep":
@@ -4268,8 +4280,7 @@ def run_review(
                 )
                 continue
             except ProviderConfigurationError:
-                progress.runner_failed = True
-                progress.incomplete_reasons.append("provider refused the configured credential or account; no automatic retry was attempted")
+                record_unfinished_run(progress, "provider refused the configured credential or account; no automatic retry was attempted")
                 return "failed", progress
             except ModelOutputError as exc:
                 spare = discovery_calls + len(chunks) - chunk_index < discovery_limit
@@ -4285,8 +4296,7 @@ def run_review(
                         findings, changes = parse_findings(repair_payload, {unit.path for unit in chunk}, require_changes={unit.path for unit in chunk})
                         recovered = True
                     except ProviderConfigurationError:
-                        progress.runner_failed = True
-                        progress.incomplete_reasons.append("provider refused the configured credential or account; no automatic retry was attempted")
+                        record_unfinished_run(progress, "provider refused the configured credential or account; no automatic retry was attempted")
                         return "failed", progress
                     except ReviewError as repair_error:
                         candidates.extend(salvage_findings(repair_payload, {unit.path for unit in chunk}))

@@ -171,6 +171,29 @@ func captureMCPFrameActionClass(toolName, mcpMethod, argsJSON string) string {
 }
 
 // toolScanMatchesToFindings converts tools.ToolScanMatch slice to capture findings.
+// toolScanResultFindings returns the capture findings for a tools/list scan:
+// every finding that enforced, plus every finding an acknowledgment lifted.
+// A lifted finding keeps its kind and signal and records the treatment, so
+// the evidence shows what was reviewed rather than an unexplained clean list.
+func toolScanResultFindings(result tools.ToolScanResult) []capture.Finding {
+	findings := toolScanMatchesToFindings(result.Matches)
+	for _, o := range result.Observations {
+		if o.CredentialAck != tools.CredentialAckAcknowledged {
+			continue
+		}
+		for _, p := range o.ToolPoison {
+			findings = append(findings, capture.Finding{
+				Kind:         capture.KindToolPoison,
+				Action:       config.ActionAllow,
+				ToolName:     o.ToolName,
+				PoisonSignal: p,
+				PolicyRule:   "mcp_tool_scanning.acknowledged_findings",
+			})
+		}
+	}
+	return findings
+}
+
 func toolScanMatchesToFindings(matches []tools.ToolScanMatch) []capture.Finding {
 	if len(matches) == 0 {
 		return nil

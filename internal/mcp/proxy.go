@@ -574,6 +574,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Capture: record tools/list scan verdict.
 			if toolResult.IsToolsList {
 				toolCaptureAction := config.ActionAllow
+				// An acknowledged list is forwarded with a finding present, so
+				// it is recorded as warned, never as clean.
+				if toolAcknowledged && toolResult.Clean {
+					toolCaptureAction = config.ActionWarn
+				}
 				if !toolResult.Clean {
 					if toolResult.ResourceLimit != "" {
 						toolCaptureAction = config.ActionBlock
@@ -592,9 +597,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureMCPActionClass("", "tools/list"),
 					Request:           capture.CaptureRequest{RPCID: captureRPCID(toolResult.RPCID)},
-					RawFindings:       toolScanMatchesToFindings(toolResult.Matches),
+					RawFindings:       toolScanResultFindings(toolResult),
 					EffectiveAction:   toolCaptureAction,
-					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
+					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean && !toolAcknowledged),
 				})
 			}
 			// Accepted definition drift is not a finding and does not affect the
@@ -698,6 +703,19 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						DenialReason:  "tool poisoning detected in tools/list",
 						PolicyHash:    opts.receiptPolicyHash(),
 					})
+				}
+			}
+			if toolAcknowledged && toolResult.Clean {
+				// Forwarded unchanged under a reviewed acknowledgment. The
+				// signed record names the finding with an allow verdict; it is
+				// not a near miss and not a clean event.
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow); emitErr != nil && opts.requireReceipts() {
+					resolveToolInventory(config.ActionBlock)
+					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
+					}
+					continue
 				}
 			}
 		}
@@ -1055,6 +1073,11 @@ func emitMCPToolScanReceipt(
 	if result.ResourceLimit != "" {
 		pattern = result.ResourceLimit
 	} else {
+		for _, o := range result.Observations {
+			if o.CredentialAck == tools.CredentialAckAcknowledged && len(o.ToolPoison) > 0 {
+				pattern = o.ToolPoison[0]
+			}
+		}
 		for _, match := range result.Matches {
 			if len(match.ToolPoison) > 0 {
 				pattern = match.ToolPoison[0]

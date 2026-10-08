@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 const (
@@ -240,5 +243,114 @@ func TestHTTPListenerAcknowledgmentFollowsReload(t *testing.T) {
 		if got := list(); got != step.forward {
 			t.Fatalf("%s: forwarded = %v, want %v", step.name, got, step.forward)
 		}
+	}
+}
+
+type toolScanCaptureRecorder struct {
+	capture.NopObserver
+	records []*capture.ToolScanRecord
+}
+
+func (r *toolScanCaptureRecorder) ObserveToolScanVerdict(_ context.Context, rec *capture.ToolScanRecord) {
+	r.records = append(r.records, rec)
+}
+
+func ackLine() string {
+	return `{"jsonrpc":"2.0","id":1,"result":{"tools":[` + proxyAckTool + `]}}` + "\n"
+}
+
+func ackOpts(t *testing.T, acks ...config.MCPAcknowledgedFinding) MCPProxyOpts {
+	t.Helper()
+	return MCPProxyOpts{
+		Scanner: testScannerWithAction(t, config.ActionWarn),
+		ToolCfg: &tools.ToolScanConfig{
+			Action:         config.ActionBlock,
+			CredentialAcks: acks,
+			Now:            func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) },
+		},
+		Transport:     transportMCPStdio,
+		ServerName:    proxyAckServer,
+		ServerBinding: proxyAckBinding,
+		PolicyHash:    mcpTestPolicyHash,
+	}
+}
+
+// An acknowledged inventory keeps its raw finding visible in every record:
+// the operator log, the capture (as warned, never clean), and a signed
+// receipt with an allow verdict naming the finding.
+func TestAcknowledgedInventoryAuditTrail(t *testing.T) {
+	var out, log bytes.Buffer
+	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+	obs := &toolScanCaptureRecorder{}
+	opts := ackOpts(t, proxyAckEntry(t))
+	opts.ReceiptEmitter = emitter
+	opts.CaptureObs = obs
+	opts.RequireReceipts = true
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(ackLine())), transport.NewStdioWriter(&out), &log, nil, opts); err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !strings.Contains(out.String(), `"store_secret"`) {
+		t.Fatalf("acknowledged inventory not forwarded: %s", out.String())
+	}
+	if !strings.Contains(log.String(), "Credential Request Directive acknowledged by mcp_tool_scanning.acknowledged_findings") {
+		t.Fatalf("log does not name the acknowledged finding: %s", log.String())
+	}
+	if len(obs.records) != 1 {
+		t.Fatalf("capture records = %d, want 1", len(obs.records))
+	}
+	cr := obs.records[0]
+	if cr.Outcome != capture.OutcomeWarned || cr.EffectiveAction != config.ActionWarn {
+		t.Fatalf("capture outcome/action = %q/%q, want warned/warn", cr.Outcome, cr.EffectiveAction)
+	}
+	foundRaw := false
+	for _, f := range cr.RawFindings {
+		if f.Kind == capture.KindToolPoison && f.PoisonSignal == config.MCPAckFindingRequestDirective &&
+			f.Action == config.ActionAllow && f.PolicyRule == "mcp_tool_scanning.acknowledged_findings" {
+			foundRaw = true
+		}
+	}
+	if !foundRaw {
+		t.Fatalf("capture lost the acknowledged raw finding: %+v", cr.RawFindings)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	r := receipts[0]
+	if err := receipt.VerifyWithKey(r, pubHex); err != nil {
+		t.Fatalf("VerifyWithKey: %v", err)
+	}
+	if r.ActionRecord.Verdict != config.ActionAllow || r.ActionRecord.Pattern != config.MCPAckFindingRequestDirective || r.ActionRecord.Layer != "mcp_tool_scan" {
+		t.Fatalf("receipt verdict/pattern/layer = %q/%q/%q", r.ActionRecord.Verdict, r.ActionRecord.Pattern, r.ActionRecord.Layer)
+	}
+}
+
+func TestAcknowledgedInventoryRequiredReceiptFailureRefuses(t *testing.T) {
+	var out, log bytes.Buffer
+	opts := ackOpts(t, proxyAckEntry(t))
+	opts.RequireReceipts = true
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(ackLine())), transport.NewStdioWriter(&out), &log, nil, opts); err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if strings.Contains(out.String(), `"store_secret"`) || !strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("output = %q, want a receipt-emission refusal", out.String())
+	}
+}
+
+func TestStaleAcknowledgmentLogNamesTheReason(t *testing.T) {
+	var out, log bytes.Buffer
+	expired := proxyAckEntry(t)
+	expired.Expires = "2026-10-07"
+	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(ackLine())), transport.NewStdioWriter(&out), &log, nil, ackOpts(t, expired)); err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !strings.Contains(log.String(), "acknowledgment refused: expired") {
+		t.Fatalf("log does not name the refusal: %s", log.String())
+	}
+	if !strings.Contains(out.String(), "a credential-request acknowledgment no longer matches its tool") {
+		t.Fatalf("block reason does not explain the refusal: %s", out.String())
 	}
 }

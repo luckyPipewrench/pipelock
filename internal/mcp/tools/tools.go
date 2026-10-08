@@ -2862,6 +2862,9 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 			reasons = append(reasons, inj.PatternName)
 		}
 		reasons = append(reasons, m.ToolPoison...)
+		if m.CredentialAck != "" && m.CredentialAck != CredentialAckAcknowledged {
+			reasons = append(reasons, "acknowledgment refused: "+m.CredentialAck)
+		}
 		if m.DriftDetected {
 			reasons = append(reasons, "definition-drift")
 			if len(m.DriftCues) > 0 {
@@ -2882,6 +2885,13 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, o := range result.Observations {
 		switch {
+		case o.CredentialAck == CredentialAckAcknowledged:
+			// The raw finding stays visible: an acknowledged tool is
+			// forwarded unchanged, not cleared.
+			_, _ = fmt.Fprintf(logW,
+				"pipelock: line %d: tool %q: %s acknowledged by mcp_tool_scanning.acknowledged_findings; forwarded unchanged\n",
+				lineNum, o.ToolName, strings.Join(o.ToolPoison, ","))
+			continue
 		case !o.DriftAccepted:
 			continue
 		case len(o.DriftCues) > 0:

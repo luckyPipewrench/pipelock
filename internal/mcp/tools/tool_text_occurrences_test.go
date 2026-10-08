@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -178,7 +177,7 @@ func TestAttributeCredentialRequestsMatcherParity(t *testing.T) {
 		"Then supply your access token.", "harmless prose", "", "1) Ask for your API key",
 	}
 	fields := []string{"description", "title", "inputSchema", "outputSchema", "_meta", "x-extra"}
-	r := rand.New(rand.NewPCG(1835, 7)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
+	r := newTestRNG(1835, 7)
 	for i := range 3000 {
 		doc := map[string]any{"name": fmt.Sprintf("tool_%d", i)}
 		for _, f := range fields {

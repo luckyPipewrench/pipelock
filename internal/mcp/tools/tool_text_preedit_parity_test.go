@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"regexp"
 	"slices"
@@ -264,7 +263,11 @@ func forEachExhaustiveSchedule(t *testing.T, limit int, run func(choose func(int
 
 func seededChooser(seed uint64) func(int, []string) []string {
 	return func(ordinal int, sorted []string) []string {
-		r := rand.New(rand.NewPCG(seed, uint64(ordinal))) //nolint:gosec // G404: deterministic test schedule, not security-sensitive
+		// Each visit draws from its own position in the seed's stream.
+		r := newTestRNG(seed, 0)
+		for range ordinal {
+			r.next()
+		}
 		out := slices.Clone(sorted)
 		r.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 		return out
@@ -444,7 +447,7 @@ func TestControlledOrderSameKeysDifferentObjectFails(t *testing.T) {
 
 // randomSchema builds nested schemas with several text-bearing keys per
 // object, which only a controlled schedule can compare.
-func randomSchema(r *rand.Rand, depth int, n *int) any {
+func randomSchema(r *testRNG, depth int, n *int) any {
 	*n++
 	text := "t" + strconv.Itoa(*n)
 	// The node budget keeps the generated tree linear in size; the depth
@@ -468,7 +471,7 @@ func randomSchema(r *rand.Rand, depth int, n *int) any {
 }
 
 func TestControlledOrderSeededCorpus(t *testing.T) {
-	r := rand.New(rand.NewPCG(1835, 99)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
+	r := newTestRNG(1835, 99)
 	for i := range 300 {
 		var n int
 		in, err := json.Marshal(randomSchema(r, 2+i%6, &n))

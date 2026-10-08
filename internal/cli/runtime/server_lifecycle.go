@@ -546,6 +546,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	}
 	if s.hasMCPListen {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP:    http://%s -> %s\n", s.opts.MCPListen, s.opts.MCPUpstream)
+		if s.opts.MCPServerName != "" {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "  MCP server %q transport binding sha256 %s (for mcp_tool_scanning.acknowledged_findings[].server_binding_sha256)\n", s.opts.MCPServerName, mcpRunListenerBinding(s.opts.MCPUpstream))
+		}
 	}
 	if cfg.ReverseProxy.Enabled {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
@@ -1093,6 +1096,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				A2ACardURL:               s.opts.MCPUpstream,
 				MediaPolicyFn:            mcpMediaPolicyFn,
 				ServerName:               s.opts.MCPServerName,
+				ServerBinding:            mcpRunListenerBinding(s.opts.MCPUpstream),
 				SuppressFn:               mcpResponseSuppressFn,
 				ResponseTrustClassFn:     mcpResponseTrustFn,
 				ResponseActionOverrideFn: mcpResponseActionFn,

@@ -2641,6 +2641,21 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 		text, spans := toolScanText(tool)
 
+		if text == "" {
+			// A reviewed tool can shrink to no scanner text at all. Its entry
+			// is still evaluated, against no occurrences, so it refuses like
+			// any other stale entry instead of being skipped.
+			if entry, ok := findCredentialAck(cfg, tool.Name); ok {
+				outcome := evaluateCredentialAck(entry, cfg, tool, credentialRequestAttribution{Attributable: true}, cfg.now())
+				if outcome == CredentialAckAcknowledged {
+					// Unreachable while entries must list at least one
+					// occurrence; refuse rather than accept it.
+					outcome = CredentialAckOccurrencesChanged
+				}
+				match.CredentialAck = outcome
+				hasFinding = true
+			}
+		}
 		if text != "" {
 			// This is the dedicated tool scanner, whose action is independent of
 			// response scanning. The response path itself never scans tool

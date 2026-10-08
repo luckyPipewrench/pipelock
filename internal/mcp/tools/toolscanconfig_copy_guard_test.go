@@ -63,16 +63,37 @@ func TestToolScanConfigLiteralsCarryAcknowledgments(t *testing.T) {
 				if !ok {
 					return true
 				}
+				typeName := ""
 				switch typ := lit.Type.(type) {
 				case *ast.SelectorExpr:
-					if typ.Sel.Name != "ToolScanConfig" {
-						return true
-					}
+					typeName = typ.Sel.Name
 				case *ast.Ident:
-					if typ.Name != "ToolScanConfig" {
-						return true
+					typeName = typ.Name
+				}
+				keys := map[string]bool{}
+				for _, elt := range lit.Elts {
+					if kv, ok := elt.(*ast.KeyValueExpr); ok {
+						if id, ok := kv.Key.(*ast.Ident); ok {
+							keys[id.Name] = true
+						}
 					}
-				default:
+				}
+				exempt := func() bool {
+					line := fset.Position(lit.Pos()).Line
+					for i := line - 2; i >= 0 && i >= line-4; i-- {
+						if strings.Contains(lines[i], "ack-exempt:") {
+							return true
+						}
+					}
+					return false
+				}
+				// Proxy options that name a server must carry its transport
+				// binding too, or every acknowledgment for that server
+				// silently fails as a binding mismatch.
+				if typeName == "MCPProxyOpts" && keys["ServerName"] && !keys["ServerBinding"] && !exempt() {
+					t.Errorf("%s:%d sets MCPProxyOpts.ServerName without ServerBinding", path, fset.Position(lit.Pos()).Line)
+				}
+				if typeName != "ToolScanConfig" {
 					return true
 				}
 				checked++

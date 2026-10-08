@@ -113,3 +113,16 @@ func TestChildEnvOverrideIdentityMatchesMergeRules(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPRunListenerBindingMatchesProxyComputation(t *testing.T) {
+	upstream := "https://mcp.vendor.example/mcp?tenant=a"
+	if got, want := mcpRunListenerBinding(upstream), mcpServerBinding(mcpBindingInputs{UpstreamURL: upstream, Headers: mustHeaders(t)}); got != want {
+		t.Fatalf("run listener binding %s differs from the proxy's %s for the same upstream", got, want)
+	}
+	if mcpRunListenerBinding(upstream) == mcpRunListenerBinding("https://mcp.vendor.example/mcp?tenant=b") {
+		t.Fatal("different upstreams share a run listener binding")
+	}
+	if mcpRunListenerBinding(upstream) == "" {
+		t.Fatal("empty binding")
+	}
+}

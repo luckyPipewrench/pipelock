@@ -81,3 +81,11 @@ func buildChildExtraEnv(resolvedEnv, envVars []string, lookup func(string) (stri
 	}
 	return extraEnv, nil
 }
+
+// mcpRunListenerBinding is the transport binding for the MCP listener that
+// pipelock run starts. It sends no configured headers and spawns no child, so
+// its effective identity is the upstream URL alone, computed exactly as
+// pipelock mcp proxy computes it for the same upstream.
+func mcpRunListenerBinding(upstream string) string {
+	return mcpServerBinding(mcpBindingInputs{UpstreamURL: upstream})
+}

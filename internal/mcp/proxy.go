@@ -707,9 +707,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 			if toolAcknowledged && toolResult.Clean {
-				// Forwarded unchanged under a reviewed acknowledgment. The
-				// signed record names the finding with an allow verdict; it is
-				// not a near miss and not a clean event.
+				// The tool scanner allowed this list under a reviewed
+				// acknowledgment. The receipt and capture record that scanner
+				// decision with an allow verdict; it is not a near miss and not
+				// a clean event. Later gates (general response scanning,
+				// inventory reservation) can still refuse delivery, and record
+				// that themselves.
 				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow); emitErr != nil && opts.requireReceipts() {
 					captureToolScan(config.ActionBlock)
 					resolveToolInventory(config.ActionBlock)
@@ -719,7 +722,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
-				// Forwarded with a finding present: warned, never clean.
+				// The tool scanner passed it with a finding present: warned,
+				// never clean.
 				captureToolScan(config.ActionWarn)
 			}
 		}

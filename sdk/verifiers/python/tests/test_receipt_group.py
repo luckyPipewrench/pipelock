@@ -545,7 +545,7 @@ def test_shared_v2_group_corpus_matches_the_go_verdict(tmp_path: Path) -> None:
     with zipfile.ZipFile(V2_CORPUS) as archive:
         archive.extractall(tmp_path)
     cases = json.loads((tmp_path / "cases.json").read_text())
-    assert len(cases) == 42
+    assert len(cases) == 60
     for item in cases:
         result = verify_receipt_group(
             tmp_path / "cases" / item["name"], item["group_id"], item["trusted_keys"]
@@ -590,6 +590,48 @@ def test_predecessor_with_a_held_writer_lock_is_invalid_until_released(
             directory, item["group_id"], item["trusted_keys"]
         )
         assert released["verdict"] == "GROUP_VALID", (name, released)
+
+
+def test_recorder_entry_fence_matches_go_walker() -> None:
+    """Go's walker accepts schema versions 1-3 and the recorder taxonomy only.
+
+    The group gate joins the taxonomy as a session's first entry. Anything else
+    is refused, including values that are unhashable or only equal to a version.
+    """
+    from pipelock_aarp_verify.group import (
+        GroupVerificationError,
+        _check_recorder_entry,
+    )
+
+    for entry_type in (
+        "action_receipt",
+        "evidence_receipt",
+        "checkpoint",
+        "transcript_root",
+        "decision",
+        "capture",
+        "capture_drop",
+    ):
+        for version in (1, 2, 3):
+            _check_recorder_entry({"v": version, "type": entry_type}, 5)
+    _check_recorder_entry({"v": 2, "type": "receipt_group_v1"}, 0)
+
+    refused: list[dict[str, object]] = [
+        {"v": 2, "type": "receipt_group_v1"},
+        {"v": 2, "type": "bogus_entry"},
+        {"v": 2, "type": ["checkpoint"]},
+        {"v": 2, "type": None},
+        {"v": 2},
+        {"v": 0, "type": "decision"},
+        {"v": 4, "type": "decision"},
+        {"v": True, "type": "decision"},
+        {"v": 2.0, "type": "decision"},
+        {"v": "2", "type": "decision"},
+        {"type": "decision"},
+    ]
+    for entry in refused:
+        with pytest.raises(GroupVerificationError):
+            _check_recorder_entry(entry, 5)
 
 
 def test_session_control_is_empty_for_any_non_receipt_shape() -> None:

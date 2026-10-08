@@ -345,6 +345,11 @@ func rewriteV2Shard(t *testing.T, path string, key v2CorpusKeys, edit func(lines
 		}
 		oldHash := entry.Hash
 		entry.Hash = recorder.ComputeHash(entry)
+		if !recorder.IsAcceptedEntryVersion(entry.Version) {
+			// Go has no projection for this version, so the hash below is the
+			// one a lenient verifier would compute and accept.
+			entry.Hash = unsupportedVersionHash(entry)
+		}
 		line = strings.Replace(line, `"hash":"`+oldHash+`"`, `"hash":"`+entry.Hash+`"`, 1)
 		prev = entry.Hash
 		buf.WriteString(line)
@@ -354,6 +359,75 @@ func rewriteV2Shard(t *testing.T, path string, key v2CorpusKeys, edit func(lines
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// unsupportedVersionHash is the v1 projection with the entry's own version
+// string: the hash a verifier gets when it hashes an unaccepted schema
+// version without refusing it first.
+func unsupportedVersionHash(e recorder.Entry) string {
+	fields := []string{
+		strconv.Itoa(e.Version), strconv.FormatUint(e.Sequence, 10), e.Timestamp.UTC().Format(time.RFC3339Nano),
+		e.SessionID, e.TraceID, e.Type, e.Transport, e.Summary, string(e.RawDetail), e.RawRef, e.PrevHash,
+	}
+	sum := sha256.Sum256([]byte(strings.Join(fields, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// retypedEntryLine clones a recorder line as an entry of another type with an
+// empty detail.
+func retypedEntryLine(t *testing.T, line, entryType string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["type"], _ = json.Marshal(entryType)
+	fields["detail"] = json.RawMessage(`{}`)
+	body, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// withEntryVersion rewrites a recorder line's schema version.
+func withEntryVersion(t *testing.T, line string, version int) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["v"] = json.RawMessage(strconv.Itoa(version))
+	body, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// v2NeighborFiles lists the evidence files of sessions in dir that are not
+// shards of open.
+func v2NeighborFiles(t *testing.T, dir string, open receipt.ReceiptGroupOpen) []string {
+	t.Helper()
+	members := map[string]bool{}
+	for _, shard := range open.Shards {
+		members[shard.SessionID] = true
+	}
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range names {
+		name := e.Name()
+		if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, "-0.jsonl") {
+			continue
+		}
+		if !members[strings.TrimSuffix(strings.TrimPrefix(name, "evidence-"), "-0.jsonl")] {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
 }
 
 func passthroughV2(lines []string) []v2OutLine {
@@ -1105,6 +1179,89 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 		if err := af.Close(); err != nil {
 			t.Fatal(err)
 		}
+		add(spec.name, dir, closed.open.GroupID, spec.note, spec.want, trusted)
+	}
+
+	// Go's recorder walkers reject an entry whose type is outside the recorder
+	// taxonomy and one whose schema version is not accepted, in every session
+	// the inventory reads: a group shard, a predecessor shard, a neighbor group
+	// and a legacy neighbor. Each fault is a self-hashed entry with the recorder
+	// chain recomputed (and the signed head rebound where one covers it), so the
+	// type or version is the only thing wrong; the control inserts a known
+	// operational entry at the same place and stays valid.
+	entryAt := func(at int, entryType string) func(lines []string) []v2OutLine {
+		return func(lines []string) []v2OutLine {
+			if len(lines) <= at {
+				t.Fatalf("shard has %d entries, want more than %d", len(lines), at)
+			}
+			out := passthroughV2(lines)
+			clone := v2OutLine{text: retypedEntryLine(t, lines[at], entryType)}
+			return append(out[:at], append([]v2OutLine{clone}, out[at:]...)...)
+		}
+	}
+	versionAt := func(at, version int) func(lines []string) []v2OutLine {
+		return func(lines []string) []v2OutLine {
+			if len(lines) <= at {
+				t.Fatalf("shard has %d entries, want more than %d", len(lines), at)
+			}
+			out := passthroughV2(lines)
+			out[at] = v2OutLine{text: withEntryVersion(t, lines[at], version)}
+			return out
+		}
+	}
+	faults := []struct {
+		suffix, note string
+		edit         func(lines []string) []v2OutLine
+		want         receipt.ReceiptGroupVerdict
+	}{
+		{"decision-control", "a known decision entry inserted", entryAt(3, "decision"), receipt.GroupValid},
+		{"unknown-type", "an entry of an unknown type inserted", entryAt(3, "bogus_entry"), receipt.GroupInvalid},
+		{"unsupported-version", "an entry rewritten to unsupported recorder version 4", versionAt(3, 4), receipt.GroupInvalid},
+	}
+	for _, target := range []struct {
+		prefix, src, groupID, where string
+		path                        func(dir string) string
+		finish                      func(dir string)
+	}{
+		{"closed-shard", closedDir, closed.open.GroupID, "closed group shard", func(dir string) string { return shardPath(dir, closed.open.Shards[0].SessionID) }, func(dir string) { resignClosedShardHead(t, dir, closed.open, 0, key) }},
+		{"unsealed-predecessor", unsealedDir, unsealed.open.GroupID, "unsealed predecessor shard", func(dir string) string { return filepath.Join(dir, pred0) }, func(string) {}},
+		{"sealed-predecessor", sealedDir, sealedSucc.open.GroupID, "sealed predecessor shard", func(dir string) string { return filepath.Join(dir, sealedPath) }, func(dir string) { rehashSealedPredecessor(t, dir, predOpenSealed, succOpenSealed, key) }},
+		{"neighbor-group-shard", chainDir, firstClosed.open.GroupID, "neighbor group shard", func(dir string) string { return shardPath(dir, secondClosed.open.Shards[0].SessionID) }, func(string) {}},
+		{"legacy-neighbor", legacyDir, closed.open.GroupID, "legacy neighbor session", func(dir string) string { return shardPath(dir, legacySession) }, func(string) {}},
+	} {
+		for _, fault := range faults {
+			name := target.prefix + "-" + fault.suffix
+			dir = clone(target.src, name)
+			rewriteV2Shard(t, target.path(dir), key, fault.edit)
+			target.finish(dir)
+			add(name, dir, target.groupID, fault.note+" in a "+target.where+", recorder chain recomputed", fault.want, trusted)
+		}
+	}
+
+	// A neighbor session that holds nothing but one such entry owns no signed
+	// open, so only the inventory's recorder walk can refuse it.
+	for _, spec := range []struct {
+		name, note, entryType string
+		version               int
+		want                  receipt.ReceiptGroupVerdict
+	}{
+		{"neighbor-session-decision-only-control", "a neighbor session holding only a known decision entry", "decision", 0, receipt.GroupValid},
+		{"neighbor-session-unknown-type-only", "a self-hashed neighbor session holding only an entry of an unknown type", "bogus_entry", 0, receipt.GroupInvalid},
+		{"neighbor-session-unsupported-version-only", "a self-hashed neighbor session holding only a decision entry at unsupported recorder version 4", "decision", 4, receipt.GroupInvalid},
+	} {
+		dir = clone(closedDir, spec.name)
+		runV2OnlySession(t, dir, key)
+		files := v2NeighborFiles(t, dir, closed.open)
+		if len(files) != 1 {
+			t.Fatalf("%s: %d neighbor files, want 1", spec.name, len(files))
+		}
+		rewriteV2Shard(t, files[0], key, func(lines []string) []v2OutLine {
+			line := retypedEntryLine(t, lines[0], spec.entryType)
+			if spec.version != 0 {
+				line = withEntryVersion(t, line, spec.version)
+			}
+			return []v2OutLine{{text: line}}
+		})
 		add(spec.name, dir, closed.open.GroupID, spec.note, spec.want, trusted)
 	}
 

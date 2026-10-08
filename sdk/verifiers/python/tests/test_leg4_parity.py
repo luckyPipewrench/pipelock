@@ -60,7 +60,7 @@ def _recorder_line(session: str, seq: int, prior: str) -> tuple[bytes, str]:
         "ts": "2026-01-01T00:00:00Z",
         "session_id": session,
         "trace_id": "t",
-        "type": "note",
+        "type": "decision",
         "transport": "",
         "summary": "",
         "detail": {},

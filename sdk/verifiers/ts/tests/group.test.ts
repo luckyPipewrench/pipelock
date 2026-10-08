@@ -606,7 +606,7 @@ test("shared v2 group corpus matches the Go verdict", async () => {
     trusted_keys: string[];
     expected: string;
   }>;
-  assert.equal(cases.length, 42);
+  assert.equal(cases.length, 60);
   for (const item of cases) {
     const result = await verifyReceiptGroup(
       join(v2Fixtures, "cases", item.name),

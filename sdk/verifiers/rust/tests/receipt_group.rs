@@ -569,7 +569,7 @@ fn shared_v2_group_corpus_matches_the_go_verdict() {
         serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
             .unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 42);
+    assert_eq!(cases.len(), 60);
     for item in cases {
         let name = item["name"].as_str().unwrap();
         let keys = item["trusted_keys"]

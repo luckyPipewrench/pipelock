@@ -29,6 +29,7 @@ from .number import (
 )
 from .rawjson import SourcedReceipt, object_member_span, recorder_line_ext_bytes
 from .receipt import (
+    _SKIPPABLE_ENTRY_TYPES,
     ACTION_ENTRY_TYPE,
     EVIDENCE_ENTRY_TYPE,
     ReceiptError,
@@ -462,6 +463,42 @@ def _session_control(receipt: Any) -> dict[str, Any]:
     return control if isinstance(control, dict) else {}
 
 
+# Go's recorder walkers accept these entry types and these schema versions and
+# nothing else. The receipt types and the skippable operational types are the
+# recorder taxonomy; the receipt group gate joins it only as a session's first
+# entry.
+_GATE_ENTRY_TYPE = "receipt_group_v1"
+_KNOWN_ENTRY_TYPES = frozenset({ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}) | (
+    _SKIPPABLE_ENTRY_TYPES
+)
+_ACCEPTED_ENTRY_VERSIONS = (1, 2, 3)
+
+
+def _check_recorder_entry(entry: dict[str, Any], position: int) -> None:
+    """Refuse an entry Go's recorder walker would not accept.
+
+    That is an unsupported schema version, an entry type outside the recorder
+    taxonomy, or a group gate anywhere but the first entry of a session.
+    """
+    version = entry.get("v")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in _ACCEPTED_ENTRY_VERSIONS
+    ):
+        raise GroupVerificationError(
+            f"entry seq {position}: unsupported version {version!r} (accepted: 1, 2, 3)"
+        )
+    entry_type = entry.get("type")
+    if not isinstance(entry_type, str) or (
+        entry_type not in _KNOWN_ENTRY_TYPES
+        and not (entry_type == _GATE_ENTRY_TYPE and position == 0)
+    ):
+        raise GroupVerificationError(
+            f"unexpected recorder entry type {entry_type!r} at seq {position}"
+        )
+
+
 def _record_hash(entry: dict[str, Any], detail_raw: bytes) -> str:
     version = entry.get("v")
     fields: list[str] = [
@@ -644,6 +681,7 @@ def _read_session_evidence(
                     raise GroupVerificationError(
                         "receipt shard session inventory recorder hash mismatch"
                     )
+                _check_recorder_entry(entry, len(entries))
                 detail = entry.get("detail")
                 if (
                     entry.get("type") in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}
@@ -747,6 +785,7 @@ def _verify_shard(
         computed = _record_hash(entry, detail_raw)
         if entry.get("hash") != computed:
             raise GroupVerificationError(f"shard line {line_no} recorder hash mismatch")
+        _check_recorder_entry(entry, len(rows))
         prior = computed
         rows.append((entry, detail_raw))
         if entry.get("type") in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
@@ -1223,14 +1262,7 @@ def _verify_ael_inventory(
         # untrusted receipt anywhere in a neighbor or legacy session fails the
         # group, not only its session_open.
         v1_chain: list[dict[str, Any]] = []
-        for position, entry in enumerate(entries):
-            # Go's group recorder walker accepts the gate only as the first
-            # entry of a session; anywhere else it is an unknown entry type.
-            if entry.get("type") == "receipt_group_v1" and position != 0:
-                raise GroupVerificationError(
-                    f"inventory receipt session {session!r}: unexpected recorder "
-                    f"entry type 'receipt_group_v1' at seq {position}"
-                )
+        for entry in entries:
             if entry.get("type") not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
                 continue
             detail = entry.get("detail")

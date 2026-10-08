@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -63,6 +64,23 @@ func explainSignedAgentCardRPC(t *testing.T, priv ed25519.PrivateKey, signature 
 	return []byte(`{"jsonrpc":"2.0","id":1,"result":` + string(body) + `}`)
 }
 
+// explainA2ATestKey returns a fixed signing key. A key generated per run made
+// the signed card nondeterministic: Ed25519 signatures are base64url, so about
+// one run in a few hundred thousand produced a signature containing a
+// credential-shaped run (for example hf_ followed by 34 alphanumerics) and the
+// valid card was blocked by response DLP. A fixed seed keeps every run on the
+// same, verified-clean bytes.
+func explainA2ATestKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	seed := make([]byte, ed25519.SeedSize)
+	copy(seed, "pipelock explain a2a test key")
+	priv := ed25519.NewKeyFromSeed(seed)
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, nil, errors.New("ed25519 public key has unexpected type")
+	}
+	return pub, priv, nil
+}
+
 func explainA2ASignatureConfig(t *testing.T, pub ed25519.PublicKey) *config.Config {
 	t.Helper()
 	cfg := config.Defaults()
@@ -82,7 +100,7 @@ func explainA2ASignatureConfig(t *testing.T, pub ed25519.PublicKey) *config.Conf
 }
 
 func TestBuildMCPExplainReport_A2ASignedAgentCardMatchesRuntimePolicy(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := explainA2ATestKey()
 	if err != nil {
 		t.Fatalf("generate signing key: %v", err)
 	}
@@ -174,7 +192,7 @@ func TestBuildMCPExplainReport_A2ASignedAgentCardMatchesRuntimePolicy(t *testing
 }
 
 func TestBuildMCPExplainReport_A2AContextAbsentStaysExplicitlyGeneric(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := explainA2ATestKey()
 	if err != nil {
 		t.Fatalf("generate signing key: %v", err)
 	}
@@ -194,7 +212,7 @@ func TestBuildMCPExplainReport_A2AContextAbsentStaysExplicitlyGeneric(t *testing
 }
 
 func TestBuildMCPExplainReport_A2AContextRejectsBatch(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := explainA2ATestKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +225,7 @@ func TestBuildMCPExplainReport_A2AContextRejectsBatch(t *testing.T) {
 }
 
 func TestBuildMCPExplainReport_A2ADisabledUsesGenericPolicy(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := explainA2ATestKey()
 	if err != nil {
 		t.Fatalf("generate signing key: %v", err)
 	}

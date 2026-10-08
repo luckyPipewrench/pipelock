@@ -242,6 +242,9 @@ func newResponseLiteralGate(literal string, fold bool) *responseGate {
 		return nil
 	}
 	gate := &responseGate{literal: literal}
+	// regexp decodes each malformed byte as U+FFFD, so a literal U+FFFD matches
+	// input that does not contain its bytes. Only the folded text carries it.
+	fold = fold || strings.ContainsRune(literal, utf8.RuneError)
 	if fold {
 		gate.hasFold = true
 		gate.folded = responseSimpleFold(literal)

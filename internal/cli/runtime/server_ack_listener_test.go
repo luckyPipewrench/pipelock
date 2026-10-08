@@ -72,7 +72,7 @@ func TestServerRunListenerAppliesAcknowledgmentAndRevocation(t *testing.T) {
       server_binding_sha256: %s
       tool: store_secret
       finding: Credential Request Directive
-      family_revision: 1
+      family_revision: 2
       tool_sha256: %s
       occurrences:
         - field: /inputSchema/properties/key/description
@@ -179,7 +179,7 @@ func TestServerRunListenerRefusedDefinitionDoesNotSeedDrift(t *testing.T) {
       server_binding_sha256: %s
       tool: store_secret
       finding: Credential Request Directive
-      family_revision: 1
+      family_revision: 2
       tool_sha256: %s
       occurrences:
         - field: /inputSchema/properties/key/description

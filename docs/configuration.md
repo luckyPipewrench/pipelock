@@ -1543,7 +1543,7 @@ mcp_tool_scanning:
       server_binding_sha256: <printed at startup>
       tool: store_secret
       finding: Credential Request Directive
-      family_revision: 1
+      family_revision: 2
       tool_sha256: <from the logged entry>
       occurrences:
         - field: /inputSchema/properties/key/description

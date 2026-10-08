@@ -56,7 +56,7 @@ func proxyAckEntry(t *testing.T) config.MCPAcknowledgedFinding {
 		ServerBindingSHA256: proxyAckBinding,
 		Tool:                "store_secret",
 		Finding:             config.MCPAckFindingRequestDirective,
-		FamilyRevision:      1,
+		FamilyRevision:      2,
 		ToolSHA256:          proxyAckHash(string(canonical)),
 		Occurrences: []config.MCPAckOccurrence{{
 			Field:           "/inputSchema/properties/key/description",

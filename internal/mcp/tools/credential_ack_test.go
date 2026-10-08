@@ -265,6 +265,7 @@ func TestCompleteToolDigestRequiresRawBytes(t *testing.T) {
 // different patterns were never reviewed.
 var credentialRequestFamilySources = map[int]string{
 	1: "b8ce12206133265a80edb096f91da6e5c06f236eac4dc86de1163ac24b338081",
+	2: "9416b93d2fe639b54f3e82fa9b477cac0e1e468ec7cf33dd763c9e4531995f35",
 }
 
 func TestCredentialRequestFamilyRevisionGuard(t *testing.T) {

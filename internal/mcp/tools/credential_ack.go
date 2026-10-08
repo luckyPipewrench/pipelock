@@ -26,7 +26,9 @@ import (
 // occurrences were produced by. Bump it for any semantic change to the
 // family's patterns, which invalidates every acknowledgment of the finding;
 // TestCredentialRequestFamilyRevisionGuard fails until the bump is made.
-const credentialRequestFamilyRevision = 1
+// Revision 2: the family's patterns became markup tolerant, so emphasis and
+// code markers between words match like the plain sentence.
+const credentialRequestFamilyRevision = 2
 
 // Credential acknowledgment outcomes, recorded on the tool's match.
 const (

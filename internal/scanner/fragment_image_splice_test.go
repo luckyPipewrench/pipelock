@@ -86,6 +86,23 @@ func TestFragmentImageSplice(t *testing.T) {
 		}
 	})
 
+	t.Run("two split rules with no whole copies are both reported", func(t *testing.T) {
+		ssn := "123" + "-45-" + "6789"
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key[:4]+image[:at], image[at:]+key[4:]+" "+ssn[:6], ssn[6:]+" end"), nil, "split-only")
+		if !hasAWSKey(got) {
+			t.Fatalf("split key lost beside a split SSN: %+v", got)
+		}
+		splitSSN := false
+		for _, m := range got {
+			if m.PatternName == "Social Security Number" {
+				splitSSN = true
+			}
+		}
+		if !splitSSN {
+			t.Fatalf("split SSN lost beside a split key: %+v", got)
+		}
+	})
+
 	t.Run("a fragment that holds a whole image still reports a split key", func(t *testing.T) {
 		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(image+" "+key+" "+key[:4]+image[:at], image[at:]+key[4:]), nil, "own-image")
 		if !hasAWSKey(got) {

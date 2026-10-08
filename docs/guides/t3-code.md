@@ -49,14 +49,28 @@ umask 077
 : "${T3_MCP_AUTHORIZATION:?T3 must supply its session authorization}"
 
 headers=$(mktemp)
-trap 'rm -f -- "$headers"' EXIT HUP INT TERM
+proxy_pid=
+cleanup() {
+  trap '' HUP INT TERM
+  if [ -n "$proxy_pid" ]; then
+    kill -TERM "$proxy_pid" 2>/dev/null || :
+    wait "$proxy_pid" 2>/dev/null || :
+  fi
+  rm -f -- "$headers"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf 'Authorization: %s\n' "$T3_MCP_AUTHORIZATION" > "$headers"
 
 pipelock mcp proxy \
   --upstream "$T3_MCP_URL" \
   --header-file "$headers" \
   --header 'MCP-Protocol-Version: 2025-06-18' \
-  --server-name t3-code
+  --server-name t3-code <&0 &
+proxy_pid=$!
+wait "$proxy_pid"
 ```
 
 Then make it executable and configure the environment of the process that
@@ -74,7 +88,11 @@ installation, put the absolute wrapper path in the service's environment.
 T3 supplies the endpoint and bearer value separately for each provider session.
 The wrapper puts the authorization header in an owner-only temporary file,
 keeping the credential out of process arguments. It removes the file on normal
-exit and handled signals. A forced kill or host crash can leave the temporary
+exit and handled signals, stopping and waiting for the proxy child first.
+The explicit stdin redirection keeps MCP input connected to the background
+child. Configure the service supervisor to stop the whole process group too;
+shell traps cannot guarantee cleanup during every launch-time race or if the
+child does not terminate. A forced kill or host crash can leave the temporary
 file behind; treat the temporary directory as credential-bearing storage.
 Do not enable shell tracing or copy these values into logs.
 

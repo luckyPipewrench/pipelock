@@ -3158,6 +3158,37 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
                 self.assertIn(f"{path}:1: first line", evidence)
                 self.assertIn(f"{path}:2: second line", evidence)
 
+    def test_requested_evidence_retains_failure_across_request_order(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        for contents in ((None, "available"), ("available", None), ("first", "second")):
+            with self.subTest(contents=contents):
+                record = pr_review.CandidateEvidence("owner")
+                decisions = {0: pr_review.JudgeDecision("unresolved", (
+                    pr_review.EvidenceRequest(path="first.txt"), pr_review.EvidenceRequest(path="second.txt")))}
+                with mock.patch.object(pr_review, "_local_review_root", return_value=ROOT), \
+                     mock.patch.object(pr_review, "_cached_evidence_read", side_effect=contents):
+                    text, unavailable = pr_review.requested_repository_evidence(
+                        binding, decisions, owners={0: "owner"}, records={"owner": record})
+                self.assertEqual(unavailable, None in contents)
+                self.assertEqual(record.retrieval, "unavailable-or-truncated" if None in contents else "retrieved")
+                self.assertIn("CANDIDATE owner", text)
+
+    def test_requested_evidence_small_slices_keep_candidate_ownership(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        decisions = {index: pr_review.JudgeDecision("unresolved", (
+            pr_review.EvidenceRequest(path="sample.txt"),)) for index in range(30)}
+        owners = {index: f"owner-{index}" for index in decisions}
+        with mock.patch.object(pr_review, "_local_review_root", return_value=ROOT), \
+             mock.patch.object(pr_review, "_cached_evidence_read", return_value="available\n"):
+            text, unavailable = pr_review.requested_repository_evidence(binding, decisions, max_tokens=700, owners=owners)
+            self.assertTrue(unavailable)
+            self.assertLessEqual(pr_review.estimate_tokens(text), 700)
+            for owner in owners.values():
+                self.assertIn(f"CANDIDATE {owner} <requested-evidence-omitted>", text)
+            text, unavailable = pr_review.requested_repository_evidence(binding, decisions, max_tokens=1, owners=owners)
+            self.assertTrue(unavailable)
+            self.assertLessEqual(pr_review.estimate_tokens(text), 1)
+
     def test_requested_path_reads_the_reviewed_commit_not_dirty_worktree_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

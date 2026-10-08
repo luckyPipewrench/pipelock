@@ -3077,10 +3077,6 @@ def requested_repository_evidence(
                     labelled = re.sub(r"(?m)^(\d+): ", lambda match: f"{request.path}:{match[1]}: ", context)
                     piece = f"REQUESTED PATH {request.path}\n{labelled}"
                     failed = context.startswith("<file-context-unavailable:")
-                    if record is not None and request.path:
-                        # Other-file locations remain labelled in the rendered
-                        # request; own-file ranges extend subsequent exclusions.
-                        record.retrieval = "retrieved"
             else:
                 lines, cut, failed = _cached_evidence_search(root, request.search or "", binding, budget, evidence_deadline)
                 if _IDENTIFIER_TERM.match(request.search or ""):
@@ -3117,12 +3113,19 @@ def requested_repository_evidence(
             rendered[index].append(piece)
             unavailable |= failed or cut
             if record is not None:
-                record.retrieval = "unavailable-or-truncated" if failed or cut else "retrieved"
+                if failed or cut:
+                    record.retrieval = "unavailable-or-truncated"
+                elif record.retrieval in {"not-requested", "retrieved"}:
+                    record.retrieval = "retrieved"
     output = []
     for index, pieces in rendered.items():
         owner = (owners or {}).get(index, str(index))
-        text = f"CANDIDATE {owner} REQUESTED EVIDENCE\n" + "\n".join(pieces)
-        text, cut = _bounded_evidence(text, max_tokens // max(1, len(rendered)), False)
+        header = f"CANDIDATE {owner} REQUESTED EVIDENCE\n"
+        allowance = max_tokens // max(1, len(rendered))
+        if estimate_tokens(header + EVIDENCE_TRUNCATED) > allowance:
+            text, cut = f"CANDIDATE {owner} <requested-evidence-omitted>", True
+        else:
+            text, cut = _bounded_evidence(header + "\n".join(pieces), allowance, False)
         unavailable |= cut
         output.append(text)
     text, cut = _bounded_evidence("\n\n".join(output), max_tokens, unavailable)

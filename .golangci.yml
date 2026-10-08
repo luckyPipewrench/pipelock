@@ -73,6 +73,16 @@ linters:
       - path: internal/mcp/fdexec_linux\.go
         linters: [gosec]
         text: "G103|G204"
+      # The MCP stdio proxy launches the server command the operator names
+      # after `pipelock mcp proxy --` (args[ArgsLenAtDash():] in
+      # internal/cli/runtime/mcp.go), directly or through the descriptor
+      # helper above. Like pipelock exec, no tool, upstream or client input
+      # selects the command. Pinned to the launch lines so any other exec
+      # site in these files is still checked.
+      - path: internal/mcp/(proxy|fdexec_linux)\.go
+        linters: [gosec]
+        text: "G702"
+        source: 'exec\.CommandContext\(ctx, (command\[0\], command\[1:\]|descriptorHelperPath, helperArgs)\.\.\.\)'
       # An executable test fixture has to be executable, so 0600 is not an
       # option for it.
       # pipelock exec launches the command the operator names (G204, G702), and on

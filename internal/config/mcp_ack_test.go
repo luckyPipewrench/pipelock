@@ -148,7 +148,6 @@ func TestValidateMCPToolScanningWarnsWhenAcksAreInert(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = false
 	cfg.MCPToolScanning.AcknowledgedFindings = []MCPAcknowledgedFinding{validAck()}
-	// clock-literal-ok: paired with the injected test clock (2026-10-08)
 	cfg.MCPToolScanning.AcknowledgedFindings[0].Expires = time.Now().UTC().AddDate(0, 0, 30).Format("2006-01-02")
 	var warnings []Warning
 	if err := cfg.validateMCPToolScanning(&warnings); err != nil {

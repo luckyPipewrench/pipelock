@@ -2622,7 +2622,21 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		defer resp.End()
 	}
 
-	for _, tool := range tools {
+	// Acknowledgment outcomes are decided before any tool is scanned. A
+	// refused entry refuses the whole response, so its drift-baseline writes
+	// must follow block for every tool in it, siblings included, whichever
+	// order they arrive in.
+	ackNow := cfg.now()
+	ackOutcomes := make([]string, len(tools))
+	responseAckRefused := false
+	for i, tool := range tools {
+		if outcome, ok := credentialAckOutcome(cfg, tool, ackNow); ok {
+			ackOutcomes[i] = outcome
+			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
+		}
+	}
+
+	for toolIndex, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
@@ -2645,13 +2659,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// A reviewed tool can shrink to no scanner text at all. Its entry
 			// is still evaluated, against no occurrences, so it refuses like
 			// any other stale entry instead of being skipped.
-			if entry, ok := findCredentialAck(cfg, tool.Name); ok {
-				outcome := evaluateCredentialAck(entry, cfg, tool, credentialRequestAttribution{Attributable: true}, cfg.now())
-				if outcome == CredentialAckAcknowledged {
-					// Unreachable while entries must list at least one
-					// occurrence; refuse rather than accept it.
-					outcome = CredentialAckOccurrencesChanged
-				}
+			if outcome := ackOutcomes[toolIndex]; outcome != "" {
 				match.CredentialAck = outcome
 				hasFinding = true
 			}
@@ -2675,7 +2683,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// still present: a reviewed tool whose wording changed or was
 			// removed no longer matches the entry, and that must refuse rather
 			// than let the stale entry go unnoticed.
-			entry, hasEntry := findCredentialAck(cfg, tool.Name)
+			outcome := ackOutcomes[toolIndex]
+			hasEntry := outcome != ""
 			if hasRequest || hasEntry {
 				// The attribution reads the exact text, spans and normalized
 				// string checkToolPoison just matched.
@@ -2684,9 +2693,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				case !hasEntry:
 					match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
 				default:
-					outcome := evaluateCredentialAck(entry, cfg, tool, att, cfg.now())
 					match.CredentialAck = outcome
-					if outcome == CredentialAckAcknowledged && hasRequest {
+					if outcome == CredentialAckAcknowledged {
 						// Only this finding is lifted. The raw finding and its
 						// treatment stay visible as an observation for audit.
 						poison = slices.DeleteFunc(slices.Clone(poison), func(f string) bool { return f == handoverRequestFinding })
@@ -2696,12 +2704,6 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 							CredentialAck: CredentialAckAcknowledged,
 						})
 					} else {
-						if outcome == CredentialAckAcknowledged {
-							// Unreachable while entries must list at least one
-							// occurrence; refuse rather than accept a vacuous
-							// acknowledgment.
-							match.CredentialAck = CredentialAckOccurrencesChanged
-						}
 						hasFinding = true
 						if hasRequest {
 							match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
@@ -2784,14 +2786,15 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		if cfg.DetectDrift && driftBaseline != nil {
 			hash := hashTool(tool)
-			// A refused acknowledgment refuses the response under every
-			// action, so for this tool it governs the trust-state writes
-			// exactly as block does: a definition the agent never received
-			// must not become the baseline later scans compare against.
-			ackRefused := match.CredentialAck != "" && match.CredentialAck != CredentialAckAcknowledged
-			blocking := cfg.Action == "block" || ackRefused
-			promoteNew := !blocking || !hasFinding
-			promoteChanged := !blocking
+			// A definition the agent never received must not become the
+			// baseline later scans compare against.
+			blocking := cfg.Action == "block"
+			// A stale acknowledgment refuses the whole response, so nothing
+			// in it reaches the agent. No definition in it may become a
+			// baseline, not even a scanner-clean new tool or a descriptive
+			// change that block mode would otherwise accept.
+			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
+			promoteChanged := !responseAckRefused && !blocking
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
 			// content-based promotion above: a scan-clean new tool would
@@ -2822,7 +2825,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
-				PromoteAccepted: !blocking || !hasFinding,
+				PromoteAccepted: !responseAckRefused && (!blocking || !hasFinding),
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},

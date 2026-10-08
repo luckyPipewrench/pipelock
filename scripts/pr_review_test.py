@@ -3537,11 +3537,12 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             )
         self.assertTrue(judged)
         self.assertEqual(verified, [])
-        self.assertEqual(unresolved, [])
+        self.assertEqual(unresolved, [candidate])
         self.assertEqual(invalid, [])
         self.assertEqual([call.args[3] for call in model.call_args_list], ["judge", "judge-repair"])
         self.assertEqual(requested.call_count, 1)
         self.assertEqual(requested.call_args.kwargs["deadline"], 1_000.0)
+        self.assertEqual(unresolved, [candidate])
 
     def test_judge_repair_has_small_output_and_timeout_bounds(self) -> None:
         payload = pr_review.build_llm_payload("gpt-5.6-terra", "system", "user", "deep", "judge-repair")
@@ -6957,6 +6958,40 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             self.assertEqual(calls, ["judge", "judge-repair"])
             self.assertEqual(result, ([], True, [], [], [], []))
             self.assertLessEqual(read.call_count, pr_review.MAX_JUDGE_CONTEXT_FETCHES)
+
+    def test_requested_fact_must_reach_the_repair_prompt(self):
+        candidate = self.candidate(line=1)
+        for scenario in ("failed", "exhausted", "no-matches", "path", "mixed", "omitted", "already-owned", "unseen-line"):
+            for verdict in ("keep", "drop"):
+                with self.subTest(scenario=scenario, verdict=verdict):
+                    requests = [{"search": "ConsumerValidate"}]
+                    if scenario in {"path", "mixed", "omitted"}:
+                        requests = [{"path": "consumer.go", "line": 1}]
+                    if scenario == "mixed":
+                        requests.insert(0, {"path": "missing.go", "line": 1})
+                    if scenario in {"already-owned", "unseen-line"}:
+                        requests = [{"path": candidate.path, "line": 1 if scenario == "already-owned" else 900}]
+                    first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer required", "requests": requests}]}
+                    repaired = {"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                    def read(_root, _revision, path, _deadline):
+                        return None if path == "missing.go" else "return true // deciding code\n"
+                    options = pr_review.JudgeOptions()
+                    with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+                        pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+                    ), mock.patch.object(pr_review, "_read_commit_file", side_effect=read), mock.patch.object(
+                        pr_review, "cross_file_evidence", return_value=("", False)
+                    ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=([], False, scenario == "failed")), mock.patch.object(
+                        pr_review, "MAX_JUDGE_EVIDENCE_REQUESTS", 0 if scenario in {"exhausted", "already-owned", "unseen-line"} else 8
+                    ), mock.patch.object(pr_review, "MAX_REQUESTED_EVIDENCE_TOKENS", 1 if scenario == "omitted" else 2000), mock.patch.object(
+                        pr_review, "call_model", side_effect=[first, repaired]
+                    ) as model:
+                        result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
+                    missing = scenario in {"failed", "exhausted", "omitted", "unseen-line"}
+                    self.assertEqual(result[4], [candidate] if missing else [])
+                    self.assertEqual(result[0], [candidate] if not missing and verdict == "keep" else [])
+                    self.assertEqual(model.call_count, 2)
+                    if missing:
+                        self.assertIn("still missing", options.evidence[pr_review.candidate_identifier(candidate)].reason)
 
     def test_schema_repair_uses_exactly_one_spare_call(self):
         state, progress, phases = self.run_discovery(5, None)

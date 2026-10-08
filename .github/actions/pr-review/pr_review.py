@@ -350,6 +350,7 @@ class CandidateEvidence:
     retrieval: str = "not-requested"
     verdict: str = "not-admitted"
     locations: list[tuple[str, str, int, int]] = field(default_factory=list)
+    requested_proofs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -3123,6 +3124,10 @@ def requested_repository_evidence(
             rendered[index].append(piece)
             unavailable |= failed or cut
             if record is not None:
+                if not failed:
+                    record.requested_proofs.extend(re.findall(r"(?m)^[^<>\n]+:\d+: .+$", piece))
+                    if not cut and request.search is not None and not matches:
+                        record.requested_proofs.append(piece)
                 if failed or cut:
                     record.retrieval = "unavailable-or-truncated"
                 elif record.retrieval in {"not-requested", "retrieved"}:
@@ -3307,6 +3312,18 @@ def judge_findings(
         finally:
             record_judge_validation("judge", validation, options, binding.correlation)
     pending = [index for index in available if index not in decisions or decisions[index].verdict == "unresolved"]
+    # An explicit request declares missing evidence. Already supplied head
+    # locations can satisfy a repeated path request, but not an unseen line.
+    asked: dict[int, bool] = {}
+    for index, decision in decisions.items():
+        if decision.verdict == "unresolved" and decision.requests:
+            record = options.evidence[candidate_identifier(candidates[index])]
+            asked[index] = any(
+                request.path == path and revision == binding.head_sha
+                and (request.line is None or start <= request.line <= end)
+                for request in decision.requests
+                for path, revision, start, end in record.locations
+            )
     feedback = {primary[local]: codes for local, codes in primary_validation.by_index.items() if local < len(primary)}
     if primary_validation.counts and not feedback:
         feedback = {index: set(primary_validation.counts) for index in primary}
@@ -3351,6 +3368,8 @@ def judge_findings(
             supplied_code = bool(re.search(r"(?m)^[^<>\n]+:\d+: ", own_evidence))
             if record.source in {"unavailable", "changed-hunk-fallback"} and not supplied_code and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Candidate path or anchor was unavailable; decisive repository evidence is still missing.")
+            elif index in asked and not asked[index] and not any(proof in own_evidence for proof in record.requested_proofs) and decision.verdict in {"keep", "drop"}:
+                decision = JudgeDecision("unresolved", reason="Repository evidence the first pass required was not supplied; that fact is still missing.")
             record.verdict, record.reason = decision.verdict, decision.reason or "Decisive evidence was not classified."
             if decision.verdict == "keep":
                 verified.append(finding)
@@ -3365,7 +3384,8 @@ def judge_findings(
             record.reason = "Serialized prompt allowance exhausted before this candidate was admitted."
             over_budget.append(finding)
     # Preserve reasons before any failed repair can remove its decision.
-    log_phase("judge-evidence", status=f"candidates-{len(candidates)}-admitted-{len(admitted)}-reads-{shared.reads}-searches-{shared.searches}-requests-{shared.requests}-calls-{calls}", correlation=binding.correlation)
+    search_failures = sum(failed for _, _, failed in shared.searched.values())
+    log_phase("judge-evidence", status=f"candidates-{len(candidates)}-admitted-{len(admitted)}-reads-{shared.reads}-searches-{shared.searches}-search-failures-{search_failures}-requests-{shared.requests}-calls-{calls}", correlation=binding.correlation)
     return verified, bool(calls), over_budget, over_files, unresolved, invalid
 
 

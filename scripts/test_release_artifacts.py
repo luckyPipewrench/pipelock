@@ -407,6 +407,8 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self.assertIn("id", producer, "producer needs an ID")
                     self.assertIs(producer.get("continue-on-error"), True)
                     action = str(producer["uses"]).partition("@")[0].lower()
+                    self.assertIn(action, ("actions/attest-build-provenance", "actions/attest-sbom"),
+                                  "unsupported attestation action")
                     self._assert_action_pin(producer, action)
                     self.assertEqual(producer.get("env", {}).get("NODE_OPTIONS"), "",
                                      "producer must explicitly clear Node startup options")
@@ -822,7 +824,16 @@ class TestReleaseArtifacts(unittest.TestCase):
                 steps.insert(steps.index(gate), producer)
                 outcomes = gate["if"].split("&&", 1)[1].strip().strip("()")
                 gate["if"] = "always() && (" + outcomes + " || steps.attest-extra.outcome != 'success')"
-                self._assert_attestation_contract(parsed)
+                for action in ("actions/attest-build-provenance", "actions/attest-sbom"):
+                    with self.subTest(supported_action=action):
+                        producer["uses"] = f"{action}@{'b' * 40}"
+                        self._assert_attestation_contract(parsed)
+                for action in ("actions/attest-unsupported", "actions/attestation",
+                               "actions/attest-build-provenance/extra"):
+                    with self.subTest(unsupported_action=action):
+                        producer["uses"] = f"{action}@{'b' * 40}"
+                        with self.assertRaisesRegex(AssertionError, "unsupported attestation action"):
+                            self._assert_attestation_contract(parsed)
                 for ref in ("v4", "future", "b" * 39, ""):
                     with self.subTest(unpinned_ref=ref):
                         producer["uses"] = "actions/attest-build-provenance" + (f"@{ref}" if ref else "")

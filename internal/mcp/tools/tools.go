@@ -2585,6 +2585,27 @@ func uninspectableDetail(toolName, field, reason string) string {
 	return fmt.Sprintf("tool %q: %s %s", toolName, field, reason)
 }
 
+// uninspectableBatchElement reports whether one batch element carries a tools
+// field or tool definitions the scanner cannot read, using the same checks as
+// scanToolsSingle without touching any baseline. It returns the refusal to use
+// for the whole batch.
+func uninspectableBatchElement(elem json.RawMessage) (ToolScanResult, bool) {
+	var rpc jsonrpc.RPCResponse
+	if err := json.Unmarshal(elem, &rpc); err != nil {
+		return ToolScanResult{}, false
+	}
+	switch ClassifyToolsListResult(rpc.Result) {
+	case ToolsListAbsent:
+		return ToolScanResult{}, false
+	case ToolsListMalformed:
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: ToolsListMalformedDetail, RPCID: rpc.ID}, true
+	}
+	if _, err := parseToolsList(rpc.Result); err != nil {
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: "tools/list result is not a complete tool inventory", RPCID: rpc.ID}, true
+	}
+	return ToolScanResult{}, false
+}
+
 // scanToolsBatch scans a JSON-RPC 2.0 batch response for tool poisoning.
 // Each element is checked independently; results are aggregated.
 func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolScanResult {
@@ -2601,6 +2622,16 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 	resourceDetail := ""
 	var firstID json.RawMessage
 	isToolsList := false
+
+	// A batch is answered as one response, so one element that cannot be
+	// inspected rejects all of it. Check every element before scanning any:
+	// scanning a valid element first would record its inventory in the drift
+	// baseline even though the batch carrying it is then refused.
+	for _, elem := range batch {
+		if r, ok := uninspectableBatchElement(elem); ok {
+			return r
+		}
+	}
 
 	for _, elem := range batch {
 		r := scanToolsSingle(elem, sc, cfg, "")

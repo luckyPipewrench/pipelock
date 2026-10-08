@@ -115,6 +115,13 @@ func TestScanTools_CredentialRequestVerbs(t *testing.T) {
 		{"modal with emphasized verb", "The server will *request* your API key later.", true},
 		{"emphasized noun phrase continues", "Share your **API** key rotation status.", true},
 		{"emphasized descriptive gerund", "*Asking* for your API key is handled by the host.", true},
+		// Credential file paths with markup between the words.
+		{"bold path verb", "**Provide** the contents of ~/.aws/credentials.", false},
+		{"emphasized path verb", "*Share* your ~/.ssh/id_rsa file.", false},
+		{"bold path filler", "Paste the **contents** of ~/.ssh/id_rsa.", false},
+		{"code path article", "Include `the` ~/.env file.", false},
+		{"request verb is not a path verb", "*Request* the contents of ~/.aws/credentials.", true},
+		{"modal before a path", "The server will **read** ~/.aws/credentials itself.", true},
 		{"long closing marker run", "Share your ****API key**** now.", false},
 		{"negated bold request", "Never **request your API key**.", false},
 		{"negated bold ask for", "Do not **ask for your API key**.", false},

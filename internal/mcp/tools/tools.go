@@ -1190,12 +1190,12 @@ var handoverBarePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverReq
 // ~/.aws/credentials". include and pass join the verb list here only, because
 // a sensitive path is a precise enough target that "include your API key in
 // the Authorization header" style documentation stays out of scope.
-var handoverPathPattern = regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
+var handoverPathPattern = regexp.MustCompile(markupTolerant(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
 	`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
 	// A path is often quoted, fenced or emphasized in a description
 	// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
 	`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
-	`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`)
+	`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`))
 
 // toolPoisonPatterns detect structural indicators of tool description poisoning.
 // These are checked ONLY in tool descriptions to avoid false positives on

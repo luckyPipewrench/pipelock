@@ -427,6 +427,10 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 			return nil, err
 		}
 		c.mu.Lock()
+		if !c.freshLocked() {
+			c.mu.Unlock()
+			return nil, errDashboardOIDCKeysExpired
+		}
 		if key := c.keys[keyID]; key != nil {
 			c.mu.Unlock()
 			return key, nil
@@ -450,13 +454,27 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 		return nil, err
 	}
 	c.mu.Lock()
+	fresh := c.freshLocked()
 	key := c.keys[keyID]
 	c.mu.Unlock()
+	if !fresh {
+		return nil, errDashboardOIDCKeysExpired
+	}
 	if key == nil {
 		return nil, dashboardOIDCSigningKeyNotFound(keyID)
 	}
 	return key, nil
 }
+
+// freshLocked reports whether the cached keys are still within their
+// lifetime. Callers hold c.mu. A caller that resumes after the refresh it
+// waited on has already expired must not use those keys; it fails closed and
+// the next request refreshes.
+func (c *dashboardJWKSCache) freshLocked() bool {
+	return c.keys != nil && c.now().Before(c.expiresAt)
+}
+
+var errDashboardOIDCKeysExpired = errors.New("OIDC signing keys expired before they could be used")
 
 func (c *dashboardJWKSCache) recordMiss() {
 	c.mu.Lock()

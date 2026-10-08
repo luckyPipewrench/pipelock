@@ -1128,6 +1128,72 @@ func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
 	}
 }
 
+// A caller that joined a refresh which succeeded, but whose keys expired
+// before the caller resumed, must not use those keys.
+func TestDashboardOIDC_JWKSJoinedCallerRejectsKeysExpiredBeforeResume(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	cache := auth.keys
+	clock := now // read and written only under cache.mu
+
+	first := &dashboardJWKSRefresh{done: make(chan struct{})}
+	waiting := make(chan struct{})
+	cache.mu.Lock()
+	cache.now = func() time.Time { return clock }
+	cache.expiresAt = now.Add(-time.Second)
+	cache.inflight = first
+	cache.joinedHook = func() { close(waiting) }
+	cache.mu.Unlock()
+
+	type result struct {
+		key *rsa.PublicKey
+		err error
+	}
+	joined := make(chan result, 1)
+	go func() {
+		key, err := cache.key(context.Background(), oidcTestKeyID)
+		joined <- result{key, err}
+	}()
+	select {
+	case <-waiting:
+	case r := <-joined:
+		t.Fatalf("caller returned (%v, %v) instead of waiting on the in-flight refresh", r.key, r.err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("caller never joined the in-flight refresh")
+	}
+
+	// The refresh succeeds with a one-hour lifetime, but the caller only
+	// resumes two hours later.
+	public := p.signingKey().PublicKey
+	cache.mu.Lock()
+	cache.keys = map[string]*rsa.PublicKey{oidcTestKeyID: &public}
+	cache.expiresAt = now.Add(time.Hour)
+	cache.generation++
+	clock = now.Add(2 * time.Hour)
+	cache.inflight = nil
+	cache.joinedHook = nil
+	close(first.done)
+	cache.mu.Unlock()
+
+	select {
+	case r := <-joined:
+		if r.key != nil || !errors.Is(r.err, errDashboardOIDCKeysExpired) {
+			t.Fatalf("key after expired joined refresh = (%v, %v), want fail-closed %v", r.key, r.err, errDashboardOIDCKeysExpired)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("joined caller did not return after its refresh completed")
+	}
+	if reads := p.jwksReads.Load(); reads != 1 {
+		t.Fatalf("JWKS reads = %d, want only the initial fetch", reads)
+	}
+
+	// The next request refreshes normally.
+	if key, err := cache.key(context.Background(), oidcTestKeyID); err != nil || key == nil {
+		t.Fatalf("next lookup = (%v, %v), want a fresh key", key, err)
+	}
+}
+
 // A failed refresh must not satisfy a delayed caller: it fetches for itself
 // and an expired cache is never served as though it had been refreshed.
 func TestDashboardOIDC_JWKSFailedRefreshDoesNotSatisfyDelayedCaller(t *testing.T) {

@@ -1,0 +1,51 @@
+name: PR Review Source Binding
+
+on:
+  workflow_call:
+    inputs:
+      reviewer_sha:
+        description: Optional compatibility pin; must match the loaded workflow commit.
+        required: false
+        default: ''
+        type: string
+    outputs:
+      reviewer_sha:
+        description: Validated immutable Pipelock review source commit.
+        value: ${{ jobs.source.outputs.reviewer_sha }}
+
+# This helper validates GitHub's loaded workflow identity without credentials,
+# checkouts, actions, or caller-selected executable code.
+permissions: {}
+
+jobs:
+  source:
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reviewer_sha: ${{ steps.bind.outputs.reviewer_sha }}
+    steps:
+      - name: Bind reviewer source to the loaded workflow
+        id: bind
+        shell: bash
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_FILE_PATH: ${{ job.workflow_file_path }}
+          REVIEWER_SHA: ${{ inputs.reviewer_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "loaded workflow must have a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          if [[ "${WORKFLOW_REPOSITORY}" != luckyPipewrench/pipelock ||
+                "${WORKFLOW_FILE_PATH}" != .github/workflows/pr-review-source.yaml ]]; then
+            echo "loaded workflow must be the Pipelock review source helper" >&2
+            exit 1
+          fi
+          if [[ -n "${REVIEWER_SHA}" && "${REVIEWER_SHA}" != "${WORKFLOW_SHA}" ]]; then
+            echo "reviewer_sha must match the loaded workflow commit" >&2
+            exit 1
+          fi
+          printf 'reviewer_sha=%s\n' "${WORKFLOW_SHA}" >> "${GITHUB_OUTPUT}"

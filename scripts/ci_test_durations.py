@@ -11,8 +11,10 @@ every top-level test in that tree, taking the slowest value seen for a name.
 
     python3 scripts/ci_test_durations.py --write shard-a.json shard-b.json ...
 
-Only trees listed in TEST_SPLITS are recorded. A tree with no measurement in
-the inputs keeps its previous entry, so a partial refresh never erases data.
+Only trees listed in TEST_SPLITS are recorded. Measurements are merged per test
+name: a re-measured test takes its new time, an unmeasured test keeps its old
+one, and a test no longer in the tree is dropped, so a partial refresh from a
+few shards never erases the rest.
 """
 
 from __future__ import annotations
@@ -27,9 +29,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ci_test_packages import (  # noqa: E402
     DURATIONS_FILE,
     HEAVY_TREES,
+    ROOT,
     TEST_SPLITS,
     load_durations,
     package_in_tree,
+    tree_test_names,
 )
 
 
@@ -63,11 +67,27 @@ def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
     return measured
 
 
-def merge(previous: dict[str, dict[str, float]], measured: dict[str, dict[str, float]]) -> dict:
-    trees = {tree: dict(sorted(tests.items())) for tree, tests in previous.items() if tree in TEST_SPLITS}
-    for tree, tests in measured.items():
-        trees[tree] = dict(sorted(tests.items()))
-    return {"trees": dict(sorted(trees.items()))}
+def merge(
+    previous: dict[str, dict[str, float]],
+    measured: dict[str, dict[str, float]],
+    inventory: dict[str, set[str]] | None = None,
+) -> dict:
+    """Overlay new measurements per test name onto the previous weights.
+
+    A re-measured name takes its new time, so a test that got faster stops
+    being charged its old cost. A name absent from the inputs keeps its old
+    time, so refreshing from a few shards never erases the rest of a tree.
+    When an inventory is given, names no longer present in the tree are dropped.
+    """
+    trees: dict[str, dict[str, float]] = {}
+    for tree in TEST_SPLITS:
+        tests = dict(previous.get(tree, {}))
+        tests.update(measured.get(tree, {}))
+        if inventory is not None and tree in inventory:
+            tests = {name: seconds for name, seconds in tests.items() if name in inventory[tree]}
+        if tests:
+            trees[tree] = dict(sorted(tests.items()))
+    return {"trees": trees}
 
 
 def main() -> int:
@@ -80,9 +100,10 @@ def main() -> int:
     if not measured:
         print("ci_test_durations.py: no top-level results for a split tree in the inputs", file=sys.stderr)
         return 1
-    result = merge(load_durations(), measured)
+    inventory = {tree: set(tree_test_names(ROOT / HEAVY_TREES[tree])) for tree in TEST_SPLITS}
+    result = merge(load_durations(), measured, inventory)
     for tree, tests in result["trees"].items():
-        print(f"{tree}: {len(tests)} tests, {sum(tests.values()):.0f}s measured")
+        print(f"{tree}: {len(tests)} tests, {sum(tests.values()):.0f}s measured", file=sys.stderr)
     text = json.dumps(result, indent=1, sort_keys=False) + "\n"
     if args.write:
         DURATIONS_FILE.write_text(text, encoding="utf-8")

@@ -482,6 +482,32 @@ class TestTestNameSplit(unittest.TestCase):
             with self.subTest(tree=tree):
                 self.assertIn(tree, durations, f"no measured durations for split tree {tree}")
 
+    def test_zero_weights_still_fill_every_bucket(self) -> None:
+        names = [f"TestZero{index}" for index in range(12)]
+        buckets = partition_names(names, 4, dict.fromkeys(names, 0.0))
+        self.assertTrue(all(buckets), buckets)
+        self.assertEqual(sorted(len(bucket) for bucket in buckets), [3, 3, 3, 3])
+
+    def test_final_shard_oversize_names_a_remedy_that_shrinks_it(self) -> None:
+        huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
+        last = f"proxy-{TEST_SPLITS['proxy'] - 1}"
+        with self.assertRaises(ValueError) as caught:
+            shard_selector(last, huge)
+        self.assertIn("lower TEST_SPLITS", str(caught.exception))
+        self.assertNotIn("raise TEST_SPLITS", str(caught.exception))
+
+    def test_duration_refresh_merges_per_name_and_drops_removed_tests(self) -> None:
+        from scripts.ci_test_durations import merge
+
+        previous = {"proxy": {"TestA": 10.0, "TestB": 20.0, "TestGone": 5.0}}
+        measured = {"proxy": {"TestA": 3.0}}
+        inventory = {"proxy": {"TestA", "TestB"}}
+        merged = merge(previous, measured, inventory)["trees"]
+        # TestA re-measured faster, TestB kept, TestGone no longer in the tree.
+        self.assertEqual(merged["proxy"], {"TestA": 3.0, "TestB": 20.0})
+        # A refresh that measured nothing in a tree keeps that tree intact.
+        self.assertEqual(merge(previous, {}, None)["trees"]["proxy"], previous["proxy"])
+
     def test_malformed_durations_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "durations.json"

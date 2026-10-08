@@ -248,7 +248,9 @@ def partition_names(
     default = known[len(known) // 2] if known else 1.0
     loads = [0.0] * count
     for name in sorted(unique, key=lambda n: (-weights.get(n, default), n)):
-        target = min(range(count), key=lambda i: (loads[i], i))
+        # Equal loads (including all-zero measurements) fall back to the
+        # bucket with the fewest names, so no bucket is left empty.
+        target = min(range(count), key=lambda i: (loads[i], len(buckets[i]), i))
         buckets[target].append(name)
         loads[target] += weights.get(name, default)
     for bucket in buckets:
@@ -284,9 +286,17 @@ def shard_selector(
         earlier = [name for bucket in buckets[:-1] for name in bucket]
         selector = "-skip=" + exact_names_regex(earlier)
     if len(selector.encode("utf-8")) > MAX_SELECTOR_BYTES:
+        if index < count - 1:
+            remedy = f"raise TEST_SPLITS[{tree!r}]"
+        else:
+            # The final sub-shard skips every earlier bucket, so more splits
+            # make its selector longer, not shorter.
+            remedy = (
+                f"the final sub-shard skips every earlier bucket; lower TEST_SPLITS[{tree!r}] "
+                "or split the tree's packages into separate heavy trees"
+            )
         raise ValueError(
-            f"selector for {shard} is {len(selector)} bytes, over {MAX_SELECTOR_BYTES}; "
-            f"raise TEST_SPLITS[{tree!r}]"
+            f"selector for {shard} is {len(selector)} bytes, over {MAX_SELECTOR_BYTES}; {remedy}"
         )
     return selector
 

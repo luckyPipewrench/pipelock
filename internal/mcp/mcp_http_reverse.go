@@ -2438,6 +2438,8 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	} else {
 		opts.ToolCfg = nil

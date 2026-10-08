@@ -707,6 +707,8 @@ Examples:
 			// detection is scoped to definitions repeated within this run.
 			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
+				// ack-exempt: the offline scan has no configured server or
+				// transport binding, so no acknowledgment can apply to it.
 				toolCfg = &tools.ToolScanConfig{
 					Baseline:         tools.NewToolBaseline(),
 					Action:           cfg.MCPToolScanning.Action,
@@ -867,12 +869,37 @@ Key-free evidence capture:
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
 			}
-			var serverBinding string
+			// Headers and child-environment overrides are resolved once here and
+			// reused by the transport, so the server binding covers exactly
+			// what is sent.
+			var upstreamHeaders http.Header
+			var extraEnv []string
+			bindingInputs := mcpBindingInputs{}
 			if hasUpstream {
-				serverBinding = tools.UpstreamBindingDigest(upstreamURL)
+				fileHeaders, fileErr := readHeaderFile(headerFile)
+				if fileErr != nil {
+					return fileErr
+				}
+				mergedHeaders := append([]string{}, fileHeaders...)
+				mergedHeaders = append(mergedHeaders, rawHeaders...)
+				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
+				var headerErr error
+				upstreamHeaders, headerErr = parseHeaderFlags(mergedHeaders)
+				if headerErr != nil {
+					return headerErr
+				}
+				bindingInputs.UpstreamURL = upstreamURL
+				bindingInputs.Headers = upstreamHeaders
 			} else {
-				serverBinding = tools.ServerBindingDigest("subprocess", args[dashIdx:]...)
+				var envErr error
+				extraEnv, envErr = buildChildExtraEnv(resolvedEnv, envVars, os.LookupEnv)
+				if envErr != nil {
+					return envErr
+				}
+				bindingInputs.Command = args[dashIdx:]
+				bindingInputs.ChildEnv = extraEnv
 			}
+			serverBinding := mcpServerBinding(bindingInputs)
 			if serverName != "" {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: server %q transport binding sha256 %s (for mcp_tool_scanning.acknowledged_findings[].server_binding_sha256)\n", serverName, serverBinding)
 			}
@@ -1060,6 +1087,7 @@ Key-free evidence capture:
 					NewToolAdmission:       cfg.MCPToolScanning.NewToolAdmission,
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
+					CredentialAcks:         cfg.MCPToolScanning.AcknowledgedFindings,
 				}
 				resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
 				if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&
@@ -1457,17 +1485,7 @@ Key-free evidence capture:
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
 				}
 
-				fileHeaders, fileErr := readHeaderFile(headerFile)
-				if fileErr != nil {
-					return fileErr
-				}
-				mergedHeaders := append([]string{}, fileHeaders...)
-				mergedHeaders = append(mergedHeaders, rawHeaders...)
-				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
-				extraHeaders, headerErr := parseHeaderFlags(mergedHeaders)
-				if headerErr != nil {
-					return headerErr
-				}
+				extraHeaders := upstreamHeaders
 				if len(extraHeaders) > 0 && isWSUpstream {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored for HTTP upstreams; ignored for ws/wss upstreams")
 				}
@@ -1660,28 +1678,7 @@ Key-free evidence capture:
 				return nil
 			}
 
-			// Parse --env flags into KEY=VALUE pairs for the child process.
-			// KEY without value: pass through from current environment.
-			// KEY=VALUE: set explicitly.
-			// Empty keys, safe-list keys, and dangerous keys are rejected.
-			extraEnv := append([]string(nil), resolvedEnv...)
-			for _, e := range envVars {
-				key, _, hasValue := strings.Cut(e, "=")
-				if key == "" {
-					return errors.New("--env requires a non-empty variable name")
-				}
-				if mcp.IsSafeEnvKey(key) {
-					return fmt.Errorf("--env %s is already set by pipelock and cannot be overridden", key)
-				}
-				if mcp.IsDangerousEnvKey(key) {
-					return fmt.Errorf("--env %s is blocked: this variable can inject code or redirect traffic in the child process", key)
-				}
-				if hasValue {
-					extraEnv = append(extraEnv, e)
-				} else if val, found := os.LookupEnv(e); found {
-					extraEnv = append(extraEnv, e+"="+val)
-				}
-			}
+			// extraEnv was resolved once above, with the server binding.
 			if len(extraEnv) > 0 {
 				keys := make([]string, 0, len(extraEnv))
 				for _, e := range extraEnv {

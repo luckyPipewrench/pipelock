@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -249,11 +250,20 @@ func TestHTTPListenerAcknowledgmentFollowsReload(t *testing.T) {
 
 type toolScanCaptureRecorder struct {
 	capture.NopObserver
+	mu      sync.Mutex
 	records []*capture.ToolScanRecord
 }
 
 func (r *toolScanCaptureRecorder) ObserveToolScanVerdict(_ context.Context, rec *capture.ToolScanRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.records = append(r.records, rec)
+}
+
+func (r *toolScanCaptureRecorder) snapshot() []*capture.ToolScanRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*capture.ToolScanRecord(nil), r.records...)
 }
 
 func ackLine() string {
@@ -491,3 +501,118 @@ type singleRecorderStore struct{ rec session.Recorder }
 
 func (s singleRecorderStore) GetOrCreate(string) session.Recorder { return s.rec }
 func (singleRecorderStore) Delete(string)                         {}
+
+func requireAcknowledgedAudit(t *testing.T, obs *toolScanCaptureRecorder, rec interface{ Close() error }, dir, pubHex string) {
+	t.Helper()
+	records := obs.snapshot()
+	if len(records) != 1 || records[0].Outcome != capture.OutcomeWarned {
+		t.Fatalf("capture records = %+v, want one warned record", records)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if err := receipt.VerifyWithKey(receipts[0], pubHex); err != nil {
+		t.Fatalf("VerifyWithKey: %v", err)
+	}
+	if r := receipts[0].ActionRecord; r.Verdict != config.ActionAllow || r.Pattern != config.MCPAckFindingRequestDirective {
+		t.Fatalf("receipt verdict/pattern = %q/%q, want allow/%s", r.Verdict, r.Pattern, config.MCPAckFindingRequestDirective)
+	}
+}
+
+func TestWebSocketAcknowledgmentAuditAndRefusal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		binding string
+		action  string
+		forward bool
+	}{
+		"matching binding under block": {proxyAckBinding, config.ActionBlock, true},
+		"other binding under warn":     {tools.ServerBindingDigest("upstream", "https://elsewhere.example/mcp"), config.ActionWarn, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := wsRespondServer(t, []byte(strings.TrimSpace(ackLine())), nil)
+			defer srv.Close()
+			emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+			obs := &toolScanCaptureRecorder{}
+			opts := ackOpts(t, proxyAckEntry(t))
+			opts.Scanner = testScannerForWS(t)
+			opts.ToolCfg.Action = tc.action
+			opts.ServerBinding = tc.binding
+			opts.Transport = "mcp_ws"
+			opts.ReceiptEmitter = emitter
+			opts.CaptureObs = obs
+			pr, pw := io.Pipe()
+			var stdout, stderr lockedHTTPBuffer
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), opts) }()
+			_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"))
+			want := "a credential-request acknowledgment no longer matches its tool"
+			if tc.forward {
+				want = `"store_secret"`
+			}
+			if !pollUntil(2*time.Second, func() bool { return stdout.contains(want) }) {
+				t.Fatalf("websocket tools/list outcome %q not seen; stdout=%s stderr=%s", want, stdout.String(), stderr.String())
+			}
+			_ = pw.Close()
+			if err := <-done; err != nil {
+				t.Fatalf("RunWSProxy: %v", err)
+			}
+			if got := stdout.contains(`"store_secret"`); got != tc.forward {
+				t.Fatalf("forwarded = %v, want %v", got, tc.forward)
+			}
+			if tc.forward {
+				requireAcknowledgedAudit(t, obs, rec, dir, pubHex)
+			}
+		})
+	}
+}
+
+func TestHTTPListenerAcknowledgmentAudit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, strings.TrimSpace(ackLine()))
+	}))
+	t.Cleanup(upstream.Close)
+	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+	obs := &toolScanCaptureRecorder{}
+	opts := ackOpts(t, proxyAckEntry(t))
+	opts.ReceiptEmitter = emitter
+	opts.CaptureObs = obs
+	got, _ := driveA2AHTTPDepth(t, upstream.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, opts, "listener")
+	if !strings.Contains(string(got), `"store_secret"`) {
+		t.Fatalf("acknowledged inventory not forwarded by the listener: %s", got)
+	}
+	requireAcknowledgedAudit(t, obs, rec, dir, pubHex)
+}
+
+// pollUntil reports whether cond became true before timeout.
+func pollUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for !cond() {
+		select {
+		case <-deadline.C:
+			return cond()
+		case <-tick.C:
+		}
+	}
+	return true
+}
+
+func TestChildEnvOverrideIdentityWindowsKeysFoldCase(t *testing.T) {
+	got := childEnvOverrideIdentityForOS([]string{"Path=a", "PATH=b"}, windowsOS)
+	if len(got) != 1 || got[0] != "set:PATH=b" {
+		t.Fatalf("windows identity = %v, want one case-folded last write", got)
+	}
+	got = childEnvOverrideIdentityForOS([]string{"Path=a", "PATH=b"}, "linux")
+	if len(got) != 2 {
+		t.Fatalf("linux identity = %v, want two distinct variables", got)
+	}
+}

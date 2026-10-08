@@ -1866,6 +1866,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	}
 
@@ -2225,6 +2227,40 @@ func mergeChildEnvForOS(base, overrides []string, goos string) []string {
 		result = append(result, values[key])
 	}
 	return result
+}
+
+// ChildEnvOverrideIdentity is the effective result of applying overrides to a
+// child environment, independent of what the child inherits: for each
+// variable, in mergeChildEnv's last-wins order and key rules, either
+// "set:KEY=VALUE" or "unset:KEY". It is what a server's transport binding
+// covers; inherited variables the operator did not name are not included.
+func ChildEnvOverrideIdentity(overrides []string) []string {
+	return childEnvOverrideIdentityForOS(overrides, runtime.GOOS)
+}
+
+func childEnvOverrideIdentityForOS(overrides []string, goos string) []string {
+	final := make(map[string]string, len(overrides))
+	for _, entry := range overrides {
+		key, value, ok := splitChildEnvEntry(entry, goos)
+		if !ok {
+			key = entry
+		}
+		identity := key
+		if goos == windowsOS {
+			identity = strings.ToUpper(key)
+		}
+		if ok {
+			final[identity] = "set:" + identity + "=" + value
+		} else {
+			final[identity] = "unset:" + identity
+		}
+	}
+	out := make([]string, 0, len(final))
+	for _, v := range final {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func splitChildEnvEntry(entry, goos string) (string, string, bool) {

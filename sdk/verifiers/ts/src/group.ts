@@ -345,6 +345,26 @@ function normalizeNumbers(
   }
   return result;
 }
+export function readBoundedArtifactBytes(
+  name: string,
+  initialSize: number,
+  max: number,
+  readAt: (buffer: Buffer, offset: number, length: number, position: number) => number,
+): Buffer {
+  if (initialSize > max) throw new Error(`artifact ${name} exceeds size limit`);
+  const data = Buffer.alloc(initialSize);
+  let off = 0;
+  while (off < data.length) {
+    const n = readAt(data, off, data.length - off, off);
+    if (n <= 0) throw new Error(`artifact ${name} truncated during read`);
+    off += n;
+  }
+  const growth = Buffer.alloc(1);
+  if (readAt(growth, 0, 1, off) !== 0)
+    throw new Error(`artifact ${name} exceeds size limit during read`);
+  return data;
+}
+
 function readChild(name: string, max = 128 * 1024): Buffer {
   const before = lstatSync(name, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink())
@@ -354,16 +374,12 @@ function readChild(name: string, max = 128 * 1024): Buffer {
     const opened = fstatSync(fd, { bigint: true });
     if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size > BigInt(max))
       throw new Error(`artifact ${name} changed or exceeds size limit`);
-    const data = Buffer.alloc(Number(opened.size));
-    let off = 0;
-    while (off < data.length) {
-      const n = readSync(fd, data, off, data.length - off, off);
-      if (n <= 0) throw new Error(`artifact ${name} truncated during read`);
-      off += n;
-    }
-    const growth = Buffer.alloc(1);
-    if (readSync(fd, growth, 0, 1, off) !== 0)
-      throw new Error(`artifact ${name} exceeds size limit during read`);
+    const data = readBoundedArtifactBytes(
+      name,
+      Number(opened.size),
+      max,
+      (buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
+    );
     const after = fstatSync(fd, { bigint: true });
     if (
       after.dev !== opened.dev ||
@@ -1037,8 +1053,7 @@ async function verifyAELInventory(
       if (sessionOpen.run_nonce === undefined && claimedGroup === "") continue;
       const run = str(sessionOpen.run_nonce, "signed session open run_nonce");
       if (!isHex(run, 32)) throw new Error(`invalid signed native AEL run ${JSON.stringify(run)}`);
-      if (claims.has(run))
-        throw new Error(`duplicate signed native AEL run ${JSON.stringify(run)}`);
+      if (claims.has(run)) throw duplicateSignedAELRunError(run);
       const completed =
         receipts.some(
           (receipt) =>
@@ -1116,6 +1131,10 @@ export function checkGroupAELMembership(
     throw new Error(
       `receipt group native AEL claims = ${groupedSessions.size}, want ${signedSessions.size}`,
     );
+}
+
+export function duplicateSignedAELRunError(run: string): Error {
+  return new Error(`duplicate signed native AEL run ${JSON.stringify(run)}`);
 }
 
 async function recoveredAELRun(

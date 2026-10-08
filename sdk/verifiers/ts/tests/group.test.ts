@@ -17,7 +17,12 @@ import { spawnSync } from "node:child_process";
 import { gunzipSync, inflateRawSync } from "node:zlib";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkGroupAELMembership, verifyReceiptGroup } from "../src/group.js";
+import {
+  checkGroupAELMembership,
+  duplicateSignedAELRunError,
+  readBoundedArtifactBytes,
+  verifyReceiptGroup,
+} from "../src/group.js";
 import { parseEvidenceFilename } from "../src/chain-set.js";
 import { findPackageRoot } from "./paths.js";
 
@@ -69,6 +74,49 @@ test("shared signed shard AEL membership vectors", () => {
       );
     }
   }
+});
+test("shared AEL stream and duplicate-run vectors", () => {
+  const vectors = JSON.parse(
+    readFileSync(resolve(root, "../receipt-group-stream-vectors.json"), "utf8"),
+  ) as {
+    bounded_stream: Array<{
+      name: string;
+      initial_size: number;
+      limit: number;
+      data: string;
+      error: string;
+    }>;
+    duplicate_run: { run: string; error: string };
+  };
+  for (const item of vectors.bounded_stream) {
+    const source = Buffer.from(item.data);
+    const readAt = (buffer: Buffer, offset: number, length: number, position: number): number => {
+      const copied = source.copy(buffer, offset, position, position + length);
+      return copied;
+    };
+    if (item.error) {
+      assert.throws(
+        () => readBoundedArtifactBytes(item.name, item.initial_size, item.limit, readAt),
+        (error: unknown) => error instanceof Error && error.message.includes(item.error),
+        item.name,
+      );
+    } else {
+      assert.deepEqual(
+        readBoundedArtifactBytes(item.name, item.initial_size, item.limit, readAt),
+        source,
+        item.name,
+      );
+    }
+  }
+  assert.match(
+    duplicateSignedAELRunError(vectors.duplicate_run.run).message,
+    /duplicate signed native AEL run/u,
+  );
+  assert.ok(
+    duplicateSignedAELRunError(vectors.duplicate_run.run).message.includes(
+      vectors.duplicate_run.error,
+    ),
+  );
 });
 extractFixtureArchive(readFileSync(resolve(root, "tests/fixtures/receipt-groups.zip")), fixtures);
 extractFixtureArchive(

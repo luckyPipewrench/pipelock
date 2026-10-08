@@ -61,6 +61,10 @@ class GroupVerificationError(ValueError):
     """A group artifact, membership, or shard failed verification."""
 
 
+def duplicate_signed_ael_run_error(run: str) -> GroupVerificationError:
+    return GroupVerificationError(f"duplicate signed native AEL run {run!r}")
+
+
 def _exists_nofollow(path: Path) -> bool:
     try:
         path.lstat()
@@ -1165,7 +1169,7 @@ def _verify_ael_inventory(
                     "signed session open disagrees with recorder group gate"
                 )
             if run in claims:
-                raise GroupVerificationError(f"duplicate signed native AEL run {run!r}")
+                raise duplicate_signed_ael_run_error(run)
             completed = any(
                 entry.get("type") == "transcript_root"
                 or (

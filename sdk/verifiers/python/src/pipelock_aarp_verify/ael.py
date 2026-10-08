@@ -12,7 +12,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -37,6 +37,13 @@ class AELVerificationError(ValueError):
     """A native AEL artifact failed verification."""
 
 
+def _read_bounded_stream(stream: BinaryIO, limit: int) -> bytes:
+    raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise AELVerificationError("native AEL artifact exceeds size limit during read")
+    return raw
+
+
 def _read_regular(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
     try:
         before = path.lstat()
@@ -51,7 +58,7 @@ def _read_regular(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
             if not os.path.samestat(before, opened):
                 raise AELVerificationError("native AEL artifact changed during open")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(limit + 1)
+                raw = _read_bounded_stream(stream, limit)
         finally:
             os.close(fd)
         after = path.stat()

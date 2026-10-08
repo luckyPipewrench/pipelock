@@ -1021,7 +1021,7 @@ fn verify_ael_inventory(
             })
             .ok_or("group shard has no signed native AEL owner")?;
         if !claims.insert(run.to_string()) {
-            return Err(format!("duplicate signed native AEL run {run}"));
+            return Err(duplicate_signed_ael_run_error(run));
         }
         if !present.contains(run) {
             return Err(format!("native AEL run {run} is missing"));
@@ -1176,7 +1176,7 @@ fn verify_ael_inventory(
                 )
                 .is_some()
             {
-                return Err(format!("duplicate signed native AEL run {run}"));
+                return Err(duplicate_signed_ael_run_error(run));
             }
         }
     }
@@ -1238,10 +1238,15 @@ fn check_group_ael_membership<'a>(
     Ok(())
 }
 
+fn duplicate_signed_ael_run_error(run: &str) -> String {
+    format!("duplicate signed native AEL run {run}")
+}
+
 #[cfg(test)]
 mod membership_vectors {
-    use super::check_group_ael_membership;
+    use super::{check_group_ael_membership, duplicate_signed_ael_run_error, read_bounded_stream};
     use serde::Deserialize;
+    use std::io::Cursor;
 
     #[derive(Deserialize)]
     struct Case {
@@ -1273,6 +1278,44 @@ mod membership_vectors {
                 ),
             }
         }
+    }
+
+    #[derive(Deserialize)]
+    struct StreamCase {
+        name: String,
+        initial_size: usize,
+        limit: u64,
+        data: String,
+        error: String,
+    }
+
+    #[derive(Deserialize)]
+    struct DuplicateRun {
+        run: String,
+        error: String,
+    }
+
+    #[derive(Deserialize)]
+    struct StreamVectors {
+        bounded_stream: Vec<StreamCase>,
+        duplicate_run: DuplicateRun,
+    }
+
+    #[test]
+    fn shared_ael_stream_and_duplicate_run_vectors() {
+        let vectors: StreamVectors =
+            serde_json::from_str(include_str!("../../receipt-group-stream-vectors.json")).unwrap();
+        for case in vectors.bounded_stream {
+            assert!(case.initial_size <= case.limit as usize, "{}", case.name);
+            let result = read_bounded_stream(Cursor::new(case.data.as_bytes()), case.limit);
+            if case.error.is_empty() {
+                assert_eq!(result.unwrap(), case.data.as_bytes(), "{}", case.name);
+            } else {
+                assert!(result.unwrap_err().contains(&case.error), "{}", case.name);
+            }
+        }
+        assert!(duplicate_signed_ael_run_error(&vectors.duplicate_run.run)
+            .contains(&vectors.duplicate_run.error));
     }
 }
 
@@ -1724,15 +1767,7 @@ fn read_regular(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     if !before.is_file() || before.file_type().is_symlink() || before.len() > max {
         return Err("evidence artifact is not a bounded regular file".into());
     }
-    let mut raw = Vec::new();
-    fs::File::open(path)
-        .map_err(|e| e.to_string())?
-        .take(max + 1)
-        .read_to_end(&mut raw)
-        .map_err(|e| e.to_string())?;
-    if raw.len() as u64 > max {
-        return Err("evidence artifact exceeds size limit during read".into());
-    }
+    let raw = read_bounded_stream(fs::File::open(path).map_err(|e| e.to_string())?, max)?;
     let after = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !after.is_file()
         || after.file_type().is_symlink()
@@ -1740,6 +1775,18 @@ fn read_regular(path: &Path, max: u64) -> Result<Vec<u8>, String> {
         || before.modified().ok() != after.modified().ok()
     {
         return Err("evidence artifact changed during read".into());
+    }
+    Ok(raw)
+}
+
+fn read_bounded_stream(reader: impl Read, max: u64) -> Result<Vec<u8>, String> {
+    let mut raw = Vec::new();
+    reader
+        .take(max + 1)
+        .read_to_end(&mut raw)
+        .map_err(|e| e.to_string())?;
+    if raw.len() as u64 > max {
+        return Err("evidence artifact exceeds size limit during read".into());
     }
     Ok(raw)
 }

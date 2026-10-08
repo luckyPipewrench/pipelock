@@ -9,6 +9,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from pipelock_aarp_verify.ael import AELVerificationError, _read_bounded_stream
 from pipelock_aarp_verify.cli import main
 from pipelock_aarp_verify.group import (
     GROUP_INCOMPLETE,
@@ -18,6 +19,7 @@ from pipelock_aarp_verify.group import (
     _parse_evidence_filename,
     _session_evidence_paths,
     check_group_ael_membership,
+    duplicate_signed_ael_run_error,
     verify_receipt_group,
 )
 
@@ -32,6 +34,7 @@ ATTACK_FIXTURES = b"".join(part.read_bytes() for part in ATTACK_FIXTURE_PARTS)
 MATRIX_FIXTURES = Path(__file__).parent / "fixtures" / "receipt-groups-matrix.zip.gz"
 FILENAME_VECTORS = Path(__file__).parents[2] / "filename-vectors.json"
 MEMBERSHIP_VECTORS = Path(__file__).parents[2] / "receipt-group-membership-vectors.json"
+STREAM_VECTORS = Path(__file__).parents[2] / "receipt-group-stream-vectors.json"
 
 
 def test_shared_signed_shard_ael_membership_vectors() -> None:
@@ -47,6 +50,24 @@ def test_shared_signed_shard_ael_membership_vectors() -> None:
             assert item["error"], item["name"]
         else:
             assert not item["error"], item["name"]
+
+
+def test_shared_ael_stream_and_duplicate_run_vectors() -> None:
+    vectors = json.loads(STREAM_VECTORS.read_text())
+    for item in vectors["bounded_stream"]:
+        assert item["initial_size"] <= item["limit"], item["name"]
+        try:
+            actual = _read_bounded_stream(
+                io.BytesIO(item["data"].encode()), item["limit"]
+            )
+        except AELVerificationError as exc:
+            assert item["error"] in str(exc), item["name"]
+            assert item["error"], item["name"]
+        else:
+            assert not item["error"], item["name"]
+            assert actual == item["data"].encode(), item["name"]
+    duplicate = vectors["duplicate_run"]
+    assert duplicate["error"] in str(duplicate_signed_ael_run_error(duplicate["run"]))
 
 
 def test_shared_filename_vectors(tmp_path: Path) -> None:

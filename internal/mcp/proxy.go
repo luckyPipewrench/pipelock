@@ -572,22 +572,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 			// Capture: record tools/list scan verdict.
-			if toolResult.IsToolsList {
-				toolCaptureAction := config.ActionAllow
-				// An acknowledged list is forwarded with a finding present, so
-				// it is recorded as warned, never as clean.
-				if toolAcknowledged && toolResult.Clean {
-					toolCaptureAction = config.ActionWarn
-				}
-				if !toolResult.Clean {
-					if toolResult.ResourceLimit != "" {
-						toolCaptureAction = config.ActionBlock
-					} else if toolCfg.Action != "" {
-						toolCaptureAction = toolCfg.Action
-					} else {
-						toolCaptureAction = config.ActionBlock
-					}
-				}
+			captureToolScan := func(toolCaptureAction string) {
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
 					Subsurface:        "mcp_tools_list",
 					Transport:         opts.Transport,
@@ -601,6 +586,22 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					EffectiveAction:   toolCaptureAction,
 					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean && !toolAcknowledged),
 				})
+			}
+			// An acknowledged list is captured after its receipt decision below,
+			// so the record says how it actually ended.
+			if toolResult.IsToolsList && (!toolAcknowledged || !toolResult.Clean) {
+				toolCaptureAction := config.ActionAllow
+				if !toolResult.Clean {
+					if toolResult.ResourceLimit != "" || toolResult.CredentialAckRefused() {
+						// Both refuse under every action, so record the block.
+						toolCaptureAction = config.ActionBlock
+					} else if toolCfg.Action != "" {
+						toolCaptureAction = toolCfg.Action
+					} else {
+						toolCaptureAction = config.ActionBlock
+					}
+				}
+				captureToolScan(toolCaptureAction)
 			}
 			// Accepted definition drift is not a finding and does not affect the
 			// verdict, so it is reported here rather than on the block path. An
@@ -710,6 +711,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				// signed record names the finding with an allow verdict; it is
 				// not a near miss and not a clean event.
 				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow); emitErr != nil && opts.requireReceipts() {
+					captureToolScan(config.ActionBlock)
 					resolveToolInventory(config.ActionBlock)
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
 					if err := writer.WriteMessage(resp); err != nil {
@@ -717,6 +719,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					continue
 				}
+				// Forwarded with a finding present: warned, never clean.
+				captureToolScan(config.ActionWarn)
 			}
 		}
 

@@ -2886,10 +2886,11 @@ func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, o := range result.Observations {
 		switch {
 		case o.CredentialAck == CredentialAckAcknowledged:
-			// The raw finding stays visible: an acknowledged tool is
-			// forwarded unchanged, not cleared.
+			// The raw finding stays visible. Whether the list is forwarded is
+			// decided later by the other findings and gates, so this line
+			// records only the treatment.
 			_, _ = fmt.Fprintf(logW,
-				"pipelock: line %d: tool %q: %s acknowledged by mcp_tool_scanning.acknowledged_findings; forwarded unchanged\n",
+				"pipelock: line %d: tool %q: %s acknowledged by mcp_tool_scanning.acknowledged_findings (treatment allow)\n",
 				lineNum, o.ToolName, strings.Join(o.ToolPoison, ","))
 			continue
 		case !o.DriftAccepted:

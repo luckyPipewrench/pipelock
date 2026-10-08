@@ -71,9 +71,35 @@ func TestFragmentImageSplice(t *testing.T) {
 
 	t.Run("blanking one rule does not hide another rule's split", func(t *testing.T) {
 		ssn := "123" + "-45-" + "6789"
-		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+" "+ssn+" ", key[:4]+image[:at], image[at:]+key[4:]), nil, "rules")
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key+" "+ssn+" ", key[:4]+image[:at], image[at:]+key[4:]+" "+ssn[:6], ssn[6:]+" end"), nil, "rules")
 		if !hasAWSKey(got) {
 			t.Fatalf("split key lost when another rule is present: %+v", got)
+		}
+		splitSSN := false
+		for _, m := range got {
+			if m.PatternName == "Social Security Number" {
+				splitSSN = true
+			}
+		}
+		if !splitSSN {
+			t.Fatalf("split SSN lost while the key rule was processed: %+v", got)
+		}
+	})
+
+	t.Run("two split rules with no whole copies are both reported", func(t *testing.T) {
+		ssn := "123" + "-45-" + "6789"
+		got := scanOneFragmentContinuityMemo(context.Background(), sc, imageSpliceFragments(key[:4]+image[:at], image[at:]+key[4:]+" "+ssn[:6], ssn[6:]+" end"), nil, "split-only")
+		if !hasAWSKey(got) {
+			t.Fatalf("split key lost beside a split SSN: %+v", got)
+		}
+		splitSSN := false
+		for _, m := range got {
+			if m.PatternName == "Social Security Number" {
+				splitSSN = true
+			}
+		}
+		if !splitSSN {
+			t.Fatalf("split SSN lost beside a split key: %+v", got)
 		}
 	})
 
@@ -158,6 +184,71 @@ func TestFragmentDocExampleRedactionShift(t *testing.T) {
 			if !found {
 				t.Errorf("%s (image=%v): split %s dropped: %+v", tc.name, withImage, tc.rule, got)
 			}
+		}
+	}
+}
+
+// The joined scan already found a rule. If the first rescan cannot find it
+// again, or the scan is cancelled, the rule must still be reported.
+func TestImageSplicedFallbackKeepsJoinedFinding(t *testing.T) {
+	sc := imageSpliceScanner(t)
+	image := dataURLForPNGBytes(t, randomPNG(t, 21))
+	at := len(image) / 2
+	frags := imageSpliceFragments("plain "+image[:at], image[at:]+" text")
+	var buf []byte
+	var ranges []fragmentRange
+	for _, f := range frags {
+		start := len(buf)
+		buf = append(buf, f.data...)
+		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: f.data, fragment: f})
+	}
+	excised, decoded, removed := stripVerifiedImageDataURLSpans(string(buf), true)
+	if len(removed) == 0 {
+		t.Fatal("fixture: image was not excised")
+	}
+	joined := []TextDLPMatch{{PatternName: "AWS Access ID"}}
+
+	t.Run("first rescan misses", func(t *testing.T) {
+		got := imageSplicedFragmentMatches(context.Background(), sc, excised, decoded, removed, ranges, joined)
+		if !hasAWSKey(got) {
+			t.Fatalf("joined finding dropped when the rescan missed: %+v", got)
+		}
+	})
+
+	t.Run("cancelled scan", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		got := imageSplicedFragmentMatches(ctx, sc, excised, decoded, removed, ranges, joined)
+		if !hasAWSKey(got) {
+			t.Fatalf("joined finding dropped on a cancelled scan: %+v", got)
+		}
+	})
+}
+
+// The empty-rescan fallback keeps a joined finding on the assumption that the
+// joined scan and the first rescan read the same text. Text DLP excises
+// verified images before matching, so neither scan sees raw image base64 and a
+// finding cannot come only from bytes the rescan removed.
+func TestImageSpliceRescanWindowMatchesDLPInput(t *testing.T) {
+	image := dataURLForPNGBytes(t, randomPNG(t, 21))
+	for _, text := range []string{
+		"before " + image + " after",
+		image,
+		"a " + image + " b " + image + " c",
+	} {
+		excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true)
+		if len(removed) == 0 {
+			t.Fatalf("fixture image was not verified: %q", text[:min(len(text), 40)])
+		}
+		window := excised
+		if len(decoded) > 0 {
+			window = excised + "\n" + decoded
+		}
+		if got := exciseImagesRetainingDecodedForDLP(text); got != window {
+			t.Fatalf("rescan window differs from the text DLP input:\nwindow %q\ndlp    %q", window[:min(len(window), 80)], got[:min(len(got), 80)])
+		}
+		if strings.Contains(window, image) {
+			t.Fatal("rescan window still holds the raw image data URL")
 		}
 	}
 }

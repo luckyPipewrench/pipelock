@@ -72,7 +72,13 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 	if b, ok := actionreceipt.RunSessionBase(base); ok {
 		base = b
 	}
-	sessions, err := actionreceipt.ResolveBaseSessions(location.Dir, base)
+	var sessions []string
+	var err error
+	if opts.excludeGroups {
+		sessions, err = actionreceipt.ResolveBaseSessionsExcludingReceiptGroups(location.Dir, base)
+	} else {
+		sessions, err = actionreceipt.ResolveBaseSessions(location.Dir, base)
+	}
 	if err != nil {
 		return true, evidenceContentError(fmt.Errorf("listing receipt chains: %w", err))
 	}
@@ -84,11 +90,15 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 		}
 	}
 	if !hasRuns {
+		if len(sessions) == 0 && opts.groupForBase {
+			return true, nil
+		}
 		return false, nil
 	}
 	baseReport, err := actionreceipt.VerifyBase(location.Dir, base, actionreceipt.BaseVerifyOptions{
-		TrustedKeys:  trust.keys,
-		Endorsements: trust.endorsements,
+		TrustedKeys:                 trust.keys,
+		Endorsements:                trust.endorsements,
+		ExcludeReceiptGroupSessions: opts.excludeGroups,
 	})
 	if err != nil {
 		return true, evidenceContentError(fmt.Errorf("restart continuity check incomplete: %w", err))

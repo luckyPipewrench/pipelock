@@ -1,0 +1,11 @@
+{
+  "parse": [
+    {"name":"evidence-proxy-7.jsonl","session":"proxy","seq":7},
+    {"name":"evidence-proxy-tail.jsonl","session":"proxy","seq":0},
+    {"name":"evidence-proxy-18446744073709551616.jsonl","session":"proxy","seq":0},
+    {"name":"evidence-proxy-evil-0.jsonl","session":"proxy-evil","seq":0},
+    {"name":"evidence-proxy-00.jsonl","session":"proxy","seq":0},
+    {"name":"evidence-proxy.jsonl","session":null,"seq":null}
+  ],
+  "duplicate": ["evidence-proxy-0.jsonl", "evidence-proxy-00.jsonl"]
+}

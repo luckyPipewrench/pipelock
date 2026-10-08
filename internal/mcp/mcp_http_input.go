@@ -40,6 +40,8 @@ type DeferredRequest struct {
 	ID                  json.RawMessage
 	IsNotification      bool
 	DeferID             string
+	ShardIndex          int
+	ShardSelected       bool
 	ForwardMessage      []byte
 	ToolName            string
 	BaselineIdentity    string
@@ -112,6 +114,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	receiptSessionIDOriginal := ""
 	var receiptContractGate *mcpContractGateOutput
 	requireReceipts := opts.requireReceipts()
+	var receiptShard receipt.EmitOpts
 
 	// Parse the inbound frame once. Every gate below reads ID / Method /
 	// tool fields from this frame instead of re-parsing. Redaction may
@@ -177,9 +180,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		requiredReceipt := (requireReceipts && result.Blocked == nil) || receiptVerdict == config.ActionDefer
+		if emitActionID != "" && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+			receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
+		}
 		receiptOpts := mcpToolReceiptOpts{
 			Emitter:           receiptEmitter,
 			V2Emitter:         v2ReceiptEmitter,
+			Group:             opts.ReceiptGroup,
+			Shard:             receiptShard,
 			PolicyHash:        opts.receiptPolicyHash(),
 			Log:               logW,
 			Transport:         opts.Transport,
@@ -215,6 +223,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return
 		}
+		if result.Deferred != nil {
+			result.Deferred.ShardIndex = receiptShard.ShardIndex
+			result.Deferred.ShardSelected = receiptShard.ShardSelected
+		}
 		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
 			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID:            emitActionID,
@@ -242,6 +254,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			if receiptContractGate != nil {
 				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
 			}
+			outcomeReceipt.ShardIndex = receiptShard.ShardIndex
+			outcomeReceipt.ShardSelected = receiptShard.ShardSelected
 			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt, Method: mcpMethod}
 		}
 	}()

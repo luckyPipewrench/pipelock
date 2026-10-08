@@ -215,6 +215,9 @@ func NewReadModel(opts Options) *ReadModel {
 
 // Sessions lists available recorder sessions and computes their compact state.
 func (m *ReadModel) Sessions() ([]SessionSummary, error) {
+	if err := m.requireSingleSessionEvidence(); err != nil {
+		return nil, err
+	}
 	ids, err := recorder.ListSessionsBounded(m.receiptDir, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -233,6 +236,9 @@ func (m *ReadModel) Sessions() ([]SessionSummary, error) {
 
 // Session reads one session's complete evidence.
 func (m *ReadModel) Session(id string) (SessionEvidence, error) {
+	if err := m.requireSingleSessionEvidence(); err != nil {
+		return SessionEvidence{}, err
+	}
 	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, id, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return SessionEvidence{}, fmt.Errorf("read session %s receipts: %w", id, err)

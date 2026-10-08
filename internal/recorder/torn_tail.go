@@ -116,7 +116,8 @@ func inspectJSONLTail(file *os.File, info os.FileInfo, path string, validate fun
 }
 
 // InspectEvidenceTailBytes classifies bytes obtained through a caller's secured
-// file-access path. It validates complete prefix records and any valid final JSON.
+// file-access path. It validates complete prefix records and any valid final JSON
+// before deciding whether a writer can treat the final fragment as crash damage.
 func InspectEvidenceTailBytes(path string, data []byte, validate func(Entry) error) error {
 	if len(data) == 0 || data[len(data)-1] == '\n' {
 		return nil
@@ -154,7 +155,7 @@ func inspectJSONLRecords(input io.Reader, path string, validate func([]byte) err
 		if len(payload) > MaxEntryLineBytes {
 			return fmt.Errorf("tail line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
 		}
-		record := bytes.TrimSpace(line)
+		record := []byte(TrimEntryLine(string(line)))
 		if bytes.IndexByte(record, 0) >= 0 {
 			return errors.New("malformed JSONL record: embedded NUL")
 		}

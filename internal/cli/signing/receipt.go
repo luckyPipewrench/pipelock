@@ -40,6 +40,7 @@ var errUnsealedRecorder = errors.New("whole-recorder verification incomplete: no
 func VerifyReceiptCmd() *cobra.Command {
 	var expectedKeys []string
 	var chainDir string
+	var groupID string
 	var sessionID string
 	var locationID string
 	var allowUnpinned bool
@@ -137,6 +138,24 @@ Examples:
 				resolvedLocation = &location
 				chainDir = location.Dir
 			}
+			if groupID != "" {
+				if resolvedLocation == nil || len(args) != 0 || cmd.Flags().Changed("session") || cleanReport != "" || fleetReport || wholeRecorder || len(endorsementPaths) > 0 || allowUnpinned {
+					return configError(errors.New("--group requires --chain DIR and pinned --key, without session, file, or other report modes"))
+				}
+				result := receipt.VerifyReceiptGroup(resolvedLocation.Dir, groupID, trustedKeys)
+				if _, err := fmt.Fprintf(out, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA); err != nil {
+					return err
+				}
+				if result.Verdict != receipt.GroupValid {
+					return errors.New(result.Error)
+				}
+				if result.Error != "" {
+					if _, err := fmt.Fprintln(out, result.Error); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			if cleanReport != "" {
 				protected := cliutil.ExistingFileLabels("--key", expectedKeys)
 				maps.Copy(protected, cliutil.ExistingFileLabels("the receipt input", args))
@@ -199,6 +218,32 @@ Examples:
 					return configError(fmt.Errorf("--fleet-report cannot be combined with --session"))
 				}
 				return outputResult(out, verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned))
+			}
+			if resolvedLocation != nil && cleanReport == "" {
+				sessionBase := sessionID
+				if base, ok := receipt.RunSessionBase(sessionBase); ok {
+					sessionBase = base
+				}
+				var matchingGroup bool
+				groupSummary, groupErr := receipt.VerifyReceiptGroups(resolvedLocation.Dir, trustedKeys, func(result receipt.ReceiptGroupResult) error {
+					if result.BaseSession == sessionBase {
+						matchingGroup = true
+					}
+					_, writeErr := fmt.Fprintf(out, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA)
+					return writeErr
+				})
+				if out.err != nil {
+					return out.err
+				}
+				if groupErr != nil {
+					_, _ = fmt.Fprintf(out, "GROUP_INVALID inventory: %v\n", groupErr)
+					return evidenceReadError(fmt.Errorf("receipt group inventory failed: %w", groupErr))
+				}
+				if groupSummary.Incomplete > 0 || groupSummary.Invalid > 0 {
+					return evidenceReadError(fmt.Errorf("receipt group verification failed: %d incomplete and %d invalid group result(s)", groupSummary.Incomplete, groupSummary.Invalid))
+				}
+				verifyOpts.ExcludeReceiptGroups = groupSummary.Groups > 0
+				verifyOpts.ReceiptGroupForBase = matchingGroup
 			}
 			if resolvedLocation != nil {
 				if cleanReport == "" {
@@ -273,6 +318,7 @@ Examples:
 
 	cmd.Flags().StringArrayVar(&expectedKeys, "key", nil, "trusted signer public key (hex or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "verify the full receipt chain from an evidence directory")
+	cmd.Flags().StringVar(&groupID, "group", "", "verify a complete signed receipt group by its 32-hex ID (requires --chain and --key)")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
@@ -362,6 +408,8 @@ type verifyReceiptOptions struct {
 	Print                receiptPrintOptions
 	Posture              receiptPostureOptions
 	RotationEndorsements []receipt.RotationEndorsement
+	ExcludeReceiptGroups bool
+	ReceiptGroupForBase  bool
 }
 
 // resolveOneReceiptSession keeps single-chain outputs unambiguous. The clean
@@ -387,15 +435,24 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b
 	}
-	sessions, err := receipt.ResolveBaseSessions(location.Dir, base)
+	var sessions []string
+	var err error
+	if opts.ExcludeReceiptGroups {
+		sessions, err = receipt.ResolveBaseSessionsExcludingReceiptGroups(location.Dir, base)
+	} else {
+		sessions, err = receipt.ResolveBaseSessions(location.Dir, base)
+	}
 	if err != nil {
 		return fmt.Errorf("listing receipt chains: %w", err)
 	}
 	if len(sessions) == 0 {
+		if opts.ReceiptGroupForBase {
+			return nil
+		}
 		return fmt.Errorf("no recorder chains found for base %q", base)
 	}
 	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
-		TrustedKeys: trustedKeys, Endorsements: opts.RotationEndorsements,
+		TrustedKeys: trustedKeys, Endorsements: opts.RotationEndorsements, ExcludeReceiptGroupSessions: opts.ExcludeReceiptGroups,
 	})
 	if err != nil {
 		return fmt.Errorf("restart continuity check incomplete: %w", err)
@@ -1229,7 +1286,13 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b
 	}
-	chains, err := receipt.ResolveBaseSessions(location.Dir, base)
+	var chains []string
+	var err error
+	if opts.ExcludeReceiptGroups {
+		chains, err = receipt.ResolveBaseSessionsExcludingReceiptGroups(location.Dir, base)
+	} else {
+		chains, err = receipt.ResolveBaseSessions(location.Dir, base)
+	}
 	if err != nil {
 		return fmt.Errorf("listing receipt chains: %w", err)
 	}
@@ -1241,11 +1304,15 @@ func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocat
 		}
 	}
 	if !hasRuns {
+		if len(chains) == 0 && opts.ReceiptGroupForBase {
+			return nil
+		}
 		return verifyChainFromResolvedSessionDirDetailed(out, location, sessionID, trustedKeys, opts)
 	}
 	report, err := receipt.VerifyBase(location.Dir, base, receipt.BaseVerifyOptions{
-		TrustedKeys:  trustedKeys,
-		Endorsements: opts.RotationEndorsements,
+		TrustedKeys:                 trustedKeys,
+		Endorsements:                opts.RotationEndorsements,
+		ExcludeReceiptGroupSessions: opts.ExcludeReceiptGroups,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "RESTART CONTINUITY INCOMPLETE: %s: %v\n", location.Dir, err)

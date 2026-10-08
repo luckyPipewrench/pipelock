@@ -166,7 +166,7 @@ func startGETStream(
 					// A subscription has no pending JSON-RPC request identity.
 					// Record its interrupted transport separately from outcomes
 					// for complete messages already delivered on the stream.
-					emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", -1, httpstream.Incomplete)
+					emitMCPStandaloneStreamReceipt(opts, safeLogW, mcpStreamReceipt(opts, http.MethodGet), "200", httpstream.Incomplete)
 				}
 				logMCPIncompleteResponse(safeLogW, opts, http.MethodGet, scanErr)
 			}

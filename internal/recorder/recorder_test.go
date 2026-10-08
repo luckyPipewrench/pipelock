@@ -1479,6 +1479,9 @@ func TestRecorder_RecordRecoversAfterClearlyOversizedEntry(t *testing.T) {
 	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 		t.Fatalf("Record overlong entry error = %v, want ErrEvidenceReadLimitExceeded", err)
 	}
+	if !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
+		t.Fatalf("Record overlong entry error = %v, want deterministic pre-write size error", err)
+	}
 
 	if err := rec.Record(recorder.Entry{
 		SessionID: "overlong-entry",

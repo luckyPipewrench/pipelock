@@ -17,6 +17,25 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+func TestManagerResolutionPreservesAdmissionShard(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Second})
+	var resolved Resolution
+	if err := m.Hold(HeldAction{
+		DeferID: "held-shard", ActionID: "held-shard", Target: "tool", SizeBytes: 1,
+		ShardIndex: 1, ShardSelected: true,
+		Authority: AuthoritySnapshot{SessionID: "session"},
+		Resolve:   func(res Resolution) { resolved = res },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Resolve("held-shard", config.ActionBlock, SourceContext); err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ShardIndex != 1 || !resolved.ShardSelected {
+		t.Fatalf("resolution shard = %d selected=%t", resolved.ShardIndex, resolved.ShardSelected)
+	}
+}
+
 func TestManagerTimeoutResolvesBlockOnce(t *testing.T) {
 	ch := make(chan Resolution, 2)
 	m := NewManager(Config{

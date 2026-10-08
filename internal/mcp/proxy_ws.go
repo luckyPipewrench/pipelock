@@ -148,10 +148,10 @@ func RunWSProxy(
 					reason, status = "policy_blocked", "blocked"
 				}
 			}
-			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), safeLogW, pending.Outcome.Receipt, status, -1, reason)
+			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), wsOpts.ReceiptGroup, safeLogW, pending.Outcome.Receipt, status, -1, reason, wsOpts.requireReceipts())
 		}
 		if len(pendingOutcomes) == 0 && upstreamEnded && ctx.Err() == nil && errors.Is(lastScanErr, transport.ErrIncompleteResponse) {
-			emitMCPOutcomeReceipt(wsOpts.receiptEmitter(), wsOpts.v2ReceiptEmitter(), safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", -1, httpstream.Incomplete)
+			emitMCPStandaloneStreamReceipt(wsOpts, safeLogW, mcpStreamReceipt(wsOpts, "WS"), "incomplete", httpstream.Incomplete)
 		}
 	}()
 

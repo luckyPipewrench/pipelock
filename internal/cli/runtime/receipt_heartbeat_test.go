@@ -83,7 +83,7 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	if err := emitSessionCloseAndTranscriptRoot(e, transcriptRootSessionID, sessionCloseReasonGracefulShutdown); err != nil {
+	if err := emitSessionCloseAndTranscriptRoot(e, transcriptRootSessionID); err != nil {
 		t.Fatalf("emitSessionCloseAndTranscriptRoot: %v", err)
 	}
 	if log.Len() != 0 {

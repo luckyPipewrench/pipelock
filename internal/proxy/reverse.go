@@ -400,6 +400,13 @@ func (rp *ReverseProxyHandler) receiptEmitter() *receipt.Emitter {
 	return rp.receiptEmitterPtr.Load()
 }
 
+func (rp *ReverseProxyHandler) receiptGroup() *receiptGroupRuntime {
+	if rp == nil || rp.owner == nil {
+		return nil
+	}
+	return rp.owner.receiptGroupPtr.Load()
+}
+
 func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
 	if e == nil {
 		return nil
@@ -410,19 +417,41 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 		}
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
-	if err := e.EmitDurable(opts); err != nil {
+	var err error
+	if group := rp.receiptGroup(); group != nil {
+		err = group.shards.EmitDurable(opts)
+	} else {
+		err = e.EmitDurable(opts)
+	}
+	if err != nil {
 		rp.logReceiptChannelBroken(opts, err)
+		if group := rp.receiptGroup(); group != nil {
+			selected, selectErr := group.shards.SelectedEmitter(opts)
+			if errors.Is(err, receipt.ErrReceiptPostAdvance) || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(err)
+			}
+		}
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	if err := emitRequiredV2(rp.v2EmitterPtr, opts, func(err error) {
-		recordV2ReceiptEmitFailure(rp.metrics)
-		logV2EmitFailure(rp.logger, opts, err)
-	}); err != nil {
-		if markerErr := rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
-			return errors.Join(err, markerErr)
+	var v2Err error
+	if group := rp.receiptGroup(); group != nil {
+		v2Err = rp.owner.emitGroupV2Receipt(group, opts, true)
+	} else {
+		v2Err = emitRequiredV2(rp.v2EmitterPtr, opts, func(err error) {
+			recordV2ReceiptEmitFailure(rp.metrics)
+			logV2EmitFailure(rp.logger, opts, err)
+		})
+	}
+	if v2Err != nil {
+		markerErr := rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
+		if group := rp.receiptGroup(); group != nil {
+			selected, selectErr := group.v2Emitter(opts)
+			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(errors.Join(v2Err, markerErr))
+			}
 		}
-		return err
+		return errors.Join(v2Err, markerErr)
 	}
 	return nil
 }
@@ -453,15 +482,39 @@ func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config,
 	if e == nil {
 		return
 	}
-	if err := e.Emit(opts); err != nil {
+	var err error
+	if group := rp.receiptGroup(); group != nil {
+		err = group.shards.Emit(opts)
+	} else {
+		err = e.Emit(opts)
+	}
+	if err != nil {
 		rp.logReceiptChannelBroken(opts, err)
+		if group := rp.receiptGroup(); group != nil {
+			selected, selectErr := group.shards.SelectedEmitter(opts)
+			if errors.Is(err, receipt.ErrReceiptPostAdvance) || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(err)
+			}
+		}
 		return
 	}
-	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
-		recordV2ReceiptEmitFailure(rp.metrics)
-		logV2EmitFailure(rp.logger, opts, err)
-	}); err != nil {
-		_ = rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+	var v2Err error
+	if group := rp.receiptGroup(); group != nil {
+		v2Err = rp.owner.emitGroupV2Receipt(group, opts, false)
+	} else {
+		v2Err = emitV2(rp.v2EmitterPtr, opts, func(err error) {
+			recordV2ReceiptEmitFailure(rp.metrics)
+			logV2EmitFailure(rp.logger, opts, err)
+		})
+	}
+	if v2Err != nil {
+		markerErr := rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+		if group := rp.receiptGroup(); group != nil {
+			selected, selectErr := group.v2Emitter(opts)
+			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(errors.Join(v2Err, markerErr))
+			}
+		}
 	}
 }
 
@@ -474,10 +527,20 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
 	}
-	if err := e.Emit(opts); err != nil {
+	var err error
+	if group := rp.receiptGroup(); group != nil {
+		err = group.shards.Emit(opts)
+	} else {
+		err = e.Emit(opts)
+	}
+	if err != nil {
 		rp.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
+	}
+	if group := rp.receiptGroup(); group != nil {
+		_ = rp.owner.emitGroupV2Receipt(group, opts, false)
+		return nil
 	}
 	_ = emitV2(rp.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(rp.metrics)
@@ -487,6 +550,14 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 }
 
 func (rp *ReverseProxyHandler) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) error {
+	if group := rp.receiptGroup(); group != nil {
+		marker := receiptEmissionFailureMarkerOpts(opts, pattern, verdict)
+		if err := group.shards.EmitDurable(marker); err != nil {
+			rp.logReceiptEmissionFailure(marker, err)
+			return err
+		}
+		return nil
+	}
 	return emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
 }
 
@@ -729,6 +800,11 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var selectedReceiptShard receipt.EmitOpts
+	if rp.owner != nil {
+		selectedReceiptShard = rp.owner.admitReceiptShard()
+	}
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
 	cfg := snap.cfg
@@ -742,6 +818,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agentAuth = string(resolvedIdentity.Auth)
 	}
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, selectedReceiptShard)
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
 		}
@@ -922,7 +999,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// sees from the client.
 	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
 		urlResult := sc.Scan(r.Context(), targetURL)
-		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), urlResult.CredentialAudienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -960,7 +1037,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
 		pathDLP.Matches = filteredMatches
-		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent); err != nil {
+		if err := rp.recordCredentialAudienceAllows(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), audienceAllows, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context())); err != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1071,7 +1148,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 		}, func(allow scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent)
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent, receiptShardFromContext(r.Context()))
 		})
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
@@ -1506,6 +1583,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:       agent,
 			AuditCtx:    newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}),
 			Emit: func(opts receipt.EmitOpts) error {
+				opts = withReceiptShard(opts, selectedReceiptShard)
 				if snap.cfg != nil {
 					opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
 				}
@@ -1593,7 +1671,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	reverseActionID := receipt.NewActionID()
-	reverseAllowReceipt := withReverseContractReceipt(receipt.EmitOpts{
+	reverseAllowReceipt := withReceiptShard(withReverseContractReceipt(receipt.EmitOpts{
 		ActionID:  reverseActionID,
 		Verdict:   config.ActionAllow,
 		Transport: TransportReverse,
@@ -1601,7 +1679,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		Target:    targetURL,
 		RequestID: requestID,
 		Agent:     agent,
-	})
+	}), selectedReceiptShard)
 	if cfg.FlightRecorder.RequireReceipts {
 		// Pin the v2 proxy_decision policy hash to the admission snapshot
 		// (cfg == snap.cfg), not a possibly-reloaded rp.cfgPtr. The v2
@@ -1889,6 +1967,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // RoundTripper can compute content-digest without a second drain.
 func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool) {
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, receiptShardFromContext(r.Context()))
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
@@ -1932,7 +2011,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent)
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent, receiptShardFromContext(r.Context()))
 		},
 	}
 	applyContentEntropyConfig(&bodyReq, cfg)
@@ -2222,6 +2301,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		blockreason.SetRecordedReceipt(responseReceiptState.header, responseReceiptState.recordedBlockReceiptID)
 	}()
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, receiptShardFromContext(resp.Request.Context()))
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
@@ -3520,7 +3600,7 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		if rp.emitRecordedReceipt(opts) {
+		if rp.emitRecordedReceipt(withReceiptShard(opts, receiptShardFromContext(r.Context()))) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))

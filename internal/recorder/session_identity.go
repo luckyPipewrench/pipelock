@@ -55,6 +55,9 @@ func (r *Recorder) AcquireSession(sessionID string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.groupSessions != nil {
+		return errors.New("recorder: single-session acquisition is unavailable for an acquired group")
+	}
 	if r.sessionID == sessionID {
 		candidates, err := r.sessionResumeCandidates(sessionID)
 		if err != nil {
@@ -164,9 +167,12 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 		return "", err
 	}
 	torn := false
-	for _, candidate := range candidates {
+	for i, candidate := range candidates {
 		err := InspectEvidenceTail(candidate.path, nil)
 		if errors.Is(err, ErrTornTail) {
+			if i != 0 { // sessionResumeCandidates is ordered newest first.
+				return "", fmt.Errorf("receipt group session has a torn segment: %s", candidate.base)
+			}
 			torn = true
 			continue
 		}

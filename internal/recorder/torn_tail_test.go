@@ -77,6 +77,53 @@ func TestInspectJSONLTailValidationPrecedesTorn(t *testing.T) {
 	}
 }
 
+func TestInspectEvidenceTailBytesValidatesCompleteFinalJSON(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	if err := rec.Record(Entry{SessionID: "hash-test", Type: "request", Summary: "real producer"}); err != nil {
+		t.Fatal(err)
+	}
+	path := rec.file.Name()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := bytes.TrimSuffix(raw, []byte{'\n'})
+	valid := last[bytes.LastIndexByte(last, '\n')+1:]
+	var entry Entry
+	if err := json.Unmarshal(valid, &entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Hash = strings.Repeat("0", len(entry.Hash))
+	badHash, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, content string
+		torn, damage  bool
+		validated     bool
+	}{
+		{"valid without LF", string(valid), true, false, true},
+		{"bad hash without LF", string(badHash), false, true, false},
+		{"incomplete JSON", `{"version":`, true, false, false},
+		{"NUL crash fragment", "\x00", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			err := InspectEvidenceTailBytes(path, []byte(tc.content), func(Entry) error {
+				called = true
+				return nil
+			})
+			if errors.Is(err, ErrTornTail) != tc.torn || (err != nil && !tc.torn) != tc.damage || called != tc.validated {
+				t.Fatalf("error=%v validated=%v", err, called)
+			}
+		})
+	}
+}
+
 func TestDirectionalReadersRejectTornTail(t *testing.T) {
 	for _, suffix := range []string{"\x00\x00", "{\"type\":", "valid-json"} {
 		path := filepath.Join(t.TempDir(), "evidence-directional-0.jsonl")
@@ -212,6 +259,46 @@ func TestRecorderTornTailRecoveryPreservesBytes(t *testing.T) {
 	}
 }
 
+func TestRecorderRecoveryRejectsTornEarlierSegment(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(Config{Enabled: true, Dir: dir, MaxEntriesPerFile: 1, CheckpointInterval: 100}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rec.Close() }()
+	session, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := rec.Record(Entry{SessionID: session, Type: "request"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := rec.sessionResumeCandidates(session)
+	if err != nil || len(files) < 2 {
+		t.Fatalf("writer did not rotate: %v %v", files, err)
+	}
+	older := files[len(files)-1].path
+	f, err := os.OpenFile(older, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- path belongs to this test's recorder.
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"partial":`); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rec.RecoverTornRunSession("proxy"); err == nil || errors.Is(err, ErrTornTail) || !strings.Contains(err.Error(), "torn segment") {
+		t.Fatalf("non-final recovery error = %v", err)
+	}
+	if rec.sessionID != session || rec.RecoveryPredecessor() != "" {
+		t.Fatal("non-final damage changed recorder session")
+	}
+}
+
 func TestRecorderTornTailCannotEscapeBySizeRotation(t *testing.T) {
 	rec := newTestRecorderForAcquire(t)
 	defer func() { _ = rec.Close() }()
@@ -302,6 +389,80 @@ func TestEvidenceTornTailCannotMaskHashTamper(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBadHashUnterminatedTailRefusesRecoveryAndReload(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	session, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(Entry{SessionID: session, Type: "request", Summary: "real producer"}); err != nil {
+		t.Fatal(err)
+	}
+	path := rec.file.Name()
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := bytes.TrimSuffix(raw, []byte{'\n'})
+	boundary := bytes.LastIndexByte(last, '\n') + 1
+	var entry Entry
+	if err := json.Unmarshal(last[boundary:], &entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.Hash = strings.Repeat("0", len(entry.Hash))
+	damaged, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged = append(bytes.Clone(raw[:boundary]), damaged...)
+	reloaded, err := New(Config{Enabled: true, Dir: rec.Dir(), CheckpointInterval: 100}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.AcquireSession(session); err != nil {
+		t.Fatalf("positive control reload: %v", err)
+	}
+	if err := os.WriteFile(path, damaged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, check := range map[string]func() error{
+		"reacquire": func() error { return reloaded.AcquireSession(session) },
+		"recover": func() error {
+			_, err := reloaded.RecoverTornRunSession("proxy")
+			return err
+		},
+		"capture for seal": func() error {
+			_, err := CaptureTornEvidence(path, MaxEvidenceReadFileBytes, nil, nil)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := check(); err == nil || errors.Is(err, ErrTornTail) || !strings.Contains(err.Error(), "hash mismatch") {
+				t.Fatalf("damage classified as recoverable: %v", err)
+			}
+		})
+	}
+	_ = reloaded.Close()
+	reloaded, err = New(Config{Enabled: true, Dir: rec.Dir(), CheckpointInterval: 100}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reloaded.Close() }()
+	if err := reloaded.AcquireSession(session); err == nil || errors.Is(err, ErrTornTail) || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("reload classified damage as recoverable: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, damaged) {
+		t.Fatal("recovery or reload changed damaged evidence")
 	}
 }
 

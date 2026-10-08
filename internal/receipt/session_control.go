@@ -77,10 +77,23 @@ type SessionOpen struct {
 
 	// Posture/containment binding. Present only when a signed posture capsule
 	// binds this run to a contained UID; the containment grade gate consumes it.
-	PostureCapsuleSHA256 string `json:"posture_capsule_sha256,omitempty"`
-	PostureSignerKeyID   string `json:"posture_signer_key_id,omitempty"`
-	ContainmentNonce     string `json:"containment_nonce,omitempty"`
-	ContainedUID         string `json:"contained_uid,omitempty"`
+	PostureCapsuleSHA256 string               `json:"posture_capsule_sha256,omitempty"`
+	PostureSignerKeyID   string               `json:"posture_signer_key_id,omitempty"`
+	ContainmentNonce     string               `json:"containment_nonce,omitempty"`
+	ContainedUID         string               `json:"contained_uid,omitempty"`
+	GroupBinding         *ReceiptGroupBinding `json:"group_binding,omitempty"`
+}
+
+// ReceiptGroupBinding binds a shard's signed opening receipt to its published
+// group manifest. It is absent for a legacy single-chain session.
+type ReceiptGroupBinding struct {
+	GroupID                    string `json:"group_id"`
+	ShardIndex                 int    `json:"shard_index"`
+	SessionID                  string `json:"session_id"`
+	OpenManifestSHA256         string `json:"open_manifest_sha256"`
+	SignerKey                  string `json:"signer_key"`
+	PreviousGroupID            string `json:"previous_group_id"`
+	PreviousOpenManifestSHA256 string `json:"previous_open_manifest_sha256"`
 }
 
 // SessionHeartbeat is a periodic signed cumulative snapshot. The durability
@@ -128,10 +141,10 @@ func IsGracefulSessionCloseSeal(r Receipt) bool {
 //
 // The preimage is LENGTH-FRAMED (each field prefixed with its 8-byte big-endian
 // length) so no two distinct field sets can collide by concatenation — the
-// classic ("a","bc") vs ("ab","c") ambiguity. Every field is always framed,
-// including empty optionals (framed as length 0), so the value is fully
-// deterministic and a verifier recomputes it offline. Field order and the
-// domain label are frozen; any change is a breaking verifier change.
+// classic ("a","bc") vs ("ab","c") ambiguity. Every included field is
+// framed, including empty optionals. ChainOpenSeq, prior-chain fields,
+// GenesisHash, PostureSignerKeyID, and GroupBinding are excluded. Field order
+// and the domain label are frozen; any change is a breaking verifier change.
 func ComputeSessionOpenGenesis(o SessionOpen) string {
 	h := sha256.New()
 	frame := func(b []byte) {

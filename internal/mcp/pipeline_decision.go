@@ -61,6 +61,11 @@ type MCPDecision struct {
 	// default warn-and-forward behavior.
 	RequireReceipt bool
 
+	// RequiredMode is the configured require_receipts policy. A per-call
+	// RequireReceipt may still refuse a deferred call in best-effort mode,
+	// but only RequiredMode may quarantine every shard and stop the process.
+	RequiredMode bool
+
 	// Durable writes the receipt fsync-confirmed whatever its verdict. Required
 	// receipts for forwardable verdicts are always durable; this extends that to
 	// a receipt whose loss after a later durable write would leave a gap, such
@@ -101,6 +106,52 @@ func EmitMCPDecision(
 	v2Emitter *proxydecision.Emitter,
 	envelopeEmitter *envelope.Emitter,
 	d MCPDecision,
+) (outbound []byte, err error) {
+	return emitMCPDecision(receiptEmitter, v2Emitter, envelopeEmitter, d, false)
+}
+
+// MCPReceiptGroup keeps each v2 writer paired with the corresponding signed
+// v1 shard. Admission selects the index once; every later emission must carry
+// the same index in Receipt. A missing pair is an error, never a fallback to
+// another shard.
+type MCPReceiptGroup struct {
+	Shards            *receipt.ReceiptShardSet
+	V2                []*proxydecision.Emitter
+	OnRequiredFailure func(error)
+}
+
+// EmitMCPGroupDecision requires both signed writes for a grouped decision.
+// The legacy EmitMCPDecision contract intentionally remains unchanged.
+func EmitMCPGroupDecision(group MCPReceiptGroup, envelopeEmitter *envelope.Emitter, d MCPDecision) ([]byte, error) {
+	if d.RequiredMode {
+		d.RequireReceipt = true
+	}
+	if group.Shards == nil || !d.Receipt.ShardSelected || d.Receipt.ShardIndex < 0 || d.Receipt.ShardIndex >= len(group.V2) {
+		return d.InboundMsg, fmt.Errorf("%w: receipt group shard was not selected at admission", ErrReceiptRequired)
+	}
+	if len(group.V2) != group.Shards.ShardCount() || group.V2[d.Receipt.ShardIndex] == nil {
+		return d.InboundMsg, fmt.Errorf("%w: receipt group shard pair unavailable", ErrReceiptRequired)
+	}
+	v1, selectErr := group.Shards.SelectedEmitter(d.Receipt)
+	if selectErr != nil {
+		return d.InboundMsg, fmt.Errorf("%w: %w", ErrReceiptRequired, selectErr)
+	}
+	out, err := emitMCPDecision(v1, group.V2[d.Receipt.ShardIndex], envelopeEmitter, d, true)
+	if d.RequiredMode && err != nil && (errors.Is(err, receipt.ErrReceiptPostAdvance) || v1.HealthError() != nil || group.V2[d.Receipt.ShardIndex].HealthError() != nil) {
+		group.Shards.MarkUnhealthy(err)
+		if group.OnRequiredFailure != nil {
+			group.OnRequiredFailure(err)
+		}
+	}
+	return out, err
+}
+
+func emitMCPDecision(
+	receiptEmitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
+	envelopeEmitter *envelope.Emitter,
+	d MCPDecision,
+	strictPair bool,
 ) (outbound []byte, err error) {
 	outbound = d.InboundMsg
 
@@ -175,8 +226,11 @@ func EmitMCPDecision(
 	// v2 success never stands in for a required outcome's v1 receipt, or the
 	// caller would report an outcome the chain can't pair.
 	v2Covers := v2Emitted && d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome
-	if receiptRequired && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
+	if receiptRequired && !strictPair && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
 		err = nil
+	}
+	if strictPair && receiptRequired && (!v1Emitted || !v2Emitted) && err == nil {
+		err = fmt.Errorf("%w: receipt group shard pair incomplete", ErrReceiptRequired)
 	}
 	if receiptRequired && !v1Emitted && !v2Covers && err == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
@@ -230,15 +284,17 @@ func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, 
 func emitMCPOutcomeReceipt(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,
+	group *MCPReceiptGroup,
 	logW io.Writer,
 	opts receipt.EmitOpts,
 	status string,
 	bytesTransferred int64,
 	reason string,
+	required bool,
 ) {
 	opts.Verdict = config.ActionAllow
 	opts.Layer = mcpOutcomeLayer
-	emitMCPOutcome(receiptEmitter, v2Emitter, logW, opts, status, bytesTransferred, reason, false)
+	emitMCPOutcome(receiptEmitter, v2Emitter, group, logW, opts, status, bytesTransferred, reason, required)
 }
 
 // emitMCPBlockedOutcomeReceipt closes an allowed intent for a call Pipelock
@@ -249,6 +305,7 @@ func emitMCPOutcomeReceipt(
 func emitMCPBlockedOutcomeReceipt(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,
+	group *MCPReceiptGroup,
 	logW io.Writer,
 	opts receipt.EmitOpts,
 	bytesTransferred int64,
@@ -256,7 +313,7 @@ func emitMCPBlockedOutcomeReceipt(
 	requireReceipts bool,
 ) {
 	opts.Verdict = config.ActionBlock
-	emitMCPOutcome(receiptEmitter, v2Emitter, logW, opts, mcpOutcomeStatusBlocked, bytesTransferred, reason, requireReceipts)
+	emitMCPOutcome(receiptEmitter, v2Emitter, group, logW, opts, mcpOutcomeStatusBlocked, bytesTransferred, reason, requireReceipts)
 }
 
 const (
@@ -269,6 +326,7 @@ const (
 func emitMCPOutcome(
 	receiptEmitter *receipt.Emitter,
 	v2Emitter *proxydecision.Emitter,
+	group *MCPReceiptGroup,
 	logW io.Writer,
 	opts receipt.EmitOpts,
 	status string,
@@ -279,7 +337,7 @@ func emitMCPOutcome(
 	// The v1 receipt carries the action ID and phase that pair an outcome with
 	// its intent; a v2 proxy_decision record carries neither, so it is only
 	// written alongside v1, never as the outcome on its own.
-	if receiptEmitter == nil || opts.ActionID == "" {
+	if (receiptEmitter == nil && group == nil) || opts.ActionID == "" {
 		return
 	}
 	opts = mcpOutcomeReceiptOpts(opts, status, bytesTransferred, reason)
@@ -287,7 +345,14 @@ func emitMCPOutcome(
 	// durably, so it is synced too: losing it would leave that allow intent
 	// unmatched for a call that was refused.
 	durable := requireReceipts && opts.Verdict == config.ActionBlock
-	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts, Durable: durable}); err != nil {
+	d := MCPDecision{Receipt: opts, Durable: durable, RequireReceipt: requireReceipts && group != nil, RequiredMode: requireReceipts}
+	var err error
+	if group != nil {
+		_, err = EmitMCPGroupDecision(*group, nil, d)
+	} else {
+		_, err = EmitMCPDecision(receiptEmitter, v2Emitter, nil, d)
+	}
+	if err != nil {
 		logReceiptEmitFailure(logW, err, requireReceipts, opts.Verdict)
 	}
 }
@@ -309,6 +374,27 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
 	opts.Pattern = fmt.Sprintf("status=%s bytes=%s reason=%s", status, bytesValue, reason)
 	return opts
+}
+
+// A stream can fail before an admitted JSON-RPC request exists. In a group,
+// record that event as a single-phase diagnostic so it cannot appear to close
+// an intent. Preserve the legacy single-chain outcome bytes.
+func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
+	if proxyOpts.ReceiptGroup == nil {
+		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, opts, status, -1, reason, proxyOpts.requireReceipts())
+		return
+	}
+	if opts.ActionID == "" {
+		return
+	}
+	opts = mcpOutcomeReceiptOpts(opts, status, -1, reason)
+	opts.DecisionPhase = ""
+	opts.Verdict = config.ActionWarn
+	opts.Layer = mcpOutcomeLayer
+	_, err := EmitMCPGroupDecision(*proxyOpts.ReceiptGroup, nil, MCPDecision{Receipt: opts, RequireReceipt: proxyOpts.requireReceipts(), RequiredMode: proxyOpts.requireReceipts()})
+	if err != nil {
+		logReceiptEmitFailure(logW, err, proxyOpts.requireReceipts(), opts.Verdict)
+	}
 }
 
 // mcpV2DecisionFromReceipt derives the v2 proxy_decision input from the v1

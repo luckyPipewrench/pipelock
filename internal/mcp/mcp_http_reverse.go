@@ -281,6 +281,7 @@ func RunHTTPListenerProxy(
 		RequireReceiptsFn:         opts.RequireReceiptsFn,
 		V2ReceiptEmitter:          opts.v2ReceiptEmitter(),
 		V2ReceiptEmitterFn:        opts.V2ReceiptEmitterFn,
+		ReceiptGroup:              opts.ReceiptGroup,
 		PolicyHash:                opts.receiptPolicyHash(),
 		PolicyHashFn:              opts.PolicyHashFn,
 		ContractLoader:            opts.ContractLoader,
@@ -673,8 +674,8 @@ func RunHTTPListenerProxy(
 			receiptEmitted := false
 			emitter := requestBaseOpts.receiptEmitter()
 			v2Emitter := requestBaseOpts.v2ReceiptEmitter()
-			if emitter != nil || v2Emitter != nil || requestBaseOpts.requireReceipts() {
-				if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
+			if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+				if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 					Receipt:        receiptOpts,
 					RequireReceipt: requestBaseOpts.requireReceipts(),
 					// A blocked outcome closes an intent written durably under
@@ -682,7 +683,7 @@ func RunHTTPListenerProxy(
 					Durable: requestBaseOpts.requireReceipts() && dec.intent.ActionID != "",
 				}); emitErr != nil {
 					logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-				} else if emitter != nil || v2Emitter != nil {
+				} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 					receiptEmitted = true
 				}
 			}
@@ -1110,7 +1111,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr != nil {
-				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), scanErr)
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, mcpStreamReceipt(reqOpts, r.Method), true, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}
@@ -1523,8 +1524,8 @@ func RunHTTPListenerProxy(
 				v2Emitter := requestBaseOpts.v2ReceiptEmitter()
 				actionID := receipt.NewActionID()
 				receiptEmitted := false
-				if emitter != nil || v2Emitter != nil || requestBaseOpts.requireReceipts() {
-					if _, emitErr := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
+				if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil || requestBaseOpts.requireReceipts() {
+					if _, emitErr := requestBaseOpts.emitReceiptDecision(MCPDecision{
 						Receipt: requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  actionID,
 							Verdict:   config.ActionBlock,
@@ -1541,7 +1542,7 @@ func RunHTTPListenerProxy(
 						RequireReceipt: requestBaseOpts.requireReceipts(),
 					}); emitErr != nil {
 						logReceiptEmitFailure(safeLogW, emitErr, requestBaseOpts.requireReceipts(), config.ActionBlock)
-					} else if emitter != nil || v2Emitter != nil {
+					} else if emitter != nil || v2Emitter != nil || requestBaseOpts.ReceiptGroup != nil {
 						receiptEmitted = true
 					}
 				}
@@ -1821,10 +1822,12 @@ func RunHTTPListenerProxy(
 			}
 			if scanErr != nil {
 				streamOutcome := decision.Outcome.Receipt
-				if _, pending := responseTracker.Consume(frame.ID); !pending || streamOutcome.ActionID == "" {
+				_, pending := responseTracker.Consume(frame.ID)
+				standalone := !pending || streamOutcome.ActionID == ""
+				if standalone {
 					streamOutcome = mcpStreamReceipt(reqOpts, r.Method)
 				}
-				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, scanErr)
+				recordListenerStreamError(r.Context(), safeLogW, reqOpts, streamOutcome, standalone, scanErr)
 				_ = httpstream.Abort(r.Context(), scanErr)
 				return
 			}

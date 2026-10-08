@@ -318,6 +318,8 @@ func taintApprovalReason(decision taintDecision) string {
 type mcpToolReceiptOpts struct {
 	Emitter          *receipt.Emitter
 	V2Emitter        *proxydecision.Emitter
+	Group            *MCPReceiptGroup
+	Shard            receipt.EmitOpts
 	PolicyHash       string
 	Log              io.Writer
 	Transport        string
@@ -394,12 +396,21 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		SessionID:           opts.SessionID,
 		SessionIDOriginal:   opts.SessionIDOriginal,
 	}
+	emitOpts.ShardIndex = opts.Shard.ShardIndex
+	emitOpts.ShardSelected = opts.Shard.ShardSelected
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}
-	if _, err := EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, MCPDecision{
+	emit := func(d MCPDecision) ([]byte, error) {
+		if opts.Group != nil {
+			return EmitMCPGroupDecision(*opts.Group, nil, d)
+		}
+		return EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, d)
+	}
+	if _, err := emit(MCPDecision{
 		Receipt:        emitOpts,
-		RequireReceipt: opts.RequireReceipt,
+		RequireReceipt: opts.RequireReceipt || (opts.Group != nil && opts.RequireReceipts),
+		RequiredMode:   opts.RequireReceipts,
 		Durable:        opts.Durable,
 	}); err != nil {
 		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)

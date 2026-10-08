@@ -136,14 +136,14 @@ func emitKillSwitchDenialReceipt(opts MCPProxyOpts, logW io.Writer, frame MCPFra
 		return
 	}
 	emitter := opts.receiptEmitter()
-	if emitter == nil {
+	if emitter == nil && opts.ReceiptGroup == nil {
 		return
 	}
 	pattern := "kill switch active: request denied"
 	if d.Source != "" {
 		pattern = fmt.Sprintf("kill switch active (%s): request denied", d.Source)
 	}
-	if _, err := EmitMCPDecision(emitter, opts.v2ReceiptEmitter(), nil, MCPDecision{
+	if _, err := opts.emitReceiptDecision(MCPDecision{
 		Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,

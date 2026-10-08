@@ -398,6 +398,9 @@ type TrustKeysPage struct {
 // TrustKeys reconstructs usage from receipt evidence on each request. No
 // second database or disposable index becomes a source of truth.
 func (m *ReadModel) TrustKeys() (TrustKeysPage, error) {
+	if err := m.requireSingleSessionEvidence(); err != nil {
+		return TrustKeysPage{}, err
+	}
 	ids, err := recorder.ListSessions(m.receiptDir)
 	if err != nil {
 		return TrustKeysPage{}, fmt.Errorf("list sessions: %w", err)

@@ -24,6 +24,12 @@ func EvidenceWriterGone(path string) (bool, error) {
 		return false, fmt.Errorf("opening evidence file for writer probe: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	if gone, handled, err := snapshotWriterGone(f); handled {
+		if err != nil {
+			return false, fmt.Errorf("probing evidence writer lock: %w", err)
+		}
+		return gone, nil
+	}
 	locked, err := tryLockEvidenceFileForExpiry(f)
 	if err != nil {
 		return false, fmt.Errorf("probing evidence writer lock: %w", err)

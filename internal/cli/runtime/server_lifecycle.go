@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanapi"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -434,6 +435,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		if err == nil {
 			return
 		}
+		if s.receiptShardSet != nil {
+			s.receiptShardSet.MarkUnhealthy(err)
+		}
 		requiredHeartbeatErrMu.Lock()
 		if requiredHeartbeatErr == nil {
 			requiredHeartbeatErr = err
@@ -449,7 +453,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", requiredHeartbeatErr)
 	}
-	if receiptEmitterReady(s.liveReceiptEmitter()) {
+	if s.receiptShardSet != nil {
+		for _, shard := range s.receiptShardSet.Emitters() {
+			e := shard
+			startReceiptHeartbeat(ctx, &lifecycleWG, cfg.FlightRecorder.HeartbeatIntervalDuration(), func() *receipt.Emitter { return e }, s.opts.Stderr, cfg.FlightRecorder.RequireReceipts, setRequiredHeartbeatErr)
+		}
+	} else if receiptEmitterReady(s.liveReceiptEmitter()) {
 		startReceiptHeartbeat(ctx, &lifecycleWG, cfg.FlightRecorder.HeartbeatIntervalDuration(), s.liveReceiptEmitter, s.opts.Stderr, cfg.FlightRecorder.RequireReceipts, setRequiredHeartbeatErr)
 	}
 	if s.recorder != nil {
@@ -1267,6 +1276,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	readyNotified = true
 	s.markStartupNotified()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
+		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
+			return groupErr
+		}
+		if s.receiptRotationRequested.Load() {
+			return errReceiptGroupKeyRotation
+		}
 		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 			return heartbeatErr
 		}
@@ -1316,8 +1331,14 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
+	if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
+		return groupErr
+	}
 	if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
 		return heartbeatErr
+	}
+	if s.receiptRotationRequested.Load() {
+		return errReceiptGroupKeyRotation
 	}
 
 	s.logger.LogShutdown("signal received")

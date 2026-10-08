@@ -40,11 +40,17 @@ type chainOptions struct {
 	signerKeys       []string
 	endorsementPaths []string
 	sessionID        string
+	groupID          string
 	locationID       string
 	evidenceBindingOptions
-	jsonOutput    bool
-	asDir         bool
-	allowUnpinned bool
+	jsonOutput      bool
+	asDir           bool
+	allowUnpinned   bool
+	excludeGroups   bool
+	groupForBase    bool
+	groupJSONSpool  io.Writer
+	legacyJSONSpool io.Writer
+	groupJSONCount  *uint64
 	// sessionExplicit records that --session was given. Without it, a
 	// directory whose base has per-run chains is verified as a whole.
 	sessionExplicit bool
@@ -91,6 +97,7 @@ must hold from genesis.`,
 	cmd.Flags().StringArrayVar(&opts.signerKeys, "key", nil, "trusted signer public key (hex, public-key text, or file path); repeat for rotated chains")
 	cmd.Flags().StringArrayVar(&opts.endorsementPaths, "rotation-endorsement", nil, "old-key-signed rotation endorsement JSON; repeat for each endorsed boundary (requires --key)")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory (--dir)")
+	cmd.Flags().StringVar(&opts.groupID, "group", "", "verify a complete signed receipt group by its 32-hex ID (requires --dir and --key)")
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory (--dir)")
 	cmd.Flags().StringVar(&opts.expectSignerKeyID, "expect-signer-id", "", "EvidenceReceipt v2: require signer_key_id")
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
@@ -123,9 +130,212 @@ type chainReport struct {
 }
 
 func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error {
+	if !opts.asDir || !opts.jsonOutput || opts.groupID != "" {
+		return runChainInner(stdout, stderr, target, opts)
+	}
+	groupSpool, err := os.CreateTemp("", "pipelock-chain-groups-*.jsonl")
+	if err != nil {
+		return fmt.Errorf("create group report spool: %w", err)
+	}
+	defer func() {
+		_ = groupSpool.Close()
+		_ = os.Remove(groupSpool.Name())
+	}()
+	legacySpool, err := os.CreateTemp("", "pipelock-chain-legacy-*.json")
+	if err != nil {
+		return fmt.Errorf("create legacy report spool: %w", err)
+	}
+	defer func() {
+		_ = legacySpool.Close()
+		_ = os.Remove(legacySpool.Name())
+	}()
+	var groupCount uint64
+	opts.groupJSONSpool = groupSpool
+	opts.legacyJSONSpool = legacySpool
+	opts.groupJSONCount = &groupCount
+	innerErr := runChainInner(io.Discard, stderr, target, opts)
+	if groupCount == 0 {
+		if _, err := legacySpool.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind legacy report spool: %w", err)
+		}
+		if _, err := io.Copy(stdout, legacySpool); err != nil {
+			return err
+		}
+		return innerErr
+	}
+	return emitGroupedChainJSON(stdout, groupSpool, legacySpool, innerErr)
+}
+
+func writeGroupJSONSpool(opts chainOptions, result actionreceipt.ReceiptGroupResult) error {
+	if opts.groupJSONSpool == nil || opts.groupJSONCount == nil {
+		return errors.New("group JSON report spool is unavailable")
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	n, err := opts.groupJSONSpool.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		*opts.groupJSONCount++
+	}
+	return err
+}
+
+func emitGroupedChainJSON(stdout io.Writer, groups, legacy *os.File, innerErr error) error {
+	var legacyReport json.RawMessage
+	if _, err := legacy.Seek(0, io.SeekStart); err != nil {
+		innerErr = errors.Join(innerErr, fmt.Errorf("rewind legacy JSON report: %w", err))
+	} else {
+		decoder := json.NewDecoder(legacy)
+		if err := decoder.Decode(&legacyReport); err != nil {
+			if !errors.Is(err, io.EOF) {
+				innerErr = errors.Join(innerErr, fmt.Errorf("decode legacy JSON report: %w", err))
+			}
+			legacyReport = nil
+		} else {
+			var extra json.RawMessage
+			if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+				if err == nil {
+					err = errors.New("multiple legacy JSON reports")
+				}
+				innerErr = errors.Join(innerErr, err)
+				legacyReport = nil
+			}
+		}
+	}
+	combined, err := os.CreateTemp("", "pipelock-chain-report-*.json")
+	if err != nil {
+		return fmt.Errorf("create combined JSON report: %w", err)
+	}
+	defer func() { _ = os.Remove(combined.Name()) }()
+	valid := innerErr == nil
+	if _, err := fmt.Fprintf(combined, `{"valid":%t,"groups":[`, valid); err != nil {
+		return err
+	}
+	if _, err := groups.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind group JSON reports: %w", err)
+	}
+	scanner := bufio.NewScanner(groups)
+	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	first := true
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if !json.Valid(line) {
+			return errors.New("group JSON report spool contains malformed JSON")
+		}
+		if !first {
+			if _, err := io.WriteString(combined, ","); err != nil {
+				return err
+			}
+		}
+		if _, err := combined.Write(line); err != nil {
+			return err
+		}
+		first = false
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read group JSON report spool: %w", err)
+	}
+	if _, err := io.WriteString(combined, `],"legacy":`); err != nil {
+		return err
+	}
+	if len(legacyReport) == 0 {
+		if _, err := io.WriteString(combined, "null"); err != nil {
+			return err
+		}
+	} else if _, err := combined.Write(legacyReport); err != nil {
+		return err
+	}
+	if innerErr != nil {
+		encoded, err := json.Marshal(innerErr.Error())
+		if err != nil {
+			return err
+		}
+		if _, err := combined.Write(append([]byte(`,"error":`), encoded...)); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(combined, "}\n"); err != nil {
+		return err
+	}
+	if _, err := combined.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind combined JSON report: %w", err)
+	}
+	if _, err := io.Copy(stdout, combined); err != nil {
+		return err
+	}
+	return innerErr
+}
+
+func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) error {
 	trust, err := resolveChainTrust(opts)
 	if err != nil {
 		return err
+	}
+	if opts.groupID != "" {
+		if !opts.asDir || opts.sessionExplicit || !trust.pinned() || opts.allowUnpinned || len(opts.endorsementPaths) > 0 || opts.anySet() {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--group requires --dir and pinned --key without session, endorsement, or shard-only checks"))
+		}
+		location, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
+		if locationErr != nil {
+			return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", locationErr))
+		}
+		result := actionreceipt.VerifyReceiptGroup(location.Dir, opts.groupID, trust.keys)
+		if opts.jsonOutput {
+			writeJSON(stdout, result)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA)
+		}
+		if result.Verdict != actionreceipt.GroupValid {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New(result.Error))
+		}
+		if result.Error != "" && !opts.jsonOutput {
+			_, _ = fmt.Fprintln(stdout, result.Error)
+		}
+		return nil
+	}
+	if opts.asDir {
+		groupLocation, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
+		if locationErr != nil {
+			return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", locationErr))
+		}
+		base := opts.sessionID
+		if b, ok := actionreceipt.RunSessionBase(base); ok {
+			base = b
+		}
+		var groupForBase bool
+		groupSummary, groupErr := actionreceipt.VerifyReceiptGroups(groupLocation.Dir, trust.keys, func(result actionreceipt.ReceiptGroupResult) error {
+			if result.BaseSession == base {
+				groupForBase = true
+			}
+			if opts.jsonOutput {
+				return writeGroupJSONSpool(opts, result)
+			}
+			_, err := fmt.Fprintf(stdout, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA)
+			return err
+		})
+		if groupErr != nil {
+			if opts.jsonOutput {
+				if err := writeGroupJSONSpool(opts, actionreceipt.ReceiptGroupResult{Verdict: actionreceipt.GroupInvalid, Error: groupErr.Error()}); err != nil {
+					return err
+				}
+			} else {
+				_, _ = fmt.Fprintf(stdout, "GROUP_INVALID inventory: %v\n", groupErr)
+			}
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("receipt group inventory failed: %w", groupErr))
+		}
+		if groupSummary.Incomplete > 0 || groupSummary.Invalid > 0 {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("receipt group verification failed: %d incomplete and %d invalid group result(s)", groupSummary.Incomplete, groupSummary.Invalid))
+		}
+		opts.excludeGroups = groupSummary.Groups > 0
+		opts.groupForBase = groupForBase
+		if opts.legacyJSONSpool != nil {
+			stdout = opts.legacyJSONSpool
+		}
 	}
 
 	var label string
@@ -137,6 +347,15 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 			return evidenceLocationError(fmt.Errorf("resolve evidence location: %w", locationErr))
 		}
 		clean := location.Dir
+		if opts.excludeGroups {
+			legacy, legacyErr := actionreceipt.ResolveBaseSessionsExcludingReceiptGroups(clean, opts.sessionID)
+			if legacyErr != nil {
+				return evidenceLocationError(fmt.Errorf("listing legacy receipt chains: %w", legacyErr))
+			}
+			if len(legacy) == 0 && opts.groupForBase {
+				return nil
+			}
+		}
 		if handled, setErr := runChainSetIfRuns(stdout, stderr, location, trust, opts); handled || setErr != nil {
 			return setErr
 		}

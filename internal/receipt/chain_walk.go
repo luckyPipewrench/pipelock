@@ -469,6 +469,14 @@ type WholeRecorderWalker struct {
 	entryErr   error
 	chain      recorder.ChainWalker
 	extractErr error
+	groupGate  bool
+}
+
+// NewGroupRecorderWalker requires the group gate as the first entry while
+// retaining the whole-recorder hash and taxonomy checks. Legacy walkers keep
+// rejecting that gate so a single surviving shard cannot verify as legacy.
+func NewGroupRecorderWalker() *WholeRecorderWalker {
+	return &WholeRecorderWalker{groupGate: true}
 }
 
 // Add checks one entry. It returns the entry's action receipt when the entry
@@ -478,7 +486,11 @@ func (w *WholeRecorderWalker) Add(e recorder.Entry) (Receipt, bool) {
 	i := w.count
 	w.count++
 	if w.entryErr == nil {
-		if !knownRecorderEntryType(e.Type) {
+		if w.groupGate && i == 0 && e.Type != recorder.GroupGateEntryType {
+			w.entryErr = fmt.Errorf("receipt group gate must be first recorder entry")
+		} else if e.Type == recorder.GroupGateEntryType && (!w.groupGate || i != 0) {
+			w.entryErr = fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
+		} else if !knownRecorderEntryType(e.Type) && (!w.groupGate || i != 0 || e.Type != recorder.GroupGateEntryType) {
 			w.entryErr = fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
 		} else if i == 0 {
 			w.sessionID = e.SessionID
@@ -488,6 +500,9 @@ func (w *WholeRecorderWalker) Add(e recorder.Entry) (Receipt, bool) {
 	}
 	_ = w.chain.Add(e)
 	if w.extractErr != nil {
+		return Receipt{}, false
+	}
+	if w.groupGate && i == 0 && e.Type == recorder.GroupGateEntryType {
 		return Receipt{}, false
 	}
 	r, ok, err := actionReceiptFromEntry(e)

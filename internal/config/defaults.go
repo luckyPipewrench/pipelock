@@ -610,6 +610,7 @@ func Defaults() *Config {
 			// a recorder failure never blocks traffic unless RequireReceipts is
 			// explicitly enabled by the operator.
 			Enabled:                    true,
+			ReceiptChains:              1,
 			RequireReceipts:            false,
 			RequireContainmentEvidence: false,
 			CheckpointInterval:         1000,  // entries between signed checkpoints

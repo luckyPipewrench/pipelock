@@ -3712,6 +3712,23 @@ func TestServer_Reload_IgnoresFlightRecorderHeartbeatIntervalChange(t *testing.T
 	}
 }
 
+func TestServer_Reload_ReceiptChainsRequiresRestart(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	updated := oldLive.Clone()
+	updated.FlightRecorder.ReceiptChains = 4
+	if err := s.Reload(updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := s.proxy.CurrentConfig().FlightRecorder.ReceiptChainCount(); got != oldLive.FlightRecorder.ReceiptChainCount() {
+		t.Fatalf("live receipt chains=%d, want original %d", got, oldLive.FlightRecorder.ReceiptChainCount())
+	}
+	want := "flight_recorder.receipt_chains changed; restart required; continuing with 1"
+	if !buf.contains(want) {
+		t.Fatalf("stderr missing named receipt-chain restart warning: %s", buf.String())
+	}
+}
+
 func newContainmentEvidenceReloadServer(t *testing.T, require bool) (*Server, *syncBuffer) {
 	t.Helper()
 	dir := t.TempDir()

@@ -233,10 +233,11 @@ type sessionOpenCanonicalV1 struct {
 	GenesisAnchorHead string `json:"genesis_anchor_head,omitempty"`
 	GenesisAnchorLog  string `json:"genesis_anchor_log,omitempty"`
 
-	PostureCapsuleSHA256 string `json:"posture_capsule_sha256,omitempty"`
-	PostureSignerKeyID   string `json:"posture_signer_key_id,omitempty"`
-	ContainmentNonce     string `json:"containment_nonce,omitempty"`
-	ContainedUID         string `json:"contained_uid,omitempty"`
+	PostureCapsuleSHA256 string               `json:"posture_capsule_sha256,omitempty"`
+	PostureSignerKeyID   string               `json:"posture_signer_key_id,omitempty"`
+	ContainmentNonce     string               `json:"containment_nonce,omitempty"`
+	ContainedUID         string               `json:"contained_uid,omitempty"`
+	GroupBinding         *ReceiptGroupBinding `json:"group_binding,omitempty"`
 }
 
 type sessionHeartbeatCanonicalV1 struct {
@@ -296,6 +297,7 @@ func canonicalSessionOpenV1(in *SessionOpen) *sessionOpenCanonicalV1 {
 		PostureSignerKeyID:   in.PostureSignerKeyID,
 		ContainmentNonce:     in.ContainmentNonce,
 		ContainedUID:         in.ContainedUID,
+		GroupBinding:         in.GroupBinding,
 	}
 }
 

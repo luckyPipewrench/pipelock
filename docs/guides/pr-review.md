@@ -209,10 +209,11 @@ time. Nothing here claims a finding was resolved.
   clean review.
 - `priority-token-budget` means the unit did not fit the configured chunk or
   unit limits. `hunk-exceeds-token-budget` means one whole unit was too large.
-  Ordinary mode allows six chunks of up to 30 units and 12,000 estimated diff
+  Ordinary mode allows six chunks of up to 30 units and 12,000 estimated input
   tokens each; deep mode allows eight chunks of up to 60 units and 48,000
-  estimated diff tokens each. Prompt structure is additional, and wall-clock
-  limits still apply. Better packing cannot make an arbitrarily large diff fit.
+  estimated tokens each. The planner also accounts for serialized prompt
+  structure and escaping. Wall-clock limits still apply. Better packing can't
+  make an arbitrarily large diff fit.
 - Review deterministic omissions independently, or deliberately choose
   `/review deep` when its larger budget is appropriate. Neither an unchanged
   ordinary rerun nor a deep run promises complete coverage. Fixtures and
@@ -237,7 +238,16 @@ time. Nothing here claims a finding was resolved.
   and evidence-request rules. The single bounded repair receives validation
   categories for its own candidate indices. It still must decide the candidate;
   diagnostics do not relax validation, add calls, or make an incomplete result
-  clean. A malformed primary response still fails without an extra recovery call.
+  clean. A malformed primary response can use that same repair slot. The limit
+  remains two judge calls, with a 4,096-token output cap for repair.
+
+Each candidate has a stable ID and its own evidence window, even if several candidates name the same file. The runner prefers a valid head line, then a named definition or relevant changed hunk. File-start and changed-hunk fallbacks are labelled. Deleted paths use the bound diff and available base content. Content reads are cached by immutable commit and path. Searches can find more code in the same file outside the supplied ranges. Failed reads and searches affect the candidate that needs them; they don't cancel judgment of its siblings.
+
+The comment retains each unsettled candidate's sanitized reason, evidence source and retrieval outcome. Missing evidence can't dismiss a candidate. Truncated surrounding evidence can still contain the fact that decides a premise. The repair uses the remaining prompt allowance for unresolved candidates, invalid decisions and overflow candidates that fit. Candidates that still don't fit remain visibly incomplete. Prompt accounting includes labels, escaped strings, summaries and truncation notices without shortening candidate claims.
+
+Oversized hunks split in both modes with accurate line coordinates and attached no-newline markers. Default deletion compression remains disclosed. Pure renames and file-mode changes are review units; binary content remains a coverage gap. The runner computes both capacity plans before provider work. It recommends deep only if that plan removes the representable-unit capacity gap. Deep doesn't promise to resolve binary or evidence gaps.
+
+Discovery admission holds a rolling reserve for remaining synthesis, judgment, possible repair and publication. It reserves the next discovery call rather than every future call's worst-case duration. Unnecessary phases release their reserve. A slow response can still exhaust the budget; unfinished units remain in the manifest and publication has separate headroom. Valid candidates in a malformed discovery response survive, but its unit stays incomplete unless a full response validates. Schema repair can use only a spare call within the mode's existing six- or eight-call discovery limit. Authentication failures and ambiguous transport failures don't receive paid repair retries. Logs distinguish transport from schema failures and record bounded finish-reason and usage counts. This repair doesn't add persistent checkpoints or automatic paid reruns.
 
 ## Changing the reviewer
 

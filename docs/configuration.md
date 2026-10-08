@@ -1570,6 +1570,7 @@ An entry that exists for the server and tool but no longer matches refuses the `
 Limits worth knowing:
 
 - Environment the server inherits without you naming it isn't part of the binding.
+- A tool definition that isn't valid UTF-8, or has any text that decodes to the replacement character U+FFFD (including a literal one), can't be acknowledged. Different encodings of it would look identical after decoding, so no entry is offered and its findings keep enforcing.
 - The binding digest is printed. If a header or variable it covers holds a short or guessable secret, the digest can be guessed offline, so use high-entropy tokens there.
 - `pipelock mcp proxy` reads its configuration once per session. Revoking an entry there takes a restart, though expiry still applies right away. The HTTP listener under `pipelock run` applies changes on the next `tools/list`.
 - An acknowledged `tools/list` is forwarded with the finding present. It's logged, captured as warned and receipted with an allow verdict, and it earns no adaptive-enforcement credit.

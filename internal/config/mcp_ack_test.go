@@ -14,7 +14,7 @@ var ackTestNow = time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC)
 func validAck() MCPAcknowledgedFinding {
 	hex64 := strings.Repeat("ab", 32)
 	return MCPAcknowledgedFinding{
-		Server:              "t3",
+		Server:              "vault",
 		ServerBindingSHA256: hex64,
 		Tool:                "request_secret",
 		Finding:             MCPAckFindingRequestDirective,
@@ -47,7 +47,7 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 		want   string
 	}{
 		{"missing server", func(e *MCPAcknowledgedFinding) { e.Server = " " }, "server is required"},
-		{"control in server", func(e *MCPAcknowledgedFinding) { e.Server = "t3\u200b" }, "server is required"},
+		{"control in server", func(e *MCPAcknowledgedFinding) { e.Server = "vault\u200b" }, "server is required"},
 		{"bad binding", func(e *MCPAcknowledgedFinding) { e.ServerBindingSHA256 = "abc" }, "server_binding_sha256"},
 		{"missing tool", func(e *MCPAcknowledgedFinding) { e.Tool = "" }, "tool is required"},
 		{"other finding", func(e *MCPAcknowledgedFinding) { e.Finding = "File Exfiltration Directive" }, "not supported"},

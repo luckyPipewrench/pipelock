@@ -206,3 +206,19 @@ func TestValidateMCPAcknowledgedFindingMatchesListValidation(t *testing.T) {
 		t.Fatalf("err = %v, want the owner refusal", err)
 	}
 }
+
+func TestValidMCPAckPointerBoundaries(t *testing.T) {
+	for _, p := range []string{"/a", "/a~0b", "/a~1b", "/0/1"} {
+		if !validMCPAckPointer(p) {
+			t.Errorf("%q refused", p)
+		}
+	}
+	for _, p := range []string{"", "/", "a", "/a~", "/a~2", "/a\x00b", "/" + strings.Repeat("a", maxMCPAckPointer)} {
+		if validMCPAckPointer(p) {
+			t.Errorf("%q accepted", p)
+		}
+	}
+	if _, err := ParseMCPAckExpiry("2026-12-01T25:00:00Z"); err == nil {
+		t.Error("impossible timestamp accepted")
+	}
+}

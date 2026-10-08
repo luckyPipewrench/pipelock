@@ -500,3 +500,53 @@ func TestToolFieldTextRefusesUnresolvablePointers(t *testing.T) {
 		t.Error("a definition without received bytes resolved a field")
 	}
 }
+
+func TestStrictCanonicalToolJSONBoundaries(t *testing.T) {
+	got, err := strictCanonicalToolJSON([]byte(`{"z":[],"y":{},"x":[[1,2],[{"b":-0.50e+3,"a":"tab\there \"q\" \u2028"}]],"w":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"w":false,"x":[[1,2],[{"a":"tab\there \"q\" \u2028","b":-0.50e+3}]],"y":{},"z":[]}`; string(got) != want {
+		t.Fatalf("canonical = %s\nwant      %s", got, want)
+	}
+	deep := strings.Repeat(`{"a":`, maxCanonicalToolDepth+2) + `1` + strings.Repeat(`}`, maxCanonicalToolDepth+2)
+	if _, err := strictCanonicalToolJSON([]byte(deep)); err == nil {
+		t.Fatal("object nesting past the limit accepted")
+	}
+	deepArr := `{"a":` + strings.Repeat(`[`, maxCanonicalToolDepth+2) + strings.Repeat(`]`, maxCanonicalToolDepth+2) + `}`
+	if _, err := strictCanonicalToolJSON([]byte(deepArr)); err == nil {
+		t.Fatal("array nesting past the limit accepted")
+	}
+	for name, raw := range map[string]string{
+		"unterminated array":  `{"a":[1,2}`,
+		"bad value":           `{"a":nope}`,
+		"empty input":         ``,
+		"truncated in member": `{"a":`,
+	} {
+		if _, err := strictCanonicalToolJSON([]byte(raw)); err == nil {
+			t.Errorf("%s accepted: %s", name, raw)
+		}
+	}
+}
+
+func TestToolFieldTextResolvesEscapedNames(t *testing.T) {
+	tool := mustTool(t, `{"name":"f","inputSchema":{"properties":{"a/b":{"description":"slash"},"c~d":{"description":"tilde"}}}}`)
+	for ptr, want := range map[string]string{
+		"/inputSchema/properties/a~1b/description": "slash",
+		"/inputSchema/properties/c~0d/description": "tilde",
+	} {
+		if got, ok := toolFieldText(tool, ptr); !ok || got != want {
+			t.Errorf("%s = %q,%v, want %q", ptr, got, ok, want)
+		}
+	}
+	if _, ok := toolFieldText(tool, "/inputSchema/properties/a/b/description"); ok {
+		t.Error("an unescaped slash resolved as part of a member name")
+	}
+}
+
+func TestWithServerOnNilConfig(t *testing.T) {
+	var cfg *ToolScanConfig
+	if cfg.WithServer("s", "b") != nil {
+		t.Fatal("nil config gained a server binding")
+	}
+}

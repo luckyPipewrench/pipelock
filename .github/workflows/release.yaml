@@ -579,6 +579,8 @@ jobs:
       - name: Attest binary archives
         id: attest-binaries
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/pipelock_*.tar.gz
@@ -586,6 +588,8 @@ jobs:
       - name: Attest checksums
         id: attest-checksums
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/checksums.txt
@@ -593,6 +597,8 @@ jobs:
       - name: Attest SBOM
         id: attest-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/pipelock_*.tar.gz
@@ -601,6 +607,8 @@ jobs:
       - name: Attest container image
         id: attest-pipelock-container
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
@@ -610,6 +618,8 @@ jobs:
       - name: Attest pipelock-init container image
         id: attest-pipelock-init-container
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
@@ -619,6 +629,8 @@ jobs:
       - name: Attest license-service container image
         id: attest-license-service-container
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
@@ -628,6 +640,8 @@ jobs:
       - name: Attest pipelock linux amd64 image
         id: attest-pipelock-amd64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
@@ -637,6 +651,8 @@ jobs:
       - name: Attest pipelock linux arm64 image
         id: attest-pipelock-arm64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
@@ -646,6 +662,8 @@ jobs:
       - name: Attest pipelock-init linux amd64 image
         id: attest-pipelock-init-amd64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
@@ -655,6 +673,8 @@ jobs:
       - name: Attest pipelock-init linux arm64 image
         id: attest-pipelock-init-arm64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
@@ -664,6 +684,8 @@ jobs:
       - name: Attest license-service linux amd64 image
         id: attest-license-service-amd64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
@@ -673,6 +695,8 @@ jobs:
       - name: Attest license-service linux arm64 image
         id: attest-license-service-arm64
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
@@ -682,6 +706,8 @@ jobs:
       - name: Attest pipelock linux amd64 SBOM
         id: attest-pipelock-amd64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
@@ -692,6 +718,8 @@ jobs:
       - name: Attest pipelock linux arm64 SBOM
         id: attest-pipelock-arm64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock
@@ -702,6 +730,8 @@ jobs:
       - name: Attest pipelock-init linux amd64 SBOM
         id: attest-pipelock-init-amd64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
@@ -712,6 +742,8 @@ jobs:
       - name: Attest pipelock-init linux arm64 SBOM
         id: attest-pipelock-init-arm64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-init
@@ -722,6 +754,8 @@ jobs:
       - name: Attest license-service linux amd64 SBOM
         id: attest-license-service-amd64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
@@ -732,6 +766,8 @@ jobs:
       - name: Attest license-service linux arm64 SBOM
         id: attest-license-service-arm64-sbom
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-name: ghcr.io/luckypipewrench/pipelock-license-service
@@ -746,6 +782,9 @@ jobs:
       # provenance while this gate still reports success. `always()` ensures the
       # gate runs even if an earlier step failed.
       - name: Verify attestation
+        env:
+          BASH_ENV: ''
+          ENV: ''
         if: >-
           always() && (
           steps.attest-binaries.outcome != 'success' ||
@@ -809,11 +848,16 @@ jobs:
       - name: Attest Kubernetes image digest bundle
         id: attest-release-images
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/release-images.json
 
       - name: Verify Kubernetes image digest bundle attestation
+        env:
+          BASH_ENV: ''
+          ENV: ''
         if: always() && steps.attest-release-images.outcome != 'success'
         run: |
           echo "::error::Kubernetes image digest bundle attestation failed"
@@ -1201,12 +1245,17 @@ jobs:
       - name: Attest Helm chart
         id: attest-helm-chart
         continue-on-error: true
+        env:
+          NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/luckypipewrench/charts/pipelock
           subject-digest: ${{ needs.release-promote.outputs.chart_digest }}
 
       - name: Verify Helm chart attestation
+        env:
+          BASH_ENV: ''
+          ENV: ''
         if: always() && steps.attest-helm-chart.outcome != 'success'
         run: |
           echo "::error::Helm chart attestation failed"

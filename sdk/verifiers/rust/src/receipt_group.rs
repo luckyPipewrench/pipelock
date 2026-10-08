@@ -599,10 +599,7 @@ fn verify_shard(
     {
         return Err("group gate is not covered by the next checkpoint".into());
     }
-    let cloned = clone_lines(&lines)
-        .into_iter()
-        .filter(|line| line.entry.get("type").and_then(Value::as_str) != Some("receipt_group_v1"))
-        .collect();
+    let cloned = strip_leading_gate(clone_lines(&lines));
     let typed = extract_typed_from_lines(cloned).map_err(|e| e.to_string())?;
     let mut receipts = typed.action.clone();
     if receipts.is_empty() {
@@ -758,14 +755,8 @@ fn verify_open_shard(
     {
         return Err(format!("incomplete shard recorder chain: {err}"));
     }
-    let typed = extract_typed_from_lines(
-        lines
-            .into_iter()
-            .filter(|l| l.entry.get("type").and_then(Value::as_str) != Some("receipt_group_v1"))
-            .collect(),
-    )
-    .map_err(|e| e.to_string())?;
-    for receipts in [&typed.action, &typed.evidence] {
+    let typed = extract_typed_from_lines(strip_leading_gate(lines)).map_err(|e| e.to_string())?;
+    for (is_action, receipts) in [(true, &typed.action), (false, &typed.evidence)] {
         if receipts.is_empty() {
             continue;
         }
@@ -776,7 +767,9 @@ fn verify_open_shard(
                 result.error.unwrap_or_default()
             ));
         }
-        if let Some(first) = receipts.first() {
+        // Only the v1 action chain starts with the signed session_open; a v2
+        // evidence chain carries no opening to bind to the gate.
+        if let Some(first) = receipts.first().filter(|_| is_action) {
             let binding = first
                 .pointer("/action_record/session_control/open/group_binding")
                 .or_else(|| first.pointer("/payload/session_control/open/group_binding"));
@@ -786,6 +779,51 @@ fn verify_open_shard(
         }
     }
     Ok(())
+}
+
+// verify_prefix_integrity applies what Go's recovery prefix verifier checks on
+// every entry of an unclosed predecessor: the gate is covered by the next
+// checkpoint and every checkpoint is signed by the group signer.
+fn verify_prefix_integrity(lines: &[RecorderLine], signer: &str) -> Result<(), String> {
+    let gate_hash = lines
+        .first()
+        .and_then(|line| line.entry.get("hash"))
+        .and_then(Value::as_str);
+    let covering = lines.get(1);
+    if gate_hash.is_none()
+        || covering
+            .and_then(|line| line.entry.get("type"))
+            .and_then(Value::as_str)
+            != Some("checkpoint")
+        || covering
+            .and_then(|line| line.entry.get("prev_hash"))
+            .and_then(Value::as_str)
+            != gate_hash
+    {
+        return Err("predecessor group gate lacks covering checkpoint".into());
+    }
+    for line in lines {
+        if line.entry.get("type").and_then(Value::as_str) == Some("checkpoint") {
+            verify_checkpoint(line, signer)
+                .map_err(|e| format!("predecessor checkpoint signature failed: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+// strip_leading_gate drops the group gate from the front of a session, the only
+// place Go's group recorder walker accepts one. A gate anywhere else stays in
+// the list, where the receipt extractor rejects it as an unknown entry type.
+fn strip_leading_gate(mut lines: Vec<RecorderLine>) -> Vec<RecorderLine> {
+    if lines
+        .first()
+        .and_then(|line| line.entry.get("type"))
+        .and_then(Value::as_str)
+        == Some("receipt_group_v1")
+    {
+        lines.remove(0);
+    }
+    lines
 }
 
 fn clone_lines(lines: &[RecorderLine]) -> Vec<RecorderLine> {
@@ -821,6 +859,8 @@ fn verify_checkpoint(line: &RecorderLine, signer: &str) -> Result<(), String> {
 fn verify_ael_run(root: &Path, run: &str, signer: &str) -> Result<(u64, String, u64), String> {
     verify_ael_records(root, run, signer, true)
 }
+
+const MAX_AEL_RECORD_BYTES: usize = 1 << 20;
 
 fn verify_ael_records(
     root: &Path,
@@ -865,6 +905,15 @@ fn verify_ael_records(
     let mut count = 0u64;
     let mut closed = false;
     for line in raw.split_inclusive(|b| *b == b'\n') {
+        // Go reads each record through a 1 MiB buffer: a terminated line may be
+        // at most 1 MiB including its newline, and an unterminated fragment must
+        // still fit the buffer. The bound applies before any trimming, so a
+        // blank line cannot slip past it.
+        let terminated = line.last() == Some(&b'\n');
+        if line.len() > MAX_AEL_RECORD_BYTES || (!terminated && line.len() >= MAX_AEL_RECORD_BYTES)
+        {
+            return Err("native AEL stream has torn or oversized line".into());
+        }
         if line.last() != Some(&b'\n') && !require_close && !closed {
             break;
         }
@@ -1115,9 +1164,37 @@ fn verify_ael_inventory(
                 return Err("receipt group session has a torn tail in another group".into());
             }
         }
+        // Go walks each inventory session's whole v1 chain against the trusted
+        // set (a group shard against its opening signer), so a forged or
+        // untrusted receipt anywhere in a neighbor or legacy session fails the
+        // group, not only its session_open.
+        let typed = extract_typed_from_lines(strip_leading_gate(lines.clone()))
+            .map_err(|e| e.to_string())?;
+        if !typed.action.is_empty() {
+            let pin = match gate {
+                Some(gate) => gate
+                    .get("signer_key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                None => trusted.join(","),
+            };
+            let walked = verify_chain_with_options(&typed.action, &pin, false);
+            if !walked.valid {
+                return Err(format!(
+                    "inventory receipt session {session:?} chain invalid: {}",
+                    walked.error.unwrap_or_default()
+                ));
+            }
+        }
         let mut signed_open_seen = false;
         for line in &lines {
             let entry = &line.entry;
+            // Go counts only action_receipt entries as signed receipts here; a
+            // decision entry's detail is not a receipt, however it is shaped.
+            if entry.get("type").and_then(Value::as_str) != Some("action_receipt") {
+                continue;
+            }
             let Some(receipt) = entry.get("detail") else {
                 continue;
             };
@@ -1166,16 +1243,17 @@ fn verify_ael_inventory(
                 .unwrap_or("");
             let completed = lines.iter().any(|line| {
                 line.entry.get("type").and_then(Value::as_str) == Some("transcript_root")
-                    || line
-                        .entry
-                        .get("detail")
-                        .and_then(|detail| {
-                            detail
-                                .pointer("/action_record/session_control/kind")
-                                .or_else(|| detail.pointer("/payload/session_control/kind"))
-                        })
-                        .and_then(Value::as_str)
-                        == Some("session_close")
+                    || (line.entry.get("type").and_then(Value::as_str) == Some("action_receipt")
+                        && line
+                            .entry
+                            .get("detail")
+                            .and_then(|detail| {
+                                detail
+                                    .pointer("/action_record/session_control/kind")
+                                    .or_else(|| detail.pointer("/payload/session_control/kind"))
+                            })
+                            .and_then(Value::as_str)
+                            == Some("session_close"))
             });
             if owners
                 .insert(
@@ -1655,12 +1733,20 @@ fn verify_recovery_seal(
     {
         return Err("recovery seal predecessor group gate differs".into());
     }
-    let mut receipt_lines = lines
-        .into_iter()
-        .filter(|l| l.entry.get("type").and_then(Value::as_str) != Some("receipt_group_v1"))
-        .collect::<Vec<_>>();
+    verify_prefix_integrity(&lines, &predecessor.signer_key)?;
+    let mut receipt_lines = strip_leading_gate(lines);
     let typed =
         extract_typed_from_lines(std::mem::take(&mut receipt_lines)).map_err(|e| e.to_string())?;
+    if !typed.action.is_empty() && !typed.evidence.is_empty() {
+        let evidence =
+            verify_chain_with_options(&typed.evidence, &seal.predecessor_signer_key, false);
+        if !evidence.valid {
+            return Err(format!(
+                "recovery seal v2 prefix invalid: {}",
+                evidence.error.unwrap_or_default()
+            ));
+        }
+    }
     let rs = if typed.action.is_empty() {
         typed.evidence
     } else {
@@ -1674,13 +1760,8 @@ fn verify_recovery_seal(
         return Err("recovery seal signed receipt prefix differs".into());
     }
     let successor_lines = read_group_session_lines(dir, &seal.successor_session, true)?;
-    let successor_receipts = extract_typed_from_lines(
-        successor_lines
-            .into_iter()
-            .filter(|l| l.entry.get("type").and_then(Value::as_str) != Some("receipt_group_v1"))
-            .collect(),
-    )
-    .map_err(|e| e.to_string())?;
+    let successor_receipts =
+        extract_typed_from_lines(strip_leading_gate(successor_lines)).map_err(|e| e.to_string())?;
     let first = successor_receipts
         .action
         .first()
@@ -1713,13 +1794,8 @@ fn verify_complete_prefix(
     {
         return Err("unsealed predecessor group gate differs".into());
     }
-    let rs = extract_typed_from_lines(
-        lines
-            .into_iter()
-            .filter(|l| l.entry.get("type").and_then(Value::as_str) != Some("receipt_group_v1"))
-            .collect(),
-    )
-    .map_err(|e| e.to_string())?;
+    verify_prefix_integrity(&lines, &open.signer_key)?;
+    let rs = extract_typed_from_lines(strip_leading_gate(lines)).map_err(|e| e.to_string())?;
     for chain_receipts in [&rs.action, &rs.evidence] {
         if chain_receipts.is_empty() {
             continue;

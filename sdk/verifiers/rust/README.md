@@ -38,7 +38,9 @@ pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]
 
 `group` verifies one signed multi-shard receipt group, including each shard's
 receipt chains and native AEL stream, the signed close, and any predecessor
-transition. It requires externally pinned `--key` values. A missing signed
+transition. It also walks every other session in the directory as a whole v1
+chain against the pinned keys, and checks an unclosed predecessor's checkpoint
+signatures and v1 and v2 chains. It requires externally pinned `--key` values. A missing signed
 close reports `GROUP_INCOMPLETE` and exits nonzero; only a fully checked group
 reports `GROUP_VALID` with exit code zero.
 

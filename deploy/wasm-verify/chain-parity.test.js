@@ -584,6 +584,47 @@ with zipfile.ZipFile(io.BytesIO(gzip.decompress(open(source, "rb").read()))) as 
     }
   });
 
+  test("shared v2 group corpus matches every expected verdict", async () => {
+    const source = path.join(
+      repoRoot,
+      "sdk/verifiers/python/tests/fixtures/receipt-groups-v2.zip",
+    );
+    const destination = path.join(outDir, "group-v2-corpus");
+    execFileSync("python3", [
+      "-c",
+      `
+import json, os, sys, zipfile
+source, destination = sys.argv[1:]
+os.makedirs(destination, exist_ok=True)
+with zipfile.ZipFile(source) as archive:
+    cases = json.loads(archive.read("cases.json"))
+    with open(os.path.join(destination, "cases.json"), "w") as output:
+        json.dump(cases, output)
+    for case in cases:
+        prefix = "cases/" + case["name"] + "/"
+        with zipfile.ZipFile(os.path.join(destination, case["name"] + ".zip"), "w", zipfile.ZIP_DEFLATED) as selected:
+            for entry in archive.infolist():
+                if entry.filename.startswith(prefix) and not entry.is_dir():
+                    selected.writestr(entry.filename[len(prefix):], archive.read(entry))
+`,
+      source,
+      destination,
+    ]);
+    const cases = JSON.parse(
+      readFileSync(path.join(destination, "cases.json"), "utf8"),
+    );
+    assert.equal(cases.length, 20);
+    for (const item of cases) {
+      const bytes = readFileSync(path.join(destination, `${item.name}.zip`));
+      const result = await verifyGroup(bytes, item.group_id, item.trusted_keys);
+      assert.equal(
+        result.verdict,
+        item.expected,
+        `${item.name}: ${result.error}`,
+      );
+    }
+  });
+
   test("missing predecessor close stays GROUP_INCOMPLETE", async () => {
     const tc = groupCases.find(
       (item) =>

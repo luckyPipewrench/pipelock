@@ -32,6 +32,7 @@ const fixtureRoot = mkdtempSync(join(tmpdir(), "ts-receipt-group-fixtures-"));
 const fixtures = join(fixtureRoot, "groups");
 const attackFixtures = join(fixtureRoot, "attacks");
 const matrixFixtures = join(fixtureRoot, "matrix");
+const v2Fixtures = join(fixtureRoot, "v2");
 const filenameVectors = JSON.parse(
   readFileSync(resolve(root, "../filename-vectors.json"), "utf8"),
 ) as {
@@ -136,6 +137,10 @@ extractFixtureArchive(
 extractFixtureArchive(
   gunzipSync(readFileSync(resolve(root, "tests/fixtures/receipt-groups-matrix.zip.gz"))),
   matrixFixtures,
+);
+extractFixtureArchive(
+  readFileSync(resolve(root, "tests/fixtures/receipt-groups-v2.zip")),
+  v2Fixtures,
 );
 test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
@@ -484,7 +489,7 @@ test("shared mutation vectors match the Go verdict", async () => {
   const vectors = JSON.parse(
     readFileSync(resolve(root, "../receipt-group-mutation-vectors.json"), "utf8"),
   ) as MutationVector[];
-  assert.equal(vectors.length, 23);
+  assert.equal(vectors.length, 25);
   const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-mutation-"));
   try {
     for (const item of vectors) {
@@ -579,6 +584,29 @@ test("duplicate signed native AEL run is rejected end to end", async () => {
   assert.match(result.error ?? "", /duplicate signed native AEL run "[0-9a-f]{32}"/u);
 });
 
+// The production shape: groups written by the real server emitter path, with a
+// v2 evidence receipt on every shard, a transition from a closed, crashed or
+// torn-and-sealed predecessor, and tamper cases whose recorder hash chain (and
+// checkpoint, seal and transition signatures) were recomputed, so only the
+// signed content is wrong. Every verdict is the Go verifier's own.
+test("shared v2 group corpus matches the Go verdict", async () => {
+  const cases = JSON.parse(readFileSync(join(v2Fixtures, "cases.json"), "utf8")) as Array<{
+    name: string;
+    group_id: string;
+    trusted_keys: string[];
+    expected: string;
+  }>;
+  assert.equal(cases.length, 20);
+  for (const item of cases) {
+    const result = await verifyReceiptGroup(
+      join(v2Fixtures, "cases", item.name),
+      item.group_id,
+      item.trusted_keys,
+    );
+    assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
+  }
+});
+
 // Go reads only the python copy of the shared fixtures, so a drifted copy in
 // another language directory would silently test different bytes.
 test("shared group fixtures are byte-identical across language directories", () => {
@@ -586,7 +614,11 @@ test("shared group fixtures are byte-identical across language directories", () 
     createHash("sha256")
       .update(readFileSync(resolve(root, file)))
       .digest("hex");
-  for (const name of ["receipt-groups-matrix.zip.gz", "receipt-groups.zip"]) {
+  for (const name of [
+    "receipt-groups-matrix.zip.gz",
+    "receipt-groups.zip",
+    "receipt-groups-v2.zip",
+  ]) {
     const reference = sha(`../python/tests/fixtures/${name}`);
     for (const language of ["ts", "rust", "python"]) {
       assert.equal(sha(`../${language}/tests/fixtures/${name}`), reference, `${language}/${name}`);

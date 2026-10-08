@@ -185,18 +185,21 @@ export function extractTypedReceipts(file: string): ExtractedReceipts {
 
 // extractTypedFromEntries splits already-read recorder entries into the two
 // receipt chains, refusing any entry type it does not know. The receipt group
-// gate is skipped only when the caller is a group verifier, which validates it
-// against the signed opening; everywhere else it is an unknown entry type.
+// gate is skipped only as the first entry and only when the caller is a group
+// verifier, which validates it against the signed opening; everywhere else it
+// is an unknown entry type.
 export function extractTypedFromEntries(
   entries: readonly RecorderEntry[],
   allowGroupGate = false,
 ): ExtractedReceipts {
   const extracted: ExtractedReceipts = { action: [], evidence: [] };
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
     if (!isReceipt) {
       if (entry.type !== undefined && skippableEntryTypes.has(entry.type)) continue;
-      if (allowGroupGate && entry.type === groupGateEntryType) continue;
+      // Go's group recorder walker accepts the gate only as a session's first
+      // entry; a gate anywhere else is an unknown entry type.
+      if (allowGroupGate && index === 0 && entry.type === groupGateEntryType) continue;
       throw new InvalidError(
         `unexpected recorder entry type "${String(entry.type)}" at seq ${String(entry.seq)}`,
       );

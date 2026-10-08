@@ -17,6 +17,7 @@ const ATTACK_FIXTURE_PARTS: [&[u8]; 7] = [
     include_bytes!("../../fixtures/receipt-groups-attacks.zip.part06"),
 ];
 const MATRIX_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-matrix.zip.gz");
+const V2_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-v2.zip");
 
 fn attack_fixture() -> Vec<u8> {
     ATTACK_FIXTURE_PARTS.concat()
@@ -474,7 +475,7 @@ fn apply_mutation(dir: &std::path::Path, op: &Value) {
 fn shared_mutation_vectors_match_the_go_verdict() {
     let vectors: Value = serde_json::from_str(MUTATION_VECTORS).unwrap();
     let vectors = vectors.as_array().unwrap();
-    assert_eq!(vectors.len(), 23);
+    assert_eq!(vectors.len(), 25);
     let cases_root = fixture_from("cases", MATRIX_FIXTURE);
     let scratch = cases_root.parent().unwrap().join("mutated");
     for item in vectors {
@@ -524,11 +525,45 @@ fn duplicate_signed_native_ael_run_is_rejected_end_to_end() {
     );
 }
 
+// The production shape: groups written by the real server emitter path, with a
+// v2 evidence receipt on every shard, a transition from a closed, crashed or
+// torn-and-sealed predecessor, and tamper cases whose recorder hash chain (and
+// checkpoint, seal and transition signatures) were recomputed, so only the
+// signed content is wrong. Every verdict is the Go verifier's own.
+#[test]
+fn shared_v2_group_corpus_matches_the_go_verdict() {
+    let cases_root = fixture_from("cases", V2_FIXTURE);
+    let cases: Value =
+        serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
+            .unwrap();
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 20);
+    for item in cases {
+        let name = item["name"].as_str().unwrap();
+        let keys = item["trusted_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let report = verify_receipt_group(
+            &cases_root.join(name),
+            item["group_id"].as_str().unwrap(),
+            &keys,
+        );
+        assert_eq!(
+            report.verdict,
+            item["expected"].as_str().unwrap(),
+            "{name}: {report:?}"
+        );
+    }
+}
+
 // Go reads only the python copy, so a drifted copy elsewhere would silently
 // exercise different bytes.
 #[test]
 fn shared_group_fixtures_are_byte_identical_across_language_directories() {
-    let copies: [(&str, [&[u8]; 3]); 2] = [
+    let copies: [(&str, [&[u8]; 3]); 3] = [
         (
             "receipt-groups-matrix.zip.gz",
             [
@@ -543,6 +578,14 @@ fn shared_group_fixtures_are_byte_identical_across_language_directories() {
                 include_bytes!("../../python/tests/fixtures/receipt-groups.zip"),
                 include_bytes!("../../ts/tests/fixtures/receipt-groups.zip"),
                 include_bytes!("fixtures/receipt-groups.zip"),
+            ],
+        ),
+        (
+            "receipt-groups-v2.zip",
+            [
+                include_bytes!("../../python/tests/fixtures/receipt-groups-v2.zip"),
+                include_bytes!("../../ts/tests/fixtures/receipt-groups-v2.zip"),
+                include_bytes!("fixtures/receipt-groups-v2.zip"),
             ],
         ),
     ];

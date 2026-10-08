@@ -183,10 +183,19 @@ def verify_ael_run(
     if not raw.endswith(b"\n") and require_close:
         raise AELVerificationError("native AEL stream has torn final line")
     complete = raw.rsplit(b"\n", 1)[0] if b"\n" in raw else b""
+    fragment = raw[len(complete) + 1 :] if b"\n" in raw else raw
+    # Go reads each record through a 1 MiB buffer: a terminated line may be at
+    # most 1 MiB including its newline, and an unterminated fragment must still
+    # fit the buffer. The bound applies before any trimming, so a blank line
+    # cannot slip past it.
+    if len(fragment) >= _MAX_RECORD_BYTES:
+        raise AELVerificationError("native AEL record exceeds limit")
     previous = _ZERO
     count = 0
     closed = False
     for line in complete.split(b"\n") if complete else []:
+        if len(line) + 1 > _MAX_RECORD_BYTES:
+            raise AELVerificationError("native AEL stream has torn or oversized line")
         line = trim_go_space_bytes(line)
         if not line:
             continue

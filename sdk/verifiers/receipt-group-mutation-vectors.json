@@ -391,5 +391,41 @@
   "trusted_keys": [
    "1aaea7096d31f52ba505f814967375c1d14bc84237b97f6399316e3376b00371"
   ]
+ },
+ {
+  "name": "torn-tail-in-another-group-shard-a",
+  "case": "neighbor-group__intact__present",
+  "note": "an unterminated final write in a closed neighbor group's shard (not the predecessor, not the open group) is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.34444d1fd42f828f07f633fd1a3d387d-0.jsonl",
+    "op": "append",
+    "arg": "7b22746f726e223a"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a3c1883b420f1b8d42658bb680bfae4d",
+  "trusted_keys": [
+   "19a3181ed25c5df75d053f6aa0ef17905c5eddba1ab3c08f46a180e9dd06b71a",
+   "1a3547d0960e0fc9b477a0d94fe283ba8dd14d9f42c477ed8ca29d25cb769a43"
+  ]
+ },
+ {
+  "name": "torn-tail-in-another-group-shard-b",
+  "case": "neighbor-group__intact__present",
+  "note": "an unterminated final write in a closed neighbor group's shard (not the predecessor, not the open group) is invalid",
+  "ops": [
+   {
+    "file": "evidence-proxy.run.3d5e9178c3529598f04db6c32226a0cc-0.jsonl",
+    "op": "append",
+    "arg": "7b22746f726e223a"
+   }
+  ],
+  "expected": "GROUP_INVALID",
+  "group_id": "a3c1883b420f1b8d42658bb680bfae4d",
+  "trusted_keys": [
+   "19a3181ed25c5df75d053f6aa0ef17905c5eddba1ab3c08f46a180e9dd06b71a",
+   "1a3547d0960e0fc9b477a0d94fe283ba8dd14d9f42c477ed8ca29d25cb769a43"
+  ]
  }
 ]

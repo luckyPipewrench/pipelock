@@ -448,6 +448,15 @@ def _validate_predecessor_claim(
         )
 
 
+def _session_control(receipt: Any) -> dict[str, Any]:
+    """Return a receipt's session_control object, or {} for any other shape."""
+    if not isinstance(receipt, dict):
+        return {}
+    record = receipt.get("action_record")
+    control = record.get("session_control") if isinstance(record, dict) else None
+    return control if isinstance(control, dict) else {}
+
+
 def _record_hash(entry: dict[str, Any], detail_raw: bytes) -> str:
     version = entry.get("v")
     fields: list[str] = [
@@ -593,6 +602,15 @@ def _read_session_evidence(
                     raise GroupVerificationError(
                         "receipt shard session inventory recorder hash mismatch"
                     )
+                detail = entry.get("detail")
+                if (
+                    entry.get("type") in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}
+                    and isinstance(detail, dict)
+                    and "ext" in detail
+                ):
+                    ext_bytes = recorder_line_ext_bytes(text)
+                    if ext_bytes is not None:
+                        entry["detail"] = SourcedReceipt(detail, ext_bytes)
                 entries.append(entry)
         # An empty file is no entries, as in Go's session walker; only a
         # session with no entries at all is invalid.
@@ -1150,6 +1168,40 @@ def _verify_ael_inventory(
                 raise GroupVerificationError(
                     "receipt group session has a torn tail in another group"
                 )
+        # Go walks each inventory session's whole v1 chain against the trusted
+        # set (a group shard against its opening signer), so a forged or
+        # untrusted receipt anywhere in a neighbor or legacy session fails the
+        # group, not only its session_open.
+        v1_chain: list[dict[str, Any]] = []
+        for position, entry in enumerate(entries):
+            # Go's group recorder walker accepts the gate only as the first
+            # entry of a session; anywhere else it is an unknown entry type.
+            if entry.get("type") == "receipt_group_v1" and position != 0:
+                raise GroupVerificationError(
+                    f"inventory receipt session {session!r}: unexpected recorder "
+                    f"entry type 'receipt_group_v1' at seq {position}"
+                )
+            if entry.get("type") not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
+                continue
+            detail = entry.get("detail")
+            if not isinstance(detail, dict):
+                raise GroupVerificationError("invalid receipt session inventory detail")
+            # Go counts an entry as a v1 receipt by its entry type, never by the
+            # record_type the detail claims.
+            if entry.get("type") == ACTION_ENTRY_TYPE:
+                v1_chain.append(detail)
+        if v1_chain:
+            pin = (
+                gate_open["signer_key"]
+                if gate_open is not None
+                else ",".join(sorted(trusted))
+            )
+            walked = verify_evidence_chain(v1_chain, pin)
+            if not walked.get("valid"):
+                raise GroupVerificationError(
+                    f"inventory receipt session {session!r} chain invalid: "
+                    f"{walked.get('error', 'invalid')}"
+                )
         signed_open_seen = False
         for entry in entries:
             if entry.get("type") not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
@@ -1157,7 +1209,7 @@ def _verify_ael_inventory(
             receipt = entry.get("detail")
             if not isinstance(receipt, dict):
                 raise GroupVerificationError("invalid receipt session inventory detail")
-            control = receipt.get("action_record", {}).get("session_control", {})
+            control = _session_control(receipt)
             if control.get("kind") != "session_open":
                 continue
             if signed_open_seen:
@@ -1166,7 +1218,9 @@ def _verify_ael_inventory(
                 )
             signed_open_seen = True
             signer = receipt.get("signer_key")
-            run = control.get("open", {}).get("run_nonce")
+            open_body = control.get("open")
+            open_body = open_body if isinstance(open_body, dict) else {}
+            run = open_body.get("run_nonce")
             if (
                 not isinstance(signer, str)
                 or signer not in trusted
@@ -1181,7 +1235,7 @@ def _verify_ael_inventory(
                 raise GroupVerificationError(
                     "native AEL run has no signed session owner"
                 )
-            binding = control.get("open", {}).get("group_binding")
+            binding = open_body.get("group_binding")
             if (gate is None and binding is not None) or (
                 gate is not None
                 and (binding != gate or signer != gate_open["signer_key"])
@@ -1194,11 +1248,8 @@ def _verify_ael_inventory(
             completed = any(
                 entry.get("type") == "transcript_root"
                 or (
-                    isinstance(entry.get("detail"), dict)
-                    and entry["detail"]
-                    .get("action_record", {})
-                    .get("session_control", {})
-                    .get("kind")
+                    entry.get("type") in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}
+                    and _session_control(entry.get("detail")).get("kind")
                     == "session_close"
                 )
                 for entry in entries
@@ -1396,6 +1447,14 @@ def verify_receipt_group(
     ) as exc:
         result["verdict"] = GROUP_INVALID
         result["error"] = str(exc)
+        return result
+    except Exception as exc:  # noqa: BLE001 - untrusted input must never traceback
+        # The group directory is untrusted. A shape the checks above did not
+        # anticipate is an invalid group, never a crash with no verdict.
+        result["verdict"] = GROUP_INVALID
+        result["error"] = (
+            f"receipt group verification failed: {type(exc).__name__}: {exc}"
+        )
         return result
 
 

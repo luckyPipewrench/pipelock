@@ -476,7 +476,7 @@ def _apply_mutation(directory: Path, op: dict) -> None:
 def test_shared_mutation_vectors_match_the_go_verdict(tmp_path: Path) -> None:
     """Every verdict was produced by the Go CLI on the same mutated directory."""
     vectors = json.loads(MUTATION_VECTORS.read_text())
-    assert len(vectors) == 23
+    assert len(vectors) == 25
     with zipfile.ZipFile(
         io.BytesIO(gzip.decompress(MATRIX_FIXTURES.read_bytes()))
     ) as archive:
@@ -528,10 +528,77 @@ def test_duplicate_signed_native_ael_run_is_rejected_end_to_end(tmp_path: Path) 
     assert "duplicate signed native AEL run" in result["error"], result
 
 
+V2_CORPUS = Path(__file__).parent / "fixtures" / "receipt-groups-v2.zip"
+
+
+def test_shared_v2_group_corpus_matches_the_go_verdict(tmp_path: Path) -> None:
+    """Groups from the real server emitter path, with v2 evidence receipts.
+
+    Covers a transition from a closed, crashed or torn-and-sealed predecessor,
+    and tamper cases whose recorder hash chain (and checkpoint, seal and
+    transition signatures) were recomputed, so only the signed content is
+    wrong. Every verdict is the Go verifier's own.
+    """
+    with zipfile.ZipFile(V2_CORPUS) as archive:
+        archive.extractall(tmp_path)
+    cases = json.loads((tmp_path / "cases.json").read_text())
+    assert len(cases) == 20
+    for item in cases:
+        result = verify_receipt_group(
+            tmp_path / "cases" / item["name"], item["group_id"], item["trusted_keys"]
+        )
+        assert result["verdict"] == item["expected"], (item["name"], result)
+
+
+def test_unexpected_exception_from_untrusted_input_is_group_invalid(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """A shape no check anticipated is an invalid group, never a traceback."""
+    from pipelock_aarp_verify import group as group_module
+
+    with zipfile.ZipFile(V2_CORPUS) as archive:
+        archive.extractall(tmp_path)
+    cases = {c["name"]: c for c in json.loads((tmp_path / "cases.json").read_text())}
+    item = cases["v2-n2-closed"]
+    directory = tmp_path / "cases" / item["name"]
+    assert (
+        verify_receipt_group(directory, item["group_id"], item["trusted_keys"])[
+            "verdict"
+        ]
+        == GROUP_VALID
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AttributeError("'list' object has no attribute 'get'")
+
+    monkeypatch.setattr(group_module, "_verify_ael_inventory", explode)
+    result = verify_receipt_group(directory, item["group_id"], item["trusted_keys"])
+    assert result["verdict"] == GROUP_INVALID
+    assert "AttributeError" in result["error"]
+    code = main(
+        [
+            "receipt",
+            str(directory),
+            "--group",
+            item["group_id"],
+            "--key",
+            ",".join(item["trusted_keys"]),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1
+    assert json.loads(captured.out)["verdict"] == GROUP_INVALID
+
+
 def test_shared_group_fixtures_are_byte_identical_across_language_directories() -> None:
     """Go reads only the python copy; other copies must be the same bytes."""
     languages = Path(__file__).parents[2]
-    for name in ("receipt-groups-matrix.zip.gz", "receipt-groups.zip"):
+    for name in (
+        "receipt-groups-matrix.zip.gz",
+        "receipt-groups.zip",
+        "receipt-groups-v2.zip",
+    ):
         reference = hashlib.sha256(
             (languages / "python" / "tests" / "fixtures" / name).read_bytes()
         ).hexdigest()

@@ -436,6 +436,8 @@ export function receiptGroupEvidencePresent(dir: string): boolean {
   return false;
 }
 
+const maxAELRecordBytes = 1 << 20;
+
 interface AELHead {
   finalSeq: number;
   finalHash: string;
@@ -470,10 +472,18 @@ async function verifyAELRun(run: string, signer: string, requireClose = true): P
   const lines = stream.toString("utf8").split("\n");
   const final = lines.pop();
   if (requireClose && final !== "") throw new Error("native AEL stream has torn line");
+  // Go reads each record through a 1 MiB buffer: a terminated line may be at
+  // most 1 MiB including its newline, and an unterminated fragment must still
+  // fit the buffer. The bound applies before any trimming, so a blank line
+  // cannot slip past it.
+  if (final !== undefined && Buffer.byteLength(final) >= maxAELRecordBytes)
+    throw new Error("native AEL record exceeds limit");
   let prev = "0".repeat(64),
     count = 0,
     closed = false;
   for (const rawLine of lines) {
+    if (Buffer.byteLength(rawLine) + 1 > maxAELRecordBytes)
+      throw new Error("native AEL stream has torn or oversized line");
     const line = trimGoSpace(rawLine);
     if (line === "") continue;
     if (closed) throw new Error("native AEL has empty line or records after close");
@@ -736,15 +746,7 @@ async function verifyShard(open: GroupOpen, openHash: string, index: number): Pr
         "receipt group has evidence after transcript root instead of final checkpoint",
       );
     if (entry.type === "checkpoint") {
-      const d = object(entry.detail, "checkpoint detail");
-      const sig = Buffer.from(str(d.signature, "signature"), "hex");
-      if (
-        sig.length !== 64 ||
-        !(await ed25519.verifyAsync(sig, Buffer.from(String(entry.prev_hash)), pub, {
-          zip215: false,
-        }))
-      )
-        throw new Error("receipt group checkpoint signature failed");
+      await verifyGroupCheckpoint(entry, pub);
       checkpointHash = String(entry.hash);
     }
     if (entry.type === "transcript_root") {
@@ -761,18 +763,20 @@ async function verifyShard(open: GroupOpen, openHash: string, index: number): Pr
       rooted = true;
       rootHash = String(entry.hash);
     }
-    if (entry.type === "action_receipt" || entry.type === "evidence_receipt") {
+    // Only a v1 action receipt carries the opening signer, the session open
+    // and the session close, as in Go's VerifyGroupShardHead. An
+    // evidence_receipt (v2) entry is checked by the v2 chain below, and it may
+    // sit between the signed close and the transcript root.
+    if (entry.type === "action_receipt") {
       if (rooted || closed) throw new Error("receipt group has action after signed close");
       const r = (entry.detail ?? {}) as Receipt;
       if ((r.signer_key ?? "").toLowerCase() !== open.signer_key)
         throw new Error("group receipt signer differs from opening signer");
-      if (entry.type === "action_receipt") {
-        count++;
-        finalSeq = Number(r.action_record?.chain_seq);
-        finalHash = receiptHash(r);
-      }
+      count++;
+      finalSeq = Number(r.action_record?.chain_seq);
+      finalHash = receiptHash(r);
+      const ctrl = r.action_record?.session_control as Record<string, unknown> | undefined;
       if (count === 1) {
-        const ctrl = r.action_record?.session_control as Record<string, unknown> | undefined;
         const op = ctrl?.open as Record<string, unknown> | undefined;
         if (
           ctrl?.kind !== "session_open" ||
@@ -783,7 +787,6 @@ async function verifyShard(open: GroupOpen, openHash: string, index: number): Pr
           throw new Error("receipt group first signed receipt lacks matching session open");
         run = String(op.run_nonce ?? "");
       }
-      const ctrl = r.action_record?.session_control as Record<string, unknown> | undefined;
       if (ctrl?.kind === "session_close") {
         closed = true;
         closeHash = receiptHash(r);
@@ -829,6 +832,43 @@ async function verifyShard(open: GroupOpen, openHash: string, index: number): Pr
     native_ael_record_count: ael.recordCount,
   };
 }
+// verifyGroupCheckpoint checks one checkpoint's signature over its prev_hash
+// against the group signer, as Go's verifyGroupCheckpoint does.
+async function verifyGroupCheckpoint(entry: RecorderEntry, pub: Buffer): Promise<void> {
+  const d = object(entry.detail, "checkpoint detail");
+  const sig = Buffer.from(str(d.signature, "signature"), "hex");
+  if (
+    sig.length !== 64 ||
+    !(await ed25519.verifyAsync(sig, Buffer.from(String(entry.prev_hash)), pub, {
+      zip215: false,
+    }))
+  )
+    throw new Error("receipt group checkpoint signature failed");
+}
+
+// verifyGroupPrefixIntegrity applies the checks Go's recovery prefix verifier
+// makes on every entry of an unclosed predecessor: the gate is covered by the
+// next checkpoint, every checkpoint is signed by the group signer, and the v2
+// evidence chain verifies under that signer.
+async function verifyGroupPrefixIntegrity(
+  lines: ReadonlyArray<{ entry: RecorderEntry }>,
+  evidence: Receipt[],
+  signerKey: string,
+): Promise<void> {
+  const gate = lines[0]?.entry as (RecorderEntry & { hash?: string }) | undefined;
+  const next = lines[1]?.entry as (RecorderEntry & { hash?: string }) | undefined;
+  if (lines.length < 2 || next?.type !== "checkpoint" || next.prev_hash !== gate?.hash)
+    throw new Error("predecessor group gate lacks covering checkpoint");
+  const pub = Buffer.from(signerKey, "hex");
+  for (const line of lines) {
+    if (line.entry.type === "checkpoint") await verifyGroupCheckpoint(line.entry, pub);
+  }
+  if (evidence.length) {
+    const ev = await verifyChain(evidence, evidenceChainKey(signerKey, evidence));
+    if (!ev.valid) throw new Error(`predecessor v2 chain failed: ${ev.error ?? "invalid"}`);
+  }
+}
+
 function safeValue(value: unknown): number {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
   if (value instanceof RawNumber) return safeNumber(value, "integer");
@@ -970,15 +1010,21 @@ async function verifyAELInventory(
     const outer = verifyRecorderChain(lines);
     if (outer) throw new Error(`inventory receipt session ${JSON.stringify(session)}: ${outer}`);
     const receipts = evidence.typed.action;
+    // Go's walker treats a session with no v1 receipt as an empty, valid chain
+    // (a session holding only v2 evidence receipts, or a bare group gate).
     const pin =
       signer || (receipts.length ? str(receipts[0]?.signer_key, "inventory signer key") : "");
-    if (!trusted.has(pin))
-      throw new Error(`inventory receipt session ${JSON.stringify(session)} signer is not trusted`);
-    const verified = receipts.length ? await verifyChain(receipts, pin) : undefined;
-    if (!verified?.valid)
-      throw new Error(
-        `inventory receipt session ${JSON.stringify(session)} chain invalid: ${verified?.error ?? "empty chain"}`,
-      );
+    if (receipts.length) {
+      if (!trusted.has(pin))
+        throw new Error(
+          `inventory receipt session ${JSON.stringify(session)} signer is not trusted`,
+        );
+      const verified = await verifyChain(receipts, pin);
+      if (!verified.valid)
+        throw new Error(
+          `inventory receipt session ${JSON.stringify(session)} chain invalid: ${verified.error ?? "invalid"}`,
+        );
+    }
     let signedOpenSeen = false;
     for (const r of receipts) {
       const ctrl = r.action_record?.session_control as Record<string, unknown> | undefined;
@@ -1145,6 +1191,7 @@ async function recoveredAELRun(
     prefix.map((line) => line.entry),
     true,
   );
+  await verifyGroupPrefixIntegrity(prefix, typed.evidence, predecessor.signer_key);
   const v1 = await verifyChain(typed.action, predecessor.signer_key);
   const last = typed.action[typed.action.length - 1];
   if (
@@ -1282,6 +1329,7 @@ async function verifyUnsealedPredecessor(
     throw new Error("predecessor shard has no signed group gate");
   const outer = verifyRecorderChain(lines);
   if (outer) throw new Error(`predecessor recorder chain failed: ${outer}`);
+  await verifyGroupPrefixIntegrity(lines, evidence.typed.evidence, open.signer_key);
   const receipts = evidence.typed.action;
   if (!receipts.length) throw new Error("predecessor shard has no signed receipts");
   const verified = await verifyChain(receipts, open.signer_key);

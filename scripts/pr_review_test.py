@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -6317,6 +6318,30 @@ class RateLimitRetryTest(OfflineReviewTestCase):
         }
         return resp
 
+    def test_wall_clock_interrupts_activity_without_retry_and_restores_handler(self):
+        previous = signal.getsignal(signal.SIGALRM)
+        activity = []
+        def trickling(*_args, **_kwargs):
+            limit = time.monotonic() + 1
+            tick = threading.Event()
+            while time.monotonic() < limit:
+                activity.append(1)
+                tick.wait(0.005)
+            return self._response(200)
+        with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), mock.patch.object(
+            pr_review, "llm_timeout_for", return_value=0.05
+        ), mock.patch.object(pr_review.requests, "post", side_effect=trickling) as post:
+            with self.assertRaises(pr_review.ModelTimeout):
+                pr_review.call_model("s", "u", "default", "judge", "corr")
+        self.assertEqual(post.call_count, 1)
+        self.assertTrue(activity)
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+        with pr_review.provider_attempt_deadline(1):
+            pass
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
     def test_429_is_retried_then_succeeds(self):
         ok = self._response(200)
         with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
@@ -6547,6 +6572,41 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         self.assertEqual(pr_review.derive_state(progress), "partial")
         self.assertEqual([phase for phase, _ in captured], ["judge", "judge-repair"])
 
+    def test_invalid_response_reports_decision_failure(self):
+        candidate = self.candidate()
+        for first in ({"findings": []}, pr_review.ModelOutputError("malformed")):
+            with self.subTest(first=type(first).__name__):
+                options = pr_review.JudgeOptions()
+                result, _, _ = self.judge([candidate], responses=[first, pr_review.ModelTimeout("unknown")], options=options)
+                self.assertEqual(result[5], [candidate])
+                self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].reason,
+                    "No schema-valid final decision was returned.")
+
+    def test_source_header_text_does_not_split_candidate_evidence(self):
+        candidate = self.candidate()
+        sibling = self.candidate(path="sibling.go")
+        owner = pr_review.candidate_identifier(candidate)
+        other = pr_review.candidate_identifier(sibling)
+        for verdict in ("keep", "drop"):
+            with self.subTest(verdict=verdict):
+                options = pr_review.JudgeOptions()
+                evidence = (f"CANDIDATE {owner} REPOSITORY EVIDENCE\n"
+                    f'helper.go:1: text = "CANDIDATE {other} REQUESTED EVIDENCE"\n'
+                    "helper.go:2: deciding_guard()\n"
+                    f"CANDIDATE {other} REPOSITORY EVIDENCE\n"
+                    "sibling.go:9: sibling_only()\n")
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                    pr_review, "fetch_file_context", return_value=None
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=(evidence, False)), mock.patch.object(
+                    pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                ):
+                    result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
+                record = options.evidence[owner]
+                self.assertEqual(result[4], [])
+                self.assertEqual(result[0], [candidate] if verdict == "keep" else [])
+                self.assertIn(("helper.go", self.binding.head_sha, 2, 2), record.locations)
+                self.assertFalse(any(path == "sibling.go" for path, *_ in record.locations))
+
     def test_changed_hunk_fallback_requires_candidate_owned_repository_code(self):
         candidate = self.candidate(900)
         sibling = self.candidate(1, path="sibling.go")
@@ -6635,6 +6695,38 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         context, source = pr_review._candidate_context(self.candidate(None, title="unclassified claim"), "package example", [], 300)
         self.assertEqual(source, "file-start-fallback")
         self.assertIn("fallback", context)
+
+    def test_file_start_fallback_needs_owned_deciding_evidence(self):
+        candidate = self.candidate(None)
+        for verdict in ("keep", "drop"):
+            options = pr_review.JudgeOptions()
+            result, _, _ = self.judge([candidate], content="package example", options=options,
+                responses=[{"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}])
+            self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].source, "file-start-fallback")
+            self.assertEqual(result[4], [candidate])
+            self.assertEqual(result[0], [])
+
+    def test_definition_search_cannot_prove_complete_absence_when_incomplete(self):
+        owner = pr_review.candidate_identifier(self.candidate())
+        for cut, failed in ((True, False), (False, True), (False, False)):
+            with self.subTest(cut=cut, failed=failed):
+                record = pr_review.CandidateEvidence(owner)
+                with mock.patch.object(pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")), mock.patch.object(
+                    pr_review, "_cached_evidence_search", side_effect=[([], False, False), ([], cut, failed)]
+                ):
+                    text, incomplete = pr_review.requested_repository_evidence(self.binding,
+                        {0: pr_review.JudgeDecision("unresolved", reason="definition needed", requests=[pr_review.EvidenceRequest(search="GuardValue")])},
+                        owners={0: owner}, records={owner: record})
+                self.assertEqual(incomplete, cut or failed)
+                self.assertEqual(bool(record.requested_proofs), not (cut or failed))
+                self.assertEqual("<requested-search-truncated>" in text, cut or failed)
+
+    def test_synthesis_http_failure_still_judges_collected_candidates(self):
+        state, progress, phases = self.run_discovery(2, pr_review.ModelHTTPError("HTTP 500"), fail_phase="cross-file-synthesis")
+        self.assertEqual(state, "partial")
+        self.assertIn("judge", phases)
+        self.assertTrue(progress.findings)
+        self.assertIn("cross-file synthesis was incomplete or invalid", progress.incomplete_reasons)
 
     def test_deleted_and_missing_anchors_retain_bound_diff_evidence(self):
         diff = "diff --git a/sample.go b/sample.go\n--- a/sample.go\n+++ /dev/null\n@@ -10,1 +0,0 @@\n-GuardValue()\n"
@@ -6946,7 +7038,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                 self.assertLessEqual(pr_review.serialized_prompt_tokens(system, user, mode, phase), pr_review.input_limits(mode)[0])
                 evidence = prompt["cross_file_repository_evidence"]
                 self.assertEqual(len(prompt["candidates"]), len(candidates))
-                sections = re.split(r"(?=CANDIDATE )", evidence)
+                sections = re.split(r"(?m)(?=^CANDIDATE [0-9a-f]{16} )", evidence)
                 for candidate in candidates:
                     owned = "\n".join(section for section in sections if section.startswith(f"CANDIDATE {pr_review.candidate_identifier(candidate)} "))
                     self.assertIn("helper.go:11:   return true // deciding_guard", owned)
@@ -6961,11 +7053,11 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
 
     def test_requested_fact_must_reach_the_repair_prompt(self):
         candidate = self.candidate(line=1)
-        for scenario in ("failed", "exhausted", "no-matches", "path", "mixed", "omitted", "already-owned", "unseen-line"):
+        for scenario in ("failed", "exhausted", "no-matches", "path", "path-header", "mixed", "omitted", "already-owned", "unseen-line"):
             for verdict in ("keep", "drop"):
                 with self.subTest(scenario=scenario, verdict=verdict):
                     requests = [{"search": "ConsumerValidate"}]
-                    if scenario in {"path", "mixed", "omitted"}:
+                    if scenario in {"path", "path-header", "mixed", "omitted"}:
                         requests = [{"path": "consumer.go", "line": 1}]
                     if scenario == "mixed":
                         requests.insert(0, {"path": "missing.go", "line": 1})
@@ -6974,6 +7066,8 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                     first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer required", "requests": requests}]}
                     repaired = {"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
                     def read(_root, _revision, path, _deadline):
+                        if scenario == "path-header" and path == "consumer.go":
+                            return 'text = "CANDIDATE 0123456789abcdef REQUESTED EVIDENCE"\nreturn true // deciding code\n'
                         return None if path == "missing.go" else "return true // deciding code\n"
                     options = pr_review.JudgeOptions()
                     with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(

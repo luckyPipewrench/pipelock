@@ -16,6 +16,7 @@ import math
 import os
 import re
 import selectors
+import signal
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ import unicodedata
 import urllib.parse
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1232,6 +1234,21 @@ def retry_after_seconds(header: str | None) -> float | None:
     return min(seconds, MODEL_RATE_LIMIT_MAX_SLEEP_SECONDS)
 
 
+@contextmanager
+def provider_attempt_deadline(seconds: float):
+    """Interrupt even a trickling response within the Linux runner's allowance."""
+    def expired(_signum, _frame):
+        raise ModelTimeout("provider attempt exceeded its wall-clock allowance")
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def call_model(
     system: str,
     user: str,
@@ -1279,12 +1296,13 @@ def call_model(
             # The connect bound is separate from the read bound so a provider
             # that never answers the connection fails in seconds and leaves the
             # read timeout to the one retry that can actually use it.
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=(min(MODEL_CONNECT_TIMEOUT_SECONDS, request_timeout), request_timeout),
-            )
+            with provider_attempt_deadline(request_timeout):
+                response = requests.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=(min(MODEL_CONNECT_TIMEOUT_SECONDS, request_timeout), request_timeout),
+                )
         except requests.ConnectTimeout as exc:
             # The only failure that proves the request was never delivered: the
             # connection itself was never established, so the provider cannot
@@ -3280,7 +3298,7 @@ def judge_findings(
             record = options.evidence[candidate_identifier(candidates[index])]
             # Save only the evidence actually sent, including its owner.
             evidence_by_index[index] = evidence
-            sections = re.split(r"(?=CANDIDATE )", evidence)
+            sections = re.split(r"(?m)(?=^CANDIDATE [0-9a-f]{16} )", evidence)
             owned = "\n".join(section for section in sections if section.startswith(f"CANDIDATE {record.identifier} "))
             for path, number in re.findall(r"(?m)^([^<>\n]+):(\d+): ", owned):
                 location = (path, binding.head_sha, int(number), int(number))
@@ -3363,10 +3381,10 @@ def judge_findings(
         if decision is not None:
             # Missing head context cannot be settled from a fallback hunk alone.
             # Decisive repository excerpts remain usable even if other reads fail.
-            owner_sections = re.split(r"(?=CANDIDATE )", evidence_by_index.get(index, ""))
+            owner_sections = re.split(r"(?m)(?=^CANDIDATE [0-9a-f]{16} )", evidence_by_index.get(index, ""))
             own_evidence = "\n".join(section for section in owner_sections if section.startswith(f"CANDIDATE {record.identifier} "))
             supplied_code = bool(re.search(r"(?m)^[^<>\n]+:\d+: ", own_evidence))
-            if record.source in {"unavailable", "changed-hunk-fallback"} and not supplied_code and decision.verdict in {"keep", "drop"}:
+            if record.source in {"unavailable", "changed-hunk-fallback", "file-start-fallback"} and not supplied_code and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Candidate path or anchor was unavailable; decisive repository evidence is still missing.")
             elif index in asked and not asked[index] and not any(proof in own_evidence for proof in record.requested_proofs) and decision.verdict in {"keep", "drop"}:
                 decision = JudgeDecision("unresolved", reason="Repository evidence the first pass required was not supplied; that fact is still missing.")
@@ -3378,7 +3396,8 @@ def judge_findings(
         elif index in admitted:
             record.verdict = "invalid"
             # Retain a primary missing-fact explanation even if repair fails.
-            record.reason = record.reason or "No schema-valid final decision was returned."
+            if record.reason == CandidateEvidence.reason:
+                record.reason = "No schema-valid final decision was returned."
             invalid.append(finding)
         else:
             record.reason = "Serialized prompt allowance exhausted before this candidate was admitted."

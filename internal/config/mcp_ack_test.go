@@ -157,3 +157,41 @@ func TestValidateMCPToolScanningWarnsWhenAcksAreInert(t *testing.T) {
 		t.Fatalf("no inert-acknowledgment warning in %v", warnings)
 	}
 }
+
+func TestValidateReloadReportsAcknowledgmentChanges(t *testing.T) {
+	enabled := func(acks ...MCPAcknowledgedFinding) *Config {
+		c := Defaults()
+		c.MCPToolScanning.Enabled = true
+		c.MCPToolScanning.Action = ActionBlock
+		c.MCPToolScanning.AcknowledgedFindings = acks
+		return c
+	}
+	find := func(ws []ReloadWarning, substr string) (ReloadWarning, bool) {
+		for _, w := range ws {
+			if w.Field == "mcp_tool_scanning.acknowledged_findings" && strings.Contains(w.Message, substr) {
+				return w, true
+			}
+		}
+		return ReloadWarning{}, false
+	}
+	e := validAck()
+	changed := validAck()
+	changed.Reason = "re-reviewed"
+
+	if w, ok := find(ValidateReload(enabled(), enabled(e)), "added"); !ok || w.Disposition == ReloadWarningDispositionAdvisory {
+		t.Fatalf("added acknowledgment: %+v ok=%v, want a non-advisory warning", w, ok)
+	}
+	if _, ok := find(ValidateReload(enabled(e), enabled(changed)), "changed"); !ok {
+		t.Fatal("changed acknowledgment not reported")
+	}
+	w, ok := find(ValidateReload(enabled(e), enabled()), "removed")
+	if !ok || w.Disposition != ReloadWarningDispositionAdvisory {
+		t.Fatalf("removed acknowledgment: %+v ok=%v, want an advisory", w, ok)
+	}
+	if strings.Contains(w.Message, "blocked") || !strings.Contains(w.Message, "mcp_tool_scanning.action") {
+		t.Fatalf("removal message must say the finding follows the action, not claim a block: %q", w.Message)
+	}
+	if _, ok := find(ValidateReload(enabled(e), enabled(e)), ""); ok {
+		t.Fatal("unchanged acknowledgments reported a change")
+	}
+}

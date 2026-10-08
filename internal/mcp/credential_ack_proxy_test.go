@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,6 +176,69 @@ func TestHTTPTransportsCarryAcknowledgmentBinding(t *testing.T) {
 					t.Fatalf("forwarded = %v, want %v: %s", forwarded, tc.forward, got)
 				}
 			})
+		}
+	}
+}
+
+// The HTTP listener reads the tool configuration per request, so a reload
+// that revokes or changes an acknowledgment applies to the very next
+// tools/list, and restoring it applies again.
+func TestHTTPListenerAcknowledgmentFollowsReload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+proxyAckTool+`]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	clock := func() time.Time { return time.Date(2026, 10, 8, 15, 30, 0, 0, time.UTC) }
+	withAcks := func(acks ...config.MCPAcknowledgedFinding) *tools.ToolScanConfig {
+		return &tools.ToolScanConfig{Action: config.ActionBlock, CredentialAcks: acks, Now: clock}
+	}
+	var current atomic.Pointer[tools.ToolScanConfig]
+	current.Store(withAcks(proxyAckEntry(t)))
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:       testScannerWithAction(t, config.ActionWarn),
+		ToolCfgFn:     current.Load,
+		ServerName:    proxyAckServer,
+		ServerBinding: proxyAckBinding,
+	})
+	list := func() bool {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Contains(string(body), `"store_secret"`)
+	}
+	expired := proxyAckEntry(t)
+	expired.Expires = "2026-10-07"
+	changed := proxyAckEntry(t)
+	changed.Occurrences[0].End--
+	steps := []struct {
+		name    string
+		cfg     *tools.ToolScanConfig
+		forward bool
+	}{
+		{"acknowledged", withAcks(proxyAckEntry(t)), true},
+		{"revoked by reload", withAcks(), false},
+		{"restored", withAcks(proxyAckEntry(t)), true},
+		{"expired by reload", withAcks(expired), false},
+		{"changed by reload", withAcks(changed), false},
+	}
+	for _, step := range steps {
+		current.Store(step.cfg)
+		if got := list(); got != step.forward {
+			t.Fatalf("%s: forwarded = %v, want %v", step.name, got, step.forward)
 		}
 	}
 }

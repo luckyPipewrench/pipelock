@@ -120,8 +120,8 @@ provider and a model available to that provider. It rejects native delegation
 as the wrong path. Preserve its verdict and exact binary/revision identities.
 
 Pipelock auto-enables MCP input, tool-definition, and tool-policy scanning when
-no explicit configuration overrides them. The tested default actions were
-input `block`, response `block`, tool definitions `warn`, and tool policy
+no explicit configuration overrides them. The effective no-config actions are
+input `block`, response `warn`, tool definitions `warn`, and tool policy
 `warn`. The routing checks above do not establish each scanner's behavior.
 Send scanner-specific MCP probes through the wrapper and check the results:
 
@@ -130,8 +130,11 @@ Send scanner-specific MCP probes through the wrapper and check the results:
   with `dlp_match`, before the upstream tool executes.
 - A tool definition matching a tool-scanning rule produces the expected warning.
 - A call matching a tool-policy rule produces the configured policy decision.
-- A tool response matching a response-scanning rule is blocked before its
-  content reaches the provider.
+- Under the no-config defaults, a tool response matching a response-scanning
+  rule produces a warning and is forwarded.
+- To test response blocking, explicitly set `response_scanning.action: block`
+  in the configuration passed to the wrapper with `--config`. Repeat the probe
+  and confirm the matching response content does not reach the provider.
 
 Use synthetic fixtures, never real credentials. Exercise tool-definition,
 tool-policy, and response probes against a disposable test MCP server through

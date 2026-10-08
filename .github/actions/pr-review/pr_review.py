@@ -4377,6 +4377,12 @@ def run_review(
         # Synthesis failure leaves coverage incomplete, but does not invalidate
         # candidates from successful chunks or valid salvaged response members.
         # The judge still verifies each premise against immutable source.
+        # Salvage from a failed response and its schema repair can return the same
+        # candidate twice; a duplicate would take two judge slots and publish twice.
+        distinct: dict[str, Finding] = {}
+        for item in candidates:
+            distinct.setdefault(candidate_identifier(item), item)
+        candidates[:] = distinct.values()
         judge_ready = bool(candidates)
         judge_deadline = provider_deadline - llm_call_budget_for(mode, "judge-repair")
         if judge_ready and not budget_allows(judge_deadline, mode, "judge"):
@@ -4477,7 +4483,12 @@ def run_review(
         # exception is not known to be safe to publish; the traceback goes to
         # the log. A published failed verdict is the result, so the step stays
         # green; if publishing it fails, the finally raises and the step fails.
-        record_unfinished_run(progress, f"the review stopped on an unexpected {type(exc).__name__}")
+        record_unfinished_run(
+            progress,
+            "provider refused the configured credential or account; no automatic retry was attempted"
+            if isinstance(exc, ProviderConfigurationError)
+            else f"the review stopped on an unexpected {type(exc).__name__}",
+        )
         emit(traceback.format_exc().rstrip(), stderr=True)
         return derive_state(progress), progress
     except BaseException as exc:

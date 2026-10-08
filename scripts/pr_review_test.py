@@ -6685,15 +6685,15 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             prompt = pr_review.build_review_prompt(pr_review.classify_units([source, *other]), chunk)
             self.assertLessEqual(pr_review.serialized_prompt_tokens(*prompt, "default", "review-chunk"), pr_review.FAST_INPUT_TOKEN_BUDGET)
 
-    def run_discovery(self, count, failure, *, spare=True):
+    def run_discovery(self, count, failure, *, spare=True, fail_phase="review-chunk-1"):
         diff = "".join(f"diff --git a/{n}.go b/{n}.go\n--- a/{n}.go\n+++ b/{n}.go\n@@ -1 +1 @@\n-old\n+new\n" for n in range(count))
         phases = []
         raw_candidate = {"severity": "medium", "path": "0.go", "line": 1, "title": "retained claim", "why": "premise", "fix": "repair", "needs_verification": False}
         def model(_system, user, _mode, phase, *_args, **kwargs):
             phases.append(phase)
+            if phase == fail_phase and isinstance(failure, Exception):
+                raise failure
             if phase == "review-chunk-1":
-                if isinstance(failure, Exception):
-                    raise failure
                 return {"findings": [raw_candidate, {"invalid": True}], "changes": []}
             if phase == "cross-file-synthesis":
                 return {"findings": []}
@@ -6738,6 +6738,41 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         self.assertEqual(state, "failed")
         self.assertEqual(progress.reviewed_units, 0)
         self.assertEqual(phases, ["review-chunk-1"])
+
+    def test_credential_refusal_after_discovery_is_named_and_keeps_candidates(self):
+        state, progress, phases = self.run_discovery(2, pr_review.ProviderConfigurationError("refused"), fail_phase="judge")
+        self.assertEqual(state, "failed")
+        self.assertIn("judge", phases)
+        self.assertTrue(any("provider refused the configured credential" in reason for reason in progress.incomplete_reasons))
+        self.assertFalse(any("unexpected" in reason for reason in progress.incomplete_reasons))
+        self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+
+    def test_salvage_from_a_failed_response_and_its_repair_is_judged_once(self):
+        diff = "".join(f"diff --git a/{n}.go b/{n}.go\n--- a/{n}.go\n+++ b/{n}.go\n@@ -1 +1 @@\n-old\n+new\n" for n in range(2))
+        cand = {"severity": "medium", "path": "0.go", "line": 1, "title": "claim", "why": "premise", "fix": "repair", "needs_verification": False}
+        judged = []
+        def model(_system, user, _mode, phase, *_args, **_kwargs):
+            if phase.startswith("review-chunk-1"):
+                return {"findings": [cand, {"invalid": True}], "changes": []}
+            if phase.startswith("judge"):
+                items = json.loads(user)["candidates"]
+                judged.append(len(items))
+                return {"findings": [{"index": item["index"], "verdict": "keep", "reason": "ok"} for item in items]}
+            index = int(phase.split("-")[2]) - 1
+            return {"findings": [], "changes": [{"path": f"{index}.go", "summary": "changed"}]}
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+            pr_review, "units_per_chunk", return_value=1
+        ), mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "k")
+        ), mock.patch.object(pr_review, "fetch_local_bound_diff", return_value=diff), mock.patch.object(
+            pr_review, "head_has_moved", return_value=False
+        ), mock.patch.object(pr_review, "get_pull_binding", return_value=self.binding), mock.patch.object(
+            pr_review, "fetch_file_context", return_value="deciding code\n"
+        ), mock.patch.object(pr_review, "call_model", side_effect=model), mock.patch.object(pr_review, "update_comment"):
+            state, progress = pr_review.run_review("owner/repo", "42", "dummy", "default", "c" * 40, binding=self.binding, status_comment_id=7)
+        self.assertEqual(state, "partial")
+        self.assertEqual(judged, [1])
+        self.assertEqual(len(progress.findings), 1)
 
     def test_slow_discovery_releases_unneeded_phases_and_preserves_publication(self):
         clock = [0.0]

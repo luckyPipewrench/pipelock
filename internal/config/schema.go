@@ -1044,7 +1044,8 @@ type WebSocketProxy struct {
 	// client-to-server text frames may legitimately carry opaque high-entropy
 	// content. The exemption applies only to per-message content entropy; body
 	// DLP, prompt-injection scanning, address protection, and CEE still run.
-	ContentEntropyExclusions []string `yaml:"content_entropy_exclusions"`
+	// Each entry is a host string or a {host, expires, reason, owner} mapping.
+	ContentEntropyExclusions []EntropyHostExclusion `yaml:"content_entropy_exclusions"`
 }
 
 // ReverseProxy configures a generic HTTP reverse proxy with body scanning.
@@ -1477,19 +1478,26 @@ type RequestBodyScanning struct {
 	ContentEntropyAction      string                            `yaml:"content_entropy_action"`                                                     // warn, block
 	ContentEntropyThreshold   float64                           `yaml:"content_entropy_threshold"`                                                  // Shannon entropy bits per character (0,8]; non-positive fails validation while enabled
 	ContentEntropyMinLength   int                               `yaml:"content_entropy_min_length"`
-	ContentEntropyExclusions  []string                          `yaml:"content_entropy_exclusions"`  // host patterns exempt from per-message content entropy only
-	ContentEntropyWarnRoutes  []RequestBodyEntropyWarnRoute     `yaml:"content_entropy_warn_routes"` // exact HTTPS routes where entropy findings warn; all other scanners remain enforced
+	ContentEntropyExclusions  []EntropyHostExclusion            `yaml:"content_entropy_exclusions"`  // host patterns (string, or mapping with expires) exempt from per-message content entropy only
+	ContentEntropyWarnRoutes  []RequestBodyEntropyWarnRoute     `yaml:"content_entropy_warn_routes"` // exact-path or path-prefix HTTPS routes where entropy findings warn; all other scanners remain enforced
 	SigV4CredentialRoutes     []RequestBodySigV4CredentialRoute `yaml:"sigv4_credential_routes"`     // exact HTTPS body routes allowed to carry structurally valid presigned URLs
 	TrustedHosts              []string                          `yaml:"trusted_hosts"`               // destinations where request-body injection findings and fully redacted critical DLP follow the configured action instead of hard blocking; scanning still runs
 }
 
 // RequestBodyEntropyWarnRoute is a narrow, expiring operator exception for
 // legitimate opaque uploads. It changes only request-body entropy findings
-// from block to warn on one exact HTTPS destination. Content-Type is an
+// from block to warn on one HTTPS destination. Content-Type is an
 // operator-intent constraint, not proof that attacker-controlled bytes are safe.
+//
+// A route names exactly one of Path (one exact canonical path, non-textual
+// content types only) or PathPrefix (a path-segment prefix, for service-issued
+// routes with a per-request segment; textual content types are allowed because
+// the payloads such routes exist for are textual). Either way only entropy
+// findings downgrade: DLP and every other scanner stay enforced.
 type RequestBodyEntropyWarnRoute struct {
 	Host         string   `yaml:"host"`
-	Path         string   `yaml:"path"`
+	Path         string   `yaml:"path,omitempty"`
+	PathPrefix   string   `yaml:"path_prefix,omitempty" json:"path_prefix,omitempty"`
 	ContentTypes []string `yaml:"content_types"`
 	Methods      []string `yaml:"methods,omitempty"`
 	Reason       string   `yaml:"reason"`

@@ -53,4 +53,8 @@ to confirm which identity a proxy-side operator command will affect.
 as proxied traffic (`bound` for a per-agent listener or `source_cidrs` match;
 a forged `X-Pipelock-Agent` header cannot present as `bound`). The text
 output does not print it. For a self-declared caller the session key is the
-bare client IP. `unknown` means the record has no valid provenance grade: it was not recorded, or an empty or unrecognized value was normalized to `unknown`. A caller without an agent header is still graded `self-declared`, not `unknown`.
+bare client IP, unless `default_agent_identity` is set with
+`bind_default_agent_identity` off: then a caller that sends `X-Pipelock-Agent`
+reports the same `<default>|<client address>` key as one that does not, while
+`agent` and `provenance` still show the identity it declared. That key is the
+one to pass to `pipelock session reset`. `unknown` means the record has no valid provenance grade: it was not recorded, or an empty or unrecognized value was normalized to `unknown`. A caller without an agent header is still graded `self-declared`, not `unknown`.

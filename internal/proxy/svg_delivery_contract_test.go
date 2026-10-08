@@ -12,11 +12,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
@@ -159,14 +162,30 @@ func runSVGPath(t *testing.T, path string, mod func(*config.Config), handler htt
 		t.Cleanup(upstream.Close)
 		addr, cleanup := setupForwardProxy(t, configure)
 		t.Cleanup(cleanup)
-		response := doGet(t, proxyClient(addr), upstream.URL)
+		// Contract cases push multi-megabyte bodies through the full scanner,
+		// which under the race detector outlasts doGet's five-second deadline.
+		proxyURL, err := url.Parse("http://" + addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 60 * time.Second}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request to %s: %v", upstream.URL, err)
+		}
 		defer func() { _ = response.Body.Close() }()
 		return readAll(response)
 	case "tls interception":
 		upstream := httptest.NewTLSServer(handler)
 		t.Cleanup(upstream.Close)
-		cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+		cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 		configure(cfg)
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
 		p, err := New(cfg, logger, sc, m)
 		if err != nil {
 			t.Fatalf("New: %v", err)

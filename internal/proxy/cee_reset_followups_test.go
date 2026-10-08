@@ -54,7 +54,7 @@ func TestResetCEEStateClearsFoldedSelfDeclaredKey(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	const agent, ip = "myagent", "10.0.0.5"
-	liveKey := ceeSessionKey(agent, ip, envelope.ActorAuthSelfDeclared)
+	liveKey := ceeSessionKey(nil, agent, ip, envelope.ActorAuthSelfDeclared)
 	if liveKey == CeeSessionKey(agent, ip) {
 		t.Fatalf("test premise broken: live key %q equals raw key; a self-declared agent must fold", liveKey)
 	}
@@ -81,7 +81,7 @@ func TestResetCEEStateClearsFoldedSelfDeclaredKey(t *testing.T) {
 // clear the folded entropy state.
 func TestResetCEEStateClearsFoldedEntropyKey(t *testing.T) {
 	const agent, ip = "myagent", "10.0.0.5"
-	liveKey := ceeSessionKey(agent, ip, envelope.ActorAuthSelfDeclared)
+	liveKey := ceeSessionKey(nil, agent, ip, envelope.ActorAuthSelfDeclared)
 
 	et := scanner.NewEntropyTracker(8, 60)
 	t.Cleanup(et.Close)
@@ -105,7 +105,7 @@ func TestResetCEEStateClearsBoundNamedKey(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	const agent, ip = "myagent", "10.0.0.7"
-	liveKey := ceeSessionKey(agent, ip, envelope.ActorAuthBound)
+	liveKey := ceeSessionKey(nil, agent, ip, envelope.ActorAuthBound)
 	if liveKey != agent+"|"+ip {
 		t.Fatalf("bound live key = %q, want %q", liveKey, agent+"|"+ip)
 	}
@@ -140,8 +140,8 @@ func TestResetCEEStateBodyJSONPrefixDoesNotReachSiblingSession(t *testing.T) {
 	t.Cleanup(fb.Close)
 
 	// Both sessions are anonymous (folded to IP), so their live keys are the IPs.
-	victimKey := ceeSessionKey("", "10.0.0.5", envelope.ActorAuthSelfDeclared)
-	siblingKey := ceeSessionKey("", "10.0.0.50", envelope.ActorAuthSelfDeclared)
+	victimKey := ceeSessionKey(nil, "", "10.0.0.5", envelope.ActorAuthSelfDeclared)
+	siblingKey := ceeSessionKey(nil, "", "10.0.0.50", envelope.ActorAuthSelfDeclared)
 	if victimKey != "10.0.0.5" || siblingKey != "10.0.0.50" {
 		t.Fatalf("unexpected keys victim=%q sibling=%q", victimKey, siblingKey)
 	}

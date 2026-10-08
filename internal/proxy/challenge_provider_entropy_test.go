@@ -59,7 +59,7 @@ func TestChallengeProviderEntropyExemption(t *testing.T) {
 
 	t.Run("body entropy exclusion includes the challenge host beside an operator list", func(t *testing.T) {
 		c := config.Defaults()
-		c.RequestBodyScanning.ContentEntropyExclusions = []string{"api.vendor.example"}
+		c.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions("api.vendor.example")
 		var req BodyScanRequest
 		applyContentEntropyConfig(&req, c)
 		found := map[string]bool{}
@@ -103,7 +103,7 @@ func TestChallengeProviderBodyEntropyIsExemptButDLPIsNot(t *testing.T) {
 	cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
 	cfg.RequestBodyScanning.ContentEntropyMinLength = 32
 	cfg.RequestBodyScanning.Action = config.ActionBlock
-	cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"api.vendor.example"}
+	cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions("api.vendor.example")
 	addBodyDLPTestPattern(cfg)
 	opaque := `{"blob":"` + opaqueHighEntropyBodyValue() + `"}`
 

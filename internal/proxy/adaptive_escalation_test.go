@@ -124,7 +124,7 @@ func TestURLHeuristicsDoNotRaiseAdaptiveScore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			key := "entropy-" + tc.name
 			p.recordSessionActivityWithUserAgent(sessionActivityOptions{ClientIP: "192.0.2.1", Agent: key, ActorAuth: envelope.ActorAuthBound, Hostname: "api.vendor.example", RequestID: "req", Result: tc.result, Config: cfg, Logger: logger, DeferClean: true})
-			rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(key, "192.0.2.1", envelope.ActorAuthBound))
+			rec := p.sessionMgrPtr.Load().GetOrCreate(sessionKeyFor(nil, key, "192.0.2.1", envelope.ActorAuthBound))
 			if got := rec.ThreatScore() > 0; got != tc.wantScore {
 				t.Fatalf("adaptive score positive = %v, want %v (score %.1f)", got, tc.wantScore, rec.ThreatScore())
 			}
@@ -181,7 +181,7 @@ func TestForwardHTTP_BoundOpaqueTrafficDoesNotEscalate(t *testing.T) {
 	} {
 		send(handler, body, fmt.Sprintf("opaque request %d", i))
 	}
-	key := sessionKeyFor("test-browser", adaptiveSessionKeyHTTPTest, envelope.ActorAuthBound)
+	key := sessionKeyFor(nil, "test-browser", adaptiveSessionKeyHTTPTest, envelope.ActorAuthBound)
 	if upstreamHits.Load() != 3 {
 		t.Fatalf("upstream hits = %d, want 3", upstreamHits.Load())
 	}
@@ -435,7 +435,7 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	folded := sm.GetOrCreate(sessionKeyFor("caller-a", adaptiveSessionKeyLoopback, envelope.ActorAuthSelfDeclared))
+	folded := sm.GetOrCreate(sessionKeyFor(nil, "caller-a", adaptiveSessionKeyLoopback, envelope.ActorAuthSelfDeclared))
 	if got := folded.EscalationLevel(); got == 0 {
 		t.Fatalf("rotating self-declared agents did not cross the shared adaptive escalation threshold (score %.2f)", folded.ThreatScore())
 	}
@@ -443,7 +443,7 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 		t.Fatal("self-declared agent name created an independent adaptive session")
 	}
 	for _, auth := range []envelope.ActorAuth{envelope.ActorAuthBound, envelope.ActorAuthConfigDefault} {
-		if sessionKeyFor("caller-a", adaptiveSessionKeyLoopback, auth) == sessionKeyFor("caller-b", adaptiveSessionKeyLoopback, auth) {
+		if sessionKeyFor(nil, "caller-a", adaptiveSessionKeyLoopback, auth) == sessionKeyFor(nil, "caller-b", adaptiveSessionKeyLoopback, auth) {
 			t.Fatalf("%s identities must keep separate adaptive buckets", auth)
 		}
 	}

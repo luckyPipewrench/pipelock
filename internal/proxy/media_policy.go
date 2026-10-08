@@ -35,26 +35,92 @@ func isSVGContentType(contentType string) bool {
 	return ok && essence == svgMediaType
 }
 
-// responseHeadersDeclareSVG applies the Fetch standard's "extract a MIME
-// type" to every Content-Type field value: the values are combined and split
-// on commas outside quoted strings, invalid entries and */* are skipped, and
-// the LAST valid essence wins. A client therefore renders
-// "text/plain, image/svg+xml", or two separate Content-Type fields, as SVG
-// even though the first value, which is all Header.Get returns, is inert.
+// responseHeadersDeclareSVG reports whether the browser-visible MIME type of a
+// response is SVG. A client renders "text/plain, image/svg+xml", or two
+// separate Content-Type fields, as SVG even though the first value, which is
+// all Header.Get returns, is inert.
 func responseHeadersDeclareSVG(headers http.Header) bool {
+	essence, ok := shieldMediaTypeEssence(responseMIMEType(headers))
+	return ok && essence == svgMediaType
+}
+
+// responseMIMEType derives the MIME type a browser uses for a response from
+// EVERY Content-Type field value, following the Fetch standard's "extract a
+// MIME type": the values are combined and split on commas outside quoted
+// strings; entries that do not parse and */* are skipped; the LAST valid entry
+// wins. The charset of the winning entry is reset when its essence differs
+// from the previously accepted one and carried forward when the essence is the
+// same but the winner declares none. "text/plain;charset=gbk, text/html" is
+// therefore text/html, while "text/html;charset=gbk, text/html" keeps the gbk
+// charset.
+//
+// A single field value is returned as written so downstream classification of
+// ordinary responses is unchanged. It returns "" when no value parses; callers
+// that must keep the first-value behaviour for that case use
+// responseContentType instead.
+func responseMIMEType(headers http.Header) string {
 	values := headers.Values("Content-Type")
 	if len(values) == 0 {
-		return false
+		return ""
 	}
-	last := ""
-	for _, segment := range splitHeaderValuesOutsideQuotes(values) {
+	segments := splitHeaderValuesOutsideQuotes([]string{strings.Join(values, ", ")})
+	last, lastEssence, charset := "", "", ""
+	charsetPresent := false
+	for _, segment := range segments {
 		essence, ok := shieldMediaTypeEssence(segment)
 		if !ok || essence == "*/*" {
 			continue
 		}
-		last = essence
+		own, hasCharset := responseMIMECharset(segment)
+		if essence != lastEssence {
+			charset = own
+			charsetPresent = hasCharset
+		}
+		last, lastEssence = segment, essence
+		if !hasCharset && charsetPresent {
+			// Same essence, no charset of its own: the earlier one is kept.
+			// Insert before malformed trailing parameters so a quoted value
+			// cannot swallow the carried declaration.
+			base, params, hasParams := strings.Cut(strings.TrimFunc(segment, isHTTPSpace), ";")
+			encoded := charset
+			if charset == "" {
+				encoded = `""`
+			}
+			for i := 0; i < len(charset); i++ {
+				if !shieldMIMETypeTokenByte(charset[i]) {
+					encoded = "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(charset) + "\""
+					break
+				}
+			}
+			last = strings.TrimRight(base, " \t\r\n") + ";charset=" + encoded
+			if hasParams {
+				last += ";" + params
+			}
+		}
 	}
-	return last == svgMediaType
+	if last == "" {
+		return ""
+	}
+	if len(segments) == 1 {
+		return last
+	}
+	return strings.TrimFunc(last, isHTTPSpace)
+}
+
+// responseContentType is the browser-visible Content-Type for Browser Shield
+// and media policy. Scan exemptions require responseMIMEEssencesAgree; taint
+// observations use responseTaintContentType to retain every media declaration.
+// When extraction fails it returns the first raw value to preserve the handling
+// of empty or unparseable headers.
+func responseContentType(headers http.Header) string {
+	if derived := responseMIMEType(headers); derived != "" {
+		return derived
+	}
+	return headers.Get("Content-Type")
+}
+
+func isHTTPSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
 }
 
 func splitHeaderValuesOutsideQuotes(values []string) []string {
@@ -539,4 +605,89 @@ func logMediaExposureIfPresent(logger mediaPolicyLogger, ctx audit.LogContext, v
 		return
 	}
 	logger.LogMediaExposure(ctx, verdict.Exposure.ToAuditInfo(transport))
+}
+
+// responseMIMEEssencesAgree permits scan relaxation only when every valid
+// declaration names the same type. Invalid entries do not establish a type.
+func responseMIMEEssencesAgree(headers http.Header) bool {
+	last := ""
+	for _, segment := range splitHeaderValuesOutsideQuotes(headers.Values("Content-Type")) {
+		essence, ok := shieldMediaTypeEssence(segment)
+		if !ok || essence == "*/*" {
+			continue
+		}
+		if last != "" && last != essence {
+			return false
+		}
+		last = essence
+	}
+	return last != ""
+}
+
+// responseTaintContentType preserves media exposure even when another client
+// interprets a conflicting response as text. Source risk is independent of MIME.
+func responseTaintContentType(headers http.Header) string {
+	for _, segment := range splitHeaderValuesOutsideQuotes(headers.Values("Content-Type")) {
+		if essence, ok := shieldMediaTypeEssence(segment); ok && isBinaryMIME(essence) {
+			return essence
+		}
+	}
+	return responseContentType(headers)
+}
+
+// responseMIMECharset reads MIME parameters using the browser grammar: quoted
+// values consume embedded semicolons, malformed parameters are ignored, and
+// the first valid charset wins. An empty quoted charset is still present.
+func responseMIMECharset(value string) (string, bool) {
+	_, rest, found := strings.Cut(value, ";")
+	for found {
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		end := strings.IndexAny(rest, ";=")
+		if end < 0 {
+			break
+		}
+		name := strings.ToLower(rest[:end])
+		if rest[end] == ';' {
+			rest = rest[end+1:]
+			continue
+		}
+		rest = rest[end+1:]
+		var parameter string
+		if strings.HasPrefix(rest, "\"") {
+			rest = rest[1:]
+			var b strings.Builder
+			for len(rest) > 0 {
+				c := rest[0]
+				rest = rest[1:]
+				if c == '"' {
+					break
+				}
+				if c == '\\' && len(rest) > 0 {
+					c = rest[0]
+					rest = rest[1:]
+				}
+				b.WriteByte(c)
+			}
+			parameter = b.String()
+			_, rest, found = strings.Cut(rest, ";")
+		} else {
+			parameter, rest, found = strings.Cut(rest, ";")
+			parameter = strings.TrimRight(parameter, " \t\r\n")
+			if parameter == "" {
+				continue
+			}
+		}
+		valid := name != ""
+		for i := 0; i < len(name); i++ {
+			valid = valid && shieldMIMETypeTokenByte(name[i])
+		}
+		for i := 0; i < len(parameter); i++ {
+			c := parameter[i]
+			valid = valid && (c == '\t' || c >= 0x20 && c <= 0x7e || c >= 0x80)
+		}
+		if valid && name == "charset" {
+			return parameter, true
+		}
+	}
+	return "", false
 }

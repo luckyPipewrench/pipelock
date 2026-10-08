@@ -33,8 +33,8 @@ type taintDecision struct {
 	TaskOverrideApplied bool
 }
 
-func responseTaintSessionKey(agent, clientIP string, auth envelope.ActorAuth) string {
-	return ceeSessionKey(agent, clientIP, auth)
+func responseTaintSessionKey(cfg *config.Config, agent, clientIP string, auth envelope.ActorAuth) string {
+	return ceeSessionKey(cfg, agent, clientIP, auth)
 }
 
 func (p *Proxy) resolveTaintAsk(agent, target, method, reason string) (bool, string) {

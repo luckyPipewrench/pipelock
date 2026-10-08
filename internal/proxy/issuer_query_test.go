@@ -164,7 +164,7 @@ func TestIssuerQueryObservationScope(t *testing.T) {
 	}
 	request := &http.Request{URL: issuer}
 	response := &http.Response{Request: request, Header: http.Header{"Content-Type": {"application/json"}}}
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	check := func(name string, target *url.URL, session, param, value string, want bool) {
 		t.Helper()
 		if got := store.allows(session, target, param, value); got != want {
@@ -280,7 +280,7 @@ func TestIssuerQueryRelativeLinks(t *testing.T) {
 	ic := &InterceptContext{Proxy: p, Config: cfg, Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
 	request := &http.Request{URL: mustIssuerQueryURL(t, "https://api.vendor.example/v1/items")}
 	response := &http.Response{Request: request, Header: http.Header{"Content-Type": {"application/problem+json"}}}
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	value := issuedTestToken()
 	for _, tc := range []struct {
 		name, link, target string
@@ -368,7 +368,7 @@ func TestIssuerQueryResponseBoundaries(t *testing.T) {
 	request := &http.Request{URL: mustIssuerQueryURL(t, "https://api.vendor.example/list")}
 	value := issuedTestToken()
 	target := mustIssuerQueryURL(t, "https://api.vendor.example/page")
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	for _, tc := range []struct {
 		name, media, body string
 		responseRequest   *http.Request
@@ -429,7 +429,7 @@ func TestIssuerQueryStaleRuntimeAndNestedDocument(t *testing.T) {
 	value := issuedTestToken()
 	body := []byte(`{"data":[{"next":"/page?token=` + value + `"}]}`)
 	recordDeliveredIssuerQuery(ic, response, body, true)
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	target := mustIssuerQueryURL(t, "https://api.vendor.example/page")
 	if !store.allows(session, target, "token", value) {
 		t.Fatal("nested JSON continuation was not observed")
@@ -539,7 +539,7 @@ func TestIssuerQueryJSONPositions(t *testing.T) {
 			}
 			response := &http.Response{Request: &http.Request{URL: issuer}, Header: http.Header{"Content-Type": {"application/json"}}}
 			recordDeliveredIssuerQuery(ic, response, []byte(tc.body), true)
-			session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+			session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			target := mustIssuerQueryURL(t, "https://api.vendor.example"+tc.path)
 			if got := store.allows(session, target, "cursor", value); got != tc.want {
 				t.Fatalf("allowed=%v, want %v for body %s", got, tc.want, tc.body)
@@ -584,7 +584,7 @@ func TestIssuerQueryRedirectLocation(t *testing.T) {
 	t.Cleanup(p.Close)
 	ic := &InterceptContext{Proxy: p, Config: cfg, Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
 	request := &http.Request{URL: mustIssuerQueryURL(t, "https://login.vendor.example/authorize")}
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	value := issuedTestToken()
 	target := mustIssuerQueryURL(t, "https://login.vendor.example/u/login")
 	for _, tc := range []struct {

@@ -9776,14 +9776,14 @@ func TestValidate_RequestBodyContentEntropy(t *testing.T) {
 		{
 			name: "invalid body exclusion",
 			modify: func(cfg *Config) {
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"https://vendor.example/path"}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("https://vendor.example/path")
 			},
 			wantErr: "content_entropy_exclusions",
 		},
 		{
 			name: "invalid websocket exclusion",
 			modify: func(cfg *Config) {
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"api.*.example.com"}
+				cfg.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("api.*.example.com")
 			},
 			wantErr: "websocket_proxy.content_entropy_exclusions",
 		},
@@ -9845,14 +9845,14 @@ func TestReloadWarnings_RequestBodyContentEntropy(t *testing.T) {
 		{
 			name: "body exclusion added",
 			update: func(cfg *Config) {
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("uploads.vendor.example")
 			},
 			field: "request_body_scanning.content_entropy_exclusions",
 		},
 		{
 			name: "websocket exclusion added",
 			update: func(cfg *Config) {
-				cfg.WebSocketProxy.ContentEntropyExclusions = []string{"ws.vendor.example"}
+				cfg.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("ws.vendor.example")
 			},
 			field: "websocket_proxy.content_entropy_exclusions",
 		},

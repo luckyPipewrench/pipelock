@@ -1142,16 +1142,20 @@ const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|giv
 // handoverEmphasisLead covers an emphasized or code-formatted imperative that
 // does not follow a clause boundary. After a symbol such as an emoji or a dash
 // ("🔑 **Request your API key**") the marker run opens the clause. After a word
-// ("Step 1 **Request your API key**") only a capitalized verb counts, which
-// keeps "The server will **request your API key**" descriptive.
-const handoverEmphasisLead = `(?:[^\w\s*_\x60]\s*[*_\x60]+\s*(?:request|ask\s+for)|\s[*_\x60]+\s*(?-i:Request|REQUEST|Ask\s+for|ASK\s+FOR))\s+`
+// it counts only after "Step" and a short step token or a label from a
+// closed list ("Step 1 **request your API key**", "Note **ask for your
+// password**"), in any case. The step token is matched loosely because
+// normalization turns digits into letters ("Step 1" arrives as "Step i"). Modal and other words are not on the list, so "The server will
+// **request your API key**" stays descriptive however it is capitalized.
+const handoverEmphasisLead = `(?:[^\w\s*_\x60]|\b(?:step\s+\w{1,4}|note|notes|important|action|todo|tip|warning|required|setup))\s*[*_\x60]+\s*(?:request|ask\s+for)\s+`
 
 // handoverRequestEnd keeps the credential noun from being the first word of a
 // longer noun phrase ("provide credentials rotation status"): the match must
-// finish at punctuation, the end of the text, a table cell "|", a closing
-// emphasis or code marker run followed by whitespace, or a connective that
-// continues the instruction.
-const handoverRequestEnd = `(?:[*_\x60]+(?:\s|$)|[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b))`
+// finish at punctuation, the end of the text, a table cell "|", or a
+// connective that continues the instruction, after any closing emphasis or
+// code markers. A closing marker alone does not end the noun: "Share your
+// **API key** rotation status" is the same noun phrase as the plain text.
+const handoverRequestEnd = `[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or

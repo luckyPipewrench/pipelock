@@ -79,8 +79,8 @@ func ceeKeyAgent(agent string, auth envelope.ActorAuth) string {
 // ceeSessionKey builds the partition-resistant CEE accumulation key. Untrusted
 // (attacker-variable) agent identities collapse to the client IP so a rotating
 // agent identifier cannot split a secret across buckets. See ceeKeyAgent.
-func ceeSessionKey(agent, clientIP string, auth envelope.ActorAuth) string {
-	return identitykey.CEESafeKey(agent, clientIP, auth)
+func ceeSessionKey(cfg *config.Config, agent, clientIP string, auth envelope.ActorAuth) string {
+	return sessionKeyFor(cfg, agent, clientIP, auth)
 }
 
 // maxCaptureSessionKeyLen aliases the writer-side ceiling so the
@@ -651,7 +651,11 @@ func ceeReceiptPattern(res ceeResult) string {
 // invites argument-order errors, and every added stream lengthened it further
 // (see the options-struct convention in CLAUDE.md).
 type ceeAdmitOptions struct {
-	ActorAuth            envelope.ActorAuth
+	ActorAuth envelope.ActorAuth
+	// IdentityConfig supplies default_agent_identity for the state projection
+	// (stateIdentity). It is the full config rather than Config, which is only
+	// the cross-request section.
+	IdentityConfig       *config.Config
 	Outbound             []byte
 	BodyFragmentPayloads map[string][]byte
 	BodyFragmentLeaves   map[string][]ceeJSONLeaf
@@ -671,7 +675,7 @@ type ceeAdmitOptions struct {
 }
 
 func ceeAdmit(ctx context.Context, opts ceeAdmitOptions) ceeResult {
-	identity := identitykey.NewCEEIdentity(opts.Agent, opts.ClientIP, opts.ActorAuth)
+	identity := newCEEIdentity(opts.IdentityConfig, opts.Agent, opts.ClientIP, opts.ActorAuth)
 	sessionKey := identity.Key()
 	outbound, bodyFragmentPayloads, keyPayload := opts.Outbound, opts.BodyFragmentPayloads, opts.KeyPayload
 	pathPayload := opts.PathPayload

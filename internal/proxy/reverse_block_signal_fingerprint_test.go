@@ -126,7 +126,7 @@ func TestReverseBlockSignalClassifiedDenialFingerprint(t *testing.T) {
 			if sm == nil {
 				t.Fatal("session manager not initialized")
 			}
-			sess := sm.GetOrCreate(sessionKeyFor("", clientHost, envelope.ActorAuthUnknown))
+			sess := sm.GetOrCreate(sessionKeyFor(nil, "", clientHost, envelope.ActorAuthUnknown))
 			scope := adaptiveScopeForHost(upstreamURL.Hostname())
 
 			for _, step := range tc.steps {

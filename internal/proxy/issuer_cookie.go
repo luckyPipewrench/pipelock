@@ -158,8 +158,18 @@ func issuerCookieEnabled(cfg *config.Config) bool {
 		cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders
 }
 
+// stateTrusted reports whether the tunnel's identity is trusted for issuer
+// evidence, judged on the same projected identity that keys the evidence. An
+// unbound default_agent_identity makes a header-carrying request share the
+// default's bucket, so it is trusted exactly as the no-header request already
+// in that bucket is; the declared grade on ic.ActorAuth is left as it was.
+func (ic *InterceptContext) stateTrusted() bool {
+	_, auth := stateIdentity(ic.Config, ic.Agent, ic.ActorAuth)
+	return auth.TrustedForIdentity()
+}
+
 func (ic *InterceptContext) issuerCookieStore() *issuerBoundCookieStore {
-	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.ActorAuth.TrustedForIdentity() {
+	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
@@ -178,7 +188,7 @@ func recordDeliveredIssuerCookies(ic *InterceptContext, request *http.Request, r
 	if store == nil {
 		return
 	}
-	store.observeResponse(sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth), request.URL, response.Header, delivered, time.Now())
+	store.observeResponse(sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth), request.URL, response.Header, delivered, time.Now())
 }
 
 type issuerCookieSession struct {

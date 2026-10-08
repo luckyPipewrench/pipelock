@@ -572,7 +572,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			})
 		}
 	}
-	if added := passthroughDomainsAdded(old.RequestBodyScanning.ContentEntropyExclusions, updated.RequestBodyScanning.ContentEntropyExclusions); len(added) > 0 {
+	if added := entropyHostExclusionsAdded(old.RequestBodyScanning.ContentEntropyExclusions, updated.RequestBodyScanning.ContentEntropyExclusions); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "request_body_scanning.content_entropy_exclusions",
 			Message: fmt.Sprintf("request body content entropy exclusions added: %s — per-message body/frame entropy bypassed for these hosts", strings.Join(added, ", ")),
@@ -590,7 +590,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("request body SigV4 credential routes added or materially changed: %s — matching bodies may carry a structurally valid presigned URL", strings.Join(added, ", ")),
 		})
 	}
-	if added := passthroughDomainsAdded(old.WebSocketProxy.ContentEntropyExclusions, updated.WebSocketProxy.ContentEntropyExclusions); len(added) > 0 {
+	if added := entropyHostExclusionsAdded(old.WebSocketProxy.ContentEntropyExclusions, updated.WebSocketProxy.ContentEntropyExclusions); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "websocket_proxy.content_entropy_exclusions",
 			Message: fmt.Sprintf("WebSocket content entropy exclusions added: %s — per-message WebSocket entropy bypassed for these hosts", strings.Join(added, ", ")),
@@ -1457,6 +1457,41 @@ func passthroughDomainsAdded(old, updated []string) []string {
 	return added
 }
 
+// entropyHostExclusionsAdded is passthroughDomainsAdded for entries that may
+// carry an expiry. An entry is new when its host, expiry or metadata is not in
+// the old list, so swapping an expiring entry for a permanent one, or
+// extending an expiry, is reported. Adding an expiry to a permanent entry is not.
+// A plain entry reports as its bare host, as before.
+func entropyHostExclusionsAdded(old, updated []EntropyHostExclusion) []string {
+	identity := func(e EntropyHostExclusion) string {
+		return strings.ToLower(e.Host) + "\x00" + e.Expires + "\x00" + e.Owner + "\x00" + e.Reason
+	}
+	oldSet := make(map[string]struct{}, len(old))
+	oldPermanent := make(map[string]struct{}, len(old))
+	for _, e := range old {
+		oldSet[identity(e)] = struct{}{}
+		if !e.temporary() {
+			oldPermanent[strings.ToLower(e.Host)] = struct{}{}
+		}
+	}
+	var added []string
+	for _, e := range updated {
+		if _, exists := oldSet[identity(e)]; exists {
+			continue
+		}
+		// Giving an existing permanent exclusion an expiry narrows it.
+		if _, wasPermanent := oldPermanent[strings.ToLower(e.Host)]; wasPermanent && e.temporary() {
+			continue
+		}
+		if e.Expires != "" {
+			added = append(added, fmt.Sprintf("%s (expires %s)", e.Host, e.Expires))
+		} else {
+			added = append(added, e.Host)
+		}
+	}
+	return added
+}
+
 func entropyWarnRoutesAdded(old, updated []RequestBodyEntropyWarnRoute) []string {
 	oldSet := make(map[string]struct{}, len(old))
 	for _, entry := range old {
@@ -1474,8 +1509,8 @@ func entropyWarnRoutesAdded(old, updated []RequestBodyEntropyWarnRoute) []string
 }
 
 func entropyWarnRouteIdentity(entry RequestBodyEntropyWarnRoute) string {
-	return fmt.Sprintf("host=%q path=%q methods=%q content_types=%q owner=%q reason=%q expires=%q",
-		strings.TrimSuffix(strings.ToLower(entry.Host), "."), entry.Path, entry.Methods, entry.ContentTypes, entry.Owner, entry.Reason, entry.Expires)
+	return fmt.Sprintf("host=%q path=%q path_prefix=%q methods=%q content_types=%q owner=%q reason=%q expires=%q",
+		strings.TrimSuffix(strings.ToLower(entry.Host), "."), entry.Path, entry.PathPrefix, entry.Methods, entry.ContentTypes, entry.Owner, entry.Reason, entry.Expires)
 }
 
 func sigV4CredentialRoutesAdded(old, updated []RequestBodySigV4CredentialRoute) []string {

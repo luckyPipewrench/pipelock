@@ -47,7 +47,7 @@ func shieldPartialResponseNeedsBlock(status int, headers http.Header, body []byt
 	if !active || status != http.StatusPartialContent || len(body) == 0 {
 		return false
 	}
-	return !shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(headers.Get("Content-Type"), body, headers))
+	return !shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(responseContentType(headers), body, headers))
 }
 
 type shieldUTF16Order uint8
@@ -460,18 +460,15 @@ func repairXMLUTF8Declaration(body string) string {
 // response representation self-consistent and removes validators for the
 // upstream bytes, without touching an unchanged response.
 func repairShieldResponseMetadata(headers http.Header, pipeline shield.PipelineType, body []byte, convertedToUTF8 bool) {
-	rawContentType := headers.Get("Content-Type")
+	// Set below replaces every Content-Type value, so the type it keeps must be
+	// the one a browser uses, not the first value Get returns; otherwise a
+	// rewritten "text/plain, text/html" response would be delivered as
+	// text/plain.
+	rawContentType := responseContentType(headers)
 	_, browserValidEssence := shieldMediaTypeEssence(rawContentType)
 	mediaType, params, err := mime.ParseMediaType(rawContentType)
 	if !browserValidEssence || err != nil || browserContentTypeIsGeneric(mediaType) {
 		mediaType = shieldMediaType(pipeline)
-		params = map[string]string{}
-	}
-	// SVG selected from a later Content-Type value keeps its SVG label. The
-	// first value is what Get returns, and Set would otherwise replace every
-	// value with it, delivering sanitized SVG labeled as another type.
-	if pipeline == shield.PipelineSVG && mediaType != svgMediaType && responseHeadersDeclareSVG(headers) {
-		mediaType = svgMediaType
 		params = map[string]string{}
 	}
 	if convertedToUTF8 {

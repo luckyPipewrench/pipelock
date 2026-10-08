@@ -713,7 +713,7 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // blocks return earlier, so without this a run of blocked reverse DLP requests
 // leaves the scoped adaptive score at zero and a caller probing URL- or
 // header-embedded secrets never escalates. It reuses the same helper, session
-// key (sessionKeyFor(agent, clientIP, actorAuth)) and upstream-host scope the end-of-handler
+// key (sessionKeyFor(cfg, agent, clientIP, actorAuth)) and upstream-host scope the end-of-handler
 // recording uses, so a blocked request records exactly once: it returns before
 // that later recording, never reaching it. A nil owner has no session manager
 // (matching the guard on the end-of-handler recording), and
@@ -784,7 +784,7 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 	if sm == nil {
 		return nil
 	}
-	key := sessionKeyFor(agent, clientIP, actorAuth)
+	key := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 	rec := sm.GetOrCreate(key)
 	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
@@ -1290,7 +1290,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		retainedAirlockSessions = retainAirlockSessions(retainedAirlockSessions,
 			requestSignalRecorders[0], requestSignalRecorders[1],
-			rp.owner.airlockSessionForIdentity(agent, clientIP, resolvedIdentity.Auth))
+			rp.owner.airlockSessionForIdentity(cfg, agent, clientIP, resolvedIdentity.Auth))
 		for _, airlockSess := range retainedAirlockSessions {
 			tier := airlockTierForScope(airlockSess, adaptiveScopeForHost(rp.upstream.Hostname()))
 			if allowed, reason := ClassifyAction(tier, r.Method, TransportReverse, false); !allowed {
@@ -1362,7 +1362,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// block_all: deny ALL traffic (including clean) when the session sits at
 		// an escalation level whose adaptive action resolves to block.
 		if sessionResult.Level > 0 && decide.UpgradeAction("", sessionResult.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP, actorAuth)
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 			recordAdaptiveUpgrade(rp.logger, rp.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionResult.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, adaptiveSessionDeny)
@@ -1390,7 +1390,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// introduced by a prior response on ANY transport is visible here.
 		var reverseTaintRec session.Recorder
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
-			sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, actorAuth))
+			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, actorAuth))
 			if sess == nil {
 				rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), sessionCapacityLayer, session.ErrCapacity.Error())
 				emitReverseReceipt(receipt.EmitOpts{
@@ -1472,7 +1472,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// feed body data; reverse can, so the forward HTTP path is the analog).
 		// extractOutboundPayloads re-wraps r.Body so the forwarded request still
 		// carries it to the upstream.
-		ceeSession := responseTaintSessionKey(agent, clientIP, actorAuth)
+		ceeSession := responseTaintSessionKey(cfg, agent, clientIP, actorAuth)
 		var ceePartitionKey []byte
 		if fb := rp.owner.FragmentBufferPtr().Load(); fb != nil {
 			ceePartitionKey = fb.PartitionKey()
@@ -2365,10 +2365,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// forward proxy, whose SSE scan runs synchronously so its single deferred
 	// observation already reflects the final promptHit.
 	sseHandlesResponseTaint := false
+	responseTaintType := responseTaintContentType(resp.Header)
 	if rp.owner != nil {
 		if sm := rp.owner.SessionMgrPtr().Load(); sm != nil {
 			agentAuth := agentAuthFromContext(resp.Request.Context())
-			if sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, envelope.ActorAuth(agentAuth))); sess != nil {
+			if sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, envelope.ActorAuth(agentAuth))); sess != nil {
 				responseTaintRec = sess
 			} else if cfg.Taint.Enabled {
 				return session.ErrCapacity
@@ -2377,7 +2378,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, resp.Header.Get("Content-Type"), "reverse_response", responsePromptHit)
+				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responsePromptHit)
 			}()
 		}
 	}
@@ -2397,7 +2398,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
-	isSVGResponse := isSVGContentType(resp.Header.Get("Content-Type")) || responseHeadersDeclareSVG(resp.Header)
+	isSVGResponse := isSVGContentType(responseContentType(resp.Header)) || responseHeadersDeclareSVG(resp.Header)
 	shieldActiveForHost := rp.shieldEngine != nil && cfg.BrowserShield.Enabled &&
 		!isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains)
 	blockShieldPartial := func(body []byte, complete bool) bool {
@@ -2424,7 +2425,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if blockShieldPartial(body, complete) {
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
 		}
-		oversizePipeline := detectShieldPipelineForResponse(resp.Header.Get("Content-Type"), body, resp.Header)
+		oversizePipeline := detectShieldPipelineForResponse(responseContentType(resp.Header), body, resp.Header)
 		if shieldLeavesBodyUnchanged(oversizePipeline) && !isSVGResponse {
 			rp.metrics.RecordShieldSkipped("non_shieldable_content")
 			return reverseShieldOversizeDecision{body: body}
@@ -2472,14 +2473,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
-			if isShieldUTF16Response(body, resp.Header.Get("Content-Type")) {
+			if isShieldUTF16Response(body, responseContentType(resp.Header)) {
 				return blockUninspectable(shieldUTF16ScanHeadBlockReason)
 			}
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
 			scanned := body[:shieldMaxBytes]
-			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
-			summary = partialShieldSummary(summary, scanned, resp.Header.Get("Content-Type"), bodyBytes, shieldMaxBytes)
+			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			summary = partialShieldSummary(summary, scanned, responseContentType(resp.Header), bodyBytes, shieldMaxBytes)
 			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
 				ParentActionID: actionID,
@@ -2502,7 +2503,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 		case config.ShieldOversizeWarn:
 			rp.logger.LogAnomaly(actx, "shield_oversize", reason, 0)
-			summary := partialShieldSummary(nil, body, resp.Header.Get("Content-Type"), bodyBytes, 0)
+			summary := partialShieldSummary(nil, body, responseContentType(resp.Header), bodyBytes, 0)
 			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
 				ParentActionID: actionID,
@@ -2608,7 +2609,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// isBinaryMIME only matches image/audio/video prefixes. The content-
 	// sniffing fallback inside applyMediaPolicy handles the rest, but only
 	// if we enter the branch in the first place.
-	mediaCT := resp.Header.Get("Content-Type")
+	mediaCT := responseContentType(resp.Header)
+	mediaTypesAgree := responseMIMEEssencesAgree(resp.Header)
 	mediaCTCanon := canonicalContentType(mediaCT)
 	mediaCTForPolicy := mediaCT
 	detectedMedia := false
@@ -2748,7 +2750,19 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				recordReverseOutcome(http.StatusForbidden, int64(len(body)), "media_policy")
 				return nil
 			}
-			if !isMediaType(verdict.MediaType) || isSVGResponse {
+			applyRelabeledContentType(resp.Header, verdict)
+			if verdict.StripResult != nil && verdict.StripResult.Changed() {
+				body = verdict.Body
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				// Clear body-derived validators. Content-MD5
+				// describes a hash of the upstream bytes - stale
+				// after metadata stripping, and a validating client
+				// or intermediary will reject the response.
+				resp.Header.Del("ETag")
+				resp.Header.Del("Digest")
+				resp.Header.Del("Content-MD5")
+			}
+			if !isMediaType(verdict.MediaType) || isSVGResponse || !mediaTypesAgree {
 				// Generic declarations may sniff as text, and SVG is shieldable
 				// even though its MIME type begins with image/. Preserve the
 				// buffered bytes and continue into response scanning and Shield.
@@ -2783,23 +2797,12 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				goto responseScanning
 			}
 			_ = resp.Body.Close()
-			applyRelabeledContentType(resp.Header, verdict)
-			if verdict.StripResult != nil && verdict.StripResult.Changed() {
-				body = verdict.Body
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-				// Clear body-derived validators. Content-MD5
-				// describes a hash of the upstream bytes - stale
-				// after metadata stripping, and a validating client
-				// or intermediary will reject the response.
-				resp.Header.Del("ETag")
-				resp.Header.Del("Digest")
-				resp.Header.Del("Content-MD5")
-			}
+
 			if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt && len(body) > responseBodyLimit {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
-					ContentType:       resp.Header.Get("Content-Type"),
+					ContentType:       responseContentType(resp.Header),
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -2837,7 +2840,7 @@ responseScanning:
 	// complete Browser Shield pass and the post-shield media check that can
 	// observe the shield proof. Streaming it here would deliver unsanitised
 	// active content, because isBinaryMIME treats every image/* as opaque.
-	if isBinaryMIME(mediaCT) && !isSVGResponse {
+	if isBinaryMIME(mediaCT) && !isSVGResponse && mediaTypesAgree {
 		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(responseBodyLimit)+1)
@@ -2867,7 +2870,7 @@ responseScanning:
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              revHost,
 					Path:              resp.Request.URL.EscapedPath(),
-					ContentType:       resp.Header.Get("Content-Type"),
+					ContentType:       responseContentType(resp.Header),
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -3186,7 +3189,7 @@ responseScanning:
 			if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 				Host:              revHost,
 				Path:              resp.Request.URL.EscapedPath(),
-				ContentType:       resp.Header.Get("Content-Type"),
+				ContentType:       responseContentType(resp.Header),
 				Header:            resp.Header,
 				ContentLength:     resp.ContentLength,
 				SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -3327,7 +3330,7 @@ responseScanning:
 			}
 		} else {
 			originalBodyBytes := len(body)
-			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
 			if shieldResult.uninspectableReason != "" {
 				rp.logger.LogBlocked(newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), shieldUninspectableLayer, shieldResult.uninspectableReason)
 				rp.metrics.RecordBlocked(revHost, shieldUninspectableLayer, 0, agent)
@@ -3368,7 +3371,7 @@ responseScanning:
 	}
 	if isSVGResponse {
 		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent})
-		verdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
+		verdict := applyMediaPolicy(cfg, responseContentType(resp.Header), body, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: resp.Request.URL.Hostname()})
 		if verdict.Blocked && svgRefusal != "" {
 			verdict.BlockReason = svgRefusal
 		}

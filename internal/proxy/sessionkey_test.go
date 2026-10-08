@@ -62,8 +62,8 @@ func TestSessionKeyFor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sessionKeyFor(tt.agent, tt.clientIP, tt.auth); got != tt.want {
-				t.Errorf("sessionKeyFor(%q, %q, %q) = %q, want %q", tt.agent, tt.clientIP, tt.auth, got, tt.want)
+			if got := sessionKeyFor(nil, tt.agent, tt.clientIP, tt.auth); got != tt.want {
+				t.Errorf("sessionKeyFor(nil, %q, %q, %q) = %q, want %q", tt.agent, tt.clientIP, tt.auth, got, tt.want)
 			}
 		})
 	}
@@ -74,8 +74,8 @@ func TestSessionKeyForFoldsRequestControlledNames(t *testing.T) {
 
 	for _, auth := range []envelope.ActorAuth{envelope.ActorAuthSelfDeclared, envelope.ActorAuthMatched, envelope.ActorAuthUnknown} {
 		t.Run(string(auth), func(t *testing.T) {
-			first := sessionKeyFor("caller-a", clientIP, auth)
-			second := sessionKeyFor("caller-b", clientIP, auth)
+			first := sessionKeyFor(nil, "caller-a", clientIP, auth)
+			second := sessionKeyFor(nil, "caller-b", clientIP, auth)
 			if first != clientIP || second != clientIP {
 				t.Fatalf("request-controlled names must fold to client key %q, got %q and %q", clientIP, first, second)
 			}
@@ -89,8 +89,8 @@ func TestSessionKeyForKeepsBoundAndSelfDeclaredIdentitySeparate(t *testing.T) {
 		clientIP = "192.0.2.10"
 	)
 
-	bound := sessionKeyFor(agent, clientIP, envelope.ActorAuthBound)
-	selfDeclared := sessionKeyFor(agent, clientIP, envelope.ActorAuthSelfDeclared)
+	bound := sessionKeyFor(nil, agent, clientIP, envelope.ActorAuthBound)
+	selfDeclared := sessionKeyFor(nil, agent, clientIP, envelope.ActorAuthSelfDeclared)
 	if bound != agent+"|"+clientIP {
 		t.Fatalf("bound key = %q, want %q", bound, agent+"|"+clientIP)
 	}

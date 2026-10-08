@@ -562,30 +562,16 @@ const (
 
 func toolsListShape(line []byte) (toolsListKind, json.RawMessage) {
 	var rpc jsonrpc.RPCResponse
-	if json.Unmarshal(line, &rpc) != nil || len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
+	if json.Unmarshal(line, &rpc) != nil {
 		return toolsListNone, nil
 	}
-	var probe struct {
-		Tools json.RawMessage `json:"tools"`
-	}
-	if json.Unmarshal(rpc.Result, &probe) != nil {
-		return toolsListNone, nil
-	}
-	toolsRaw := bytes.TrimSpace(probe.Tools)
-	if len(toolsRaw) == 0 || toolsRaw[0] != '[' {
-		return toolsListNone, rpc.ID
-	}
-	var elements []json.RawMessage
-	if json.Unmarshal(toolsRaw, &elements) != nil {
+	switch tools.ClassifyToolsListResult(rpc.Result) {
+	case tools.ToolsListValid:
+		return toolsListScannable, rpc.ID
+	case tools.ToolsListMalformed:
 		return toolsListUninspectable, rpc.ID
 	}
-	for _, element := range elements {
-		element = bytes.TrimSpace(element)
-		if len(element) == 0 || element[0] != '{' {
-			return toolsListUninspectable, rpc.ID
-		}
-	}
-	return toolsListScannable, rpc.ID
+	return toolsListNone, nil
 }
 
 // scanToolsListNonToolFields scans a tools/list response for injection in

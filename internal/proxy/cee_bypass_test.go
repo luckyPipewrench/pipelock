@@ -172,8 +172,8 @@ func TestCEESessionKey_FoldsUntrustedAgent(t *testing.T) {
 	ip := testCEEClientIP
 
 	// Two different self-declared agent names must yield the SAME key.
-	k1 := ceeSessionKey("rot-agent-1", ip, envelope.ActorAuthSelfDeclared)
-	k2 := ceeSessionKey("rot-agent-2", ip, envelope.ActorAuthSelfDeclared)
+	k1 := ceeSessionKey(nil, "rot-agent-1", ip, envelope.ActorAuthSelfDeclared)
+	k2 := ceeSessionKey(nil, "rot-agent-2", ip, envelope.ActorAuthSelfDeclared)
 	if k1 != ip || k2 != ip {
 		t.Fatalf("self-declared agents must fold to IP-only key: k1=%q k2=%q ip=%q", k1, k2, ip)
 	}
@@ -182,7 +182,7 @@ func TestCEESessionKey_FoldsUntrustedAgent(t *testing.T) {
 	}
 
 	// A bound identity keeps its namespace (spoof-proof per-listener binding).
-	kb := ceeSessionKey("bound-agent", ip, envelope.ActorAuthBound)
+	kb := ceeSessionKey(nil, "bound-agent", ip, envelope.ActorAuthBound)
 	if kb != "bound-agent|"+ip {
 		t.Fatalf("bound agent must keep namespace, got %q", kb)
 	}
@@ -206,8 +206,8 @@ func TestCEESessionKey_SharedHelperMatchesPreRefactorKeys(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ceeSessionKey(agent, ip, tt.auth); got != tt.want {
-				t.Fatalf("ceeSessionKey() = %q, want historical key %q", got, tt.want)
+			if got := ceeSessionKey(nil, agent, ip, tt.auth); got != tt.want {
+				t.Fatalf("ceeSessionKey(nil, ) = %q, want historical key %q", got, tt.want)
 			}
 		})
 	}

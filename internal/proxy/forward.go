@@ -26,7 +26,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
-	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -298,7 +297,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	connectSessionKey := ceeSessionKey(agent, clientIP, id.Auth)
+	connectSessionKey := ceeSessionKey(cfg, agent, clientIP, id.Auth)
 	var connectRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(connectSessionKey)
@@ -439,7 +438,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		}
 		if effectiveAction == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			emitConnectSessionDenyReceipt()
@@ -466,7 +465,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// block_all enforcement: deny ALL traffic (including clean) when the
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+		sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		emitConnectSessionDenyReceipt()
 		p.metrics.RecordTunnelBlocked(agentLabel)
@@ -495,7 +494,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// was exhausting the entropy budget and triggering adaptive escalation
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
-	ceeEntropy := p.currentCEEEntropy(identitykey.NewCEEIdentity(agent, clientIP, id.Auth))
+	ceeEntropy := p.currentCEEEntropy(newCEEIdentity(cfg, agent, clientIP, id.Auth))
 	if p.connectCEEReady != nil {
 		p.connectCEEReady()
 	}
@@ -505,7 +504,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	postCEERec, postCEEAdaptive := connectPostCEEAdaptiveState(ceeEntropy, connectRec, cfg.AdaptiveEnforcement)
 	if ceeEntropy.Active {
-		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
+		sessionKey := ceeSessionKey(cfg, agent, clientIP, id.Auth)
 		if ceeEntropy.Exceeded {
 			// Skip: CONNECT hostname is NOT recorded to entropy budget.
 			// Only query values, request bodies, and MCP args contribute.
@@ -648,7 +647,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Request-controlled names fold to the source IP, so rotating a name cannot
 	// select a fresh airlock lane.
 	shouldIntercept := cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains)
-	connectAirlockSessions := retainAirlockSessions(nil, connectRec, sr.recorder, postCEERec, p.airlockSessionForIdentity(agent, clientIP, id.Auth))
+	connectAirlockSessions := retainAirlockSessions(nil, connectRec, sr.recorder, postCEERec, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	if !shouldIntercept {
 		for _, connectSess := range connectAirlockSessions {
 			tier := airlockTierForScope(connectSess, adaptiveScopeForHost(host))
@@ -819,7 +818,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Airlock cancel hooks (intercepted and raw tunnels below) attach to the
 	// same trust-graded session the adaptive writer transitions.
-	connectAirlockSessions = retainAirlockSessions(connectAirlockSessions, p.airlockSessionForIdentity(agent, clientIP, id.Auth))
+	connectAirlockSessions = retainAirlockSessions(connectAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 
 	// TLS interception: decrypt tunnel and scan body/headers/responses.
 	// Branch here after SNI verification but before raw splice. If interception
@@ -858,7 +857,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// escalation level lookups instead of a stale snapshot from sr.Level.
 		var interceptRec session.Recorder
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			sess := sm.GetOrCreate(responseTaintSessionKey(agent, clientIP, id.Auth))
+			sess := sm.GetOrCreate(responseTaintSessionKey(cfg, agent, clientIP, id.Auth))
 			if sess == nil {
 				p.logger.LogBlocked(targetCtx, sessionCapacityLayer, session.ErrCapacity.Error())
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -1185,7 +1184,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		DeferClean: true,
 	})
 
-	forwardSessionKey := responseTaintSessionKey(agent, clientIP, id.Auth)
+	forwardSessionKey := responseTaintSessionKey(cfg, agent, clientIP, id.Auth)
 	var forwardRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sess := sm.GetOrCreate(forwardSessionKey)
@@ -1212,7 +1211,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	denyForwardAirlock := func() bool {
 		// Preserve this request's findings and also honor current quarantine
 		// if capacity eviction or a manager replacement changed the lookup.
-		for _, forwardSess := range [3]*SessionState{sr.recorder, forwardAirlockSess, p.airlockSessionForIdentity(agent, clientIP, id.Auth)} {
+		for _, forwardSess := range [3]*SessionState{sr.recorder, forwardAirlockSess, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth)} {
 			if forwardSess == nil {
 				continue
 			}
@@ -1269,7 +1268,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			effectiveAction = decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		}
 		if effectiveAction == config.ActionBlock {
-			sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
@@ -1301,7 +1300,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// block_all enforcement: deny ALL traffic (including clean) when the
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+		sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		emitSessionDenyReceipt()
 		p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)
@@ -1723,7 +1722,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
 			}
 			if action != originalBodyAction {
-				sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+				sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: clientIP, RequestID: requestID})
 			}
 
@@ -1923,7 +1922,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// CEE pre-forward admission: check cross-request entropy and fragment
 	// reassembly before the outbound request leaves. Forward proxy has
 	// URL path, query params, and request body as outbound data.
-	ceeSession := ceeSessionKey(agent, clientIP, id.Auth)
+	ceeSession := ceeSessionKey(cfg, agent, clientIP, id.Auth)
 	var ceePartitionKey []byte
 	if fb := p.fragmentBufferPtr.Load(); fb != nil {
 		ceePartitionKey = fb.PartitionKey()
@@ -1937,7 +1936,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if ceeAdmission.Active {
 		ceeRes := ceeAdmission.Result
-		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
+		sessionKey := ceeSessionKey(cfg, agent, clientIP, id.Auth)
 
 		// Capture observer: record forward CEE verdict for policy replay.
 		ceeFindings := ceeResultToFindings(ceeRes)
@@ -2389,8 +2388,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responsePromptHit := false
+	responseTaintType := responseTaintContentType(resp.Header)
 	defer func() {
-		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "forward_response", responsePromptHit)
+		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responsePromptHit)
 	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
@@ -2608,7 +2608,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 				forwardScope := adaptiveScopeForHost(fwdRespHost)
 				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
-					sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
+					sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
 					scope:      forwardScope,
 					reason:     adaptiveRecoveryClean,
 					clientIP:   clientIP,
@@ -2768,7 +2768,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 						Host:              fwdRespHost,
 						Path:              resp.Request.URL.EscapedPath(),
-						ContentType:       resp.Header.Get("Content-Type"),
+						ContentType:       responseContentType(resp.Header),
 						Header:            resp.Header,
 						ContentLength:     resp.ContentLength,
 						SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
@@ -2904,7 +2904,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var svgShielded bool
 		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
 		if shieldBlocked == nil {
-			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
+			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShield(respBody, responseContentType(resp.Header), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
 		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -2932,7 +2932,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// media types (audio/video by default, oversized images, disallowed
 		// types). Runs after Browser Shield so HTML responses flow through
 		// unchanged and image responses are handled transport-agnostically.
-		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
+		mediaVerdict := applyMediaPolicy(cfg, responseContentType(resp.Header), respBody, mediaPolicyOptions{svgShielded: svgShielded, headers: resp.Header, host: fwdRespHost})
 		mediaVerdict = refusePartialMediaRewrite(resp.StatusCode, mediaVerdict)
 		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
 		if mediaVerdict.Blocked {
@@ -3145,7 +3145,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if forwardRec != nil && !fwdRespExempt {
 					action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
 					if action != originalAction {
-						sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+						sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 						recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(forwardRec.EscalationLevel()), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 					}
 				}
@@ -3156,7 +3156,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					// the block path records no signal of its own.
 					// Exempt domains skip scoring - findings are logged but don't escalate.
 					if !fwdRespExempt && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled {
-						sessionKey := sessionKeyFor(agent, clientIP, id.Auth)
+						sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 						recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(fwdRespHost), session.SignalStrip, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 							Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 							Logger:    p.logger,
@@ -3233,7 +3233,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
-				sessionKey: sessionKeyFor(agent, clientIP, id.Auth),
+				sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
 				scope:      forwardScope,
 				reason:     adaptiveRecoveryClean,
 				clientIP:   clientIP,
@@ -3319,7 +3319,7 @@ func a2aContentEntropyOptions(host string, cfg *config.Config) mcp.A2AContentEnt
 		MinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		Host:       host,
 		Trusted:    cfg.TrustedDomains,
-		Exclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		Exclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 		Separator:  bodyDLPJoinSeparator,
 	}
 }

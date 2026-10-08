@@ -272,13 +272,52 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 		}
 		entry.Host = host[0]
 
-		path, ok := CanonicalUnscannablePassthroughPath(strings.TrimSpace(entry.Path))
-		if !ok {
-			return fmt.Errorf("%s.path %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.Path)
+		hasPath := strings.TrimSpace(entry.Path) != ""
+		hasPrefix := strings.TrimSpace(entry.PathPrefix) != ""
+		switch {
+		case hasPath && hasPrefix:
+			return fmt.Errorf("%s sets both path and path_prefix; name exactly one", field)
+		case !hasPath && !hasPrefix:
+			return fmt.Errorf("%s requires exactly one of path or path_prefix", field)
+		case hasPath:
+			path, ok := CanonicalUnscannablePassthroughPath(strings.TrimSpace(entry.Path))
+			if !ok {
+				return fmt.Errorf("%s.path %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.Path)
+			}
+			entry.Path = path
+			// A whitespace-only path_prefix counted as absent above; clear it so
+			// the runtime matcher, which requires the unused field to be empty,
+			// does not treat the accepted route as having both.
+			entry.PathPrefix = ""
+		default:
+			entry.Path = ""
+			prefix := strings.TrimSpace(entry.PathPrefix)
+			if err := validateEntropyPathPrefixShape(field, entry.PathPrefix, prefix); err != nil {
+				return err
+			}
+			// The runtime compares against the request path in the form
+			// CanonicalUnscannablePassthroughPath produces, so the stored prefix
+			// must be in that same form. The trailing slash is load-bearing and
+			// is carried across the canonicalization.
+			canonical, ok := CanonicalUnscannablePassthroughPath(strings.TrimSuffix(prefix, "/"))
+			if !ok {
+				return fmt.Errorf("%s.path_prefix %q must be a non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.PathPrefix)
+			}
+			if strings.HasSuffix(prefix, "/") {
+				canonical += "/"
+			}
+			entry.PathPrefix = canonical
 		}
-		entry.Path = path
+		// An exact-path route keeps the original rule: only non-textual bodies,
+		// because the textual scanners are what the route must not blind. A
+		// prefix route exists for service-issued textual payloads, and still
+		// downgrades entropy findings only.
+		allowTextual := hasPrefix
 
 		if len(entry.ContentTypes) == 0 {
+			if allowTextual {
+				return fmt.Errorf("%s.content_types must contain at least one media type", field)
+			}
 			return fmt.Errorf("%s.content_types must contain at least one non-textual media type", field)
 		}
 		for j, raw := range entry.ContentTypes {
@@ -286,7 +325,7 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 			if err != nil || mediaType == "" {
 				return fmt.Errorf("%s.content_types[%d] %q is invalid", field, j, raw)
 			}
-			if isTextualUnscannablePassthroughType(mediaType) {
+			if !allowTextual && isTextualUnscannablePassthroughType(mediaType) {
 				return fmt.Errorf("%s.content_types[%d] %q is textual/scannable and cannot downgrade entropy enforcement", field, j, raw)
 			}
 			entry.ContentTypes[j] = mediaType
@@ -330,8 +369,8 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 		for j := range i {
 			previous := cfg.ContentEntropyWarnRoutes[j]
 			methodsOverlap := len(previous.Methods) == 0 || len(entry.Methods) == 0 || sortedStringsOverlap(previous.Methods, entry.Methods)
-			if previous.Host == entry.Host && previous.Path == entry.Path && methodsOverlap && sortedStringsOverlap(previous.ContentTypes, entry.ContentTypes) {
-				return fmt.Errorf("%s overlaps content_entropy_warn_routes[%d]; exact route exceptions must have one unambiguous owner and reason", field, j)
+			if previous.Host == entry.Host && entropyRoutePathsOverlap(previous, *entry) && methodsOverlap && sortedStringsOverlap(previous.ContentTypes, entry.ContentTypes) {
+				return fmt.Errorf("%s overlaps content_entropy_warn_routes[%d]; route exceptions must have one unambiguous owner and reason", field, j)
 			}
 		}
 	}
@@ -623,7 +662,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if len(c.RequestBodyScanning.ContentEntropyWarnRoutes) > 0 {
 		warnings = append(warnings, Warning{
 			Field:   "request_body_scanning.content_entropy_warn_routes",
-			Message: fmt.Sprintf("%d exact HTTPS route(s) downgrade request-body entropy findings from block to warn; DLP, injection, address, size, and redirect controls remain enforced", len(c.RequestBodyScanning.ContentEntropyWarnRoutes)),
+			Message: fmt.Sprintf("%d HTTPS route(s) downgrade request-body entropy findings from block to warn; DLP, injection, address, size, and redirect controls remain enforced", len(c.RequestBodyScanning.ContentEntropyWarnRoutes)),
 		})
 	}
 	if err := c.validateRequestPolicy(&warnings); err != nil {
@@ -1984,6 +2023,36 @@ func validatePassthroughHostGrantList(hosts []string, label string) error {
 	return nil
 }
 
+// validateEntropyPathPrefixShape holds the path-prefix checks shared by every
+// entropy exception that names a prefix (path_entropy_exclusions and
+// content_entropy_warn_routes[].path_prefix), so neither carries a weaker copy.
+// raw is the operator's spelling, for messages; prefix is it trimmed.
+func validateEntropyPathPrefixShape(field, raw, prefix string) error {
+	if !strings.HasPrefix(prefix, "/") {
+		return fmt.Errorf("%s.path_prefix %q must start with /", field, raw)
+	}
+	if prefix == "/" {
+		return fmt.Errorf("%s.path_prefix %q exempts every path on the host; use subdomain_entropy_exclusions deliberately if that is the intent", field, raw)
+	}
+	if strings.Contains(prefix, "://") {
+		return fmt.Errorf("%s.path_prefix %q must be a path, not a URL", field, raw)
+	}
+	// Reuse the sibling exemption's path normalizer rather than repeating a
+	// weaker check beside it. It refuses an encoded slash or backslash, a
+	// query or fragment delimiter, a wildcard, a control character, a dot
+	// segment, and any non-canonical escape spelling. Those all matter here
+	// because the scanner compares a prefix against the request's ESCAPED
+	// path: a prefix carrying %2f could never match a canonical request, so
+	// accepting one would hand the operator a silently inert exemption.
+	// The trailing slash is trimmed first because it is load-bearing for
+	// prefix matching (it stops /document/de matching /document/d) while
+	// path.Clean treats it as non-canonical and would reject it.
+	if _, err := normalizeQueryEntropyParamPath(strings.TrimSuffix(prefix, "/")); err != nil {
+		return fmt.Errorf("%s.path_prefix %q is not a canonical path: %w", field, raw, err)
+	}
+	return nil
+}
+
 // validatePathEntropyExclusions rejects an entry that would widen the path
 // entropy exemption beyond one route. An empty host or an empty path prefix
 // makes the entry match everything, which is a host-wide (or global) exemption
@@ -2024,27 +2093,8 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 		if prefix == "" {
 			return fmt.Errorf("%s.path_prefix is required; an entry without a prefix would exempt every path on the host", field)
 		}
-		if !strings.HasPrefix(prefix, "/") {
-			return fmt.Errorf("%s.path_prefix %q must start with /", field, entry.PathPrefix)
-		}
-		if prefix == "/" {
-			return fmt.Errorf("%s.path_prefix %q exempts every path on the host; use subdomain_entropy_exclusions deliberately if that is the intent", field, entry.PathPrefix)
-		}
-		if strings.Contains(prefix, "://") {
-			return fmt.Errorf("%s.path_prefix %q must be a path, not a URL", field, entry.PathPrefix)
-		}
-		// Reuse the sibling exemption's path normalizer rather than repeating a
-		// weaker check beside it. It refuses an encoded slash or backslash, a
-		// query or fragment delimiter, a wildcard, a control character, a dot
-		// segment, and any non-canonical escape spelling. Those all matter here
-		// because the scanner compares a prefix against the request's ESCAPED
-		// path: a prefix carrying %2f could never match a canonical request, so
-		// accepting one would hand the operator a silently inert exemption.
-		// The trailing slash is trimmed first because it is load-bearing for
-		// prefix matching (it stops /document/de matching /document/d) while
-		// path.Clean treats it as non-canonical and would reject it.
-		if _, err := normalizeQueryEntropyParamPath(strings.TrimSuffix(prefix, "/")); err != nil {
-			return fmt.Errorf("%s.path_prefix %q is not a canonical path: %w", field, entry.PathPrefix, err)
+		if err := validateEntropyPathPrefixShape(field, entry.PathPrefix, prefix); err != nil {
+			return err
 		}
 
 		expires := strings.TrimSpace(entry.Expires)
@@ -3181,7 +3231,7 @@ func (c *Config) validateForwardProxy() error {
 
 func (c *Config) validateWebSocketProxy(warnings *[]Warning) error {
 	// Validate WebSocket proxy config
-	if err := validateHostnamePatternList("websocket_proxy.content_entropy_exclusions", c.WebSocketProxy.ContentEntropyExclusions); err != nil {
+	if err := validateEntropyHostExclusions("websocket_proxy.content_entropy_exclusions", c.WebSocketProxy.ContentEntropyExclusions); err != nil {
 		return err
 	}
 	if !c.WebSocketProxy.Enabled {
@@ -3576,7 +3626,7 @@ func (c *Config) validateRequestBodyScanning(warnings *[]Warning) error {
 	if c.RequestBodyScanning.ContentEntropyMinLength < 0 {
 		return fmt.Errorf("request_body_scanning.content_entropy_min_length must be non-negative")
 	}
-	if err := validateHostnamePatternList("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
+	if err := validateEntropyHostExclusions("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
 		return err
 	}
 	if err := validateRequestBodyEntropyWarnRoutes(&c.RequestBodyScanning); err != nil {
@@ -4987,6 +5037,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 // | fetch_proxy.monitoring.path_entropy_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the narrow route or move to policy. |
 // | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
 // | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
+// | request_body_scanning.content_entropy_exclusions[].expires, websocket_proxy.content_entropy_exclusions[].expires | temporary | 90 days: a host-wide block-to-allow exception needs a bounded remediation window; the plain host string stays permanent. |
 // | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |
 // | response_scanning.core_observe_exceptions[].expires | temporary | 30 days: this narrowly relaxes the immutable response floor for one host and one pattern. |
 // | reverse_proxy.trusted_upstream.expires | durable | uncapped: an authenticated, host-and-port-bound upstream is reviewed, not churned through expiry. |.
@@ -5062,6 +5113,12 @@ func (c *Config) ValidateExpiryAuthorizations() error {
 		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
 			return err
 		}
+	}
+	if err := validateEntropyExclusionExpiry("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
+		return err
+	}
+	if err := validateEntropyExclusionExpiry("websocket_proxy.content_entropy_exclusions", c.WebSocketProxy.ContentEntropyExclusions); err != nil {
+		return err
 	}
 	for i, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
 		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d].expires", i)

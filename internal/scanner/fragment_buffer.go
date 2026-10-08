@@ -1088,6 +1088,11 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, deco
 				}
 			}
 			if target == nil {
+				// The joined scan found this rule. If the first rescan does
+				// not, or the scan was cut short, keep the finding.
+				if attempt == 0 || ctx.Err() != nil {
+					matches = append(matches, DLPMatch{PatternName: name})
+				}
 				break
 			}
 			span := target.Span()

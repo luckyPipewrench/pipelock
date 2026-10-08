@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -224,7 +225,7 @@ func TestScanRequestBody_ContentEntropy(t *testing.T) {
 			host: "uploads.vendor.example",
 			body: fmt.Sprintf(`{"blob":%q}`, opaqueHighEntropyBodyValue()),
 			modify: func(cfg *config.Config) {
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = config.EntropyHostExclusions("uploads.vendor.example")
 			},
 			wantHit: false,
 		},
@@ -331,7 +332,7 @@ func TestScanRequestBody_ContentEntropyWarnDoesNotHidePromptInjectionBlock(t *te
 		ContentEntropyThreshold:  cfg.RequestBodyScanning.ContentEntropyThreshold,
 		ContentEntropyMinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		ContentEntropyTrusted:    cfg.TrustedDomains,
-		ContentEntropyExclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		ContentEntropyExclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 	})
 
 	if result.Clean {
@@ -373,7 +374,7 @@ func TestScanRequestBody_DLPWarnDoesNotHideEntropyBlock(t *testing.T) {
 		ContentEntropyThreshold:  cfg.RequestBodyScanning.ContentEntropyThreshold,
 		ContentEntropyMinLength:  cfg.RequestBodyScanning.ContentEntropyMinLength,
 		ContentEntropyTrusted:    cfg.TrustedDomains,
-		ContentEntropyExclusions: cfg.RequestBodyScanning.ContentEntropyExclusions,
+		ContentEntropyExclusions: config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()),
 	})
 
 	if result.Clean {
@@ -711,18 +712,21 @@ func TestRequestDLPPatternControlsAcrossTransports(t *testing.T) {
 	})
 }
 
-func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
+func TestHeaderDLPDecisionJWTSessionCookieFollowsConfiguredAction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Mode = config.ModeStrict
 	cfg.RequestBodyScanning.Action = config.ActionBlock
 
 	jwt := scanner.TextDLPMatch{PatternName: "JWT Token", Severity: config.SeverityCritical}
-	// A JWT recovered from an encoding layer is not an ordinary session cookie.
-	// The narrow warning exists because a site's own session cookie looks like
-	// a JWT; a token someone base64-wrapped inside one does not have that
-	// excuse, so it keeps the hard block.
+	// A JWT in Cookie follows the configured header action like any other
+	// finding. The only automatic exception for session cookies is the
+	// issuer-bound omission, which removes the pair before a decision is made.
 	encodedJWT := jwt
 	encodedJWT.Encoded = "base64"
+	// A warn-level match is not hard-blocked regardless of severity, so it
+	// shows the configured action being honored rather than the critical floor.
+	softJWT := jwt
+	softJWT.Warn = true
 	aws := scanner.TextDLPMatch{PatternName: "AWS Access ID", Severity: config.SeverityCritical}
 
 	tests := []struct {
@@ -736,9 +740,29 @@ func TestHeaderDLPDecisionJWTSessionCookieWarnsNarrowly(t *testing.T) {
 			wantAction: "",
 		},
 		{
-			name: "JWT in Cookie warns",
+			name: "JWT in Cookie follows a configured block",
+			result: &BodyScanResult{
+				Action:     config.ActionBlock,
+				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "JWT in Cookie with no result action takes the config action",
 			result: &BodyScanResult{
 				DLPMatches: []scanner.TextDLPMatch{jwt},
+				HeaderName: "Cookie",
+			},
+			wantAction: config.ActionBlock,
+			wantHard:   true,
+		},
+		{
+			name: "JWT in Cookie follows a configured warn",
+			result: &BodyScanResult{
+				Action:     config.ActionWarn,
+				DLPMatches: []scanner.TextDLPMatch{softJWT},
 				HeaderName: "Cookie",
 			},
 			wantAction: config.ActionWarn,

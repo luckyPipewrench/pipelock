@@ -329,7 +329,7 @@ func TestRecordSessionActivity_RecordsBlockEvent(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	key := sessionKeyFor(operAgent, operIP, envelope.ActorAuthUnknown)
+	key := sessionKeyFor(nil, operAgent, operIP, envelope.ActorAuthUnknown)
 	sess := sm.SessionByKey(key)
 	if sess == nil {
 		t.Fatalf("expected session %q", key)

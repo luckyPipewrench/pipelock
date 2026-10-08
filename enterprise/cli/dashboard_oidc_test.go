@@ -1073,6 +1073,68 @@ func TestDashboardOIDC_JWKSDelayedCallerPastRefreshLifetimeFetches(t *testing.T)
 	}
 }
 
+// A caller that waits on an in-flight refresh that fails receives that
+// refresh's own error and makes no fetch of its own. The in-flight record is
+// installed directly so the test controls when it completes; the provider is
+// failing too, so a caller that arrives only after completion still fails and
+// is identified by its extra fetch rather than by luck of scheduling.
+func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	cache := auth.keys
+	p.setJWKSFail(true)
+
+	first := &dashboardJWKSRefresh{done: make(chan struct{})}
+	cache.mu.Lock()
+	cache.expiresAt = now.Add(-time.Second)
+	observed := cache.generation
+	cache.inflight = first
+	cache.mu.Unlock()
+
+	joined := make(chan error, 1)
+	go func() { joined <- cache.refreshSince(context.Background(), observed) }()
+	// While the refresh is in flight the caller must wait on it, not return.
+	// The window also lets the caller reach the wait before completion.
+	select {
+	case err := <-joined:
+		t.Fatalf("caller returned %v while its refresh was still in flight", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	firstErr := errors.New("first refresh failed")
+	cache.mu.Lock()
+	first.err = firstErr
+	cache.inflight = nil
+	close(first.done)
+	cache.mu.Unlock()
+
+	var err error
+	select {
+	case err = <-joined:
+	case <-time.After(10 * time.Second):
+		t.Fatal("caller did not return after the refresh it waited on completed")
+	}
+	reads := p.jwksReads.Load()
+	switch {
+	case err == nil:
+		t.Fatal("caller reported success after a failed refresh")
+	case errors.Is(err, firstErr):
+		if reads != 1 {
+			t.Fatalf("joined caller fetched: JWKS reads = %d, want only the initial fetch", reads)
+		}
+	default:
+		// Arrived after completion: it must have made exactly its own fetch.
+		if reads != 2 {
+			t.Fatalf("late caller JWKS reads = %d, want the initial fetch plus its own", reads)
+		}
+	}
+
+	if err := cache.refresh(context.Background()); err == nil || errors.Is(err, firstErr) {
+		t.Fatalf("later refresh error = %v, want its own fetch failure", err)
+	}
+}
+
 // A failed refresh must not satisfy a delayed caller: it fetches for itself
 // and an expired cache is never served as though it had been refreshed.
 func TestDashboardOIDC_JWKSFailedRefreshDoesNotSatisfyDelayedCaller(t *testing.T) {

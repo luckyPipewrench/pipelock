@@ -352,3 +352,74 @@ func (r ToolScanResult) CredentialAckApplied() bool {
 	}
 	return false
 }
+
+// CredentialAckCandidate is the acknowledgment an operator would add, after
+// reviewing the tool, to accept its current Credential Request Directive
+// occurrences. It is offered only when every occurrence is attributable and
+// the configured server name and binding are known. It carries digests and
+// field pointers, never field text. Owner, reason and expiry are left for the
+// operator to supply.
+type CredentialAckCandidate struct {
+	Server              string                    `json:"server"`
+	ServerBindingSHA256 string                    `json:"server_binding_sha256"`
+	Tool                string                    `json:"tool"`
+	Finding             string                    `json:"finding"`
+	FamilyRevision      int                       `json:"family_revision"`
+	ToolSHA256          string                    `json:"tool_sha256"`
+	Occurrences         []CredentialAckOccurrence `json:"occurrences"`
+}
+
+// CredentialAckOccurrence is one occurrence in a candidate.
+type CredentialAckOccurrence struct {
+	Field           string `json:"field"`
+	FieldTextSHA256 string `json:"field_text_sha256"`
+	Pattern         int    `json:"pattern"`
+	Ordinal         int    `json:"ordinal"`
+	Start           int    `json:"start"`
+	End             int    `json:"end"`
+	MatchSHA256     string `json:"match_sha256"`
+}
+
+func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialRequestAttribution) *CredentialAckCandidate {
+	if cfg == nil || cfg.ServerName == "" || cfg.ServerBindingSHA256 == "" || !att.Attributable || len(att.Occurrences) == 0 {
+		return nil
+	}
+	digest, ok := completeToolDigest(tool)
+	if !ok {
+		return nil
+	}
+	c := &CredentialAckCandidate{
+		Server:              cfg.ServerName,
+		ServerBindingSHA256: cfg.ServerBindingSHA256,
+		Tool:                tool.Name,
+		Finding:             config.MCPAckFindingRequestDirective,
+		FamilyRevision:      credentialRequestFamilyRevision,
+		ToolSHA256:          digest,
+	}
+	for _, o := range att.Occurrences {
+		text, ok := toolFieldText(tool, o.Pointer)
+		if !ok {
+			return nil
+		}
+		sum := sha256.Sum256([]byte(text))
+		c.Occurrences = append(c.Occurrences, CredentialAckOccurrence{
+			Field: o.Pointer, FieldTextSHA256: hex.EncodeToString(sum[:]),
+			Pattern: o.Pattern, Ordinal: o.Ordinal, Start: o.Start, End: o.End, MatchSHA256: o.MatchSHA256,
+		})
+	}
+	return c
+}
+
+// logCredentialAckCandidate prints the acknowledgment entry an operator could
+// add once they have reviewed the tool. It never prints field text.
+func logCredentialAckCandidate(logW io.Writer, lineNum int, m ToolScanMatch) {
+	if m.CredentialAckCandidate == nil {
+		return
+	}
+	enc, err := json.Marshal(m.CredentialAckCandidate)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: after reviewing it, this entry (plus owner, reason and expires) acknowledges its current %s occurrences under mcp_tool_scanning.acknowledged_findings: %s\n",
+		lineNum, m.ToolName, m.CredentialAckCandidate.Finding, enc)
+}

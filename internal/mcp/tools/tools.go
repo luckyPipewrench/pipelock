@@ -108,6 +108,10 @@ type ToolScanMatch struct {
 	// tool's Credential Request Directive finding. Any value other than
 	// "acknowledged" refuses the response under every action.
 	CredentialAck string `json:"credential_ack,omitempty"`
+	// CredentialAckCandidate is the entry an operator could add, after
+	// reviewing the tool, to acknowledge its current occurrences. Set only
+	// when every occurrence is attributable and the server is configured.
+	CredentialAckCandidate *CredentialAckCandidate `json:"credential_ack_candidate,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -2648,11 +2652,19 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			norm := normalize.ForToolText(text)
 			poison := checkToolPoison(norm)
 			if slices.Contains(poison, handoverRequestFinding) {
-				if entry, ok := findCredentialAck(cfg, tool.Name); ok {
-					// The attribution reads the exact text, spans and
-					// normalized string checkToolPoison just matched.
-					outcome := evaluateCredentialAck(entry, cfg, tool, attributeWithNorm(text, norm, spans), cfg.now())
+				// The attribution reads the exact text, spans and normalized
+				// string checkToolPoison just matched.
+				att := attributeWithNorm(text, norm, spans)
+				entry, hasEntry := findCredentialAck(cfg, tool.Name)
+				if !hasEntry {
+					match.CredentialAckCandidate = credentialAckCandidate(cfg, tool, att)
+				}
+				if hasEntry {
+					outcome := evaluateCredentialAck(entry, cfg, tool, att, cfg.now())
 					match.CredentialAck = outcome
+					if outcome != CredentialAckAcknowledged {
+						match.CredentialAckCandidate = credentialAckCandidate(cfg, tool, att)
+					}
 					if outcome == CredentialAckAcknowledged {
 						// Only this finding is lifted. The raw finding and its
 						// treatment stay visible as an observation for audit.
@@ -2876,6 +2888,7 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		if m.DriftDetail != "" {
 			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
 		}
+		logCredentialAckCandidate(logW, lineNum, m)
 	}
 }
 

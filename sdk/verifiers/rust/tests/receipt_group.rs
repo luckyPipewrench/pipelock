@@ -537,7 +537,7 @@ fn shared_v2_group_corpus_matches_the_go_verdict() {
         serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
             .unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 35);
     for item in cases {
         let name = item["name"].as_str().unwrap();
         let keys = item["trusted_keys"]
@@ -556,6 +556,68 @@ fn shared_v2_group_corpus_matches_the_go_verdict() {
             item["expected"].as_str().unwrap(),
             "{name}: {report:?}"
         );
+    }
+}
+
+// A live writer holds a shared flock on its run's lifetime lock. Linking a
+// crashed predecessor (unsealed or sealed) needs that lock gone: a held lock is
+// a still-growing chain, and a missing lock file cannot prove the exit.
+#[cfg(unix)]
+#[test]
+fn predecessor_with_a_held_writer_lock_is_invalid_until_released() {
+    use std::os::fd::AsRawFd;
+    let cases_root = fixture_from("cases", V2_FIXTURE);
+    let cases: Value =
+        serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
+            .unwrap();
+    for name in [
+        "v2-successor-unsealed-predecessor",
+        "v2-successor-sealed-predecessor",
+    ] {
+        let item = cases
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == name)
+            .unwrap();
+        let keys = item["trusted_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let dir = cases_root.join(name);
+        let group_id = item["group_id"].as_str().unwrap();
+        let free = verify_receipt_group(&dir, group_id, &keys);
+        assert_eq!(free.verdict, "GROUP_VALID", "{name}: {free:?}");
+        let mut held = Vec::new();
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if file_name.starts_with("writer-") && file_name.ends_with(".lock") {
+                let file = fs::File::open(&path).unwrap();
+                // SAFETY: the descriptor is owned by `file`, which outlives the lock.
+                assert_eq!(
+                    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+                    0
+                );
+                held.push(file);
+            }
+        }
+        assert!(!held.is_empty(), "{name}: no writer locks to hold");
+        let blocked = verify_receipt_group(&dir, group_id, &keys);
+        assert_eq!(blocked.verdict, "GROUP_INVALID", "{name}: {blocked:?}");
+        assert!(
+            blocked
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("still present"),
+            "{name}: {blocked:?}"
+        );
+        drop(held);
+        let released = verify_receipt_group(&dir, group_id, &keys);
+        assert_eq!(released.verdict, "GROUP_VALID", "{name}: {released:?}");
     }
 }
 

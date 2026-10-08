@@ -8,8 +8,11 @@ import hashlib
 import io
 import json
 import shutil
+import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 from pipelock_aarp_verify.ael import AELVerificationError, _read_bounded_stream
 from pipelock_aarp_verify.cli import main
@@ -542,12 +545,63 @@ def test_shared_v2_group_corpus_matches_the_go_verdict(tmp_path: Path) -> None:
     with zipfile.ZipFile(V2_CORPUS) as archive:
         archive.extractall(tmp_path)
     cases = json.loads((tmp_path / "cases.json").read_text())
-    assert len(cases) == 20
+    assert len(cases) == 35
     for item in cases:
         result = verify_receipt_group(
             tmp_path / "cases" / item["name"], item["group_id"], item["trusted_keys"]
         )
         assert result["verdict"] == item["expected"], (item["name"], result)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="advisory flock is POSIX-only")
+def test_predecessor_with_a_held_writer_lock_is_invalid_until_released(
+    tmp_path: Path,
+) -> None:
+    """A live writer holds a shared flock on its run lock, so its chain still grows."""
+    import fcntl
+
+    with zipfile.ZipFile(V2_CORPUS) as archive:
+        archive.extractall(tmp_path)
+    cases = {
+        item["name"]: item for item in json.loads((tmp_path / "cases.json").read_text())
+    }
+    for name in (
+        "v2-successor-unsealed-predecessor",
+        "v2-successor-sealed-predecessor",
+    ):
+        item = cases[name]
+        directory = tmp_path / "cases" / name
+        free = verify_receipt_group(directory, item["group_id"], item["trusted_keys"])
+        assert free["verdict"] == "GROUP_VALID", (name, free)
+        held = [open(path) for path in sorted(directory.glob("writer-*.lock"))]
+        assert held, name
+        try:
+            for handle in held:
+                fcntl.flock(handle, fcntl.LOCK_SH)
+            blocked = verify_receipt_group(
+                directory, item["group_id"], item["trusted_keys"]
+            )
+        finally:
+            for handle in held:
+                handle.close()
+        assert blocked["verdict"] == "GROUP_INVALID", (name, blocked)
+        assert "still active" in blocked["error"], (name, blocked)
+        released = verify_receipt_group(
+            directory, item["group_id"], item["trusted_keys"]
+        )
+        assert released["verdict"] == "GROUP_VALID", (name, released)
+
+
+def test_session_control_is_empty_for_any_non_receipt_shape() -> None:
+    """A receipt detail that is not an object has no session control, not a crash."""
+    from pipelock_aarp_verify.group import _session_control
+
+    for shape in (None, "x", 7, [], [{"action_record": {}}]):
+        assert _session_control(shape) == {}
+    assert _session_control({"action_record": []}) == {}
+    assert _session_control({"action_record": {"session_control": {"kind": "k"}}}) == {
+        "kind": "k"
+    }
 
 
 def test_unexpected_exception_from_untrusted_input_is_group_invalid(

@@ -9,6 +9,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
   statSync,
@@ -1012,13 +1013,11 @@ async function verifyAELInventory(
     const receipts = evidence.typed.action;
     // Go's walker treats a session with no v1 receipt as an empty, valid chain
     // (a session holding only v2 evidence receipts, or a bare group gate).
-    const pin =
-      signer || (receipts.length ? str(receipts[0]?.signer_key, "inventory signer key") : "");
+    // A group shard is walked against its opening signer; a legacy or neighbor
+    // session is walked against the whole trusted set, as Go does, so a chain
+    // that rotates between two trusted keys verifies.
+    const pin = signer || [...trusted].join(",");
     if (receipts.length) {
-      if (!trusted.has(pin))
-        throw new Error(
-          `inventory receipt session ${JSON.stringify(session)} signer is not trusted`,
-        );
       const verified = await verifyChain(receipts, pin);
       if (!verified.valid)
         throw new Error(
@@ -1053,7 +1052,13 @@ async function verifyAELInventory(
             (receipt.action_record?.session_control as Record<string, unknown> | undefined)
               ?.kind === "session_close",
         ) || lines.some((line) => line.entry.type === "transcript_root");
-      claims.set(run, { session, groupID: claimedGroup, signer: pin, completed });
+      // The native AEL run is signed by the key that signed this session_open.
+      const openSigner = str(r.signer_key, "signed session open signer key").toLowerCase();
+      if (!trusted.has(openSigner))
+        throw new Error(
+          `inventory receipt session ${JSON.stringify(session)} signer is not trusted`,
+        );
+      claims.set(run, { session, groupID: claimedGroup, signer: openSigner, completed });
     }
   }
   const aelRuns = readdirSync("ael", { withFileTypes: true });
@@ -1290,6 +1295,7 @@ async function verifyTransition(
       )
         throw new Error(`transition predecessor ${i} differs from signed close`);
     } else {
+      requirePredecessorWriterGone(p.session_id, i);
       if (p.recovery_seal_sha256) {
         const sealBytes = readChild(`chain-link-${p.session_id}.json`, 64 * 1024);
         if (sha(sealBytes) !== p.recovery_seal_sha256)
@@ -1299,6 +1305,54 @@ async function verifyTransition(
         await verifyUnsealedPredecessor(predecessor, oldHash, p);
       }
     }
+  }
+}
+
+// requirePredecessorWriterGone mirrors Go's EvidenceRunWriterGone for a
+// predecessor with no signed close: the run's lifetime lock file must exist and
+// no live writer may hold it. A writer advertises itself with a shared flock,
+// which Node cannot probe directly, so Linux is answered from /proc/locks (any
+// lock on the lock file's inode counts as a live writer, a superset of Go's
+// flock probe). A missing lock file, or a platform with no way to read lock
+// state, cannot prove the writer exited and fails closed, as Go does.
+function requirePredecessorWriterGone(session: string, index: number): void {
+  const fail = (why: string): never => {
+    throw new Error(
+      `incomplete predecessor shard ${index}: probe receipt group predecessor writer: ${why}`,
+    );
+  };
+  const name = `writer-${session}.lock`;
+  let ino: bigint;
+  try {
+    const before = lstatSync(name, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink())
+      return fail("predecessor writer lock is not a regular file");
+    const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (opened.dev !== before.dev || opened.ino !== before.ino)
+        return fail("predecessor writer lock changed during probe");
+      ino = opened.ino;
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("incomplete predecessor shard")) throw err;
+    return fail(`opening evidence file for writer probe: ${(err as Error).message}`);
+  }
+  let locks: string;
+  try {
+    locks = readFileSync("/proc/locks", "utf8");
+  } catch {
+    return fail("platform cannot prove predecessor writer is gone");
+  }
+  for (const line of locks.split("\n")) {
+    const field = line
+      .trim()
+      .split(/\s+/u)
+      .find((f) => /^[0-9a-f]+:[0-9a-f]+:[0-9]+$/u.test(f));
+    if (field && BigInt(field.slice(field.lastIndexOf(":") + 1)) === ino)
+      return fail("receipt group predecessor writer still present");
   }
 }
 

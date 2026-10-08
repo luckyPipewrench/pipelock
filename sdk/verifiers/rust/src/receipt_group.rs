@@ -1498,8 +1498,10 @@ fn verify_transition(
                 return Err("closed predecessor transition head differs".into());
             }
         } else if p.recovery_seal_sha256.is_empty() {
+            require_writer_gone(dir, &p.session_id, i)?;
             verify_complete_prefix(dir, &pred, &open.previous_open_manifest_sha256, i, p)?;
         } else {
+            require_writer_gone(dir, &p.session_id, i)?;
             let seal_name = format!("chain-link-{}.json", p.session_id);
             let raw = bounded_read(dir, &seal_name)?;
             if sha256_hex(&raw) != p.recovery_seal_sha256 {
@@ -1525,6 +1527,56 @@ fn verify_transition(
     }
     verify_transitions_referencing(dir, &open.previous_open_manifest_sha256, trusted, false)?;
     Ok(())
+}
+
+// require_writer_gone mirrors Go's EvidenceRunWriterGone for a predecessor with
+// no signed close: the run's lifetime lock must exist and no live writer may
+// hold it. A missing lock cannot prove the writer exited, so it fails closed,
+// as does a platform with no advisory lock.
+fn require_writer_gone(dir: &Path, session: &str, index: usize) -> Result<(), String> {
+    let path = dir.join(format!("writer-{session}.lock"));
+    let fail = |why: String| {
+        Err(format!(
+            "incomplete predecessor shard {index}: probe receipt group predecessor writer: {why}"
+        ))
+    };
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => return fail("predecessor writer lock is not a regular file".into()),
+        Err(err) => return fail(format!("opening evidence file for writer probe: {err}")),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(err) => return fail(format!("opening evidence file for writer probe: {err}")),
+        };
+        let fd = file.as_raw_fd();
+        // SAFETY: fd is a valid descriptor owned by `file` for this whole call.
+        if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let err = std::io::Error::last_os_error();
+            return if err.kind() == std::io::ErrorKind::WouldBlock {
+                Err(format!(
+                    "incomplete predecessor shard {index}: receipt group predecessor writer still present"
+                ))
+            } else {
+                fail(format!("probing evidence writer lock: {err}"))
+            };
+        }
+        // SAFETY: same descriptor; the probe lock is released before returning.
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fail("platform cannot prove predecessor writer is gone".into())
+    }
 }
 
 fn verify_group_artifact_names(dir: &Path) -> Result<(), String> {

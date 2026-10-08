@@ -78,12 +78,19 @@ type v2Run struct {
 // decision receipts on every shard, optionally the graceful shutdown path.
 func runV2Process(t *testing.T, dir string, key v2CorpusKeys, graceful bool) v2Run {
 	t.Helper()
+	return runV2ProcessN(t, dir, key, graceful, nil, 2)
+}
+
+// runV2ProcessN starts one server process group of n shards. A non-empty prior
+// lists the signer keys of an earlier process, which the new signer endorses.
+func runV2ProcessN(t *testing.T, dir string, key v2CorpusKeys, graceful bool, prior []string, n int) v2Run {
+	t.Helper()
 	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key.priv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := receipt.EmitterConfig{Recorder: rec, PrivKey: key.priv, ConfigHash: strings.Repeat("a", 64), Principal: "local", Actor: "pipelock"}
-	shards, _, err := buildServerReceiptShardGroup(template, 2, filepath.Join(dir, "signer.key"), false)
+	template := receipt.EmitterConfig{Recorder: rec, PrivKey: key.priv, ConfigHash: strings.Repeat("a", 64), Principal: "local", Actor: "pipelock", PriorSignerKeys: prior}
+	shards, _, err := buildServerReceiptShardGroup(template, n, filepath.Join(dir, "signer.key"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,6 +180,94 @@ func runV2OnlySession(t *testing.T, dir string, key v2CorpusKeys) {
 		PolicyHash: strings.Repeat("b", 64),
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tearV2Shard appends an unterminated fragment to a crashed shard, the torn
+// tail a recovery seal exists to cover.
+func tearV2Shard(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"torn":`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// v2HandStep is one receipt of a hand-signed legacy chain.
+type v2HandStep struct {
+	key v2CorpusKeys
+	rot bool   // restart the sequence under key, naming the previous head
+	ext string // unsigned ext bag recorded with the receipt, if any
+}
+
+// recordHandSignedChain writes a legacy receipt chain with no native AEL run,
+// one signed receipt per step, into dir under its own session. A rotating step
+// restarts the sequence under its key with a transition from the previous head.
+func recordHandSignedChain(t *testing.T, dir, session string, recorderKey v2CorpusKeys, steps []v2HandStep) {
+	t.Helper()
+	src := t.TempDir()
+	srcRec, err := recorder.New(recorder.Config{Enabled: true, Dir: src, SignCheckpoints: true}, nil, recorderKey.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcEmitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: srcRec, PrivKey: recorderKey.priv, ConfigHash: strings.Repeat("a", 64), Principal: "local", Actor: "pipelock"})
+	if err := srcEmitter.EmitDurable(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/s"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srcRec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := receipt.ExtractReceiptsFromSessionDir(src, "proxy")
+	if err != nil || len(tmpl) == 0 {
+		t.Fatalf("receipt template: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, recorderKey.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := receipt.GenesisHash
+	var seq, lastSeq uint64
+	var lastKey, lastHash string
+	for i, step := range steps {
+		ar := tmpl[0].ActionRecord
+		ar.RunNonce = ""
+		ar.ActionID = receipt.NewActionID()
+		ar.Target = "https://api.vendor.example/legacy" + string(rune('a'+i))
+		ar.KeyTransition = nil
+		if step.rot {
+			seq = 0
+			ar.KeyTransition = &receipt.KeyTransition{PriorSignerKey: lastKey, PriorChainSeq: lastSeq, PriorChainHash: lastHash}
+		}
+		ar.ChainSeq, ar.ChainPrevHash = seq, prev
+		r, err := receipt.Sign(ar, step.key.priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if step.ext != "" {
+			r.Ext = json.RawMessage(step.ext)
+		}
+		hash, err := receipt.ReceiptHash(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := receipt.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rec.Record(recorder.Entry{SessionID: session, Type: "action_receipt", EventKind: string(ar.ActionType), Transport: "fetch", Summary: "x", Detail: json.RawMessage(body)}); err != nil {
+			t.Fatal(err)
+		}
+		prev, lastHash, lastKey, lastSeq = hash, hash, r.SignerKey, seq
+		seq++
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
@@ -298,6 +393,56 @@ func shardPath(dir, session string) string {
 	return filepath.Join(dir, "evidence-"+session+"-0.jsonl")
 }
 
+// resignClosedShardHead rebinds a group's signed close to a shard whose
+// recorder chain was recomputed. The close commits the recorder hashes of the
+// transcript root and of the final checkpoint, so after a rewrite it must be
+// signed again; only then is a single wrong checkpoint signature left for the
+// verifier to find, instead of a head that merely differs from the close.
+func resignClosedShardHead(t *testing.T, dir string, open receipt.ReceiptGroupOpen, index int, key v2CorpusKeys) {
+	t.Helper()
+	closeName := "receipt-group-" + open.GroupID + "-close.json"
+	rawClose, err := os.ReadFile(filepath.Clean(filepath.Join(dir, closeName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closeManifest receipt.ReceiptGroupClose
+	if err := json.Unmarshal(rawClose, &closeManifest); err != nil {
+		t.Fatal(err)
+	}
+	rawShard, err := os.ReadFile(filepath.Clean(shardPath(dir, open.Shards[index].SessionID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := &closeManifest.Shards[index]
+	lines := bytes.Split(bytes.TrimSuffix(rawShard, []byte("\n")), []byte("\n"))
+	for _, line := range lines {
+		entry, err := recorder.ParseEntryLine(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Type == "transcript_root" {
+			head.TranscriptRootHash = entry.Hash
+		}
+		head.CheckpointHash = entry.Hash
+	}
+	rawOpen, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "receipt-group-"+open.GroupID+"-open.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	openSum := sha256.Sum256(rawOpen)
+	closeManifest, err = receipt.SignReceiptGroupClose(closeManifest, open, hex.EncodeToString(openSum[:]), key.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(closeManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, closeName), jsonscan.NormalizeReplacementEscapes(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func rehashSealedPredecessor(t *testing.T, dir string, pred, succ receipt.ReceiptGroupOpen, key v2CorpusKeys) {
 	t.Helper()
 	// The recovery seal binds the damaged shard digest and the last good head,
@@ -413,6 +558,10 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 	// 3. A crashed predecessor with no close, then a closed successor.
 	unsealedDir := mkdir("v2-successor-unsealed-predecessor")
 	crashed := runV2Process(t, unsealedDir, key, false)
+	crashedRuns, err := os.ReadDir(filepath.Join(unsealedDir, "ael"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	unsealed := runV2Process(t, unsealedDir, key, true)
 	if unsealed.open.PreviousGroupID != crashed.open.GroupID {
 		t.Fatalf("successor did not bind the crashed predecessor: %+v", unsealed.open)
@@ -519,10 +668,135 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 	rehashSealedPredecessor(t, dir, predOpenSealed, succOpenSealed, key)
 	add("sealed-predecessor-v2-body-edit", dir, sealedSucc.open.GroupID, "sealed predecessor v2 receipt body edited; recorder chain, seal and transition re-signed", receipt.GroupInvalid, trusted)
 
+	// A predecessor shard's gate must be covered by the very next checkpoint.
+	// Swapping the first checkpoint behind the signed session_open leaves a
+	// recorder chain that still verifies but a gate nothing signs over.
+	dir = clone(unsealedDir, "unsealed-predecessor-gate-not-covered")
+	rewriteV2Shard(t, filepath.Join(dir, pred0), key, func(lines []string) []v2OutLine {
+		out := passthroughV2(lines)
+		out[1], out[2] = out[2], out[1]
+		return out
+	})
+	add("unsealed-predecessor-gate-not-covered", dir, unsealed.open.GroupID, "first checkpoint moved behind the signed session open, so no checkpoint covers the gate", receipt.GroupInvalid, trusted)
+
+	dir = clone(sealedDir, "sealed-predecessor-gate-not-covered")
+	rewriteV2Shard(t, filepath.Join(dir, sealedPath), key, func(lines []string) []v2OutLine {
+		out := passthroughV2(lines)
+		out[1], out[2] = out[2], out[1]
+		return out
+	})
+	rehashSealedPredecessor(t, dir, predOpenSealed, succOpenSealed, key)
+	add("sealed-predecessor-gate-not-covered", dir, sealedSucc.open.GroupID, "sealed predecessor with its first checkpoint behind the signed session open; seal and transition re-signed", receipt.GroupInvalid, trusted)
+
+	// A closed shard's checkpoints are signed too: flip one signature and
+	// recompute the recorder chain so only the signature is wrong.
+	for _, which := range []string{"first", "last"} {
+		dir = clone(closedDir, "closed-shard-checkpoint-signature-flip-"+which)
+		rewriteV2Shard(t, shardPath(dir, closed.open.Shards[0].SessionID), key, func(lines []string) []v2OutLine {
+			out := passthroughV2(lines)
+			idx := lastCheckpointIndex(t, lines)
+			if which == "first" {
+				for i, l := range lines {
+					if strings.Contains(l, `"type":"checkpoint"`) {
+						idx = i
+						break
+					}
+				}
+			}
+			out[idx] = v2OutLine{text: flipHexAfter(t, lines[idx], `"signature":"`), keepSig: true}
+			return out
+		})
+		resignClosedShardHead(t, dir, closed.open, 0, key)
+		add("closed-shard-checkpoint-signature-flip-"+which, dir, closed.open.GroupID, which+" checkpoint signature of a closed shard flipped; recorder chain recomputed and signed close rebound", receipt.GroupInvalid, trusted)
+	}
+
+	// An unterminated fragment at the end of a crashed predecessor's native AEL
+	// stream counts toward the 1 MiB record bound: one byte under is a torn
+	// write Go tolerates, a full megabyte is refused.
+	for _, spec := range []struct {
+		name string
+		pad  int
+		want receipt.ReceiptGroupVerdict
+		note string
+	}{
+		{"unsealed-predecessor-ael-fragment-below-bound", 1<<20 - 1, receipt.GroupValid, "predecessor native AEL stream ends in an unterminated fragment one byte under 1 MiB"},
+		{"unsealed-predecessor-ael-fragment-at-bound", 1 << 20, receipt.GroupInvalid, "predecessor native AEL stream ends in an unterminated fragment of exactly 1 MiB"},
+	} {
+		dir = clone(unsealedDir, spec.name)
+		for _, run := range crashedRuns {
+			af, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "ael", run.Name(), "recorders", "pipelock.jsonl")), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := af.WriteString(strings.Repeat(" ", spec.pad)); err != nil {
+				t.Fatal(err)
+			}
+			if err := af.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		add(spec.name, dir, unsealed.open.GroupID, spec.note, spec.want, trusted)
+	}
+
+	// A crashed predecessor is only linked once its run's lifetime lock proves
+	// the writer is gone. With the lock file missing the exit cannot be proven,
+	// so Go refuses the link for unsealed and sealed predecessors alike.
+	dir = clone(unsealedDir, "unsealed-predecessor-writer-lock-missing")
+	if err := os.Remove(filepath.Join(dir, "writer-"+crashed.open.Shards[0].SessionID+".lock")); err != nil {
+		t.Fatal(err)
+	}
+	add("unsealed-predecessor-writer-lock-missing", dir, unsealed.open.GroupID, "crashed predecessor whose shard-0 writer lock file is gone, so its exit cannot be proven", receipt.GroupInvalid, trusted)
+
+	dir = clone(sealedDir, "sealed-predecessor-writer-lock-missing")
+	if err := os.Remove(filepath.Join(dir, "writer-"+predOpenSealed.Shards[0].SessionID+".lock")); err != nil {
+		t.Fatal(err)
+	}
+	add("sealed-predecessor-writer-lock-missing", dir, sealedSucc.open.GroupID, "sealed predecessor whose shard-0 writer lock file is gone, so its exit cannot be proven", receipt.GroupInvalid, trusted)
+
+	// Signer rotation across processes: the successor is signed by a second key
+	// that endorses the first, and a crashed predecessor keeps its own key.
+	keyB := newV2CorpusKey(t)
+	both := []string{key.pub, keyB.pub}
+	mixedDir := mkdir("mixed-key-successor-unsealed-predecessor")
+	mixedCrashed := runV2Process(t, mixedDir, key, false)
+	mixedSucc := runV2ProcessN(t, mixedDir, keyB, true, []string{key.pub}, 2)
+	if mixedSucc.open.PreviousGroupID != mixedCrashed.open.GroupID {
+		t.Fatalf("mixed-key successor did not bind the predecessor: %+v", mixedSucc.open)
+	}
+	add("mixed-key-successor-unsealed-predecessor", mixedDir, mixedSucc.open.GroupID, "successor signed by a second trusted key after a crashed predecessor signed by the first", receipt.GroupValid, both)
+	add("mixed-key-successor-predecessor-key-untrusted", mixedDir, mixedSucc.open.GroupID, "same directory with only the successor key trusted, so the predecessor key is not", receipt.GroupInvalid, []string{keyB.pub})
+
+	// A legacy chain with no native AEL run that rotates its signer key. Go
+	// walks the whole chain against the full trusted set, so both keys trusted
+	// is valid and a second key outside the set is not.
+	rotation := []v2HandStep{{key: key}, {key: key}, {key: keyB, rot: true}, {key: keyB}}
+	dir = clone(closedDir, "legacy-hand-signed-rotation-both-keys-trusted")
+	recordHandSignedChain(t, dir, "legacy-old", key, rotation)
+	add("legacy-hand-signed-rotation-both-keys-trusted", dir, closed.open.GroupID, "legacy session whose signer rotates between two trusted keys", receipt.GroupValid, both)
+	add("legacy-hand-signed-rotation-new-key-untrusted", dir, closed.open.GroupID, "same legacy session with the rotated-to key outside the trusted set", receipt.GroupInvalid, trusted)
+
+	// The unsigned ext bag of a receipt takes part in the chain link hash with
+	// the bytes Go marshals, so a verifier must keep the recorded source text.
+	dir = clone(closedDir, "legacy-hand-signed-ext-bag")
+	recordHandSignedChain(t, dir, "legacy-ext", key, []v2HandStep{{key: key, ext: `{"n":1e2,"s":"<&>"}`}, {key: key}, {key: key}})
+	add("legacy-hand-signed-ext-bag", dir, closed.open.GroupID, "legacy session whose first receipt carries an unsigned ext bag that only its recorded bytes hash correctly", receipt.GroupValid, trusted)
+
+	// 32 shards, one of them torn and sealed: every other shard of the same
+	// crashed predecessor is unsealed, so both claim shapes meet in one group.
+	n32Dir := mkdir("n32-successor-sealed-predecessor")
+	n32Crashed := runV2ProcessN(t, n32Dir, key, false, nil, 32)
+	tearV2Shard(t, shardPath(n32Dir, n32Crashed.open.Shards[17].SessionID))
+	n32Succ := runV2ProcessN(t, n32Dir, key, true, nil, 32)
+	add("n32-successor-sealed-predecessor", n32Dir, n32Succ.open.GroupID, "32-shard successor of a 32-shard crashed predecessor with one torn, sealed shard", receipt.GroupValid, trusted)
+
 	// Legacy neighbor sessions in the directory of a closed v2 group.
 	legacyDir := clone(closedDir, "v2-n2-legacy-neighbor")
 	legacySession := runLegacySession(t, legacyDir, key, true)
 	add("v2-n2-legacy-neighbor", legacyDir, closed.open.GroupID, "closed v2 group next to a valid legacy session", receipt.GroupValid, trusted)
+
+	// A legacy neighbor that opened a native AEL run is walked against the whole
+	// trusted set, and its run is verified under the key that signed its open.
+	add("v2-n2-legacy-neighbor-two-trusted-keys", legacyDir, closed.open.GroupID, "closed v2 group next to a valid legacy session, with a second unrelated key in the trusted set", receipt.GroupValid, both)
 
 	dir = clone(legacyDir, "legacy-neighbor-close-body-edit")
 	rewriteV2Shard(t, shardPath(dir, legacySession), key, func(lines []string) []v2OutLine {

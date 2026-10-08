@@ -613,7 +613,7 @@ with zipfile.ZipFile(source) as archive:
     const cases = JSON.parse(
       readFileSync(path.join(destination, "cases.json"), "utf8"),
     );
-    assert.equal(cases.length, 20);
+    assert.equal(cases.length, 35);
     for (const item of cases) {
       const bytes = readFileSync(path.join(destination, `${item.name}.zip`));
       const result = await verifyGroup(bytes, item.group_id, item.trusted_keys);

@@ -701,9 +701,9 @@ def _verify_shard(
             ext_bytes = recorder_line_ext_bytes(text)
             if ext_bytes is not None and "ext" in detail:
                 detail = SourcedReceipt(detail, ext_bytes)
-            (
-                v2 if detail.get("record_type") == "evidence_receipt_v2" else action
-            ).append(detail)
+            # Go sorts a receipt by its recorder entry type; the record_type the
+            # detail claims never decides which chain it joins.
+            (v2 if entry.get("type") == EVIDENCE_ENTRY_TYPE else action).append(detail)
     entries = [row[0] for row in rows]
     if torn:
         complete_record_count = len(rows)

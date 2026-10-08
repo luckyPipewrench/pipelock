@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { gunzipSync, inflateRawSync } from "node:zlib";
 import test from "node:test";
@@ -596,7 +596,7 @@ test("shared v2 group corpus matches the Go verdict", async () => {
     trusted_keys: string[];
     expected: string;
   }>;
-  assert.equal(cases.length, 20);
+  assert.equal(cases.length, 35);
   for (const item of cases) {
     const result = await verifyReceiptGroup(
       join(v2Fixtures, "cases", item.name),
@@ -606,6 +606,57 @@ test("shared v2 group corpus matches the Go verdict", async () => {
     assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
   }
 });
+
+// A live writer holds a shared flock on its run's lifetime lock. Linking a
+// crashed predecessor (unsealed or sealed) needs that lock gone: a held lock is
+// a still-growing chain, so verification must refuse it until the writer exits.
+// Node cannot take an flock itself, so a child process plays the writer.
+test(
+  "a predecessor whose writer lock is held is invalid until the writer exits",
+  { skip: process.platform !== "linux" || spawnSync("python3", ["--version"]).status !== 0 },
+  async () => {
+    const cases = JSON.parse(readFileSync(join(v2Fixtures, "cases.json"), "utf8")) as Array<{
+      name: string;
+      group_id: string;
+      trusted_keys: string[];
+    }>;
+    for (const name of ["v2-successor-unsealed-predecessor", "v2-successor-sealed-predecessor"]) {
+      const item = cases.find((c) => c.name === name);
+      assert.ok(item, name);
+      const dir = join(v2Fixtures, "cases", name);
+      const locks = readdirSync(dir)
+        .filter((f) => f.startsWith("writer-") && f.endsWith(".lock"))
+        .map((f) => join(dir, f));
+      assert.ok(locks.length > 0, name);
+      const free = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(free.verdict, "GROUP_VALID", `${name}: ${JSON.stringify(free)}`);
+      const writer = spawn(
+        "python3",
+        [
+          "-c",
+          "import fcntl,sys\nfs=[open(p) for p in sys.argv[1:]]\n[fcntl.flock(f,fcntl.LOCK_SH) for f in fs]\nprint('held',flush=True)\nsys.stdin.read()",
+          ...locks,
+        ],
+        { stdio: ["pipe", "pipe", "inherit"] },
+      );
+      try {
+        await new Promise<void>((resolveHeld, reject) => {
+          writer.once("error", reject);
+          writer.stdout.once("data", () => resolveHeld());
+        });
+        const blocked = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+        assert.equal(blocked.verdict, "GROUP_INVALID", `${name}: ${JSON.stringify(blocked)}`);
+        assert.match(blocked.error ?? "", /writer still present/u);
+      } finally {
+        const exited = new Promise((resolveExit) => writer.once("exit", resolveExit));
+        writer.stdin.end();
+        await exited;
+      }
+      const released = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
+      assert.equal(released.verdict, "GROUP_VALID", `${name}: ${JSON.stringify(released)}`);
+    }
+  },
+);
 
 // Go reads only the python copy of the shared fixtures, so a drifted copy in
 // another language directory would silently test different bytes.

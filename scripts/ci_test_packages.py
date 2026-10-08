@@ -17,8 +17,10 @@ are divided by top-level test name across sub-shards (`proxy-0`, `proxy-1`,
 ...). Every sub-shard of a tree runs the same packages with a different
 selector:
 
-* sub-shard i < n-1 runs `-run` of the names whose stable hash lands in
-  bucket i;
+* sub-shard i < n-1 runs `-run` of the names packed into bucket i, longest
+  measured test first onto the least-loaded bucket using
+  scripts/ci_test_durations.json (a stable name hash when a tree has no
+  measurements);
 * the last sub-shard runs `-skip` of the union of every earlier bucket.
 
 That makes the split complete and disjoint by construction rather than by the
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -51,15 +54,22 @@ HEAVY_TREES = {
     "proxy": "internal/proxy",
     "scanner": "internal/scanner",
     "mcp": "internal/mcp",
+    "runtime": "internal/cli/runtime",
 }
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 2,
-    "scanner": 2,
-    "mcp": 2,
+    "proxy": 3,
+    "scanner": 4,
+    "mcp": 3,
+    "runtime": 2,
 }
 REST_SHARDS = ("rest-0", "rest-1", "rest-2")
+
+# Measured race-test seconds per top-level test, used to balance sub-shards by
+# time instead of by name count. Regenerate it from CI shard timings with
+# scripts/ci_test_durations.py when shards drift past the CI time budget.
+DURATIONS_FILE = ROOT / "scripts" / "ci_test_durations.json"
 
 
 def _heavy_shard_names() -> tuple[str, ...]:
@@ -195,15 +205,65 @@ def exact_names_regex(names: list[str]) -> str:
     return "^(?:" + "|".join(alternatives) + ")$"
 
 
-def partition_names(names: list[str], count: int) -> list[list[str]]:
+def load_durations(path: Path = DURATIONS_FILE) -> dict[str, dict[str, float]]:
+    """Read measured top-level test seconds per tree; a missing file means none."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    trees = data.get("trees") if isinstance(data, dict) else None
+    if not isinstance(trees, dict):
+        raise ValueError(f"{path.name}: expected a 'trees' object")
+    durations: dict[str, dict[str, float]] = {}
+    for tree, tests in trees.items():
+        if not isinstance(tests, dict):
+            raise ValueError(f"{path.name}: tree {tree!r} must map test names to seconds")
+        clean: dict[str, float] = {}
+        for name, seconds in tests.items():
+            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+                raise ValueError(f"{path.name}: {tree}.{name} must be non-negative seconds")
+            clean[name] = float(seconds)
+        durations[tree] = clean
+    return durations
+
+
+def partition_names(
+    names: list[str], count: int, weights: dict[str, float] | None = None
+) -> list[list[str]]:
+    """Split names into count buckets.
+
+    Without weights a name's bucket is a stable hash, which balances counts but
+    not time. With measured weights, names are packed longest first onto the
+    least-loaded bucket so a few slow tests cannot pile onto one shard. A name
+    with no measurement is charged the median measured time. Ties break on the
+    bucket index and names are visited in a fixed order, so the result depends
+    only on the inputs.
+    """
+    unique = sorted(set(names))
     buckets: list[list[str]] = [[] for _ in range(count)]
-    for name in sorted(set(names)):
-        buckets[name_bucket(name, count)].append(name)
+    if not weights:
+        for name in unique:
+            buckets[name_bucket(name, count)].append(name)
+        return buckets
+    known = sorted(weights[name] for name in unique if name in weights)
+    default = known[len(known) // 2] if known else 1.0
+    loads = [0.0] * count
+    for name in sorted(unique, key=lambda n: (-weights.get(n, default), n)):
+        target = min(range(count), key=lambda i: (loads[i], i))
+        buckets[target].append(name)
+        loads[target] += weights.get(name, default)
+    for bucket in buckets:
+        bucket.sort()
     return buckets
 
 
-def shard_selector(shard: str, names: list[str] | None = None) -> str:
-    """Return the go test selector flag for a shard, or "" when it runs all tests."""
+def shard_selector(
+    shard: str, names: list[str] | None = None, weights: dict[str, float] | None = None
+) -> str:
+    """Return the go test selector flag for a shard, or "" when it runs all tests.
+
+    With names omitted, the real inventory and the checked-in durations are
+    used. Passing names without weights keeps the unweighted hash split.
+    """
     located = shard_tree(shard)
     if located is None or located[2] == 1:
         if located is None and shard not in REST_SHARDS:
@@ -212,7 +272,9 @@ def shard_selector(shard: str, names: list[str] | None = None) -> str:
     tree, index, count = located
     if names is None:
         names = tree_test_names(ROOT / HEAVY_TREES[tree])
-    buckets = partition_names(names, count)
+        if weights is None:
+            weights = load_durations().get(tree)
+    buckets = partition_names(names, count, weights)
     for position, bucket in enumerate(buckets):
         if not bucket:
             raise ValueError(f"sub-shard {tree}-{position} would select no tests")

@@ -24,7 +24,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {
-    "proxy-0", "proxy-1", "scanner-0", "scanner-1", "mcp-0", "mcp-1", "rest-0", "rest-1", "rest-2",
+    "proxy-0", "proxy-1", "proxy-2", "scanner-0", "scanner-1", "scanner-2", "scanner-3",
+    "mcp-0", "mcp-1", "mcp-2",
+    "runtime-0", "runtime-1", "rest-0", "rest-1", "rest-2",
 }
 MINORS = ("126", "127")
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
@@ -46,8 +48,8 @@ SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # producer actually skips.
 SKIP_CARVEOUT_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
-    "&& (github.event_name != 'pull_request' "
-    "|| needs.changed-files.outputs.ci_policy == 'true') }}"
+    "&& github.event_name == 'pull_request' "
+    "&& needs.changed-files.outputs.ci_policy == 'true' }}"
 )
 REQUIRED_PRODUCERS = {
     "security-scan",
@@ -93,6 +95,7 @@ def gate_script_is_safe(run: str) -> bool:
             test\ "[^"]*"\ =\ "success"(?:\ \|\|\ \{)?|
             if\ !\ test\ "[^"]*"\ =\ "success";\ then|
             if\ \[\ "\$EVENT_NAME"\ !=\ "pull_request"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
+            if\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
             \[\ "\$EVENT_NAME"\ (?:=|!=)\ "pull_request"\ \]\ \&\&|
             \[\ "[^"]*"\ (?:=|!=)\ "skipped"\ \]|
             exit\ 1|fi|\}
@@ -162,9 +165,9 @@ def execute_gate(run: str, results: dict[str, str], event_name: str) -> int:
 def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> list[str]:
     """Return failures from executing every aggregate result state.
 
-    Go 1.27 may accept a skipped shard producer only on a pull request.  Every
-    other omitted, unknown, cancelled, or failed producer result must red the
-    aggregate required check.
+    Go 1.27 may accept a skipped shard producer, which runs only on a pull
+    request that changes CI policy.  Every other omitted, unknown, cancelled,
+    or failed producer result must red the aggregate required check.
     """
     errors = []
     successful = {dependency: "success" for dependency in dependencies}
@@ -186,10 +189,11 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
             # literals -- `[ "skipped" != "skipped" ]` -- reds every failure on a
             # push and silently returns zero for the SAME failure on a pull
             # request, which is the event where the required check gates a merge.
-            # The carve-out is the one state allowed to pass, and only on a pull
-            # request; the identical skip on a push must still red.
+            # The carve-out is the one state allowed to pass. The producer skips
+            # on every push and on every pull request without a CI-policy change,
+            # so its skip passes under both events; failures never do.
             for event_name in EVENT_NAMES:
-                passes = legitimate_skip and event_name == "pull_request"
+                passes = legitimate_skip
                 cases.append(
                     (
                         f"{dependency}={result or 'empty'}",

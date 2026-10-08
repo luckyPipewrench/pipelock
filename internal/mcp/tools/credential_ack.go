@@ -61,8 +61,10 @@ func ServerBindingDigest(kind string, parts ...string) string {
 // UpstreamBindingDigest is the transport binding digest for a configured
 // upstream URL. Every part that can select a different destination, tenant
 // or principal is bound: scheme and host (lowercased, as they are
-// case-insensitive), user info, the escaped path, the raw query exactly as
-// written including parameter order, and the fragment. Only the digest is
+// case-insensitive), user info, an opaque part, the escaped path, whether an
+// empty query was written ("/mcp?" is a different request target from
+// "/mcp"), the raw query exactly as written including parameter order, and the
+// fragment. Only the digest is
 // ever printed, so credentials in the URL never reach a log. A URL that does
 // not parse is bound by its exact bytes.
 func UpstreamBindingDigest(raw string) string {
@@ -74,7 +76,7 @@ func UpstreamBindingDigest(raw string) string {
 	if u.User != nil {
 		userinfo = u.User.String()
 	}
-	return ServerBindingDigest("upstream", strings.ToLower(u.Scheme), strings.ToLower(u.Host), userinfo, u.EscapedPath(), u.RawQuery, u.EscapedFragment())
+	return ServerBindingDigest("upstream", strings.ToLower(u.Scheme), strings.ToLower(u.Host), userinfo, u.Opaque, u.EscapedPath(), strconv.FormatBool(u.ForceQuery), u.RawQuery, u.EscapedFragment())
 }
 
 // WithServer returns a copy of c bound to the configured server name and

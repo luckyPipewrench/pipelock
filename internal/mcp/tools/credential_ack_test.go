@@ -313,6 +313,9 @@ func TestUpstreamBindingDigestBindsEverySelector(t *testing.T) {
 		"http://mcp.vendor.example/mcp?tenant=a&region=eu",           // scheme
 		"wss://mcp.vendor.example/mcp?tenant=a&region=eu",            // websocket
 		"https://mcp2.vendor.example/mcp?tenant=a&region=eu",         // host
+		"https://mcp.vendor.example/mcp?",                            // empty query written
+		"http:tenant-a",                                              // opaque
+		"http:tenant-b",                                              // other opaque
 	}
 	seen := map[string]string{UpstreamBindingDigest(base): base}
 	for _, u := range different {

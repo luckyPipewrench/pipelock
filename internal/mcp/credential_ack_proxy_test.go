@@ -756,3 +756,22 @@ func TestAcknowledgmentKeepsAdaptiveRiskAcrossTransports(t *testing.T) {
 		})
 	}
 }
+
+// Over the real proxy, an entry whose tool no longer raises the finding
+// refuses the inventory under warn and names the reason.
+func TestForwardScannedStaleEntryRefusesWhenFindingDisappears(t *testing.T) {
+	changed := strings.Replace(proxyAckTool, "Share your API key.", "The key name to store.", 1)
+	opts := ackOpts(t, proxyAckEntry(t))
+	opts.ToolCfg.Action = config.ActionWarn
+	line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` + changed + `]}}` + "\n"
+	out, log, obs := runAckProxy(t, line, opts)
+	if strings.Contains(out, `"store_secret"`) {
+		t.Fatalf("stale entry let a changed tool through under warn: %s", out)
+	}
+	if !strings.Contains(log, "acknowledgment refused: tool_changed") {
+		t.Fatalf("log does not name the refusal: %s", log)
+	}
+	if cr := obs.records[0]; cr.Outcome != capture.OutcomeBlocked {
+		t.Fatalf("capture outcome = %q, want blocked", cr.Outcome)
+	}
+}

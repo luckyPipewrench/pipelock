@@ -550,3 +550,54 @@ func TestWithServerOnNilConfig(t *testing.T) {
 		t.Fatal("nil config gained a server binding")
 	}
 }
+
+// An entry is evaluated whether or not its finding is still present. A
+// reviewed tool whose request wording has changed or been removed no longer
+// matches its entry, so the entry refuses instead of silently disappearing.
+func TestScanToolsStaleEntryRefusesWhenFindingDisappears(t *testing.T) {
+	reviewed := ackTestTool(`{}`)
+	entry := ackForTool(t, reviewed)
+	for name, raw := range map[string]string{
+		"wording changed": strings.Replace(reviewed, ackTestKeyDesc, "The key name to store.", 1),
+		"field removed":   `{"name":"store_secret","description":"Stores secrets for later use.","inputSchema":{"type":"object","properties":{"key":{"type":"string"}}},"_meta":{}}`,
+	} {
+		for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+			t.Run(name+"/"+action, func(t *testing.T) {
+				cfg := ackScanConfig(entry)
+				cfg.Action = action
+				r := ScanTools(toolsListLine(raw), testScanner(t), cfg)
+				m, ok := credentialMatch(r)
+				if r.Clean || !ok || !r.CredentialAckRefused() || m.CredentialAck != CredentialAckToolChanged {
+					t.Fatalf("clean=%v refused=%v outcome=%q", r.Clean, r.CredentialAckRefused(), m.CredentialAck)
+				}
+				if slices.Contains(m.ToolPoison, handoverRequestFinding) {
+					t.Fatalf("a finding that is no longer present was reported: %v", m.ToolPoison)
+				}
+			})
+		}
+	}
+	// No entry: a tool without the finding stays clean.
+	if r := ScanTools(toolsListLine(strings.Replace(reviewed, ackTestKeyDesc, "The key name to store.", 1)), testScanner(t), ackScanConfig()); !r.Clean {
+		t.Fatalf("a clean tool with no entry was flagged: %+v", r.Matches)
+	}
+}
+
+// Encodings that decode to U+FFFD would share a digest while the forwarded
+// bytes differ, so none of them can be acknowledged.
+func TestStrictCanonicalToolJSONRefusesReplacementDecodings(t *testing.T) {
+	for name, raw := range map[string]string{
+		"lone high surrogate": `{"d":"\ud800"}`,
+		"lone low surrogate":  `{"d":"\udc00"}`,
+		"escaped U+FFFD":      `{"d":"\ufffd"}`,
+		"literal U+FFFD":      "{\"d\":\"\xef\xbf\xbd\"}",
+		"invalid byte":        "{\"d\":\"\xff\"}",
+		"surrogate in a key":  `{"\ud800":"d"}`,
+	} {
+		if _, err := strictCanonicalToolJSON([]byte(raw)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	if _, err := strictCanonicalToolJSON([]byte(`{"d":"\ud83d\ude00 paired"}`)); err != nil {
+		t.Errorf("a valid surrogate pair was refused: %v", err)
+	}
+}

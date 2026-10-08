@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -113,6 +114,12 @@ func completeToolDigest(t ToolDef) (string, bool) {
 // object, and trailing data after it. It is used only to decide whether an
 // acknowledgment may apply.
 func strictCanonicalToolJSON(raw []byte) ([]byte, error) {
+	// Invalid UTF-8, a lone surrogate escape and U+FFFD itself all decode to
+	// U+FFFD, so their canonical forms would collide while the forwarded
+	// bytes differ. Refuse them: such a definition cannot be acknowledged.
+	if !utf8.Valid(raw) {
+		return nil, fmt.Errorf("tool definition is not valid UTF-8")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	first, err := dec.Token()
@@ -150,6 +157,9 @@ func canonicalObject(dec *json.Decoder, out *bytes.Buffer, depth int) error {
 		key, ok := tok.(string)
 		if !ok {
 			return fmt.Errorf("object key is not a string")
+		}
+		if strings.ContainsRune(key, utf8.RuneError) {
+			return fmt.Errorf("object key decodes to U+FFFD")
 		}
 		if _, dup := members[key]; dup {
 			return fmt.Errorf("duplicate member %q", key)
@@ -218,6 +228,15 @@ func canonicalValue(dec *json.Decoder, out *bytes.Buffer, depth int) error {
 		}
 	case json.Number:
 		out.WriteString(v.String())
+	case string:
+		if strings.ContainsRune(v, utf8.RuneError) {
+			return fmt.Errorf("string value decodes to U+FFFD")
+		}
+		enc, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		out.Write(enc)
 	default:
 		enc, err := json.Marshal(v)
 		if err != nil {

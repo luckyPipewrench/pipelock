@@ -2136,10 +2136,11 @@ func checkToolPoison(text string) []string {
 			// attempt to recognize a genuine refusal ("never share your API
 			// key") was defeated by a later redirect phrased some new way, and
 			// real servers do not word their tool documentation like this.
-			// There is no per-tool or per-finding acknowledgment for these
-			// findings; the operator controls are mcp_tool_scanning.action
-			// and mcp_tool_scanning.enabled, as described above
-			// contextLeakParamPattern.
+			// Detection itself has no exception. A reviewed tool can be
+			// acknowledged per server, tool and occurrence list through
+			// mcp_tool_scanning.acknowledged_findings, which ScanTools applies
+			// after this match; mcp_tool_scanning.action and enabled remain
+			// the broad controls.
 			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
 				offset = loc[1]
 				continue
@@ -2654,21 +2655,23 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// Normalization prevents zero-width char and confusable bypasses.
 			norm := normalize.ForToolText(text)
 			poison := checkToolPoison(norm)
-			if slices.Contains(poison, handoverRequestFinding) {
+			hasRequest := slices.Contains(poison, handoverRequestFinding)
+			// A configured entry is evaluated whether or not its finding is
+			// still present: a reviewed tool whose wording changed or was
+			// removed no longer matches the entry, and that must refuse rather
+			// than let the stale entry go unnoticed.
+			entry, hasEntry := findCredentialAck(cfg, tool.Name)
+			if hasRequest || hasEntry {
 				// The attribution reads the exact text, spans and normalized
 				// string checkToolPoison just matched.
 				att := attributeWithNorm(text, norm, spans)
-				entry, hasEntry := findCredentialAck(cfg, tool.Name)
-				if !hasEntry {
+				switch {
+				case !hasEntry:
 					match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
-				}
-				if hasEntry {
+				default:
 					outcome := evaluateCredentialAck(entry, cfg, tool, att, cfg.now())
 					match.CredentialAck = outcome
-					if outcome != CredentialAckAcknowledged {
-						match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
-					}
-					if outcome == CredentialAckAcknowledged {
+					if outcome == CredentialAckAcknowledged && hasRequest {
 						// Only this finding is lifted. The raw finding and its
 						// treatment stay visible as an observation for audit.
 						poison = slices.DeleteFunc(slices.Clone(poison), func(f string) bool { return f == handoverRequestFinding })
@@ -2678,7 +2681,16 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 							CredentialAck: CredentialAckAcknowledged,
 						})
 					} else {
+						if outcome == CredentialAckAcknowledged {
+							// Unreachable while entries must list at least one
+							// occurrence; refuse rather than accept a vacuous
+							// acknowledgment.
+							match.CredentialAck = CredentialAckOccurrencesChanged
+						}
 						hasFinding = true
+						if hasRequest {
+							match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
+						}
 					}
 				}
 			}

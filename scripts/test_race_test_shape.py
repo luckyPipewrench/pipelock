@@ -202,7 +202,7 @@ class TestRaceTestShape(unittest.TestCase):
         )
 
     def test_oss_proxy_shape_limits_package_fanout(self) -> None:
-        for shard, flag in (("proxy-0", "-run="), ("proxy-1", "-skip=")):
+        for shard, flag in (("proxy-0", "-run="), ("proxy-1", "-run="), ("proxy-2", "-skip=")):
             with self.subTest(shard=shard):
                 command = printed_command("--shard", shard)
 

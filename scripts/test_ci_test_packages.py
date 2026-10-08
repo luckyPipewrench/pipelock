@@ -18,12 +18,15 @@ import sys
 
 from scripts import ci_test_packages
 from scripts.ci_test_packages import (
+    HEAVY_TREES,
     PACKAGE_SHARDS,
     SHARDS,
     TEST_SPLITS,
     exact_names_regex,
+    load_durations,
     name_bucket,
     package_in_tree,
+    partition_names,
     package_suffix,
     partition_errors,
     select_packages,
@@ -198,6 +201,7 @@ class TestPackageSharding(unittest.TestCase):
             "example.test/pipelock/internal/proxy/cache",
             "example.test/pipelock/internal/scanner",
             "example.test/pipelock/internal/mcp/http",
+            "example.test/pipelock/internal/cli/runtime",
             "example.test/pipelock/internal/config",
             "example.test/pipelock/enterprise/dashboard",
         ]
@@ -332,9 +336,10 @@ class TestTestNameSplit(unittest.TestCase):
             "example.test/pipelock/internal/scanner",
             "example.test/pipelock/internal/mcp",
             "example.test/pipelock/internal/mcp/jsonrpc",
+            "example.test/pipelock/internal/cli/runtime",
         ]
         for tree in TEST_SPLITS:
-            expected = [pkg for pkg in packages if package_in_tree(pkg, f"internal/{tree}")]
+            expected = [pkg for pkg in packages if package_in_tree(pkg, HEAVY_TREES[tree])]
             for index in range(TEST_SPLITS[tree]):
                 with self.subTest(shard=f"{tree}-{index}"):
                     self.assertEqual(select_packages(packages, f"{tree}-{index}"), expected)
@@ -359,7 +364,7 @@ class TestTestNameSplit(unittest.TestCase):
             with self.subTest(name=unseen):
                 self.assertNotIn(unseen, self.NAMES)
                 self.assertEqual(len(_selected_by(selectors, unseen)), 1)
-                self.assertEqual(_selected_by(selectors, unseen), ["scanner-1"])
+                self.assertEqual(_selected_by(selectors, unseen), [f"scanner-{TEST_SPLITS['scanner'] - 1}"])
 
     def test_partition_is_stable_across_order_and_process(self) -> None:
         first = self.selectors("proxy", self.NAMES)
@@ -401,7 +406,7 @@ class TestTestNameSplit(unittest.TestCase):
         # brackets (splitRegexp in testing/match.go). A top-level '|' drops the
         # anchors from each piece, so `^(?:TestA)|^(?:TestB)$` also runs
         # TestAExtra. Every generated selector must stay one piece.
-        for shard in ("proxy-0", "proxy-1", "scanner-0", "scanner-1"):
+        for shard in (f"{tree}-{index}" for tree in TEST_SPLITS for index in range(TEST_SPLITS[tree])):
             with self.subTest(shard=shard):
                 pattern = shard_selector(shard).partition("=")[2]
                 self.assertEqual(_go_split_regexp(pattern), [[pattern]])
@@ -410,13 +415,14 @@ class TestTestNameSplit(unittest.TestCase):
 
     def test_prefix_collision_across_sub_shards_selects_each_once(self) -> None:
         names = ["TestScan", "TestScanTextForDLP"]
-        count = 2
-        # Find a pairing where the shorter name sits in the -run bucket, so an
+        count = TEST_SPLITS["scanner"]
+        last = count - 1
+        # Find a pairing where the shorter name sits in a -run bucket, so an
         # unanchored -run would also claim the longer name from the -skip side.
-        for suffix in range(200):
+        for suffix in range(2000):
             short, long_ = f"TestScan{suffix}", f"TestScan{suffix}TextForDLP"
-            if name_bucket(short, count) == 0 and name_bucket(long_, count) == 1:
-                names = [short, long_, "TestOther0", "TestOther1", "TestOther2", "TestOther3"]
+            if name_bucket(short, count) == 0 and name_bucket(long_, count) == last:
+                names = [short, long_, *(f"TestOther{index}" for index in range(40))]
                 break
         else:
             self.fail("no colliding pair found")
@@ -424,7 +430,7 @@ class TestTestNameSplit(unittest.TestCase):
         if not all(selectors.values()):
             self.skipTest("fixture produced an empty bucket")
         self.assertEqual(partition_errors(names, selectors), [])
-        self.assertEqual(_selected_by(selectors, long_), ["scanner-1"])
+        self.assertEqual(_selected_by(selectors, long_), [f"scanner-{last}"])
 
     def test_empty_bucket_and_oversize_selector_fail_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "would select no tests"):
@@ -434,6 +440,84 @@ class TestTestNameSplit(unittest.TestCase):
         huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
         with self.assertRaisesRegex(ValueError, "raise TEST_SPLITS"):
             shard_selector("proxy-0", huge)
+
+    def test_weighted_partition_balances_time_not_count(self) -> None:
+        # Two slow tests that a name hash could put together must land apart,
+        # and the fast tests fill around them.
+        weights = {"TestSlowA": 300.0, "TestSlowB": 290.0, **{f"TestFast{i}": 1.0 for i in range(40)}}
+        buckets = partition_names(list(weights), 2, weights)
+        loads = [sum(weights[name] for name in bucket) for bucket in buckets]
+        self.assertNotEqual(
+            "TestSlowA" in buckets[0], "TestSlowB" in buckets[0], "slow tests share a bucket"
+        )
+        self.assertLessEqual(max(loads) - min(loads), max(weights.values()))
+        self.assertCountEqual([n for b in buckets for n in b], list(weights))
+
+    def test_weighted_partition_is_deterministic_and_charges_unmeasured_the_median(self) -> None:
+        weights = {"TestA": 10.0, "TestB": 20.0, "TestC": 30.0}
+        names = ["TestA", "TestB", "TestC", "TestNew1", "TestNew2"]
+        first = partition_names(names, 2, weights)
+        self.assertEqual(first, partition_names(list(reversed(names)) + names[:2], 2, weights))
+        # Median of measured names is 20s, so each unmeasured name weighs 20s.
+        # Longest first: C(30)|B(20), New1->1, New2->0, A->1 gives 50 | 50.
+        self.assertEqual(first, [["TestC", "TestNew2"], ["TestA", "TestB", "TestNew1"]])
+
+    def test_weighted_selectors_stay_disjoint_and_complete(self) -> None:
+        weights = {name: float(len(name) % 7 + 1) for name in self.NAMES}
+        for tree in TEST_SPLITS:
+            with self.subTest(tree=tree):
+                selectors = {
+                    f"{tree}-{index}": shard_selector(f"{tree}-{index}", self.NAMES, weights)
+                    for index in range(TEST_SPLITS[tree])
+                }
+                self.assertEqual(partition_errors(self.NAMES, selectors), [])
+                for unseen in ("TestAddedLater", "FuzzNew"):
+                    self.assertEqual(_selected_by(selectors, unseen), [f"{tree}-{TEST_SPLITS[tree] - 1}"])
+
+    def test_durations_file_is_valid_and_names_only_split_trees(self) -> None:
+        durations = load_durations()
+        self.assertTrue(durations, "scripts/ci_test_durations.json is missing or empty")
+        self.assertLessEqual(set(durations), set(TEST_SPLITS))
+        for tree in TEST_SPLITS:
+            with self.subTest(tree=tree):
+                self.assertIn(tree, durations, f"no measured durations for split tree {tree}")
+
+    def test_zero_weights_still_fill_every_bucket(self) -> None:
+        names = [f"TestZero{index}" for index in range(12)]
+        buckets = partition_names(names, 4, dict.fromkeys(names, 0.0))
+        self.assertTrue(all(buckets), buckets)
+        self.assertEqual(sorted(len(bucket) for bucket in buckets), [3, 3, 3, 3])
+
+    def test_final_shard_oversize_names_a_remedy_that_shrinks_it(self) -> None:
+        huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
+        last = f"proxy-{TEST_SPLITS['proxy'] - 1}"
+        with self.assertRaises(ValueError) as caught:
+            shard_selector(last, huge)
+        self.assertIn("lower TEST_SPLITS", str(caught.exception))
+        self.assertNotIn("raise TEST_SPLITS", str(caught.exception))
+
+    def test_duration_refresh_merges_per_name_and_drops_removed_tests(self) -> None:
+        from scripts.ci_test_durations import merge
+
+        previous = {"proxy": {"TestA": 10.0, "TestB": 20.0, "TestGone": 5.0}}
+        measured = {"proxy": {"TestA": 3.0}}
+        inventory = {"proxy": {"TestA", "TestB"}}
+        merged = merge(previous, measured, inventory)["trees"]
+        # TestA re-measured faster, TestB kept, TestGone no longer in the tree.
+        self.assertEqual(merged["proxy"], {"TestA": 3.0, "TestB": 20.0})
+        # A refresh that measured nothing in a tree keeps that tree intact.
+        self.assertEqual(merge(previous, {}, None)["trees"]["proxy"], previous["proxy"])
+
+    def test_malformed_durations_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "durations.json"
+            self.assertEqual(load_durations(path), {})
+            for bad in ('{"proxy": {}}', '{"trees": {"proxy": []}}', '{"trees": {"proxy": {"TestA": -1}}}',
+                        '{"trees": {"proxy": {"TestA": "5"}}}', '{"trees": {"proxy": {"TestA": true}}}'):
+                with self.subTest(bad=bad):
+                    path.write_text(bad, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_durations(path)
 
     def test_unsplit_shards_have_no_selector(self) -> None:
         for shard in ("rest-0", "rest-1", "rest-2"):
@@ -474,7 +558,7 @@ class TestTestNameSplit(unittest.TestCase):
             )
         for tree in TEST_SPLITS:
             with self.subTest(tree=tree):
-                names = tree_test_names(ci_test_packages.ROOT / "internal" / tree)
+                names = tree_test_names(ci_test_packages.ROOT / HEAVY_TREES[tree])
                 self.assertGreater(len(names), 100)
                 selectors = self.selectors(tree, names)
                 self.assertEqual(partition_errors(names, selectors), [])

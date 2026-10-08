@@ -24,6 +24,7 @@ from scripts.ci_test_packages import (
     TEST_SPLITS,
     exact_names_regex,
     load_durations,
+    load_package_durations,
     name_bucket,
     package_in_tree,
     partition_names,
@@ -251,6 +252,33 @@ class TestPackageSharding(unittest.TestCase):
             max(len(shard) for shard in rest_shards) - min(len(shard) for shard in rest_shards),
             1,
         )
+
+    def test_weighted_rest_shards_balance_time_and_cover_every_package_once(self) -> None:
+        packages = [f"example.test/pipelock/internal/p{index}" for index in range(12)] + [
+            "example.test/pipelock/internal/proxy",
+            "example.test/pipelock/internal/scanner",
+        ]
+        weights = {"example.test/pipelock/internal/p0": 300.0, "example.test/pipelock/internal/p1": 290.0}
+        weights.update({f"example.test/pipelock/internal/p{index}": 10.0 for index in range(2, 12)})
+        shards = [select_packages(packages, shard, weights) for shard in ("rest-0", "rest-1", "rest-2")]
+        rest = [pkg for pkg in packages if pkg in weights]
+        self.assertCountEqual([pkg for shard in shards for pkg in shard], rest)
+        self.assertFalse(any("p0" in pkg for pkg in shards[0]) and any("p1" in pkg for pkg in shards[0]))
+        loads = [sum(weights[pkg] for pkg in shard) for shard in shards]
+        self.assertLessEqual(max(loads) - min(loads), 300.0)
+        self.assertTrue(all(shards), shards)
+
+    def test_real_package_weights_load_and_are_valid(self) -> None:
+        weights = load_package_durations()
+        self.assertTrue(weights, "scripts/ci_test_durations.json has no rest package weights")
+        self.assertTrue(all(value >= 0 for value in weights.values()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "durations.json"
+            path.write_text('{"trees": {}}', encoding="utf-8")
+            self.assertEqual(load_package_durations(path), {})
+            path.write_text('{"trees": {}, "packages": {"x": -1}}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_package_durations(path)
 
     def test_nested_internal_directory_cannot_impersonate_heavy_shard(self) -> None:
         package = "example.test/pipelock/internal/config/internal/proxy"

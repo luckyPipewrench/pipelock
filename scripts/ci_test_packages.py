@@ -143,13 +143,24 @@ PACKAGE_SHARDS = tuple(
 )
 
 
-def select_packages(packages: list[str], shard: str) -> list[str]:
+def select_packages(
+    packages: list[str], shard: str, package_weights: dict[str, float] | None = None
+) -> list[str]:
+    """Return the packages a shard runs.
+
+    Rest packages are dealt round-robin by name, or, with measured package
+    seconds, packed longest first onto the least-loaded rest shard. Either way
+    every rest package lands in exactly one rest shard.
+    """
     heavy_roots = tuple(HEAVY_TREES.values())
     if shard in REST_SHARDS:
         rest_packages = sorted(
             pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)
         )
         shard_index = REST_SHARDS.index(shard)
+        if package_weights:
+            buckets = partition_names(rest_packages, len(REST_SHARDS), package_weights)
+            return buckets[shard_index]
         return [pkg for index, pkg in enumerate(rest_packages) if index % len(REST_SHARDS) == shard_index]
 
     located = shard_tree(shard)
@@ -213,17 +224,28 @@ def load_durations(path: Path = DURATIONS_FILE) -> dict[str, dict[str, float]]:
     trees = data.get("trees") if isinstance(data, dict) else None
     if not isinstance(trees, dict):
         raise ValueError(f"{path.name}: expected a 'trees' object")
-    durations: dict[str, dict[str, float]] = {}
-    for tree, tests in trees.items():
-        if not isinstance(tests, dict):
-            raise ValueError(f"{path.name}: tree {tree!r} must map test names to seconds")
-        clean: dict[str, float] = {}
-        for name, seconds in tests.items():
-            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
-                raise ValueError(f"{path.name}: {tree}.{name} must be non-negative seconds")
-            clean[name] = float(seconds)
-        durations[tree] = clean
-    return durations
+    return {tree: _seconds_map(path, tree, tests) for tree, tests in trees.items()}
+
+
+def load_package_durations(path: Path = DURATIONS_FILE) -> dict[str, float]:
+    """Read measured seconds per rest-shard package; absent means round-robin."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or "packages" not in data:
+        return {}
+    return _seconds_map(path, "packages", data["packages"])
+
+
+def _seconds_map(path: Path, label: str, values: object) -> dict[str, float]:
+    if not isinstance(values, dict):
+        raise ValueError(f"{path.name}: {label!r} must map names to seconds")
+    clean: dict[str, float] = {}
+    for name, seconds in values.items():
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+            raise ValueError(f"{path.name}: {label}.{name} must be non-negative seconds")
+        clean[name] = float(seconds)
+    return clean
 
 
 def partition_names(
@@ -395,7 +417,7 @@ def main() -> int:
         if args.selector:
             print(shard_selector(args.shard))
             return 0
-        packages = select_packages(list_packages(args.tags), args.shard)
+        packages = select_packages(list_packages(args.tags), args.shard, load_package_durations())
     except (subprocess.CalledProcessError, ValueError) as err:
         print(f"ci_test_packages.py: {err}", file=sys.stderr)
         return 1

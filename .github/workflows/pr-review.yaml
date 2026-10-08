@@ -33,9 +33,6 @@ jobs:
       review_mode: >-
         ${{ github.event.comment.body == '/review deep' && 'deep' ||
             'default' }}
-      # A same-repository reusable call resolves this workflow at github.sha.
-      # External callers use an explicit full SHA in both positions instead.
-      reviewer_sha: ${{ github.sha }}
     secrets:
       review_token: ${{ secrets.GITHUB_TOKEN }}
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}

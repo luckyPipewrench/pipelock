@@ -1172,7 +1172,7 @@ var handoverPossessivePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb 
 // password". The noun set is narrower than the possessive form because a bare
 // "token" or "secret" is too common as an ordinary noun.
 var handoverBarePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
-	`(?:(?:the|a|an|any|all)\s+)?(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
+	`[*_\x60]*(?:(?:the|a|an|any|all)\s+)?[*_\x60]*(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
 	`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
 	handoverRequestEnd)
 

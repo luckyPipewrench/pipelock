@@ -1038,6 +1038,41 @@ func TestDashboardOIDC_JWKSRefreshAdmitsDelayedCallerOnce(t *testing.T) {
 	}
 }
 
+// A delayed caller whose intervening refresh has itself expired must fetch
+// again instead of reusing those keys.
+func TestDashboardOIDC_JWKSDelayedCallerPastRefreshLifetimeFetches(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	cache := auth.keys
+	clock := now // read and written only under cache.mu
+
+	cache.mu.Lock()
+	cache.now = func() time.Time { return clock }
+	cache.expiresAt = now.Add(-time.Second)
+	observed := cache.generation
+	cache.mu.Unlock()
+
+	if err := cache.refreshSince(context.Background(), observed); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	cache.mu.Lock()
+	clock = now.Add(2 * time.Hour)
+	cache.mu.Unlock()
+	if err := cache.refreshSince(context.Background(), observed); err != nil {
+		t.Fatalf("delayed refresh: %v", err)
+	}
+	if got := p.jwksReads.Load(); got != 3 {
+		t.Fatalf("JWKS reads = %d, want a fresh fetch for the caller delayed past the refresh lifetime", got)
+	}
+	cache.mu.Lock()
+	fresh := clock.Before(cache.expiresAt)
+	cache.mu.Unlock()
+	if !fresh {
+		t.Fatal("cache still expired after the delayed caller's refresh")
+	}
+}
+
 // A failed refresh must not satisfy a delayed caller: it fetches for itself
 // and an expired cache is never served as though it had been refreshed.
 func TestDashboardOIDC_JWKSFailedRefreshDoesNotSatisfyDelayedCaller(t *testing.T) {

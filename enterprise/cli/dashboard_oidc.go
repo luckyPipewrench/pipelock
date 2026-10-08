@@ -482,6 +482,10 @@ func (c *dashboardJWKSCache) refreshSince(ctx context.Context, observed uint64) 
 	return c.admitRefresh(ctx, observed, true)
 }
 
+// admitRefresh joins an in-flight fetch or starts one. A conditional caller is
+// satisfied without fetching only when a refresh succeeded after it observed
+// the cache and that refresh's keys have not expired since; a caller delayed
+// past that lifetime fetches again rather than reuse expired keys.
 func (c *dashboardJWKSCache) admitRefresh(ctx context.Context, observed uint64, conditional bool) error {
 	c.mu.Lock()
 	if r := c.inflight; r != nil {
@@ -493,7 +497,7 @@ func (c *dashboardJWKSCache) admitRefresh(ctx context.Context, observed uint64, 
 			return ctx.Err()
 		}
 	}
-	if conditional && c.generation != observed {
+	if conditional && c.generation != observed && c.now().Before(c.expiresAt) {
 		c.mu.Unlock()
 		return nil
 	}

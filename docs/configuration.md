@@ -1525,6 +1525,55 @@ pipelock signing reset inspect \
 pipelock signing reset revoke --file /run/pipelock/mcp-tool-drift.reset
 ```
 
+### Acknowledged credential-request findings
+
+A Credential Request Directive finding refuses the whole `tools/list` under `action: block`. When you've reviewed a tool and its wording is fine, for example placeholder text or a server that does take a key as a parameter, you can acknowledge that exact tool instead of turning scanning down.
+
+An acknowledgment covers one finding in one tool from one configured server. It lifts only that finding. Every other finding on the tool and every other gate still applies. It doesn't say the text is harmless, only that someone reviewed this tool's complete content. Pipelock compares the whole definition after normalizing it to canonical JSON, so reordering object members doesn't change it and any other edit does.
+
+To get the values, run the proxy with `--server-name`. At startup Pipelock prints the server's transport binding digest. When a tool raises the finding and each match sits wholly within one field, Pipelock logs a one-line JSON entry to copy after you've reviewed the tool. Add `owner`, `reason` and `expires` to it. The entry holds digests and field pointers, never field text. No entry is offered when a match spans two fields, sits in a name, title, output schema or metadata, or when there are more than 64 matches, and the finding keeps enforcing.
+
+```yaml pipelock-fragment
+# pipelock-fragment-id: mcp-acknowledged-findings
+mcp_tool_scanning:
+  enabled: true
+  action: block
+  acknowledged_findings:
+    - server: vault
+      server_binding_sha256: <printed at startup>
+      tool: store_secret
+      finding: Credential Request Directive
+      family_revision: 1
+      tool_sha256: <from the logged entry>
+      occurrences:
+        - field: /inputSchema/properties/key/description
+          field_text_sha256: <from the logged entry>
+          pattern: 0
+          ordinal: 0
+          start: 0
+          end: 19
+          match_sha256: <from the logged entry>
+      owner: platform team
+      reason: placeholder parameter text, reviewed
+      expires: 2026-12-01
+```
+
+An entry stops applying when any of these change:
+
+- The tool definition: every member, including `_meta` and any provenance it carries, the text of a field holding a match, or the set of matches.
+- The detector's patterns. A maintainer raises `family_revision` by hand whenever the patterns change, and a test that pins the pattern sources fails until they do. Pipelock doesn't bump it automatically. After a release with a new revision, every entry for the finding goes stale. Review the tool again and add the entry Pipelock logs for the new revision.
+- The transport binding: the upstream URL (scheme, host, user info, path, the query exactly as written, fragment) or the subprocess command, the upstream headers Pipelock sends, and the child environment you set with `--env`, `--env-carrier`, `--env-file-carrier` and `--env-unset`. Rotating a credential held in one of those headers or variables changes the binding too.
+- The expiry. `expires` is required: a UTC timestamp ending in `Z` at most 180 days ahead, or a `YYYY-MM-DD` date at most 180 days ahead that holds through the end of that UTC day. It's checked on every scan.
+
+An entry that exists for the server and tool but no longer matches refuses the `tools/list` under every action, `warn` included, and the log names the reason. With no entry, the finding follows `action` as usual, so removing an entry under `warn` goes back to warning.
+
+Limits worth knowing:
+
+- Environment the server inherits without you naming it isn't part of the binding.
+- The binding digest is printed. If a header or variable it covers holds a short or guessable secret, the digest can be guessed offline, so use high-entropy tokens there.
+- `pipelock mcp proxy` reads its configuration once per session. Revoking an entry there takes a restart, though expiry still applies right away. The HTTP listener under `pipelock run` applies changes on the next `tools/list`.
+- An acknowledged `tools/list` is forwarded with the finding present. It's logged, captured as warned and receipted with an allow verdict, and it earns no adaptive-enforcement credit.
+
 ## MCP Tool Policy
 
 Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 30 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, protected-path and audit-log tampering, and encoded command execution.

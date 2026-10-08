@@ -224,3 +224,31 @@ func TestImageSplicedFallbackKeepsJoinedFinding(t *testing.T) {
 		}
 	})
 }
+
+// The empty-rescan fallback keeps a joined finding on the assumption that the
+// joined scan and the first rescan read the same text. Text DLP excises
+// verified images before matching, so neither scan sees raw image base64 and a
+// finding cannot come only from bytes the rescan removed.
+func TestImageSpliceRescanWindowMatchesDLPInput(t *testing.T) {
+	image := dataURLForPNGBytes(t, randomPNG(t, 21))
+	for _, text := range []string{
+		"before " + image + " after",
+		image,
+		"a " + image + " b " + image + " c",
+	} {
+		excised, decoded, removed := stripVerifiedImageDataURLSpans(text, true)
+		if len(removed) == 0 {
+			t.Fatalf("fixture image was not verified: %q", text[:min(len(text), 40)])
+		}
+		window := excised
+		if len(decoded) > 0 {
+			window = excised + "\n" + decoded
+		}
+		if got := exciseImagesRetainingDecodedForDLP(text); got != window {
+			t.Fatalf("rescan window differs from the text DLP input:\nwindow %q\ndlp    %q", window[:min(len(window), 80)], got[:min(len(got), 80)])
+		}
+		if strings.Contains(window, image) {
+			t.Fatal("rescan window still holds the raw image data URL")
+		}
+	}
+}

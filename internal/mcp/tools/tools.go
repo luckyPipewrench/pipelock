@@ -112,6 +112,9 @@ type ToolScanMatch struct {
 	// reviewing the tool, to acknowledge its current occurrences. Set only
 	// when every occurrence is attributable and the server is configured.
 	CredentialAckCandidate *CredentialAckCandidate `json:"credential_ack_candidate,omitempty"`
+	// CredentialAckUnsupported says why no candidate can be offered for a
+	// fully attributable tool, such as more occurrences than an entry holds.
+	CredentialAckUnsupported string `json:"credential_ack_unsupported,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -2657,13 +2660,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				att := attributeWithNorm(text, norm, spans)
 				entry, hasEntry := findCredentialAck(cfg, tool.Name)
 				if !hasEntry {
-					match.CredentialAckCandidate = credentialAckCandidate(cfg, tool, att)
+					match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
 				}
 				if hasEntry {
 					outcome := evaluateCredentialAck(entry, cfg, tool, att, cfg.now())
 					match.CredentialAck = outcome
 					if outcome != CredentialAckAcknowledged {
-						match.CredentialAckCandidate = credentialAckCandidate(cfg, tool, att)
+						match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
 					}
 					if outcome == CredentialAckAcknowledged {
 						// Only this finding is lifted. The raw finding and its

@@ -380,7 +380,41 @@ type CredentialAckOccurrence struct {
 	MatchSHA256     string `json:"match_sha256"`
 }
 
-func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialRequestAttribution) *CredentialAckCandidate {
+// credentialAckCandidate returns the candidate, or nil and the reason an
+// entry cannot represent this tool. A tool with no candidate still enforces.
+func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialRequestAttribution) (*CredentialAckCandidate, string) {
+	c := buildCredentialAckCandidate(cfg, tool, att)
+	if c == nil {
+		return nil, ""
+	}
+	// The real configuration validator is the oracle: an entry it would
+	// refuse (too many occurrences, an unusable name) is never offered.
+	probe := c.entry()
+	probe.Owner, probe.Reason = "operator", "reviewed"
+	probe.Expires = cfg.now().Add(24 * time.Hour).Format(time.RFC3339)
+	if err := config.ValidateMCPAcknowledgedFinding(probe, cfg.now()); err != nil {
+		return nil, err.Error()
+	}
+	return c, ""
+}
+
+// entry converts the candidate to a configuration entry without the fields
+// only an operator can supply.
+func (c *CredentialAckCandidate) entry() config.MCPAcknowledgedFinding {
+	e := config.MCPAcknowledgedFinding{
+		Server: c.Server, ServerBindingSHA256: c.ServerBindingSHA256, Tool: c.Tool, Finding: c.Finding,
+		FamilyRevision: c.FamilyRevision, ToolSHA256: c.ToolSHA256,
+	}
+	for _, o := range c.Occurrences {
+		e.Occurrences = append(e.Occurrences, config.MCPAckOccurrence{
+			Field: o.Field, FieldTextSHA256: o.FieldTextSHA256, Pattern: o.Pattern, Ordinal: o.Ordinal,
+			Start: o.Start, End: o.End, MatchSHA256: o.MatchSHA256,
+		})
+	}
+	return e
+}
+
+func buildCredentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialRequestAttribution) *CredentialAckCandidate {
 	if cfg == nil || cfg.ServerName == "" || cfg.ServerBindingSHA256 == "" || !att.Attributable || len(att.Occurrences) == 0 {
 		return nil
 	}
@@ -414,6 +448,12 @@ func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialReq
 // add once they have reviewed the tool. It never prints field text.
 func logCredentialAckCandidate(logW io.Writer, lineNum int, m ToolScanMatch) {
 	if m.CredentialAckCandidate == nil {
+		if m.CredentialAckUnsupported != "" {
+			// Neutral on purpose: whether the list is refused depends on the
+			// action and on any configured entry, decided elsewhere.
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: no acknowledgment candidate available (%s)\n",
+				lineNum, m.ToolName, m.CredentialAckUnsupported)
+		}
 		return
 	}
 	enc, err := json.Marshal(m.CredentialAckCandidate)

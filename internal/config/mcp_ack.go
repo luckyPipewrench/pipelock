@@ -283,3 +283,10 @@ func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, now time.
 	}
 	return nil
 }
+
+// ValidateMCPAcknowledgedFinding checks one entry exactly as configuration
+// load does. The tool scanner uses it before offering an operator a
+// candidate, so it never prints an entry the configuration would refuse.
+func ValidateMCPAcknowledgedFinding(e MCPAcknowledgedFinding, now time.Time) error {
+	return validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, now)
+}

@@ -165,6 +165,10 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         contract = helper["on"]["workflow_call"]
         self.assertNotIn("secrets", contract)
         self.assertEqual(contract["inputs"]["reviewer_sha"]["required"], "false")
+        typed = yaml.safe_load(SOURCE_WORKFLOW.read_text(encoding="utf-8"))
+        # PyYAML's YAML 1.1 resolver also treats the key 'on' as boolean true.
+        trigger = typed.get("on", typed.get(True))
+        self.assertIs(trigger["workflow_call"]["inputs"]["reviewer_sha"]["required"], False)
         self.assertEqual(contract["inputs"]["reviewer_sha"]["default"], "")
         self.assertEqual(contract["outputs"]["reviewer_sha"]["value"], "${{ jobs.source.outputs.reviewer_sha }}")
         self.assertEqual(helper["permissions"], {})
@@ -6355,6 +6359,26 @@ class RateLimitRetryTest(OfflineReviewTestCase):
             pr_review.call_model("s", "u", "default", "review-chunk-1", "corr")
         self.assertEqual(post.call_count, 3, "a 429 must be retried, not surfaced as a failure")
         self.assertTrue(slept.called, "a retry without backoff would hammer a rate-limited provider")
+
+    def test_untrusted_response_metadata_and_text_types(self):
+        for finish in ([], {}, None, 1, "stop", "unknown-value"):
+            with self.subTest(finish=finish):
+                response = self._response(200)
+                response.json.return_value["choices"][0]["finish_reason"] = finish
+                with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), mock.patch.object(
+                    pr_review.requests, "post", return_value=response
+                ) as post:
+                    self.assertEqual(pr_review.call_model("s", "u", "default", "judge", "corr"), {})
+                self.assertEqual(post.call_count, 1)
+        for text in ([], {}, None, 1):
+            with self.subTest(text=text):
+                response = self._response(200)
+                response.json.return_value["choices"][0]["message"]["content"] = [{"text": text}]
+                with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), mock.patch.object(
+                    pr_review.requests, "post", return_value=response
+                ) as post, self.assertRaises(pr_review.ModelOutputError):
+                    pr_review.call_model("s", "u", "default", "judge", "corr")
+                self.assertEqual(post.call_count, 1)
 
     def test_sustained_429_raises_a_rate_limit_error(self):
         with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \

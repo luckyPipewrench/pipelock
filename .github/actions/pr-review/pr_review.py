@@ -1159,6 +1159,8 @@ def _content_from_response(data: object) -> str:
         raise ModelOutputError("provider response had no message")
     content = message.get("content")
     if isinstance(content, list):
+        if any(isinstance(part, dict) and not isinstance(part.get("text", ""), str) for part in content):
+            raise ModelOutputError("provider response had invalid text content")
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
         raise ModelOutputError("provider response had empty content")
@@ -1358,7 +1360,7 @@ def call_model(
             data = response.json()
             choices = data.get("choices") if isinstance(data, dict) else None
             finish = choices[0].get("finish_reason") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
-            log_phase(f"{phase}-finish", status=finish if finish in {"stop", "length", "content_filter", "tool_calls"} else "unknown", correlation=correlation)
+            log_phase(f"{phase}-finish", status=finish if isinstance(finish, str) and finish in {"stop", "length", "content_filter", "tool_calls"} else "unknown", correlation=correlation)
             usage = data.get("usage") if isinstance(data, dict) else None
             if isinstance(usage, dict):
                 details = usage.get("completion_tokens_details")

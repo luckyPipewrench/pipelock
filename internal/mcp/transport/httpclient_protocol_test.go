@@ -5,12 +5,14 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const protocolTestVersion = "2025-06-18"
@@ -335,5 +337,125 @@ func TestHTTPClientProtocolDeletedPendingInitialize(t *testing.T) {
 	drain(t, reader)
 	if got := <-seen; got != "" {
 		t.Fatalf("deleted session recovered protocol version from pending response: %q", got)
+	}
+}
+
+// protocolPausedReader holds a completed read until the test releases it.
+// Closing the body cannot undo bytes already obtained by the read goroutine.
+type protocolPausedReader struct {
+	reader interface {
+		MessageReader
+		io.Closer
+	}
+	ready   chan struct{}
+	release chan struct{}
+}
+
+func (r *protocolPausedReader) ReadMessage() ([]byte, error) {
+	msg, err := r.reader.ReadMessage()
+	close(r.ready)
+	<-r.release
+	return msg, err
+}
+
+func (r *protocolPausedReader) Close() error {
+	return r.reader.Close()
+}
+
+func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		for _, mode := range []string{"complete", "abort", "timeout", "replacement"} {
+			t.Run(fmt.Sprintf("sse=%t/%s", sse, mode), func(t *testing.T) {
+				seen := make(chan string, 2)
+				response := `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seen <- r.Header.Get(mcpProtocolVersionHeader)
+					body, _ := io.ReadAll(r.Body)
+					message := response
+					if strings.Contains(string(body), `"id":2`) {
+						message = `{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-03-26"}}`
+					}
+					if sse {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", message)
+					} else {
+						_, _ = io.WriteString(w, message)
+					}
+				}))
+				defer srv.Close()
+				client := NewHTTPClient(srv.URL, nil)
+				reader, err := client.SendMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				<-seen
+				negotiation := reader.(*initializeResponseReader)
+				paused := &protocolPausedReader{reader: negotiation.reader, ready: make(chan struct{}), release: make(chan struct{})}
+				t.Cleanup(func() {
+					select {
+					case <-paused.release:
+					default:
+						close(paused.release)
+					}
+				})
+				negotiation.reader = paused
+				var timeoutReader *TimeoutReader
+				if mode == "timeout" {
+					timeoutReader = NewTimeoutReader(reader, time.Millisecond)
+					reader = timeoutReader
+				}
+				result := make(chan ReadResult, 1)
+				go func() {
+					msg, readErr := reader.ReadMessage()
+					result <- ReadResult{Msg: msg, Err: readErr}
+				}()
+				<-paused.ready
+				if mode == "timeout" {
+					if got := <-result; !errors.Is(got.Err, ErrResponseTimeout) {
+						t.Fatalf("read error = %v, want timeout", got.Err)
+					}
+				}
+				if mode == "replacement" {
+					replacement, err := client.SendMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":2,"method":"initialize"}`))
+					if err != nil {
+						t.Fatal(err)
+					}
+					drain(t, replacement)
+					<-seen
+				}
+				if mode != "complete" {
+					if err := reader.(io.Closer).Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				close(paused.release)
+				completed := result
+				if timeoutReader != nil {
+					completed = timeoutReader.inflight
+				}
+				got := <-completed
+				if got.Err != nil || string(got.Msg) != response {
+					t.Fatalf("response = %s, error = %v", got.Msg, got.Err)
+				}
+				if err := negotiation.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reader, err = client.SendMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				drain(t, reader)
+				want := protocolTestVersion
+				switch mode {
+				case "abort", "timeout":
+					want = ""
+				case "replacement":
+					want = "2025-03-26"
+				}
+				if header := <-seen; header != want {
+					t.Fatalf("protocol header after Close = %q, want %q", header, want)
+				}
+			})
+		}
 	}
 }

@@ -314,6 +314,7 @@ type initializeResponseReader struct {
 	id         any
 	generation uint64
 	done       bool
+	closed     bool // guarded by client.sessionMu, alongside version commitment
 }
 
 func httpRPCID(raw json.RawMessage) any {
@@ -373,7 +374,7 @@ func (r *initializeResponseReader) ReadMessage() ([]byte, error) {
 		return msg, nil
 	}
 	r.client.sessionMu.Lock()
-	if r.client.initializeGeneration == r.generation {
+	if !r.closed && r.client.initializeGeneration == r.generation {
 		r.client.protocolVersion = version
 	}
 	r.client.sessionMu.Unlock()
@@ -381,6 +382,11 @@ func (r *initializeResponseReader) ReadMessage() ([]byte, error) {
 }
 
 func (r *initializeResponseReader) Close() error {
+	// Abort negotiation before closing the body: a concurrent read may already
+	// have obtained a response and otherwise commit it after this Close returns.
+	r.client.sessionMu.Lock()
+	r.closed = true
+	r.client.sessionMu.Unlock()
 	return r.reader.Close()
 }
 

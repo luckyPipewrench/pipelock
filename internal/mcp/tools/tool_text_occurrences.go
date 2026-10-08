@@ -74,19 +74,25 @@ func normalizedRegions(text, norm string, spans []toolTextSpan) ([]normalizedReg
 }
 
 // attributeCredentialRequests enumerates every Credential Request Directive
-// match in the scan text and attributes each one to its source field. It
-// steps through matches exactly as checkToolPoison does, resuming the search
-// on the remaining suffix after each match, so it reports the matches the
-// detector would see if it kept going past the first. It decides nothing
-// about whether the wording is harmless.
+// match in the scan text and attributes each one to its source field.
+//
+// Continuation contract: it steps through matches exactly as checkToolPoison
+// does, resuming the search on the remaining suffix after each match. "^"
+// therefore matches again at every resume point, which FindAll would not
+// allow, so a match can begin where the previous one consumed its clause
+// boundary. checkToolPoison stops at the first match of the family; this
+// continues with the same stepping, so the occurrences are what the detector
+// would report if it kept going. It decides nothing about whether the wording
+// is harmless.
 func attributeCredentialRequests(text string, spans []toolTextSpan) credentialRequestAttribution {
 	return attributeWithNorm(text, normalize.ForToolText(text), spans)
 }
 
 // attributeWithNorm is attributeCredentialRequests over an already normalized
-// text. The detector's normalizer is currently split-invariant, so its own
-// output always passes the gate; tests pass a mismatched norm to exercise the
-// fail-closed path a future boundary-sensitive normalizer would take.
+// text. No input found so far makes per-field normalization differ from the
+// whole, but that is an observation over finite probes, not a proof:
+// correctness rests on the unconditional byte-equality check in
+// normalizedRegions. Tests pass a mismatched norm to exercise that path.
 func attributeWithNorm(text, norm string, spans []toolTextSpan) credentialRequestAttribution {
 	regions, ok := normalizedRegions(text, norm, spans)
 

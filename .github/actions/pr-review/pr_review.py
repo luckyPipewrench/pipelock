@@ -4350,19 +4350,13 @@ def run_review(
             except ModelConnectionError:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis could not connect after one retry")
-                if reason := unverified_candidates_reason(candidates):
-                    progress.incomplete_reasons.append(reason)
             except ModelRateLimited as exc:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append(f"cross-file synthesis was rate limited ({exc})")
-                if reason := unverified_candidates_reason(candidates):
-                    progress.incomplete_reasons.append(reason)
             except ModelOutputError:
                 candidates.extend(salvage_findings(payload, {unit.path for unit in units if unit.representable}))
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append("cross-file synthesis was incomplete or invalid")
-                if reason := unverified_candidates_reason(candidates):
-                    progress.incomplete_reasons.append(reason)
         # Deliberately not gated on timed_out. A timeout used to end the chunk
         # loop, so there were no later candidates to judge; chunks now continue
         # past one, and gating here would discard findings that later chunks
@@ -4380,9 +4374,10 @@ def run_review(
             for item in carried:
                 if finding_fingerprint(item) not in known:
                     candidates.append(item)
-        judge_ready = bool(candidates) and not progress.aggregation_failed
-        if candidates and progress.aggregation_failed:
-            progress.unverified_candidates.extend(candidates)
+        # Synthesis failure leaves coverage incomplete, but does not invalidate
+        # candidates from successful chunks or valid salvaged response members.
+        # The judge still verifies each premise against immutable source.
+        judge_ready = bool(candidates)
         judge_deadline = provider_deadline - llm_call_budget_for(mode, "judge-repair")
         if judge_ready and not budget_allows(judge_deadline, mode, "judge"):
             progress.incomplete_reasons.append("wall-clock budget exhausted before the judge pass")

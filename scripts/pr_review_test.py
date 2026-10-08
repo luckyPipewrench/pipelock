@@ -6344,7 +6344,7 @@ class RateLimitRetryTest(OfflineReviewTestCase):
         slept.assert_called_once_with(10.0)
 
     @mock.patch.object(pr_review, "scan_status_comments", new=lambda *_args: ([], set(), True))
-    def _run_phase_rate_limit(self, *, synthesis: bool) -> tuple[str, object]:
+    def _run_phase_rate_limit(self, *, synthesis: bool, synthesis_error=None) -> tuple[str, object]:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         diff = "diff --git a/f.go b/f.go\n--- a/f.go\n+++ b/f.go\n@@ -1 +1 @@\n-old\n+new\n"
         discovery = {
@@ -6355,7 +6355,8 @@ class RateLimitRetryTest(OfflineReviewTestCase):
             "changes": [{"path": "f.go", "summary": "changed"}],
         }
         rate_limit = pr_review.ModelRateLimited("quota exhausted")
-        outcomes = [discovery, rate_limit] if synthesis else [discovery, {"findings": []}, rate_limit]
+        judged = {"findings": [{"index": 0, "verdict": "keep", "reason": "Source confirms the defect"}]}
+        outcomes = [discovery, synthesis_error or rate_limit, judged] if synthesis else [discovery, {"findings": []}, rate_limit]
         with mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), \
              mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), \
              mock.patch.object(pr_review, "compare_incompleteness", return_value=None), \
@@ -6375,6 +6376,23 @@ class RateLimitRetryTest(OfflineReviewTestCase):
         self.assertEqual(state, "partial")
         self.assertTrue(progress.aggregation_failed)
         self.assertTrue(any("synthesis was rate limited" in reason for reason in progress.incomplete_reasons))
+        self.assertEqual([finding.title for finding in progress.findings], ["unsafe"])
+        self.assertEqual(progress.unverified_candidates, [])
+
+    def test_synthesis_failure_preserves_independent_judgment(self):
+        for error in (
+            pr_review.ModelOutputError("malformed"),
+            pr_review.ModelTransportError("ambiguous request failure"),
+            pr_review.ModelHTTPError("HTTP 500"),
+            pr_review.ModelConnectionError("connection retry exhausted"),
+            pr_review.ModelTimeout("read timeout"),
+        ):
+            with self.subTest(failure=type(error).__name__):
+                state, progress = self._run_phase_rate_limit(synthesis=True, synthesis_error=error)
+                self.assertEqual(state, "partial")
+                self.assertEqual([finding.title for finding in progress.findings], ["unsafe"])
+                self.assertEqual(progress.unverified_candidates, [])
+                self.assertFalse(any("reports no findings" in reason for reason in progress.incomplete_reasons))
 
     def test_judge_rate_limit_is_partial_and_retains_candidates(self):
         state, progress = self._run_phase_rate_limit(synthesis=False)

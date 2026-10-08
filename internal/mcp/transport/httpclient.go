@@ -6,6 +6,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
@@ -47,6 +49,8 @@ var ErrUpstreamRequestFailed = errors.New("upstream request failed")
 var ErrInvalidPipelockSessionToken = errors.New("invalid Pipelock session token")
 
 const pipelockSessionTokenHeader = "Pipelock-Session-Token"
+
+const mcpProtocolVersionHeader = "Mcp-Protocol-Version"
 
 func validPipelockSessionToken(token string) bool {
 	if len(token) != 43 {
@@ -84,6 +88,8 @@ type HTTPClient struct {
 	sessionMu            sync.Mutex
 	sessionID            string
 	listenerSessionToken string
+	protocolVersion      string
+	initializeGeneration uint64
 }
 
 // NewHTTPClient creates an HTTPClient that POSTs JSON-RPC messages to url.
@@ -185,7 +191,16 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	req.Header.Del(pipelockSessionTokenHeader)
 
 	// Include Pipelock-managed correlation state if established.
+	initializeID := httpInitializeRequestID(msg)
 	c.sessionMu.Lock()
+	if initializeID != nil {
+		c.initializeGeneration++
+		c.protocolVersion = ""
+	}
+	generation := c.initializeGeneration
+	if c.protocolVersion != "" {
+		req.Header.Set(mcpProtocolVersionHeader, c.protocolVersion)
+	}
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}
@@ -269,15 +284,104 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Route based on Content-Type.
+	var reader interface {
+		MessageReader
+		io.Closer
+	}
 	if HasSingleSSEContentType(resp.Header) {
-		return &closingSSEReader{
+		reader = &closingSSEReader{
 			sse:  NewSSEReader(resp.Body),
 			body: resp.Body,
-		}, nil
+		}
+	} else {
+		reader = &SingleMessageReader{Body: resp.Body}
 	}
+	if initializeID != nil {
+		reader = &initializeResponseReader{reader: reader, client: c, id: initializeID, generation: generation}
+	}
+	return reader, nil
+}
 
-	// Default: treat as single JSON message.
-	return &SingleMessageReader{Body: resp.Body}, nil
+// Protocol negotiation observes framed responses without consuming or changing
+// the bytes that the MCP scanners receive. Only a matching initialize result can
+// change the transport header, including when SSE carries other messages first.
+type initializeResponseReader struct {
+	reader interface {
+		MessageReader
+		io.Closer
+	}
+	client     *HTTPClient
+	id         any
+	generation uint64
+	done       bool
+}
+
+func httpRPCID(raw json.RawMessage) any {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var id any
+	if decoder.Decode(&id) != nil {
+		return nil
+	}
+	switch id.(type) {
+	case string, json.Number:
+		return id
+	default:
+		return nil
+	}
+}
+
+func httpInitializeRequestID(msg []byte) any {
+	var request map[string]json.RawMessage
+	if json.Unmarshal(msg, &request) != nil {
+		return nil
+	}
+	var method, version string
+	if json.Unmarshal(request["method"], &method) != nil || method != "initialize" ||
+		json.Unmarshal(request["jsonrpc"], &version) != nil || version != "2.0" ||
+		jsonscan.RejectDuplicateKeys(msg) != nil {
+		return nil
+	}
+	return httpRPCID(request["id"])
+}
+
+func (r *initializeResponseReader) ReadMessage() ([]byte, error) {
+	msg, err := r.reader.ReadMessage()
+	if err != nil || r.done {
+		return msg, err
+	}
+	var response map[string]json.RawMessage
+	if json.Unmarshal(msg, &response) != nil || jsonscan.RejectDuplicateKeys(msg) != nil ||
+		httpRPCID(response["id"]) != r.id {
+		return msg, nil
+	}
+	var rpcVersion string
+	if json.Unmarshal(response["jsonrpc"], &rpcVersion) != nil || rpcVersion != "2.0" || response["method"] != nil {
+		return msg, nil
+	}
+	r.done = true
+	if response["error"] != nil {
+		return msg, nil
+	}
+	var result map[string]json.RawMessage
+	var version string
+	if json.Unmarshal(response["result"], &result) != nil ||
+		json.Unmarshal(result["protocolVersion"], &version) != nil || len(version) != len(time.DateOnly) {
+		return msg, nil
+	}
+	if _, err := time.Parse(time.DateOnly, version); err != nil {
+		return msg, nil
+	}
+	r.client.sessionMu.Lock()
+	if r.client.initializeGeneration == r.generation {
+		r.client.protocolVersion = version
+	}
+	r.client.sessionMu.Unlock()
+	return msg, nil
+}
+
+func (r *initializeResponseReader) Close() error {
+	return r.reader.Close()
 }
 
 // emptyReader returns io.EOF on every ReadMessage call.
@@ -375,6 +479,9 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	c.sessionMu.Lock()
 	req.Header.Del("Mcp-Session-Id")
 	req.Header.Del(pipelockSessionTokenHeader)
+	if c.protocolVersion != "" {
+		req.Header.Set(mcpProtocolVersionHeader, c.protocolVersion)
+	}
 	if c.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", c.sessionID)
 	}
@@ -438,6 +545,10 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	c.sessionMu.Lock()
 	sid := c.sessionID
 	listenerToken := c.listenerSessionToken
+	version := c.protocolVersion
+	// Invalidate outstanding initialize readers even for stateless upstreams.
+	c.initializeGeneration++
+	c.protocolVersion = ""
 	c.sessionMu.Unlock()
 	if sid == "" && listenerToken == "" {
 		return
@@ -467,6 +578,9 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	responseencoding.RequestIdentity(req.Header)
 	req.Header.Del("Mcp-Session-Id")
 	req.Header.Del(pipelockSessionTokenHeader)
+	if version != "" {
+		req.Header.Set(mcpProtocolVersionHeader, version)
+	}
 	if sid != "" {
 		req.Header.Set("Mcp-Session-Id", sid)
 	}

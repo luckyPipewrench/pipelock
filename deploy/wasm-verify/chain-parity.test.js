@@ -2,12 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
-const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { execFileSync, spawnSync } = require("node:child_process");
+const {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { after, before, test } = require("node:test");
-const { isMainThread, parentPort, Worker, workerData } = require("node:worker_threads");
+const {
+  isMainThread,
+  parentPort,
+  Worker,
+  workerData,
+} = require("node:worker_threads");
 
 if (!isMainThread) {
   runWasmWorker().catch((error) => {
@@ -16,7 +29,9 @@ if (!isMainThread) {
 } else {
   const repoRoot = path.resolve(__dirname, "../..");
   const testdata = path.join(repoRoot, "sdk/conformance/testdata");
-  const keyInfo = JSON.parse(readFileSync(path.join(testdata, "test-key.json"), "utf8"));
+  const keyInfo = JSON.parse(
+    readFileSync(path.join(testdata, "test-key.json"), "utf8"),
+  );
   const primaryKey = keyInfo.public_key_hex;
   const rotatedKey = keyInfo.rotated_public_key_hex;
   const rotatedTwiceKey = keyInfo.rotated_twice_public_key_hex;
@@ -24,6 +39,8 @@ if (!isMainThread) {
   let outDir;
   let worker;
   let oracleByName;
+  let groupCases;
+  let groupFixture;
   let nextID = 1;
   const pending = new Map();
 
@@ -140,6 +157,19 @@ if (!isMainThread) {
       encoding: "utf8",
     });
     oracleByName = runOracle(cases, repoRoot);
+    groupFixture = readFileSync(
+      path.join(
+        repoRoot,
+        "sdk/verifiers/python/tests/fixtures/receipt-groups.zip",
+      ),
+    );
+    groupCases = runGroupOracle(
+      path.join(
+        repoRoot,
+        "sdk/verifiers/python/tests/fixtures/receipt-groups.zip",
+      ),
+      repoRoot,
+    );
     worker = await startWorker(outDir);
     worker.on("message", (message) => {
       if (message.error) {
@@ -208,8 +238,53 @@ if (!isMainThread) {
     assert.deepEqual(result.signerKeys, [primaryKey]);
   });
 
+  test("shared Go evidence-line whitespace vectors match WASM", async () => {
+    const vectors = JSON.parse(
+      readFileSync(
+        path.join(
+          repoRoot,
+          "sdk/conformance/testdata/receipt-line-whitespace.json",
+        ),
+        "utf8",
+      ),
+    ).vectors;
+    assert.equal(vectors.length, 93);
+    const base = readFileSync(path.join(testdata, "g1-valid-chain.jsonl"));
+    const firstEnd = base.indexOf(0x0a);
+    assert.ok(firstEnd > 0);
+    for (const vector of vectors) {
+      const mark = Buffer.from(String.fromCodePoint(vector.codepoint));
+      let altered;
+      if (vector.placement === "whole") {
+        altered = Buffer.concat([
+          base.subarray(0, firstEnd + 1),
+          mark,
+          Buffer.from("\n"),
+          base.subarray(firstEnd + 1),
+        ]);
+      } else if (vector.placement === "leading") {
+        altered = Buffer.concat([mark, base]);
+      } else {
+        altered = Buffer.concat([
+          base.subarray(0, firstEnd),
+          mark,
+          base.subarray(firstEnd),
+        ]);
+      }
+      const result = await verifyBytes(altered, primaryKey, "uint8array");
+      assert.equal(
+        result.valid,
+        vector.expected !== "reject",
+        `${vector.name}: ${result.error}`,
+      );
+    }
+  });
+
   test("rotated g1 raw chain verifies with multi-key input", async () => {
-    const result = await verifyFixture("g1-rotated-close-count-valid.jsonl", "uint8array");
+    const result = await verifyFixture(
+      "g1-rotated-close-count-valid.jsonl",
+      "uint8array",
+    );
     assert.equal(result.valid, true, result.error);
     assert.equal(result.receiptCount, 6);
     assert.equal(result.finalSeq, 2);
@@ -217,7 +292,10 @@ if (!isMainThread) {
   });
 
   test("raw chain input accepts ArrayBuffer and string forms", async () => {
-    const arrayBufferResult = await verifyFixture("g1-valid-chain.jsonl", "arraybuffer");
+    const arrayBufferResult = await verifyFixture(
+      "g1-valid-chain.jsonl",
+      "arraybuffer",
+    );
     assert.equal(arrayBufferResult.valid, true, arrayBufferResult.error);
 
     const stringResult = await verifyFixture("g1-valid-chain.jsonl", "string");
@@ -237,7 +315,11 @@ if (!isMainThread) {
         ],
         `${tc.name}: chain checks`,
       );
-      assert.equal(result.valid, tc.valid, `${tc.name}: ${result.error || "unexpected result"}`);
+      assert.equal(
+        result.valid,
+        tc.valid,
+        `${tc.name}: ${result.error || "unexpected result"}`,
+      );
       if (tc.reason) {
         assert.match(result.error || "", tc.reason, tc.name);
       }
@@ -247,7 +329,10 @@ if (!isMainThread) {
   test("malformed raw chain inputs fail closed", async () => {
     const empty = await verifyBytes(Buffer.alloc(0), primaryKey, "uint8array");
     assert.equal(empty.valid, false);
-    assert.match(empty.error || "", /chain string is empty|no receipts found in chain/u);
+    assert.match(
+      empty.error || "",
+      /chain string is empty|no receipts found in chain/u,
+    );
 
     const badKey = await verifyBytes(
       readFileSync(path.join(testdata, "g1-valid-chain.jsonl")),
@@ -284,7 +369,9 @@ if (!isMainThread) {
     // A valid chain must not verify when a non-receipt line is appended or
     // spliced in: the extractor rejects the malformed record rather than
     // silently skipping it and certifying the surrounding chain.
-    const validBytes = readFileSync(path.join(testdata, "g1-valid-chain.jsonl"));
+    const validBytes = readFileSync(
+      path.join(testdata, "g1-valid-chain.jsonl"),
+    );
     const garbage = Buffer.from('{"not":"a receipt","x":123}\n');
     const trailingGarbage = await verifyBytes(
       Buffer.concat([validBytes, Buffer.from("\n"), garbage]),
@@ -306,23 +393,498 @@ if (!isMainThread) {
     assert.equal(middleGarbage.valid, false, middleGarbage.error);
   });
 
-  test("receipt group archive skips its root directory entry", async () => {
-    const fixture = path.join(repoRoot, "sdk/verifiers/python/tests/fixtures/receipt-groups.zip");
-    const script = [
-      "import io, sys, zipfile",
-      "out = io.BytesIO()",
-      "with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(out, 'w') as target:",
-      "    target.writestr('group-valid/', b'')",
-      "    for name in source.namelist():",
-      "        if name.startswith('group-valid/'):",
-      "            target.writestr(name, source.read(name))",
-      "sys.stdout.buffer.write(out.getvalue())",
-    ].join("\n");
-    const archive = execFileSync("python3", ["-c", script, fixture]);
-    const groupID = "a6c9a32034a3e0467360c6800a82b0e6";
-    const key = "fa2a0af252a9dfd1414f02a3222bac9cd415990f48e0e047a20d4f756b45ecb9";
-    const result = await verifyGroupBytes(archive, groupID, [key]);
+  test("closed, successor, and recovery groups match the Go verifier", async () => {
+    // Every Go verdict is compared, not only GROUP_VALID: a browser verifier
+    // that accepts what the native one rejects is the dangerous drift.
+    assert.ok(groupCases.some((item) => item.verdict === "GROUP_VALID"));
+    assert.ok(groupCases.some((item) => item.verdict !== "GROUP_VALID"));
+    for (const tc of groupCases) {
+      const result = await verifyGroup(groupFixture, tc.groupId, tc.keys);
+      assert.equal(
+        result.verdict,
+        tc.verdict,
+        `${tc.scenario}/${tc.groupId}: wasm ${result.verdict} (${result.error}) vs go ${tc.verdict} (${tc.error})`,
+      );
+      assert.equal(result.valid, tc.verdict === "GROUP_VALID");
+      assert.equal(result.groupId, tc.groupId);
+      if (tc.verdict === "GROUP_VALID") assert.ok(result.shardCount > 0);
+    }
+  });
+
+  test("explicit ZIP root directory entry verifies in the browser", async () => {
+    const tc = groupCases.find(
+      (item) =>
+        item.scenario === "group-valid" && item.verdict === "GROUP_VALID",
+    );
+    assert.ok(tc, "Go-produced closed group fixture missing");
+    const bundle = path.join(outDir, "explicit-root-group.zip");
+    execFileSync("python3", [
+      "-c",
+      `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED) as target:
+    target.writestr("group-valid/", b"")
+    for entry in source.infolist():
+        target.writestr(entry, source.read(entry))
+`,
+      path.join(
+        repoRoot,
+        "sdk/verifiers/python/tests/fixtures/receipt-groups.zip",
+      ),
+      bundle,
+    ]);
+    const result = await verifyGroup(readFileSync(bundle), tc.groupId, tc.keys);
     assert.equal(result.verdict, "GROUP_VALID", result.error);
+  });
+
+  test("shared group attack vectors match the native verifier", async () => {
+    const source = path.join(outDir, "receipt-groups-attacks.zip");
+    writeFileSync(
+      source,
+      Buffer.concat(
+        Array.from({ length: 7 }, (_, index) =>
+          readFileSync(
+            path.join(
+              repoRoot,
+              "sdk/verifiers/fixtures",
+              `receipt-groups-attacks.zip.part${String(index).padStart(2, "0")}`,
+            ),
+          ),
+        ),
+      ),
+    );
+    const attackErrors = {
+      "forged-untrusted":
+        /signer is not trusted|transition predecessor set differs/u,
+      "flipped-signature": /signature verification failed/u,
+      "lying-chain-head": /signature verification failed/u,
+      "extra-unowned-ael": /has no signed session owner/u,
+      "empty-unowned-ael": /has no signed session owner/u,
+      "self-signed-owner": /is not in the trusted set/u,
+      "damaged-recorder-owner": /recorder hash chain: .*hash mismatch/u,
+      "damaged-recorder-trusted-owner": /recorder hash chain: .*hash mismatch/u,
+      "damaged-legacy-ael": /invalid native AEL signature/u,
+      "damaged-neighbor-ael": /invalid native AEL signature/u,
+      "missing-legacy-ael": /claimed by a signed session_open is missing/u,
+      "missing-neighbor-ael":
+        /is missing or redirected|claimed by a signed session_open is missing/u,
+      "damaged-legacy-incomplete": /invalid native AEL signature/u,
+      "duplicate-successor": /multiple successor transitions/u,
+    };
+    for (const scenario of [
+      "forged-untrusted",
+      "flipped-signature",
+      "lying-chain-head",
+      "extra-unowned-ael",
+      "empty-unowned-ael",
+      "self-signed-owner",
+      "damaged-recorder-owner",
+      "damaged-recorder-trusted-owner",
+      "damaged-legacy-ael",
+      "damaged-neighbor-ael",
+      "missing-legacy-ael",
+      "missing-neighbor-ael",
+      "damaged-legacy-incomplete",
+      "trusted-legacy-owner",
+      "large-legacy-ael",
+      "duplicate-successor",
+      "recovery-count-change",
+    ]) {
+      const bundle = path.join(outDir, `${scenario}.zip`);
+      const trustFile = path.join(outDir, `${scenario}-trust.json`);
+      execFileSync("python3", [
+        "-c",
+        `
+import json, re, sys, zipfile
+source, scenario, output, trust_file = sys.argv[1:]
+with zipfile.ZipFile(source) as archive, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as selected:
+    prefix = scenario + "/"
+    ids = set()
+    for entry in archive.infolist():
+        if entry.filename.startswith(prefix):
+            selected.writestr(entry.filename[len(prefix):], archive.read(entry))
+            match = re.fullmatch(r"receipt-group-([0-9a-f]{32})-open[.]json", entry.filename[len(prefix):])
+            if match:
+                ids.add(match.group(1))
+    trust = json.loads(archive.read(prefix + "trust.json"))
+    trust["group_ids"] = sorted(ids)
+    with open(trust_file, "w") as stream:
+        json.dump(trust, stream)
+`,
+        source,
+        scenario,
+        bundle,
+        trustFile,
+      ]);
+      const trust = JSON.parse(readFileSync(trustFile, "utf8"));
+      const bytes = readFileSync(bundle);
+      const successor = trust.group_id;
+      const ids =
+        scenario === "duplicate-successor" ||
+        scenario === "damaged-neighbor-ael" ||
+        scenario === "missing-neighbor-ael"
+          ? trust.group_ids
+          : scenario === "extra-unowned-ael" ||
+              scenario === "empty-unowned-ael" ||
+              scenario === "self-signed-owner" ||
+              scenario === "damaged-recorder-owner" ||
+              scenario === "damaged-recorder-trusted-owner" ||
+              scenario === "damaged-legacy-ael" ||
+              scenario === "missing-legacy-ael" ||
+              scenario === "damaged-legacy-incomplete" ||
+              scenario === "trusted-legacy-owner" ||
+              scenario === "large-legacy-ael" ||
+              scenario === "recovery-count-change"
+            ? [successor]
+            : [
+                ...trust.group_ids.filter((id) => id !== successor),
+                successor,
+              ];
+      // Every id comes from the archive's own openings, so a scenario can
+      // never pass by naming a group the archive no longer holds.
+      assert.ok(trust.group_ids.includes(successor), `${scenario}: successor`);
+      assert.ok(ids.length > 0, `${scenario}: no groups selected`);
+      for (const id of ids) {
+        assert.ok(trust.group_ids.includes(id), `${scenario}/${id}: not in archive`);
+        const result = await verifyGroup(bytes, id, trust.trusted_keys);
+        const want =
+          scenario === "recovery-count-change" ||
+          scenario === "trusted-legacy-owner" ||
+          scenario === "large-legacy-ael"
+            ? "GROUP_VALID"
+            : "GROUP_INVALID";
+        assert.equal(
+          result.verdict,
+          want,
+          `${scenario}/${id}: ${result.error}`,
+        );
+        // A rejection must come from the check the scenario exercises, not
+        // from a mount, extraction, or missing-group failure.
+        if (want === "GROUP_INVALID") {
+          assert.match(
+            result.error || "",
+            attackErrors[scenario],
+            `${scenario}/${id}: wrong failure reason`,
+          );
+        }
+      }
+    }
+  });
+
+  test("shared native AEL matrix matches every expected verdict", async () => {
+    const source = path.join(
+      repoRoot,
+      "sdk/verifiers/python/tests/fixtures/receipt-groups-matrix.zip.gz",
+    );
+    const destination = path.join(outDir, "group-matrix");
+    execFileSync("python3", [
+      "-c",
+      `
+import gzip, io, json, os, sys, zipfile
+source, destination = sys.argv[1:]
+os.makedirs(destination, exist_ok=True)
+with zipfile.ZipFile(io.BytesIO(gzip.decompress(open(source, "rb").read()))) as archive:
+    cases = json.loads(archive.read("matrix.json"))
+    controls = json.loads(archive.read("controls.json"))
+    with open(os.path.join(destination, "matrix.json"), "w") as output:
+        json.dump(cases, output)
+    with open(os.path.join(destination, "controls.json"), "w") as output:
+        json.dump(controls, output)
+    for case in cases + controls:
+        prefix = ("cases/" if case in cases else "controls/") + case["name"] + "/"
+        with zipfile.ZipFile(os.path.join(destination, case["name"] + ".zip"), "w", zipfile.ZIP_DEFLATED) as selected:
+            for entry in archive.infolist():
+                if entry.filename.startswith(prefix):
+                    selected.writestr(entry.filename[len(prefix):], archive.read(entry))
+`,
+      source,
+      destination,
+    ]);
+    const cases = JSON.parse(
+      readFileSync(path.join(destination, "matrix.json"), "utf8"),
+    );
+    const controls = JSON.parse(
+      readFileSync(path.join(destination, "controls.json"), "utf8"),
+    );
+    assert.equal(cases.length, 119);
+    assert.equal(controls.length, 1);
+    for (const item of [...cases, ...controls]) {
+      const bytes = readFileSync(path.join(destination, `${item.name}.zip`));
+      const result = await verifyGroup(bytes, item.group_id, item.trusted_keys);
+      assert.equal(
+        result.verdict,
+        item.expected,
+        `${item.name}: ${result.error}`,
+      );
+      if (item.name === "predecessor__intact__present")
+        assert.match(result.error || "", /GROUP_INCOMPLETE/u);
+    }
+  });
+
+  test("shared v2 group corpus matches every expected verdict", async () => {
+    const source = path.join(
+      repoRoot,
+      "sdk/verifiers/python/tests/fixtures/receipt-groups-v2.zip",
+    );
+    const destination = path.join(outDir, "group-v2-corpus");
+    execFileSync("python3", [
+      "-c",
+      `
+import json, os, sys, zipfile
+source, destination = sys.argv[1:]
+os.makedirs(destination, exist_ok=True)
+with zipfile.ZipFile(source) as archive:
+    cases = json.loads(archive.read("cases.json"))
+    with open(os.path.join(destination, "cases.json"), "w") as output:
+        json.dump(cases, output)
+    for case in cases:
+        prefix = "cases/" + case["name"] + "/"
+        with zipfile.ZipFile(os.path.join(destination, case["name"] + ".zip"), "w", zipfile.ZIP_DEFLATED) as selected:
+            for entry in archive.infolist():
+                if entry.filename.startswith(prefix) and not entry.is_dir():
+                    selected.writestr(entry.filename[len(prefix):], archive.read(entry))
+`,
+      source,
+      destination,
+    ]);
+    const cases = JSON.parse(
+      readFileSync(path.join(destination, "cases.json"), "utf8"),
+    );
+    assert.equal(cases.length, 68);
+    for (const item of cases) {
+      const bytes = readFileSync(path.join(destination, `${item.name}.zip`));
+      const result = await verifyGroup(bytes, item.group_id, item.trusted_keys);
+      assert.equal(
+        result.verdict,
+        item.expected,
+        `${item.name}: ${result.error}`,
+      );
+    }
+  });
+
+  test("missing predecessor close stays GROUP_INCOMPLETE", async () => {
+    const tc = groupCases.find(
+      (item) =>
+        item.scenario === "group-recovery-successor" &&
+        item.verdict === "GROUP_INCOMPLETE",
+    );
+    assert.ok(
+      tc,
+      "Go-produced recovery fixture has no incomplete predecessor group",
+    );
+    const result = await verifyGroup(groupFixture, tc.groupId, tc.keys);
+    assert.equal(result.verdict, "GROUP_INCOMPLETE", result.error);
+    assert.equal(result.valid, false);
+    assert.match(result.error || "", /no signed close manifest/u);
+  });
+
+  test("tampered ZIP content and unpinned signer fail closed", async () => {
+    const tc = groupCases.find(
+      (item) =>
+        item.scenario === "group-valid" && item.verdict === "GROUP_VALID",
+    );
+    assert.ok(tc, "Go-produced closed group fixture missing");
+    const closePath = `group-valid/receipt-group-${tc.groupId}-close.json`;
+    const tampered = corruptStoredZipEntry(groupFixture, closePath);
+    const corruptResult = await verifyGroup(tampered, tc.groupId, tc.keys);
+    assert.equal(corruptResult.verdict, "GROUP_INVALID", corruptResult.error);
+    assert.equal(corruptResult.valid, false);
+
+    const wrongKey = "00".repeat(32);
+    const unpinnedResult = await verifyGroup(groupFixture, tc.groupId, [
+      wrongKey,
+    ]);
+    assert.equal(unpinnedResult.verdict, "GROUP_INVALID");
+    assert.equal(unpinnedResult.valid, false);
+  });
+
+  test("malformed and oversized group archives fail closed", async () => {
+    const tc = groupCases.find(
+      (item) =>
+        item.scenario === "group-valid" && item.verdict === "GROUP_VALID",
+    );
+    assert.ok(tc);
+    const malformed = await verifyGroup(
+      Buffer.from("not a zip"),
+      tc.groupId,
+      tc.keys,
+    );
+    assert.equal(malformed.verdict, "GROUP_INVALID");
+    assert.equal(malformed.valid, false);
+    const oversized = await verifyGroup(
+      Buffer.alloc((8 << 20) + 1),
+      tc.groupId,
+      tc.keys,
+    );
+    assert.equal(oversized.verdict, "GROUP_INCOMPLETE");
+    assert.equal(oversized.valid, false);
+    assert.match(oversized.error || "", /host verifier/u);
+    const largeEntry = path.join(outDir, "large-entry.zip");
+    execFileSync("python3", [
+      "-c",
+      `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr("group-valid/large.bin", b"x" * (33 << 20))
+`,
+      largeEntry,
+    ]);
+    const unsupported = await verifyGroup(
+      readFileSync(largeEntry),
+      tc.groupId,
+      tc.keys,
+    );
+    assert.equal(unsupported.verdict, "GROUP_INCOMPLETE");
+    assert.equal(unsupported.valid, false);
+    assert.match(unsupported.error || "", /host verifier/u);
+  });
+
+  // Go's js/wasm runtime writes stdout and stderr through the callback form of
+  // fs.write. The memory filesystem used to define write() twice, and the later
+  // definition answered EBADF for descriptors 1 and 2.
+  test("memory filesystem routes callback-style stdout and stderr writes", async () => {
+    const lines = { out: [], err: [] };
+    const context = vm.createContext({
+      console: {
+        log: (line) => lines.out.push(line),
+        error: (line) => lines.err.push(line),
+      },
+      TextDecoder,
+      Uint8Array,
+      Math,
+      Number,
+      String,
+      Map,
+      Set,
+      Object,
+      Error,
+    });
+    context.globalThis = context;
+    context.fs = {
+      constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_EXCL: -1, O_TRUNC: -1, O_APPEND: -1, O_DIRECTORY: -1 },
+    };
+    vm.runInContext(
+      readFileSync(path.join(__dirname, "receipt-memfs.js"), "utf8"),
+      context,
+    );
+    const call = (fd, text, position = null) =>
+      new Promise((resolve) => {
+        const bytes = new TextEncoder().encode(text);
+        context.fs.write(fd, bytes, 0, bytes.length, position, (err, n) =>
+          resolve({ err, n }),
+        );
+      });
+    assert.deepEqual(await call(1, "out line\n"), { err: null, n: 9 });
+    assert.deepEqual(await call(2, "err line\n"), { err: null, n: 9 });
+    assert.deepEqual(lines, { out: ["out line"], err: ["err line"] });
+    assert.equal((await call(1, "x", 0)).err.code, "EINVAL");
+    assert.equal((await call(99, "x")).err.code, "EBADF");
+    // File descriptors still reach the in-memory file path.
+    const opened = await new Promise((resolve) =>
+      context.fs.open("/f", 0, 0, (err, fd) => resolve({ err, fd })),
+    );
+    assert.equal(opened.err?.code, "ENOENT");
+    const created = await new Promise((resolve) =>
+      context.fs.open("/f", 64 | 1, 0o600, (err, fd) => resolve({ err, fd })),
+    );
+    assert.equal(created.err, null);
+    assert.deepEqual(await call(created.fd, "file bytes"), { err: null, n: 10 });
+    assert.deepEqual(lines, { out: ["out line"], err: ["err line"] });
+  });
+
+  // A create-open of an existing directory must fail; it must never put a file
+  // at the directory's path.
+  test("memory filesystem refuses to create a file over a directory", async () => {
+    const context = vm.createContext({
+      console,
+      TextDecoder,
+      Uint8Array,
+      Math,
+      Number,
+      String,
+      Map,
+      Set,
+      Object,
+      Error,
+    });
+    context.globalThis = context;
+    context.fs = {
+      constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_EXCL: -1, O_TRUNC: -1, O_APPEND: -1, O_DIRECTORY: -1 },
+    };
+    vm.runInContext(
+      readFileSync(path.join(__dirname, "receipt-memfs.js"), "utf8"),
+      context,
+    );
+    const open = (name, flags) =>
+      new Promise((resolve) =>
+        context.fs.open(name, flags, 0o600, (err, fd) => resolve({ err, fd })),
+      );
+    const mkdir = (name) =>
+      new Promise((resolve) => context.fs.mkdir(name, 0o700, (err) => resolve(err)));
+    assert.equal(await mkdir("/d"), null);
+    assert.equal((await open("/d", 64 | 128 | 1)).err?.code, "EEXIST");
+    assert.equal((await open("/d", 64 | 1)).err?.code, "EISDIR");
+    assert.equal((await open("/d", 64)).err?.code, "EISDIR");
+    const created = await open("/f", 64 | 128 | 1);
+    assert.equal(created.err, null);
+    assert.equal((await open("/f", 64 | 128 | 1)).err?.code, "EEXIST");
+  });
+
+  // The oracle unpacks an archive into a temporary root. A hostile entry name
+  // must not write outside it, a hostile size must not fill the disk, and a
+  // refusal must not leave the temporary root behind.
+  test("group oracle refuses hostile archive entries and cleans up", () => {
+    const sandbox = mkdtempSync(path.join(tempRoot, "pipelock-oracle-sandbox-"));
+    try {
+      const hostile = [
+        ["parent-segment", "../pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["nested-parent", "a/../../pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["absolute", "/pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["backslash", "a\\..\\pipelock-oracle-escape.txt", 1, /unsafe archive path/u],
+        ["oversized", "group-valid/large.bin", 33 << 20, /larger than/u],
+      ];
+      for (const [label, entry, size, message] of hostile) {
+        const archive = path.join(sandbox, `${label}.zip`);
+        execFileSync("python3", [
+          "-c",
+          `
+import sys, zipfile
+name, size = sys.argv[2], sys.argv[3]
+data = b"x" * int(size)
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr(zipfile.ZipInfo(name), data)
+`,
+          archive,
+          entry,
+          String(size),
+        ]);
+        const run = spawnSync(
+          "go",
+          ["run", "./deploy/wasm-verify/group_oracle.go", archive],
+          {
+            cwd: repoRoot,
+            env: { ...process.env, TMPDIR: sandbox },
+            encoding: "utf8",
+          },
+        );
+        assert.notEqual(run.status, 0, `${label}: oracle accepted the archive`);
+        assert.match(run.stderr, message, label);
+        assert.equal(
+          existsSync(path.join(sandbox, "pipelock-oracle-escape.txt")),
+          false,
+          `${label}: entry escaped the fixture root`,
+        );
+        assert.deepEqual(
+          readdirSync(sandbox).filter((name) =>
+            name.startsWith("pipelock-group-oracle-"),
+          ),
+          [],
+          `${label}: temporary root was left behind`,
+        );
+      }
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   async function verifyFixture(name, mode) {
@@ -344,56 +906,23 @@ if (!isMainThread) {
     return result;
   }
 
-  async function verifyGroupBytes(bytes, groupID, keys) {
+  async function verifyGroup(bytes, groupID, keys) {
     const id = nextID++;
     const result = new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
     });
-    worker.postMessage({ id, bytes: Uint8Array.from(bytes), groupID, keys, mode: "uint8array" });
+    worker.postMessage({
+      id,
+      operation: "group",
+      bytes: Uint8Array.from(bytes),
+      groupID,
+      keys,
+    });
     return result;
   }
 }
 
 async function runWasmWorker() {
-  const hostFS = require("node:fs");
-  const syncCall = (callback, fn) => {
-    try {
-      callback(null, fn());
-    } catch (error) {
-      callback(error);
-    }
-  };
-  // Go's JS filesystem waits for callbacks before returning from a syscall/js
-  // event. Node's async fs callbacks cannot run until that event returns.
-  globalThis.fs = {
-    ...hostFS,
-    mkdir: (name, mode, cb) => syncCall(cb, () => hostFS.mkdirSync(name, { mode })),
-    open: (name, flags, mode, cb) => syncCall(cb, () => hostFS.openSync(name, flags, mode)),
-    close: (fd, cb) => syncCall(cb, () => hostFS.closeSync(fd)),
-    fstat: (fd, cb) => syncCall(cb, () => hostFS.fstatSync(fd)),
-    stat: (name, cb) => syncCall(cb, () => hostFS.statSync(name)),
-    lstat: (name, cb) => syncCall(cb, () => hostFS.lstatSync(name)),
-    readdir: (name, cb) => syncCall(cb, () => hostFS.readdirSync(name)),
-    unlink: (name, cb) => syncCall(cb, () => hostFS.unlinkSync(name)),
-    rmdir: (name, cb) => syncCall(cb, () => hostFS.rmdirSync(name)),
-    fsync: (fd, cb) => syncCall(cb, () => hostFS.fsyncSync(fd)),
-    read: (fd, buffer, offset, length, position, cb) => syncCall(cb, () => hostFS.readSync(fd, buffer, offset, length, position)),
-    write: (fd, buffer, offset, length, position, cb) => syncCall(cb, () => hostFS.writeSync(fd, buffer, offset, length, position)),
-  };
-  globalThis.pipelockMountReceiptGroup = (root, entries) => {
-    for (const [name, data] of Object.entries(entries)) {
-      if (!name) {
-        throw new Error("empty receipt group mount entry");
-      }
-      const target = path.join(root, name);
-      if (data === null) {
-        mkdirSync(target, { recursive: true, mode: 0o750 });
-      } else {
-        mkdirSync(path.dirname(target), { recursive: true, mode: 0o750 });
-        writeFileSync(target, Buffer.from(data), { mode: 0o600 });
-      }
-    }
-  };
   require(workerData.wasmExec);
   const go = new globalThis.Go();
   const wasm = readFileSync(workerData.wasm);
@@ -404,10 +933,17 @@ async function runWasmWorker() {
   parentPort.on("message", (message) => {
     try {
       const bytes = new Uint8Array(message.bytes);
-      const input = wasmInput(bytes, message.mode);
-      const result = message.groupID
-        ? globalThis.pipelockVerifyReceiptGroup(input, message.groupID, message.keys)
-        : globalThis.pipelockVerifyChain(input, message.keys);
+      const result =
+        message.operation === "group"
+          ? globalThis.pipelockVerifyReceiptGroup(
+              bytes,
+              message.groupID,
+              message.keys,
+            )
+          : globalThis.pipelockVerifyChain(
+              wasmInput(bytes, message.mode),
+              message.keys,
+            );
       parentPort.postMessage({
         id: message.id,
         result: JSON.parse(JSON.stringify(result)),
@@ -425,7 +961,10 @@ async function runWasmWorker() {
 function wasmInput(bytes, mode) {
   switch (mode) {
     case "arraybuffer":
-      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      return bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      );
     case "string":
       return Buffer.from(bytes).toString("utf8");
     case "uint8array":
@@ -445,13 +984,54 @@ function runOracle(cases, repoRoot) {
       keys: tc.keys,
     })),
   );
-  const output = execFileSync("go", ["run", "./deploy/wasm-verify/chain_oracle.go"], {
-    cwd: repoRoot,
-    env: process.env,
-    input,
-    encoding: "utf8",
-  });
+  const output = execFileSync(
+    "go",
+    ["run", "./deploy/wasm-verify/chain_oracle.go"],
+    {
+      cwd: repoRoot,
+      env: process.env,
+      input,
+      encoding: "utf8",
+    },
+  );
   return new Map(JSON.parse(output).map((result) => [result.name, result]));
+}
+
+function runGroupOracle(fixturePath, repoRoot) {
+  const output = execFileSync(
+    "go",
+    ["run", "./deploy/wasm-verify/group_oracle.go", fixturePath],
+    {
+      cwd: repoRoot,
+      env: process.env,
+      encoding: "utf8",
+    },
+  );
+  return JSON.parse(output);
+}
+
+function corruptStoredZipEntry(archive, name) {
+  const bytes = Buffer.from(archive);
+  const nameBytes = Buffer.from(name);
+  const nameAt = bytes.indexOf(nameBytes);
+  assert.ok(nameAt >= 30, `ZIP entry ${name} is missing`);
+  const headerAt = nameAt - 30;
+  assert.equal(
+    bytes.readUInt32LE(headerAt),
+    0x04034b50,
+    `${name} local header`,
+  );
+  assert.equal(
+    bytes.readUInt16LE(headerAt + 8),
+    0,
+    `${name} must be stored for byte mutation`,
+  );
+  const nameLength = bytes.readUInt16LE(headerAt + 26);
+  const extraLength = bytes.readUInt16LE(headerAt + 28);
+  const dataAt = headerAt + 30 + nameLength + extraLength;
+  assert.ok(dataAt < bytes.length, `${name} payload is missing`);
+  bytes[dataAt + Math.min(8, bytes.length - dataAt - 1)] ^= 0x01;
+  return bytes;
 }
 
 function startWorker(outDir) {
@@ -476,7 +1056,11 @@ function startWorker(outDir) {
 
 function assertChainParity(actual, expected, name) {
   assert.ok(expected, `${name}: missing Go oracle result`);
-  assert.deepEqual(comparableChainResult(actual), comparableChainResult(expected), name);
+  assert.deepEqual(
+    comparableChainResult(actual),
+    comparableChainResult(expected),
+    name,
+  );
 }
 
 function assertCaseListCoversTopLevelJSONLFixtures(cases, testdata) {

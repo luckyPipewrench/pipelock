@@ -1,0 +1,10 @@
+{
+  "bounded_stream": [
+    {"name":"within-limit","initial_size":8,"limit":8,"data":"abcdefgh","error":""},
+    {"name":"growth-past-limit","initial_size":7,"limit":8,"data":"abcdefghi","error":"size limit"}
+  ],
+  "duplicate_run": {
+    "run": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "duplicate signed native AEL run"
+  }
+}

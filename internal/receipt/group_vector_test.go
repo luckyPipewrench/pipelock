@@ -94,8 +94,8 @@ func TestReceiptGroupAELMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(cases) != 116 {
-		t.Fatalf("matrix has %d cells, want 116", len(cases))
+	if len(cases) != 119 {
+		t.Fatalf("matrix has %d cells, want 119", len(cases))
 	}
 	compared := 0
 	for _, item := range cases {
@@ -230,5 +230,58 @@ func TestReceiptGroupCrossLanguageGoldenBytes(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing signed group vectors: %v", want)
+	}
+}
+
+// A recovery seal covers the final segment's unterminated tail. These Go-sealed
+// predecessors (NUL padding after a fragment, NUL padding alone, and a valid
+// final record missing only its newline) verify as GROUP_VALID; the TypeScript,
+// Rust and Python verifiers replay the same archive.
+func TestRecoveryTailKindsVerifyFromSharedArchive(t *testing.T) {
+	archive, err := zip.OpenReader("../../sdk/verifiers/fixtures/receipt-group-recovery-tails.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archive.Close() }()
+	root := t.TempDir()
+	var manifest []byte
+	for _, file := range archive.File {
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if file.Name == "cases.json" {
+			manifest = data
+			continue
+		}
+		dest := filepath.Join(root, filepath.FromSlash(file.Name))
+		if !strings.HasPrefix(dest, root+string(filepath.Separator)) {
+			t.Fatalf("unsafe archive path %q", file.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var cases []struct {
+		Name        string   `json:"name"`
+		GroupID     string   `json:"group_id"`
+		TrustedKeys []string `json:"trusted_keys"`
+		Expected    string   `json:"expected"`
+	}
+	if err := json.Unmarshal(manifest, &cases); err != nil || len(cases) != 3 {
+		t.Fatalf("cases: %v (%d)", err, len(cases))
+	}
+	for _, c := range cases {
+		if got := VerifyReceiptGroup(filepath.Join(root, "cases", c.Name), c.GroupID, c.TrustedKeys); string(got.Verdict) != c.Expected {
+			t.Fatalf("%s: got %s want %s: %s", c.Name, got.Verdict, c.Expected, got.Error)
+		}
 	}
 }

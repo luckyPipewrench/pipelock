@@ -34,7 +34,9 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
+from .group import GROUP_VALID, verify_receipt_group
 from .input_file import read_verifier_file
+from .line_space import trim_go_space_bytes
 from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
     UNPINNED_RECEIPT_BANNER,
@@ -134,10 +136,11 @@ def _emit_fatal(stdout: IO[str], stderr: IO[str], json_mode: bool, cause: str) -
 
 
 def _run_chain(stdout: IO[str], stderr: IO[str], data: bytes, json_mode: bool) -> int:
-    lines = data.strip().split(b"\n")
+    lines = data.split(b"\n")
     envs = []
     for i, line in enumerate(lines):
-        if line.strip() == b"":
+        line = trim_go_space_bytes(line)
+        if line == b"":
             continue
         try:
             envs.append(unmarshal(line))
@@ -291,7 +294,19 @@ def _run_receipt(
     json_mode: bool,
     chain_mode: bool,
     allow_unpinned: bool,
+    group_id: str = "",
 ) -> int:
+    if group_id:
+        pinned_keys = [key.strip().lower() for key in key_hex.split(",") if key.strip()]
+        report = verify_receipt_group(target, group_id, pinned_keys)
+        if json_mode:
+            stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
+            stdout.write("\n")
+        else:
+            stdout.write(f"receipt group: {report['verdict']}\n")
+            if report.get("error"):
+                stdout.write(f"  error: {report['error']}\n")
+        return EXIT_OK if report.get("verdict") == GROUP_VALID else EXIT_GENERAL
     report = (
         verify_evidence_chain_file(target, key_hex, allow_unpinned)
         if chain_mode
@@ -371,6 +386,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow structural-only verification without a trusted signer key",
     )
+    receipt_p.add_argument(
+        "--group",
+        default="",
+        help=(
+            "verify a signed group in PATH; --key accepts comma-separated "
+            "pinned public keys"
+        ),
+    )
     provenance_p = sub.add_parser(
         "provenance",
         help="verify an experimental fixture-only evidence-provenance proof",
@@ -396,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             args.json,
             args.chain,
             args.allow_unpinned,
+            args.group,
         )
     if args.command == "provenance":
         return _run_provenance(sys.stdout, sys.stderr, args.path, args.allow_incomplete)

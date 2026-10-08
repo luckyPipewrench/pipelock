@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { recorderEntryHash, verifyRecorderChain } from "../src/recorder-chain.js";
+import { parseEntryLinesText } from "../src/recorder.js";
 import { findPackageRoot } from "./paths.js";
 
 // Written by the Go conformance test from internal/recorder itself, so the
@@ -21,6 +22,10 @@ interface Fixture {
 }
 
 const fixture = JSON.parse(readFileSync(VECTORS, "utf8")) as Fixture;
+
+test("null recorder entry reports an unsupported version", () => {
+  assert.throws(() => parseEntryLinesText("null\n"), /unsupported entry version null/u);
+});
 
 test("recorder entry hash matches Go ComputeHash for every vector", () => {
   assert.ok(fixture.hashes.length >= 15);

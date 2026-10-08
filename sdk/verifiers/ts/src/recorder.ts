@@ -8,6 +8,7 @@ import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { bindRecorderLineExtSource, objectMemberSpan } from "./rawjson.js";
 import { validateSecretEgressSource } from "./secret-egress.js";
 import { readSessionReceipts, withPinnedEvidenceDirectorySync } from "./chain-set.js";
+import { trimGoSpace } from "./line-space.js";
 import type { RecorderLine } from "./recorder-chain.js";
 import {
   InvalidError,
@@ -20,6 +21,7 @@ import {
 
 const actionReceiptType = "action_receipt";
 const evidenceReceiptType = "evidence_receipt";
+const groupGateEntryType = "receipt_group_v1";
 
 // Receipt-chain mode: the known non-receipt operational entry types that
 // extraction legitimately skips. Any entry whose type is outside the union of
@@ -49,19 +51,37 @@ export function readEntryLines(file: string, directoryChild = false): ParsedReco
   return parseEntryLinesText(text);
 }
 
-// parseEntryLinesText parses an already-decoded recorder shard. Recovery
-// verification uses it only for the LF-terminated prefix whose raw bytes are
-// independently bound by a recovery seal.
+// EntryLinesPrefix is the LF-terminated prefix of one shard plus whether a
+// final unterminated fragment follows it. Receipt-group verification needs the
+// split because Go's session walker delivers every complete line and then
+// reports the fragment as a torn tail; the fragment is never evidence.
+export interface EntryLinesPrefix {
+  lines: ParsedRecorderLine[];
+  torn: boolean;
+}
+
+export function readEntryLinesPrefix(file: string, directoryChild = false): EntryLinesPrefix {
+  const raw = readVerifierBytes(file, directoryChild);
+  const torn = raw.length > 0 && raw[raw.length - 1] !== 0x0a;
+  const end = raw.lastIndexOf(0x0a);
+  const text = decodeUTF8(raw.subarray(0, end + 1), "evidence jsonl");
+  return { lines: parseEntryLinesText(text), torn };
+}
+
+// parseEntryLinesText parses an already-decoded recorder shard, including an
+// unterminated final line. Recovery verification uses it for the LF-terminated
+// prefix whose raw bytes are independently bound by a recovery seal.
 export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
   const entries: ParsedRecorderLine[] = [];
-  const lines = text.split(/\r?\n/u);
+  const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim() ?? "";
+    const line = trimGoSpace(lines[i] ?? "");
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
-    if (entry.v !== 1 && entry.v !== 2 && entry.v !== 3) {
+    const version = entry === null || typeof entry !== "object" ? entry : entry.v;
+    if (version !== 1 && version !== 2 && version !== 3) {
       throw new RuntimeError(
-        `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
+        `line ${i + 1}: unsupported entry version ${String(version)} (accepted: 1, 2, 3)`,
       );
     }
     if (entry.v === 3) {
@@ -69,7 +89,7 @@ export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
     } else {
       rejectDuplicateKeys(line);
     }
-    validateProjectedStrings(entry, i + 1, entry.v);
+    validateProjectedStrings(entry, i + 1, version);
     bindRecorderLineExtSource(entry.detail, line);
     if (entry.type === evidenceReceiptType) {
       const detailSpan = objectMemberSpan(line, 0, "detail");
@@ -164,13 +184,22 @@ export function extractTypedReceipts(file: string): ExtractedReceipts {
 }
 
 // extractTypedFromEntries splits already-read recorder entries into the two
-// receipt chains, refusing any entry type it does not know.
-export function extractTypedFromEntries(entries: readonly RecorderEntry[]): ExtractedReceipts {
+// receipt chains, refusing any entry type it does not know. The receipt group
+// gate is skipped only as the first entry and only when the caller is a group
+// verifier, which validates it against the signed opening; everywhere else it
+// is an unknown entry type.
+export function extractTypedFromEntries(
+  entries: readonly RecorderEntry[],
+  allowGroupGate = false,
+): ExtractedReceipts {
   const extracted: ExtractedReceipts = { action: [], evidence: [] };
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const isReceipt = entry.type === actionReceiptType || entry.type === evidenceReceiptType;
     if (!isReceipt) {
       if (entry.type !== undefined && skippableEntryTypes.has(entry.type)) continue;
+      // Go's group recorder walker accepts the gate only as a session's first
+      // entry; a gate anywhere else is an unknown entry type.
+      if (allowGroupGate && index === 0 && entry.type === groupGateEntryType) continue;
       throw new InvalidError(
         `unexpected recorder entry type "${String(entry.type)}" at seq ${String(entry.seq)}`,
       );

@@ -32,8 +32,17 @@ It provides these commands:
 ```text
 pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]
 pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--dir] [--session-id ID]
+pipelock-verifier-rs group EVIDENCE_DIR --group-id ID --key HEX_OR_FILE... [--json]
 pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]
 ```
+
+`group` verifies one signed multi-shard receipt group, including each shard's
+receipt chains and native AEL stream, the signed close, and any predecessor
+transition. It also walks every other session in the directory as a whole v1
+chain against the pinned keys, and checks an unclosed predecessor's checkpoint
+signatures and v1 and v2 chains. It requires externally pinned `--key` values. A missing signed
+close reports `GROUP_INCOMPLETE` and exits nonzero; only a fully checked group
+reports `GROUP_VALID` with exit code zero.
 
 Exit codes match the Go and TypeScript verifiers:
 

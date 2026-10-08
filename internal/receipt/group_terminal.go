@@ -12,9 +12,8 @@ import (
 )
 
 // FindTerminalReceiptGroup finds the unique group of base that has no signed
-// successor opening. It streams names and uses repeated passes rather than
-// retaining every historical group in memory. Startup happens once, so this
-// bounded-memory O(groups²) search is preferable to an unbounded index.
+// successor opening. It verifies every opening against pinned signer keys,
+// then checks predecessor links and terminal candidates in memory.
 func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool, error) {
 	if len(trusted) == 0 {
 		return "", false, errors.New("receipt group terminal discovery requires a trusted signer key")
@@ -48,6 +47,7 @@ func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool,
 	}
 	terminal := ""
 	found := false
+	multipleTerminals := false
 	for _, entry := range openings {
 		if entry.open.BaseSession != base {
 			continue
@@ -67,10 +67,14 @@ func FindTerminalReceiptGroup(dir, base string, trusted []string) (string, bool,
 		}
 		if successors == 0 {
 			if found {
-				return "", false, errors.New("receipt group history has more than one terminal group")
+				multipleTerminals = true
+				continue
 			}
 			terminal, found = entry.open.GroupID, true
 		}
+	}
+	if multipleTerminals {
+		return "", false, errors.New("receipt group history has more than one terminal group")
 	}
 	return terminal, found, nil
 }

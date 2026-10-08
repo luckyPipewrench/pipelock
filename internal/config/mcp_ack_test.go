@@ -24,8 +24,9 @@ func validAck() MCPAcknowledgedFinding {
 			Field: "/inputSchema/properties/key/description", FieldTextSHA256: hex64,
 			Pattern: 0, Ordinal: 0, Start: 0, End: 19, MatchSHA256: hex64,
 		}},
-		Owner:   "platform team",
-		Reason:  "placeholder text, reviewed",
+		Owner:  "platform team",
+		Reason: "placeholder text, reviewed",
+		// clock-literal-ok: paired with the injected test clock (2026-10-08)
 		Expires: "2026-12-01",
 	}
 }
@@ -78,7 +79,9 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 		{"missing owner", func(e *MCPAcknowledgedFinding) { e.Owner = "" }, "owner is required"},
 		{"missing reason", func(e *MCPAcknowledgedFinding) { e.Reason = "" }, "reason is required"},
 		{"missing expiry", func(e *MCPAcknowledgedFinding) { e.Expires = "" }, "expires is required"},
+		// clock-literal-ok: paired with the injected test clock (2026-10-08)
 		{"local-time expiry", func(e *MCPAcknowledgedFinding) { e.Expires = "2026-12-01T00:00:00+02:00" }, "ending in Z"},
+		// clock-literal-ok: deliberately expired relative to the injected test clock
 		{"expired", func(e *MCPAcknowledgedFinding) { e.Expires = "2026-10-07" }, "already expired"},
 	}
 	for _, tt := range tests {
@@ -127,6 +130,7 @@ func TestMCPAckExpiryHorizonIsExact(t *testing.T) {
 
 func TestMCPAckActiveChecksExpiryAtRuntime(t *testing.T) {
 	e := validAck()
+	// clock-literal-ok: paired with the injected test clock (2026-10-08)
 	e.Expires = "2026-10-09"
 	if !MCPAckActive(e, time.Date(2026, 10, 9, 23, 59, 59, 0, time.UTC)) {
 		t.Fatal("date expiry must hold through the end of that UTC day")
@@ -144,6 +148,7 @@ func TestValidateMCPToolScanningWarnsWhenAcksAreInert(t *testing.T) {
 	cfg := Defaults()
 	cfg.MCPToolScanning.Enabled = false
 	cfg.MCPToolScanning.AcknowledgedFindings = []MCPAcknowledgedFinding{validAck()}
+	// clock-literal-ok: paired with the injected test clock (2026-10-08)
 	cfg.MCPToolScanning.AcknowledgedFindings[0].Expires = time.Now().UTC().AddDate(0, 0, 30).Format("2006-01-02")
 	var warnings []Warning
 	if err := cfg.validateMCPToolScanning(&warnings); err != nil {

@@ -64,8 +64,9 @@ func proxyAckEntry(t *testing.T) config.MCPAcknowledgedFinding {
 			Start:           0, End: len(proxyAckKeyDesc),
 			MatchSHA256: proxyAckHash(proxyAckKeyDesc),
 		}},
-		Owner:   "platform team",
-		Reason:  "reviewed placeholder",
+		Owner:  "platform team",
+		Reason: "reviewed placeholder",
+		// clock-literal-ok: paired with the injected test clock (2026-10-08)
 		Expires: "2026-12-01",
 	}
 }
@@ -126,6 +127,7 @@ func TestForwardScannedAcknowledgedInventoryForwardsWithoutCleanCredit(t *testin
 // describes this tool, so it must not quietly become a warning.
 func TestForwardScannedStaleAcknowledgmentRefusesUnderWarn(t *testing.T) {
 	expired := proxyAckEntry(t)
+	// clock-literal-ok: deliberately expired relative to the injected test clock
 	expired.Expires = "2026-10-07"
 	for name, tc := range map[string]struct {
 		binding string
@@ -226,6 +228,7 @@ func TestHTTPListenerAcknowledgmentFollowsReload(t *testing.T) {
 		return strings.Contains(string(body), `"store_secret"`)
 	}
 	expired := proxyAckEntry(t)
+	// clock-literal-ok: deliberately expired relative to the injected test clock
 	expired.Expires = "2026-10-07"
 	changed := proxyAckEntry(t)
 	changed.Occurrences[0].End--
@@ -354,6 +357,7 @@ func TestAcknowledgedInventoryRequiredReceiptFailureRefuses(t *testing.T) {
 func TestStaleAcknowledgmentLogNamesTheReason(t *testing.T) {
 	var out, log bytes.Buffer
 	expired := proxyAckEntry(t)
+	// clock-literal-ok: deliberately expired relative to the injected test clock
 	expired.Expires = "2026-10-07"
 	if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(ackLine())), transport.NewStdioWriter(&out), &log, nil, ackOpts(t, expired)); err != nil {
 		t.Fatalf("ForwardScanned: %v", err)
@@ -383,6 +387,7 @@ func runAckProxy(t *testing.T, line string, opts MCPProxyOpts) (out, log string,
 // A stale acknowledgment refuses under warn, and the capture says so.
 func TestStaleAcknowledgmentCapturedAsBlockedUnderWarn(t *testing.T) {
 	expired := proxyAckEntry(t)
+	// clock-literal-ok: deliberately expired relative to the injected test clock
 	expired.Expires = "2026-10-07"
 	opts := ackOpts(t, expired)
 	opts.ToolCfg.Action = config.ActionWarn

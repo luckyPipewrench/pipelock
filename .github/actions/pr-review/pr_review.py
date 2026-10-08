@@ -138,8 +138,8 @@ DEEP_MAX_CHUNKS = 8
 # even considered.
 FAST_MAX_UNITS_PER_CHUNK = 30
 DEEP_MAX_UNITS_PER_CHUNK = 60
-# Each judge context fetch allows 30 seconds, so an unbounded candidate set
-# could spend longer on requests than the whole job is permitted to run.
+# Judge context reads share a retrieval deadline and a file-count allowance.
+# Repeated candidates reuse immutable content without spending another read.
 MAX_JUDGE_CONTEXT_FETCHES = 20
 # One file window used to consume most of the default judge payload and leave
 # later candidates entirely unjudged. A focused actual-line window is enough
@@ -382,6 +382,8 @@ class JudgeOptions:
     diagnostics: dict[str, dict[str, int]] = field(default_factory=dict)
     evidence: dict[str, CandidateEvidence] = field(default_factory=dict)
     units: list[DiffUnit] = field(default_factory=list)
+    # Delta reviews use the prior reviewed head, not the full PR merge base.
+    old_side: str | None = None
 
 
 @dataclass
@@ -2465,14 +2467,21 @@ def _read_commit_file(root: Path, head_sha: str, path: str, deadline: float) -> 
     return blob.stdout.decode("utf-8", errors="replace")
 
 
-def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlation: str) -> str | None:
+def fetch_file_context(
+    repo: str, path: str, head_sha: str, token: str, correlation: str, deadline: float | None = None,
+) -> str | None:
     # parse_diff rejects control characters but allows characters that are
     # significant in a URL, so an unencoded path containing ? or # would address
     # a different file and the judge would verify a finding against the wrong
     # source. The returned path is checked against the request for the same
     # reason.
-    if root := _local_review_root(head_sha, correlation):
-        return _read_commit_file(root, head_sha, path, time.monotonic() + 30)
+    deadline = min(deadline if deadline is not None else float("inf"), time.monotonic() + 30)
+    if root := _local_review_root(head_sha, correlation, deadline):
+        return _read_commit_file(root, head_sha, path, deadline)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        log_phase("judge-context", status="deadline-exhausted", correlation=correlation)
+        return None
 
     encoded = urllib.parse.quote(path, safe="/")
     try:
@@ -2480,13 +2489,13 @@ def fetch_file_context(repo: str, path: str, head_sha: str, token: str, correlat
             f"https://api.github.com/repos/{repo}/contents/{encoded}",
             headers=github_headers(token),
             params={"ref": head_sha},
-            timeout=30,
+            timeout=remaining,
         )
     except requests.RequestException:
         log_phase("judge-context", status="request-error", correlation=correlation)
         return None
     log_phase("judge-context", status=response.status_code, correlation=correlation)
-    if response.status_code != 200:
+    if time.monotonic() >= deadline or response.status_code != 200:
         return None
     try:
         data = response.json()
@@ -3173,16 +3182,16 @@ def judge_findings(
                 over_files.append(finding)
                 continue
             shared.reads += 1
-            if deadline is not None and time.monotonic() >= retrieval_deadline:
+            if time.monotonic() >= retrieval_deadline:
                 content = None
             elif root is not None:
                 content = _read_commit_file(root, binding.head_sha, finding.path, retrieval_deadline)
             else:
-                content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation)
+                content = fetch_file_context(repo, finding.path, binding.head_sha, token, binding.correlation, retrieval_deadline)
             shared.contents[key] = content
         content = shared.contents[key]
         context, source = _candidate_context(finding, content, options.units, context_cap)
-        old_side = os.environ.get("REVIEWED_MERGE_BASE_SHA") or binding.base_sha
+        old_side = options.old_side or os.environ.get("REVIEWED_MERGE_BASE_SHA") or binding.base_sha
         if source == "deleted-diff" and root is not None:
             base_key = (old_side, finding.path)
             if base_key not in shared.contents and shared.reads < MAX_JUDGE_CONTEXT_FETCHES:
@@ -3225,17 +3234,24 @@ def judge_findings(
             return [], "", ""
         items = [candidates[index] for index in selected]
         contexts = {_context_key(item, items): options.evidence[candidate_identifier(item)].context for item in items}
-        evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=700, budget=shared, deadline=retrieval_deadline)
+        kwargs = {"recheck_feedback": {local: (feedback or {}).get(index, set()) for local, index in enumerate(selected)}} if phase == "judge-repair" else {}
+        system, user = build_judge_prompt(items, contexts, summaries, "", **kwargs)
+        headroom = max(0, token_budget - serialized_prompt_tokens(system, user, mode, phase) - 100)
+        repair_decisions = {index: decisions[index] for index in selected if index in decisions} if phase == "judge-repair" else {}
+        requested_budget = min(MAX_REQUESTED_EVIDENCE_TOKENS, headroom // 2) if any(decision.requests for decision in repair_decisions.values()) else 0
+        # Spend existing prompt headroom on deciding code, rather than dividing
+        # a fixed small pool into unusable candidate slices. Retrieval limits
+        # remain shared, and serialized escaping is checked below.
+        evidence_budget = min(6_000, headroom - requested_budget)
+        evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=evidence_budget, budget=shared, deadline=retrieval_deadline)
         if unavailable:
             evidence += "\n<some-candidate-repository-evidence-unavailable>"
         requested = ""
-        if phase == "judge-repair":
-            repair_decisions = {index: decisions[index] for index in selected if index in decisions}
-            requested, _ = requested_repository_evidence(binding, repair_decisions, max_tokens=700, deadline=retrieval_deadline, budget=shared, owners={index: candidate_identifier(candidates[index]) for index in selected}, records=options.evidence)
+        if requested_budget:
+            requested, _ = requested_repository_evidence(binding, repair_decisions, max_tokens=requested_budget, deadline=retrieval_deadline, budget=shared, owners={index: candidate_identifier(candidates[index]) for index in selected}, records=options.evidence)
         if requested:
             evidence += "\nFIRST-PASS REQUESTED REPOSITORY EVIDENCE\n" + requested
         shared.seconds_remaining = max(0, shared.seconds_remaining - (time.monotonic() - retrieval_started))
-        kwargs = {"recheck_feedback": {local: (feedback or {}).get(index, set()) for local, index in enumerate(selected)}} if phase == "judge-repair" else {}
         system, user = build_judge_prompt(items, contexts, summaries, evidence, **kwargs)
         # Escaping can expand retrieved source by more than the raw estimate.
         # Bound presentation evidence only; candidate semantics remain whole.
@@ -4405,7 +4421,10 @@ def run_review(
             try:
                 progress.findings, judged, over_budget, over_files, unresolved, invalid = judge_findings(
                     repo, token, binding, mode, candidates, reviewed_changes,
-                    JudgeOptions(provider_deadline, progress.judge_diagnostics, progress.candidate_evidence, units),
+                    JudgeOptions(
+                        provider_deadline, progress.judge_diagnostics, progress.candidate_evidence, units,
+                        old_side=scope_base if scope == "delta" else None,
+                    ),
                 )
                 if not judged:
                     # No decision was made, so the original candidate list is

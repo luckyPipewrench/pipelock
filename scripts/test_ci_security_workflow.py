@@ -203,13 +203,18 @@ exit "$DEFAULT_STATUS"
         )
         self.assertEqual(0, success.returncode, success.stderr)
 
-        fork_env = dict(base_env, REPOSITORY="contributor/pipelock", REVIEW_SOURCE_RESULT="skipped")
-        fork = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=fork_env, text=True, capture_output=True)
-        self.assertEqual(0, fork.returncode, fork.stderr)
-        for evidence in ("failure", "cancelled", ""):
-            fork_env["REVIEW_SOURCE_RESULT"] = evidence
-            fork = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=fork_env, text=True, capture_output=True)
-            self.assertNotEqual(0, fork.returncode)
+        for evidence in ("success", "skipped", "failure", "cancelled", ""):
+            with self.subTest(repository="fork", evidence=evidence):
+                fork_env = dict(base_env, REPOSITORY="contributor/pipelock", REVIEW_SOURCE_RESULT=evidence)
+                fork = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", script], check=False,
+                    env=fork_env, text=True, capture_output=True,
+                )
+                if evidence in {"success", "skipped"}:
+                    self.assertEqual(0, fork.returncode, fork.stderr)
+                else:
+                    self.assertNotEqual(0, fork.returncode)
+                    self.assertIn("review source identity was not verified", fork.stderr)
 
         for name in result_names:
             for evidence in ("failure", "cancelled", "skipped", ""):

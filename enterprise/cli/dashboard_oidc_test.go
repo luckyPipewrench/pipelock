@@ -1075,9 +1075,8 @@ func TestDashboardOIDC_JWKSDelayedCallerPastRefreshLifetimeFetches(t *testing.T)
 
 // A caller that waits on an in-flight refresh that fails receives that
 // refresh's own error and makes no fetch of its own. The in-flight record is
-// installed directly so the test controls when it completes; the provider is
-// failing too, so a caller that arrives only after completion still fails and
-// is identified by its extra fetch rather than by luck of scheduling.
+// installed directly and the cache's join hook signals once the caller has
+// committed to waiting on it, so the refresh completes only after the join.
 func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)
@@ -1086,48 +1085,42 @@ func TestDashboardOIDC_JWKSJoinedCallerGetsItsRefreshFailure(t *testing.T) {
 	p.setJWKSFail(true)
 
 	first := &dashboardJWKSRefresh{done: make(chan struct{})}
+	waiting := make(chan struct{})
 	cache.mu.Lock()
 	cache.expiresAt = now.Add(-time.Second)
 	observed := cache.generation
 	cache.inflight = first
+	cache.joinedHook = func() { close(waiting) }
 	cache.mu.Unlock()
 
 	joined := make(chan error, 1)
 	go func() { joined <- cache.refreshSince(context.Background(), observed) }()
-	// While the refresh is in flight the caller must wait on it, not return.
-	// The window also lets the caller reach the wait before completion.
 	select {
+	case <-waiting:
 	case err := <-joined:
-		t.Fatalf("caller returned %v while its refresh was still in flight", err)
-	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("caller returned %v instead of waiting on the in-flight refresh", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("caller never joined the in-flight refresh")
 	}
 
 	firstErr := errors.New("first refresh failed")
 	cache.mu.Lock()
 	first.err = firstErr
 	cache.inflight = nil
+	cache.joinedHook = nil
 	close(first.done)
 	cache.mu.Unlock()
 
-	var err error
 	select {
-	case err = <-joined:
+	case err := <-joined:
+		if !errors.Is(err, firstErr) {
+			t.Fatalf("joined caller error = %v, want the refresh it waited on: %v", err, firstErr)
+		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("caller did not return after the refresh it waited on completed")
+		t.Fatal("joined caller did not return after its refresh completed")
 	}
-	reads := p.jwksReads.Load()
-	switch {
-	case err == nil:
-		t.Fatal("caller reported success after a failed refresh")
-	case errors.Is(err, firstErr):
-		if reads != 1 {
-			t.Fatalf("joined caller fetched: JWKS reads = %d, want only the initial fetch", reads)
-		}
-	default:
-		// Arrived after completion: it must have made exactly its own fetch.
-		if reads != 2 {
-			t.Fatalf("late caller JWKS reads = %d, want the initial fetch plus its own", reads)
-		}
+	if reads := p.jwksReads.Load(); reads != 1 {
+		t.Fatalf("joined caller fetched: JWKS reads = %d, want only the initial fetch", reads)
 	}
 
 	if err := cache.refresh(context.Background()); err == nil || errors.Is(err, firstErr) {

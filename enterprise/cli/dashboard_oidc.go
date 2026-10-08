@@ -375,6 +375,9 @@ type dashboardJWKSCache struct {
 	// decides to refresh, so a refresh that completed after that decision
 	// satisfies the caller instead of admitting another fetch.
 	generation uint64
+	// joinedHook, when set by a test, runs after a caller commits to waiting
+	// on an in-flight refresh. It is nil in production.
+	joinedHook func()
 }
 
 // dashboardJWKSRefresh carries one fetch's outcome to every caller that joined
@@ -489,7 +492,11 @@ func (c *dashboardJWKSCache) refreshSince(ctx context.Context, observed uint64) 
 func (c *dashboardJWKSCache) admitRefresh(ctx context.Context, observed uint64, conditional bool) error {
 	c.mu.Lock()
 	if r := c.inflight; r != nil {
+		joined := c.joinedHook
 		c.mu.Unlock()
+		if joined != nil {
+			joined()
+		}
 		select {
 		case <-r.done:
 			return r.err

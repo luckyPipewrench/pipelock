@@ -1540,6 +1540,13 @@ func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
 // scanned in their original form; they are not expanded into space-separated
 // words, because that is how an identifier becomes jailbreak prose.
 func extractToolGeneralText(t ToolDef) string {
+	return extractToolGeneralTextOrdered(t, nil)
+}
+
+// extractToolGeneralTextOrdered is extractToolGeneralText with the schema map
+// iteration order supplied by order; nil keeps Go's own map order. Only the
+// controlled-order equivalence tests pass a non-nil order.
+func extractToolGeneralTextOrdered(t ToolDef, order schemaKeyOrder) string {
 	var parts []string
 	// Dropping a truncated key set is only safe because
 	// uninspectableToolDefinition has already refused the definition
@@ -1572,7 +1579,7 @@ func extractToolGeneralText(t ToolDef) string {
 		appendJSONKeys(t.InputSchema)
 	}
 	if len(t.OutputSchema) > 0 {
-		parts = append(parts, ExtractSchemaDescriptions(t.OutputSchema)...)
+		parts = append(parts, schemaDescriptionsOrdered(t.OutputSchema, order)...)
 		appendJSONKeys(t.OutputSchema)
 	}
 	// Metadata is extensible and agent-visible. Its readable strings use the
@@ -1868,41 +1875,17 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 // plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
 func ExtractSchemaDescriptions(schema json.RawMessage) []string {
+	return schemaDescriptionsOrdered(schema, nil)
+}
+
+func schemaDescriptionsOrdered(schema json.RawMessage, order schemaKeyOrder) []string {
 	var parsed interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		return nil
 	}
-	var result []string
-	collectSchemaValueText(parsed, &result, 0)
-	return result
-}
-
-// collectSchemaValueText extracts agent-visible text from a schema value of any
-// JSON shape, not only an object.
-//
-// A well-formed MCP schema is an object, but nothing forces an upstream server
-// to send one and the agent reads whatever arrives. Parsing straight into a map
-// dropped every other shape: a top-level array carried its instructions past
-// the scanner entirely, leaving only the key names behind, and ScanTools then
-// marked the tools/list clean so the proxy skipped general response scanning
-// and forwarded it. Dispatch on the actual shape instead, so an unexpected one
-// is scanned rather than silently unread.
-func collectSchemaValueText(value interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch v := value.(type) {
-	case map[string]interface{}:
-		collectAllSchemaText(v, result, depth)
-	case []interface{}:
-		for _, item := range v {
-			collectSchemaValueText(item, result, depth+1)
-		}
-	case string:
-		if v != "" {
-			*result = append(*result, v)
-		}
-	}
+	sink := toolTextSink{order: order}
+	sink.schemaValue(parsed, "", 0)
+	return sink.texts
 }
 
 // schemaTextExtractionTruncated reports whether schema text lies beyond the
@@ -1965,88 +1948,6 @@ var schemaTextFields = [...]string{
 	"description", "title", "default", "const", "pattern", "$comment",
 }
 
-// collectAllSchemaText walks a JSON Schema tree collecting all text values
-// that an LLM might ingest. Extracts string values from metadata fields
-// (description, title, default, const, pattern, $comment, x-* extensions),
-// string members from enum/examples arrays, then recurses into all nested
-// objects and arrays to catch text hidden in composition keywords
-// (allOf, anyOf, oneOf, if/then/else, $defs, items, etc.).
-func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-
-	for key, v := range obj {
-		handledSubtree := false
-
-		// Extract values from known metadata fields.
-		// default and const can hold objects/arrays with nested strings,
-		// so use collectStringLeaves for full subtree extraction.
-		for _, field := range schemaTextFields {
-			if key == field {
-				if key == "default" || key == "const" {
-					collectStringLeaves(v, result, depth+1)
-					handledSubtree = true
-				} else if s, ok := v.(string); ok && s != "" {
-					*result = append(*result, s)
-					// Consumed here. Without this the value is appended
-					// again by the string case in the walk below, which
-					// doubles the scanner input for every modelled field.
-					handledSubtree = true
-				}
-				break
-			}
-		}
-
-		// Extract all string leaves from vendor extension fields (x-*).
-		// Extensions can hold objects, arrays, or strings.
-		if strings.HasPrefix(key, "x-") || strings.HasPrefix(key, "X-") {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		// Extract all string leaves from enum and examples.
-		// These can hold objects (e.g., examples: [{"prompt":"..."}]),
-		// not just flat strings.
-		if key == "enum" || key == "examples" {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		if handledSubtree {
-			continue
-		}
-
-		// Recurse into nested objects and arrays for schema composition
-		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.),
-		// and take string values under keys this walk does not model.
-		//
-		// Only the modelled field names were being read here, so a string
-		// under any other key was dropped: a schema carrying
-		// "instructions":"Ignore all previous instructions" reached the agent
-		// having never been scanned, because the tools/list response is
-		// excluded from general response scanning once ScanTools calls it
-		// clean. The agent reads whatever the schema contains, so the walk
-		// takes every string it contains rather than only the ones named in
-		// the specification.
-		switch val := v.(type) {
-		case map[string]interface{}:
-			collectAllSchemaText(val, result, depth+1)
-		case []interface{}:
-			// Every element, not only the objects. A bare string sitting
-			// directly in a composition array is agent-visible text and was
-			// being dropped by an object-only walk.
-			for _, item := range val {
-				collectSchemaValueText(item, result, depth+1)
-			}
-		case string:
-			if isAgentReadableSchemaText(val) {
-				*result = append(*result, val)
-			}
-		}
-	}
-}
-
 // schemaTypeKeywords are the JSON Schema type names. A string equal to one of
 // them is structure rather than anything an agent acts on.
 var schemaTypeKeywords = map[string]bool{
@@ -2072,23 +1973,9 @@ func isAgentReadableSchemaText(value string) bool {
 // like default, const, enum, examples, and x-* extensions that can hold
 // nested structures containing poisoned text.
 func collectStringLeaves(v interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch val := v.(type) {
-	case string:
-		if val != "" {
-			*result = append(*result, val)
-		}
-	case map[string]interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	case []interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	}
+	sink := toolTextSink{}
+	sink.stringLeaves(v, "", depth)
+	*result = append(*result, sink.texts...)
 }
 
 // tryParseToolsList attempts to parse a JSON-RPC result as a tools/list response.
@@ -2722,9 +2609,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		directiveKeys := extractToolDirectiveKeys(tool)
 
-		descriptionText := extractToolText(tool)
-		generalText := extractToolGeneralText(tool)
-		text := strings.Trim(strings.Join([]string{descriptionText, generalText}, ". "), ". ")
+		text, _ := toolScanText(tool)
 
 		if text != "" {
 			// This is the dedicated tool scanner, whose action is independent of

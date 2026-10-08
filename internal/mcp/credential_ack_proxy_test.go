@@ -616,3 +616,41 @@ func TestChildEnvOverrideIdentityWindowsKeysFoldCase(t *testing.T) {
 		t.Fatalf("linux identity = %v, want two distinct variables", got)
 	}
 }
+
+// An SSE upstream answers tools/list as an event stream; both HTTP transports
+// read it through their SSE paths. The acknowledgment, its audit, and the
+// stale refusal must behave there exactly as on JSON responses.
+func TestSSEToolsListAcknowledgment(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message\ndata: "+strings.TrimSpace(ackLine())+"\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	for _, transportName := range []string{"upstream", "listener"} {
+		for name, tc := range map[string]struct {
+			binding string
+			action  string
+			forward bool
+		}{
+			"matching binding under block": {proxyAckBinding, config.ActionBlock, true},
+			"other binding under warn":     {tools.ServerBindingDigest("upstream", "https://elsewhere.example/mcp"), config.ActionWarn, false},
+		} {
+			t.Run(transportName+"/"+name, func(t *testing.T) {
+				emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+				obs := &toolScanCaptureRecorder{}
+				opts := ackOpts(t, proxyAckEntry(t))
+				opts.ToolCfg.Action = tc.action
+				opts.ServerBinding = tc.binding
+				opts.ReceiptEmitter = emitter
+				opts.CaptureObs = obs
+				got, _ := driveA2AHTTPDepth(t, upstream.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, opts, transportName)
+				if forwarded := strings.Contains(string(got), `"store_secret"`); forwarded != tc.forward {
+					t.Fatalf("forwarded = %v, want %v: %s", forwarded, tc.forward, got)
+				}
+				if tc.forward {
+					requireAcknowledgedAudit(t, obs, rec, dir, pubHex)
+				}
+			})
+		}
+	}
+}

@@ -176,6 +176,11 @@ func TestMCPProxyCmd_StartupDoesNotExposeBindingDigest(t *testing.T) {
 		// endpoint without its user info or query.
 		{"proxy", "--upstream", "http://ops:" + password + "@/mcp?token=" + password},
 		{"proxy", "--upstream", "ws://ops:" + password + "@[::1/mcp?token=" + password},
+		// Opaque and host-less upstreams: the refusal shows the scheme only.
+		{"proxy", "--upstream", "http:ops:" + password + "@mcp.vendor.example/mcp?token=" + password},
+		{"proxy", "--upstream", "ws:ops:" + password + "@mcp.vendor.example/mcp"},
+		// An unsupported scheme is refused naming the endpoint only.
+		{"proxy", "--upstream", "ftp://ops:" + password + "@" + addr + "/mcp?token=" + password},
 	} {
 		stdout, stderr, err := runMCPProxyCommandWithInput(t, args,
 			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")

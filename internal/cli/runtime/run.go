@@ -424,6 +424,11 @@ func RedactEndpoint(raw string) string {
 	if err != nil {
 		return "<invalid>"
 	}
+	if u.Opaque != "" {
+		// An opaque URL ("http:user:pass@host") keeps everything after the
+		// scheme in Opaque, credentials included, so none of it is shown.
+		return u.Scheme + ":<redacted>"
+	}
 	u.User = nil
 	u.RawQuery = ""
 	u.Fragment = ""

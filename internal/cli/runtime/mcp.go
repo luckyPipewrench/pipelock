@@ -952,7 +952,7 @@ Key-free evidence capture:
 				case "ws", "wss":
 					isWSUpstream = true
 				default:
-					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", upstreamURL)
+					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", RedactEndpoint(upstreamURL))
 				}
 			}
 

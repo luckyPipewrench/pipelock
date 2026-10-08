@@ -36,11 +36,17 @@ type WSClient struct {
 }
 
 // redactDialURL drops the parts of an upstream URL that can carry a
-// credential (user info, query and fragment) before it reaches an error.
+// credential (user info, query, fragment, or an opaque part) before it
+// reaches an error.
 func redactDialURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "<invalid>"
+	}
+	if u.Opaque != "" {
+		// An opaque URL ("ws:user:pass@host") keeps everything after the
+		// scheme in Opaque, credentials included, so none of it is shown.
+		return u.Scheme + ":<redacted>"
 	}
 	u.User = nil
 	u.RawQuery = ""

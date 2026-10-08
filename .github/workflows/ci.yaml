@@ -903,7 +903,7 @@ jobs:
           go-version: '1.27'
 
       - name: Run browser target fallback contracts
-        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform|TestLoadSaltFileFailsClosedOnUnsupportedPlatform" ./internal/securefile/... ./internal/recorder/... ./internal/contract/privacy/...
+        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform|TestLoadSaltFileFailsClosedOnUnsupportedPlatform|TestMCPAckKeyFileSourceRefusedOnBrowserTarget" ./internal/securefile/... ./internal/recorder/... ./internal/contract/privacy/...
 
       - name: Compile WASI fallback contracts
         run: |

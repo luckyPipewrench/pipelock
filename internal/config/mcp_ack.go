@@ -334,8 +334,17 @@ func ResolveMCPAckKey(source string) ([]byte, error) {
 // environment reference or an absolute file reference is accepted; the
 // resolver refuses symlinks and files readable by group or others.
 func resolveMCPAckKey(source string) ([]byte, error) {
+	return resolveMCPAckKeyOn(source, mcpAckFileKeySupported)
+}
+
+// resolveMCPAckKeyOn is resolveMCPAckKey with the platform's file-key
+// support supplied, so every platform's refusal can be tested on any host.
+func resolveMCPAckKeyOn(source string, fileKeySupported bool) ([]byte, error) {
 	const field = "mcp_tool_scanning.acknowledgment_key"
 	isEnv := strings.HasPrefix(source, "${") && strings.HasSuffix(source, "}") && len(source) > 3
+	if strings.HasPrefix(source, "file:") && !fileKeySupported {
+		return nil, fmt.Errorf("%s: a file key is not supported on this platform, where its readership cannot be verified; use \"${ENV_VAR}\"", field)
+	}
 	if !isEnv && !strings.HasPrefix(source, "file:") {
 		return nil, fmt.Errorf("%s must be \"${ENV_VAR}\" or \"file:/absolute/path\"; a literal key in the configuration would be readable by everyone who can read the entries it protects", field)
 	}

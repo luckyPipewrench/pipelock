@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // credentialRequestFamilyRevision is the detector revision of the Credential
@@ -586,22 +585,20 @@ func credentialAckHasOtherFindings(m ToolScanMatch) bool {
 }
 
 // credentialAckOutcome returns the outcome of the configured entry for tool,
-// if there is one. It evaluates the entry against the same text, spans and
-// normalized string the detector scans. An entry whose finding is absent,
-// including a tool with no scanner text at all, never applies: it describes
-// a definition the tool no longer has.
-func credentialAckOutcome(cfg *ToolScanConfig, tool ToolDef, now time.Time) (string, bool) {
+// if there is one. It evaluates the entry against pre, the one traversal
+// whose findings the scanner then enforces or lifts. An entry whose finding
+// is absent, including a tool with no scanner text at all, never applies: it
+// describes a definition the tool no longer has.
+func credentialAckOutcome(cfg *ToolScanConfig, tool ToolDef, pre toolPrescan, now time.Time) (string, bool) {
 	entry, ok := findCredentialAck(cfg, tool.Name)
 	if !ok {
 		return "", false
 	}
-	text, spans := toolScanText(tool)
 	att := credentialRequestAttribution{Attributable: true}
 	hasRequest := false
-	if text != "" {
-		norm := normalize.ForToolText(text)
-		hasRequest = slices.Contains(checkToolPoison(norm), handoverRequestFinding)
-		att = attributeWithNorm(text, norm, spans)
+	if pre.text != "" {
+		hasRequest = slices.Contains(pre.poison, handoverRequestFinding)
+		att = attributeWithNorm(pre.text, pre.norm, pre.spans)
 	}
 	outcome := evaluateCredentialAck(entry, cfg, tool, att, now)
 	if outcome == CredentialAckAcknowledged && !hasRequest {

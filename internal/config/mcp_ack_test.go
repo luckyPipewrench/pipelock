@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -363,5 +364,36 @@ func TestResolveMCPAckKeyMatchesLoad(t *testing.T) {
 		if _, err := ResolveMCPAckKey(source); err == nil {
 			t.Errorf("source %q resolved", source)
 		}
+	}
+}
+
+// Where a file key's readership cannot be verified (Windows, the browser
+// target), a file source is refused before anything is read, while an
+// environment source still resolves. The file exists and is private, so the
+// refusal comes from the platform rule, not from the file.
+func TestMCPAckFileKeyRefusedWhereUnverifiable(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ack.key")
+	if err := os.WriteFile(p, []byte(testAckKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveMCPAckKeyOn("file:"+p, false); err == nil || !strings.Contains(err.Error(), "not supported on this platform") {
+		t.Fatalf("file key on an unverifiable platform: err = %v", err)
+	}
+	// The production resolver applies this platform's rule: refused before
+	// the loader where unverifiable, read where supported.
+	key, err := ResolveMCPAckKey("file:" + p)
+	if mcpAckFileKeySupported {
+		if err != nil || string(key) != testAckKey {
+			t.Fatalf("file key on %s: %q, %v", runtime.GOOS, key, err)
+		}
+	} else if err == nil || !strings.Contains(err.Error(), "not supported on this platform") {
+		t.Fatalf("file key on %s: err = %v, want the platform refusal", runtime.GOOS, err)
+	}
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
+	if key, err := resolveMCPAckKeyOn("${PIPELOCK_TEST_ACK_KEY}", false); err != nil || string(key) != testAckKey {
+		t.Fatalf("environment key on an unverifiable platform: %q, %v", key, err)
+	}
+	if mcpAckFileKeySupported != (runtime.GOOS != "windows" && runtime.GOOS != "js") {
+		t.Fatalf("mcpAckFileKeySupported = %v on %s", mcpAckFileKeySupported, runtime.GOOS)
 	}
 }

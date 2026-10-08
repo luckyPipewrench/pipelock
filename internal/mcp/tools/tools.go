@@ -206,6 +206,37 @@ type ToolScanConfig struct {
 	ServerBindingSHA256 string
 	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.
 	Now func() time.Time
+	// schemaOrder supplies schema map iteration order in tests. Nil keeps
+	// Go's own map order.
+	schemaOrder schemaKeyOrder
+}
+
+func (c *ToolScanConfig) textOrder() schemaKeyOrder {
+	if c == nil {
+		return nil
+	}
+	return c.schemaOrder
+}
+
+// toolPrescan is one traversal of a tool's scanner text and the detector's
+// findings on it. Schema maps iterate in random order, and a match can span
+// two fields in one order and not another, so the acknowledgment decision
+// and the findings it lifts must come from the same traversal.
+type toolPrescan struct {
+	text   string
+	spans  []toolTextSpan
+	norm   string
+	poison []string
+}
+
+func prescanTool(cfg *ToolScanConfig, tool ToolDef) toolPrescan {
+	text, spans := toolScanTextOrdered(tool, cfg.textOrder())
+	pre := toolPrescan{text: text, spans: spans}
+	if text != "" {
+		pre.norm = normalize.ForToolText(text)
+		pre.poison = checkToolPoison(pre.norm)
+	}
+	return pre
 }
 
 func (c *ToolScanConfig) now() time.Time {
@@ -2630,9 +2661,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	// order they arrive in.
 	ackNow := cfg.now()
 	ackOutcomes := make([]string, len(tools))
+	prescans := make([]toolPrescan, len(tools))
 	responseAckRefused := false
 	for i, tool := range tools {
-		if outcome, ok := credentialAckOutcome(cfg, tool, ackNow); ok {
+		prescans[i] = prescanTool(cfg, tool)
+		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
 			ackOutcomes[i] = outcome
 			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
 		}
@@ -2655,7 +2688,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		directiveKeys := extractToolDirectiveKeys(tool)
 
-		text, spans := toolScanText(tool)
+		pre := prescans[toolIndex]
+		text, spans := pre.text, pre.spans
 
 		if text == "" {
 			// A reviewed tool can shrink to no scanner text at all. Its entry
@@ -2678,8 +2712,8 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			norm := normalize.ForToolText(text)
-			poison := checkToolPoison(norm)
+			norm := pre.norm
+			poison := slices.Clone(pre.poison)
 			hasRequest := slices.Contains(poison, handoverRequestFinding)
 			// A configured entry is evaluated whether or not its finding is
 			// still present: a reviewed tool whose wording changed or was

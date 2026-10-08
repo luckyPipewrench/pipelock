@@ -4,14 +4,17 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -778,5 +781,55 @@ func TestForwardScannedStaleEntryRefusesWhenFindingDisappears(t *testing.T) {
 	}
 	if cr := obs.records[0]; cr.Outcome != capture.OutcomeBlocked {
 		t.Fatalf("capture outcome = %q, want blocked", cr.Outcome)
+	}
+}
+
+// TestAckRunProxyHelperProcess is the fake MCP server for the RunProxy test
+// below: it answers every request with the acknowledged tools/list.
+func TestAckRunProxyHelperProcess(t *testing.T) {
+	if os.Getenv("PIPELOCK_ACK_RUNPROXY_HELPER") != "1" {
+		return
+	}
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(in.Bytes(), &req); err != nil || len(req.ID) == 0 {
+			req.ID = json.RawMessage("null")
+		}
+		_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[%s]}}`+"\n", req.ID, proxyAckTool)
+	}
+	os.Exit(0)
+}
+
+// The subprocess proxy builds its own tool-scan configuration copy; the
+// server binding must still reach the acknowledgment check through its
+// options, so a matching entry applies and a mismatched one refuses.
+func TestRunProxySubprocessCarriesAcknowledgmentBinding(t *testing.T) {
+	for name, tc := range map[string]struct {
+		binding string
+		action  string
+		forward bool
+	}{
+		"matching binding under block": {proxyAckBinding, config.ActionBlock, true},
+		"other binding under warn":     {tools.ServerBindingDigest("upstream", "https://elsewhere.example/mcp"), config.ActionWarn, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := ackOpts(t, proxyAckEntry(t))
+			opts.ToolCfg.Action = tc.action
+			opts.ServerBinding = tc.binding
+			var stdout, stderr bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			err := RunProxy(ctx, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n"), &stdout, &stderr,
+				[]string{os.Args[0], "-test.run=TestAckRunProxyHelperProcess", "--"}, opts, "PIPELOCK_ACK_RUNPROXY_HELPER=1")
+			if err != nil {
+				t.Fatalf("RunProxy: %v\nstderr=%s", err, stderr.String())
+			}
+			if forwarded := strings.Contains(stdout.String(), `"store_secret"`); forwarded != tc.forward {
+				t.Fatalf("forwarded = %v, want %v\nstdout=%s\nstderr=%s", forwarded, tc.forward, stdout.String(), stderr.String())
+			}
+		})
 	}
 }

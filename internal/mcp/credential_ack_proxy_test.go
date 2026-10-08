@@ -508,6 +508,14 @@ func requireAcknowledgedAudit(t *testing.T, obs *toolScanCaptureRecorder, rec in
 	if len(records) != 1 || records[0].Outcome != capture.OutcomeWarned {
 		t.Fatalf("capture records = %+v, want one warned record", records)
 	}
+	raw := false
+	for _, f := range records[0].RawFindings {
+		raw = raw || (f.Kind == capture.KindToolPoison && f.PoisonSignal == config.MCPAckFindingRequestDirective &&
+			f.Action == config.ActionAllow && f.PolicyRule == "mcp_tool_scanning.acknowledged_findings")
+	}
+	if !raw {
+		t.Fatalf("capture lost the acknowledged raw finding on this transport: %+v", records[0].RawFindings)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -652,5 +660,99 @@ func TestSSEToolsListAcknowledgment(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+const cleanToolsList = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"store_secret","description":"Stores notes for later use."}]}}`
+
+// runTransportAdaptive drives one tools/list over the named transport with a
+// session already carrying risk, and returns what the recorder saw.
+func runTransportAdaptive(t *testing.T, transportName, response string, acks ...config.MCPAcknowledgedFinding) (*mockRecorder, string) {
+	t.Helper()
+	rec := &mockRecorder{score: 5}
+	opts := ackOpts(t, acks...)
+	opts.Store = singleRecorderStore{rec}
+	opts.AdaptiveCfg = adaptiveCfgEnabled()
+	request := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	switch transportName {
+	case "websocket":
+		srv := wsRespondServer(t, []byte(response), nil)
+		defer srv.Close()
+		opts.Scanner = testScannerForWS(t)
+		opts.Transport = "mcp_ws"
+		pr, pw := io.Pipe()
+		var stdout, stderr lockedHTTPBuffer
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), opts) }()
+		_, _ = pw.Write([]byte(request + "\n"))
+		if !pollUntil(2*time.Second, func() bool { return stdout.contains(`"id":1`) }) {
+			t.Fatalf("no websocket response; stderr=%s", stderr.String())
+		}
+		_ = pw.Close()
+		if err := <-done; err != nil {
+			t.Fatalf("RunWSProxy: %v", err)
+		}
+		return rec, stdout.String()
+	default:
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: message\ndata: "+response+"\n\n")
+		}))
+		defer upstream.Close()
+		if transportName != "listener" {
+			got, _ := driveA2AHTTPDepth(t, upstream.URL, request, opts, transportName)
+			return rec, string(got)
+		}
+		// The listener attaches a session recorder only to a request that
+		// names its session, and reads adaptive config through the function.
+		adaptive := opts.AdaptiveCfg
+		opts.AdaptiveCfg = nil
+		opts.AdaptiveCfgFn = func() *config.AdaptiveEnforcement { return adaptive }
+		baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Session-Id", "acknowledgment-adaptive-session")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec, string(body)
+	}
+}
+
+// On SSE (both HTTP transports) and WebSocket, with a session already
+// carrying risk, an acknowledged inventory earns exactly one fewer clean
+// credit than a clean inventory over the same transport: the response's. It
+// raises no signal. mockRecorder counts RecordClean calls rather than
+// lowering its score, so the comparison is by call count.
+func TestAcknowledgmentKeepsAdaptiveRiskAcrossTransports(t *testing.T) {
+	for _, transportName := range []string{"upstream", "listener", "websocket"} {
+		t.Run(transportName, func(t *testing.T) {
+			control, controlOut := runTransportAdaptive(t, transportName, cleanToolsList)
+			if !strings.Contains(controlOut, `"store_secret"`) {
+				t.Fatalf("clean control not forwarded: %s", controlOut)
+			}
+			acked, ackedOut := runTransportAdaptive(t, transportName, strings.TrimSpace(ackLine()), proxyAckEntry(t))
+			if !strings.Contains(ackedOut, `"store_secret"`) {
+				t.Fatalf("acknowledged inventory not forwarded: %s", ackedOut)
+			}
+			if control.cleans < 1 || acked.cleans != control.cleans-1 {
+				t.Fatalf("clean credits: control %d, acknowledged %d; want exactly the response credit missing", control.cleans, acked.cleans)
+			}
+			if len(control.signals) != 0 || len(acked.signals) != 0 || acked.score != 5 {
+				t.Fatalf("signals: control %v, acknowledged %v, score %v", control.signals, acked.signals, acked.score)
+			}
+		})
 	}
 }

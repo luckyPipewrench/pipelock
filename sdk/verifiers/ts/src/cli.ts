@@ -33,6 +33,7 @@ import {
 } from "./recorder.js";
 import { FindingOuterChainBroken, verifyRecorderChain } from "./recorder-chain.js";
 import { runReceipt } from "./receipt.js";
+import { receiptGroupEvidencePresent, verifyReceiptGroup } from "./group.js";
 import {
   loadRotationEndorsementFile,
   verifyChainWithEndorsements,
@@ -69,7 +70,7 @@ function usage(command?: string): string {
     return "Usage: pipelock-verifier-ts audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]";
   }
   if (command === "chain") {
-    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]";
+    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID] [--group ID]";
   }
   if (command === "receipt") {
     return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]";
@@ -436,6 +437,7 @@ async function runChainCommand(args: string[]): Promise<number> {
       dir: { type: "boolean", default: false },
       "session-id": { type: "string" },
       "rotation-endorsement": { type: "string", multiple: true, default: [] },
+      group: { type: "string" },
     },
   });
   const target = requireOneArg(parsed.positionals, "chain");
@@ -446,6 +448,27 @@ async function runChainCommand(args: string[]): Promise<number> {
   const allowUnpinned = parsed.values["allow-unpinned"] === true;
   let endorsementPaths = parsed.values["rotation-endorsement"] ?? [];
   const json = parsed.values.json === true;
+  const groupID = parsed.values.group;
+  if (groupID !== undefined) {
+    if (!asDir) throw new UsageError("--group requires --dir");
+    if (allowUnpinned || endorsementPaths.length > 0 || explicitSession) {
+      throw new UsageError(
+        "--group cannot be combined with --allow-unpinned, --session-id, or rotation endorsements",
+      );
+    }
+    const group = await verifyReceiptGroup(target, groupID, keyHex.split(",").filter(Boolean));
+    if (json) process.stdout.write(`${JSON.stringify(group, null, 2)}\n`);
+    else {
+      process.stdout.write(
+        `${group.verdict}: ${group.group_id}${group.base_session ? ` (${group.base_session})` : ""}\n`,
+      );
+      if (group.error) process.stderr.write(`  error: ${group.error}\n`);
+      if (group.shard_count) process.stdout.write(`  shards: ${group.shard_count}\n`);
+    }
+    if (group.verdict !== "GROUP_VALID")
+      reportFailure(`receipt group ${group.group_id}: ${group.error ?? group.verdict}`);
+    return group.verdict === "GROUP_VALID" ? 0 : 1;
+  }
   // Resolve an explicit file before normalizing it: symlink/.. can reach a
   // different file from the one selected by lexical normalization.
   if (asDir) {
@@ -475,6 +498,18 @@ async function runChainCommand(args: string[]): Promise<number> {
   const display = path.normalize(target);
   const readPath = asDir ? "." : resolveOperatorFilePath(target);
   const runAt = async (clean: string): Promise<number> => {
+    if (asDir && receiptGroupEvidencePresent(clean)) {
+      return emitChainResult(
+        {
+          path: display,
+          valid: false,
+          receipt_count: 0,
+          final_seq: 0,
+          error: "GROUP_INVALID: receipt group evidence requires --group",
+        },
+        json,
+      );
+    }
     // A directory whose base has per-run chains is verified as a base, as the Go
     // reference does: the base of a run session is its prefix, and any other
     // session is its own base. Without --session-id every chain of the base is

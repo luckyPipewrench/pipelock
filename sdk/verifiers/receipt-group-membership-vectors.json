@@ -1,0 +1,7 @@
+[
+  {"name":"complete","signed_sessions":["shard-a","shard-b"],"claimed_sessions":["shard-a","shard-b"],"incomplete":false,"error":""},
+  {"name":"missing","signed_sessions":["shard-a","shard-b"],"claimed_sessions":["shard-a"],"incomplete":false,"error":"claims"},
+  {"name":"foreign-substitution","signed_sessions":["shard-a","shard-b"],"claimed_sessions":["shard-a","foreign"],"incomplete":false,"error":"outside signed shard membership"},
+  {"name":"duplicate-substitution","signed_sessions":["shard-a","shard-b"],"claimed_sessions":["shard-a","shard-a"],"incomplete":false,"error":"duplicate claims"},
+  {"name":"incomplete-prefix","signed_sessions":["shard-a","shard-b"],"claimed_sessions":["shard-a"],"incomplete":true,"error":""}
+]

@@ -13,6 +13,7 @@ type NestedKind =
   | "key_transition"
   | "session_control"
   | "session_open"
+  | "group_binding"
   | "session_heartbeat"
   | "session_close";
 
@@ -161,6 +162,17 @@ const sessionOpenFields: readonly FieldSpec[] = [
   ["posture_signer_key_id", true],
   ["containment_nonce", true],
   ["contained_uid", true],
+  ["group_binding", true, "group_binding"],
+];
+
+const groupBindingFields: readonly FieldSpec[] = [
+  ["group_id", false],
+  ["shard_index", false],
+  ["session_id", false],
+  ["open_manifest_sha256", false],
+  ["signer_key", false],
+  ["previous_group_id", false],
+  ["previous_open_manifest_sha256", false],
 ];
 
 const sessionHeartbeatFields: readonly FieldSpec[] = [
@@ -226,6 +238,8 @@ function orderStruct(
       fieldValue = orderStruct(fieldValue, sessionControlFields);
     } else if (nested === "session_open" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, sessionOpenFields);
+    } else if (nested === "group_binding" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, groupBindingFields);
     } else if (nested === "session_heartbeat" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, sessionHeartbeatFields);
     } else if (nested === "session_close" && isPlainObject(fieldValue)) {

@@ -24,6 +24,7 @@ import {
   extractTypedFromEntries,
   parseEntryLinesText,
   readEntryLines,
+  readEntryLinesPrefix,
   type ExtractedReceipts,
   type ParsedRecorderLine,
 } from "./recorder.js";
@@ -35,7 +36,9 @@ import {
   type RotationEndorsement,
 } from "./rotation.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
+import { InvalidError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
+import { blankAfterGoTrim } from "./line-space.js";
+export { blankAfterGoTrim } from "./line-space.js";
 
 export const FindingCorruptChain = "corrupt_chain";
 export const FindingInvalidLink = "invalid_link";
@@ -364,7 +367,7 @@ function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();
   for (const de of readdirSync(dir, { withFileTypes: true })) {
-    if (de.isDirectory() || !de.name.endsWith(evidenceSuffix)) continue;
+    if (!de.name.endsWith(evidenceSuffix)) continue;
     const parsed = parseEvidenceFilename(de.name);
     if (parsed === undefined) continue;
     if (de.isSymbolicLink()) {
@@ -417,6 +420,11 @@ function indexFiles(ix: EvidenceIndex, session: string): string[] {
   return files;
 }
 
+// Return the validated session order used by the ordinary evidence reader.
+export function sessionEvidenceFiles(dir: string, session: string): string[] {
+  return indexFiles(indexRecorderFiles(dir), session);
+}
+
 function sortedSessions(ix: EvidenceIndex): string[] {
   return [...ix.files.keys()].sort(compareStrings);
 }
@@ -445,23 +453,60 @@ export function resolveBaseSessions(dir: string, base: string): string[] {
 // verification failure, never a usage error.
 export class EvidenceRefusedError extends Error {}
 
+// SessionTail selects how a session's final unterminated write is treated.
+// "whole" is the ordinary evidence reader: the fragment is parsed like any
+// other line, so a torn tail is a parse failure. "prefix" is the receipt group
+// reader, where Go's session walker delivers every complete line and then
+// reports the fragment as a torn tail the caller must classify.
+export type SessionTail = "whole" | "prefix";
+
+interface SessionLinesRead {
+  lines: ParsedRecorderLine[];
+  torn: boolean;
+}
+
+function checkLineSession(l: ParsedRecorderLine, file: string, session: string): void {
+  if (l.entry.session_id !== session) {
+    throw new EvidenceRefusedError(
+      `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
+    );
+  }
+}
+
 // readSessionLines reads every recorder entry of one session in shard order.
 // Like Go's session reader (internal/recorder/query.go), it refuses an entry
 // whose session_id is not the session its file name claims: a file named for
 // run X that holds run Y's entries is not run X's evidence.
-function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLine[] {
+function readSessionLines(
+  ix: EvidenceIndex,
+  session: string,
+  tail: SessionTail = "whole",
+): SessionLinesRead {
   const out: ParsedRecorderLine[] = [];
-  for (const file of indexFiles(ix, session)) {
-    for (const l of readEntryLines(file, evidenceDirectoryActive)) {
-      if (l.entry.session_id !== session) {
-        throw new EvidenceRefusedError(
-          `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
-        );
+  const files = indexFiles(ix, session);
+  let torn = false;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i] as string;
+    if (tail === "whole") {
+      for (const l of readEntryLines(file, evidenceDirectoryActive)) {
+        checkLineSession(l, file, session);
+        out.push(l);
       }
+      continue;
+    }
+    const read = readEntryLinesPrefix(file, evidenceDirectoryActive);
+    for (const l of read.lines) {
+      checkLineSession(l, file, session);
       out.push(l);
     }
+    if (!read.torn) continue;
+    // A later segment may hold authenticated entries, so only the last
+    // segment's fragment is a recoverable final write.
+    if (i + 1 < files.length)
+      throw new InvalidError(`receipt group session has a torn segment: ${path.basename(file)}`);
+    torn = true;
   }
-  return out;
+  return { lines: out, torn };
 }
 
 // checkFileEntrySessions applies the session rule to one evidence file read on
@@ -496,12 +541,28 @@ export function checkFileEntrySessions(name: string, lines: ParsedRecorderLine[]
 export interface SessionEvidence {
   lines: ParsedRecorderLine[];
   typed: ExtractedReceipts;
+  // torn is true only for tail "prefix": the final shard ends in an
+  // unterminated fragment that is not part of lines.
+  torn: boolean;
 }
 
-// readSessionEvidence reads one session of dir with the refusals above.
-export function readSessionEvidence(dir: string, session: string): SessionEvidence {
-  const lines = readSessionLines(indexRecorderFiles(dir), session);
-  return { lines, typed: extractTypedFromEntries(lines.map((l) => l.entry)) };
+// readSessionEvidence reads one session of dir with the refusals above. Only a
+// receipt group caller passes tail "prefix"; it also accepts the group gate
+// entry, which every other reader treats as an unknown entry type.
+export function readSessionEvidence(
+  dir: string,
+  session: string,
+  tail: SessionTail = "whole",
+): SessionEvidence {
+  const read = readSessionLines(indexRecorderFiles(dir), session, tail);
+  return {
+    lines: read.lines,
+    typed: extractTypedFromEntries(
+      read.lines.map((l) => l.entry),
+      tail === "prefix",
+    ),
+    torn: read.torn,
+  };
 }
 
 // readSessionReceipts returns the receipts of one session in shard order, as
@@ -516,28 +577,6 @@ function chainLinkFilePredecessor(name: string): string | undefined {
   }
   const pred = name.slice(chainLinkFilePrefix.length, name.length - chainLinkFileSuffix.length);
   return pred === "" ? undefined : pred;
-}
-
-// Go's unicode.IsSpace, used by strings.TrimSpace.
-function isGoSpace(ch: string): boolean {
-  const c = ch.codePointAt(0) ?? 0;
-  return (
-    (c >= 0x09 && c <= 0x0d) ||
-    c === 0x20 ||
-    c === 0x85 ||
-    c === 0xa0 ||
-    c === 0x1680 ||
-    (c >= 0x2000 && c <= 0x200a) ||
-    c === 0x2028 ||
-    c === 0x2029 ||
-    c === 0x202f ||
-    c === 0x205f ||
-    c === 0x3000
-  );
-}
-
-function blankAfterGoTrim(value: string): boolean {
-  return [...value].every(isGoSpace);
 }
 
 // goJSONString encodes value exactly as Go's encoding/json does, followed by
@@ -1600,7 +1639,7 @@ function loadBaseChain(
   const s = d.chain.session;
   let lines: ParsedRecorderLine[];
   try {
-    lines = readSessionLines(ix, s);
+    lines = readSessionLines(ix, s).lines;
   } catch (err) {
     d.chain.error = (err as Error).message;
     add(FindingCorruptChain, s, d.chain.error);

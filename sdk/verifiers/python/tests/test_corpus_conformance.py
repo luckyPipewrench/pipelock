@@ -24,7 +24,6 @@ import pytest
 
 from pipelock_aarp_verify.cli import main
 
-
 # Every corpus category directory. test_categories_match_corpus fails when a new
 # category is added to the corpus without being wired in here.
 _CATEGORIES = ("golden", "malicious", "edge", "chain", "killsuite", "svid")

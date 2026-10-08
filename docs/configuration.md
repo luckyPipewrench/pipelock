@@ -1573,7 +1573,7 @@ Limits worth knowing:
 - A tool definition that isn't valid UTF-8, or has any text that decodes to the replacement character U+FFFD (including a literal one), can't be acknowledged. Different encodings of it would look identical after decoding, so no entry is offered and its findings keep enforcing.
 - The binding digest is printed. If a header or variable it covers holds a short or guessable secret, the digest can be guessed offline, so use high-entropy tokens there.
 - `pipelock mcp proxy` reads its configuration once per session. Revoking an entry there takes a restart, though expiry still applies right away. The HTTP listener under `pipelock run` applies changes on the next `tools/list`.
-- An acknowledged `tools/list` is forwarded with the finding present. It's logged, captured as warned and receipted with an allow verdict, and it earns no adaptive-enforcement credit.
+- An acknowledged `tools/list` passes tool scanning with the finding present, and it's forwarded only if every later check passes too. Tool scanning logs it, captures it as warned and receipts it with an allow verdict, and it earns no adaptive-enforcement credit.
 
 ## MCP Tool Policy
 

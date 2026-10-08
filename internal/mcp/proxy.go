@@ -588,7 +588,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				})
 			}
 			// An acknowledged list is captured after its receipt decision below,
-			// so the record says how it actually ended.
+			// so the tool-scan record reflects that receipt decision.
+			// Later gates record their own refusals.
 			if toolResult.IsToolsList && (!toolAcknowledged || !toolResult.Clean) {
 				toolCaptureAction := config.ActionAllow
 				if !toolResult.Clean {

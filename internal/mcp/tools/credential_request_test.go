@@ -112,18 +112,6 @@ func TestCheckToolPoison_CredentialRequestBenign(t *testing.T) {
 		"Give the tool a short title.",
 		"Include your API key in the Authorization header.",
 		"Pass the request body through unchanged.",
-		// Negated: a capability boundary, not a request.
-		"Never provide your API key to this tool.",
-		"Do not provide your API key.",
-		"This tool does not supply credentials to anything.",
-		"The agent must not share the user's password.",
-		// A following clause that continues rather than redirects keeps the
-		// negation a boundary.
-		"Never share your API key. Rotate it regularly.",
-		"Do not provide your password; the server never asks for it.",
-		"Never paste your token here. It is read from the environment.",
-		"Never share your API key... **Rotate** it regularly.",
-		"Do not provide your password. -- Only the server stores it.",
 	}
 	for i, text := range benign {
 		t.Run(fmt.Sprintf("benign_%d", i), func(t *testing.T) {
@@ -187,9 +175,10 @@ func TestScanTools_CredentialRequestFreshInventory(t *testing.T) {
 			wantClean: true,
 		},
 		{
-			name:      "negated request",
-			line:      anyOfToolsResponse(t, "Never provide your API key to this tool."),
-			wantClean: true,
+			// No negation carve-out: negated wording is flagged too.
+			name: "negated request",
+			line: anyOfToolsResponse(t, "Never provide your API key to this tool."),
+			want: handoverRequestFinding,
 		},
 		{
 			name: "top-level description",

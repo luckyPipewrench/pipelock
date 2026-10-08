@@ -975,3 +975,15 @@ func TestCredentialAckKeyLifecycle(t *testing.T) {
 	var nilSet *CredentialAckSet
 	nilSet.Revoke() // a nil set is a no-op, not a panic
 }
+
+// With no entries and no key there is no set, and a configuration without a
+// set has no acknowledgment for any tool.
+func TestCredentialAckSetAbsent(t *testing.T) {
+	if NewCredentialAckSet(nil, nil) != nil {
+		t.Fatal("empty inputs built a set")
+	}
+	cfg := (&ToolScanConfig{Action: config.ActionBlock}).WithServer(ackTestServer, ackTestBinding)
+	if _, ok := findCredentialAck(cfg, "store_secret"); ok {
+		t.Fatal("found an acknowledgment with no set configured")
+	}
+}

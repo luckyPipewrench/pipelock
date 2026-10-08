@@ -57,6 +57,9 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 		{"uppercase binding", func(e *MCPAcknowledgedFinding) {
 			e.ServerBindingHMAC = strings.ToUpper(e.ServerBindingHMAC)
 		}, "server_binding_hmac"},
+		{"non-hex key id", func(e *MCPAcknowledgedFinding) {
+			e.ServerBindingHMAC = MCPAckBindingHMACPrefix + strings.Repeat("zz", 8) + ":" + hex64
+		}, "server_binding_hmac"},
 		{"short key id", func(e *MCPAcknowledgedFinding) {
 			e.ServerBindingHMAC = MCPAckBindingHMACPrefix + "0f:" + hex64
 		}, "server_binding_hmac"},
@@ -345,5 +348,20 @@ func TestMCPAcknowledgmentKeyIsPinnedPrivately(t *testing.T) {
 	clone.MCPToolScanning.AcknowledgmentKeyBytes[0] ^= 0xff
 	if string(cfg.MCPToolScanning.AcknowledgmentKeyBytes) != testAckKey {
 		t.Fatal("clone shares the pinned key with the original")
+	}
+}
+
+// ResolveMCPAckKey resolves a source exactly as configuration load does, so
+// the runtime's recheck after a failed reload sees the same refusals.
+func TestResolveMCPAckKeyMatchesLoad(t *testing.T) {
+	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
+	key, err := ResolveMCPAckKey("${PIPELOCK_TEST_ACK_KEY}")
+	if err != nil || string(key) != testAckKey {
+		t.Fatalf("key = %q, err = %v", key, err)
+	}
+	for _, source := range []string{testAckKey, "${PIPELOCK_TEST_ACK_UNSET}", "file:relative.key"} {
+		if _, err := ResolveMCPAckKey(source); err == nil {
+			t.Errorf("source %q resolved", source)
+		}
 	}
 }

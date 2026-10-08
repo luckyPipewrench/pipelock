@@ -172,6 +172,10 @@ func TestMCPProxyCmd_StartupDoesNotExposeBindingDigest(t *testing.T) {
 		{"proxy", "--upstream", upstream},
 		{"proxy", "--server-name", "vault", "--upstream", wsUpstream},
 		{"proxy", "--server-name", "vault", "--listen", "127.0.0.1:0", "--upstream", wsUpstream},
+		// Malformed upstreams: the refusal and dial errors name the
+		// endpoint without its user info or query.
+		{"proxy", "--upstream", "http://ops:" + password + "@/mcp?token=" + password},
+		{"proxy", "--upstream", "ws://ops:" + password + "@[::1/mcp?token=" + password},
 	} {
 		stdout, stderr, err := runMCPProxyCommandWithInput(t, args,
 			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")

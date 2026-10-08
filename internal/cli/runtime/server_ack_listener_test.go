@@ -422,6 +422,9 @@ func TestServerRunListenerAckKeyFollowsFileReload(t *testing.T) {
 		"unchanged key keeps applying": {
 			{"rewrite", func(*testing.T, string) string { return "" }, true},
 		},
+		"unchanged key survives an unrelated failed reload": {
+			{"break", func(*testing.T, string) string { return ackBrokenReload }, true},
+		},
 		"deleted key refuses": {
 			{"delete", func(t *testing.T, p string) string {
 				if err := os.Remove(p); err != nil {

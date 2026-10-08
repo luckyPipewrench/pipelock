@@ -18,3 +18,7 @@ const noFollowFlag = 0
 // reparse points before Open is called, so this errors.Is branch never
 // fires. Defined so the Unix and Windows files share an identifier set.
 var errELOOP = errors.New("ELOOP-not-supported-on-windows")
+
+// fileSourceSupported is true on Windows, where the Lstat rejection above is
+// the accepted defense.
+const fileSourceSupported = true

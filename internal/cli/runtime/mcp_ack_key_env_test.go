@@ -25,6 +25,8 @@ func TestAckKeyWithheldFromChild(t *testing.T) {
 		{"forwarded with other case", "${PIPELOCK_TEST_ACK_KEY}", []string{"pipelock_test_ack_key=x"}, "acknowledgment key"},
 		{"forwarded as unset marker", "${PIPELOCK_TEST_ACK_KEY}", []string{"PIPELOCK_TEST_ACK_KEY"}, "acknowledgment key"},
 		{"system variable every child gets", "${HOME}", nil, "every MCP server process receives"},
+		{"empty reference is not a variable", "${}", []string{"PIPELOCK_TEST_ACK_KEY=x"}, ""},
+		{"unterminated reference is not a variable", "${PIPELOCK_TEST_ACK_KEY", []string{"PIPELOCK_TEST_ACK_KEY=x"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

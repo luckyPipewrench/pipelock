@@ -944,7 +944,7 @@ Key-free evidence capture:
 			if hasUpstream {
 				u, err := url.Parse(upstreamURL)
 				if err != nil || u.Host == "" {
-					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", upstreamURL)
+					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", RedactEndpoint(upstreamURL))
 				}
 				switch u.Scheme {
 				case schemeHTTP, schemeHTTPS:

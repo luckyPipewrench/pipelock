@@ -62,6 +62,17 @@ func NewWSClientWithDialer(ctx context.Context, rawURL string, dialContext func(
 	dialer := ws.Dialer{NetDial: dialContext}
 	conn, br, _, err := dialer.Dial(ctx, rawURL)
 	if err != nil {
+		// A *url.Error's text repeats its URL exactly as given, user info
+		// and query included. A parse failure has nothing else worth
+		// keeping; any other keeps its cause, so errors.Is still sees a
+		// cancellation or a dialer's sentinel, without the URL text.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			if urlErr.Op == "parse" {
+				return nil, fmt.Errorf("ws dial %s: invalid upstream URL", redactDialURL(rawURL))
+			}
+			return nil, fmt.Errorf("ws dial %s: %s: %w", redactDialURL(rawURL), urlErr.Op, urlErr.Err)
+		}
 		return nil, fmt.Errorf("ws dial %s: %w", redactDialURL(rawURL), err)
 	}
 	var reader io.Reader = conn

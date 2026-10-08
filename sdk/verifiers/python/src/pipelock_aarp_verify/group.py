@@ -51,6 +51,9 @@ _GROUP_ARTIFACT = re.compile(
 _MAX_ARTIFACT = 128 * 1024
 _MAX_LINE = 1 << 20
 _MAX_SHARD_BYTES = 128 * 1024 * 1024
+# Decoded inventory entries stay in memory across a session's files, so the
+# session as a whole is capped; Go streams these and has no equivalent limit.
+_MAX_INVENTORY_SESSION_BYTES = 1024 * 1024 * 1024
 _DOMAINS = {
     "open": "pipelock/receipt-group-open/v1",
     "close": "pipelock/receipt-group-close/v1",
@@ -630,16 +633,26 @@ def _read_session_evidence(
         # Read at most one byte past the remaining budget, counting the bytes
         # actually read: a file that grows after the stat above cannot exhaust
         # memory, and no line is longer than the bounded buffer it came from.
-        budget = _MAX_SHARD_BYTES - total if include_bytes else _MAX_SHARD_BYTES
+        # The budget spans the whole session, because the decoded entries of
+        # every file stay in memory: a shard is held to the shard limit, and an
+        # inventory session (which Go streams) to the in-memory session limit.
+        limit = _MAX_SHARD_BYTES if include_bytes else _MAX_INVENTORY_SESSION_BYTES
+        budget = min(_MAX_SHARD_BYTES, limit - total)
+        oversized = (
+            "receipt group shard is oversized"
+            if include_bytes
+            else "receipt session inventory is oversized for the Python "
+            "verifier's in-memory limit; verify this directory with the Go verifier"
+        )
         if size > budget:
-            raise GroupVerificationError("receipt group shard is oversized")
+            raise GroupVerificationError(oversized)
         with _open_evidence_file(path) as source:
             part = source.read(budget + 1)
         if len(part) > budget:
-            raise GroupVerificationError("receipt group shard is oversized")
+            raise GroupVerificationError(oversized)
+        total += max(size, len(part))
         if include_bytes:
             # _verify_shard applies the same limit to the joined bytes.
-            total += max(size, len(part))
             parts.append(part)
         stream = io.BytesIO(part)
         with stream:

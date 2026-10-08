@@ -269,3 +269,44 @@ def test_writer_probe_refuses_a_lock_swapped_before_open(
     )
     with pytest.raises(recovery.RecoverySealError, match="changed during open"):
         recovery.require_writer_gone(tmp_path, "s")
+
+
+def _two_file_inventory(
+    monkeypatch: pytest.MonkeyPatch, budget_slack: int
+) -> tuple[bytes, bytes]:
+    first_line, first_hash = _recorder_line("s", 0, "genesis")
+    second_line, _ = _recorder_line("s", 1, first_hash)
+    first = _FakeShard("evidence-s-0.jsonl", len(first_line), first_line, True)
+    second = _FakeShard("evidence-s-1.jsonl", len(second_line), second_line, True)
+    monkeypatch.setattr(
+        group_module, "_session_evidence_paths", lambda *_: [(0, first), (1, second)]
+    )
+    monkeypatch.setattr(
+        group_module,
+        "_open_evidence_file",
+        lambda shard: io.BytesIO(shard.read_bytes()),
+    )
+    monkeypatch.setattr(
+        group_module,
+        "_MAX_INVENTORY_SESSION_BYTES",
+        len(first_line) + len(second_line) + budget_slack,
+    )
+    return first_line, second_line
+
+
+def test_inventory_session_total_is_bounded_across_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Decoded entries from every file stay in memory, so the inventory session
+    # as a whole is capped, not each file on its own.
+    _two_file_inventory(monkeypatch, -1)
+    with pytest.raises(GroupVerificationError, match="in-memory limit"):
+        _read_session_evidence(tmp_path, "s", False, False)
+
+
+def test_inventory_session_within_the_total_bound_reads_every_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _two_file_inventory(monkeypatch, 0)
+    _, _, entries, _ = _read_session_evidence(tmp_path, "s", False, False)
+    assert len(entries) == 2

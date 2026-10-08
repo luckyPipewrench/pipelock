@@ -181,7 +181,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
             "WORKFLOW_FILE_PATH": "${{ job.workflow_file_path }}",
             "REVIEWER_SHA": "${{ inputs.reviewer_sha }}",
         })
-        self.assertNotIn("secrets.", SOURCE_WORKFLOW.read_text(encoding="utf-8"))
+        self.assertNotRegex(SOURCE_WORKFLOW.read_text(encoding="utf-8"), r"(?i)\bsecrets\b")
 
     def test_validated_source_reaches_every_trusted_consumer_before_secrets(self) -> None:
         workflow = load_yaml(REUSABLE_WORKFLOW)
@@ -6780,7 +6780,29 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             prompt = pr_review.build_review_prompt(pr_review.classify_units([source, *other]), chunk)
             self.assertLessEqual(pr_review.serialized_prompt_tokens(*prompt, "default", "review-chunk"), pr_review.FAST_INPUT_TOKEN_BUDGET)
 
-    def run_discovery(self, count, failure, *, spare=True, fail_phase="review-chunk-1", judge_verdict="keep"):
+    def test_capacity_reuses_the_active_mode_plan(self):
+        with mock.patch.object(pr_review, "plan_chunks", wraps=pr_review.plan_chunks) as plan:
+            self.run_discovery(1, pr_review.ModelTimeout("timeout"))
+        self.assertEqual([call.args[1] for call in plan.call_args_list], ["default", "deep"])
+
+    def test_planner_skips_serializing_trials_that_cannot_fit(self):
+        units = [unit(n, "sample.go", "source:go") for n in range(100)]
+        for item in units:
+            item.body = "+" + "\\" * 4000
+            item.estimated_tokens = pr_review.estimate_tokens(item.body)
+        classification = pr_review.classify_units(units)
+        budget = max(pr_review.serialized_prompt_tokens(*pr_review.build_review_prompt(classification, [item]), "default", "review-chunk") for item in units) + 10
+        with mock.patch.object(pr_review, "input_limits", return_value=(budget, 8)), mock.patch.object(
+            pr_review, "serialized_prompt_tokens", wraps=pr_review.serialized_prompt_tokens
+        ) as serialize:
+            chunks, omitted = pr_review.plan_chunks(units, "default")
+        self.assertEqual(len(chunks), 8)
+        self.assertEqual(len(omitted), 92)
+        self.assertEqual(serialize.call_count, len(units))
+        for chunk in chunks:
+            self.assertLessEqual(pr_review.serialized_prompt_tokens(*pr_review.build_review_prompt(classification, chunk), "default", "review-chunk"), budget)
+
+    def run_discovery(self, count, failure, *, spare=True, fail_phase="review-chunk-1", judge_verdict="keep", judge_payload=None):
         diff = "".join(f"diff --git a/{n}.go b/{n}.go\n--- a/{n}.go\n+++ b/{n}.go\n@@ -1 +1 @@\n-old\n+new\n" for n in range(count))
         phases = []
         raw_candidate = {"severity": "medium", "path": "0.go", "line": 1, "title": "retained claim", "why": "premise", "fix": "repair", "needs_verification": False}
@@ -6793,6 +6815,8 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             if phase == "cross-file-synthesis":
                 return {"findings": []}
             if phase.startswith("judge"):
+                if judge_payload is not None:
+                    return judge_payload
                 return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied"} for item in json.loads(user)["candidates"]]}
             index = int(phase.split("-")[2]) - 1
             return {"findings": [], "changes": [{"path": f"{index}.go", "summary": "changed"}]}
@@ -6809,6 +6833,20 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         ), mock.patch.object(pr_review, "update_comment"):
             state, progress = pr_review.run_review("owner/repo", "42", "dummy", "default", "c" * 40, binding=self.binding, status_comment_id=7)
         return state, progress, phases
+
+    def test_malformed_judge_and_repair_keep_the_run_partial(self):
+        for payload in ({"findings": [{"nope": 1}]}, {"findings": "not a list"}, {"other": []}):
+            with self.subTest(payload=payload):
+                state, progress, phases = self.run_discovery(1, None, judge_payload=payload)
+                self.assertEqual(progress.reviewed_units, progress.expected_units)
+                self.assertEqual(state, "partial")
+                self.assertEqual(progress.findings, [])
+                self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+                self.assertEqual([phase for phase in phases if phase.startswith("judge")], ["judge", "judge-repair"])
+        state, progress, phases = self.run_discovery(1, None, judge_verdict="drop")
+        self.assertEqual(state, "clean")
+        self.assertEqual(progress.unverified_candidates, [])
+        self.assertEqual([phase for phase in phases if phase.startswith("judge")], ["judge"])
 
     def test_discovery_schema_repair_spends_only_a_spare_mode_slot(self):
         state, progress, phases = self.run_discovery(2, None)

@@ -791,21 +791,30 @@ def plan_chunks(units: list[DiffUnit], mode: str) -> tuple[list[list[DiffUnit]],
     classification = classify_units(units)
     chunks: list[list[DiffUnit]] = []
     chunk_tokens: list[int] = []
+    chunk_serialized: list[int] = []
     omitted: list[DiffUnit] = []
     for unit in rank_units(units):
         if not unit.representable:
             omitted.append(unit)
             continue
-        if unit.estimated_tokens > token_budget or serialized_prompt_tokens(*build_review_prompt(classification, [unit], mode), mode, "review-chunk") > token_budget:
+        own = serialized_prompt_tokens(*build_review_prompt(classification, [unit], mode), mode, "review-chunk") if unit.estimated_tokens <= token_budget else token_budget + 1
+        if own > token_budget:
             unit.omission_reason = "hunk-exceeds-token-budget"
             omitted.append(unit)
             continue
         placed = False
+        # The escaped body alone is a lower bound on the added payload size.
+        # Allow one token for rounding in each estimate. Labels and paths only
+        # add bytes; the exact serialized check below remains authoritative.
+        added_body = estimate_tokens(json.dumps(unit.body)[1:-1])
         for index, used in enumerate(chunk_tokens):
+            if chunk_serialized[index] + added_body - 2 > token_budget:
+                continue
             trial = [*chunks[index], unit]
-            if len(chunks[index]) < units_per_chunk(mode) and used + unit.estimated_tokens <= token_budget and serialized_prompt_tokens(*build_review_prompt(classification, trial, mode), mode, "review-chunk") <= token_budget:
+            if len(chunks[index]) < units_per_chunk(mode) and used + unit.estimated_tokens <= token_budget and (size := serialized_prompt_tokens(*build_review_prompt(classification, trial, mode), mode, "review-chunk")) <= token_budget:
                 chunks[index].append(unit)
                 chunk_tokens[index] += unit.estimated_tokens
+                chunk_serialized[index] = size
                 placed = True
                 break
         if placed:
@@ -813,6 +822,7 @@ def plan_chunks(units: list[DiffUnit], mode: str) -> tuple[list[list[DiffUnit]],
         if len(chunks) < max_chunks:
             chunks.append([unit])
             chunk_tokens.append(unit.estimated_tokens)
+            chunk_serialized.append(own)
             continue
         unit.omission_reason = "priority-token-budget"
         omitted.append(unit)
@@ -3052,8 +3062,8 @@ def requested_repository_evidence(
     rendered: dict[int, list[str]] = {index: [] for index in pending}
     unavailable = False
     for turn in range(MAX_REQUESTS_PER_CANDIDATE):
-        for index, requests in pending.items():
-            if turn >= len(requests):
+        for index, wanted in pending.items():
+            if turn >= len(wanted):
                 continue
             owner = (owners or {}).get(index, str(index))
             record = (records or {}).get(owner)
@@ -3064,7 +3074,7 @@ def requested_repository_evidence(
                     record.retrieval = "unavailable-or-exhausted"
                 continue
             budget.requests += 1
-            request = requests[turn]
+            request = wanted[turn]
             failed = False
             cut = False
             if request.path is not None:
@@ -4222,8 +4232,11 @@ def run_review(
         progress.expected_units = sum(1 for unit in units if unit.representable)
         chunks, omitted = plan_chunks(units, mode)
         for capacity_mode in ("default", "deep"):
-            capacity_units, _ = parse_diff(diff, capacity_mode)
-            _, capacity_omitted = plan_chunks(capacity_units, capacity_mode)
+            if capacity_mode == mode:
+                capacity_omitted = omitted
+            else:
+                capacity_units, _ = parse_diff(diff, capacity_mode)
+                _, capacity_omitted = plan_chunks(capacity_units, capacity_mode)
             progress.capacity[capacity_mode] = sum(unit.representable for unit in capacity_omitted)
         progress.incomplete_reasons.extend(coverage_gaps(units, omitted, parse_errors))
         reviewed_changes: list[dict[str, str]] = []

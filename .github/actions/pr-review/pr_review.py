@@ -4325,8 +4325,7 @@ def run_review(
                     for unit in chunk:
                         unit.review_status = "reviewed"
                     progress.reviewed_units += len(chunk)
-                    known = {finding_fingerprint(item) for item in candidates}
-                    candidates.extend(item for item in findings if finding_fingerprint(item) not in known)
+                    candidates.extend(findings)
                     reviewed_changes.extend(changes)
                     continue
                 for unit in chunk:

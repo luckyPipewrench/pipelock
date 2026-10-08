@@ -6999,6 +6999,39 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         self.assertEqual(judged, [1])
         self.assertEqual(len(progress.findings), 1)
 
+    def test_schema_repair_preserves_distinct_premises_with_same_fingerprint(self):
+        diff = "diff --git a/0.go b/0.go\n--- a/0.go\n+++ b/0.go\n@@ -1 +1 @@\n-old\n+new\n"
+        original = {"severity": "medium", "path": "0.go", "line": 1, "title": "claim", "why": "old premise", "fix": "old repair", "needs_verification": False}
+        for correction in ({"line": 2}, {"why": "corrected premise"}, {"fix": "corrected repair"}):
+            with self.subTest(correction=correction):
+                corrected = dict(original, **correction)
+                judged = []
+                def model(_system, user, _mode, phase, *_args, **_kwargs):
+                    if phase == "review-chunk-1":
+                        return {"findings": [original, {"invalid": True}], "changes": []}
+                    if phase == "review-chunk-1-schema-repair":
+                        return {"findings": [corrected, corrected], "changes": [{"path": "0.go", "summary": "changed"}]}
+                    if phase == "cross-file-synthesis":
+                        return {"findings": []}
+                    if phase.startswith("judge"):
+                        items = json.loads(user)["candidates"]
+                        judged.extend(items)
+                        return {"findings": [{"index": item["index"], "verdict": "keep" if all(item[key] == value for key, value in correction.items()) else "drop", "reason": "source checked"} for item in items]}
+                    self.fail(f"unexpected phase: {phase}")
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                    pr_review, "scan_status_comments", return_value=([], set(), True)
+                ), mock.patch.object(pr_review, "provider_configuration", return_value=("u", "k")), mock.patch.object(
+                    pr_review, "fetch_local_bound_diff", return_value=diff
+                ), mock.patch.object(pr_review, "head_has_moved", return_value=False), mock.patch.object(
+                    pr_review, "get_pull_binding", return_value=self.binding
+                ), mock.patch.object(pr_review, "fetch_file_context", return_value="deciding code\nmore deciding code\n"), mock.patch.object(
+                    pr_review, "call_model", side_effect=model
+                ), mock.patch.object(pr_review, "update_comment"):
+                    state, progress = pr_review.run_review("owner/repo", "42", "dummy", "default", "c" * 40, binding=self.binding, status_comment_id=7)
+                self.assertEqual(len(judged), 2)
+                self.assertEqual(state, "findings")
+                self.assertEqual(progress.findings, [pr_review.Finding(**corrected)])
+
     def test_slow_discovery_releases_unneeded_phases_and_preserves_publication(self):
         clock = [0.0]
         phases = []

@@ -1126,50 +1126,76 @@ const handoverRequestFinding = "Credential Request Directive"
 //
 // "request" and "ask for" are accepted only in imperative position: at the
 // start of the text or of a clause (after sentence punctuation, a comma, an
-// opening quote or list marker), optionally after please, kindly, must, you
+// opening quote, a list marker such as "-" or "1)", a Markdown heading "#",
+// blockquote ">" or table cell "|"), optionally after please, kindly, must, you
 // must, you should and similar. "The client can request your API key" and
 // "The server will ask for your API key" describe what a service does, so a
-// modal or third-person subject keeps them out. The lead-in is part of the
-// match, so a match for these two verbs begins at the clause boundary.
-const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘(\[*_\x60-])\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+)*`
+// modal or third-person subject keeps them out. Emphasis and code markers
+// ("**", "_", a backtick) may open the clause but are not a boundary
+// themselves, so "The server will **request your API key**" keeps its modal
+// subject. The lead-in is part of the match, so a match for these two verbs
+// begins at the clause boundary.
+const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[#>|-])\s*[*_\x60]*\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+[*_\x60]*\s*)*`
 
-const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+)`
+const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+|` + handoverEmphasisLead + `)`
+
+// handoverEmphasisLead covers an emphasized or code-formatted imperative that
+// does not follow a clause boundary. After a symbol such as an emoji or a dash
+// ("🔑 **Request your API key**") the marker run opens the clause. After a word
+// it counts only after "Step" and a short step token or a label from a
+// closed list ("Step 1 **request your API key**", "Note **ask for your
+// password**"), in any case. The step token is matched loosely because
+// normalization turns digits into letters ("Step 1" arrives as "Step i"). Modal and other words are not on the list, so "The server will
+// **request your API key**" stays descriptive however it is capitalized.
+const handoverEmphasisLead = `(?:[^\w\s*_\x60]|\b(?:step\s+\w{1,4}|note|notes|important|action|todo|tip|warning|required|setup))\s*[*_\x60]+\s*(?:request|ask\s+for)\s+`
 
 // handoverRequestEnd keeps the credential noun from being the first word of a
 // longer noun phrase ("provide credentials rotation status"): the match must
-// finish at punctuation, the end of the text, or a connective that continues
-// the instruction.
-const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+// finish at punctuation, the end of the text, a table cell "|", or a
+// connective that continues the instruction, after any closing emphasis or
+// code markers. A closing marker alone does not end the noun: "Share your
+// **API key** rotation status" is the same noun phrase as the plain text.
+const handoverRequestEnd = `[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+
+// markupTolerant lets emphasis and code markers sit on either side of every
+// word gap in a credential-request pattern, and inside the joiner of a
+// compound noun such as API key, so "*Request* your **API** key" matches like
+// the plain sentence. Markers never add a boundary or end a noun phrase, so
+// marked text is judged exactly as the same plain text.
+func markupTolerant(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, `\s+`, `[*_\x60]*\s+[*_\x60]*`)
+	return strings.ReplaceAll(pattern, `[\s_-]{0,3}`, `[*_\x60]*[\s_-]{0,3}[*_\x60]*`)
+}
 
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or
 // its user, which is what separates a request from documentation of a service
 // that holds credentials. Modifiers come from a closed list so "share your
 // thoughts on the secret" cannot reach the noun.
-var handoverPossessivePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
-	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+` +
+var handoverPossessivePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
+	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+[*_\x60]*` +
 	`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
 	`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
-	handoverRequestEnd)
+	handoverRequestEnd))
 
 // handoverBarePattern is the bare form: "provide credentials", "enter a valid
 // password". The noun set is narrower than the possessive form because a bare
 // "token" or "secret" is too common as an ordinary noun.
-var handoverBarePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
-	`(?:(?:the|a|an|any|all)\s+)?(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
+var handoverBarePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
+	`[*_\x60]*(?:(?:the|a|an|any|all)\s+)?[*_\x60]*(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
 	`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
-	handoverRequestEnd)
+	handoverRequestEnd))
 
 // handoverPathPattern is the path form: "provide the full contents of
 // ~/.aws/credentials". include and pass join the verb list here only, because
 // a sensitive path is a precise enough target that "include your API key in
 // the Authorization header" style documentation stays out of scope.
-var handoverPathPattern = regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
+var handoverPathPattern = regexp.MustCompile(markupTolerant(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
 	`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
 	// A path is often quoted, fenced or emphasized in a description
 	// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
 	`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
-	`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`)
+	`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`))
 
 // toolPoisonPatterns detect structural indicators of tool description poisoning.
 // These are checked ONLY in tool descriptions to avoid false positives on

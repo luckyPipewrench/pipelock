@@ -199,6 +199,8 @@ func RunHTTPProxy(
 			ExtraPoison:             toolCfg.ExtraPoison,
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	}
 

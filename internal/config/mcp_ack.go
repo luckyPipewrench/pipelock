@@ -35,11 +35,14 @@ const (
 
 // MCPAcknowledgedFinding records that an operator reviewed every occurrence of
 // one finding in one exact tool definition from one configured server, and
-// accepts forwarding that definition unchanged. It accepts nothing else: any
-// change to the tool, to a field holding an occurrence, to the set of
-// occurrences, to the detector revision, to the configured server or its
-// transport binding, or the passing of the expiry withholds the
-// acknowledgment, and the finding enforces as if no entry existed.
+// accepts forwarding that definition unchanged. It accepts nothing else, and
+// it never relaxes any other finding. An entry that exists for the server,
+// tool and finding but no longer matches (any change to the tool, to a field
+// holding an occurrence, to the set of occurrences, to the detector revision
+// or to the transport binding) or has expired refuses the tools/list response
+// under every mcp_tool_scanning.action, warn included: a reviewed exception
+// that has gone stale is never silently downgraded to a warning. With no
+// entry for the tool, the finding follows mcp_tool_scanning.action as usual.
 type MCPAcknowledgedFinding struct {
 	// Server is the operator-supplied server name. An upstream's own
 	// serverInfo.name is a self-report and is never consulted.

@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -102,6 +104,10 @@ type ToolScanMatch struct {
 	PreviousHash string   `json:"previous_hash,omitempty"`
 	CurrentHash  string   `json:"current_hash,omitempty"`
 	DriftDetail  string   `json:"drift_detail,omitempty"`
+	// CredentialAck is the outcome of a configured acknowledgment for this
+	// tool's Credential Request Directive finding. Any value other than
+	// "acknowledged" refuses the response under every action.
+	CredentialAck string `json:"credential_ack,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -182,6 +188,22 @@ type ToolScanConfig struct {
 
 	// ExtraPoison holds tool-poison patterns from community rule bundles.
 	ExtraPoison []*ExtraPoisonPattern
+
+	// CredentialAcks are the operator's acknowledgments of Credential
+	// Request Directive findings. They apply only to the configured server
+	// named by ServerName and bound by ServerBindingSHA256.
+	CredentialAcks      []config.MCPAcknowledgedFinding
+	ServerName          string
+	ServerBindingSHA256 string
+	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.
+	Now func() time.Time
+}
+
+func (c *ToolScanConfig) now() time.Time {
+	if c != nil && c.Now != nil {
+		return c.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
@@ -2609,7 +2631,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		directiveKeys := extractToolDirectiveKeys(tool)
 
-		text, _ := toolScanText(tool)
+		text, spans := toolScanText(tool)
 
 		if text != "" {
 			// This is the dedicated tool scanner, whose action is independent of
@@ -2623,7 +2645,28 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			poison := checkToolPoison(normalize.ForToolText(text))
+			norm := normalize.ForToolText(text)
+			poison := checkToolPoison(norm)
+			if slices.Contains(poison, handoverRequestFinding) {
+				if entry, ok := findCredentialAck(cfg, tool.Name); ok {
+					// The attribution reads the exact text, spans and
+					// normalized string checkToolPoison just matched.
+					outcome := evaluateCredentialAck(entry, cfg, tool, attributeWithNorm(text, norm, spans), cfg.now())
+					match.CredentialAck = outcome
+					if outcome == CredentialAckAcknowledged {
+						// Only this finding is lifted. The raw finding and its
+						// treatment stay visible as an observation for audit.
+						poison = slices.DeleteFunc(slices.Clone(poison), func(f string) bool { return f == handoverRequestFinding })
+						observations = append(observations, ToolScanMatch{
+							ToolName:      tool.Name,
+							ToolPoison:    []string{handoverRequestFinding},
+							CredentialAck: CredentialAckAcknowledged,
+						})
+					} else {
+						hasFinding = true
+					}
+				}
+			}
 			if len(poison) > 0 {
 				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true

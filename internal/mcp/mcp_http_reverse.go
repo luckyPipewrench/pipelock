@@ -319,6 +319,7 @@ func RunHTTPListenerProxy(
 		MediaPolicy:               opts.mediaPolicy(),
 		MediaPolicyFn:             opts.MediaPolicyFn,
 		ServerName:                opts.ServerName,
+		ServerBinding:             opts.ServerBinding,
 		Suppress:                  opts.Suppress,
 		SuppressFn:                opts.SuppressFn,
 		ResponseTrustClass:        opts.ResponseTrustClass,

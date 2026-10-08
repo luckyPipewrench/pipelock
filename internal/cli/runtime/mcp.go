@@ -867,6 +867,15 @@ Key-free evidence capture:
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
 			}
+			var serverBinding string
+			if hasUpstream {
+				serverBinding = tools.UpstreamBindingDigest(upstreamURL)
+			} else {
+				serverBinding = tools.ServerBindingDigest("subprocess", args[dashIdx:]...)
+			}
+			if serverName != "" {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: server %q transport binding sha256 %s (for mcp_tool_scanning.acknowledged_findings[].server_binding_sha256)\n", serverName, serverBinding)
+			}
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
@@ -1520,6 +1529,7 @@ Key-free evidence capture:
 					}
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
+					listenerOpts.ServerBinding = serverBinding
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					listenerOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
@@ -1572,6 +1582,7 @@ Key-free evidence capture:
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
+					wsOpts.ServerBinding = serverBinding
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					wsOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
@@ -1628,6 +1639,7 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
+				httpOpts.ServerBinding = serverBinding
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				httpOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
@@ -1841,6 +1853,7 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
@@ -1998,6 +2011,7 @@ Key-free evidence capture:
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+			proxyOpts.ServerBinding = serverBinding
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			proxyOpts.ReceiptGroup = receiptGroup
 			// The unsandboxed path has no UID/GID map setup. Harden before

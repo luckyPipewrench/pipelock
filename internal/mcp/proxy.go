@@ -522,8 +522,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// tool-poison near-miss signal must not also apply RecordClean: the
 		// same message cannot both raise and decay the session threat score.
 		toolPoisonDetected := false
+		// toolAcknowledged marks a tools/list whose Credential Request
+		// Directive finding a configured acknowledgment lifted. It is not
+		// evidence of clean behavior, so it earns no clean credit either.
+		toolAcknowledged := false
 		if toolCfg != nil {
-			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg, trackedMethod)
+			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg.WithServer(opts.ServerName, opts.ServerBinding), trackedMethod)
 			if err := opts.warnContext().Err(); err != nil {
 				if writeErr := blockScanError("response scan failed: " + err.Error()); writeErr != nil {
 					return foundInjection, writeErr
@@ -531,6 +535,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 			isToolsList = toolResult.IsToolsList
+			toolAcknowledged = toolResult.IsToolsList && toolResult.CredentialAckApplied()
 			// Provenance: verify tool signatures BEFORE updating session binding
 			// baseline. A blocked tools/list must not seed known tools.
 			if toolResult.IsToolsList && provenanceCfg != nil && provenanceCfg.Enabled {
@@ -615,6 +620,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					// uninspectable definition, so this outcome is always a block.
 					toolAction = config.ActionBlock
 				}
+				if toolResult.CredentialAckRefused() {
+					// A configured acknowledgment that no longer matches its
+					// tool is a reviewed exception gone stale. It refuses under
+					// every action rather than quietly becoming a warning.
+					toolAction = config.ActionBlock
+				}
 				// Escalation upgrade for tool poison detection.
 				if rec != nil {
 					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
@@ -636,6 +647,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						if m != nil {
 							m.RecordBlocked("mcp", toolResult.ResourceLimit, 0, "")
 						}
+					} else if toolResult.CredentialAckRefused() {
+						blockReason = "tools/list refused: a credential-request acknowledgment no longer matches its tool"
 					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}
@@ -733,7 +746,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Clean message: decay threat score. Skip decay when tool-poisoning
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
-			if !toolPoisonDetected {
+			if !toolPoisonDetected && !toolAcknowledged {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 					sessionKey: firstNonEmpty(opts.ServerName, "default"),
 					reason:     adaptiveRecoveryClean,
@@ -756,7 +769,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
-			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
+			observeMCPResponseTaint(taintOpts, toolPoisonDetected || toolAcknowledged)
 			continue
 		}
 

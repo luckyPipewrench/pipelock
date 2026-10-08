@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipelock-aarp-verifier-py"
-version = "0.1.0"
+version = "0.2.0"
 description = "In-repo AARP v0.1 envelope reference verifier (cross-language conformance only; not a published package)"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

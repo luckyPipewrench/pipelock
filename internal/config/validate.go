@@ -5253,9 +5253,6 @@ func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 	if c.FlightRecorder.ReceiptChains < 0 || c.FlightRecorder.ReceiptChains > 32 {
 		return fmt.Errorf("flight_recorder.receipt_chains must be between 0 and 32 (0 uses one chain)")
 	}
-	if c.FlightRecorder.ReceiptChainCount() > 1 {
-		return errors.New("flight_recorder.receipt_chains greater than one is unavailable until the cross-language verifiers support receipt groups")
-	}
 	if err := c.validateFlightRecorderAnchor(warnings); err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ enum NestedKind {
     KeyTransition,
     SessionControl,
     SessionOpen,
+    GroupBinding,
     SessionHeartbeat,
     SessionClose,
 }
@@ -167,6 +168,17 @@ const SESSION_OPEN_FIELDS: &[FieldSpec] = &[
     field("posture_signer_key_id", true),
     field("containment_nonce", true),
     field("contained_uid", true),
+    nested_field("group_binding", true, NestedKind::GroupBinding),
+];
+
+const GROUP_BINDING_FIELDS: &[FieldSpec] = &[
+    field("group_id", false),
+    field("shard_index", false),
+    field("session_id", false),
+    field("open_manifest_sha256", false),
+    field("signer_key", false),
+    field("previous_group_id", false),
+    field("previous_open_manifest_sha256", false),
 ];
 
 const SESSION_HEARTBEAT_FIELDS: &[FieldSpec] = &[
@@ -305,6 +317,9 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             }
             Some(NestedKind::SessionOpen) if field_value.is_object() => {
                 order_struct(&field_value, SESSION_OPEN_FIELDS)
+            }
+            Some(NestedKind::GroupBinding) if field_value.is_object() => {
+                order_struct(&field_value, GROUP_BINDING_FIELDS)
             }
             Some(NestedKind::SessionHeartbeat) if field_value.is_object() => {
                 order_struct(&field_value, SESSION_HEARTBEAT_FIELDS)

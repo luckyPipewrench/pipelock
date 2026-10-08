@@ -247,7 +247,10 @@ export function rejectDuplicateKeys(text: string): void {
 
 export function decodeUTF8(data: Buffer, label: string): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(data);
+    // ignoreBOM keeps a leading U+FEFF in the output, so it reaches the JSON
+    // parser and is rejected like Go's encoding/json does, instead of being
+    // stripped silently.
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(data);
   } catch {
     throw new InvalidError(`${label}: invalid UTF-8`);
   }

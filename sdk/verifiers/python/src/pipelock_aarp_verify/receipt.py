@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonicalize
 from .input_file import read_verifier_file
+from .line_space import trim_go_space
 from .number import (
     StrictParseError,
     UnsafeNumberError,
@@ -299,6 +300,17 @@ _SESSION_OPEN_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
     ("posture_signer_key_id", True, None),
     ("containment_nonce", True, None),
     ("contained_uid", True, None),
+    ("group_binding", True, "group_binding"),
+)
+
+_GROUP_BINDING_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("group_id", False, None),
+    ("shard_index", False, None),
+    ("session_id", False, None),
+    ("open_manifest_sha256", False, None),
+    ("signer_key", False, None),
+    ("previous_group_id", False, None),
+    ("previous_open_manifest_sha256", False, None),
 )
 
 _SESSION_HEARTBEAT_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
@@ -484,7 +496,7 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
     for index, line in enumerate(
         read_verifier_file(path).decode("utf-8").split("\n"), start=1
     ):
-        raw = line.strip()
+        raw = trim_go_space(line)
         if raw == "":
             continue
         try:
@@ -1052,6 +1064,8 @@ def _order_struct(
             field_value = _order_struct(field_value, _SESSION_CONTROL_FIELDS)
         elif nested == "session_open" and isinstance(field_value, dict):
             field_value = _order_struct(field_value, _SESSION_OPEN_FIELDS)
+        elif nested == "group_binding" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _GROUP_BINDING_FIELDS)
         elif nested == "session_heartbeat" and isinstance(field_value, dict):
             field_value = _order_struct(field_value, _SESSION_HEARTBEAT_FIELDS)
         elif nested == "session_close" and isinstance(field_value, dict):
@@ -1345,6 +1359,33 @@ def _validate_session_open(value: Any) -> None:
     _require_optional_string(
         open_record.get("contained_uid"), "session_control.open.contained_uid"
     )
+    # Go decodes a null group_binding into a nil pointer: an ungrouped session.
+    if open_record.get("group_binding") is not None:
+        binding = _require_object(
+            open_record["group_binding"], "session_control.open.group_binding"
+        )
+        _reject_unknown(
+            binding,
+            _field_names(_GROUP_BINDING_FIELDS),
+            "session_control.open.group_binding",
+        )
+        for name in (
+            "group_id",
+            "session_id",
+            "open_manifest_sha256",
+            "signer_key",
+        ):
+            _require_string(
+                binding.get(name), f"session_control.open.group_binding.{name}"
+            )
+        for name in ("previous_group_id", "previous_open_manifest_sha256"):
+            if name not in binding or not isinstance(binding[name], str):
+                raise ReceiptError(
+                    f"session_control.open.group_binding.{name} must be a string"
+                )
+        _require_uint64(
+            binding.get("shard_index"), "session_control.open.group_binding.shard_index"
+        )
 
 
 def _validate_session_heartbeat(value: Any) -> None:

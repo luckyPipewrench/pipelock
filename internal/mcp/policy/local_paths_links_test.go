@@ -310,7 +310,7 @@ var localProtectedExemptRuleLocations = map[string]string{}
 // every listed location is named by at least one alternative.
 func TestLocalProtectedPathsMatchRulePatterns(t *testing.T) {
 	var alternatives []string
-	for _, pattern := range []string{persistencePathPattern, shellProfilePathPattern, auditLogPathPattern, sensitiveFilePathPattern} {
+	for _, pattern := range []string{persistencePathPattern, shellProfilePathPattern, auditLogPathPattern, sensitiveFilePathPattern, credentialWritePathPattern} {
 		for _, alt := range splitPolicyAlternatives(t, pattern) {
 			alternatives = append(alternatives, expandLiteralGroups(alt)...)
 		}

@@ -57,11 +57,11 @@ const (
 // reaches one of them, or lies under one of the directories, is also matched
 // under the protected spelling. Keep this list in step with
 // shellProfilePathPattern, sensitiveFilePathPattern, persistencePathPattern and
-// auditLogPathPattern.
+// auditLogPathPattern and credentialWritePathPattern.
 var (
 	localProtectedHomePaths = []string{
 		".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile", ".zshenv", ".bash_logout",
-		".ssh", ".aws/credentials", ".netrc", ".env",
+		".ssh", ".ssh/authorized_keys", ".ssh/config", ".ssh/rc", ".aws/credentials", ".aws/config", ".netrc", ".env", ".kube/config", ".docker/config.json",
 		".config/systemd/user", "Library/LaunchAgents",
 	}
 	// localProtectedZshFiles are the zsh startup files shellProfilePathPattern

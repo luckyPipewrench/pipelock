@@ -6722,11 +6722,38 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                 self.assertEqual("<requested-search-truncated>" in text, cut or failed)
 
     def test_synthesis_http_failure_still_judges_collected_candidates(self):
-        state, progress, phases = self.run_discovery(2, pr_review.ModelHTTPError("HTTP 500"), fail_phase="cross-file-synthesis")
-        self.assertEqual(state, "partial")
-        self.assertIn("judge", phases)
-        self.assertTrue(progress.findings)
-        self.assertIn("cross-file synthesis was incomplete or invalid", progress.incomplete_reasons)
+        for failure in (pr_review.ModelHTTPError("HTTP 500"), pr_review.ModelTransportError("request failed")):
+            with self.subTest(failure=type(failure).__name__):
+                state, progress, phases = self.run_discovery(2, failure, fail_phase="cross-file-synthesis")
+                self.assertEqual(state, "partial")
+                self.assertIn("judge", phases)
+                self.assertTrue(progress.findings)
+                self.assertEqual(phases.count("cross-file-synthesis"), 1)
+                self.assertIn(f"cross-file synthesis provider request failed ({pr_review.judge_error_code(failure)})", progress.incomplete_reasons)
+
+    def test_context_http_activity_cannot_extend_retrieval_deadline(self):
+        def trickling(*_args, **_kwargs):
+            stop = time.monotonic() + 1
+            tick = threading.Event()
+            while time.monotonic() < stop:
+                tick.wait(0.005)
+            self.fail("context request exceeded its allowance")
+        with mock.patch.object(pr_review, "_local_review_root", return_value=None), mock.patch.object(
+            pr_review.requests, "get", side_effect=trickling
+        ) as get:
+            result = pr_review.fetch_file_context("owner/repo", "sample.go", self.binding.head_sha, "dummy", "corr", time.monotonic() + 0.05)
+        self.assertIsNone(result)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+
+    def test_invalid_reason_values_never_reach_public_sanitizer(self):
+        for reason in (1, [], {}, None, True):
+            with self.subTest(reason=reason), mock.patch.object(pr_review, "sanitize_public_text") as sanitize:
+                validation = pr_review.JudgeValidation()
+                result = pr_review._parse_judge_decisions({"findings": [{"index": 0, "verdict": "keep", "reason": reason}]}, 1, validation=validation)
+                self.assertEqual(result, {})
+                self.assertEqual(validation.counts, {"invalid-reason": 1})
+                sanitize.assert_not_called()
 
     def test_deleted_and_missing_anchors_retain_bound_diff_evidence(self):
         diff = "diff --git a/sample.go b/sample.go\n--- a/sample.go\n+++ /dev/null\n@@ -10,1 +0,0 @@\n-GuardValue()\n"

@@ -2514,12 +2514,16 @@ def fetch_file_context(
 
     encoded = urllib.parse.quote(path, safe="/")
     try:
-        response = requests.get(
-            f"https://api.github.com/repos/{repo}/contents/{encoded}",
-            headers=github_headers(token),
-            params={"ref": head_sha},
-            timeout=remaining,
-        )
+        with provider_attempt_deadline(remaining):
+            response = requests.get(
+                f"https://api.github.com/repos/{repo}/contents/{encoded}",
+                headers=github_headers(token),
+                params={"ref": head_sha},
+                timeout=remaining,
+            )
+    except ModelTimeout:
+        log_phase("judge-context", status="deadline-exhausted", correlation=correlation)
+        return None
     except requests.RequestException:
         log_phase("judge-context", status="request-error", correlation=correlation)
         return None
@@ -4433,6 +4437,9 @@ def run_review(
             except ModelRateLimited as exc:
                 progress.aggregation_failed = True
                 progress.incomplete_reasons.append(f"cross-file synthesis was rate limited ({exc})")
+            except (ModelTransportError, ModelHTTPError) as exc:
+                progress.aggregation_failed = True
+                progress.incomplete_reasons.append(f"cross-file synthesis provider request failed ({judge_error_code(exc)})")
             except ModelOutputError:
                 candidates.extend(salvage_findings(payload, {unit.path for unit in units if unit.representable}))
                 progress.aggregation_failed = True

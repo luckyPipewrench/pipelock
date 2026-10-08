@@ -337,13 +337,25 @@ gh search code --owner luckyPipewrench 'pr-review-reusable.yaml' --limit 20
 Two rules for a pin bump:
 
 - **Advance both occurrences together.** `uses:` and `reviewer_sha:` must name
-  the same commit. They select the workflow and the reviewer source separately,
-  and a mismatch runs one version's workflow against another version's code.
+  the same commit. The source helper checks an explicit `reviewer_sha` against
+  the loaded workflow commit and rejects a mismatch before admission.
 - **Carry any stub change in the same commit as the bump.** The caller's inputs
   and secrets are a contract with the reusable workflow at the pinned commit. If
   a bump removes or renames a secret, a caller still passing the old one fails
   at workflow load. Because the pin is immutable, the old caller keeps working
   against the old commit until both move, so this only breaks if they are split.
+
+### Workflow source binding
+
+The reusable workflow calls `.github/workflows/pr-review-source.yaml` locally, so GitHub loads the helper from the same revision as the reusable workflow. The helper has `permissions: {}`, receives no secrets, and runs no checkout or action. It validates `job.workflow_sha` as a full lowercase commit SHA, requires `job.workflow_repository` to be `luckyPipewrench/pipelock`, and requires `job.workflow_file_path` to identify the helper. Missing or mismatching identity fails before admission can claim a comment or use a credential. Every trusted checkout and review action consumes the validated SHA.
+
+`reviewer_sha` is optional for callers using this workflow contract. When omitted or empty, the source helper uses the loaded workflow SHA. An explicit value must equal that SHA. The local Pipelock caller omits it. External callers should keep the paired pins in the example below until a credential-free cross-repository run proves GitHub supplies the callee identity through both reusable calls. Callers pinned to older workflow contracts still require both pins.
+
+CI calls the same helper with no permissions or secrets to exercise GitHub's actual runtime fields. A pull request can select that helper's code, so this CI job must never receive review credentials or execute the privileged review workflow. Local shell tests prove validation and output linkage with supplied values; they don't prove GitHub's runtime semantics. A successful local CI helper call also doesn't prove the cross-repository nested-call behavior. Record the actual helper SHA, repository, path, and output from that cross-repository run before adopting a caller with only the `uses:` pin. GitHub documents the fields in the [job context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context).
+
+### Recovering a failed finalizer
+
+If `finalize` fails while the comment still reads `running`, retry only that job after the GitHub API problem clears. Re-running the entire workflow or all failed jobs can repeat review work. The finalizer uses the original claim's comment ID and identity, closes only its own `running` marker, and leaves a terminal verdict unchanged. A lost edit reply is checked by reading the marker back. Once the claim is closed as `failed`, a new `/review` can start normally. If finalization still can't close it, a new command remains blocked until the claim is 105 minutes old; it doesn't resume the old review.
 
 ## Reusing the reviewer in another repository
 
@@ -413,12 +425,13 @@ Requiring both means a re-run cannot widen who is able to start a review.
 |------|------|
 | `.github/workflows/pr-review.yaml` | Thin Pipelock caller for the reusable workflow |
 | `.github/workflows/pr-review-reusable.yaml` | Shared job control plane, permissions, and concurrency |
+| `.github/workflows/pr-review-source.yaml` | Credential-free loaded workflow identity validation |
 | `.github/actions/pr-review/action.yml` | Composite action: runner inputs, outputs, and setup |
 | `.github/actions/pr-review/pr_review.py` | The reviewer: diff parsing, budgets, provider calls, state |
 | `.github/actions/pr-review/requirements.txt` | Pinned runtime dependencies, installed by the action |
 | `.github/requirements-pr-review-test.txt` | Pinned test-only dependency, installed by CI |
 | `scripts/pr_review_test.py` | The test suite, including the structural workflow guards |
-| `.github/workflows/ci.yaml` | The `pr-review-tests` job, which runs that suite on pull requests |
+| `.github/workflows/ci.yaml` | Reviewer tests and the credential-free runtime source helper call |
 
 Every other repository holds only its own `.github/workflows/pr-review.yaml`
 caller. Nothing in this table is duplicated into them.

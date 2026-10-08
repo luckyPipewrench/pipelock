@@ -15,6 +15,13 @@ permissions:
   contents: read
 
 jobs:
+  # Exercise the same source validator with GitHub's actual runtime identity.
+  # This local helper may come from a PR, so give it no permissions or secrets.
+  pr-review-source:
+    needs: security-scan
+    permissions: {}
+    uses: ./.github/workflows/pr-review-source.yaml
+
   # Pipelock scans the PR diff before anything else runs. If the scan
   # finds credential leaks, injection patterns, or security misconfigs,
   # all downstream jobs are skipped — no compromised code executes.

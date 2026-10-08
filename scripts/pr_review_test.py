@@ -35,6 +35,7 @@ ACTION_DIR = ROOT / ".github" / "actions" / "pr-review"
 SCRIPT_PATH = ACTION_DIR / "pr_review.py"
 CALLER_WORKFLOW = ROOT / ".github" / "workflows" / "pr-review.yaml"
 REUSABLE_WORKFLOW = ROOT / ".github" / "workflows" / "pr-review-reusable.yaml"
+SOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "pr-review-source.yaml"
 ACTION_YAML = ACTION_DIR / "action.yml"
 SPEC = importlib.util.spec_from_file_location("pr_review", SCRIPT_PATH)
 if SPEC is None or SPEC.loader is None:
@@ -120,6 +121,130 @@ class HermeticityGuardTest(OfflineReviewTestCase):
 
 
 class WorkflowPackagingTest(OfflineReviewTestCase):
+    def test_source_binding_executes_against_valid_and_invalid_identities(self) -> None:
+        script = load_yaml(SOURCE_WORKFLOW)["jobs"]["source"]["steps"][0]["run"]
+        sha = "c" * 40
+        identity = {
+            "WORKFLOW_SHA": sha,
+            "WORKFLOW_REPOSITORY": "luckyPipewrench/pipelock",
+            "WORKFLOW_FILE_PATH": ".github/workflows/pr-review-source.yaml",
+            "REVIEWER_SHA": "",
+        }
+        cases = [("runtime", {}, True), ("matching-pin", {"REVIEWER_SHA": sha}, True)]
+        cases += [
+            ("mismatching-pin", {"REVIEWER_SHA": "d" * 40}, False),
+            ("wrong-repository", {"WORKFLOW_REPOSITORY": "owner/repo"}, False),
+            ("caller-path", {"WORKFLOW_FILE_PATH": ".github/workflows/pr-review.yaml"}, False),
+            ("parent-path", {"WORKFLOW_FILE_PATH": ".github/workflows/pr-review-reusable.yaml"}, False),
+        ]
+        for field in identity:
+            if field != "REVIEWER_SHA":
+                cases.append((f"missing-{field}", {field: ""}, False))
+        for field in ("WORKFLOW_SHA", "REVIEWER_SHA"):
+            for invalid in ("main", "c" * 39, "c" * 41, "C" * 40, sha + "\n", " " + sha, "$(exit 0)"):
+                cases.append((f"malformed-{field}-{invalid!r}", {field: invalid}, False))
+        for name, overrides, accepted in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                output = pathlib.Path(directory) / "github-output"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**os.environ, **identity, **overrides, "GITHUB_OUTPUT": str(output)},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+                if accepted:
+                    self.assertEqual(output.read_text(encoding="utf-8"), f"reviewer_sha={sha}\n")
+                else:
+                    self.assertFalse(output.exists(), "rejected identity must publish no source output")
+
+    def test_source_helper_has_no_credentials_or_executable_dependencies(self) -> None:
+        helper = load_yaml(SOURCE_WORKFLOW)
+        self.assertEqual(set(helper["on"]), {"workflow_call"})
+        contract = helper["on"]["workflow_call"]
+        self.assertNotIn("secrets", contract)
+        self.assertEqual(contract["inputs"]["reviewer_sha"]["required"], "false")
+        self.assertEqual(contract["inputs"]["reviewer_sha"]["default"], "")
+        self.assertEqual(contract["outputs"]["reviewer_sha"]["value"], "${{ jobs.source.outputs.reviewer_sha }}")
+        self.assertEqual(helper["permissions"], {})
+        self.assertEqual(set(helper["jobs"]), {"source"})
+        job = helper["jobs"]["source"]
+        self.assertEqual(job["permissions"], {})
+        self.assertEqual(job["outputs"]["reviewer_sha"], "${{ steps.bind.outputs.reviewer_sha }}")
+        self.assertEqual(len(job["steps"]), 1)
+        step = job["steps"][0]
+        self.assertNotIn("uses", step)
+        self.assertEqual(step["shell"], "bash")
+        self.assertEqual(step["env"], {
+            "WORKFLOW_SHA": "${{ job.workflow_sha }}",
+            "WORKFLOW_REPOSITORY": "${{ job.workflow_repository }}",
+            "WORKFLOW_FILE_PATH": "${{ job.workflow_file_path }}",
+            "REVIEWER_SHA": "${{ inputs.reviewer_sha }}",
+        })
+        self.assertNotIn("secrets.", SOURCE_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_validated_source_reaches_every_trusted_consumer_before_secrets(self) -> None:
+        workflow = load_yaml(REUSABLE_WORKFLOW)
+        source = workflow["jobs"]["source"]
+        self.assertEqual(source["uses"], "./.github/workflows/pr-review-source.yaml")
+        self.assertEqual(source["permissions"], {})
+        self.assertNotIn("secrets", source)
+        self.assertEqual(source["with"], {"reviewer_sha": "${{ inputs.reviewer_sha }}"})
+        pin = workflow["on"]["workflow_call"]["inputs"]["reviewer_sha"]
+        self.assertEqual((pin["required"], pin["default"]), ("false", ""))
+        consumers = []
+        for name, job in workflow["jobs"].items():
+            if name == "source":
+                continue
+            needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+            self.assertIn("source", needs, f"{name} must wait for identity validation")
+            for step in job.get("steps", []):
+                with_values = step.get("with", {})
+                if with_values.get("repository") == "luckyPipewrench/pipelock":
+                    self.assertEqual(with_values["ref"], "${{ needs.source.outputs.reviewer_sha }}")
+                    self.assertEqual(with_values["persist-credentials"], "false")
+                    consumers.append((name, "checkout"))
+                if step.get("uses") == "./trusted-pr-review/.github/actions/pr-review":
+                    self.assertEqual(with_values["reviewer-sha"], "${{ needs.source.outputs.reviewer_sha }}")
+                    consumers.append((name, with_values["operation"]))
+            self.assertNotIn("inputs.reviewer_sha", json.dumps(job))
+        self.assertCountEqual(consumers, [
+            ("admit", "checkout"), ("admit", "claim"), ("review", "checkout"),
+            ("review", "review"), ("review", "review"),
+        ])
+        self.assertEqual(workflow["jobs"]["admit"]["needs"], "source")
+        self.assertEqual(workflow["jobs"]["finalize"]["if"],
+                         "always() && needs.source.result == 'success' && needs.admit.outputs.claimed == 'true'")
+
+    def test_ci_exercises_the_same_helper_without_review_credentials(self) -> None:
+        ci = load_yaml(ROOT / ".github" / "workflows" / "ci.yaml")
+        self.assertEqual(ci["jobs"]["pr-review-source"], {
+            "needs": "security-scan",
+            "permissions": {},
+            "uses": "./.github/workflows/pr-review-source.yaml",
+        })
+
+    def test_source_consumer_guard_rejects_disconnected_or_input_selected_source(self) -> None:
+        for job_name, change in (
+            ("admit", "dependency"), ("review", "checkout"), ("admit", "action"),
+            ("finalize", "condition"), ("source", "helper"),
+        ):
+            workflow = load_yaml(REUSABLE_WORKFLOW)
+            job = workflow["jobs"][job_name]
+            if change == "dependency":
+                job["needs"] = "unrelated"
+            elif change == "checkout":
+                job["steps"][0]["with"]["ref"] = "${{ github.sha }}"
+            elif change == "action":
+                job["steps"][1]["with"]["reviewer-sha"] = "${{ inputs.reviewer_sha }}"
+            elif change == "condition":
+                job["if"] = "always() && needs.admit.outputs.claimed == 'true'"
+            else:
+                job["uses"] = "owner/repo/.github/workflows/helper.yaml@main"
+            with self.subTest(change=change), mock.patch(__name__ + ".load_yaml", return_value=workflow):
+                with self.assertRaises(AssertionError):
+                    self.test_validated_source_reaches_every_trusted_consumer_before_secrets()
+
     def test_merge_base_resolution_accepts_only_an_immutable_sha(self) -> None:
         workflow = load_yaml(REUSABLE_WORKFLOW)
         script = next(
@@ -207,14 +332,14 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         self.assertEqual(claim["with"]["model-deep"], "${{ vars.PR_REVIEW_MODEL_DEEP }}")
 
         review = workflow["jobs"]["review"]
-        self.assertEqual(review["needs"], "admit")
+        self.assertEqual(review["needs"], ["source", "admit"])
         # Exactly the provider-presence flags, stated positively. Asserting
         # that one removed flag is absent would only catch that one spelling
         # and would say nothing about a third provider added later.
         self.assertEqual(set(review["env"]), {"HAS_OPENAI"})
         checkout = review["steps"][0]
         self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
-        self.assertEqual(checkout["with"]["ref"], "${{ inputs.reviewer_sha }}")
+        self.assertEqual(checkout["with"]["ref"], "${{ needs.source.outputs.reviewer_sha }}")
         target_checkout = next(
             step for step in review["steps"] if step.get("name") == "Check out immutable reviewed repository head"
         )
@@ -250,7 +375,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         # status comment and the review job never starts, leaving the comment
         # reading running until its stale timeout blocks later reviews.
         finalize = workflow["jobs"]["finalize"]
-        self.assertEqual(finalize["needs"], ["admit", "review"])
+        self.assertEqual(finalize["needs"], ["source", "admit", "review"])
         self.assertIn("always()", finalize["if"])
         self.assertNotIn("Finalize an abandoned review", [step.get("name") for step in review["steps"]])
 
@@ -2271,6 +2396,7 @@ if [ -f "$FAKE_CAPTURE" ]; then cat "$FAKE_CAPTURE"; else printf '%s' "$FAKE_BOD
                 self.assertEqual((gets, sleeps, posted), (3, ["5", "5"], ""), "three paced reads, and no edit")
                 if result != "success":
                     self.assertIn(f"the claim is {pr_review.STALE_RUNNING_MINUTES} minutes old", run.stdout)
+                    self.assertIn("Re-run only the finalize job", run.stdout)
 
     def test_a_lost_edit_reply_is_confirmed_by_reading_the_comment_back(self) -> None:
         # The edit landed but its reply was lost: the read-back finds this run's
@@ -2288,6 +2414,7 @@ if [ -f "$FAKE_CAPTURE" ]; then cat "$FAKE_CAPTURE"; else printf '%s' "$FAKE_BOD
         run, posted, gets, _ = self._finalize("body", "default", FAKE_PATCH="fail", REVIEW_RESULT="cancelled")
         self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
         self.assertIn("::error title=pr-review finalize::could not close the status comment", run.stdout)
+        self.assertIn("Re-run only the finalize job", run.stdout)
         self.assertNotIn("status=closed", run.stdout)
         self.assertEqual((posted, gets), ("", 2))
 
@@ -5104,6 +5231,7 @@ class GuideAccuracyTest(OfflineReviewTestCase):
         expected = {
             ".github/workflows/pr-review.yaml",
             ".github/workflows/pr-review-reusable.yaml",
+            ".github/workflows/pr-review-source.yaml",
             ".github/actions/pr-review/action.yml",
             ".github/actions/pr-review/pr_review.py",
             ".github/actions/pr-review/requirements.txt",
@@ -5675,14 +5803,12 @@ class AdoptionStubTest(OfflineReviewTestCase):
         real_contract = self.collapse(real)
 
         # An external caller names the reusable workflow and reviewer source by
-        # immutable commit, while this repository resolves its local workflow at
-        # github.sha. Normalize exactly those two repository-specific values,
+        # immutable commit, while this repository uses the runtime source binding.
+        # Normalize exactly those two repository-specific values,
         # then compare the complete executable example: trigger, permissions,
         # guard, target, inputs, and secrets.
         stub_contract["jobs"]["review"]["uses"] = real_contract["jobs"]["review"]["uses"]
-        stub_contract["jobs"]["review"]["with"]["reviewer_sha"] = real_contract["jobs"]["review"]["with"][
-            "reviewer_sha"
-        ]
+        del stub_contract["jobs"]["review"]["with"]["reviewer_sha"]
         self.assertEqual(
             stub_contract,
             real_contract,

@@ -578,20 +578,15 @@ jobs:
           test "${{ needs.test-replay-go126.result }}" = "success"
 
   test-go127:
-    needs: [security-scan, test-oss-go127, test-enterprise-go127, test-replay-go127]
+    needs: [security-scan, changed-files, test-oss-go127, test-enterprise-go127, test-replay-go127]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # "test (1.27)" is a required check name on every PR (see the branch
-    # ruleset), so it must exist and complete even though the Go 1.27 race
-    # producers usually skip. This job's `needs` is exactly {security-scan, the
-    # three go127 producers} per the CI topology contract
-    # (scripts/test_ci_workflow_topology.py) -- it does NOT also depend on
-    # changed-files, so it cannot read that job's output directly. It does not
-    # need to: a producer's own `if:` runs it only on a pull_request whose
-    # changed-files output says a CI-policy file changed, so a "skipped"
-    # producer means exactly "no CI-policy change in this run". Every other
-    # non-success result (failure, cancelled, unknown, empty) still reds the
-    # gate, and the replay producer must always succeed.
+    # ruleset), so it must exist even when the Go 1.27 race producers skip.
+    # On a pull request, require successful policy detection and a boolean
+    # output. Only an explicit false justifies skipped race producers. On a
+    # push, the policy detector and race producers intentionally skip.
+    # Security scan and replay evidence must succeed on both events.
     name: test (1.27)
     timeout-minutes: 5
     steps:
@@ -611,11 +606,20 @@ jobs:
           # producer result. Every non-success path below exits explicitly
           # instead of relying on the compound's own exit status.
           test "${{ needs.security-scan.result }}" = "success"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test "${{ needs.changed-files.result }}" = "success"
+            if [ "${{ needs.changed-files.outputs.ci_policy }}" != "false" ]; then
+              test "${{ needs.changed-files.outputs.ci_policy }}" = "true"
+            fi
+          fi
 
           echo "test-oss-go127 result: ${{ needs.test-oss-go127.result }}"
           if ! test "${{ needs.test-oss-go127.result }}" = "success"; then
             if [ "${{ needs.test-oss-go127.result }}" != "skipped" ]; then
               exit 1
+            fi
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
             fi
           fi
 
@@ -623,6 +627,9 @@ jobs:
           if ! test "${{ needs.test-enterprise-go127.result }}" = "success"; then
             if [ "${{ needs.test-enterprise-go127.result }}" != "skipped" ]; then
               exit 1
+            fi
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
             fi
           fi
 

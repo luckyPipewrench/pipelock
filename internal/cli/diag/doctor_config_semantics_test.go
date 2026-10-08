@@ -333,7 +333,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = false
 				cfg.RequestBodyScanning.ContentEntropyEnabled = true
-				cfg.RequestBodyScanning.ContentEntropyExclusions = []config.EntropyHostExclusion{{Host: testExemptHost, Expires: "2099-01-01"}}
+				cfg.RequestBodyScanning.ContentEntropyExclusions = []config.EntropyHostExclusion{{Host: testExemptHost, Expires: time.Now().UTC().AddDate(0, 0, 30).Format(time.DateOnly)}}
 			},
 			wantWarn:         1,
 			wantDetailSubstr: "request_body_scanning.enabled=false",

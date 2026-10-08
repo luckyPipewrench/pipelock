@@ -90,7 +90,7 @@ func TestValidateEntropyWarnRoutePathAndPrefix(t *testing.T) {
 		{"prefix needs reason", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) { r.Reason = "" })}, "reason is required"},
 		{"prefix needs owner", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) { r.Owner = "" })}, "owner is required"},
 		{"prefix needs expires", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) { r.Expires = "" })}, "must be YYYY-MM-DD"},
-		{"prefix expired", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) { r.Expires = "2020-01-01" })}, "already expired"},
+		{"prefix expired", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) { r.Expires = "2020-01-01" })}, "already expired"}, // clock-literal-ok: deliberately-expired negative case
 		{"prefix beyond horizon", []RequestBodyEntropyWarnRoute{withPrefix(prefixRoutePrefix, func(r *RequestBodyEntropyWarnRoute) {
 			r.Expires = temporaryExpiryDate(MaxRequestBodyEntropyWarnRouteHorizon + 10*24*time.Hour)
 		})}, "maximum temporary horizon"},
@@ -206,7 +206,7 @@ func TestEntropyHostExclusionYAMLShapes(t *testing.T) {
 		// yaml.v3 skips a null sequence element before it reaches any element type,
 		// so this decodes exactly as it did for []string.
 		{"null entry is skipped as before", "request_body_scanning:\n  content_entropy_exclusions:\n    -\n", nil, ""},
-		{"expired mapping", "request_body_scanning:\n  content_entropy_exclusions:\n    - host: a.vendor.example\n      expires: 2020-01-01\n", nil, "already expired"},
+		{"expired mapping", "request_body_scanning:\n  content_entropy_exclusions:\n    - host: a.vendor.example\n      expires: 2020-01-01\n", nil, "already expired"}, // clock-literal-ok: deliberately-expired negative case
 		{"mapping beyond horizon", "request_body_scanning:\n  content_entropy_exclusions:\n    - host: a.vendor.example\n      expires: " + temporaryExpiryDate(MaxContentEntropyHostExclusionHorizon+20*24*time.Hour) + "\n", nil, "maximum temporary horizon"},
 		{"bad date", "request_body_scanning:\n  content_entropy_exclusions:\n    - host: a.vendor.example\n      expires: tomorrow\n", nil, "YYYY-MM-DD"},
 		{"mapping over-broad host", "request_body_scanning:\n  content_entropy_exclusions:\n    - host: '*.com'\n      expires: " + future + "\n", nil, "content_entropy_exclusions[0]"},
@@ -279,13 +279,13 @@ func TestEntropyHostExclusionPlainEntryKeepsLegacyEncodings(t *testing.T) {
 	if string(y) != "- a.vendor.example\n- b.vendor.example\n" {
 		t.Fatalf("plain entries yaml = %q", y)
 	}
-	mapped := []EntropyHostExclusion{{Host: "a.vendor.example", Expires: "2099-01-01", Owner: "platform"}}
+	mapped := []EntropyHostExclusion{{Host: "a.vendor.example", Expires: "2099-01-01", Owner: "platform"}} // clock-literal-ok: serialization round-trip; no clock reads this value
 	j, _ = json.Marshal(mapped)
-	if !strings.Contains(string(j), `"expires":"2099-01-01"`) || !strings.Contains(string(j), `"owner":"platform"`) {
+	if !strings.Contains(string(j), `"expires":"2099-01-01"`) || !strings.Contains(string(j), `"owner":"platform"`) { // clock-literal-ok: serialization round-trip; no clock reads this value
 		t.Fatalf("mapping entry json lost metadata: %s", j)
 	}
 	y, _ = yaml.Marshal(mapped)
-	if !strings.Contains(string(y), `expires: "2099-01-01"`) {
+	if !strings.Contains(string(y), `expires: "2099-01-01"`) { // clock-literal-ok: serialization round-trip; no clock reads this value
 		t.Fatalf("mapping entry yaml lost metadata: %s", y)
 	}
 }
@@ -293,7 +293,7 @@ func TestEntropyHostExclusionPlainEntryKeepsLegacyEncodings(t *testing.T) {
 func TestActiveEntropyExclusionHostsFollowsWarnRouteExpiryConvention(t *testing.T) {
 	entries := []EntropyHostExclusion{
 		{Host: "plain.vendor.example"},
-		{Host: "temp.vendor.example", Expires: "2026-12-31", mapped: true},
+		{Host: "temp.vendor.example", Expires: "2026-12-31", mapped: true}, // clock-literal-ok: paired with the injected clock in the cases below
 		{Host: "garbled.vendor.example", Expires: "soon", mapped: true},
 		{Host: "blank.vendor.example", mapped: true},
 	}
@@ -335,7 +335,7 @@ func TestValidateEntropyHostExclusionsGoConstructed(t *testing.T) {
 		{"expiring wildcard", []EntropyHostExclusion{{Host: "*.vendor.example", Expires: future}}, ""},
 		{"reason without expires", []EntropyHostExclusion{{Host: "a.vendor.example", Reason: "x"}}, "expires is required"},
 		{"owner without expires", []EntropyHostExclusion{{Host: "a.vendor.example", Owner: "x"}}, "expires is required"},
-		{"expired", []EntropyHostExclusion{{Host: "a.vendor.example", Expires: "2020-01-01"}}, "already expired"},
+		{"expired", []EntropyHostExclusion{{Host: "a.vendor.example", Expires: "2020-01-01"}}, "already expired"}, // clock-literal-ok: deliberately-expired negative case
 		{"reason too long", []EntropyHostExclusion{{Host: "a.vendor.example", Expires: future, Reason: strings.Repeat("x", 201)}}, "200 characters"},
 		{"owner control character", []EntropyHostExclusion{{Host: "a.vendor.example", Expires: future, Owner: "a\x07b"}}, "control characters"},
 		{"normalizes host", []EntropyHostExclusion{{Host: "A.Vendor.Example.", Expires: future}}, ""},
@@ -376,7 +376,7 @@ func TestValidateExpiryAuthorizationsCoversEntropyHostExclusions(t *testing.T) {
 			if err := cfg.ValidateExpiryAuthorizations(); err != nil {
 				t.Fatalf("valid entries rejected: %v", err)
 			}
-			set(cfg, []EntropyHostExclusion{{Host: "b.vendor.example", Expires: "2020-01-01"}})
+			set(cfg, []EntropyHostExclusion{{Host: "b.vendor.example", Expires: "2020-01-01"}}) // clock-literal-ok: deliberately-expired negative case
 			err := cfg.ValidateExpiryAuthorizations()
 			if err == nil || !strings.Contains(err.Error(), field+".content_entropy_exclusions[0].expires") || !strings.Contains(err.Error(), "already expired") {
 				t.Fatalf("expired entry not rejected on reload path: %v", err)

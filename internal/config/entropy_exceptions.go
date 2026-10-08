@@ -30,7 +30,7 @@ const MaxContentEntropyHostExclusionHorizon = 90 * 24 * time.Hour
 //
 //	content_entropy_exclusions:
 //	  - host: challenge.vendor.example
-//	    expires: 2026-12-31
+//	    expires: YYYY-MM-DD
 //	    reason: bot challenge payloads are opaque
 //	    owner: platform team
 //

@@ -68,7 +68,7 @@ func TestResponseMIMEPassthroughConflicts(t *testing.T) {
 			_, matched := matchUnscannablePassthrough(unscannablePassthroughRequest{
 				Host: "downloads.vendor.example", Path: "/file", ContentType: responseContentType(h), Header: h,
 				ContentLength: 4096, SizeExemptDomains: []string{"downloads.vendor.example"}, Now: time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC),
-			}, []config.UnscannablePassthroughEntry{{Host: "downloads.vendor.example", Paths: []string{"/file"}, ContentTypes: []string{contentTypeOctetStream}, Expires: "2027-01-01", Reason: "archive"}})
+			}, []config.UnscannablePassthroughEntry{{Host: "downloads.vendor.example", Paths: []string{"/file"}, ContentTypes: []string{contentTypeOctetStream}, Expires: "2027-01-01", Reason: "archive"}}) // clock-literal-ok: paired with the injected Now above
 			want := values[0] == contentTypeOctetStream && (len(values) == 1 || values[1] == contentTypeOctetStream)
 			if matched != want {
 				t.Fatalf("headers %q matched=%t, want %t", values, matched, want)

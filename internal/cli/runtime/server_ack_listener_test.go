@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -618,8 +619,18 @@ logging:
 	} else {
 		reloadWith(cfgText)
 	}
-	if wantRevoked := !wantForward && !regenerate; held.set.Revoked() != wantRevoked {
+	wantRevoked := !wantForward && !regenerate
+	if held.set.Revoked() != wantRevoked {
 		t.Fatalf("held acknowledgment set revoked = %v, want %v", held.set.Revoked(), wantRevoked)
+	}
+	// A response that acquired its tool configuration before the reload and
+	// evaluates its tools/list only now: it shares the held set, so a revoked
+	// key refuses it and a usable key still applies.
+	inFlight := (&tools.ToolScanConfig{Action: config.ActionWarn, CredentialAcks: held.set}).
+		WithServer("vault", binding)
+	listLine := []byte(`{"jsonrpc":"2.0","id":99,"result":{"tools":[` + ackListenerTool + `]}}`)
+	if got := tools.ScanTools(listLine, s.proxy.ScannerPtr().Load(), inFlight).CredentialAckRefused(); got != wantRevoked {
+		t.Fatalf("in-flight response refused = %v, want %v", got, wantRevoked)
 	}
 	if got := forwarded(); got != wantForward {
 		t.Fatalf("after the key change, forwarded = %v, want %v\n%s", got, wantForward, buf.String())

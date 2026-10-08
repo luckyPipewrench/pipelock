@@ -266,8 +266,10 @@ func TestMCPAcknowledgmentKeyResolution(t *testing.T) {
 	open := writeKey("open.key", testAckKey, 0o644)
 	short := writeKey("short.key", "too-short", 0o600)
 	link := filepath.Join(dir, "link.key")
-	if err := os.Symlink(good, link); err != nil {
-		t.Fatal(err)
+	if mcpAckFileKeySupported {
+		if err := os.Symlink(good, link); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PIPELOCK_TEST_ACK_KEY", testAckKey)
 	t.Setenv("PIPELOCK_TEST_ACK_SHORT", "short")
@@ -294,6 +296,11 @@ func TestMCPAcknowledgmentKeyResolution(t *testing.T) {
 		{"neither", "", false, ""},
 	}
 	for _, tt := range tests {
+		if strings.HasPrefix(tt.source, "file:") && !mcpAckFileKeySupported {
+			// Where a file key's readership cannot be verified, every file
+			// source is refused before it is read.
+			tt.wantErr = "not supported on this platform"
+		}
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.MCPToolScanning.Enabled = true

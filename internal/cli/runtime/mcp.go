@@ -888,8 +888,7 @@ Key-free evidence capture:
 				if headerErr != nil {
 					return headerErr
 				}
-				bindingInputs.UpstreamURL = upstreamURL
-				bindingInputs.Headers = upstreamHeaders
+				bindingInputs = mcpUpstreamBindingInputs(upstreamURL, upstreamHeaders)
 			} else {
 				var envErr error
 				extraEnv, envErr = buildChildExtraEnv(resolvedEnv, envVars, os.LookupEnv)

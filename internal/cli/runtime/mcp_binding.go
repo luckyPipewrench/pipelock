@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -88,4 +89,26 @@ func buildChildExtraEnv(resolvedEnv, envVars []string, lookup func(string) (stri
 // pipelock mcp proxy computes it for the same upstream.
 func mcpRunListenerBinding(upstream string) string {
 	return mcpServerBinding(mcpBindingInputs{UpstreamURL: upstream})
+}
+
+// mcpUpstreamIsWebSocket reports whether upstream selects the WebSocket
+// transport, which sends no configured headers.
+func mcpUpstreamIsWebSocket(upstream string) bool {
+	u, err := url.Parse(upstream)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "ws" || scheme == "wss"
+}
+
+// mcpUpstreamBindingInputs is the binding input for an upstream URL and the
+// headers parsed for it. A WebSocket upstream ignores configured headers, so
+// they are not part of its effective transport identity.
+func mcpUpstreamBindingInputs(upstream string, headers http.Header) mcpBindingInputs {
+	in := mcpBindingInputs{UpstreamURL: upstream}
+	if !mcpUpstreamIsWebSocket(upstream) {
+		in.Headers = headers
+	}
+	return in
 }

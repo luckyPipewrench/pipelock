@@ -126,3 +126,20 @@ func TestMCPRunListenerBindingMatchesProxyComputation(t *testing.T) {
 		t.Fatal("empty binding")
 	}
 }
+
+func TestMCPUpstreamBindingIgnoresHeadersOnlyForWebSocket(t *testing.T) {
+	a, b := mustHeaders(t, "X-Tenant: alpha"), mustHeaders(t, "X-Tenant: beta")
+	for _, u := range []string{"wss://mcp.vendor.example/mcp", "ws://mcp.vendor.example/mcp", "WSS://mcp.vendor.example/mcp"} {
+		if mcpServerBinding(mcpUpstreamBindingInputs(u, a)) != mcpServerBinding(mcpUpstreamBindingInputs(u, b)) {
+			t.Errorf("%s: headers the WebSocket transport ignores changed its binding", u)
+		}
+	}
+	for _, u := range []string{"https://mcp.vendor.example/mcp", "http://mcp.vendor.example/mcp"} {
+		if mcpServerBinding(mcpUpstreamBindingInputs(u, a)) == mcpServerBinding(mcpUpstreamBindingInputs(u, b)) {
+			t.Errorf("%s: headers the HTTP transport sends did not change its binding", u)
+		}
+	}
+	if mcpUpstreamIsWebSocket("http://[::1") {
+		t.Error("an unparseable URL was treated as WebSocket")
+	}
+}

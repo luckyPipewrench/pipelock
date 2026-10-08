@@ -3566,6 +3566,7 @@ Behavior when at least one trusted key is configured:
 
 Notes and honest scope:
 
+- A signature that verifies is not scanned for credential patterns. Its 64 bytes are fixed by the signer's key and the card, and an occasional valid signature happens to spell a credential-shaped run, such as a Hugging Face token, in base64url. Only the one `signatures[].signature` string that verified is left out, found by its position in the card; the same characters anywhere else, the card body, `protected` (including `kid`), the unprotected `header`, signature entries that did not verify, and entries past the first 16 are all still scanned. With no trusted key, a wrong origin, or a failed verification, nothing is left out.
 - Only `EdDSA` (Ed25519) signatures are verified. Cards signed with other algorithms cannot match a trusted key and therefore fail verification when verification is active.
 - `require_signed_agent_cards: true` requires at least one trusted key (otherwise every card would be rejected); this combination is rejected at config load.
 - Verification fires on every surface that delivers an Agent Card as a single body: forward proxy (plain HTTP and CONNECT/TLS-intercept) and MCP HTTP. A2A SSE streams carry task/message events, not Agent Cards, so there is no card-signature step on the SSE path.

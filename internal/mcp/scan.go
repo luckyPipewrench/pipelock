@@ -1231,20 +1231,45 @@ func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2ARespo
 // response-pattern injection, the class the core response floor governs.
 func scanA2AResponseDispatchClass(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) (jsonrpc.ScanVerdict, bool) {
 	rpcID := extractRPCID(line)
+	isCard := isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line)
+
 	// Protocol routing adds field-aware checks without replacing the joined
-	// text, media, and complete-message bounds shared by MCP responses.
-	joined := a2aFallbackScan(line, sc, a2aOpts)
+	// text, media, and complete-message bounds shared by MCP responses. For an
+	// Agent Card that joined scan reads the whole line, so it gets the same
+	// view the card scan does: without the one signature string that verified.
+	joinedLine := line
+	if isCard {
+		joinedLine = lineWithoutVerifiedCardSignature(line, a2aOpts)
+	}
+	joined := a2aFallbackScan(joinedLine, sc, a2aOpts)
 	if joined.Error != "" {
 		return joined, false
 	}
 
-	if isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line) {
+	if isCard {
 		return scanAgentCardRPCResponse(line, sc, a2aOpts, rpcID, joined)
 	}
 
 	// All other A2A methods: field-aware body scanning.
 	result := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
 	return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, result), joined), len(result.InjectFindings) > 0 || len(joined.Matches) > 0
+}
+
+// lineWithoutVerifiedCardSignature returns line with the verified Agent Card
+// signature string blanked, or line itself when there is nothing to exempt.
+// Only a result-bearing response is eligible: an error response is scanned
+// whole, as is any card whose signature does not verify against a trusted key
+// scoped to the card's origin.
+func lineWithoutVerifiedCardSignature(line []byte, a2aOpts *A2AResponseOpts) []byte {
+	if !CardSignatureVerificationActive(a2aOpts.Cfg) {
+		return line
+	}
+	var rpc jsonrpc.RPCResponse
+	if json.Unmarshal(line, &rpc) != nil || (len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null) {
+		return line
+	}
+	sig := VerifyAgentCardSignatures(rpc.Result, CardOriginFromURL(a2aOpts.CardKey.cardURL), a2aOpts.Cfg)
+	return cardBodyWithoutVerifiedSignature(line, []string{"result"}, sig)
 }
 
 func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanVerdict {

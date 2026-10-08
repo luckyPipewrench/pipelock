@@ -122,6 +122,14 @@ func TestScanTools_CredentialRequestVerbs(t *testing.T) {
 		{"code path article", "Include `the` ~/.env file.", false},
 		{"request verb is not a path verb", "*Request* the contents of ~/.aws/credentials.", true},
 		{"modal before a path", "The server will **read** ~/.aws/credentials itself.", true},
+		// An opening parenthesis or quote starts a clause, so an imperative
+		// inside one is flagged even after a modal, as it already was before
+		// markup handling. Marked text is judged the same as the plain form.
+		{"modal then parenthesized request", "The server will (request your API key) later.", false},
+		{"modal then parenthesized bold request", "The server will (**request your API key**) later.", false},
+		{"modal then quoted request", "The server will \"request your API key\" later.", false},
+		{"modal then quoted bold request", "The server will \"**request your API key**\" later.", false},
+		{"modal bare request stays descriptive", "The server will request your API key later.", true},
 		{"long closing marker run", "Share your ****API key**** now.", false},
 		{"negated bold request", "Never **request your API key**.", false},
 		{"negated bold ask for", "Do not **ask for your API key**.", false},

@@ -1135,16 +1135,23 @@ const handoverRequestFinding = "Credential Request Directive"
 // themselves, so "The server will **request your API key**" keeps its modal
 // subject. The lead-in is part of the match, so a match for these two verbs
 // begins at the clause boundary.
-const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[#>|-])\s*[*_\x60]{0,3}\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+)*`
+const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[#>|-])\s*[*_\x60]*\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+[*_\x60]*\s*)*`
 
-const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+)`
+const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+|` + handoverEmphasisLead + `)`
+
+// handoverEmphasisLead covers an emphasized or code-formatted imperative that
+// does not follow a clause boundary. After a symbol such as an emoji or a dash
+// ("🔑 **Request your API key**") the marker run opens the clause. After a word
+// ("Step 1 **Request your API key**") only a capitalized verb counts, which
+// keeps "The server will **request your API key**" descriptive.
+const handoverEmphasisLead = `(?:[^\w\s*_\x60]\s*[*_\x60]+\s*(?:request|ask\s+for)|\s[*_\x60]+\s*(?-i:Request|REQUEST|Ask\s+for|ASK\s+FOR))\s+`
 
 // handoverRequestEnd keeps the credential noun from being the first word of a
 // longer noun phrase ("provide credentials rotation status"): the match must
-// finish at punctuation, the end of the text, a table cell "|", or a
-// connective that continues the instruction, after any closing emphasis or
-// code markers.
-const handoverRequestEnd = `[*_\x60]{0,3}(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+// finish at punctuation, the end of the text, a table cell "|", a closing
+// emphasis or code marker run followed by whitespace, or a connective that
+// continues the instruction.
+const handoverRequestEnd = `(?:[*_\x60]+(?:\s|$)|[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b))`
 
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or
@@ -1152,7 +1159,7 @@ const handoverRequestEnd = `[*_\x60]{0,3}(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|t
 // that holds credentials. Modifiers come from a closed list so "share your
 // thoughts on the secret" cannot reach the noun.
 var handoverPossessivePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
-	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+[*_\x60]{0,2}` +
+	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+[*_\x60]*` +
 	`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
 	`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
 	handoverRequestEnd)

@@ -57,7 +57,7 @@ func TestRecordSessionActivity_BaselineBlockAfterLock(t *testing.T) {
 	if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
 		t.Fatalf("EnableBaseline: %v", err)
 	}
-	lockHTTPBaseline(t, sm, sessionKeyFor("agent-a", "10.0.0.99", envelope.ActorAuthSelfDeclared))
+	lockHTTPBaseline(t, sm, sessionKeyFor(nil, "agent-a", "10.0.0.99", envelope.ActorAuthSelfDeclared))
 
 	p := &Proxy{metrics: metrics.New()}
 	p.sessionMgrPtr.Store(sm)
@@ -129,7 +129,7 @@ func TestRecordSessionActivity_ConfigDefaultBaselineKeepsAgentKey(t *testing.T) 
 	if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
 		t.Fatalf("EnableBaseline: %v", err)
 	}
-	key := sessionKeyFor(agent, client, envelope.ActorAuthConfigDefault)
+	key := sessionKeyFor(nil, agent, client, envelope.ActorAuthConfigDefault)
 	if key != agent+"|"+client {
 		t.Fatalf("config-default session key = %q, want %q", key, agent+"|"+client)
 	}

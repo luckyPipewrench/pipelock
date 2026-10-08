@@ -833,3 +833,19 @@ func TestRejectedSelfDeclaredReservedControlActor_AnonymousAndEmpty(t *testing.T
 		t.Errorf("empty request: got (%q,%v), want empty/false", reserved, ok)
 	}
 }
+
+// TestConfigDefaultNameMatchesResolvedDefault pins that state keying names the
+// same bucket the resolver does: the sanitized default a header-less request
+// resolves to is exactly what ConfigDefaultName returns.
+func TestConfigDefaultNameMatchesResolvedDefault(t *testing.T) {
+	for _, configured := range []string{"team-bot", "deployment/my agent", strings.Repeat("a", 100)} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.vendor.example/", nil)
+		got := ResolveAgentIdentity(req, nil, configured, false)
+		if got.Auth != envelope.ActorAuthConfigDefault {
+			t.Fatalf("%q: grade = %q, want config-default", configured, got.Auth)
+		}
+		if name := ConfigDefaultName(configured); name != got.Name {
+			t.Errorf("ConfigDefaultName(%q) = %q, resolver named %q", configured, name, got.Name)
+		}
+	}
+}

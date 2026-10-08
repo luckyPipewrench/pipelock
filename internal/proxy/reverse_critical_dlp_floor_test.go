@@ -162,7 +162,7 @@ func TestReverseHardBlocksScoreAdaptiveOnce(t *testing.T) {
 			if sm == nil {
 				t.Fatal("session manager not initialized")
 			}
-			sess := sm.GetOrCreate(sessionKeyFor("", clientHost, envelope.ActorAuthUnknown))
+			sess := sm.GetOrCreate(sessionKeyFor(nil, "", clientHost, envelope.ActorAuthUnknown))
 			got := sess.ScopedThreatScore(adaptiveScopeForHost(upstreamURL.Hostname()))
 			if got != tt.want {
 				t.Fatalf("scoped threat score = %.2f, want %.2f", got, tt.want)

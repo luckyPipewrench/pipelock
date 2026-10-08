@@ -121,9 +121,11 @@ Sites often put values in their own cookies that look like credentials to DLP: a
 
 A cookie the destination issued, and that goes back to that exact destination, discloses nothing the destination does not already hold. Pipelock therefore leaves such a cookie out of header DLP. The rule is `request_body_scanning.issuer_bound_session_cookies`, and it is on by default. It takes effect only when `tls_interception.enabled` is true and request body and header scanning are enabled, because intercepted HTTPS responses are the only place Pipelock can see a site issue a cookie. Set it to `false` to scan every cookie as before.
 
-This allowance applies only to an operator-established agent identity: a per-agent listener binding, a `source_cidrs` match, or `default_agent_identity`. A request whose identity is self-declared through the agent header or `?agent=`, or that carries no identity at all, never gets the allowance and is scanned in full even with the setting on. A default install with no listener binding, no `source_cidrs`, and no `default_agent_identity` resolves every caller to a self-declared identity, so the default-on setting does nothing there. Set `default_agent_identity` (or bind listeners) for the allowance to take effect.
+This allowance applies only to an operator-established agent identity: a per-agent listener binding, a `source_cidrs` match, or `default_agent_identity`. Without a configured default, a request whose identity is self-declared through the agent header or `?agent=`, or that carries no identity at all, is scanned in full even with the setting on. With `default_agent_identity` set and `bind_default_agent_identity` off, a request that sends `X-Pipelock-Agent` is then treated as the default identity for this allowance, because its state is kept in the default identity's bucket (see [Default Agent Identity](../configuration.md#default-agent-identity)). A cookie issued to a request with the header is recognized on the next request without it, and the other way around. A default install with no listener binding, no `source_cidrs`, and no `default_agent_identity` resolves every caller to a self-declared identity, so the default-on setting does nothing there. Set `default_agent_identity` (or bind listeners) for the allowance to take effect.
 
-A plain, unencoded JWT in a `Cookie` header is separately treated as `warn` rather than `block` regardless of this setting, because JWT session cookies are ordinary browser authentication state; an encoded JWT, a JWT in any other header, or any other credential pattern in the cookie keeps normal enforcement.
+A plain, unencoded JWT in a `Cookie` header follows `request_body_scanning.action` like a JWT in any other header: with `block` it is denied on fetch, forward proxy, CONNECT, TLS-intercepted, reverse-proxy and WebSocket traffic, and with `warn` it is forwarded and recorded unless an enforced critical-severity finding triggers the hard-block floor. The hostile preset grades `JWT Token` as critical; use a `request_body_scanning.pattern_actions` entry for that pattern to select `warn` explicitly. Earlier releases forced this one case to `warn` even when the action was `block`. The issuer-bound allowance above is now the only automatic exception for a session cookie, and there is no fallback that downgrades a JWT cookie to a warning when issuance evidence is missing: TLS interception is off in the shipped presets, so such a fallback would let a JWT cookie through for every one of them.
+
+To keep a site's own JWT session cookie flowing under `block`, turn on TLS interception and give the agent a trusted identity (a per-agent listener, a `source_cidrs` match, or `default_agent_identity`) so Pipelock can recognize the cookie it saw that site issue. If you do not intercept TLS, a JWT cookie is subject to the configured action, and the remedies are a `request_body_scanning.pattern_actions` entry that sets `JWT Token` to `warn`, a path-scoped `suppress:` entry for that pattern, or keeping `Cookie` out of the scanned headers.
 
 How it decides:
 
@@ -178,11 +180,25 @@ selecting a blocking preset (strict/hostile presets already block):
   expiring `request_body_scanning.content_entropy_warn_routes` entry. The
   entropy finding remains visible while DLP, prompt injection, address, body
   size, and redirect checks keep their normal actions.
+- **Route with a random path segment:** when a service issues a per-request
+  path (a bot-challenge POST under `/cdn-cgi/challenge/<random>`, say) and the
+  body is form, JSON, or text, an exact `path` cannot name it and an exact route
+  refuses text content types. Use `path_prefix` on the same entry type
+  instead, for example `path_prefix: /cdn-cgi/challenge/` with
+  `content_types: [application/x-www-form-urlencoded, application/json]`. It
+  matches on a path-segment boundary and still requires a reason, owner, and an
+  `expires` date within 90 days. A credential or injection phrase inside that
+  textual body is still caught; only the entropy finding is downgraded.
 - **WebSocket:** use `websocket_proxy.content_entropy_exclusions` for a
   WebSocket-only endpoint. Route warning entries do not affect WebSocket or
   A2A entropy scanning.
 - **Broader:** a host in `request_body_scanning.content_entropy_exclusions`
-  skips request-body entropy across every path on that host. If the host is
+  skips request-body entropy across every path on that host. Write it as a
+  mapping (`- host: api.vendor.example`, `expires: "<date within 90 days>"`,
+  optional `reason` and `owner`) when it is a stopgap: the entry stops applying
+  after that date and fails validation once expired, while a plain host string
+  stays permanent. `websocket_proxy.content_entropy_exclusions` takes the same
+  two shapes. If the host is
   fully trusted, `trusted_domains` covers it for
   entropy and other destination-trust checks at once.
 - **Global (last resort):** raising `request_body_scanning.content_entropy_threshold`

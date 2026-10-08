@@ -75,7 +75,7 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 }
 
 func (ic *InterceptContext) issuerQueryStore() *issuerQueryStore {
-	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.ActorAuth.TrustedForIdentity() {
+	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
@@ -373,7 +373,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	if !ok {
 		return
 	}
-	session := sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	// An OAuth authorization request names where the code must go. Record the
 	// declaration only once the request was allowed and its response
 	// delivered, which is the only way this function is reached.

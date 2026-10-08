@@ -138,7 +138,7 @@ func TestTopAdaptiveAnomaliesSortsAndCaps(t *testing.T) {
 func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 
-	missing := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
+	missing := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if missing.Exists || missing.Classification != config.ActionAllow || missing.SessionKey != adaptiveAPIIdentityKey {
 		t.Fatalf("missing whoami response: %+v", missing)
 	}
@@ -146,18 +146,18 @@ func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 	sess := sm.GetOrCreate(adaptiveAPIIdentityKey)
 	sess.RecordSignal(session.SignalBlock, 1.0)
 
-	observed := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
+	observed := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if !observed.Exists || observed.Classification != adaptiveClassificationObserve || observed.EscalationLevel != testLevelElevated {
 		t.Fatalf("observed whoami response: %+v", observed)
 	}
 
 	sess.SetBlockAll(true)
-	blocked := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
+	blocked := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if blocked.Classification != config.ActionBlock || !blocked.BlockAll {
 		t.Fatalf("blocked whoami response: %+v", blocked)
 	}
 
-	ipOnly := sm.AdaptiveWhoami(adaptiveAPIClientIP, "", envelope.ActorAuthSelfDeclared)
+	ipOnly := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, "", envelope.ActorAuthSelfDeclared)
 	if ipOnly.SessionKey != adaptiveAPIClientIP || ipOnly.Agent != "" {
 		t.Fatalf("ip-only whoami response: %+v", ipOnly)
 	}
@@ -165,10 +165,10 @@ func TestSessionManager_AdaptiveWhoamiClassifiesIdentity(t *testing.T) {
 
 func TestSessionManager_AdaptiveWhoamiDoesNotReadBoundAgentSession(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
-	boundKey := sessionKeyFor(adaptiveAPIAgent, adaptiveAPIClientIP, envelope.ActorAuthBound)
+	boundKey := sessionKeyFor(nil, adaptiveAPIAgent, adaptiveAPIClientIP, envelope.ActorAuthBound)
 	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 
-	got := sm.AdaptiveWhoami(adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
+	got := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, adaptiveAPIAgent, envelope.ActorAuthSelfDeclared)
 	if got.SessionKey != adaptiveAPIClientIP {
 		t.Fatalf("whoami key = %q, want folded client key %q", got.SessionKey, adaptiveAPIClientIP)
 	}
@@ -201,11 +201,11 @@ func TestSessionManager_AdaptiveWhoamiProvenance(t *testing.T) {
 				// Pre-seed a genuinely bound session under the forged name
 				// so a leak would present as Exists=true with a
 				// bound-looking key, not just a wrong Provenance string.
-				boundKey := sessionKeyFor(tt.agent, adaptiveAPIClientIP, envelope.ActorAuthBound)
+				boundKey := sessionKeyFor(nil, tt.agent, adaptiveAPIClientIP, envelope.ActorAuthBound)
 				sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 			}
 
-			got := sm.AdaptiveWhoami(adaptiveAPIClientIP, tt.agent, tt.auth)
+			got := sm.AdaptiveWhoami(nil, adaptiveAPIClientIP, tt.agent, tt.auth)
 			if got.Provenance != string(tt.auth) {
 				t.Fatalf("Provenance = %q, want %q: %+v", got.Provenance, tt.auth, got)
 			}
@@ -226,7 +226,7 @@ func TestSessionManager_AdaptiveWhoamiProvenance(t *testing.T) {
 // override outranks the header in edition.ResolveAgentIdentity.
 func TestSessionAPI_HandleAdaptiveWhoami_BoundContext(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
-	boundKey := sessionKeyFor("infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
+	boundKey := sessionKeyFor(nil, "infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
 	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 	handler := newTestSessionAPIHandler(t, sm)
 
@@ -265,7 +265,7 @@ func TestSessionAPI_HandleAdaptiveWhoami_BoundContext(t *testing.T) {
 // folded client-IP bucket, never a same-named bound bucket.
 func TestSessionAPI_HandleAdaptiveWhoami_HeaderOnlyStaysSelfDeclared(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
-	boundKey := sessionKeyFor("infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
+	boundKey := sessionKeyFor(nil, "infra-agent", adaptiveAPIClientIP, envelope.ActorAuthBound)
 	sm.GetOrCreate(boundKey).RecordSignal(session.SignalBlock, 1.0)
 	handler := newTestSessionAPIHandler(t, sm)
 

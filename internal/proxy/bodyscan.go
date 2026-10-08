@@ -284,6 +284,9 @@ func matchUnscannablePassthrough(req unscannablePassthroughRequest, entries []co
 		return unscannablePassthroughMatch{}, false
 	}
 	mediaType := responseMediaType(req.ContentType)
+	if len(req.Header.Values("Content-Type")) > 0 && !responseMIMEEssencesAgree(req.Header) {
+		return unscannablePassthroughMatch{}, false
+	}
 	if mediaType == "" || configTextualPassthroughType(mediaType) {
 		return unscannablePassthroughMatch{}, false
 	}
@@ -470,13 +473,15 @@ func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Confi
 	return false
 }
 
-const jwtTokenPatternName = "JWT Token"
-
-// headerDLPDecision resolves request-header enforcement after scanning. A
-// direct JWT match in Cookie is warning-only because JWT session cookies are
-// ordinary browser authentication state. The exception is deliberately
-// narrow: transformed/encoded JWT findings, JWTs in any other header, and any
-// additional credential pattern retain their normal enforcement.
+// headerDLPDecision resolves request-header enforcement after scanning. Every
+// header finding, including an unencoded JWT in Cookie, follows the configured
+// header action. The one automatic exception for browser session cookies is the
+// issuer-bound omission applied during scanning: a cookie an intercepted HTTPS
+// origin issued to this identity and that returns to that origin never reaches
+// this function as a finding. There is deliberately no fallback that downgrades
+// a JWT cookie to a warning when issuance evidence is missing, because TLS
+// interception ships off and that fallback would reopen the hole for every
+// preset.
 func headerDLPDecision(result *BodyScanResult, cfg *config.Config) (string, bool) {
 	if result == nil {
 		return "", false
@@ -485,26 +490,11 @@ func headerDLPDecision(result *BodyScanResult, cfg *config.Config) (string, bool
 	if action == "" && cfg != nil {
 		action = cfg.RequestBodyScanning.Action
 	}
-	if jwtOnlyCookieHeader(result) {
-		return config.ActionWarn, false
-	}
 	hardBlock := shouldHardBlockRequestDLP(result.DLPMatches, cfg)
 	if hardBlock {
 		action = config.ActionBlock
 	}
 	return action, hardBlock
-}
-
-func jwtOnlyCookieHeader(result *BodyScanResult) bool {
-	if result == nil || !strings.EqualFold(result.HeaderName, "Cookie") || len(result.DLPMatches) == 0 {
-		return false
-	}
-	for _, match := range result.DLPMatches {
-		if match.PatternName != jwtTokenPatternName || match.Encoded != "" {
-			return false
-		}
-	}
-	return true
 }
 
 // bodyBlockCause names the body finding that blocks the request on its own.
@@ -625,11 +615,12 @@ type ContentEntropyFinding = contententropy.Finding
 // an entropy finding from block to warn. It is kept on the result so audit and
 // receipt surfaces can show why the warning was allowed through.
 type BodyEntropyWarnRouteMatch struct {
-	Host    string
-	Path    string
-	Reason  string
-	Owner   string
-	Expires string
+	Host       string
+	Path       string
+	PathPrefix string
+	Reason     string
+	Owner      string
+	Expires    string
 }
 
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
@@ -1308,15 +1299,29 @@ func matchBodyEntropyWarnRoute(req BodyScanRequest, now time.Time) *BodyEntropyW
 	host := strings.ToLower(strings.TrimSuffix(req.Host, "."))
 	today := now.UTC().Format("2006-01-02")
 	for _, entry := range req.ContentEntropyWarnRoutes {
-		if entry.Host != host || entry.Path != path || entry.Expires < today || !stringListContains(entry.ContentTypes, mediaType) {
+		if entry.Host != host || entry.Expires < today || !entropyWarnRouteCoversPath(entry, path) || !stringListContains(entry.ContentTypes, mediaType) {
 			continue
 		}
 		if len(entry.Methods) > 0 && !stringListContains(entry.Methods, method) {
 			continue
 		}
-		return &BodyEntropyWarnRouteMatch{Host: entry.Host, Path: entry.Path, Reason: entry.Reason, Owner: entry.Owner, Expires: entry.Expires}
+		return &BodyEntropyWarnRouteMatch{Host: entry.Host, Path: entry.Path, PathPrefix: entry.PathPrefix, Reason: entry.Reason, Owner: entry.Owner, Expires: entry.Expires}
 	}
 	return nil
+}
+
+// entropyWarnRouteCoversPath reports whether a route covers the canonical
+// request path. A route that sets both path and path_prefix, or neither, covers
+// nothing: validation refuses it, and a config that skipped validation fails
+// toward enforcement.
+func entropyWarnRouteCoversPath(entry config.RequestBodyEntropyWarnRoute, path string) bool {
+	switch {
+	case entry.Path != "" && entry.PathPrefix == "":
+		return entry.Path == path
+	case entry.PathPrefix != "" && entry.Path == "":
+		return config.RequestPathHasSegmentPrefix(path, entry.PathPrefix)
+	}
+	return false
 }
 
 func matchBodySigV4CredentialRoute(req BodyScanRequest, now time.Time) bool {
@@ -1362,7 +1367,9 @@ func applyContentEntropyConfig(req *BodyScanRequest, cfg *config.Config, extraEx
 	req.ContentEntropyThreshold = cfg.RequestBodyScanning.ContentEntropyThreshold
 	req.ContentEntropyMinLength = cfg.RequestBodyScanning.ContentEntropyMinLength
 	req.ContentEntropyTrusted = cfg.TrustedDomains
-	req.ContentEntropyExclusions = append(append([]string(nil), cfg.RequestBodyScanning.ContentEntropyExclusions...), config.ShippedChallengeProviderHosts()...)
+	// Expiring host exclusions stop applying after their date even in a process
+	// that has not reloaded, as the warn routes do.
+	req.ContentEntropyExclusions = append(config.ActiveEntropyExclusionHosts(cfg.RequestBodyScanning.ContentEntropyExclusions, time.Now()), config.ShippedChallengeProviderHosts()...)
 	req.ContentEntropyWarnRoutes = cfg.RequestBodyScanning.ContentEntropyWarnRoutes
 	for _, exclusions := range extraExclusions {
 		req.ContentEntropyExclusions = append(req.ContentEntropyExclusions, exclusions...)

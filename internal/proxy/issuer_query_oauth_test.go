@@ -171,7 +171,7 @@ func oauthTestStore(t *testing.T) (*InterceptContext, string) {
 	if ic.issuerQueryStore() == nil {
 		t.Fatal("intercepted trusted session has no query store")
 	}
-	return ic, sessionKeyFor(ic.Agent, ic.ClientIP, ic.ActorAuth)
+	return ic, sessionKeyFor(nil, ic.Agent, ic.ClientIP, ic.ActorAuth)
 }
 
 func oauthAuthorizeURL(t *testing.T, server string) *url.URL {

@@ -776,19 +776,19 @@ func TestCanonicalPolicyHash_HostSetsCanonicalized(t *testing.T) {
 		{
 			name: "request body content entropy exclusions",
 			lowercase: func(c *Config) {
-				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example"}
+				c.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("uploads.vendor.example")
 			},
 			uppercase: func(c *Config) {
-				c.RequestBodyScanning.ContentEntropyExclusions = []string{"UPLOADS.VENDOR.EXAMPLE"}
+				c.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("UPLOADS.VENDOR.EXAMPLE")
 			},
 			duplicate: func(c *Config) {
-				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example", "UPLOADS.VENDOR.EXAMPLE"}
+				c.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("uploads.vendor.example", "UPLOADS.VENDOR.EXAMPLE")
 			},
 			trailing: func(c *Config) {
-				c.RequestBodyScanning.ContentEntropyExclusions = []string{"uploads.vendor.example."}
+				c.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("uploads.vendor.example.")
 			},
 			different: func(c *Config) {
-				c.RequestBodyScanning.ContentEntropyExclusions = []string{"other.vendor.example"}
+				c.RequestBodyScanning.ContentEntropyExclusions = EntropyHostExclusions("other.vendor.example")
 			},
 		},
 		{
@@ -812,19 +812,19 @@ func TestCanonicalPolicyHash_HostSetsCanonicalized(t *testing.T) {
 		{
 			name: "websocket content entropy exclusions",
 			lowercase: func(c *Config) {
-				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example"}
+				c.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("stream.vendor.example")
 			},
 			uppercase: func(c *Config) {
-				c.WebSocketProxy.ContentEntropyExclusions = []string{"STREAM.VENDOR.EXAMPLE"}
+				c.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("STREAM.VENDOR.EXAMPLE")
 			},
 			duplicate: func(c *Config) {
-				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example", "STREAM.VENDOR.EXAMPLE"}
+				c.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("stream.vendor.example", "STREAM.VENDOR.EXAMPLE")
 			},
 			trailing: func(c *Config) {
-				c.WebSocketProxy.ContentEntropyExclusions = []string{"stream.vendor.example."}
+				c.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("stream.vendor.example.")
 			},
 			different: func(c *Config) {
-				c.WebSocketProxy.ContentEntropyExclusions = []string{"other.vendor.example"}
+				c.WebSocketProxy.ContentEntropyExclusions = EntropyHostExclusions("other.vendor.example")
 			},
 		},
 		{

@@ -165,7 +165,7 @@ func TestReverseTaintFromResponseBlocksLaterRequest(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	rec := sm.GetOrCreate(responseTaintSessionKey(resolved.Name, clientHost, resolved.Auth))
+	rec := sm.GetOrCreate(responseTaintSessionKey(nil, resolved.Name, clientHost, resolved.Auth))
 	if !rec.RiskSnapshot().Contaminated {
 		t.Fatalf("reverse response did not record taint on the shared session key")
 	}
@@ -209,7 +209,7 @@ func TestReverseSessionProfilingBlockAllDeniesSharedSession(t *testing.T) {
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
-	rec := sm.GetOrCreate(sessionKeyFor("", clientHost, envelope.ActorAuthUnknown))
+	rec := sm.GetOrCreate(sessionKeyFor(nil, "", clientHost, envelope.ActorAuthUnknown))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
 	for attempts := 0; rec.ScopedEscalationLevel(scope) < 1 && attempts < 10; attempts++ {
 		rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)
@@ -338,7 +338,7 @@ func TestReverseSSEInjectionUpgradesResponseTaint(t *testing.T) {
 			if sm == nil {
 				t.Fatal("session manager not initialized")
 			}
-			rec := sm.GetOrCreate(responseTaintSessionKey(resolved.Name, clientHost, resolved.Auth))
+			rec := sm.GetOrCreate(responseTaintSessionKey(nil, resolved.Name, clientHost, resolved.Auth))
 			waitReverseTaintPromptHit(t, rec)
 			if snap := rec.RiskSnapshot(); snap.Level < session.TaintExternalHostile {
 				t.Fatalf("streamed SSE injection (%s) must raise session taint to hostile, got level=%v promptHit=%v", tc.action, snap.Level, snap.PromptHit)
@@ -440,7 +440,7 @@ func TestReverseSSETaintObservationOnNonCleanCompletion(t *testing.T) {
 		if sm == nil {
 			t.Fatal("session manager not initialized")
 		}
-		return sm.GetOrCreate(responseTaintSessionKey(resolved.Name, clientHost, resolved.Auth))
+		return sm.GetOrCreate(responseTaintSessionKey(nil, resolved.Name, clientHost, resolved.Auth))
 	}
 
 	t.Run("client_cancel", func(t *testing.T) {

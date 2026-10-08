@@ -73,7 +73,7 @@ func TestSessionAPI_HandleTerminate_ClearsFoldedSelfDeclaredAdaptiveState(t *tes
 	defer cleanup()
 
 	const clientIP = "192.0.2.42"
-	key := sessionKeyFor("rotated-agent", clientIP, envelope.ActorAuthSelfDeclared)
+	key := sessionKeyFor(nil, "rotated-agent", clientIP, envelope.ActorAuthSelfDeclared)
 	sess := sm.GetOrCreate(key)
 	_, _, _ = sess.RecordSignal(session.SignalBlock, 1)
 	if got := sess.EscalationLevel(); got == 0 {

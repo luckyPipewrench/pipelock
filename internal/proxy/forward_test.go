@@ -1265,7 +1265,7 @@ func forwardTaintAskPost(t *testing.T, approver *hitl.Approver) (int, string, in
 	if sm == nil {
 		t.Fatal("session manager is nil")
 	}
-	rec := sm.GetOrCreate(ceeSessionKey("", "127.0.0.1", envelope.ActorAuthSelfDeclared))
+	rec := sm.GetOrCreate(ceeSessionKey(nil, "", "127.0.0.1", envelope.ActorAuthSelfDeclared))
 	observeHTTPResponseTaint(rec, p.cfgPtr.Load(), "http://evil.example.com/source", "text/plain", "forward_response", false)
 
 	client := forwardHTTPClient(t, proxyAddr)

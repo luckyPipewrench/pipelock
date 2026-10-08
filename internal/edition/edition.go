@@ -210,6 +210,14 @@ func boundDefaultIdentity(defaultIdentity string, bindDefaultIdentity bool) (str
 	return sanitizeAgentName(defaultIdentity), true
 }
 
+// ConfigDefaultName returns the agent name default_agent_identity resolves to
+// after sanitization. State keying that must land a header-carrying request in
+// the configured default's bucket uses this so it names the same bucket
+// configDefaultIdentity does for a request without the header.
+func ConfigDefaultName(defaultIdentity string) string {
+	return sanitizeAgentName(defaultIdentity)
+}
+
 func configDefaultIdentity(knownProfiles map[string]bool, defaultIdentity string) AgentIdentity {
 	resolved := sanitizeAgentName(defaultIdentity)
 	if knownProfiles[resolved] {

@@ -219,7 +219,7 @@ func TestIssuerCookieProxyRestart(t *testing.T) {
 	issuer, _ := url.Parse("https://app.vendor.example/account/login")
 	target, _ := url.Parse("https://app.vendor.example/account/home")
 	value := issuerAWSShapedValue()
-	key := sessionKeyFor("agent-one", "192.0.2.10", envelope.ActorAuthBound)
+	key := sessionKeyFor(nil, "agent-one", "192.0.2.10", envelope.ActorAuthBound)
 	makeProxy := func() *Proxy {
 		t.Helper()
 		p, err := New(cfg, audit.NewNop(), scanner.MustNew(cfg), metrics.New())
@@ -272,7 +272,7 @@ func TestIssuerCookiePrerequisiteReloadReset(t *testing.T) {
 			}
 			defer p.Close()
 			issuer, _ := url.Parse("https://app.vendor.example/account")
-			key := sessionKeyFor("agent-one", "192.0.2.10", envelope.ActorAuthBound)
+			key := sessionKeyFor(nil, "agent-one", "192.0.2.10", envelope.ActorAuthBound)
 			value := issuerAWSShapedValue()
 			p.issuerCookieRuntime.Load().store.observeResponse(key, issuer, http.Header{"Set-Cookie": {"lb=" + value + "; Path=/; Max-Age=60"}}, true, time.Now())
 			off := cfg.Clone()
@@ -779,7 +779,7 @@ func TestIssuerBoundCookieDefaultKnobAndReload(t *testing.T) {
 	if store == nil {
 		t.Fatal("default config produced no store")
 	}
-	key := sessionKeyFor("agent-one", "192.0.2.10", envelope.ActorAuthBound)
+	key := sessionKeyFor(nil, "agent-one", "192.0.2.10", envelope.ActorAuthBound)
 	now := time.Now()
 	store.observeResponse(key, issuer, http.Header{"Set-Cookie": {"lb=" + value + "; Path=/"}}, true, now)
 	if !store.allows(key, issuer, "lb", value, now) {

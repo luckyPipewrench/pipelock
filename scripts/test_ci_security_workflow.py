@@ -159,6 +159,8 @@ exit "$DEFAULT_STATUS"
                 "test-cross-target",
                 "helm",
                 "build-binaries",
+                "pr-review-tests",
+                "pr-review-source",
             },
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )
@@ -171,6 +173,8 @@ exit "$DEFAULT_STATUS"
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
+            "REVIEW_TESTS_RESULT",
+            "REVIEW_SOURCE_RESULT",
         ):
             self.assertIn(f'"${result}"', self.build)
 
@@ -184,10 +188,12 @@ exit "$DEFAULT_STATUS"
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
+            "REVIEW_TESTS_RESULT",
+            "REVIEW_SOURCE_RESULT",
         )
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in result_names})
-        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request"})
+        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request", "REPOSITORY": "luckyPipewrench/pipelock"})
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             check=False,
@@ -196,6 +202,19 @@ exit "$DEFAULT_STATUS"
             capture_output=True,
         )
         self.assertEqual(0, success.returncode, success.stderr)
+
+        for evidence in ("success", "skipped", "failure", "cancelled", ""):
+            with self.subTest(repository="fork", evidence=evidence):
+                fork_env = dict(base_env, REPOSITORY="contributor/pipelock", REVIEW_SOURCE_RESULT=evidence)
+                fork = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", script], check=False,
+                    env=fork_env, text=True, capture_output=True,
+                )
+                if evidence in {"success", "skipped"}:
+                    self.assertEqual(0, fork.returncode, fork.stderr)
+                else:
+                    self.assertNotEqual(0, fork.returncode)
+                    self.assertIn("review source identity was not verified", fork.stderr)
 
         for name in result_names:
             for evidence in ("failure", "cancelled", "skipped", ""):
@@ -221,13 +240,13 @@ exit "$DEFAULT_STATUS"
             name: "success"
             for name in (
                 "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT",
-                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT",
+                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT", "REVIEW_TESTS_RESULT", "REVIEW_SOURCE_RESULT",
             )
         })
 
         def run(event: str, classifier: str) -> int:
             env = base_env.copy()
-            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier})
+            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "REPOSITORY": "luckyPipewrench/pipelock"})
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode

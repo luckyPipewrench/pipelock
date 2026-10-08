@@ -43,6 +43,11 @@ const (
 // entry readers.
 const MaxEntryLineBytes = 1 << 20
 
+// ErrSerializedEntryTooLarge identifies a deterministic pre-write size reject.
+// Other evidence read-limit errors can mean damaged or incomplete on-disk
+// state and must not be treated as a retryable input error.
+var ErrSerializedEntryTooLarge = errors.New("serialized recorder entry exceeds line limit")
+
 const maxEntryWireLineBytes = MaxEntryLineBytes + len("\r\n")
 
 type entryReadLimits struct {
@@ -659,7 +664,7 @@ func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Ent
 		if len(line) > MaxEntryLineBytes {
 			return false, bytesRead, fmt.Errorf("line %d: exceeds %d-byte recorder entry limit", lineNum, MaxEntryLineBytes)
 		}
-		trimmed := strings.TrimSpace(string(line))
+		trimmed := TrimEntryLine(string(line))
 		line = line[:0]
 		if trimmed == "" {
 			if errors.Is(err, io.EOF) {
@@ -696,7 +701,7 @@ func walkEntriesFromReader(r io.Reader, limits entryReadLimits, consume func(Ent
 // before decoding could collapse them. Streaming consumers use this same
 // parser so they cannot disagree with recorder verification.
 func ParseEntryLine(line []byte) (Entry, error) {
-	trimmed := bytes.TrimSpace(line)
+	trimmed := []byte(TrimEntryLine(string(line)))
 	if len(trimmed) == 0 {
 		return Entry{}, errors.New("empty recorder entry")
 	}

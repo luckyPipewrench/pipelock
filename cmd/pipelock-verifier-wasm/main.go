@@ -6,9 +6,15 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path"
 	"strings"
 	"syscall/js"
 	"time"
@@ -51,10 +57,239 @@ type wasmChainSegment struct {
 	Boundary  bool   `json:"boundary"`
 }
 
+type wasmGroupResult struct {
+	Verdict          receipt.ReceiptGroupVerdict `json:"verdict"`
+	Valid            bool                        `json:"valid"`
+	GroupID          string                      `json:"groupId"`
+	BaseSession      string                      `json:"baseSession,omitempty"`
+	OpenManifestSHA  string                      `json:"openManifestSha256,omitempty"`
+	CloseManifestSHA string                      `json:"closeManifestSha256,omitempty"`
+	ShardCount       int                         `json:"shardCount,omitempty"`
+	Error            string                      `json:"error,omitempty"`
+}
+
+const (
+	maxReceiptGroupArchiveBytes     = 8 << 20
+	maxReceiptGroupArchiveFiles     = 4096
+	maxReceiptGroupArchiveEntrySize = 32 << 20
+	maxReceiptGroupArchiveTotalSize = 32 << 20
+)
+
+var errReceiptGroupArchiveUnsupported = errors.New("receipt group archive exceeds browser verifier size limit; use a host verifier")
+
 func main() {
 	js.Global().Set("pipelockVerifyBundle", js.FuncOf(verifyBundle))
 	js.Global().Set("pipelockVerifyChain", js.FuncOf(verifyChain))
+	js.Global().Set("pipelockVerifyReceiptGroup", js.FuncOf(verifyReceiptGroup))
 	select {}
+}
+
+// verifyReceiptGroup verifies a single group selected from a bounded ZIP
+// evidence bundle. The trusted signer keys are supplied separately; keys in
+// the archive are evidence, never trust anchors.
+func verifyReceiptGroup(_ js.Value, args []js.Value) (ret any) {
+	defer func() {
+		if r := recover(); r != nil {
+			ret = groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, Error: fmt.Sprintf("verify panic: %v", r)})
+		}
+	}()
+	if len(args) != 3 {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, Error: "expected ZIP bundle, group ID, and trusted keys"})
+	}
+	if args[1].Type() != js.TypeString {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, Error: "group ID must be a string"})
+	}
+	groupID := args[1].String()
+	if _, err := receipt.ReceiptGroupFileName(groupID, "open"); err != nil {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: err.Error()})
+	}
+	bundle, err := bytesValue(args[0], "bundle", stringBundleBytes)
+	if err != nil {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: err.Error()})
+	}
+	if len(bundle) == 0 {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: "receipt group ZIP is empty"})
+	}
+	if len(bundle) > maxReceiptGroupArchiveBytes {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupIncomplete, GroupID: groupID, Error: errReceiptGroupArchiveUnsupported.Error()})
+	}
+	keys, err := trustedKeys(args[2])
+	if err != nil {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: err.Error()})
+	}
+	files, err := receiptGroupArchiveFiles(bundle, groupID)
+	if err != nil {
+		if errors.Is(err, errReceiptGroupArchiveUnsupported) {
+			return groupResultValue(wasmGroupResult{Verdict: receipt.GroupIncomplete, GroupID: groupID, Error: err.Error()})
+		}
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: err.Error()})
+	}
+	if len(files) == 0 {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: "receipt group archive has no matching evidence directory"})
+	}
+	root, err := os.MkdirTemp("", "pipelock-receipt-group-")
+	if err != nil {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: fmt.Sprintf("create in-memory receipt group root: %v", err)})
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+	if err := mountReceiptGroupFiles(root, files); err != nil {
+		return groupResultValue(wasmGroupResult{Verdict: receipt.GroupInvalid, GroupID: groupID, Error: err.Error()})
+	}
+	result := receipt.VerifyReceiptGroup(root, groupID, keys)
+	return groupResultValue(wasmGroupResult{
+		Verdict:          result.Verdict,
+		Valid:            result.Verdict == receipt.GroupValid,
+		GroupID:          result.GroupID,
+		BaseSession:      result.BaseSession,
+		OpenManifestSHA:  result.OpenManifestSHA,
+		CloseManifestSHA: result.CloseManifestSHA,
+		ShardCount:       result.ShardCount,
+		Error:            result.Error,
+	})
+}
+
+func receiptGroupArchiveFiles(bundle []byte, groupID string) (map[string][]byte, error) {
+	r, err := zip.NewReader(bytes.NewReader(bundle), int64(len(bundle)))
+	if err != nil {
+		return nil, fmt.Errorf("decode receipt group ZIP: %w", err)
+	}
+	if len(r.File) == 0 || len(r.File) > maxReceiptGroupArchiveFiles {
+		return nil, fmt.Errorf("receipt group ZIP entry count is empty or exceeds %d", maxReceiptGroupArchiveFiles)
+	}
+	openName, _ := receipt.ReceiptGroupFileName(groupID, "open")
+	seen := make(map[string]struct{}, len(r.File))
+	directories := make(map[string]bool, len(r.File))
+	all := make(map[string][]byte, len(r.File))
+	var archiveDirs []string
+	var total uint64
+	root := ""
+	foundRoot := false
+	for _, file := range r.File {
+		name := file.Name
+		if !safeReceiptArchiveName(name) {
+			return nil, fmt.Errorf("unsafe receipt group ZIP path %q", name)
+		}
+		if _, ok := seen[name]; ok {
+			return nil, fmt.Errorf("duplicate receipt group ZIP path %q", name)
+		}
+		seen[name] = struct{}{}
+		isDir := file.FileInfo().IsDir()
+		trimmedName := strings.TrimSuffix(name, "/")
+		for parent := path.Dir(trimmedName); parent != "."; parent = path.Dir(parent) {
+			if kind, exists := directories[parent]; exists && !kind {
+				return nil, fmt.Errorf("receipt group ZIP file %q is a parent path", parent)
+			}
+		}
+		if prior, exists := directories[trimmedName]; exists && prior != isDir {
+			return nil, fmt.Errorf("receipt group ZIP path %q is both a file and directory", trimmedName)
+		}
+		if !isDir {
+			for prior := range directories {
+				if strings.HasPrefix(prior, trimmedName+"/") {
+					return nil, fmt.Errorf("receipt group ZIP file %q is a parent path", trimmedName)
+				}
+			}
+		}
+		directories[trimmedName] = isDir
+		if isDir {
+			archiveDirs = append(archiveDirs, name)
+			continue
+		}
+		if !file.Mode().IsRegular() || file.UncompressedSize64 > maxReceiptGroupArchiveEntrySize {
+			if file.UncompressedSize64 > maxReceiptGroupArchiveEntrySize {
+				return nil, fmt.Errorf("%w: entry %q", errReceiptGroupArchiveUnsupported, name)
+			}
+			return nil, fmt.Errorf("receipt group ZIP entry %q is not a regular file", name)
+		}
+		total += file.UncompressedSize64
+		if total > maxReceiptGroupArchiveTotalSize {
+			return nil, errReceiptGroupArchiveUnsupported
+		}
+		reader, err := file.Open()
+		if err != nil {
+			return nil, fmt.Errorf("open receipt group ZIP entry %q: %w", name, err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(reader, maxReceiptGroupArchiveEntrySize+1))
+		closeErr := reader.Close()
+		if readErr != nil || closeErr != nil || uint64(len(data)) != file.UncompressedSize64 {
+			return nil, fmt.Errorf("read receipt group ZIP entry %q: invalid or truncated content", name)
+		}
+		all[name] = data
+		if path.Base(name) == openName {
+			candidate := strings.TrimSuffix(name, openName)
+			if foundRoot {
+				return nil, fmt.Errorf("receipt group ID %s has multiple openings in the ZIP", groupID)
+			}
+			root = candidate
+			foundRoot = true
+		}
+	}
+	if !foundRoot {
+		return nil, fmt.Errorf("receipt group %s opening is missing from ZIP", groupID)
+	}
+	selected := make(map[string][]byte)
+	for _, name := range archiveDirs {
+		if strings.HasPrefix(name, root) {
+			if relative := strings.TrimPrefix(name, root); relative != "" {
+				selected[relative] = nil
+			}
+		}
+	}
+	for name, data := range all {
+		if strings.HasPrefix(name, root) {
+			relative := strings.TrimPrefix(name, root)
+			if relative == "" || strings.HasPrefix(relative, "../") {
+				return nil, fmt.Errorf("invalid receipt group ZIP root selection")
+			}
+			selected[relative] = data
+		}
+	}
+	return selected, nil
+}
+
+func safeReceiptArchiveName(name string) bool {
+	if name == "" || strings.ContainsAny(name, "\\\x00") || strings.HasPrefix(name, "/") || strings.Contains(name, ":") {
+		return false
+	}
+	trimmed := strings.TrimSuffix(name, "/")
+	if trimmed == "" || path.Clean(trimmed) != trimmed {
+		return false
+	}
+	for _, component := range strings.Split(trimmed, "/") {
+		if component == "" || component == "." || component == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func mountReceiptGroupFiles(root string, files map[string][]byte) error {
+	mount := js.Global().Get("pipelockMountReceiptGroup")
+	if mount.Type() != js.TypeFunction {
+		return fmt.Errorf("in-memory receipt group filesystem is unavailable")
+	}
+	entries := js.Global().Get("Object").New()
+	for name, data := range files {
+		if data == nil {
+			entries.Set(name, js.Null())
+			continue
+		}
+		bytes := js.Global().Get("Uint8Array").New(len(data))
+		if copied := js.CopyBytesToJS(bytes, data); copied != len(data) {
+			return fmt.Errorf("copy receipt group ZIP entry %q into memory", name)
+		}
+		entries.Set(name, bytes)
+	}
+	mount.Invoke(root, entries)
+	return nil
+}
+
+func groupResultValue(result wasmGroupResult) js.Value {
+	data, err := json.Marshal(result)
+	if err != nil {
+		data = []byte(`{"verdict":"GROUP_INVALID","valid":false,"error":"marshal result"}`)
+	}
+	return js.Global().Get("JSON").Call("parse", string(data))
 }
 
 func verifyBundle(_ js.Value, args []js.Value) (ret any) {

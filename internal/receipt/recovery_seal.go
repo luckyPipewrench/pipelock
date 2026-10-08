@@ -200,6 +200,7 @@ type recoveryObservationOptions struct {
 	trusted        []string
 	maxBytes       int64
 	signaturesOnly bool
+	groupBinding   *ReceiptGroupBinding
 }
 
 func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recoveryObservationOptions) (RecoverySeal, error) {
@@ -215,6 +216,7 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 	if err != nil {
 		return RecoverySeal{}, err
 	}
+	v.groupBinding = opts.groupBinding
 	s := RecoverySeal{PredecessorSession: predecessor, LastGoodHash: GenesisHash, PredecessorTailHash: GenesisHash, PredecessorSignerKey: observerKey}
 	complete := func(e recorder.Entry) error {
 		s.LastGoodSeq, s.LastGoodHash = e.Sequence, e.Hash
@@ -242,6 +244,9 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 			raw, readErr := recorder.ReadEvidenceFileBounded(f, maxBytes)
 			if readErr != nil {
 				return RecoverySeal{}, readErr
+			}
+			if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+				return RecoverySeal{}, errors.New("recovery predecessor has a torn non-final segment")
 			}
 			es, readErr := recorder.ReadEntriesFromReader(bytes.NewReader(raw))
 			if readErr != nil {
@@ -275,12 +280,17 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 // verifiers' walking state. A readable final record without LF advances this
 // state, but never advances the independently captured durable heads.
 type recoveryPrefixVerifier struct {
-	session        string
-	trusted        []string
-	previous       *recorder.Entry
-	v1             *StreamingVerifier
-	v2             *contractreceipt.StreamingVerifier
-	signaturesOnly bool
+	session         string
+	trusted         []string
+	previous        *recorder.Entry
+	v1              *StreamingVerifier
+	v2              *contractreceipt.StreamingVerifier
+	signaturesOnly  bool
+	groupBinding    *ReceiptGroupBinding
+	entryCount      int
+	opened          bool
+	lastReceiptSeq  uint64
+	lastReceiptHash string
 }
 
 func newRecoveryPrefixVerifier(session string, trusted []string, signaturesOnly bool) (*recoveryPrefixVerifier, error) {
@@ -308,6 +318,29 @@ func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
 	if err := recorder.ValidateEntrySchema(e); err != nil {
 		return err
 	}
+	if v.groupBinding != nil {
+		if e.Type == "checkpoint" {
+			pub, err := hex.DecodeString(v.groupBinding.SignerKey)
+			if err != nil || len(pub) != ed25519.PublicKeySize {
+				return errors.New("recovery group prefix has invalid checkpoint signer")
+			}
+			if err := verifyGroupCheckpoint(e, pub); err != nil {
+				return err
+			}
+		}
+		switch v.entryCount {
+		case 0:
+			var gate ReceiptGroupBinding
+			if e.Type != recorder.GroupGateEntryType || decodeGroupEntryDetail(e.Detail, &gate) != nil || !reflect.DeepEqual(gate, *v.groupBinding) {
+				return errors.New("recovery group prefix lacks matching first gate")
+			}
+		case 1:
+			if e.Type != "checkpoint" || v.previous == nil || e.PrevHash != v.previous.Hash {
+				return errors.New("recovery group gate lacks covering checkpoint")
+			}
+		}
+	}
+	v.entryCount++
 	if v.previous == nil {
 		if e.Sequence != 0 || e.PrevHash != recorder.GenesisHash {
 			return errors.New("recovery recorder genesis mismatch")
@@ -345,9 +378,24 @@ func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
 		if o := sessionOpen(v.v1.last.ActionRecord.SessionControl); o != nil && o.RecorderSession != v.session {
 			return errors.New("recovery receipt session binding mismatch")
 		}
+		if v.groupBinding != nil && !v.opened {
+			o := sessionOpen(v.v1.last.ActionRecord.SessionControl)
+			if o == nil || !reflect.DeepEqual(o.GroupBinding, v.groupBinding) {
+				return errors.New("recovery group prefix lacks matching signed session open")
+			}
+			v.opened = true
+		}
+		v.lastReceiptSeq = v.v1.last.ActionRecord.ChainSeq
+		v.lastReceiptHash, err = ReceiptHash(*v.v1.last)
+		if err != nil {
+			return err
+		}
 	}
 	// The shared extractor also rejects unknown recorder entry types and
 	// preserves the original wire bytes required by secret-egress receipts.
+	if e.Type == recorder.GroupGateEntryType {
+		return nil
+	}
 	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromEntries([]recorder.Entry{e})
 	if err != nil {
 		return err
@@ -375,6 +423,9 @@ func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
 }
 
 func (v *recoveryPrefixVerifier) finish() error {
+	if v.groupBinding != nil && (!v.opened || v.entryCount < 3) {
+		return errors.New("recovery group prefix lacks durable signed opening")
+	}
 	if v.v1.count > 0 {
 		res := v.v1.Finish()
 		if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {

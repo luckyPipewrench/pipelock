@@ -301,6 +301,10 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 	}
 	report := evidenceDoctorReport{Dir: cleanDir}
 	for _, location := range locations {
+		grouped, groupErr := hasReceiptGroupArtifacts(location.Dir)
+		if groupErr != nil {
+			return evidenceDoctorReport{}, groupErr
+		}
 		d := &evidenceDoctor{
 			dir:          location.Dir,
 			location:     location,
@@ -315,6 +319,12 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 		report.Truncated = report.Truncated || d.truncated
 		report.ScanTruncated = report.ScanTruncated || d.scanTruncated
 		report.FilesSkipped += d.filesSkipped
+		if grouped {
+			report.Findings = append(report.Findings, evidenceDoctorFinding{
+				Kind:    "group_verification_required",
+				Message: "signed receipt groups need verify-receipt --chain with trusted keys; structural doctor does not establish a complete group verdict",
+			})
+		}
 	}
 	return report, nil
 }

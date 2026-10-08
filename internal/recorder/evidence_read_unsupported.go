@@ -1,4 +1,4 @@
-//go:build aix || (js && wasm) || (wasip1 && wasm)
+//go:build aix || (wasip1 && wasm)
 
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0

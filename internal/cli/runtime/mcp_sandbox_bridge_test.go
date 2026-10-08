@@ -20,8 +20,30 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
+
+func TestMCPSandboxBridgeRequiredGroupNeedsCancellation(t *testing.T) {
+	group := &mcp.MCPReceiptGroup{}
+	_, err := bridgeRequiredReceiptFailure(group, true, nil)
+	if err == nil || !strings.Contains(err.Error(), "no cancellation callback") {
+		t.Fatalf("required receipt group without cancellation = %v", err)
+	}
+	called := false
+	callback, err := bridgeRequiredReceiptFailure(group, true, func() { called = true })
+	if err != nil || callback == nil {
+		t.Fatalf("required receipt group callback present = %t, error = %v", callback != nil, err)
+	}
+	callback(errors.New("receipt persistence failed"))
+	if !called {
+		t.Fatal("required receipt failure did not cancel the bridge parent")
+	}
+	callback, err = bridgeRequiredReceiptFailure(group, false, nil)
+	if err != nil || callback != nil {
+		t.Fatalf("best-effort receipt group callback present = %t, error = %v", callback != nil, err)
+	}
+}
 
 func TestSetupMCPSandboxBridge_LinuxStartsBridge(t *testing.T) {
 	t.Parallel()

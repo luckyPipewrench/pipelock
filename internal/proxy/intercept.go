@@ -111,11 +111,13 @@ type InterceptContext struct {
 	UpstreamRT http.RoundTripper
 	SafeDial   dialFunc
 
-	EntropyTracker  *scanner.EntropyTracker
-	FragmentBuffer  *scanner.FragmentBuffer
-	SessionMgr      *SessionManager
-	Redaction       *redactionRuntime
-	Proxy           *Proxy
+	EntropyTracker *scanner.EntropyTracker
+	FragmentBuffer *scanner.FragmentBuffer
+	SessionMgr     *SessionManager
+	Redaction      *redactionRuntime
+	Proxy          *Proxy
+	// receiptShard is selected once for each decrypted inner HTTP request.
+	receiptShard    receipt.EmitOpts
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
@@ -212,6 +214,14 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	if ic.Config != nil {
 		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
 	}
+	opts = withReceiptShard(opts, ic.receiptShard)
+	if ic.Proxy.receiptGroupPtr.Load() != nil {
+		e := ic.Proxy.receiptEmitterPtr.Load()
+		if e == nil {
+			return ic.Proxy.recordReceiptEmitterUnavailable(opts)
+		}
+		return ic.Proxy.emitReceiptWithEmitter(opts, e)
+	}
 	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
 	ic.Proxy.reloadMu.RUnlock()
@@ -266,6 +276,14 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 	if ic.Config != nil {
 		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
 	}
+	opts = withReceiptShard(opts, ic.receiptShard)
+	if ic.Proxy.receiptGroupPtr.Load() != nil {
+		e := ic.Proxy.receiptEmitterPtr.Load()
+		if e == nil {
+			return ic.Proxy.recordReceiptEmitterUnavailable(opts)
+		}
+		return ic.Proxy.emitRequiredReceiptWithEmitter(opts, e)
+	}
 	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
 	ic.Proxy.reloadMu.RUnlock()
@@ -303,6 +321,25 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 	}
 	if ic.Config != nil {
 		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+	}
+	opts = withReceiptShard(opts, ic.receiptShard)
+	if group := ic.Proxy.receiptGroupPtr.Load(); group != nil {
+		if err := group.shards.Emit(opts); err != nil {
+			ic.Proxy.logReceiptChannelBroken(opts, err)
+			selected, selectErr := group.shards.SelectedEmitter(opts)
+			if errors.Is(err, receipt.ErrReceiptPostAdvance) || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(err)
+			}
+			return
+		}
+		if err := ic.Proxy.emitGroupV2Receipt(group, opts, false); err != nil {
+			markerErr := ic.Proxy.emitReceiptFailureMarker(ic.Proxy.receiptEmitterPtr.Load(), opts, "outcome receipt emission failed", config.ActionAllow)
+			selected, selectErr := group.v2Emitter(opts)
+			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
+				group.failRequired(errors.Join(err, markerErr))
+			}
+		}
+		return
 	}
 	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
@@ -562,6 +599,9 @@ func newInterceptHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestContext := *ic
 		ic := &requestContext
+		if ic.Proxy != nil {
+			ic.receiptShard = ic.Proxy.admitReceiptShard()
+		}
 		reqStart := time.Now()
 		// Inner request headers are visible here after TLS termination, so
 		// the inner request's own tag wins over the CONNECT request's. The
@@ -841,7 +881,7 @@ func newInterceptHandler(
 					if rescanned.Allowed {
 						// Under require_receipts the allow must be durably recorded
 						// before forwarding; nothing has been written to w yet.
-						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind); err != nil {
+						if err := ic.Proxy.recordIssuerQueryAllow(ic.Config, actx, targetURL, ic.RequestID, ic.Agent, r.Method, allowKind, ic.receiptShard); err != nil {
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,
@@ -854,7 +894,7 @@ func newInterceptHandler(
 			}
 		}
 		if ic.Proxy != nil {
-			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent); err != nil {
+			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 				writeBlockedError(w,
@@ -1207,7 +1247,7 @@ func newInterceptHandler(
 				},
 				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
-						return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+						return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
 					}
 					recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 					if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
@@ -1507,7 +1547,7 @@ func newInterceptHandler(
 				var issuerAllowErr error
 				for _, allowance := range allowances {
 					for _, pattern := range allowance.Patterns {
-						if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method); err != nil && issuerAllowErr == nil {
+						if err := ic.Proxy.recordIssuerCookieAllow(ic.Config, actx, pattern, allowance.Name, targetURL, ic.RequestID, ic.Agent, r.Method, ic.receiptShard); err != nil && issuerAllowErr == nil {
 							issuerAllowErr = err
 						}
 					}
@@ -1528,7 +1568,7 @@ func newInterceptHandler(
 				ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 			}, func(allow scanner.CredentialAudienceAllow) error {
 				if ic.Proxy != nil {
-					return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent)
+					return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
 				}
 				recordCredentialAudienceAllow(ic.Logger, ic.Metrics, actx, allow)
 				if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
@@ -1840,7 +1880,7 @@ func newInterceptHandler(
 				AuditCtx:    actx,
 				Emit: func(o receipt.EmitOpts) error {
 					return ic.Proxy.emitRequestPolicyReceipt(
-						withReceiptPolicyHash(o, ic.Config.CanonicalPolicyHash()),
+						withReceiptPolicyHash(withReceiptShard(o, ic.receiptShard), ic.Config.CanonicalPolicyHash()),
 					)
 				},
 			}

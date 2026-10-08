@@ -21,7 +21,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+var errReceiptGroupKeyRotation = errors.New("receipt group signing key changed; restart required")
 
 // Reload applies a single hot-reload cycle against newCfg. Mirrors the
 // goroutine body the pre-refactor RunCmd launched from reloader.Changes():
@@ -110,6 +113,18 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	}
 
 	oldCfg := s.proxy.CurrentConfig()
+	if s.receiptShardSet != nil && oldCfg != nil && oldCfg.FlightRecorder.SigningKeyPath != "" &&
+		oldCfg.FlightRecorder.SigningKeyPath == newCfg.FlightRecorder.SigningKeyPath {
+		key, keyErr := signing.LoadPrivateKeyFile(oldCfg.FlightRecorder.SigningKeyPath)
+		if keyErr == nil && fmt.Sprintf("%x", key.Public()) != s.receiptShardSet.ProcessEmitter().SignerKeyHex() {
+			// Teardown drains listeners before sealing all old-key shards and
+			// publishing their close. The next process opens the successor.
+			s.receiptRotationRequested.Store(true)
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: flight_recorder signing key changed with receipt_chains=%d; closing the old-key group and restarting\n", oldCfg.FlightRecorder.ReceiptChainCount())
+			_ = s.Shutdown(context.Background())
+			return errReceiptGroupKeyRotation
+		}
+	}
 	loopbackServicesChanged := false
 	publishedServicesChanged := false
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
@@ -257,7 +272,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		oldFR.EvidenceHealth.MaxAnchorLag = newFR.EvidenceHealth.MaxAnchorLag
 		oldFR.Anchor = newFR.Anchor
 		if !reflect.DeepEqual(oldFR, newFR) {
-			if oldCfg.FlightRecorder.RequireContainmentEvidence != newCfg.FlightRecorder.RequireContainmentEvidence {
+			if oldCfg.FlightRecorder.ReceiptChainCount() != newCfg.FlightRecorder.ReceiptChainCount() {
+				liveChains := oldCfg.FlightRecorder.ReceiptChainCount()
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.receipt_chains changed; restart required; continuing with %d\n", liveChains)
+			} else if oldCfg.FlightRecorder.RequireContainmentEvidence != newCfg.FlightRecorder.RequireContainmentEvidence {
 				_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_containment_evidence changed, but posture evidence is checked when signed receipts start. Ignoring the change until restart.")
 			} else if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",

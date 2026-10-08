@@ -46,9 +46,12 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	case deferred.SourceKillSwitch:
 		layer = mcpReceiptLayerKillSwitch
 	}
+	shard := receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:         opts.receiptEmitter(),
 		V2Emitter:       opts.v2ReceiptEmitter(),
+		Group:           opts.ReceiptGroup,
+		Shard:           shard,
 		PolicyHash:      opts.receiptPolicyHash(),
 		Log:             logW,
 		Transport:       opts.Transport,
@@ -63,9 +66,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		Decision:        taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
 		RequireReceipts: opts.requireReceipts(),
 		RequireReceipt:  true,
-		// A resolution receipt must be on disk before the journal entry that
-		// closes the hold: restart recovery, which writes the journal entry
-		// right after, would otherwise leave a hold closed with no receipt.
+		// A resolution must reach disk before its closing journal entry.
 		Durable:           true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,
@@ -156,12 +157,14 @@ func (s *deferredReceiptSettlement) emit(opts MCPProxyOpts, logW io.Writer, res 
 // holdFailureResolution carries the surface-specific fields for a failed
 // Manager.Hold so both defer transports emit identical denial receipts.
 type holdFailureResolution struct {
-	DeferID   string
-	Authority deferred.AuthoritySnapshot
-	Policy    deferred.ResolutionPolicy
-	Target    string
-	Method    string
-	Reason    string
+	DeferID       string
+	ShardIndex    int
+	ShardSelected bool
+	Authority     deferred.AuthoritySnapshot
+	Policy        deferred.ResolutionPolicy
+	Target        string
+	Method        string
+	Reason        string
 }
 
 // emitHoldFailureResolution classifies a failed Hold (capacity vs cascade
@@ -182,6 +185,8 @@ func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error,
 	emitErr := emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 		DeferID:          hf.DeferID,
 		ParentActionID:   hf.DeferID,
+		ShardIndex:       hf.ShardIndex,
+		ShardSelected:    hf.ShardSelected,
 		FinalDecision:    config.ActionBlock,
 		ResolutionSource: source,
 		Authority:        hf.Authority,

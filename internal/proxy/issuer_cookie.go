@@ -55,7 +55,7 @@ const issuerCookieMaxLoggedName = 256
 // applied that cannot durably record the allow returns an error the caller
 // must treat as fail-closed. With require_receipts off it always returns nil
 // and emission stays best-effort.
-func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string) error {
+func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext, pattern, cookieName, target, requestID, agent, method string, selected ...receipt.EmitOpts) error {
 	requireReceipts := cfg != nil && cfg.FlightRecorder.RequireReceipts
 	fail := func(err error) error {
 		if requireReceipts {
@@ -85,12 +85,16 @@ func (p *Proxy) recordIssuerCookieAllow(cfg *config.Config, ctx audit.LogContext
 	if err != nil {
 		return fail(err)
 	}
-	emitErr := p.emitCredentialAudienceReceipt(cfg, receipt.EmitOpts{
+	var shard receipt.EmitOpts
+	if len(selected) > 0 {
+		shard = selected[0]
+	}
+	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerCookieReceiptExtensionKey, Pattern: pattern,
 		Transport: "intercept", Method: method, Target: target,
 		RequestID: requestID, Agent: agent, Extension: extension,
-	})
+	}, shard))
 	if emitErr != nil {
 		return fail(emitErr)
 	}

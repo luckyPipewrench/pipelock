@@ -143,6 +143,8 @@ type AuthoritySnapshot struct {
 type HeldAction struct {
 	DeferID       string
 	ActionID      string
+	ShardIndex    int
+	ShardSelected bool
 	Target        string
 	Reason        string
 	Surface       string
@@ -187,6 +189,8 @@ type HeldAction struct {
 type Resolution struct {
 	DeferID          string
 	ParentActionID   string
+	ShardIndex       int
+	ShardSelected    bool
 	FinalDecision    string
 	ResolutionSource string
 	Authority        AuthoritySnapshot
@@ -456,6 +460,8 @@ func (m *Manager) resolveApplied(deferID, finalDecision, source string) (string,
 	res := Resolution{
 		DeferID:          held.DeferID,
 		ParentActionID:   held.ActionID,
+		ShardIndex:       held.ShardIndex,
+		ShardSelected:    held.ShardSelected,
 		FinalDecision:    finalDecision,
 		ResolutionSource: source,
 		Authority:        held.Authority,

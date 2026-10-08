@@ -308,6 +308,33 @@ LIMITED and UNVERIFIED are successful analyses. Exit code 1 means broken
 completeness evidence, an unpinned non-empty chain without
 `--allow-unpinned`, or another verifier failure.
 
+### Receipt groups with multiple chains
+
+The signed group format and Go verifiers are included here, but configuration still rejects `flight_recorder.receipt_chains > 1`. Operator enablement follows when the TypeScript, Rust, and Python verifiers support groups.
+
+With `flight_recorder.receipt_chains > 1`, one process writes several independent run sessions. A signed group opening lists their exact session IDs and signer. Each shard has its own signed `session_open`, action and evidence receipts, `session_close`, transcript root, and final checkpoint. The signed group close names every final shard head. A restarted process writes a new group and a signed transition to its predecessor.
+
+The group ID is the 32-character hex value in `receipt-group-<group-id>-open.json`. Verify that ID against the evidence directory and pin every trusted signer key involved in a rotation:
+
+```bash
+pipelock verify-receipt --chain /var/lib/pipelock/evidence --group <group-id> --key old.pub --key new.pub
+pipelock-verifier chain /var/lib/pipelock/evidence --dir --group <group-id> --key old.pub --key new.pub
+```
+
+`GROUP_VALID` means the listed shards, signed close, and any required predecessor transition verified. `GROUP_INCOMPLETE` means the opening has no signed close; it is not a complete evidence verdict. `GROUP_INVALID` means a required file or binding failed verification. The group check exits nonzero for both incomplete and invalid results. A single shard can verify while another is missing, so a shard result must not be used as a group verdict. An independent copy of the opening digest is needed to detect an entire first or final group withheld from the directory.
+
+Every native AEL run claimed by a pinned signed `session_open` has its present newline-terminated records authenticated against that signer, including when the recorder tail is open or truncated. A final fragment without a newline is ignored as a torn live write, even when it is valid JSON or the file has no complete line yet. The same rule applies to receipt entries in group verification. A torn tail alone leaves an open group incomplete; a bad newline-terminated record makes the group invalid. An open neighbor is reported explicitly. A signed recovery seal separately checks damaged final bytes before it can attach; those bytes do not become group entries. A completed recorder run also requires the signed native AEL close. Evidence filenames use the last dash to separate session from sequence; nonnumeric or overflowing sequence suffixes map to zero, and two names for one session and sequence are invalid.
+
+Group verification compares directory entry names and file metadata before and after reading the evidence, including native AEL files. It also checks the signatures and hashes of evidence it reads. The directory comparison does not hash every file twice: a concurrent rewrite that preserves both size and modification time may escape that change check. Verify a stable snapshot of the evidence directory when another process could modify it.
+
+The native AEL manifest names the recorder and public key that verification reads. Extra files inside an AEL run directory are outside that manifest and aren't verified evidence; a valid group verdict says nothing about their contents.
+
+Changing the key file while a multi-chain proxy runs closes the old group under its existing key and stops the process for a supervisor restart. If the close fails, the old group remains incomplete. The restarted process opens its successor under the new key. A restarted Guard or MCP process that no longer holds the old private key cannot create a late close for the predecessor.
+
+`pipelock evidence doctor` checks individual recorder chains but does not verify group completeness; it exits nonzero when group artifacts are present and directs you to `verify-receipt --chain` with trusted keys. `pipelock evidence compact` refuses a group directory because rewriting one shard would invalidate the signed group. Epoch inspection and pin verification also refuse grouped evidence. Keep the complete directory intact for group verification. Automatic receipt anchoring is available only with one chain; a multi-chain configuration that enables it is rejected. Manual single-chain receipt anchoring refuses a grouped directory as well.
+
+The dashboard's session evidence and trust views refuse directories containing receipt groups. Use `verify-receipt --chain` with trusted keys for a group verdict; a dashboard view of one shard cannot establish that the whole group is complete.
+
 ### Chains that rotated the signing key
 
 A chain whose signing key was rotated mid-life splits into **segments**. The
@@ -716,6 +743,8 @@ surface that fits your downstream audit pipeline:
 | Rust | [`sdk/verifiers/rust/`](../../sdk/verifiers/rust/) | Embedded use, audit-platform sidecars, no-runtime environments |
 | Python (companion) | [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) | Python-based audit pipelines and Jupyter analysis. Verifies ActionReceipt v1 chains and individual EvidenceReceipt v2 envelopes; install from PyPI as `pipelock-verify`. |
 | Browser wasm (Go implementation) | `cmd/pipelock-verifier-wasm/` | In-browser receipt and chain verification without treating wasm as an independent fifth implementation |
+
+The browser group verifier accepts ZIP bundles up to 8 MiB compressed and 32 MiB uncompressed, with a 32 MiB limit per entry. Larger bundles report `GROUP_INCOMPLETE` with an unsupported-size message. Use a host verifier for those bundles; host native AEL streams have a 256 MiB file limit.
 
 The TypeScript and Rust verifiers ship with their own test suites that
 exercise the canonical vectors from the Go schema package, so a schema

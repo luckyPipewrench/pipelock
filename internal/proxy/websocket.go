@@ -62,6 +62,7 @@ type wsRelay struct {
 	upstreamConn net.Conn
 	scanner      *scanner.Scanner
 	proxy        *Proxy
+	receiptShard receipt.EmitOpts
 	cfg          *config.Config
 	redaction    *redactionRuntime
 	agent        string
@@ -140,7 +141,7 @@ func (r *wsRelay) escalationLevel() int {
 }
 
 func (r *wsRelay) emitReceipt(opts receipt.EmitOpts) error {
-	return r.proxy.emitReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
+	return r.proxy.emitReceipt(withReceiptPolicyHash(withReceiptShard(opts, r.receiptShard), r.cfg.CanonicalPolicyHash()))
 }
 
 func (r *wsRelay) resetCredentialAudienceAllows() {
@@ -170,7 +171,7 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 	}
 	r.audienceMu.Unlock()
 	actx := newHTTPAuditContext(r.auditProvenanceCtx(), r.proxy.logger, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
-	if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent); err != nil {
+	if err := r.proxy.recordCredentialAudienceAllow(r.cfg, actx, allow, TransportWS, "WS", r.targetURL, r.requestID, r.agent, r.receiptShard); err != nil {
 		// Do not mark the key seen: a duplicate must retry and fail too
 		// rather than be treated as confirmed.
 		return err
@@ -257,6 +258,8 @@ type wsRelayStats struct {
 // handleWebSocket handles /ws WebSocket proxy requests.
 func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	selectedReceiptShard := p.admitReceiptShard()
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 
 	clientIP, requestID := requestMeta(r)
 
@@ -275,6 +278,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
+		opts = withReceiptShard(opts, selectedReceiptShard)
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -371,7 +375,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.Scan(wsScanCtx, scanURL)
-	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent); err != nil {
+	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
@@ -800,7 +804,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
 		},
 		DeferBodyPredicate: true,
 	}); rpRes.Block {
@@ -848,7 +852,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actionID := receipt.NewActionID()
-	admissionReceipt := receipt.EmitOpts{
+	admissionReceipt := withReceiptShard(receipt.EmitOpts{
 		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: TransportWS,
@@ -856,7 +860,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Target:    targetURL,
 		RequestID: requestID,
 		Agent:     agent,
-	}
+	}, selectedReceiptShard)
 	if wsGate.HasContractContext() {
 		admissionReceipt = withContractReceipt(wsGate, admissionReceipt)
 	}
@@ -1168,6 +1172,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		upstreamConn:    upstreamConn,
 		scanner:         sc,
 		proxy:           p,
+		receiptShard:    selectedReceiptShard,
 		cfg:             cfg,
 		redaction:       p.currentRedactionRuntimeFor(cfg),
 		agent:           agent,
@@ -1337,7 +1342,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
-			if err := p.recordCredentialAudienceAllow(cfg, actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent()); err != nil && receiptErr == nil {
+			if err := p.recordCredentialAudienceAllow(cfg, actx, allow, TransportWS, "WS", targetURL, actx.RequestID(), actx.Agent(), receiptShardFromContext(ctx)); err != nil && receiptErr == nil {
 				receiptErr = err
 			}
 		}
@@ -1580,7 +1585,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.Agent = r.agent
 	in.AuditCtx = newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	in.Emit = func(opts receipt.EmitOpts) error {
-		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
+		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, r.receiptShard), r.cfg.CanonicalPolicyHash()))
 	}
 	res := r.proxy.applyRequestPolicy(in)
 	if !res.Block {

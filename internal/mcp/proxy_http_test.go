@@ -707,7 +707,7 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 	// Wait for GET stream to be called, then close stdin.
 	select {
 	case <-getCalled:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for GET stream to be called")
 	}
 
@@ -764,7 +764,7 @@ func TestRunHTTPProxy_GETStreamRejectsResponseIDs(t *testing.T) {
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 	select {
 	case <-getCalled:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for GET stream")
 	}
 	testwait.For(t, 2*time.Second, func() bool {
@@ -853,7 +853,7 @@ func TestRunHTTPProxy_GETStreamWrongIDCannotCompleteOutstandingPOST(t *testing.T
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 	select {
 	case <-getReady:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for GET stream")
 	}
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
@@ -1726,7 +1726,7 @@ func TestRunHTTPProxy_ContextCancellation(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("unexpected error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timeout waiting for proxy to stop after context cancellation")
 	}
 }
@@ -8023,6 +8023,45 @@ func TestScanHTTPInputDecision_DeferReceiptFailureBlocksWithoutRequireReceipts(t
 	}
 	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
 		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
+func TestScanHTTPInputDecision_GroupedDeferFailureKeepsBestEffortProcess(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		name := "best_effort"
+		if required {
+			name = "required"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts, _, _, _ := newMCPTransportReceiptGroup(t)
+			opts.RequireReceipts = required
+			opts.Transport = deferred.SurfaceMCPHTTPUpstream
+			opts.Scanner = testScannerForHTTP(t)
+			opts.PolicyCfg = &policy.Config{Action: config.ActionWarn, Rules: []*policy.CompiledRule{{
+				Name: "defer-dangerous", ToolPattern: regexp.MustCompile(`dangerous_tool`),
+				Action:           config.ActionDefer,
+				ResolutionPolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{ToolInventoryBaseline: true}},
+			}}}
+			opts.DeferManager = deferred.NewManager(deferred.Config{
+				Enabled: true, Timeout: time.Second, MaxPending: 4,
+				MaxPendingPerSession: 4, MaxPendingBytes: 1024,
+			})
+			_ = opts.ReceiptGroup.Shards.Admit(receipt.EmitOpts{})
+			opts.ReceiptGroup.Shards.Emitters()[1].MarkUnhealthy(errors.New("writer failed"))
+			var stops int
+			opts.ReceiptGroup.OnRequiredFailure = func(error) { stops++ }
+			decision := scanHTTPInputDecision([]byte(jsonToolsCallDangerous), io.Discard, "sess", "sess", opts)
+			if decision.Blocked == nil || decision.Deferred != nil || decision.Blocked.ErrorCode != -32007 {
+				t.Fatalf("defer failure blocked=%+v deferred=%+v", decision.Blocked, decision.Deferred)
+			}
+			if required {
+				if stops != 1 || opts.ReceiptGroup.Shards.Emitters()[0].HealthError() == nil {
+					t.Fatalf("required failure stops=%d other shard health=%v", stops, opts.ReceiptGroup.Shards.Emitters()[0].HealthError())
+				}
+			} else if stops != 0 || opts.ReceiptGroup.Shards.Emitters()[0].HealthError() != nil {
+				t.Fatalf("best-effort failure stops=%d other shard health=%v", stops, opts.ReceiptGroup.Shards.Emitters()[0].HealthError())
+			}
+		})
 	}
 }
 

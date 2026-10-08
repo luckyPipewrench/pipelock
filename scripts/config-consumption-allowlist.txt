@@ -18,6 +18,7 @@ SNIVerification  # (A) ForwardProxy.SNIVerificationEnabled() schema_receiver_met
 IntervalSeconds  # (A) HealthWatchdog.IntervalDuration() schema.go:1002 -> proxy/proxy.go:488
 SampleRate  # (A) SentryConfig.EffectiveSampleRate() schema_receiver_methods.go:175 -> sentry/client.go:84
 StripImages  # (A) MediaPolicy.ShouldStripImages() schema_receiver_methods.go:210 -> proxy/media_policy.go:149, mcp/media_policy.go
+ReceiptChains  # (A) FlightRecorder.ReceiptChainCount() schema.go:1859 -> cli/runtime/guard.go:358, cli/runtime/mcp.go:1184
 StripAudio  # (A) MediaPolicy.ShouldStripAudio() schema_receiver_methods.go:216 -> proxy+mcp media_policy
 StripVideo  # (A) MediaPolicy.ShouldStripVideo() schema_receiver_methods.go:222 -> proxy+mcp media_policy
 StripImageMetadata  # (A) MediaPolicy.ShouldStripImageMetadata() schema_receiver_methods.go:228 -> proxy+mcp media_policy

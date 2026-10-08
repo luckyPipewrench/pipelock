@@ -23,6 +23,23 @@ func TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform(t *testing.T) {
 	if !errors.Is(err, errEvidenceFileAccessUnsupported) {
 		t.Fatalf("open error = %v, want %v", err, errEvidenceFileAccessUnsupported)
 	}
+	location := EvidenceLocation{Root: "/unused", Dir: "/unused"}
+	directory, err := openEvidenceLocationDirectory(location)
+	if directory != nil || err == nil {
+		t.Fatalf("location directory = (%v, %v), want denied", directory, err)
+	}
+	file, info, err = openEvidenceLocationFile(location, "evidence.jsonl")
+	if file != nil || info != nil || err == nil {
+		t.Fatalf("location file = (%v, %v, %v), want denied", file, info, err)
+	}
+	directory, err = OpenEvidenceDirectory("/unused")
+	if directory != nil || err == nil {
+		t.Fatalf("evidence directory = (%v, %v), want denied", directory, err)
+	}
+	file, info, err = OpenEvidenceFile("/unused/evidence.jsonl")
+	if file != nil || info != nil || err == nil {
+		t.Fatalf("evidence artifact = (%v, %v, %v), want denied", file, info, err)
+	}
 
 	for name, lockErr := range map[string]error{
 		"lock":   lockEvidenceFileForWrite(nil),

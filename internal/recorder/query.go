@@ -117,6 +117,9 @@ func walkSessionResolved(location EvidenceLocation, sessionID string, filter *Qu
 		}
 		return filepath.Base(files[i]) < filepath.Base(files[j])
 	})
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return nil, err
+	}
 
 	result := &QueryResult{
 		TotalFiles: len(files),
@@ -198,9 +201,6 @@ func WalkSessionEntries(dir, sessionID string, consume func(Entry) error) error 
 
 	files := make([]string, 0, len(dirEntries))
 	for _, de := range dirEntries {
-		if de.IsDir() {
-			continue
-		}
 		name := de.Name()
 		fileSessionID, ok := evidenceFileSessionID(name)
 		if ok && fileSessionID == sessionID {
@@ -214,9 +214,17 @@ func WalkSessionEntries(dir, sessionID string, consume func(Entry) error) error 
 		}
 		return filepath.Base(files[i]) < filepath.Base(files[j])
 	})
+	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+		return err
+	}
 
-	for _, name := range files {
+	for i, name := range files {
 		if err := walkEntriesAtEvidenceLocation(location, name, sessionID, consume); err != nil {
+			if i+1 < len(files) && errors.Is(err, ErrTornTail) {
+				// A later segment may contain authenticated entries. Never let a
+				// caller treat this stopped walk as a recoverable final write.
+				return fmt.Errorf("receipt group session has a torn segment: %s", filepath.Base(name))
+			}
 			return fmt.Errorf("reading %s: %w", filepath.Base(name), err)
 		}
 	}
@@ -264,9 +272,10 @@ func walkEntryReader(input io.Reader, path, sessionID string, consume func(Entry
 		}
 		complete := len(line) > 0 && line[len(line)-1] == '\n'
 		if !complete && len(line) > 0 {
-			// Match file-backed QuerySession semantics: an unterminated final
-			// JSONL record is a torn write, even if it contains valid JSON.
-			return InspectEvidenceTailBytes(path, line, nil)
+			// Reader verdicts never authenticate an unterminated record. Writer
+			// recovery separately validates complete JSON before classifying it.
+			boundary := bytesRead - int64(len(line))
+			return &TornTailError{Path: path, Offset: boundary, LastGoodOffset: boundary}
 		}
 		if len(line) > 0 {
 			payload := bytes.TrimSuffix(line, []byte{'\n'})
@@ -274,7 +283,7 @@ func walkEntryReader(input io.Reader, path, sessionID string, consume func(Entry
 			if len(payload) > MaxEntryLineBytes {
 				return fmt.Errorf("line exceeds %d-byte recorder entry limit", MaxEntryLineBytes)
 			}
-			if len(bytes.TrimSpace(payload)) > 0 {
+			if TrimEntryLine(string(payload)) != "" {
 				if entriesRead >= MaxEvidenceReadEntries {
 					return fmt.Errorf("%w: evidence file %s exceeds %d entries", ErrEvidenceReadLimitExceeded, filepath.Base(path), MaxEvidenceReadEntries)
 				}

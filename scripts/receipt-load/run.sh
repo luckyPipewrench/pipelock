@@ -14,4 +14,5 @@ cd "$repo"
 go run ./scripts/receipt-load --binary "$repo/pipelock" --out "$1" \
   --requests "${RECEIPT_LOAD_REQUESTS:-1000000}" \
   --concurrency "${RECEIPT_LOAD_CONCURRENCY:-128}" \
+  --chains "${RECEIPT_LOAD_CHAINS:-1}" \
   --modes "${RECEIPT_LOAD_MODES:-off,best,required}"

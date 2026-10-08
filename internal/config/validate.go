@@ -5179,6 +5179,26 @@ func (c *Config) validateSandbox() error {
 
 func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 	c.FlightRecorder.PostureSignerPublicKey = nil
+	if len(c.FlightRecorder.ReceiptGroupPriorSignerKeys) > 32 {
+		return errors.New("flight_recorder.receipt_group_prior_signer_keys supports at most 32 keys")
+	}
+	seenPriorSigners := make(map[string]struct{}, len(c.FlightRecorder.ReceiptGroupPriorSignerKeys))
+	for _, key := range c.FlightRecorder.ReceiptGroupPriorSignerKeys {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != ed25519.PublicKeySize || key != strings.ToLower(key) {
+			return errors.New("flight_recorder.receipt_group_prior_signer_keys must contain lowercase 64-character Ed25519 public keys")
+		}
+		if _, exists := seenPriorSigners[key]; exists {
+			return errors.New("flight_recorder.receipt_group_prior_signer_keys contains a duplicate key")
+		}
+		seenPriorSigners[key] = struct{}{}
+	}
+	if c.FlightRecorder.ReceiptChains < 0 || c.FlightRecorder.ReceiptChains > 32 {
+		return fmt.Errorf("flight_recorder.receipt_chains must be between 0 and 32 (0 uses one chain)")
+	}
+	if c.FlightRecorder.ReceiptChainCount() > 1 {
+		return errors.New("flight_recorder.receipt_chains greater than one is unavailable until the cross-language verifiers support receipt groups")
+	}
 	if err := c.validateFlightRecorderAnchor(warnings); err != nil {
 		return err
 	}
@@ -5218,6 +5238,14 @@ func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 		// `pipelock init` populates dir + signing key; without them the server
 		// prints a one-time notice that receipts are inert.
 		return nil
+	}
+	if c.FlightRecorder.ReceiptChainCount() > 1 {
+		if c.FlightRecorder.SigningKeyPath == "" {
+			return errors.New("flight_recorder.receipt_chains greater than one requires flight_recorder.signing_key_path")
+		}
+		if c.FlightRecorder.AnchorConfigured() {
+			return errors.New("flight_recorder.receipt_chains greater than one cannot use single-chain auto-anchoring")
+		}
 	}
 	if c.FlightRecorder.CheckpointInterval < 0 {
 		return fmt.Errorf("flight_recorder.checkpoint_interval must be non-negative")

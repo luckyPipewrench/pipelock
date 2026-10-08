@@ -646,6 +646,122 @@ func TestEmitMCPDecision_RequiredNeitherEmitterEmitsFailsClosed(t *testing.T) {
 	}
 }
 
+func TestEmitMCPGroupDecision_RequiresBothShardWrites(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		broken string
+	}{
+		{name: "paired success"},
+		{name: "v1 failure", broken: "v1"},
+		{name: "v2 failure", broken: "v2"},
+		{name: "v1 durability failure", broken: "v1 durability"},
+		{name: "v2 durability failure", broken: "v2 durability"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, key, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), SignCheckpoints: true}, nil, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			shards, err := receipt.OpenInitialReceiptShardSet(receipt.EmitterConfig{
+				Recorder: rec, PrivKey: key, ConfigHash: mcpTestPolicyHash,
+				Principal: "local", Actor: "pipelock",
+			}, "proxy", 2, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opening, _ := shards.Opening()
+			group := MCPReceiptGroup{Shards: shards, V2: make([]*proxydecision.Emitter, 2)}
+			var cancelCalls int
+			group.OnRequiredFailure = func(error) { cancelCalls++ }
+			for i, shard := range opening.Shards {
+				writer := proxydecision.Recorder(rec)
+				if i == 1 && test.broken == "v2" {
+					writer = failingMCPV2Recorder{}
+				}
+				group.V2[i] = proxydecision.NewEmitter(proxydecision.EmitterConfig{
+					Recorder: writer, Signer: proxydecision.NewKeyedSigner(key),
+					Principal: "local", Actor: "pipelock", Session: shard.SessionID,
+				})
+			}
+			if test.broken == "v1" {
+				shards.Emitters()[1].MarkUnhealthy(errors.New("v1 unavailable"))
+			}
+			if test.broken == "v1 durability" || test.broken == "v2 durability" {
+				var syncCalls int
+				rec.SetSyncForTest(func(*os.File) error {
+					syncCalls++
+					if (test.broken == "v1 durability" && syncCalls == 1) || (test.broken == "v2 durability" && syncCalls == 2) {
+						return errors.New("shard sync failure")
+					}
+					return nil
+				})
+			}
+			opts := receipt.EmitOpts{
+				ActionID: "group-decision", Verdict: config.ActionAllow,
+				Transport: transportMCPStdio, Target: "fetch", MCPMethod: methodToolsCall,
+				ToolName: "fetch", PolicyHash: mcpTestPolicyHash,
+				ShardIndex: 1, ShardSelected: true,
+			}
+			inbound := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+			out, err := EmitMCPGroupDecision(group, envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "h"}), MCPDecision{
+				Receipt: opts, RequireReceipt: true, RequiredMode: true, InboundMsg: inbound,
+				Envelope: &envelope.BuildOpts{ActionID: opts.ActionID, Verdict: config.ActionAllow},
+			})
+			if test.broken == "" {
+				if err != nil || bytes.Equal(out, inbound) {
+					t.Fatalf("paired emit err=%v, envelope unchanged=%t", err, bytes.Equal(out, inbound))
+				}
+				emitMCPOutcomeReceipt(nil, nil, &group, nil, opts, "ok", 12, "complete", true)
+				if err := rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				for i, shard := range opening.Shards {
+					paths, globErr := filepath.Glob(filepath.Join(rec.Dir(), "evidence-"+shard.SessionID+"-*.jsonl"))
+					if globErr != nil || len(paths) != 1 {
+						t.Fatalf("shard %d evidence files=%v err=%v", i, paths, globErr)
+					}
+					entries, readErr := recorder.ReadEntries(paths[0])
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					var decisions int
+					for _, entry := range entries {
+						if (entry.Type == "action_receipt" || entry.Type == "evidence_receipt") && bytes.Contains(entry.RawDetail, []byte("group-decision")) {
+							decisions++
+						}
+					}
+					if want := 0; i == 1 {
+						want = 2 // v1 decision and outcome; v2 does not carry action ID.
+						if decisions != want {
+							t.Fatalf("shard %d decision records=%d, want %d", i, decisions, want)
+						}
+					} else if decisions != want {
+						t.Fatalf("shard %d decision records=%d, want %d", i, decisions, want)
+					}
+				}
+			} else if !errors.Is(err, ErrReceiptRequired) || !bytes.Equal(out, inbound) {
+				t.Fatalf("broken %s pair err=%v, outbound=%s", test.broken, err, out)
+			}
+			if test.broken == "v1 durability" || test.broken == "v2 durability" {
+				if cancelCalls != 1 || shards.Emitters()[0].HealthError() == nil {
+					t.Fatalf("durability failure cancel calls=%d, other shard health=%v", cancelCalls, shards.Emitters()[0].HealthError())
+				}
+			} else if test.broken == "v1" {
+				if cancelCalls != 1 {
+					t.Fatalf("sticky v1 failure cancellation calls=%d", cancelCalls)
+				}
+			} else if cancelCalls != 0 {
+				t.Fatalf("unexpected group cancellation after %s: %d", test.broken, cancelCalls)
+			}
+		})
+	}
+}
+
 func TestEmitMCPV2Decision_RequiredDerivationFailureFailsClosed(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

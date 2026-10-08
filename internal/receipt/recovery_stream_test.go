@@ -143,6 +143,40 @@ func TestRecoveryStreamFinalRecordWithoutNewline(t *testing.T) {
 	}
 }
 
+func TestRecoverySealRejectsBadHashUnterminatedFinalRecord(t *testing.T) {
+	dir, seal, key := recoveryFixture(t)
+	claim := filepath.Join(dir, ChainLinkFileName(seal.PredecessorSession))
+	if err := os.Remove(claim); err != nil {
+		t.Fatal(err)
+	}
+	entries := recoveryStreamEntries(t, dir, seal)
+	last := entries[len(entries)-1]
+	last.Hash = strings.Repeat("0", len(last.Hash))
+	badHash, err := json.Marshal(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, seal.Shard)
+	writeRecoveryStreamEntries(t, path, entries[:len(entries)-1], badHash)
+	damaged, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publishRecoverySeal(linkRequest{dir: dir, self: seal.SuccessorSession, privKey: key, now: time.Now().UTC()}, seal.PredecessorSession); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("published recovery seal for damaged final record: %v", err)
+	}
+	if _, err := os.Stat(claim); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovery claim exists after refusal: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, damaged) {
+		t.Fatal("recovery changed damaged evidence")
+	}
+}
+
 func TestRecoveryStreamRejectsCorruptPrefix(t *testing.T) {
 	for _, tc := range []struct {
 		name string

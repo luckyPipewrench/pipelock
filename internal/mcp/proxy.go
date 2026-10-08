@@ -21,7 +21,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -105,7 +104,7 @@ func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer,
 		if wErr := writer.WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout")
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout", opts.requireReceipts())
 	}
 }
 
@@ -114,7 +113,7 @@ func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts
 		return
 	}
 	for _, pending := range tracker.DrainPendingOutcomes() {
-		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, pending.Outcome.Receipt, "incomplete", -1, reason)
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, pending.Outcome.Receipt, "incomplete", -1, reason, opts.requireReceipts())
 	}
 }
 
@@ -364,7 +363,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if !hasTrackedOutcome {
 				return
 			}
-			emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, logW, trackedOutcome.Receipt, status, int64(len(outbound)), reason)
+			emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, opts.ReceiptGroup, logW, trackedOutcome.Receipt, status, int64(len(outbound)), reason, opts.requireReceipts())
 		}
 
 		blockScanError := func(scanError string) error {
@@ -413,8 +412,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if m != nil {
 				m.RecordBlocked("mcp", "media_policy", 0, "")
 			}
-			if receiptEmitter != nil {
-				if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+			if receiptEmitter != nil || opts.ReceiptGroup != nil {
+				if _, emitErr := opts.emitReceiptDecision(MCPDecision{
 					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 						ActionID:  receipt.NewActionID(),
 						Verdict:   config.ActionBlock,
@@ -630,7 +629,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 
 				if toolAction == config.ActionBlock {
-					_ = emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionBlock)
+					_ = emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionBlock)
 					blockReason := "tool poisoning detected in tools/list"
 					if toolResult.ResourceLimit != "" {
 						blockReason = "tools/list cannot be safely inspected: " + toolResult.ResourceLimit
@@ -667,7 +666,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
-				if emitErr := emitMCPToolScanReceipt(receiptEmitter, v2ReceiptEmitter, logW, opts, toolResult, config.ActionWarn); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn); emitErr != nil && opts.requireReceipts() {
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
@@ -904,17 +903,21 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			pattern = names[0]
 		}
 		originalActionID := receipt.NewActionID()
-		_, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
-			Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
-				ActionID:  originalActionID,
-				Verdict:   effectiveAction,
-				Transport: opts.Transport,
-				Target:    target,
-				RequestID: requestID,
-				Layer:     "mcp_response_scan",
-				Pattern:   pattern,
-				Severity:  config.SeverityHigh,
-			}),
+		originalReceiptOpts := opts.withReceiptPolicyHash(receipt.EmitOpts{
+			ActionID:  originalActionID,
+			Verdict:   effectiveAction,
+			Transport: opts.Transport,
+			Target:    target,
+			RequestID: requestID,
+			Layer:     "mcp_response_scan",
+			Pattern:   pattern,
+			Severity:  config.SeverityHigh,
+		})
+		if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+			originalReceiptOpts = opts.ReceiptGroup.Shards.Admit(originalReceiptOpts)
+		}
+		_, emitErr := opts.emitReceiptDecision(MCPDecision{
+			Receipt:        originalReceiptOpts,
 			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
 		})
 		originalReceiptPersisted := emitErr != nil && errors.Is(emitErr, errMCPV2ReceiptEmit)
@@ -936,10 +939,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Pattern:   "mcp_response_scan receipt emission failed",
 					Severity:  config.SeverityHigh,
 				})
+				replacementOpts.ShardIndex = originalReceiptOpts.ShardIndex
+				replacementOpts.ShardSelected = originalReceiptOpts.ShardSelected
 				if originalReceiptPersisted {
 					replacementOpts.ParentActionID = originalActionID
 				}
-				if _, blockEmitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+				if _, blockEmitErr := opts.emitReceiptDecision(MCPDecision{
 					Receipt:        replacementOpts,
 					RequireReceipt: true,
 				}); blockEmitErr != nil {
@@ -1023,8 +1028,6 @@ func toolScanHasDrift(result tools.ToolScanResult) bool {
 }
 
 func emitMCPToolScanReceipt(
-	emitter *receipt.Emitter,
-	v2Emitter *proxydecision.Emitter,
 	logW io.Writer,
 	opts MCPProxyOpts,
 	result tools.ToolScanResult,
@@ -1054,7 +1057,7 @@ func emitMCPToolScanReceipt(
 			}
 		}
 	}
-	_, err := EmitMCPDecision(emitter, v2Emitter, nil, MCPDecision{
+	_, err := opts.emitReceiptDecision(MCPDecision{
 		Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   verdict,

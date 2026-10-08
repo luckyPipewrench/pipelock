@@ -281,7 +281,7 @@ func TestRecoverDeferredActionsKeepsHoldPendingWhenReceiptFails(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	err := recoverDeferredActions(manager, "", nil, nil, runtimeTestPolicyHash, &log)
+	err := recoverDeferredActions(manager, "", nil, nil, nil, runtimeTestPolicyHash, &log)
 	if err == nil {
 		t.Fatal("recoverDeferredActions returned nil without a required receipt emitter")
 	}

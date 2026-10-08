@@ -36,6 +36,8 @@ import {
 } from "./rotation.js";
 import type { ChainResult, Receipt } from "./types.js";
 import { decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
+import { blankAfterGoTrim } from "./line-space.js";
+export { blankAfterGoTrim } from "./line-space.js";
 
 export const FindingCorruptChain = "corrupt_chain";
 export const FindingInvalidLink = "invalid_link";
@@ -364,7 +366,7 @@ function indexRecorderFiles(dir: string): EvidenceIndex {
   const shards = new Map<string, { file: string; name: string; seq: bigint }[]>();
   const symlinks = new Map<string, string[]>();
   for (const de of readdirSync(dir, { withFileTypes: true })) {
-    if (de.isDirectory() || !de.name.endsWith(evidenceSuffix)) continue;
+    if (!de.name.endsWith(evidenceSuffix)) continue;
     const parsed = parseEvidenceFilename(de.name);
     if (parsed === undefined) continue;
     if (de.isSymbolicLink()) {
@@ -417,6 +419,11 @@ function indexFiles(ix: EvidenceIndex, session: string): string[] {
   return files;
 }
 
+// Return the validated session order used by the ordinary evidence reader.
+export function sessionEvidenceFiles(dir: string, session: string): string[] {
+  return indexFiles(indexRecorderFiles(dir), session);
+}
+
 function sortedSessions(ix: EvidenceIndex): string[] {
   return [...ix.files.keys()].sort(compareStrings);
 }
@@ -451,8 +458,10 @@ export class EvidenceRefusedError extends Error {}
 // run X that holds run Y's entries is not run X's evidence.
 function readSessionLines(ix: EvidenceIndex, session: string): ParsedRecorderLine[] {
   const out: ParsedRecorderLine[] = [];
-  for (const file of indexFiles(ix, session)) {
-    for (const l of readEntryLines(file, evidenceDirectoryActive)) {
+  const files = indexFiles(ix, session);
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i] as string;
+    for (const l of readEntryLines(file, evidenceDirectoryActive, i + 1 === files.length)) {
       if (l.entry.session_id !== session) {
         throw new EvidenceRefusedError(
           `reading ${path.basename(file)}: entry seq ${String(l.entry.seq)} session_id ${JSON.stringify(l.entry.session_id ?? null)} does not match requested session ${JSON.stringify(session)}`,
@@ -516,28 +525,6 @@ function chainLinkFilePredecessor(name: string): string | undefined {
   }
   const pred = name.slice(chainLinkFilePrefix.length, name.length - chainLinkFileSuffix.length);
   return pred === "" ? undefined : pred;
-}
-
-// Go's unicode.IsSpace, used by strings.TrimSpace.
-function isGoSpace(ch: string): boolean {
-  const c = ch.codePointAt(0) ?? 0;
-  return (
-    (c >= 0x09 && c <= 0x0d) ||
-    c === 0x20 ||
-    c === 0x85 ||
-    c === 0xa0 ||
-    c === 0x1680 ||
-    (c >= 0x2000 && c <= 0x200a) ||
-    c === 0x2028 ||
-    c === 0x2029 ||
-    c === 0x202f ||
-    c === 0x205f ||
-    c === 0x3000
-  );
-}
-
-function blankAfterGoTrim(value: string): boolean {
-  return [...value].every(isGoSpace);
 }
 
 // goJSONString encodes value exactly as Go's encoding/json does, followed by
@@ -1376,7 +1363,7 @@ async function verifyRecoveryBinding(
       // A complete JSON value must be one known recorder entry, including
       // checkpoints. Validate its schema, outer chain and any embedded receipt
       // signature before the seal can attach.
-      const candidate = parseEntryLinesText(suffixText);
+      const candidate = parseEntryLinesText(`${suffixText}\n`);
       if (candidate.length !== 1) {
         throw new Error("missing-newline tail is not one recorder entry");
       }
@@ -1404,7 +1391,9 @@ async function verifyRecoveryBinding(
   if (sequenceErr !== undefined) throw new Error(`recovery prefix sequence: ${sequenceErr}`);
   const fullLines = [...lines];
   if (tailKind === "missing_newline") {
-    const candidate = parseEntryLinesText(decodeUTF8(tailContent, "recovery seal final record"))[0];
+    const candidate = parseEntryLinesText(
+      `${decodeUTF8(tailContent, "recovery seal final record")}\n`,
+    )[0];
     if (candidate === undefined || candidate.entry.session_id !== seal.predecessor_session) {
       throw new Error("recovery final record session mismatch");
     }

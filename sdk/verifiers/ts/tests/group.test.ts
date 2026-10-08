@@ -1,0 +1,380 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { gunzipSync, inflateRawSync } from "node:zlib";
+import test from "node:test";
+import assert from "node:assert/strict";
+import { checkGroupAELMembership, verifyReceiptGroup } from "../src/group.js";
+import { parseEvidenceFilename } from "../src/chain-set.js";
+import { findPackageRoot } from "./paths.js";
+
+const root = findPackageRoot(import.meta.url);
+const fixtureRoot = mkdtempSync(join(tmpdir(), "ts-receipt-group-fixtures-"));
+const fixtures = join(fixtureRoot, "groups");
+const attackFixtures = join(fixtureRoot, "attacks");
+const matrixFixtures = join(fixtureRoot, "matrix");
+const filenameVectors = JSON.parse(
+  readFileSync(resolve(root, "../filename-vectors.json"), "utf8"),
+) as {
+  parse: Array<{ name: string; session: string | null; seq: number | null }>;
+  duplicate: string[];
+};
+test("shared filename vectors", () => {
+  for (const item of filenameVectors.parse) {
+    const parsed = parseEvidenceFilename(item.name);
+    assert.equal(parsed?.session ?? null, item.session, item.name);
+    assert.equal(parsed?.seqStart ?? null, item.seq === null ? null : BigInt(item.seq), item.name);
+  }
+  const first = parseEvidenceFilename(filenameVectors.duplicate[0] as string);
+  const second = parseEvidenceFilename(filenameVectors.duplicate[1] as string);
+  assert.ok(
+    first && second && first.session === second.session && first.seqStart === second.seqStart,
+  );
+});
+test("shared signed shard AEL membership vectors", () => {
+  const cases = JSON.parse(
+    readFileSync(resolve(root, "../receipt-group-membership-vectors.json"), "utf8"),
+  ) as Array<{
+    name: string;
+    signed_sessions: string[];
+    claimed_sessions: string[];
+    incomplete: boolean;
+    error: string;
+  }>;
+  assert.equal(cases.length, 5);
+  for (const item of cases) {
+    if (item.error) {
+      assert.throws(
+        () => checkGroupAELMembership(item.signed_sessions, item.claimed_sessions, item.incomplete),
+        (error: unknown) => error instanceof Error && error.message.includes(item.error),
+        item.name,
+      );
+    } else {
+      assert.doesNotThrow(
+        () => checkGroupAELMembership(item.signed_sessions, item.claimed_sessions, item.incomplete),
+        item.name,
+      );
+    }
+  }
+});
+extractFixtureArchive(readFileSync(resolve(root, "tests/fixtures/receipt-groups.zip")), fixtures);
+extractFixtureArchive(
+  Buffer.concat(
+    Array.from({ length: 7 }, (_, index) =>
+      readFileSync(
+        resolve(
+          root,
+          `../fixtures/receipt-groups-attacks.zip.part${String(index).padStart(2, "0")}`,
+        ),
+      ),
+    ),
+  ),
+  attackFixtures,
+);
+extractFixtureArchive(
+  gunzipSync(readFileSync(resolve(root, "tests/fixtures/receipt-groups-matrix.zip.gz"))),
+  matrixFixtures,
+);
+test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+test("shared native AEL matrix", async () => {
+  const cases = JSON.parse(readFileSync(join(matrixFixtures, "matrix.json"), "utf8")) as Array<{
+    name: string;
+    group_id: string;
+    trusted_keys: string[];
+    expected: string;
+  }>;
+  assert.equal(cases.length, 119);
+  const controls = JSON.parse(
+    readFileSync(join(matrixFixtures, "controls.json"), "utf8"),
+  ) as typeof cases;
+  assert.equal(controls.length, 1);
+  for (const [prefix, entries] of [
+    ["cases", cases],
+    ["controls", controls],
+  ] as const) {
+    for (const item of entries) {
+      const result = await verifyReceiptGroup(
+        join(matrixFixtures, prefix, item.name),
+        item.group_id,
+        item.trusted_keys,
+      );
+      assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
+      if (item.name === "predecessor__signed-close-head-disagrees")
+        assert.match(result.error ?? "", /signed close/u);
+      if (item.name === "predecessor__intact__present")
+        assert.match(result.error ?? "", /GROUP_INCOMPLETE/u);
+    }
+  }
+});
+
+test("torn gated shard without opening cannot fall back to legacy directory verification", () => {
+  const dir = join(matrixFixtures, "cases", "shard__torn-gate-missing-open");
+  const result = runCLI(["chain", dir, "--dir", "--json"]);
+  assert.equal(result.status, 1, result.stderr);
+  const report = JSON.parse(result.stdout) as { error?: string };
+  assert.match(report.error ?? "", /GROUP_INVALID/u);
+});
+
+function extractFixtureArchive(archive: Buffer, destination: string): void {
+  const eocd = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.notEqual(eocd, -1, "fixture ZIP has an end record");
+  const count = archive.readUInt16LE(eocd + 10),
+    directoryOffset = archive.readUInt32LE(eocd + 16);
+  let offset = directoryOffset;
+  for (let i = 0; i < count; i++) {
+    assert.equal(archive.readUInt32LE(offset), 0x02014b50, "fixture ZIP central directory entry");
+    const method = archive.readUInt16LE(offset + 10),
+      compressedSize = archive.readUInt32LE(offset + 20),
+      uncompressedSize = archive.readUInt32LE(offset + 24),
+      nameLength = archive.readUInt16LE(offset + 28),
+      extraLength = archive.readUInt16LE(offset + 30),
+      commentLength = archive.readUInt16LE(offset + 32),
+      localOffset = archive.readUInt32LE(offset + 42),
+      name = archive.toString("utf8", offset + 46, offset + 46 + nameLength);
+    offset += 46 + nameLength + extraLength + commentLength;
+    assert.ok(name && !name.startsWith("/") && !name.split("/").includes(".."));
+    const target = resolve(destination, name);
+    assert.ok(target.startsWith(`${resolve(destination)}/`));
+    if (name.endsWith("/")) {
+      mkdirSync(target, { recursive: true });
+      continue;
+    }
+    const localNameLength = archive.readUInt16LE(localOffset + 26),
+      localExtraLength = archive.readUInt16LE(localOffset + 28),
+      dataOffset = localOffset + 30 + localNameLength + localExtraLength,
+      compressed = archive.subarray(dataOffset, dataOffset + compressedSize),
+      data = method === 0 ? compressed : method === 8 ? inflateRawSync(compressed) : undefined;
+    assert.ok(data, `unsupported ZIP compression method ${method}`);
+    assert.equal(data.length, uncompressedSize, `fixture size differs for ${name}`);
+    mkdirSync(resolve(target, ".."), { recursive: true });
+    writeFileSync(target, data);
+  }
+}
+function groupID(dir: string): string {
+  const names = readdirSync(dir).filter((n) => /^receipt-group-[0-9a-f]{32}-open\.json$/u.test(n));
+  const successor = names.find((n) => {
+    const id = n.slice("receipt-group-".length, -"-open.json".length);
+    return existsSync(join(dir, `receipt-group-${id}-transition.json`));
+  });
+  const name =
+    successor ??
+    names.find((n) => existsSync(join(dir, n.replace("-open.json", "-close.json")))) ??
+    names[0];
+  assert.ok(name);
+  return name.slice("receipt-group-".length, -"-open.json".length);
+}
+function keys(dir: string): string[] {
+  return (JSON.parse(readFileSync(join(dir, "trust.json"), "utf8")) as { trusted_keys: string[] })
+    .trusted_keys;
+}
+function runCLI(args: string[]): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+} {
+  const result = spawnSync(process.execPath, [resolve(root, "dist/src/cli.js"), ...args], {
+    encoding: "utf8",
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error,
+  };
+}
+
+test("Go-produced initial, successor, and recovery-successor groups verify", async () => {
+  const cases = ["group-valid", "group-successor", "group-recovery-successor"];
+  for (const name of cases) {
+    const dir = join(fixtures, name),
+      id = groupID(dir),
+      report = await verifyReceiptGroup(dir, id, keys(dir));
+    assert.equal(report.verdict, "GROUP_VALID", `${name}: ${JSON.stringify(report)}`);
+  }
+});
+
+test("shared attack vectors reject both ends of a forged transition", async () => {
+  for (const name of ["forged-untrusted", "flipped-signature", "lying-chain-head"]) {
+    const dir = join(attackFixtures, name),
+      successor = groupID(dir),
+      predecessor = readdirSync(dir)
+        .filter((file) => /^receipt-group-[0-9a-f]{32}-open\.json$/u.test(file))
+        .map((file) => file.slice("receipt-group-".length, -"-open.json".length))
+        .find((id) => id !== successor);
+    assert.ok(predecessor);
+    for (const id of [predecessor, successor]) {
+      const report = await verifyReceiptGroup(dir, id, keys(dir));
+      assert.equal(report.verdict, "GROUP_INVALID", `${name} ${id}: ${JSON.stringify(report)}`);
+    }
+  }
+  for (const name of ["extra-unowned-ael", "empty-unowned-ael"]) {
+    const dir = join(attackFixtures, name),
+      report = await verifyReceiptGroup(dir, groupID(dir), keys(dir));
+    assert.equal(report.verdict, "GROUP_INVALID");
+    assert.match(report.error ?? "", /no signed session owner/u);
+  }
+  for (const name of [
+    "self-signed-owner",
+    "damaged-recorder-owner",
+    "damaged-recorder-trusted-owner",
+    "damaged-legacy-ael",
+    "damaged-neighbor-ael",
+    "missing-legacy-ael",
+    "missing-neighbor-ael",
+    "damaged-legacy-incomplete",
+  ]) {
+    const dir = join(attackFixtures, name),
+      report = await verifyReceiptGroup(dir, groupID(dir), keys(dir));
+    assert.equal(report.verdict, "GROUP_INVALID", `${name}: ${JSON.stringify(report)}`);
+  }
+  for (const scenario of ["damaged-neighbor-ael", "missing-neighbor-ael"]) {
+    const neighbor = join(attackFixtures, scenario);
+    for (const id of readdirSync(neighbor)
+      .filter((name) => /^receipt-group-[0-9a-f]{32}-open\.json$/u.test(name))
+      .map((name) => name.slice("receipt-group-".length, -"-open.json".length))) {
+      const report = await verifyReceiptGroup(neighbor, id, keys(neighbor));
+      assert.equal(report.verdict, "GROUP_INVALID", `${scenario}/${id}: ${JSON.stringify(report)}`);
+    }
+  }
+  const legacy = join(attackFixtures, "trusted-legacy-owner");
+  assert.equal(
+    (await verifyReceiptGroup(legacy, groupID(legacy), keys(legacy))).verdict,
+    "GROUP_VALID",
+  );
+  const large = join(attackFixtures, "large-legacy-ael");
+  assert.equal(
+    (await verifyReceiptGroup(large, groupID(large), keys(large))).verdict,
+    "GROUP_VALID",
+  );
+});
+
+test("recovery seal survives a successor shard count change", async () => {
+  const dir = join(attackFixtures, "recovery-count-change"),
+    report = await verifyReceiptGroup(dir, groupID(dir), keys(dir));
+  assert.equal(report.verdict, "GROUP_VALID", JSON.stringify(report));
+  assert.equal(report.shard_count, 3);
+});
+
+test("shared duplicate successors invalidate every linked group", async () => {
+  const dir = join(attackFixtures, "duplicate-successor"),
+    ids = readdirSync(dir)
+      .filter((name) => /^receipt-group-[0-9a-f]{32}-open\.json$/u.test(name))
+      .map((name) => name.slice("receipt-group-".length, -"-open.json".length));
+  assert.equal(ids.length, 3);
+  for (const id of ids) {
+    const report = await verifyReceiptGroup(dir, id, keys(dir));
+    assert.equal(report.verdict, "GROUP_INVALID", `${id}: ${JSON.stringify(report)}`);
+  }
+});
+
+test("group verification fails closed for missing close, deleted shard, tampered AEL, and unpinned signer", async () => {
+  const base = join(fixtures, "group-valid"),
+    id = groupID(base),
+    trusted = keys(base);
+  const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-"));
+  try {
+    const incomplete = join(temp, "incomplete");
+    cpSync(base, incomplete, { recursive: true });
+    rmSync(join(incomplete, `receipt-group-${id}-close.json`));
+    assert.equal((await verifyReceiptGroup(incomplete, id, trusted)).verdict, "GROUP_INCOMPLETE");
+
+    const missing = join(temp, "missing");
+    cpSync(base, missing, { recursive: true });
+    const shard = readdirSync(missing).find(
+      (n) => n.startsWith("evidence-") && n.endsWith(".jsonl"),
+    );
+    assert.ok(shard);
+    rmSync(join(missing, shard));
+    assert.equal((await verifyReceiptGroup(missing, id, trusted)).verdict, "GROUP_INVALID");
+
+    const ael = join(temp, "ael");
+    cpSync(base, ael, { recursive: true });
+    const runDir = readdirSync(join(ael, "ael"))[0];
+    assert.ok(runDir);
+    const stream = join(ael, "ael", runDir, "recorders", "pipelock.jsonl");
+    writeFileSync(stream, `${readFileSync(stream, "utf8")}tamper\n`);
+    assert.equal((await verifyReceiptGroup(ael, id, trusted)).verdict, "GROUP_INVALID");
+    assert.equal((await verifyReceiptGroup(base, id, [])).verdict, "GROUP_INVALID");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("recovery group fails closed when its seal is missing, altered, or transition is forged", async () => {
+  const base = join(fixtures, "group-recovery-successor"),
+    id = groupID(base),
+    trusted = keys(base);
+  const transition = JSON.parse(
+    readFileSync(join(base, `receipt-group-${id}-transition.json`), "utf8"),
+  ) as { predecessors: { session_id: string; recovery_seal_sha256: string }[] };
+  const sealClaim = transition.predecessors.find((p) => p.recovery_seal_sha256 !== "");
+  assert.ok(sealClaim);
+  const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-recovery-"));
+  try {
+    const missing = join(temp, "missing");
+    cpSync(base, missing, { recursive: true });
+    rmSync(join(missing, `chain-link-${sealClaim.session_id}.json`));
+    assert.equal((await verifyReceiptGroup(missing, id, trusted)).verdict, "GROUP_INVALID");
+
+    const altered = join(temp, "altered");
+    cpSync(base, altered, { recursive: true });
+    const sealPath = join(altered, `chain-link-${sealClaim.session_id}.json`);
+    writeFileSync(
+      sealPath,
+      readFileSync(sealPath, "utf8").replace('"damage_offset":3808', '"damage_offset":3807'),
+    );
+    assert.equal((await verifyReceiptGroup(altered, id, trusted)).verdict, "GROUP_INVALID");
+
+    const damaged = join(temp, "damaged");
+    cpSync(base, damaged, { recursive: true });
+    const damagedShard = join(damaged, `evidence-${sealClaim.session_id}-0.jsonl`);
+    writeFileSync(damagedShard, `${readFileSync(damagedShard, "utf8")}changed\n`);
+    assert.equal((await verifyReceiptGroup(damaged, id, trusted)).verdict, "GROUP_INVALID");
+
+    const forged = join(temp, "forged");
+    cpSync(base, forged, { recursive: true });
+    const path = join(forged, `receipt-group-${id}-transition.json`);
+    const raw = readFileSync(path, "utf8").replace('"final_chain_seq":0', '"final_chain_seq":1');
+    writeFileSync(path, raw);
+    assert.equal((await verifyReceiptGroup(forged, id, trusted)).verdict, "GROUP_INVALID");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("CLI group mode prints the group verdict and exits nonzero when incomplete", () => {
+  const dir = join(fixtures, "group-valid"),
+    id = groupID(dir),
+    key = keys(dir)[0];
+  assert.ok(key);
+  const valid = runCLI(["chain", dir, "--dir", "--group", id, "--key", key, "--json"]);
+  assert.equal(valid.status, 0, `${valid.stdout}\n${valid.stderr}\n${String(valid.error)}`);
+  assert.equal((JSON.parse(valid.stdout) as { verdict: string }).verdict, "GROUP_VALID");
+  const temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-cli-"));
+  try {
+    const incomplete = join(temp, "incomplete");
+    cpSync(dir, incomplete, { recursive: true });
+    rmSync(join(incomplete, `receipt-group-${id}-close.json`));
+    const result = runCLI(["chain", incomplete, "--dir", "--group", id, "--key", key, "--json"]);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}\n${String(result.error)}`);
+    assert.ok(result.stdout, result.stderr);
+    assert.equal((JSON.parse(result.stdout) as { verdict: string }).verdict, "GROUP_INCOMPLETE");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});

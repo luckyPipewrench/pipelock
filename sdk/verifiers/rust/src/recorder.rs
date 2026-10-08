@@ -1,6 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::line_space::trim_go_space;
 use crate::types::Receipt;
 use crate::util::{
     parse_json_line, read_verifier_text, reject_duplicate_keys, Result, VerifierError,
@@ -51,8 +52,8 @@ pub(crate) fn read_entry_lines(path: &Path) -> Result<Vec<RecorderLine>> {
 /// damaged final shard without copying or rewriting evidence on disk.
 pub(crate) fn read_entry_lines_text(text: &str) -> Result<Vec<RecorderLine>> {
     let mut entries = Vec::new();
-    for (index, raw_line) in text.lines().enumerate() {
-        let line = raw_line.trim();
+    for (index, raw_line) in text.split_terminator('\n').enumerate() {
+        let line = trim_go_space(raw_line);
         if line.is_empty() {
             continue;
         }

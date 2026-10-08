@@ -8,6 +8,7 @@ import { parseJSONStrict, RawNumber } from "./aarp/strictjson.js";
 import { bindRecorderLineExtSource, objectMemberSpan } from "./rawjson.js";
 import { validateSecretEgressSource } from "./secret-egress.js";
 import { readSessionReceipts, withPinnedEvidenceDirectorySync } from "./chain-set.js";
+import { trimGoSpace } from "./line-space.js";
 import type { RecorderLine } from "./recorder-chain.js";
 import {
   InvalidError,
@@ -27,6 +28,9 @@ const evidenceReceiptType = "evidence_receipt";
 // skipped, so a file mixing a valid chain with an unknown record type cannot be
 // reported as a valid receipt subsequence.
 const skippableEntryTypes = new Set([
+  // Group mode validates this first-entry gate against the signed opening
+  // before accepting either receipt chain.
+  "receipt_group_v1",
   "checkpoint",
   "transcript_root",
   "decision",
@@ -44,8 +48,17 @@ export interface ParsedRecorderLine extends RecorderLine {
   entry: RecorderEntry;
 }
 
-export function readEntryLines(file: string, directoryChild = false): ParsedRecorderLine[] {
-  const text = decodeUTF8(readVerifierBytes(file, directoryChild), "evidence jsonl");
+export function readEntryLines(
+  file: string,
+  directoryChild = false,
+  allowTorn = true,
+): ParsedRecorderLine[] {
+  const raw = readVerifierBytes(file, directoryChild);
+  if (!allowTorn && raw.length > 0 && raw[raw.length - 1] !== 0x0a) {
+    throw new InvalidError("receipt group session has a torn segment");
+  }
+  const end = raw.lastIndexOf(0x0a);
+  const text = decodeUTF8(raw.subarray(0, end + 1), "evidence jsonl");
   return parseEntryLinesText(text);
 }
 
@@ -54,14 +67,15 @@ export function readEntryLines(file: string, directoryChild = false): ParsedReco
 // independently bound by a recovery seal.
 export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
   const entries: ParsedRecorderLine[] = [];
-  const lines = text.split(/\r?\n/u);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim() ?? "";
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = trimGoSpace(lines[i] ?? "");
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
-    if (entry.v !== 1 && entry.v !== 2 && entry.v !== 3) {
+    const version = entry === null || typeof entry !== "object" ? entry : entry.v;
+    if (version !== 1 && version !== 2 && version !== 3) {
       throw new RuntimeError(
-        `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2, 3)`,
+        `line ${i + 1}: unsupported entry version ${String(version)} (accepted: 1, 2, 3)`,
       );
     }
     if (entry.v === 3) {
@@ -69,7 +83,7 @@ export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
     } else {
       rejectDuplicateKeys(line);
     }
-    validateProjectedStrings(entry, i + 1, entry.v);
+    validateProjectedStrings(entry, i + 1, version);
     bindRecorderLineExtSource(entry.detail, line);
     if (entry.type === evidenceReceiptType) {
       const detailSpan = objectMemberSpan(line, 0, "detail");

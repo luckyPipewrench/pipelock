@@ -94,8 +94,8 @@ func TestReceiptGroupAELMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(cases) != 116 {
-		t.Fatalf("matrix has %d cells, want 116", len(cases))
+	if len(cases) != 119 {
+		t.Fatalf("matrix has %d cells, want 119", len(cases))
 	}
 	compared := 0
 	for _, item := range cases {

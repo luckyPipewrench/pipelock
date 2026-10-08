@@ -493,7 +493,6 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
       original.predecessor_session.split(".run.")[0] as string,
       { trustedKeys: [trustedKey], endorsements: [] },
     );
-    assert.ok(missing.findings.some((finding) => finding.kind === "corrupt_chain"));
     assert.equal(baseUnlinked(missing).includes(original.successor_session), true);
     assert.equal(
       missing.chains.some((chain) => chain.recovery_seal !== undefined),

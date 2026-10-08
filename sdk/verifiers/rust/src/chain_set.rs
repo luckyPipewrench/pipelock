@@ -17,6 +17,7 @@
 //! `duplicate_run_nonce`), because a process run writes exactly one chain.
 
 use crate::chain::{evidence_chain_key, receipt_hash, verify_chain_with_options};
+use crate::line_space::is_go_space;
 use crate::recorder::{
     extract_typed_from_lines, read_entry_lines, read_entry_lines_text, ExtractedReceipts,
     RecorderLine,
@@ -228,6 +229,33 @@ pub fn parse_evidence_filename(name: &str) -> Option<(String, u64)> {
     Some((rest[..last_dash].to_string(), seq))
 }
 
+#[cfg(test)]
+mod filename_vector_tests {
+    use super::parse_evidence_filename;
+    use serde_json::Value;
+
+    #[test]
+    fn shared_filename_vectors() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../../filename-vectors.json")).unwrap();
+        for item in vectors["parse"].as_array().unwrap() {
+            let name = item["name"].as_str().unwrap();
+            let want = item["session"]
+                .as_str()
+                .map(|session| (session.to_owned(), item["seq"].as_u64().unwrap()));
+            assert_eq!(parse_evidence_filename(name), want, "{name}");
+        }
+        let names = vectors["duplicate"].as_array().unwrap();
+        let first = parse_evidence_filename(names[0].as_str().unwrap());
+        let second = parse_evidence_filename(names[1].as_str().unwrap());
+        assert!(first.is_some());
+        assert_eq!(
+            first, second,
+            "duplicate sequence must be rejected by the index"
+        );
+    }
+}
+
 /// Each session's shard files in order. A symlinked evidence file is kept
 /// apart: it names its session, so that session is listed and then refused,
 /// rather than silently read or silently dropped.
@@ -246,7 +274,7 @@ fn index_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
             .file_type()
             .map_err(|err| format!("reading evidence directory: {err}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if file_type.is_dir() || !name.ends_with(EVIDENCE_SUFFIX) {
+        if !name.ends_with(EVIDENCE_SUFFIX) {
             continue;
         }
         let Some((session, seq)) = parse_evidence_filename(&name) else {
@@ -272,6 +300,21 @@ fn index_recorder_files(dir: &Path) -> Result<EvidenceIndex, String> {
         })
         .collect();
     Ok(EvidenceIndex { files, symlinks })
+}
+
+/// Ordered files for every session, including the duplicate-start and symlink
+/// checks used by the standalone chain verifier.
+pub(crate) fn indexed_session_files(dir: &Path) -> Result<BTreeMap<String, Vec<PathBuf>>, String> {
+    let index = index_recorder_files(dir)?;
+    index
+        .files
+        .keys()
+        .map(|session| {
+            index_files(&index, session)
+                .map(|files| (session.clone(), files.to_vec()))
+                .map_err(|err| err.message)
+        })
+        .collect()
 }
 
 /// Evidence the verifier will not read as the session it claims to be: a
@@ -780,12 +823,6 @@ fn chain_link_file_predecessor(name: &str) -> Option<&str> {
         .strip_prefix(CHAIN_LINK_FILE_PREFIX)?
         .strip_suffix(CHAIN_LINK_FILE_SUFFIX)?;
     (!pred.is_empty()).then_some(pred)
-}
-
-/// Go's `unicode.IsSpace`, used by `strings.TrimSpace`.
-fn is_go_space(ch: char) -> bool {
-    matches!(ch, '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-        | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
 }
 
 /// Encodes a string exactly as Go's `encoding/json` does: HTML-sensitive

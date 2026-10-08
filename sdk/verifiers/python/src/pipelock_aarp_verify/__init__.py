@@ -22,12 +22,21 @@ from .appraise import (
 )
 from .chain import comparable_chain, is_chain_linked, verify_chain
 from .envelope import Envelope, unmarshal
+from .group import (
+    GROUP_INCOMPLETE,
+    GROUP_INVALID,
+    GROUP_VALID,
+    verify_receipt_group,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Appraisal",
     "Envelope",
+    "GROUP_INCOMPLETE",
+    "GROUP_INVALID",
+    "GROUP_VALID",
     "SignatureResult",
     "TrustEntry",
     "VerifyOptions",
@@ -37,5 +46,6 @@ __all__ = [
     "unmarshal",
     "verify",
     "verify_chain",
+    "verify_receipt_group",
     "__version__",
 ]

@@ -28,7 +28,7 @@ MIN_SAFE_INTEGER = -((1 << 53) - 1)
 HEX_DIGEST_LEN = 64
 
 
-class StrictParseError(Exception):
+class StrictParseError(ValueError):
     """The input is not strict JSON (duplicate key, trailing token, bad syntax)."""
 
 

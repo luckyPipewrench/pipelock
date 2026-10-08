@@ -2193,9 +2193,11 @@ func checkToolPoison(text string) []string {
 			// The credential-request family has no negation carve-out. Every
 			// attempt to recognize a genuine refusal ("never share your API
 			// key") was defeated by a later redirect phrased some new way, and
-			// real servers do not word their tool documentation like this. An
-			// operator whose server does can accept the exact text with a
-			// reviewed acknowledgment.
+			// real servers do not word their tool documentation like this.
+			// There is no per-tool or per-finding acknowledgment for these
+			// findings; the operator controls are mcp_tool_scanning.action
+			// and mcp_tool_scanning.enabled, as described above
+			// contextLeakParamPattern.
 			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
 				offset = loc[1]
 				continue

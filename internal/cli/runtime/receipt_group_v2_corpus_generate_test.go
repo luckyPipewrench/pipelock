@@ -85,6 +85,22 @@ func runV2Process(t *testing.T, dir string, key v2CorpusKeys, graceful bool) v2R
 // lists the signer keys of an earlier process, which the new signer endorses.
 func runV2ProcessN(t *testing.T, dir string, key v2CorpusKeys, graceful bool, prior []string, n int) v2Run {
 	t.Helper()
+	return runV2ProcessOpts(t, dir, key, v2ProcessOpts{graceful: graceful, prior: prior, shards: n, receipts: 1})
+}
+
+// v2ProcessOpts shapes one server process group: how many shards it opens, how
+// many receipt pairs (one v1 action, one v2 decision) each shard writes after
+// its opening, and whether it shuts down gracefully.
+type v2ProcessOpts struct {
+	graceful bool
+	prior    []string
+	shards   int
+	receipts int
+}
+
+func runV2ProcessOpts(t *testing.T, dir string, key v2CorpusKeys, opts v2ProcessOpts) v2Run {
+	t.Helper()
+	graceful, prior, n := opts.graceful, opts.prior, opts.shards
 	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key.priv)
 	if err != nil {
 		t.Fatal(err)
@@ -96,20 +112,13 @@ func runV2ProcessN(t *testing.T, dir string, key v2CorpusKeys, graceful bool, pr
 	}
 	open, _ := shards.Opening()
 	for _, emitter := range shards.Emitters() {
-		if err := emitter.EmitDurable(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/data"}); err != nil {
-			t.Fatal(err)
-		}
-		v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-			Recorder: rec, Signer: proxydecision.NewKeyedSigner(key.priv),
-			Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-			Principal: "local", Actor: "pipelock", Session: emitter.Session(),
-		})
-		if err := v2.Emit(proxydecision.Decision{
-			ActionType: "http_request", Transport: "forward", Target: "https://x.example/a", Verdict: "allow",
-			WinningSource: proxydecision.SourceScanner, PolicySources: []string{proxydecision.SourceScanner},
-			PolicyHash: strings.Repeat("b", 64),
-		}); err != nil {
-			t.Fatal(err)
+		// One v2 emitter per shard: it owns the shard's v2 chain position.
+		v2 := newV2DecisionEmitter(rec, key, emitter.Session())
+		for range opts.receipts {
+			if err := emitter.EmitDurable(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/data"}); err != nil {
+				t.Fatal(err)
+			}
+			emitV2Decision(t, v2)
 		}
 	}
 	if graceful {
@@ -119,6 +128,25 @@ func runV2ProcessN(t *testing.T, dir string, key v2CorpusKeys, graceful bool, pr
 		t.Fatal(err)
 	}
 	return v2Run{open: open, dir: dir}
+}
+
+func newV2DecisionEmitter(rec *recorder.Recorder, key v2CorpusKeys, session string) *proxydecision.Emitter {
+	return proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: rec, Signer: proxydecision.NewKeyedSigner(key.priv),
+		Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+		Principal: "local", Actor: "pipelock", Session: session,
+	})
+}
+
+func emitV2Decision(t *testing.T, v2 *proxydecision.Emitter) {
+	t.Helper()
+	if err := v2.Emit(proxydecision.Decision{
+		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a", Verdict: "allow",
+		WinningSource: proxydecision.SourceScanner, PolicySources: []string{proxydecision.SourceScanner},
+		PolicyHash: strings.Repeat("b", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // runLegacySession adds a signed legacy (non-group) session to dir.
@@ -519,6 +547,14 @@ func resignClosedShardHead(t *testing.T, dir string, open receipt.ReceiptGroupOp
 
 func rehashSealedPredecessor(t *testing.T, dir string, pred, succ receipt.ReceiptGroupOpen, key v2CorpusKeys) {
 	t.Helper()
+	rebindSealedPredecessor(t, dir, pred, succ, key, nil)
+}
+
+// rebindSealedPredecessor is rehashSealedPredecessor with an optional edit of
+// the seal applied before it is signed again, so one field can be wrong while
+// the signature, the transition digest and every other binding stay valid.
+func rebindSealedPredecessor(t *testing.T, dir string, pred, succ receipt.ReceiptGroupOpen, key v2CorpusKeys, edit func(*receipt.RecoverySeal)) {
+	t.Helper()
 	// The recovery seal binds the damaged shard digest and the last good head,
 	// and the transition binds the seal digest. Rebind both after a tamper so
 	// the signed content, not a stale digest, is what the verifier must reject.
@@ -545,6 +581,9 @@ func rehashSealedPredecessor(t *testing.T, dir string, pred, succ receipt.Receip
 	sum := sha256.Sum256(shard)
 	seal.ShardSize, seal.ShardSHA256, seal.DamageOffset = uint64(len(shard)), hex.EncodeToString(sum[:]), uint64(len(prefix))
 	seal.LastGoodSeq, seal.LastGoodHash = last.Sequence, last.Hash
+	if edit != nil {
+		edit(&seal)
+	}
 	seal, err = receipt.SignRecoverySeal(seal, key.priv)
 	if err != nil {
 		t.Fatal(err)
@@ -1263,6 +1302,38 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 			return []v2OutLine{{text: line}}
 		})
 		add(spec.name, dir, closed.open.GroupID, spec.note, spec.want, trusted)
+	}
+
+	// A torn, sealed predecessor whose successor group is still running: no
+	// close manifest, only the successor's opening and the receipts written
+	// since. Recovery verification of the predecessor's seal reads the
+	// successor's prefix and its signed opening receipt, never its completeness,
+	// so a running successor leaves the predecessor incomplete, not invalid. The
+	// mismatch cases rebind the seal to a different opening hash and re-sign the
+	// transition, so only that binding is wrong. Each shape is verified from the
+	// predecessor group (which reads the seal) and from the open successor group
+	// (which stops at its missing close).
+	for _, spec := range []struct {
+		name, note  string
+		receipts    int
+		mismatch    bool
+		wantPred    receipt.ReceiptGroupVerdict
+		wantSuccess receipt.ReceiptGroupVerdict
+	}{
+		{"open-successor-opening-only", "the successor group is still open and has written nothing after its opening", 0, false, receipt.GroupIncomplete, receipt.GroupIncomplete},
+		{"open-successor-some-receipts", "the successor group is still open with one receipt pair per shard after its opening", 1, false, receipt.GroupIncomplete, receipt.GroupIncomplete},
+		{"open-successor-more-receipts", "the successor group is still open and has written three receipt pairs per shard after its opening", 3, false, receipt.GroupIncomplete, receipt.GroupIncomplete},
+		{"open-successor-open-hash-mismatch", "the successor group is still open; seal re-signed with a successor_open_hash that is not the successor's opening receipt hash, transition re-signed", 1, true, receipt.GroupInvalid, receipt.GroupIncomplete},
+	} {
+		dir := mkdir(spec.name)
+		pred := runV2Process(t, dir, key, false)
+		tearV2Shard(t, shardPath(dir, pred.open.Shards[0].SessionID))
+		succ := runV2ProcessOpts(t, dir, key, v2ProcessOpts{shards: 2, receipts: spec.receipts})
+		if spec.mismatch {
+			rebindSealedPredecessor(t, dir, pred.open, succ.open, key, func(s *receipt.RecoverySeal) { s.SuccessorOpenHash = strings.Repeat("0", 64) })
+		}
+		add(spec.name+"-predecessor-view", dir, pred.open.GroupID, "torn sealed predecessor verified while "+spec.note, spec.wantPred, trusted)
+		add(spec.name+"-successor-view", dir, succ.open.GroupID, "open successor of a torn sealed predecessor: "+spec.note, spec.wantSuccess, trusted)
 	}
 
 	// Go decides every verdict, and each tamper must actually be rejected.

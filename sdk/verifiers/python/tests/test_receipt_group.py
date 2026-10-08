@@ -545,7 +545,7 @@ def test_shared_v2_group_corpus_matches_the_go_verdict(tmp_path: Path) -> None:
     with zipfile.ZipFile(V2_CORPUS) as archive:
         archive.extractall(tmp_path)
     cases = json.loads((tmp_path / "cases.json").read_text())
-    assert len(cases) == 60
+    assert len(cases) == 68
     for item in cases:
         result = verify_receipt_group(
             tmp_path / "cases" / item["name"], item["group_id"], item["trusted_keys"]

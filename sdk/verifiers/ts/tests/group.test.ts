@@ -606,7 +606,7 @@ test("shared v2 group corpus matches the Go verdict", async () => {
     trusted_keys: string[];
     expected: string;
   }>;
-  assert.equal(cases.length, 60);
+  assert.equal(cases.length, 68);
   for (const item of cases) {
     const result = await verifyReceiptGroup(
       join(v2Fixtures, "cases", item.name),
@@ -762,18 +762,51 @@ test(
         ],
         { stdio: ["pipe", "pipe", "inherit"] },
       );
-      try {
-        await new Promise<void>((resolveHeld, reject) => {
-          writer.once("error", reject);
-          writer.stdout.once("data", () => resolveHeld());
+      // Every wait on the helper is bounded: a helper that dies before it holds
+      // the locks, or never exits, must fail this test instead of hanging it.
+      const withDeadline = <T>(wait: Promise<T>, what: string): Promise<T> =>
+        new Promise<T>((resolveWait, rejectWait) => {
+          const timer = setTimeout(() => {
+            writer.kill("SIGKILL");
+            rejectWait(new Error(`${name}: timed out waiting for ${what}`));
+          }, 10_000);
+          wait.then(
+            (value) => {
+              clearTimeout(timer);
+              resolveWait(value);
+            },
+            (error: unknown) => {
+              clearTimeout(timer);
+              rejectWait(error);
+            },
+          );
         });
+      try {
+        await withDeadline(
+          new Promise<void>((resolveHeld, reject) => {
+            writer.once("error", reject);
+            writer.once("exit", (code, signal) =>
+              reject(
+                new Error(
+                  `${name}: lock helper exited before holding the locks (code ${code}, signal ${signal})`,
+                ),
+              ),
+            );
+            writer.stdout.once("data", () => resolveHeld());
+          }),
+          "the lock helper to hold the writer locks",
+        );
         const blocked = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
         assert.equal(blocked.verdict, "GROUP_INVALID", `${name}: ${JSON.stringify(blocked)}`);
         assert.match(blocked.error ?? "", /writer still present/u);
       } finally {
-        const exited = new Promise((resolveExit) => writer.once("exit", resolveExit));
-        writer.stdin.end();
-        await exited;
+        if (writer.exitCode === null && writer.signalCode === null) {
+          const exited = new Promise<void>((resolveExit) =>
+            writer.once("exit", () => resolveExit()),
+          );
+          writer.stdin.end();
+          await withDeadline(exited, "the lock helper to exit");
+        }
       }
       const released = await verifyReceiptGroup(dir, item.group_id, item.trusted_keys);
       assert.equal(released.verdict, "GROUP_VALID", `${name}: ${JSON.stringify(released)}`);

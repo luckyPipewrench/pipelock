@@ -1097,8 +1097,11 @@ def _verify_successor_transition(
                 )
             successor_member = opening["shards"][i % len(opening["shards"])]
             successor_index = i % len(opening["shards"])
+            # Go's recovery binding reads the successor's prefix and its signed
+            # opening receipt only. A successor that is still running has no
+            # close, transcript root, final checkpoint or closed AEL run yet.
             successor_head = _verify_shard(
-                directory, opening, open_hash, successor_index, None
+                directory, opening, open_hash, successor_index, None, incomplete=True
             )
             expected = {
                 "shard": head["shard"],

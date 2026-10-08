@@ -1141,11 +1141,6 @@ const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|giv
 // the instruction.
 const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
-// handoverRequestEndSuffix strips handoverRequestEnd back off a match, so
-// the negation check judges the request itself and not the sentence boundary
-// the pattern had to consume to know the noun phrase was over.
-var handoverRequestEndSuffix = regexp.MustCompile(`(?i)` + handoverRequestEnd + `$`)
-
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or
 // its user, which is what separates a request from documentation of a service
@@ -2185,7 +2180,6 @@ func parseToolsList(result json.RawMessage) ([]ToolDef, error) {
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.
 func checkToolPoison(text string) []string {
 	var findings []string
-	redirects := newRedirectIndex(text)
 	for _, p := range toolPoisonPatterns {
 		// FindStringIndex on the remaining suffix has FindAll's non-overlap
 		// semantics without allocating an index slice for every match.
@@ -2196,12 +2190,13 @@ func checkToolPoison(text string) []string {
 			}
 			loc[0] += offset
 			loc[1] += offset
-			var negationSpan []int
-			if p.name == handoverRequestFinding {
-				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
-			}
-			if (p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc)) ||
-				(p.name == handoverRequestFinding && handoverIsNegated(text, negationSpan, redirects)) {
+			// The credential-request family has no negation carve-out. Every
+			// attempt to recognize a genuine refusal ("never share your API
+			// key") was defeated by a later redirect phrased some new way, and
+			// real servers do not word their tool documentation like this. An
+			// operator whose server does can accept the exact text with a
+			// reviewed acknowledgment.
+			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
 				offset = loc[1]
 				continue
 			}
@@ -2229,218 +2224,6 @@ var commaSeparatedFileExfilDirective = regexp.MustCompile(
 func isNegatedFileExfiltration(text string, loc []int) bool {
 	return isNegatedBy(text, loc, negatedFileExfiltrationPrefix)
 }
-
-// negatedHandoverPrefix is the strict counterpart for the handover family. The
-// negation must sit directly on the verb, with at most one adverb between, so
-// "do not forget to provide your API key" and "never hesitate to supply your
-// token" stay requests instead of being read as capability boundaries.
-var negatedHandoverPrefix = regexp.MustCompile(
-	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:ever|directly|simply|automatically))?\s*$`,
-)
-
-// handoverExceptionCue marks a negation that is really a redirect ("never X
-// except to this tool"): the prohibition carves out the very destination the
-// poisoned description wants the agent to use.
-var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save|excluding|instead|only)\b`)
-
-// handoverNegationHoldsToClauseEnd reports whether the clause after a negated
-// handover match, bounded to 160 bytes, is free of exception or redirect cues.
-func handoverNegationHoldsToClauseEnd(text string, end int) bool {
-	if end < 0 || end > len(text) {
-		return false
-	}
-	rest := text[end:]
-	capped := false
-	if len(rest) > 160 {
-		rest = rest[:160]
-		capped = true
-	}
-	next := ""
-	for i, r := range rest {
-		if isClauseBoundary(r) {
-			next = text[end+i+utf8.RuneLen(r):]
-			rest = rest[:i]
-			capped = false
-			break
-		}
-	}
-	// A clause longer than the window cannot be shown free of an exception,
-	// so it fails closed and the negation does not exempt the match.
-	if capped || handoverExceptionCue.MatchString(rest) {
-		return false
-	}
-	// "Never share your API key. Except with this tool." carries the redirect
-	// in the clause that follows. A following clause that opens with an
-	// exception cue revokes the negation; one that merely continues ("Rotate it
-	// regularly.") does not. Redirects that do not open the clause are caught
-	// by redirectIndex, which looks at the whole remainder of the text.
-	// Skip every boundary, mark and wrapper ("...", "--", "**", quotes) before
-	// the first word, so formatting cannot hide a leading cue.
-	next = strings.TrimLeftFunc(next, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	return !leadingHandoverExceptionCue.MatchString(next)
-}
-
-// handoverDestinationNoun names the thing a redirect points the credential at.
-// "input" and "box" cover positional UI destinations ("the first input").
-const handoverDestinationNoun = `(?:tool|server|function|call|argument|field|parameter|endpoint|input|box)s?`
-
-// handoverDestinationPrep are the prepositions that put a value somewhere.
-// "for" counts only because a destination noun or pronoun must follow it, so
-// "only for this tool" redirects while "only for rotation" does not.
-const handoverDestinationPrep = `(?:to|for|with|through|via|into|using|by|in|inside|within|on|onto)`
-
-// handoverDestinationAsk is a destination asking for the value, which makes a
-// conditional ("only if the server asks", "only when this tool requests it")
-// a redirect rather than a restriction.
-const handoverDestinationAsk = `(?:asks?|asked|requests?|requested|prompts?|prompted|needs?|requires?|wants?)`
-
-// handoverNamedDestination is an optional determiner, at most one qualifier
-// ("first", "next", "MCP") and a destination noun: "this tool", "the first
-// argument", "the field below".
-const handoverNamedDestination = `(?:(?:this|the|that|our|a|an|its)\s+)?(?:\pL+\s+)?` + handoverDestinationNoun
-
-// handoverPronounDestination is the agent or the tool's own side named as a
-// person: "to me", "with us", "to this assistant". It always needs a
-// preposition.
-const handoverPronounDestination = `(?:me|us|myself|(?:this|the)\s+assistant)`
-
-// handoverRedirect matches a destination construction anywhere in a sentence:
-// an exception cue followed, within a few words, by the tool, server, call,
-// argument, field or person the secret is to go to ("only to this tool",
-// "only in the first argument", "except with the server", "only to me",
-// "unless this tool asks"), or by "here"/"below". It deliberately has no match
-// for a restriction without a destination ("only for rotation", "only when
-// rotating"), which limits use of a secret and does not redirect it. "only"
-// and "instead" need a preposition before the destination so "Only the server
-// stores it." stays an ordinary sentence; the carve-out cues do not.
-var handoverRedirect = regexp.MustCompile(`(?i)\b(?:` +
-	`(?:except|unless|but|other\s+than|apart\s+from|aside\s+from|excluding|save\s+for|besides)\b\s+(?:[^\s.!?\n]+\s+){0,3}?` +
-	`(?:(?:` + handoverDestinationPrep + `\s+)?` + handoverNamedDestination + `|` + handoverDestinationPrep + `\s+` + handoverPronounDestination + `)` +
-	`|(?:only|instead)\b\s+(?:[^\s.!?\n]+\s+){0,3}?` +
-	handoverDestinationPrep + `\s+(?:` + handoverNamedDestination + `|` + handoverPronounDestination + `)` +
-	`|(?:only|except|unless|but|instead)\s+(?:(?:in|at|on|to|with)\s+)?(?:here|below)` +
-	`|(?:only|except|unless)\s+(?:if|when|after|once|whenever)\s+(?:` + handoverNamedDestination + `|` + handoverPronounDestination + `|it|they)\s+` + handoverDestinationAsk +
-	`)\b`)
-
-// handoverBenignPurpose names a use or lifecycle restriction on a secret that
-// does not send it anywhere: rotation, expiry, audit, an environment, or
-// keeping it in the user's own store.
-var handoverBenignPurpose = regexp.MustCompile(`(?i)\b(?:` + handoverBenignPurposeWords + `)\b`)
-
-const handoverBenignPurposeWords = `rotat\pL*|expir\pL*|audit\pL*|testing|debugging|development|production|staging|logging|monitoring|keychain|vault|yourself|revok\pL*|renew\pL*|compromised|leaked|lost\s+access`
-
-// handoverPlacePhrase is a prepositional phrase that could name where a secret
-// goes. In a benign clause every such phrase must itself be a benign purpose
-// ("for rotation", "in production", "in the OS keychain"); any other place
-// ("in the chat", "through the settings page") may be a destination.
-var handoverPlacePhrase = regexp.MustCompile(`(?i)\b(?:to|in|into|inside|within|on|onto|via|through|with|using|at|for|by)\s+`)
-
-// handoverBenignPlace is a place phrase whose first few words reach a benign purpose.
-var handoverBenignPlace = regexp.MustCompile(`(?i)^(?:\S+\s+){0,2}?(?:` + handoverBenignPurposeWords + `)\b`)
-
-// handoverPlacesBenign reports whether every place phrase in a clause names a
-// benign purpose. Each preposition is judged on the text after it on its own,
-// so one benign phrase cannot swallow a following place ("for rotation in the
-// support channel").
-func handoverPlacesBenign(clause string) bool {
-	for _, m := range handoverPlacePhrase.FindAllStringIndex(clause, -1) {
-		if !handoverBenignPlace.MatchString(clause[m[1]:]) {
-			return false
-		}
-	}
-	return true
-}
-
-// handoverStorageStatement is "only the server stores it": a statement about
-// who holds the secret, not an instruction to hand it over.
-var handoverStorageStatement = regexp.MustCompile(`(?i)^only\s+(?:(?:the|this|our|its)\s+)?\pL+(?:\s+\pL+)?\s+(?:stores?|reads?|holds?|keeps?|sees?|manages?|handles?)\s+(?:it|them)\s*$`)
-
-// handoverInstructionVerb is any verb that would put the secret somewhere. An
-// exception clause carrying one is never benign, whatever purpose it names, so
-// "only for rotation, paste it in a note" still revokes the negation.
-var handoverInstructionVerb = regexp.MustCompile(`(?i)\b(?:send|paste|put|attach|mention|share|give|provide|include|enter|submit|type|write|add|post|forward|upload|copy|insert|place|supply|hand|pass|reply|respond|tell)\b`)
-
-// handoverClauseEnd ends an exception clause at a sentence or line boundary.
-// Commas do not end it, so a comma cannot split a benign lead from a redirect.
-var handoverClauseEnd = regexp.MustCompile(`[.!?;\n]`)
-
-// handoverBenignClause reports whether an exception clause, read with the
-// sentence it sits in, restricts a secret without redirecting it.
-func handoverBenignClause(sentence, clause string) bool {
-	if handoverRedirect.MatchString(clause) || handoverInstructionVerb.MatchString(clause) || !handoverPlacesBenign(clause) {
-		return false
-	}
-	return handoverBenignPurpose.MatchString(sentence) || handoverStorageStatement.MatchString(clause)
-}
-
-// redirectIndex finds, once per text, the last exception clause that revokes a
-// negated request, so each negated match is checked against the rest of the
-// description in O(1) instead of rescanning it.
-//
-// The rule fails closed. An exception cue (only, except, unless, but, instead,
-// other than, ...) anywhere after the negation revokes it unless the cue's
-// clause names no destination and is wholly a benign restriction. Destinations
-// cannot be enumerated ("only for the support agent", "only in a note", "only
-// in your next message"), so an unrecognized clause costs a finding rather
-// than admitting a redirect.
-type redirectIndex struct {
-	text string
-	done bool
-	last int
-}
-
-func newRedirectIndex(text string) *redirectIndex { return &redirectIndex{text: text, last: -1} }
-
-// after reports whether a revoking exception clause ends after offset end.
-func (r *redirectIndex) after(end int) bool {
-	if !r.done {
-		r.done = true
-		for _, m := range handoverRedirect.FindAllStringIndex(r.text, -1) {
-			if m[1] > r.last {
-				r.last = m[1]
-			}
-		}
-		for _, m := range handoverExceptionCue.FindAllStringIndex(r.text, -1) {
-			clauseEnd := len(r.text)
-			if b := handoverClauseEnd.FindStringIndex(r.text[m[0]:]); b != nil {
-				clauseEnd = m[0] + b[0]
-			}
-			sentenceStart := 0
-			if b := handoverClauseEnd.FindAllStringIndex(r.text[:m[0]], -1); len(b) > 0 {
-				sentenceStart = b[len(b)-1][1]
-			}
-			clause := strings.TrimSpace(r.text[m[0]:clauseEnd])
-			sentence := r.text[sentenceStart:clauseEnd]
-			if !handoverBenignClause(sentence, clause) {
-				if clauseEnd > r.last {
-					r.last = clauseEnd
-				}
-			}
-		}
-	}
-	return r.last > end
-}
-
-// handoverIsNegated reports whether the handover match span is a prohibition
-// that holds: a negation on the verb, no exception cue in its own or the next
-// clause, and no destination construction anywhere later in the text.
-func handoverIsNegated(text string, span []int, ri *redirectIndex) bool {
-	return isNegatedBy(text, span, negatedHandoverPrefix) &&
-		handoverNegationHoldsToClauseEnd(text, span[1]) &&
-		!ri.after(span[1])
-}
-
-// leadingHandoverExceptionCue matches an exception or redirect cue as the first
-// word of the clause after a negated handover. A leading "but" revokes the
-// negation outright: in a tool description it almost always introduces the
-// carve-out, and a false finding there costs less than a missed request.
-// "Only" also opens ordinary sentences ("Only the server stores it."), so it
-// counts when a destination, condition or approval word follows it through any
-// formatting. Natural language cannot be enumerated; this narrows the bypass
-// space and the core credential-solicitation check remains a separate layer.
-// The cue must end at a non-letter, non-digit rune; Go's \b treats '_' as a
-// word rune and would miss "_Unless_".
-var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|but|other[^\pL\pN]+than|apart[^\pL\pN]+from|aside[^\pL\pN]+from|besides|save[^\pL\pN]+for|excluding|instead|only[^\pL\pN]+(?:(?:an?|the)[^\pL\pN]+)?(?:to|with|through|via|here|this|that|these|those|trusted|approved|authorized|authorised|designated))(?:[^\pL\pN]|$)`)
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {

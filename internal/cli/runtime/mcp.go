@@ -2053,7 +2053,7 @@ Key-free evidence capture:
 	cmd.Flags().StringArrayVar(&headerCarriers, "header-carrier", nil, "map a host-resolved carrier into an upstream header (HEADER=CARRIER, repeatable)")
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
-	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'")
+	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'; tools/list tool-definition findings are not suppressed by it (control them with mcp_tool_scanning)")
 	cmd.Flags().StringVar(&adaptiveResetFile, "adaptive-reset-file", "", "signed adaptive reset delegation control file")
 	cmd.Flags().StringVar(&adaptiveResetAuthorityPublicKeyFile, "adaptive-reset-authority-public-key-file", "", "exported mcp-reset-authority public key for --adaptive-reset-file")
 	cmd.Flags().StringVar(&adaptiveResetTarget, "adaptive-reset-target", "", "stable target identity for --adaptive-reset-file delegations")

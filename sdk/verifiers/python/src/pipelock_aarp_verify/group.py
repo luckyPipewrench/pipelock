@@ -278,8 +278,10 @@ def _digest(raw: bytes) -> str:
 def _require_canonical_utc(value: Any, field: str) -> None:
     if (
         not isinstance(value, str)
-        or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z", value)
-        or re.search(r"\.\d*0Z$", value)
+        or not re.fullmatch(
+            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z", value, re.ASCII
+        )
+        or re.search(r"\.\d*0Z$", value, re.ASCII)
     ):
         raise GroupVerificationError(
             f"receipt group {field} is not canonical UTC RFC3339Nano"
@@ -550,10 +552,17 @@ def _read_session_evidence(
     parts: list[bytes] = []
     prior = "genesis"
     session_torn = False
+    total = 0
     for file_index, (start, path) in enumerate(paths):
-        if path.stat().st_size > 128 * 1024 * 1024 or start != len(entries):
+        size = path.stat().st_size
+        if size > 128 * 1024 * 1024 or start != len(entries):
             raise GroupVerificationError("receipt session inventory sequence mismatch")
         if include_bytes:
+            # Bound the running total before the next file is read into
+            # memory; _verify_shard applies the same limit to the joined bytes.
+            total += size
+            if total > 128 * 1024 * 1024:
+                raise GroupVerificationError("receipt group shard is oversized")
             part = path.read_bytes()
             parts.append(part)
             stream = io.BytesIO(part)
@@ -617,6 +626,21 @@ def _read_session_evidence(
     if not entries:
         raise GroupVerificationError("empty receipt session inventory file")
     return paths, parts, entries, session_torn
+
+
+def _committed_action_receipts(
+    committed_entries: list[dict[str, Any]], action: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The leading action receipts that sit in committed recorder lines.
+
+    `action` holds the details of every action_receipt entry, in order, so the
+    committed ones are exactly as many as the committed entries of that type.
+    The record_type a detail claims never decides which chain it joins.
+    """
+    count = sum(
+        1 for entry in committed_entries if entry.get("type") == ACTION_ENTRY_TYPE
+    )
+    return action[:count]
 
 
 def _verify_shard(
@@ -783,14 +807,7 @@ def _verify_shard(
             complete_record_count if complete_record_count is not None else len(rows)
         )
         committed_entries = [row[0] for row in rows[:committed_count]]
-        committed_v1_count = sum(
-            1
-            for entry in committed_entries
-            if entry.get("type") in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}
-            and isinstance(entry.get("detail"), dict)
-            and entry["detail"].get("record_type") != "evidence_receipt_v2"
-        )
-        committed_action = action[:committed_v1_count]
+        committed_action = _committed_action_receipts(committed_entries, action)
         if not committed_entries or not committed_action:
             raise GroupVerificationError(
                 "group predecessor lacks a durable receipt tail"
@@ -911,6 +928,7 @@ def _verify_successor_transition(
         raise GroupVerificationError("receipt group predecessor open digest differs")
     close_path = directory / f"receipt-group-{previous_id}-close.json"
     close_hash = ""
+    old_close: dict[str, Any] | None = None
     if _exists_nofollow(close_path):
         old_close, old_close_raw = _strict_artifact(close_path, "close")
         _validate_close(old_close, predecessor, prev_hash, trusted)
@@ -946,8 +964,7 @@ def _verify_successor_transition(
         )
     for i, pred in enumerate(preds):
         _validate_predecessor_claim(pred, i, predecessor["shards"][i]["session_id"])
-        if close_hash:
-            old_close, _ = _strict_artifact(close_path, "close")
+        if old_close is not None:
             head = _verify_shard(
                 directory, predecessor, prev_hash, i, old_close["shards"][i]
             )

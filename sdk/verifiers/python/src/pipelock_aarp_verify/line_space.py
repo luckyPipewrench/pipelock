@@ -39,4 +39,11 @@ def trim_go_space(line: str) -> str:
 
 
 def trim_go_space_bytes(line: bytes) -> bytes:
-    return trim_go_space(line.decode("utf-8")).encode("utf-8")
+    """Trim Go-space code points from bytes without ever raising.
+
+    Invalid UTF-8 is not whitespace (Go stops trimming at it), so the bytes are
+    round-tripped through surrogateescape and handed to the caller's strict
+    parser unchanged instead of raising UnicodeDecodeError here.
+    """
+    text = line.decode("utf-8", errors="surrogateescape")
+    return trim_go_space(text).encode("utf-8", errors="surrogateescape")

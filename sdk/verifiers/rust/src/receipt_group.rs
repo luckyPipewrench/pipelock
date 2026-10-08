@@ -2017,7 +2017,21 @@ fn canonical_time(s: &str) -> bool {
     let Some((minute, sec)) = rest.split_once(':') else {
         return false;
     };
-    let (second, fraction) = sec.split_once('.').unwrap_or((sec, ""));
+    let (second, fraction, has_dot) = match sec.split_once('.') {
+        Some((s, f)) => (s, f, true),
+        None => (sec, "", false),
+    };
+    // Go's RFC3339Nano writer emits ASCII digits only and never a bare '.'.
+    // str::parse::<u32> would accept a leading '+', so check digits first.
+    if has_dot && fraction.is_empty() {
+        return false;
+    }
+    if [year, month, day, hour, minute, second]
+        .iter()
+        .any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
     let nums = [year, month, day, hour, minute, second]
         .iter()
         .map(|v| v.parse::<u32>().ok())
@@ -2052,4 +2066,35 @@ fn canonical_time(s: &str) -> bool {
             || fraction.len() <= 9
                 && fraction.bytes().all(|b| b.is_ascii_digit())
                 && !fraction.ends_with('0'))
+}
+
+#[cfg(test)]
+mod canonical_time_vectors {
+    use super::canonical_time;
+
+    #[test]
+    fn accepts_go_rfc3339nano_and_rejects_non_canonical_forms() {
+        for good in [
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00.5Z",
+            "2026-02-28T23:59:59.123456789Z",
+            "2024-02-29T00:00:00Z",
+        ] {
+            assert!(canonical_time(good), "{good}");
+        }
+        for bad in [
+            "+026-+1-+1T+1:+1:+1Z",
+            "2026-01-01T+0:00:00Z",
+            "2026-01-01T00:00:00.Z",
+            "2026-01-01T00:00:00.50Z",
+            "2026-01-01T00:00:00.1234567890Z",
+            "2026-01-01T00:00:00.+5Z",
+            "2026-1-01T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-01-01T00:00:00+00:00",
+            "２０２６-01-01T00:00:00Z",
+        ] {
+            assert!(!canonical_time(bad), "{bad}");
+        }
+    }
 }

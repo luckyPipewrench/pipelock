@@ -105,20 +105,49 @@ fn torn_group_gate_without_opening_never_falls_back_to_legacy_directory() {
         .contains("GROUP_INVALID"));
 }
 
-fn fixture(name: &str) -> std::path::PathBuf {
+/// An extracted fixture tree. The whole extraction root is removed when the
+/// guard drops, including when the test panics, so a run never leaves its
+/// extraction directories behind in the temporary directory.
+struct Fixture {
+    root: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+impl std::ops::Deref for Fixture {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::path::Path> for Fixture {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+fn fixture(name: &str) -> Fixture {
     fixture_from(name, FIXTURE)
 }
 
-fn fixture_from(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+fn fixture_from(name: &str, bytes: &[u8]) -> Fixture {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "pipelock-rust-group-{}-{stamp}-{name}",
-        std::process::id()
+        "pipelock-rust-group-{}-{stamp}-{}",
+        std::process::id(),
+        name.replace('/', "-")
     ));
     fs::create_dir_all(&root).unwrap();
+    let guard_root = root.clone();
     let archive = root.join("receipt-groups.zip");
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let compressed = root.join("receipt-groups.zip.gz");
@@ -150,7 +179,10 @@ fn fixture_from(name: &str, bytes: &[u8]) -> std::path::PathBuf {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
-    root.join(name)
+    Fixture {
+        path: root.join(name),
+        root: guard_root,
+    }
 }
 
 #[test]
@@ -537,7 +569,7 @@ fn shared_v2_group_corpus_matches_the_go_verdict() {
         serde_json::from_slice(&fs::read(cases_root.parent().unwrap().join("cases.json")).unwrap())
             .unwrap();
     let cases = cases.as_array().unwrap();
-    assert_eq!(cases.len(), 35);
+    assert_eq!(cases.len(), 42);
     for item in cases {
         let name = item["name"].as_str().unwrap();
         let keys = item["trusted_keys"]

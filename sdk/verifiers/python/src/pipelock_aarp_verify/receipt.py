@@ -1359,7 +1359,8 @@ def _validate_session_open(value: Any) -> None:
     _require_optional_string(
         open_record.get("contained_uid"), "session_control.open.contained_uid"
     )
-    if "group_binding" in open_record:
+    # Go decodes a null group_binding into a nil pointer: an ungrouped session.
+    if open_record.get("group_binding") is not None:
         binding = _require_object(
             open_record["group_binding"], "session_control.open.group_binding"
         )

@@ -405,6 +405,32 @@ function existsNoFollow(name: string): boolean {
   }
 }
 
+// Read only the bytes up to and including the first newline, never more than
+// max. The probe needs the first recorder line, not the whole shard.
+export function readFirstLine(name: string, max: number): Buffer {
+  const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total < max) {
+      const chunk = Buffer.alloc(Math.min(4096, max - total));
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      if (n <= 0) break;
+      const got = chunk.subarray(0, n);
+      const nl = got.indexOf(0x0a);
+      if (nl >= 0) {
+        chunks.push(got.subarray(0, nl + 1));
+        break;
+      }
+      chunks.push(got);
+      total += n;
+    }
+    return Buffer.concat(chunks);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // A torn final write does not erase a complete first group gate. Inspect the
 // first terminated entry before the legacy directory command selects a path.
 export function receiptGroupEvidencePresent(dir: string): boolean {
@@ -417,7 +443,7 @@ export function receiptGroupEvidencePresent(dir: string): boolean {
     if (!kind.isFile() || kind.isSymbolicLink()) continue;
     let raw: Buffer;
     try {
-      raw = readChild(child, 128 << 20);
+      raw = readFirstLine(child, maxAELRecordBytes + 1);
     } catch {
       // Legacy verification reports malformed or changing shard files.
       continue;
@@ -640,18 +666,7 @@ async function verifyGroupAt(
     const closeRaw = strictObject(closeBytes, closeFields, "receipt group close");
     const close = normalizeNumbers(closeRaw, closeFields) as unknown as GroupClose;
     await verifySignature(closeRaw, closeFields, closeDomain, trusted);
-    if (
-      close.version !== 1 ||
-      close.kind !== "receipt_group_close" ||
-      close.status !== "complete" ||
-      close.group_id !== groupID ||
-      close.open_manifest_sha256 !== result.open_manifest_sha256 ||
-      close.signer_key !== open.signer_key ||
-      !canonicalTime(close.closed_at) ||
-      !Array.isArray(close.shards) ||
-      close.shards.length !== open.shards.length
-    )
-      throw new Error("receipt group close does not bind opening manifest");
+    requireCloseBindsOpen(close, open, groupID, result.open_manifest_sha256);
     for (let i = 0; i < close.shards.length; i++) {
       const claimed = close.shards[i] as GroupHead,
         actual = await verifyShard(open, result.open_manifest_sha256, i);
@@ -685,6 +700,28 @@ async function verifyGroupAt(
     result.error = (err as Error).message;
     return result;
   }
+}
+
+// requireCloseBindsOpen is Go's validateGroupClose header check: a signed close
+// must name exactly this opening, signer and shard count.
+function requireCloseBindsOpen(
+  close: GroupClose,
+  open: GroupOpen,
+  groupID: string,
+  openHash: string,
+): void {
+  if (
+    close.version !== 1 ||
+    close.kind !== "receipt_group_close" ||
+    close.status !== "complete" ||
+    close.group_id !== groupID ||
+    close.open_manifest_sha256 !== openHash ||
+    close.signer_key !== open.signer_key ||
+    !canonicalTime(close.closed_at) ||
+    !Array.isArray(close.shards) ||
+    close.shards.length !== open.shards.length
+  )
+    throw new Error("receipt group close does not bind opening manifest");
 }
 
 function checkDirectoryIdentity(
@@ -891,6 +928,12 @@ async function verifyPredecessorTransition(
     const closeBytes = readChild(`receipt-group-${predecessorID}-close.json`),
       closeRaw = strictObject(closeBytes, closeFields, "predecessor close");
     await verifySignature(closeRaw, closeFields, closeDomain, trusted);
+    requireCloseBindsOpen(
+      normalizeNumbers(closeRaw, closeFields) as unknown as GroupClose,
+      old,
+      predecessorID,
+      sha(oldBytes),
+    );
     closeHash = sha(closeBytes);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -1275,11 +1318,11 @@ async function verifyTransition(
     )
       throw new Error(`invalid transition predecessor ${i}`);
     if (closeHash) {
-      const signedClose = strictObject(
-        readChild(`receipt-group-${predecessor.group_id}-close.json`),
-        closeFields,
-        "predecessor close",
-      );
+      const signedCloseBytes = readChild(`receipt-group-${predecessor.group_id}-close.json`);
+      // The close checked above is the close claimed here, not a second read.
+      if (sha(signedCloseBytes) !== closeHash)
+        throw new Error("receipt group predecessor close changed during verification");
+      const signedClose = strictObject(signedCloseBytes, closeFields, "predecessor close");
       await verifySignature(signedClose, closeFields, closeDomain, trusted);
       const closeRaw = normalizeNumbers(signedClose, closeFields) as unknown as GroupClose;
       const h = closeRaw.shards[i];

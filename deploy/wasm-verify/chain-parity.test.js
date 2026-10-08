@@ -394,18 +394,20 @@ if (!isMainThread) {
   });
 
   test("closed, successor, and recovery groups match the Go verifier", async () => {
-    for (const tc of groupCases.filter(
-      (item) => item.verdict === "GROUP_VALID",
-    )) {
+    // Every Go verdict is compared, not only GROUP_VALID: a browser verifier
+    // that accepts what the native one rejects is the dangerous drift.
+    assert.ok(groupCases.some((item) => item.verdict === "GROUP_VALID"));
+    assert.ok(groupCases.some((item) => item.verdict !== "GROUP_VALID"));
+    for (const tc of groupCases) {
       const result = await verifyGroup(groupFixture, tc.groupId, tc.keys);
       assert.equal(
         result.verdict,
-        "GROUP_VALID",
-        `${tc.scenario}/${tc.groupId}: ${result.error}`,
+        tc.verdict,
+        `${tc.scenario}/${tc.groupId}: wasm ${result.verdict} (${result.error}) vs go ${tc.verdict} (${tc.error})`,
       );
-      assert.equal(result.valid, true);
+      assert.equal(result.valid, tc.verdict === "GROUP_VALID");
       assert.equal(result.groupId, tc.groupId);
-      assert.ok(result.shardCount > 0);
+      if (tc.verdict === "GROUP_VALID") assert.ok(result.shardCount > 0);
     }
   });
 
@@ -451,6 +453,24 @@ with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], "w", z
         ),
       ),
     );
+    const attackErrors = {
+      "forged-untrusted":
+        /signer is not trusted|transition predecessor set differs/u,
+      "flipped-signature": /signature verification failed/u,
+      "lying-chain-head": /signature verification failed/u,
+      "extra-unowned-ael": /has no signed session owner/u,
+      "empty-unowned-ael": /has no signed session owner/u,
+      "self-signed-owner": /is not in the trusted set/u,
+      "damaged-recorder-owner": /recorder hash chain: .*hash mismatch/u,
+      "damaged-recorder-trusted-owner": /recorder hash chain: .*hash mismatch/u,
+      "damaged-legacy-ael": /invalid native AEL signature/u,
+      "damaged-neighbor-ael": /invalid native AEL signature/u,
+      "missing-legacy-ael": /claimed by a signed session_open is missing/u,
+      "missing-neighbor-ael":
+        /is missing or redirected|claimed by a signed session_open is missing/u,
+      "damaged-legacy-incomplete": /invalid native AEL signature/u,
+      "duplicate-successor": /multiple successor transitions/u,
+    };
     for (const scenario of [
       "forged-untrusted",
       "flipped-signature",
@@ -516,8 +536,16 @@ with zipfile.ZipFile(source) as archive, zipfile.ZipFile(output, "w", zipfile.ZI
               scenario === "large-legacy-ael" ||
               scenario === "recovery-count-change"
             ? [successor]
-            : ["a3c1883b420f1b8d42658bb680bfae4d", successor];
+            : [
+                ...trust.group_ids.filter((id) => id !== successor),
+                successor,
+              ];
+      // Every id comes from the archive's own openings, so a scenario can
+      // never pass by naming a group the archive no longer holds.
+      assert.ok(trust.group_ids.includes(successor), `${scenario}: successor`);
+      assert.ok(ids.length > 0, `${scenario}: no groups selected`);
       for (const id of ids) {
+        assert.ok(trust.group_ids.includes(id), `${scenario}/${id}: not in archive`);
         const result = await verifyGroup(bytes, id, trust.trusted_keys);
         const want =
           scenario === "recovery-count-change" ||
@@ -530,6 +558,15 @@ with zipfile.ZipFile(source) as archive, zipfile.ZipFile(output, "w", zipfile.ZI
           want,
           `${scenario}/${id}: ${result.error}`,
         );
+        // A rejection must come from the check the scenario exercises, not
+        // from a mount, extraction, or missing-group failure.
+        if (want === "GROUP_INVALID") {
+          assert.match(
+            result.error || "",
+            attackErrors[scenario],
+            `${scenario}/${id}: wrong failure reason`,
+          );
+        }
       }
     }
   });
@@ -613,7 +650,7 @@ with zipfile.ZipFile(source) as archive:
     const cases = JSON.parse(
       readFileSync(path.join(destination, "cases.json"), "utf8"),
     );
-    assert.equal(cases.length, 35);
+    assert.equal(cases.length, 42);
     for (const item of cases) {
       const bytes = readFileSync(path.join(destination, `${item.name}.zip`));
       const result = await verifyGroup(bytes, item.group_id, item.trusted_keys);
@@ -753,6 +790,44 @@ with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
     assert.equal(created.err, null);
     assert.deepEqual(await call(created.fd, "file bytes"), { err: null, n: 10 });
     assert.deepEqual(lines, { out: ["out line"], err: ["err line"] });
+  });
+
+  // A create-open of an existing directory must fail; it must never put a file
+  // at the directory's path.
+  test("memory filesystem refuses to create a file over a directory", async () => {
+    const context = vm.createContext({
+      console,
+      TextDecoder,
+      Uint8Array,
+      Math,
+      Number,
+      String,
+      Map,
+      Set,
+      Object,
+      Error,
+    });
+    context.globalThis = context;
+    context.fs = {
+      constants: { O_WRONLY: -1, O_RDWR: -1, O_CREAT: -1, O_EXCL: -1, O_TRUNC: -1, O_APPEND: -1, O_DIRECTORY: -1 },
+    };
+    vm.runInContext(
+      readFileSync(path.join(__dirname, "receipt-memfs.js"), "utf8"),
+      context,
+    );
+    const open = (name, flags) =>
+      new Promise((resolve) =>
+        context.fs.open(name, flags, 0o600, (err, fd) => resolve({ err, fd })),
+      );
+    const mkdir = (name) =>
+      new Promise((resolve) => context.fs.mkdir(name, 0o700, (err) => resolve(err)));
+    assert.equal(await mkdir("/d"), null);
+    assert.equal((await open("/d", 64 | 128 | 1)).err?.code, "EEXIST");
+    assert.equal((await open("/d", 64 | 1)).err?.code, "EISDIR");
+    assert.equal((await open("/d", 64)).err?.code, "EISDIR");
+    const created = await open("/f", 64 | 128 | 1);
+    assert.equal(created.err, null);
+    assert.equal((await open("/f", 64 | 128 | 1)).err?.code, "EEXIST");
   });
 
   // The oracle unpacks an archive into a temporary root. A hostile entry name

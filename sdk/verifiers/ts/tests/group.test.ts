@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +23,8 @@ import {
   checkGroupAELMembership,
   duplicateSignedAELRunError,
   readBoundedArtifactBytes,
+  readFirstLine,
+  receiptGroupEvidencePresent,
   verifyReceiptGroup,
 } from "../src/group.js";
 import { parseEvidenceFilename } from "../src/chain-set.js";
@@ -596,7 +599,7 @@ test("shared v2 group corpus matches the Go verdict", async () => {
     trusted_keys: string[];
     expected: string;
   }>;
-  assert.equal(cases.length, 35);
+  assert.equal(cases.length, 42);
   for (const item of cases) {
     const result = await verifyReceiptGroup(
       join(v2Fixtures, "cases", item.name),
@@ -604,6 +607,53 @@ test("shared v2 group corpus matches the Go verdict", async () => {
       item.trusted_keys,
     );
     assert.equal(result.verdict, item.expected, `${item.name}: ${JSON.stringify(result)}`);
+  }
+});
+
+// The legacy directory probe needs the first recorder line, not the shard. A
+// gate on the first line of an oversized shard is still a group gate, and a
+// first line longer than the 1 MiB record bound is left to the legacy walker.
+test("group evidence probe reads only the first recorder line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ts-group-probe-"));
+  try {
+    const big = join(dir, "evidence-big.run.00000000000000000000000000000001-0.jsonl");
+    writeFileSync(big, '{"type":"receipt_group_v1"}\n');
+    truncateSync(big, 129 * 1024 * 1024);
+    assert.equal(receiptGroupEvidencePresent(dir), true);
+    rmSync(big);
+
+    const legacy = join(dir, "evidence-leg.run.00000000000000000000000000000002-0.jsonl");
+    writeFileSync(legacy, '{"type":"action_receipt"}\n');
+    truncateSync(legacy, 129 * 1024 * 1024);
+    assert.equal(receiptGroupEvidencePresent(dir), false);
+    rmSync(legacy);
+
+    const unterminated = join(dir, "evidence-un.run.00000000000000000000000000000003-0.jsonl");
+    writeFileSync(unterminated, '{"type":"receipt_group_v1"}');
+    assert.equal(receiptGroupEvidencePresent(dir), false);
+    rmSync(unterminated);
+
+    const oversizedLine = join(dir, "evidence-ov.run.00000000000000000000000000000004-0.jsonl");
+    writeFileSync(oversizedLine, `{"type":"receipt_group_v1","pad":"${"x".repeat(1 << 20)}"}\n`);
+    assert.equal(receiptGroupEvidencePresent(dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readFirstLine stops at the first newline and at its bound", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ts-first-line-"));
+  try {
+    const file = join(dir, "f");
+    writeFileSync(file, "one\ntwo\n");
+    assert.equal(readFirstLine(file, 100).toString(), "one\n");
+    writeFileSync(file, "abcdef");
+    assert.equal(readFirstLine(file, 4).toString(), "abcd");
+    assert.equal(readFirstLine(file, 100).toString(), "abcdef");
+    writeFileSync(file, "");
+    assert.equal(readFirstLine(file, 100).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

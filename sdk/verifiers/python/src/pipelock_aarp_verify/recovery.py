@@ -108,8 +108,8 @@ def _session_base(session: str) -> str | None:
 def _validate(seal: dict[str, Any], trusted: set[str]) -> None:
     if (
         seal["kind"] != "recovery_seal"
+        or type(seal["version"]) is not int
         or seal["version"] != 1
-        or isinstance(seal["version"], bool)
     ):
         raise RecoverySealError("unsupported recovery seal kind or version")
     predecessor = seal["predecessor_session"]
@@ -167,8 +167,10 @@ def _validate(seal: dict[str, Any], trusted: set[str]) -> None:
         raise RecoverySealError("invalid recovery seal observed_at") from exc
     if (
         not isinstance(timestamp, str)
-        or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z", timestamp)
-        or re.search(r"\.\d*0Z$", timestamp)
+        or not re.fullmatch(
+            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z", timestamp, re.ASCII
+        )
+        or re.search(r"\.\d*0Z$", timestamp, re.ASCII)
     ):
         raise RecoverySealError("recovery seal observed_at is not canonical UTC")
     signature = seal["signature"]

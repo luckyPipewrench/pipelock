@@ -110,19 +110,24 @@
 			path = normalize(path);
 			const directory = (flags & fs.constants.O_DIRECTORY) !== 0;
 			if (directory && !dirs.has(path)) return callback(cb, error("ENOTDIR"));
+			if (dirs.has(path) && (flags & fs.constants.O_CREAT) !== 0) {
+				// A create must never replace a directory with a file.
+				return callback(cb, error((flags & fs.constants.O_EXCL) !== 0 ? "EEXIST" : "EISDIR"));
+			}
 			if (dirs.has(path) && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR)) !== 0) {
 				return callback(cb, error("EISDIR"));
 			}
 			let data = files.get(path);
+			// O_EXCL fails only when the file existed before this open created it.
+			if (data && (flags & fs.constants.O_EXCL) !== 0 && (flags & fs.constants.O_CREAT) !== 0) {
+				return callback(cb, error("EEXIST"));
+			}
 			if (!data && (flags & fs.constants.O_CREAT) !== 0) {
 				ensureParents(parent(path));
 				data = { bytes: new Uint8Array(), inode: nextInode++, mtime: now };
 				files.set(path, data);
 			} else if (!data && !dirs.has(path)) {
 				return callback(cb, error("ENOENT"));
-			}
-			if (data && (flags & fs.constants.O_EXCL) !== 0 && (flags & fs.constants.O_CREAT) !== 0) {
-				return callback(cb, error("EEXIST"));
 			}
 			if (data && (flags & fs.constants.O_TRUNC) !== 0) data.bytes = new Uint8Array();
 			const fd = nextFD++;

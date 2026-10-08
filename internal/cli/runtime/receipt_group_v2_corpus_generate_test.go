@@ -517,6 +517,81 @@ func rehashSealedPredecessor(t *testing.T, dir string, pred, succ receipt.Receip
 	}
 }
 
+// resignGroupClose rewrites a group's signed close with mutate and signs it
+// again with the group key, bypassing the signer's own validation so the close
+// can carry a header or shard set no honest writer would produce. It returns
+// the new close digest.
+func resignGroupClose(t *testing.T, dir, groupID string, key v2CorpusKeys, mutate func(*receipt.ReceiptGroupClose)) [sha256.Size]byte {
+	t.Helper()
+	closeName := "receipt-group-" + groupID + "-close.json"
+	rawClose, err := os.ReadFile(filepath.Clean(filepath.Join(dir, closeName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closeManifest receipt.ReceiptGroupClose
+	if err := json.Unmarshal(rawClose, &closeManifest); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&closeManifest)
+	closeManifest.Signature = ""
+	unsigned, err := json.Marshal(closeManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := append([]byte("pipelock/receipt-group-close/v1"), jsonscan.NormalizeReplacementEscapes(unsigned)...)
+	closeManifest.Signature = "ed25519:" + hex.EncodeToString(ed25519.Sign(key.priv, signed))
+	closeBody, err := json.Marshal(closeManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeBody = jsonscan.NormalizeReplacementEscapes(closeBody)
+	if err := os.WriteFile(filepath.Join(dir, closeName), closeBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(closeBody)
+}
+
+// rebindPredecessorClose rewrites a closed predecessor's signed close with
+// mutate, then re-signs the successor's transition over the new close digest.
+// Only the close's own header or shard set is then wrong; every digest and
+// signature around it still verifies, so a verifier that skips the close
+// header check accepts the group.
+func rebindPredecessorClose(t *testing.T, dir string, pred, succ receipt.ReceiptGroupOpen, key v2CorpusKeys, mutate func(*receipt.ReceiptGroupClose)) {
+	t.Helper()
+	closeSum := resignGroupClose(t, dir, pred.GroupID, key, mutate)
+
+	trName := "receipt-group-" + succ.GroupID + "-transition.json"
+	rawTr, err := os.ReadFile(filepath.Clean(filepath.Join(dir, trName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tr receipt.ReceiptGroupTransition
+	if err := json.Unmarshal(rawTr, &tr); err != nil {
+		t.Fatal(err)
+	}
+	rawPred, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "receipt-group-"+pred.GroupID+"-open.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawSucc, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "receipt-group-"+succ.GroupID+"-open.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	predSum, succSum := sha256.Sum256(rawPred), sha256.Sum256(rawSucc)
+	tr.PreviousCloseManifestSHA256 = hex.EncodeToString(closeSum[:])
+	tr, err = receipt.SignReceiptGroupTransition(tr, succ, pred, hex.EncodeToString(succSum[:]), hex.EncodeToString(predSum[:]), hex.EncodeToString(closeSum[:]), key.priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trBody, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, trName), jsonscan.NormalizeReplacementEscapes(trBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 	if os.Getenv("UPDATE_RECEIPT_V2_CORPUS") != "1" {
 		t.Skip("fixture regeneration only")
@@ -554,6 +629,21 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 		t.Fatalf("successor did not bind the predecessor: %+v", secondClosed.open)
 	}
 	add("v2-successor-closed-predecessor", chainDir, secondClosed.open.GroupID, "closed successor with a transition from a closed v2 predecessor", receipt.GroupValid, trusted)
+
+	// A closed predecessor whose signed close has a wrong header or shard set
+	// is rejected even when its signature, digest and transition all verify.
+	for _, spec := range []struct {
+		name, note string
+		mutate     func(*receipt.ReceiptGroupClose)
+	}{
+		{"predecessor-close-status-not-complete", "closed predecessor whose trusted-signed close has a status other than complete; transition re-signed", func(c *receipt.ReceiptGroupClose) { c.Status = "aborted" }},
+		{"predecessor-close-extra-shard", "closed predecessor whose trusted-signed close lists one shard head more than its opening; transition re-signed", func(c *receipt.ReceiptGroupClose) { c.Shards = append(c.Shards, c.Shards[len(c.Shards)-1]) }},
+		{"predecessor-close-time-not-canonical", "closed predecessor whose trusted-signed close has a closed_at that is not canonical RFC3339Nano; transition re-signed", func(c *receipt.ReceiptGroupClose) { c.ClosedAt = "yesterday" }},
+	} {
+		dir := clone(chainDir, spec.name)
+		rebindPredecessorClose(t, dir, firstClosed.open, secondClosed.open, key, spec.mutate)
+		add(spec.name, dir, secondClosed.open.GroupID, spec.note, receipt.GroupInvalid, trusted)
+	}
 
 	// 3. A crashed predecessor with no close, then a closed successor.
 	unsealedDir := mkdir("v2-successor-unsealed-predecessor")
@@ -921,6 +1011,64 @@ func TestGenerateReceiptGroupV2Corpus(t *testing.T) {
 	dir = clone(closedDir, "v2-only-legacy-session")
 	runV2OnlySession(t, dir, key)
 	add("v2-only-legacy-session", dir, closed.open.GroupID, "extra legacy session with only a v2 decision receipt (an empty v1 chain)", receipt.GroupValid, trusted)
+
+	// Go's inventory walks a neighbor session's v1 chain only. A v2 receipt
+	// edited there, with the recorder chain recomputed, is not checked by it.
+	dir = clone(closedDir, "legacy-neighbor-v2-body-edit")
+	runV2OnlySession(t, dir, key)
+	shardSessions := map[string]bool{}
+	for _, shard := range closed.open.Shards {
+		shardSessions[shard.SessionID] = true
+	}
+	neighbors, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := 0
+	for _, e := range neighbors {
+		name := e.Name()
+		if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, "-0.jsonl") {
+			continue
+		}
+		session := strings.TrimSuffix(strings.TrimPrefix(name, "evidence-"), "-0.jsonl")
+		if shardSessions[session] {
+			continue
+		}
+		rewriteV2Shard(t, filepath.Join(dir, name), key, func(lines []string) []v2OutLine {
+			out := passthroughV2(lines)
+			for i, l := range lines {
+				if strings.Contains(l, `"type":"evidence_receipt"`) && strings.Contains(l, "x.example") {
+					out[i] = v2OutLine{text: strings.Replace(l, "x.example", "y.example", 1)}
+					edited++
+					break
+				}
+			}
+			return out
+		})
+	}
+	if edited != 1 {
+		t.Fatalf("edited %d neighbor v2 receipts, want 1", edited)
+	}
+	add("legacy-neighbor-v2-body-edit", dir, closed.open.GroupID, "legacy neighbor v2 receipt body edited, recorder chain recomputed; Go walks a neighbor's v1 chain only", receipt.GroupValid, trusted)
+
+	// Go parses a signed timestamp as ASCII digits only. A close whose
+	// closed_at spells the same instant in Arabic-Indic digits is rejected.
+	dir = clone(closedDir, "close-time-non-ascii-digits")
+	resignGroupClose(t, dir, closed.open.GroupID, key, func(c *receipt.ReceiptGroupClose) {
+		c.ClosedAt = "\u0662\u0660\u0662\u0666-\u0660\u0661-\u0660\u0661T\u0660\u0660:\u0660\u0660:\u0660\u0660Z"
+	})
+	add("close-time-non-ascii-digits", dir, closed.open.GroupID, "trusted-signed close whose closed_at uses non-ASCII digits", receipt.GroupInvalid, trusted)
+
+	// Rust's integer parser accepts a leading '+', and a bare '.' leaves an
+	// empty fraction. Go's RFC3339Nano parser accepts neither.
+	for _, spec := range []struct{ name, closedAt, note string }{
+		{"close-time-plus-signs", "+026-+1-+1T+1:+1:+1Z", "trusted-signed close whose closed_at fields carry leading plus signs"},
+		{"close-time-empty-fraction", "2026-01-01T00:00:00.Z", "trusted-signed close whose closed_at has a '.' with no fraction digits"},
+	} {
+		dir = clone(closedDir, spec.name)
+		resignGroupClose(t, dir, closed.open.GroupID, key, func(c *receipt.ReceiptGroupClose) { c.ClosedAt = spec.closedAt })
+		add(spec.name, dir, closed.open.GroupID, spec.note, receipt.GroupInvalid, trusted)
+	}
 
 	// A group whose close never landed, with v2 evidence on every shard, is
 	// incomplete, not invalid.

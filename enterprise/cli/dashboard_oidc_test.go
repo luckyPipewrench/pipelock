@@ -1008,6 +1008,69 @@ func TestDashboardOIDC_JWKSCacheCoalescesConcurrentRefresh(t *testing.T) {
 	}
 }
 
+// A caller that saw an expired cache and was delayed until another caller's
+// refresh had already finished must use that result, not fetch again.
+func TestDashboardOIDC_JWKSRefreshAdmitsDelayedCallerOnce(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	cache := auth.keys
+
+	cache.mu.Lock()
+	cache.expiresAt = now.Add(-time.Second)
+	observed := cache.generation
+	cache.mu.Unlock()
+
+	if err := cache.refreshSince(context.Background(), observed); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if err := cache.refreshSince(context.Background(), observed); err != nil {
+		t.Fatalf("delayed refresh: %v", err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus one refresh for both callers", got)
+	}
+	if key, err := cache.key(context.Background(), oidcTestKeyID); err != nil || key == nil {
+		t.Fatalf("cache.key after refresh = (%v, %v), want fresh key", key, err)
+	}
+	if got := p.jwksReads.Load(); got != 2 {
+		t.Fatalf("JWKS reads after cached lookup = %d, want no further fetch", got)
+	}
+}
+
+// A failed refresh must not satisfy a delayed caller: it fetches for itself
+// and an expired cache is never served as though it had been refreshed.
+func TestDashboardOIDC_JWKSFailedRefreshDoesNotSatisfyDelayedCaller(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	p := newOIDCTestProvider(t)
+	auth := newOIDCTestAuthenticator(t, p, now)
+	cache := auth.keys
+
+	cache.mu.Lock()
+	cache.expiresAt = now.Add(-time.Second)
+	observed := cache.generation
+	cache.mu.Unlock()
+
+	p.setJWKSFail(true)
+	if err := cache.refreshSince(context.Background(), observed); err == nil {
+		t.Fatal("refresh against failing JWKS succeeded, want error")
+	}
+	if err := cache.refreshSince(context.Background(), observed); err == nil {
+		t.Fatal("delayed caller after failed refresh succeeded, want its own failing fetch")
+	}
+	if got := p.jwksReads.Load(); got != 3 {
+		t.Fatalf("JWKS reads = %d, want initial fetch plus one fetch per caller after failure", got)
+	}
+	if key, err := cache.key(context.Background(), oidcTestKeyID); err == nil || key != nil {
+		t.Fatalf("cache.key on expired cache after failed refresh = (%v, %v), want fail-closed", key, err)
+	}
+
+	p.setJWKSFail(false)
+	if key, err := cache.key(context.Background(), oidcTestKeyID); err != nil || key == nil {
+		t.Fatalf("cache.key after JWKS recovery = (%v, %v), want fresh key", key, err)
+	}
+}
+
 func TestDashboardOIDC_StaticTokenRemainsAdditive(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	p := newOIDCTestProvider(t)

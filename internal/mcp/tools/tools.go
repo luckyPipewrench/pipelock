@@ -2870,6 +2870,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			}
 		}
 
+		if match.CredentialAckCandidate != nil && credentialAckHasOtherFindings(match) {
+			// An acknowledgment lifts only the credential-request finding.
+			// With another finding still enforcing, the entry would change
+			// nothing, so it is not offered.
+			match.CredentialAckCandidate = nil
+			match.CredentialAckUnsupported = "other findings on this tool still enforce"
+		}
 		if hasFinding {
 			matches = append(matches, match)
 		}

@@ -484,3 +484,17 @@ func logCredentialAckCandidate(logW io.Writer, lineNum int, m ToolScanMatch) {
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: after reviewing it, this entry (plus owner, reason and expires) acknowledges its current %s occurrences under mcp_tool_scanning.acknowledged_findings: %s\n",
 		lineNum, m.ToolName, m.CredentialAckCandidate.Finding, enc)
 }
+
+// credentialAckHasOtherFindings reports whether m carries any finding besides
+// the Credential Request Directive, which an acknowledgment cannot lift.
+func credentialAckHasOtherFindings(m ToolScanMatch) bool {
+	if len(m.Injection) > 0 || m.DriftDetected {
+		return true
+	}
+	for _, f := range m.ToolPoison {
+		if f != handoverRequestFinding {
+			return true
+		}
+	}
+	return false
+}

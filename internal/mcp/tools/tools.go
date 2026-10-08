@@ -1157,24 +1157,34 @@ const handoverEmphasisLead = `(?:[^\w\s*_\x60]|\b(?:step\s+\w{1,4}|note|notes|im
 // **API key** rotation status" is the same noun phrase as the plain text.
 const handoverRequestEnd = `[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
+// markupTolerant lets emphasis and code markers sit on either side of every
+// word gap in a credential-request pattern, and inside the joiner of a
+// compound noun such as API key, so "*Request* your **API** key" matches like
+// the plain sentence. Markers never add a boundary or end a noun phrase, so
+// marked text is judged exactly as the same plain text.
+func markupTolerant(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, `\s+`, `[*_\x60]*\s+[*_\x60]*`)
+	return strings.ReplaceAll(pattern, `[\s_-]{0,3}`, `[*_\x60]*[\s_-]{0,3}[*_\x60]*`)
+}
+
 // handoverPossessivePattern is the possessive form: "supply your API key",
 // "share the user's password". The possessive binds the secret to the agent or
 // its user, which is what separates a request from documentation of a service
 // that holds credentials. Modifiers come from a closed list so "share your
 // thoughts on the secret" cannot reach the noun.
-var handoverPossessivePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
+var handoverPossessivePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
 	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+[*_\x60]*` +
 	`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
 	`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
-	handoverRequestEnd)
+	handoverRequestEnd))
 
 // handoverBarePattern is the bare form: "provide credentials", "enter a valid
 // password". The noun set is narrower than the possessive form because a bare
 // "token" or "secret" is too common as an ordinary noun.
-var handoverBarePattern = regexp.MustCompile(`(?i)` + handoverRequestVerb +
+var handoverBarePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
 	`[*_\x60]*(?:(?:the|a|an|any|all)\s+)?[*_\x60]*(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
 	`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
-	handoverRequestEnd)
+	handoverRequestEnd))
 
 // handoverPathPattern is the path form: "provide the full contents of
 // ~/.aws/credentials". include and pass join the verb list here only, because

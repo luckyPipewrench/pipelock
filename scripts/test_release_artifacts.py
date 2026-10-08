@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from scripts.chart_changes_version import changes_appversion
+from scripts.yaml_contracts import WorkflowLoader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,16 +95,8 @@ def grants_package_write(block: object) -> bool:
 
 
 def load_workflow(path: Path) -> object:
-    # BaseLoader for the same reason the reviewer tests use it, and it must stay
-    # BaseLoader. Every other loader reads GitHub's `on:` key as the YAML 1.1
-    # boolean true, so the trigger set this check exists to read would arrive
-    # under a key named True, every workflow would look trigger-less, and the
-    # check would pass on all of them while testing nothing.
-    #
-    # This is not the unsafe load. BaseLoader constructs only strings, lists and
-    # dicts, so it cannot instantiate arbitrary Python; it is strictly narrower
-    # than safe_load, which additionally resolves the bool that breaks this.
-    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    """Load core workflow scalar types and reject duplicate mapping keys."""
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=WorkflowLoader)
 
 
 class TestReleaseArtifacts(unittest.TestCase):
@@ -245,7 +238,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         separately because a token quietly restored to the GoReleaser step would
         make the separation cosmetic while every other check here still passed.
         """
-        parsed = yaml.safe_load(WORKFLOW.read_text())
+        parsed = load_workflow(WORKFLOW)
         holders = []
         for job_name, job in parsed["jobs"].items():
             for step in job.get("steps", []):
@@ -501,7 +494,27 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertRegex(ref, r"^[0-9a-fA-F]{40}$", "action must be pinned to a commit SHA")
 
     def test_every_attestation_dependency_is_fail_closed(self) -> None:
-        self._assert_attestation_contract(yaml.safe_load(self.workflow))
+        self._assert_attestation_contract(yaml.load(self.workflow, Loader=WorkflowLoader))
+
+    def test_attestation_contract_rejects_duplicate_workflow_keys(self) -> None:
+        original = self.workflow
+        self.test_every_attestation_dependency_is_fail_closed()
+        for key, before, after in (
+            ("continue-on-error", "        continue-on-error: true\n",
+             "        continue-on-error: false\n        continue-on-error: true\n"),
+            ("NODE_OPTIONS", "          NODE_OPTIONS: ''\n",
+             "          NODE_OPTIONS: startup.js\n          NODE_OPTIONS: ''\n"),
+            ("env", "        env:\n          NODE_OPTIONS: ''\n",
+             "        env: {NODE_OPTIONS: startup.js}\n        env:\n          NODE_OPTIONS: ''\n"),
+        ):
+            with self.subTest(key=key):
+                self.assertIn(before, original)
+                try:
+                    self.workflow = original.replace(before, after, 1)
+                    with self.assertRaisesRegex(ValueError, f"duplicate YAML key: {key}$"):
+                        self.test_every_attestation_dependency_is_fail_closed()
+                finally:
+                    self.workflow = original
 
     def _assert_attestation_gate_body(self, gate: dict) -> None:
         # The condition alone proves nothing if the step it guards succeeds:
@@ -528,7 +541,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertFalse(not_failing)
 
     def test_attestation_contract_joins_gate_continuations_before_final_command_check(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job_name, gate_name in (
             ("release-build", "Verify attestation"),
             ("release-build", "Verify Kubernetes image digest bundle attestation"),
@@ -545,7 +558,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_rejects_mutations(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         # Mutate actual workflow structure, not a second model of the checker.
         for label in (
             "uncovered producer", "dropped producer", "missing ID", "blank ID",
@@ -656,14 +669,14 @@ class TestReleaseArtifacts(unittest.TestCase):
                     self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_ids_reused_by_another_job(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         parsed["jobs"]["release-publish"]["steps"].append({
             "id": "attest-binaries", "run": "echo unrelated step",
         })
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_checks_effective_gate_shell(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job_name, gate_name in (
             ("release-build", "Verify attestation"),
             ("release-build", "Verify Kubernetes image digest bundle attestation"),
@@ -691,7 +704,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             self._assert_attestation_contract(parsed)
 
     def test_attestation_gate_shell_overrides_follow_workflow_precedence(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         parsed["defaults"] = {"run": {"shell": "true {0}"}}
         for job in parsed["jobs"].values():
             job["defaults"] = {"run": {"shell": "bash"}}
@@ -704,7 +717,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_checks_effective_gate_environment(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job_name, gate_name in (
             ("release-build", "Verify attestation"),
             ("release-build", "Verify Kubernetes image digest bundle attestation"),
@@ -727,7 +740,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                                 self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_requires_step_runtime_environment_overrides(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job_name, job in original["jobs"].items():
             for index, step in enumerate(job.get("steps", [])):
                 if str(step.get("uses", "")).lower().startswith("actions/attest"):
@@ -763,7 +776,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self._assert_attestation_contract(parsed)
 
     def test_attestation_gate_environment_overrides_follow_workflow_precedence(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         parsed.setdefault("env", {}).update({"BASH_ENV": "startup.sh", "ENV": "startup.sh"})
         for job in parsed["jobs"].values():
             job.setdefault("env", {}).update({"BASH_ENV": "", "ENV": ""})
@@ -774,12 +787,12 @@ class TestReleaseArtifacts(unittest.TestCase):
                 if step.get("name", "").startswith("Verify"):
                     step.setdefault("env", {}).update({"BASH_ENV": "", "ENV": ""})
         self._assert_attestation_contract(parsed)
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         parsed.setdefault("env", {})["RELEASE_LABEL"] = "v1.2.3"
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_action_pin_bumps(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job in parsed["jobs"].values():
             for step in job.get("steps", []):
                 action, _, _ = str(step.get("uses", "")).partition("@")
@@ -788,7 +801,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_expression_wrappers_and_action_case(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job in parsed["jobs"].values():
             for step in job.get("steps", []):
                 if str(step.get("uses", "")).startswith("actions/attest"):
@@ -806,7 +819,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                         self._assert_action_pin({"uses": uses}, action)
 
     def test_attestation_contract_accepts_added_covered_producers(self) -> None:
-        original = yaml.safe_load(self.workflow)
+        original = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job_name, gate_name in (
             ("release-build", "Verify attestation"),
             ("release-build", "Verify Kubernetes image digest bundle attestation"),
@@ -841,7 +854,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                             self._assert_attestation_contract(parsed)
 
     def test_attestation_contract_accepts_whitespace_and_term_reordering(self) -> None:
-        parsed = yaml.safe_load(self.workflow)
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         for job in parsed["jobs"].values():
             for gate in job.get("steps", []):
                 if gate.get("name", "").startswith("Verify") and "always() &&" in gate.get("if", ""):
@@ -927,7 +940,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         search is satisfied by a comment or an echo that merely mentions a
         command, and it cannot tell which step a command belongs to.
         """
-        parsed = yaml.safe_load(WORKFLOW.read_text())
+        parsed = load_workflow(WORKFLOW)
         steps = parsed["jobs"][job_name]["steps"]
         return [
             (step.get("name", ""), step["run"])
@@ -951,7 +964,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         return lines
 
     def test_promotion_is_separate_protected_and_signature_gated(self) -> None:  # noqa: PLR0915
-        parsed = yaml.safe_load(WORKFLOW.read_text())
+        parsed = load_workflow(WORKFLOW)
         build = parsed["jobs"]["release-build"]
         promote = parsed["jobs"]["release-promote"]
         self.assertEqual(promote["needs"], ["release-build"])
@@ -1233,7 +1246,7 @@ class TestReleaseArtifacts(unittest.TestCase):
     def test_helm_chart_attestation_is_confined_and_fail_closed(self) -> None:
         """The chart is attested by digest in a job that holds the signing
         permissions only for GitHub's first-party attestation action."""
-        parsed = yaml.safe_load(WORKFLOW.read_text())
+        parsed = load_workflow(WORKFLOW)
         promote = parsed["jobs"]["release-promote"]
         self.assertNotIn("id-token", promote["permissions"])
         self.assertNotIn("attestations", promote["permissions"])

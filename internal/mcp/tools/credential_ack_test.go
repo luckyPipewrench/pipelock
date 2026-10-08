@@ -966,14 +966,23 @@ func TestCredentialAckKeyLifecycle(t *testing.T) {
 	shared := NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, ackTestKey)
 	base := &ToolScanConfig{Action: config.ActionWarn, CredentialAcks: shared, Now: func() time.Time { return ackTestNow }}
 	copied := base.WithServer(ackTestServer, ackTestBinding)
+	if shared.Revoked() {
+		t.Fatal("a new set reports revoked")
+	}
 	shared.Revoke()
 	shared.Revoke() // idempotent
+	if !shared.Revoked() || !copied.CredentialAcks.Revoked() {
+		t.Fatal("revocation is not visible through the set and its copies")
+	}
 	r := ScanTools(toolsListLine(raw), testScanner(t), copied)
 	if m, _ := credentialMatch(r); r.Clean || m.CredentialAck != CredentialAckBindingMismatch || m.CredentialAckCandidate != nil {
 		t.Fatalf("revoked set still applied through a copy: %+v", m)
 	}
 	var nilSet *CredentialAckSet
 	nilSet.Revoke() // a nil set is a no-op, not a panic
+	if nilSet.Revoked() {
+		t.Fatal("a nil set reports revoked")
+	}
 }
 
 // With no entries and no key there is no set, and a configuration without a

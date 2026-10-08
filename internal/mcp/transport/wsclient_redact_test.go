@@ -30,13 +30,12 @@ func TestRedactDialURL(t *testing.T) {
 // A failed dial names the endpoint without the credential in its URL.
 func TestWSDialErrorOmitsCredentials(t *testing.T) {
 	secret := "dial-" + "pass-2Wq"
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := NewWSClient(ctx, "ws://ops:"+secret+"@127.0.0.1:1/mcp?token="+secret)
+	_, err := NewWSClientWithDialer(context.Background(), "ws://ops:"+secret+"@mcp.vendor.example:8443/mcp?token="+secret,
+		func(context.Context, string, string) (net.Conn, error) { return nil, errClassDialRefused })
 	if err == nil {
-		t.Fatal("dial with a cancelled context succeeded")
+		t.Fatal("refused dial succeeded")
 	}
-	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ws dial ws://127.0.0.1:1/mcp") {
+	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ws dial ws://mcp.vendor.example:8443/mcp") {
 		t.Fatalf("dial error = %v", err)
 	}
 }
@@ -97,18 +96,21 @@ func TestWSDialErrorKeepsCause(t *testing.T) {
 // the scheme only; the opaque part carries the credentials.
 func TestWSDialOpaqueURLOmitsCredentials(t *testing.T) {
 	secret := "dial-" + "pass-5Qm"
-	_, err := NewWSClient(context.Background(), "ws:ops:"+secret+"@127.0.0.1:1/mcp?token="+secret)
+	_, err := NewWSClientWithDialer(context.Background(), "ws:ops:"+secret+"@mcp.vendor.example:8443/mcp?token="+secret,
+		func(context.Context, string, string) (net.Conn, error) { return nil, errClassDialRefused })
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ws dial ws:<redacted>") {
 		t.Fatalf("opaque dial error = %v", err)
 	}
 }
+
+var errClassDialRefused = errors.New("class dial refused")
 
 // The dial-error helper redacts every endpoint shape the same way the CLI's
 // does, and a dial of each shape names the endpoint without the secret.
 func TestRedactDialURLClasses(t *testing.T) {
 	secret := "class-" + "pass-2Hv"
 	esc := url.QueryEscape("@" + secret + ":")
-	host := "127.0.0.1:1"
+	host := "mcp.vendor.example:8443"
 	for _, c := range []struct{ class, raw, want string }{
 		{"opaque websocket", "ws:ops:" + secret + "@" + host + "/mcp", "ws:<redacted>"},
 		{"opaque bare", "wss:" + secret, "wss:<redacted>"},
@@ -124,7 +126,11 @@ func TestRedactDialURLClasses(t *testing.T) {
 		if got := redactDialURL(c.raw); got != c.want {
 			t.Errorf("%s: redactDialURL(%q) = %q, want %q", c.class, c.raw, got, c.want)
 		}
-		_, err := NewWSClient(context.Background(), c.raw)
+		// The dialer refuses without touching the network, so no port is
+		// dialed; a parse failure never reaches it.
+		_, err := NewWSClientWithDialer(context.Background(), c.raw, func(context.Context, string, string) (net.Conn, error) {
+			return nil, errClassDialRefused
+		})
 		if err == nil {
 			t.Errorf("%s: dial of %q succeeded", c.class, c.raw)
 			continue

@@ -128,6 +128,11 @@ func NewCredentialAckSet(entries []config.MCPAcknowledgedFinding, key []byte) *C
 	return set
 }
 
+// Revoked reports whether Revoke has been called on the set.
+func (s *CredentialAckSet) Revoked() bool {
+	return s != nil && s.revoked.Load()
+}
+
 // keyedBinding returns the exported form of an exact transport digest:
 // hmac-sha256-v1:<key id>:<HMAC-SHA256 over the domain and the digest>. It
 // returns "" with no key or no digest, which no entry can equal.

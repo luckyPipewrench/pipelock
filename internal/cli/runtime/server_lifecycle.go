@@ -900,6 +900,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			if current != cachedMCPToolSource {
 				cachedMCPToolCfg = buildMCPToolCfg(current, extraPoison, mcpToolBaseline)
 				cachedMCPToolSource = current
+				if cachedMCPToolCfg != nil {
+					s.liveAckSet.Store(&liveCredentialAckSet{cfg: current, set: cachedMCPToolCfg.CredentialAcks})
+				}
 			}
 			if cachedMCPToolCfg != nil && s.ackKeyRevokedFor.Load() == current {
 				cachedMCPToolCfg.CredentialAcks.Revoke()
@@ -1414,8 +1417,10 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 // key file that was deleted, truncated, loosened or rotated would otherwise
 // go on validating acknowledgments. The key source is resolved again; unless
 // it still yields the pinned bytes, the key is revoked for this running
-// configuration: an atomic mark the listener's tool configuration checks, so
-// revocation publishes nothing and cannot fail. Every acknowledgment then
+// configuration: the listener's live acknowledgment set is revoked at once,
+// reaching any in-flight response that holds a copy, and an atomic mark makes
+// later configuration reads revoke too. Revocation publishes nothing and
+// cannot fail. Every acknowledgment then
 // refuses until a reload succeeds with a usable key. Nothing else in the
 // running configuration changes.
 func (s *Server) revokeUnavailableAckKey() {
@@ -1428,6 +1433,11 @@ func (s *Server) revokeUnavailableAckKey() {
 		return
 	}
 	s.ackKeyRevokedFor.Store(cur)
+	// Revoke the live set now, not at the next configuration read: a response
+	// already in flight holds a configuration copy that shares this set.
+	if live := s.liveAckSet.Load(); live != nil && live.cfg == cur {
+		live.set.Revoke()
+	}
 	_, _ = fmt.Fprintln(s.opts.Stderr, "pipelock: mcp_tool_scanning.acknowledgment_key is unavailable or changed and the reload failed; every acknowledgment refuses until a reload succeeds")
 }
 

@@ -602,6 +602,13 @@ logging:
 	if !forwarded() {
 		t.Fatalf("acknowledged tools/list refused before any change: %s", buf.String())
 	}
+	// The set an in-flight response would already hold. A failed reload that
+	// finds the key unusable revokes it immediately, before any later
+	// configuration read; a usable key leaves it alone.
+	held := s.liveAckSet.Load()
+	if held == nil || held.set == nil {
+		t.Fatal("listener published no live acknowledgment set")
+	}
 	newKey := mutate(t, keyPath)
 	if newKey == ackBrokenReload {
 		// A configuration error unrelated to the key fails the reload
@@ -610,6 +617,9 @@ logging:
 		reloadWith(cfgText + "\nmode: [unterminated\n")
 	} else {
 		reloadWith(cfgText)
+	}
+	if wantRevoked := !wantForward && !regenerate; held.set.Revoked() != wantRevoked {
+		t.Fatalf("held acknowledgment set revoked = %v, want %v", held.set.Revoked(), wantRevoked)
 	}
 	if got := forwarded(); got != wantForward {
 		t.Fatalf("after the key change, forwarded = %v, want %v\n%s", got, wantForward, buf.String())

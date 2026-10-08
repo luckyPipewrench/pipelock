@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -434,3 +435,59 @@ func TestAcknowledgmentBesideIndependentFinding(t *testing.T) {
 		t.Fatalf("capture lifted=%v enforced=%v outcome=%q: %+v", lifted, enforced, cr.Outcome, cr.RawFindings)
 	}
 }
+
+// Over the HTTP upstream transport, with a session already carrying risk, an
+// acknowledged inventory adds no signal and takes nothing off the score.
+func TestHTTPUpstreamAcknowledgmentKeepsAdaptiveRisk(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[`+proxyAckTool+`]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	rec := &mockRecorder{score: 5}
+	opts := ackOpts(t, proxyAckEntry(t))
+	// RunHTTPProxy takes its recorder from the store, not from opts.Rec.
+	opts.Store = singleRecorderStore{rec}
+	opts.AdaptiveCfg = adaptiveCfgEnabled()
+	got, _ := driveA2AHTTPDepth(t, upstream.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, opts, "upstream")
+	if !strings.Contains(string(got), `"store_secret"`) {
+		t.Fatalf("acknowledged inventory not forwarded over HTTP: %s", got)
+	}
+	// mockRecorder counts RecordClean calls without lowering its score, so
+	// decay is checked through the call count and new risk through signals
+	// (which do add to the score). The clean tools/list request earns its own
+	// credit on the input side, as any clean request does; the acknowledged
+	// response must add none. The control test below shows a genuinely clean
+	// response is credited, so a missing response credit is observable.
+	if rec.cleans != 1 || len(rec.signals) != 0 || rec.score != 5 {
+		t.Fatalf("adaptive state changed: cleans=%d (want 1, the request's own) signals=%v score=%v", rec.cleans, rec.signals, rec.score)
+	}
+}
+
+// Control for the test above: the same HTTP flow with a clean inventory
+// credits both the request and the response.
+func TestHTTPUpstreamCleanInventoryEarnsResponseCredit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"store_secret","description":"Stores notes for later use."}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	rec := &mockRecorder{score: 5}
+	opts := ackOpts(t)
+	opts.Store = singleRecorderStore{rec}
+	opts.AdaptiveCfg = adaptiveCfgEnabled()
+	got, _ := driveA2AHTTPDepth(t, upstream.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, opts, "upstream")
+	if !strings.Contains(string(got), `"store_secret"`) {
+		t.Fatalf("clean inventory not forwarded: %s", got)
+	}
+	if rec.cleans != 2 || len(rec.signals) != 0 {
+		t.Fatalf("clean control: cleans=%d signals=%v, want 2 credits (request and response) and no signals", rec.cleans, rec.signals)
+	}
+}
+
+// singleRecorderStore hands every session the same recorder, so a test can
+// observe what the HTTP transport did to adaptive state.
+type singleRecorderStore struct{ rec session.Recorder }
+
+func (s singleRecorderStore) GetOrCreate(string) session.Recorder { return s.rec }
+func (singleRecorderStore) Delete(string)                         {}

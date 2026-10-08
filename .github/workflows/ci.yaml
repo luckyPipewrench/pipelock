@@ -19,6 +19,7 @@ jobs:
   # This local helper may come from a PR, so give it no permissions or secrets.
   pr-review-source:
     needs: security-scan
+    if: github.repository == 'luckyPipewrench/pipelock'
     permissions: {}
     uses: ./.github/workflows/pr-review-source.yaml
 
@@ -1136,7 +1137,7 @@ jobs:
   # The parallel binary and cross-target producers also flow through this gate,
   # so a compilation failure cannot present as a successful required build check.
   build:
-    needs: [security-scan, changed-files, test-go126, test-go127, lint, test-cross-target, helm, build-binaries]
+    needs: [security-scan, changed-files, test-go126, test-go127, lint, test-cross-target, helm, build-binaries, pr-review-tests, pr-review-source]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1150,6 +1151,9 @@ jobs:
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
+          REVIEW_TESTS_RESULT: ${{ needs.pr-review-tests.result }}
+          REVIEW_SOURCE_RESULT: ${{ needs.pr-review-source.result }}
+          REPOSITORY: ${{ github.repository }}
           CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -1162,6 +1166,14 @@ jobs:
             echo "changed-files did not succeed, so skipped upper-lane tests are not evidence" >&2
             exit 1
           fi
+          # Only the canonical repository can prove its own reusable source
+          # identity. Fork CI intentionally skips that credential-free probe.
+          if [ "$REVIEW_SOURCE_RESULT" != success ]; then
+            if [ "$REPOSITORY" = luckyPipewrench/pipelock ] || [ "$REVIEW_SOURCE_RESULT" != skipped ]; then
+              echo "review source identity was not verified" >&2
+              exit 1
+            fi
+          fi
           for result in \
             "$SECURITY_SCAN_RESULT" \
             "$TEST_GO126_RESULT" \
@@ -1169,6 +1181,7 @@ jobs:
             "$LINT_RESULT" \
             "$CROSS_TARGET_RESULT" \
             "$HELM_RESULT" \
+            "$REVIEW_TESTS_RESULT" \
             "$BUILD_BINARIES_RESULT"; do
             if [ "$result" != success ]; then
               echo "required build evidence is incomplete or failed" >&2

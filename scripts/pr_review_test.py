@@ -220,6 +220,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         ci = load_yaml(ROOT / ".github" / "workflows" / "ci.yaml")
         self.assertEqual(ci["jobs"]["pr-review-source"], {
             "needs": "security-scan",
+            "if": "github.repository == 'luckyPipewrench/pipelock'",
             "permissions": {},
             "uses": "./.github/workflows/pr-review-source.yaml",
         })

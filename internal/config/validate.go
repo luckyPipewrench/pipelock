@@ -285,7 +285,12 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 				return fmt.Errorf("%s.path %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, entry.Path)
 			}
 			entry.Path = path
+			// A whitespace-only path_prefix counted as absent above; clear it so
+			// the runtime matcher, which requires the unused field to be empty,
+			// does not treat the accepted route as having both.
+			entry.PathPrefix = ""
 		default:
+			entry.Path = ""
 			prefix := strings.TrimSpace(entry.PathPrefix)
 			if err := validateEntropyPathPrefixShape(field, entry.PathPrefix, prefix); err != nil {
 				return err

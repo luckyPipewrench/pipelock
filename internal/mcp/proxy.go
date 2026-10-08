@@ -523,7 +523,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// same message cannot both raise and decay the session threat score.
 		toolPoisonDetected := false
 		if toolCfg != nil {
-			toolResult = tools.ScanTools(line, sc, toolCfg)
+			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg, trackedMethod)
 			if err := opts.warnContext().Err(); err != nil {
 				if writeErr := blockScanError("response scan failed: " + err.Error()); writeErr != nil {
 					return foundInjection, writeErr

@@ -3074,7 +3074,7 @@ def requested_repository_evidence(
                     failed = True
                 else:
                     context = _line_context(content, request.line, max_tokens=min(700, max_tokens // len(pending)))
-                    labelled = re.sub(r"(?m)^(\d+): ", rf"{request.path}:\1: ", context)
+                    labelled = re.sub(r"(?m)^(\d+): ", lambda match: f"{request.path}:{match[1]}: ", context)
                     piece = f"REQUESTED PATH {request.path}\n{labelled}"
                     failed = context.startswith("<file-context-unavailable:")
                     if record is not None and request.path:

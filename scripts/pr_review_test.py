@@ -3144,6 +3144,20 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertIn("REQUESTED PATH go.mod", repair_prompt["cross_file_repository_evidence"])
         self.assertIn("go 1.25", repair_prompt["cross_file_repository_evidence"])
 
+    def test_requested_path_labels_preserve_literal_backslashes(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        for path in ("contract.txt", r"docs\q.txt", r"docs\1.txt", r"docs\n.txt", r"docs\g<1>.txt"):
+            with self.subTest(path=path):
+                requests = pr_review._parse_evidence_requests([{"path": path, "line": 1}])
+                self.assertEqual(len(requests), 1)
+                decisions = {0: pr_review.JudgeDecision("unresolved", requests)}
+                with mock.patch.object(pr_review, "_local_review_root", return_value=ROOT), \
+                     mock.patch.object(pr_review, "_cached_evidence_read", return_value="first line\nsecond line\n"):
+                    evidence, unavailable = pr_review.requested_repository_evidence(binding, decisions)
+                self.assertFalse(unavailable)
+                self.assertIn(f"{path}:1: first line", evidence)
+                self.assertIn(f"{path}:2: second line", evidence)
+
     def test_requested_path_reads_the_reviewed_commit_not_dirty_worktree_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -6796,6 +6810,15 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         self.assertTrue(any("provider refused the configured credential" in reason for reason in progress.incomplete_reasons))
         self.assertFalse(any("unexpected" in reason for reason in progress.incomplete_reasons))
         self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+
+    def test_synthesis_credential_refusal_stops_calls_and_keeps_candidates(self):
+        state, progress, phases = self.run_discovery(
+            2, pr_review.ProviderConfigurationError("refused"), fail_phase="cross-file-synthesis")
+        self.assertEqual(state, "failed")
+        self.assertEqual(phases[-1], "cross-file-synthesis")
+        self.assertNotIn("judge", phases)
+        self.assertEqual([item.title for item in progress.unverified_candidates], ["retained claim"])
+        self.assertTrue(any("provider refused the configured credential" in reason for reason in progress.incomplete_reasons))
 
     def test_discovery_refusal_preserves_previously_gathered_candidates(self):
         for phase in ("review-chunk-2", "review-chunk-1-schema-repair"):

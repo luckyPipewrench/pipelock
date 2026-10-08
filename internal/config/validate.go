@@ -2473,6 +2473,15 @@ func (c *Config) validateMCPInputScanning() error {
 
 func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
+	if err := validateMCPAcknowledgedFindings(c.MCPToolScanning.AcknowledgedFindings, time.Now().UTC()); err != nil {
+		return err
+	}
+	if len(c.MCPToolScanning.AcknowledgedFindings) > 0 && !c.MCPToolScanning.Enabled && warnings != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "mcp_tool_scanning.acknowledged_findings",
+			Message: "acknowledged_findings has no effect while mcp_tool_scanning is disabled",
+		})
+	}
 	if c.NewToolActionAliasWarning != "" && warnings != nil {
 		*warnings = append(*warnings, Warning{
 			Field:   "mcp_tool_scanning.new_tool_action",

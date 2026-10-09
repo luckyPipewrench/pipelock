@@ -2050,7 +2050,9 @@ func validateEntropyPathPrefixShape(field, raw, prefix string) error {
 	// The trailing slash is trimmed first because it is load-bearing for
 	// prefix matching (it stops /document/de matching /document/d) while
 	// path.Clean treats it as non-canonical and would reject it.
-	if _, err := normalizeQueryEntropyParamPath(strings.TrimSuffix(prefix, "/")); err != nil {
+	// normalizeQueryEntropyParamPath now accepts one trailing slash itself, so
+	// trimming here as well would let a doubled slash ("/assets//") through.
+	if _, err := normalizeQueryEntropyParamPath(prefix); err != nil {
 		return fmt.Errorf("%s.path_prefix %q is not a canonical path: %w", field, raw, err)
 	}
 	return nil

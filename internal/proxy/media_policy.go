@@ -509,41 +509,21 @@ func exposureOrNil(cfg *config.Config, fields *MediaExposureFields) *MediaExposu
 // supplied by the upstream. Policy classification still uses the original type.
 func mediaExposureContentType(mt string) string {
 	switch mt {
-	case "image/jpeg":
-		return "image/jpeg"
-	case "image/png":
-		return "image/png"
-	case "image/gif":
-		return "image/gif"
-	case "image/webp":
-		return "image/webp"
-	case "image/bmp":
-		return "image/bmp"
-	case "image/x-icon":
-		return "image/x-icon"
-	case svgMediaType:
-		return svgMediaType
-	case "audio/mpeg":
-		return "audio/mpeg"
-	case "audio/wav":
-		return "audio/wav"
-	case "audio/ogg":
-		return "audio/ogg"
-	case "video/mp4":
-		return "video/mp4"
-	case "video/webm":
-		return "video/webm"
+	case "image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/gif", "image/webp",
+		"image/bmp", "image/x-icon", svgMediaType,
+		"audio/mpeg", "audio/wav", "audio/wave", "audio/ogg", "audio/aiff", "audio/midi", "audio/basic",
+		"video/mp4", "video/webm", "video/avi":
+		return mt
+	}
+	switch {
+	case strings.HasPrefix(mt, "image/"):
+		return "image/unknown"
+	case strings.HasPrefix(mt, "audio/"):
+		return "audio/unknown"
+	case strings.HasPrefix(mt, "video/"):
+		return "video/unknown"
 	default:
-		switch {
-		case strings.HasPrefix(mt, "image/"):
-			return "image/unknown"
-		case strings.HasPrefix(mt, "audio/"):
-			return "audio/unknown"
-		case strings.HasPrefix(mt, "video/"):
-			return "video/unknown"
-		default:
-			return "unknown"
-		}
+		return "unknown"
 	}
 }
 
@@ -597,7 +577,7 @@ func sniffMediaType(body []byte) string {
 // on top before dispatching the event.
 func (m *MediaExposureFields) ToEventFields() map[string]any {
 	f := map[string]any{
-		"content_type": m.ContentType,
+		"content_type": mediaExposureContentType(m.ContentType),
 		"size_bytes":   m.SizeBytes,
 		"blocked":      m.Blocked,
 	}
@@ -622,7 +602,7 @@ func (m *MediaExposureFields) ToEventFields() map[string]any {
 func (m *MediaExposureFields) ToAuditInfo(transport string) audit.MediaExposureInfo {
 	return audit.MediaExposureInfo{
 		Transport:       transport,
-		ContentType:     m.ContentType,
+		ContentType:     mediaExposureContentType(m.ContentType),
 		Format:          m.Format,
 		SizeBytes:       m.SizeBytes,
 		MetadataRemoved: m.MetadataRemoved,

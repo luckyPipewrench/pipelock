@@ -28,6 +28,26 @@ func TestMediaExposureContentTypeRecognizedTypes(t *testing.T) {
 	}
 }
 
+func TestMediaExposureOutputProjectsDirectlyBuiltFields(t *testing.T) {
+	t.Parallel()
+	const secret = "private-sensitive-value-73519"
+	for _, tt := range []struct{ in, want string }{
+		{"image/" + secret, "image/unknown"},
+		{"audio/" + secret, "audio/unknown"},
+		{"video/" + secret, "video/unknown"},
+		{"audio/wave", "audio/wave"},
+		{"image/unknown", "image/unknown"},
+	} {
+		fields := &MediaExposureFields{ContentType: tt.in}
+		if got := fields.ToAuditInfo("reverse").ContentType; got != tt.want {
+			t.Fatalf("audit content type=%q, want %q", got, tt.want)
+		}
+		if got := fields.ToEventFields()["content_type"]; got != tt.want {
+			t.Fatalf("event content type=%v, want %q", got, tt.want)
+		}
+	}
+}
+
 func TestMediaExposureDoesNotRetainHeaderSecrets(t *testing.T) {
 	t.Parallel()
 	const secret = "private-sensitive-value-73519"

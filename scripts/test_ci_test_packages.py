@@ -303,16 +303,35 @@ class TestPackageSharding(unittest.TestCase):
             loads = predicted_loads("")
             self.assertEqual(set(loads), set(SHARDS))
             # 20 tests of 10s: every second is charged once and buckets differ by
-            # at most one test. Rest packages run two at a time.
+            # at most one test; a separate-coverage tree also pays its coverage
+            # pass. Rest packages run two at a time.
             for tree, count in TEST_SPLITS.items():
+                factor = 1.0 + (ci_test_packages.COVERAGE_PASS_FRACTION if tree in SEPARATE_COVERAGE_TREES else 0.0)
                 tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
-                self.assertAlmostEqual(sum(tree_loads), 200.0)
-                self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0)
+                self.assertAlmostEqual(sum(tree_loads), 200.0 * factor)
+                self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0 * factor)
             self.assertEqual(sorted(loads[shard] for shard in ("rest-0", "rest-1", "rest-2")), [100.0, 100.0, 100.0])
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
                 self.assertEqual(ci_test_packages.check_budget("", 40.0), 1)
+                # A non-finite or non-positive budget would pass every shard.
+                for bad in (float("nan"), float("inf"), 0.0, -1.0):
+                    self.assertEqual(ci_test_packages.check_budget("", bad), 2, bad)
             self.assertIn("over the 40s budget", err.getvalue())
+            self.assertIn("positive finite", err.getvalue())
+
+    def test_unmeasured_tests_are_never_free_even_when_the_median_is_zero(self) -> None:
+        trees = {tree: {f"Test{tree}{index}": 0.0 for index in range(20)} for tree in TEST_SPLITS}
+        unmeasured = {tree: list(tests) + [f"TestNew{tree}{index}" for index in range(8)] for tree, tests in trees.items()}
+        with patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             patch.object(ci_test_packages, "load_durations", return_value=trees), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", side_effect=lambda root: next(
+                 names for tree, names in unmeasured.items() if str(root).endswith(HEAVY_TREES[tree]))):
+            loads = predicted_loads("")
+            for tree, count in TEST_SPLITS.items():
+                total = sum(loads[f"{tree}-{index}"] for index in range(count))
+                self.assertGreater(total, 0.0, f"{tree}: eight unmeasured tests predicted free")
 
     def test_rest_budget_cannot_divide_a_single_slow_package(self) -> None:
         with patch.object(ci_test_packages, "list_packages", return_value=["example.test/slow"]), \

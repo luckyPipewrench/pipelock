@@ -35,7 +35,10 @@ class CoverageProfileCheckTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory) / "c.out"
             self.assertNotEqual(run(profile).returncode, 0, "missing profile accepted")
-            for body in ("", "mode: set\n", BLOCK, "mode: bogus\n" + BLOCK, "mode: set\nnot a block line\n"):
+            unexecuted = BLOCK.replace(" 1 1\n", " 1 0\n")
+            for body in ("", "mode: set\n", BLOCK, "mode: bogus\n" + BLOCK, "mode: set\nnot a block line\n",
+                         # A selector that matched no tests: blocks, all zero.
+                         "mode: set\n" + unexecuted + unexecuted):
                 with self.subTest(body=body):
                     profile.write_text(body, encoding="utf-8")
                     self.assertNotEqual(run(profile).returncode, 0)

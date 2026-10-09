@@ -80,6 +80,11 @@ SHARD_BUDGET_SECONDS = 600
 # Rest shards run their packages two at a time (-p=2), so summed package time
 # overstates wall time by about that factor.
 REST_PACKAGE_PARALLELISM = 2
+# The non-race coverage pass of a separate-coverage tree, as a fraction of its
+# race pass: scanner-1 took 72-83s without -race against about 370s with it.
+COVERAGE_PASS_FRACTION = 0.25
+# Least cost charged to a test with no measurement.
+MIN_UNMEASURED_SECONDS = 1.0
 
 # Measured race-test seconds per top-level test, used to balance sub-shards by
 # time instead of by name count. Regenerate it from CI shard timings with
@@ -425,9 +430,14 @@ def predicted_loads(tags: str) -> dict[str, float]:
         names = tree_test_names(ROOT / HEAVY_TREES[tree])
         weights = durations.get(tree, {})
         known = sorted(weights[name] for name in set(names) if name in weights)
-        default = known[len(known) // 2] if known else 1.0
+        # Most tests round to 0.0s, so the median can be zero; an unmeasured
+        # test must still cost something or a new slow test predicts free.
+        default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
+        # A separate-coverage tree reruns its tests without -race after the
+        # race pass, in the same job.
+        extra = 1.0 + (COVERAGE_PASS_FRACTION if tree in SEPARATE_COVERAGE_TREES else 0.0)
         for index, bucket in enumerate(partition_names(names, count, weights or None)):
-            loads[f"{tree}-{index}"] = sum(weights.get(name, default) for name in bucket)
+            loads[f"{tree}-{index}"] = extra * sum(weights.get(name, default) for name in bucket)
     package_weights = load_package_durations()
     packages = list_packages(tags)
     known = sorted(package_weights.values())
@@ -440,6 +450,10 @@ def predicted_loads(tags: str) -> dict[str, float]:
 
 
 def check_budget(tags: str, budget: float) -> int:
+    # NaN compares false with everything, so it would pass every shard.
+    if not math.isfinite(budget) or budget <= 0:
+        print(f"ci_test_packages.py: budget must be a positive finite number of seconds, got {budget}", file=sys.stderr)
+        return 2
     loads = predicted_loads(tags)
     over = {shard: load for shard, load in loads.items() if load > budget}
     for shard in SHARDS:

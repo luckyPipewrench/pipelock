@@ -32,4 +32,10 @@ if [ "$blocks" -lt 1 ]; then
   echo "check-coverage-profile: $profile records no coverage blocks" >&2
   exit 1
 fi
-echo "check-coverage-profile: $profile has $blocks blocks"
+# A selector that matches no tests still writes every block with a zero count.
+executed="$(grep -cE '^[^ ]+\.go:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+ [0-9]+ [1-9][0-9]*$' "$profile" || true)"
+if [ "$executed" -lt 1 ]; then
+  echo "check-coverage-profile: $profile records no executed code, so no tests ran" >&2
+  exit 1
+fi
+echo "check-coverage-profile: $profile has $blocks blocks, $executed executed"

@@ -10,11 +10,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
 // A verified Agent Card signature is a 64-byte stamp the signer does not
@@ -425,7 +427,7 @@ func TestCardBodyWithoutVerifiedSignature(t *testing.T) {
 		},
 		{
 			name: "matches an escaped spelling of the verified string",
-			doc:  card("d", `{"protected":"p","signature":"AAAA`+canonical[4:]+`"}`),
+			doc:  card("d", `{"protected":"p","signature":"`+fmt.Sprintf(`\u%04x`, canonical[0])+canonical[1:]+`"}`),
 			sig:  verified(0, canonical),
 			want: card("d", `{"protected":"p","signature":""}`),
 		},
@@ -541,4 +543,80 @@ func TestLineWithoutVerifiedCardSignature(t *testing.T) {
 			t.Fatal("an unknown origin verifies nothing and must exempt nothing")
 		}
 	})
+}
+
+func escapeJSONString(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		_, _ = fmt.Fprintf(&b, `\u%04x`, c)
+	}
+	return b.String()
+}
+
+// JSON escapes in the signature value or the member names do not move the
+// exemption off the verified entry, and an escaped copy elsewhere still blocks.
+func TestVerifiedSignatureEscapedSpellings(t *testing.T) {
+	body, pub, stamp := stampedCard(t)
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, body, "", " \t"); err != nil {
+		t.Fatal(err)
+	}
+	variants := map[string][]byte{
+		"one escaped character":   []byte(strings.Replace(string(body), stamp, fmt.Sprintf(`\u%04x`, stamp[0])+stamp[1:], 1)),
+		"every character escaped": []byte(strings.Replace(string(body), stamp, escapeJSONString(stamp), 1)),
+		"escaped signature key":   []byte(strings.Replace(string(body), `"signature":`, `"signature":`, 1)),
+		"escaped signatures key":  []byte(strings.Replace(string(body), `"signatures":`, `"signatures":`, 1)),
+		"indented":                pretty.Bytes(),
+	}
+	for name, b := range variants {
+		t.Run(name, func(t *testing.T) {
+			cfg := cardScanCfg(pub)
+			sig := VerifyAgentCardSignatures(b, testCardOrigin, cfg)
+			if sig.Outcome != SigOutcomeVerified {
+				t.Fatalf("fixture did not verify: %+v", sig)
+			}
+			var want, got map[string]any
+			if err := json.Unmarshal(b, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(cardBodyWithoutVerifiedSignature(b, nil, sig), &got); err != nil {
+				t.Fatal(err)
+			}
+			want["signatures"].([]any)[0].(map[string]any)["signature"] = ""
+			wantJSON, _ := json.Marshal(want)
+			gotJSON, _ := json.Marshal(got)
+			if !bytes.Equal(wantJSON, gotJSON) {
+				t.Fatalf("blanked the wrong span:\n got %s\nwant %s", gotJSON, wantJSON)
+			}
+			if h := scanCardHTTP(t, b, cfg); !h.Clean || !h.SignatureVerified {
+				t.Fatalf("HTTP blocked a verified escaped card: %+v", h)
+			}
+			if clean, dlp := scanCardMCP(t, b, cfg); !clean || dlp != 0 {
+				t.Fatalf("MCP blocked a verified escaped card: clean=%v dlp=%d", clean, dlp)
+			}
+			copied := bytes.Replace(b, []byte(`"protected":`), []byte(`"header":{"copy":"`+escapeJSONString(stamp)+`"},"protected":`), 1)
+			if h := scanCardHTTP(t, copied, cfg); h.Clean || len(h.Findings.DLPFindings) == 0 {
+				t.Fatalf("HTTP missed an escaped copy of the stamp: %+v", h)
+			}
+			if clean, dlp := scanCardMCP(t, copied, cfg); clean || dlp == 0 {
+				t.Fatalf("MCP missed an escaped copy of the stamp: clean=%v dlp=%d", clean, dlp)
+			}
+		})
+	}
+}
+
+// Blanking the verified signature shortens the line, so the size bound must
+// read the bytes received: one byte over the limit is refused, not scanned.
+func TestVerifiedSignatureDoesNotShrinkUnderSizeLimit(t *testing.T) {
+	body, pub, _ := stampedCard(t)
+	line := rpcResponse(body)
+	line = append(line, bytes.Repeat([]byte(" "), transport.MaxLineSize+1-len(line))...)
+	opts := &A2AResponseOpts{Cfg: cardScanCfg(pub), Method: methodGetExtendedAgentCard, CardKey: CardCacheKeyFromRequest(testCardURL, "")}
+	if n := len(lineWithoutVerifiedCardSignature(line, opts)); n > transport.MaxLineSize {
+		t.Fatalf("fixture: blanked line %d bytes is not under the limit", n)
+	}
+	v := ScanResponseA2A(line, testA2AScanner(t), opts)
+	if v.Clean || v.Error == "" {
+		t.Fatalf("oversized card response was scanned: clean=%v error=%q", v.Clean, v.Error)
+	}
 }

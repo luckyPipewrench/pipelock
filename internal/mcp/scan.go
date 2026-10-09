@@ -1230,6 +1230,11 @@ func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2ARespo
 // scanA2AResponseDispatchClass also reports whether the A2A scan found a
 // response-pattern injection, the class the core response floor governs.
 func scanA2AResponseDispatchClass(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) (jsonrpc.ScanVerdict, bool) {
+	// The size bound applies to the bytes received, before any view drops the
+	// verified signature and shortens the line under the limit.
+	if len(line) > transport.MaxLineSize {
+		return oversizedResponseVerdict(line), false
+	}
 	rpcID := extractRPCID(line)
 	isCard := isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line)
 

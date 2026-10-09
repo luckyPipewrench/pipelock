@@ -35,7 +35,7 @@ func TestSingleSessionMaintenanceRefusesGroupEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Damaged() || report.Conclusive() && len(report.Findings) == 0 {
+	if report.Damaged() || report.Conclusive() {
 		t.Fatalf("structural doctor reported a complete group check: %+v", report)
 	}
 	found := false
@@ -60,7 +60,7 @@ func TestEvidenceDoctorDoesNotCertifyReceiptGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, finding := range report.Findings {
-		if finding.Kind == "group_verification_required" && report.Damaged() {
+		if finding.Kind == "group_verification_required" && !report.Damaged() && !report.Conclusive() {
 			return
 		}
 	}

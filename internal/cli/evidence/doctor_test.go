@@ -887,8 +887,11 @@ func TestEvidenceDoctorDirectoryShapes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runEvidenceDoctor: %v", err)
 		}
-		if !hasDoctorFinding(report, "file_read_error") {
+		if !hasDoctorFinding(report, "file_read_unavailable") {
 			t.Fatalf("unreadable shard was silently skipped; findings = %+v", report.Findings)
+		}
+		if report.Damaged() || report.Conclusive() {
+			t.Fatalf("unreadable shard produced an integrity verdict: %+v", report)
 		}
 	})
 }

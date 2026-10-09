@@ -39,23 +39,39 @@ var htmlSrcsetAttrs = map[string]bool{
 // what is an attribute, so a URL in text, a comment, a script or a style
 // block is not a link.
 func htmlLinkValues(body []byte, limit int) []string {
+	links, _ := htmlLinksAndBase(body, limit)
+	return links
+}
+
+// htmlLinksAndBase is htmlLinkValues plus the href of the document's first
+// <base> element that carries one, which is the base every relative reference
+// resolves against. A <base> is not itself a link.
+func htmlLinksAndBase(body []byte, limit int) (links []string, base string) {
 	if limit <= 0 || len(body) == 0 {
-		return nil
+		return nil, ""
 	}
 	if len(body) > issuerQueryMaxHTMLBytes {
 		body = body[:issuerQueryMaxHTMLBytes]
 	}
 	var out []string
+	baseSeen := false
 	z := html.NewTokenizer(bytes.NewReader(body))
 	for len(out) < limit {
 		switch z.Next() {
 		case html.ErrorToken:
-			return out
+			return out, base
 		case html.StartTagToken, html.SelfClosingTagToken:
+			tag, _ := z.TagName()
+			isBase := string(tag) == "base"
 			for {
 				key, val, more := z.TagAttr()
 				name := strings.ToLower(string(key))
 				switch {
+				case isBase:
+					if name == "href" && !baseSeen {
+						baseSeen = true
+						base = strings.TrimSpace(string(val))
+					}
 				case htmlLinkAttrs[name]:
 					if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
 						out = append(out, v)
@@ -73,7 +89,7 @@ func htmlLinkValues(body []byte, limit int) []string {
 			}
 		}
 	}
-	return out
+	return out, base
 }
 
 // srcsetURLs returns the candidate URLs of a srcset attribute value, following

@@ -450,6 +450,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		store.declareRedirect(session, response.Request.URL, redirect, time.Now())
 	}
 	remaining := issuerCookieMaxSetCookies
+	// base is what a relative reference resolves against: the response URL,
+	// or an HTML document's own <base href> when it names the same origin.
+	base := response.Request.URL
 	// observe records the URL a response carried. linkAttr marks a value the
 	// document itself declares to be a URL (an HTML link attribute), so a
 	// bare relative reference is a link. A JSON string is only a link when it
@@ -469,7 +472,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			// Resolve any relative reference ("/x?a", "x?a", "?a") against the
 			// response URL; the origin check below then rejects anything that
 			// resolved to another host, including a "//host" reference.
-			candidate = response.Request.URL.ResolveReference(candidate)
+			candidate = base.ResolveReference(candidate)
 		}
 		host, port, valid := issuerCookieOrigin(candidate)
 		if !valid {
@@ -522,7 +525,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
-		for _, link := range htmlLinkValues(body, remaining) {
+		links, baseHref := htmlLinksAndBase(body, remaining)
+		base = sameOriginBase(response.Request.URL, baseHref)
+		for _, link := range links {
 			observe(link, false, true)
 		}
 		return
@@ -578,6 +583,31 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			valueDone()
 		}
 	}
+}
+
+// sameOriginBase returns the URL an HTML document's relative references
+// resolve against: its <base href> resolved against the response URL, but only
+// when that is the same scheme, host and port as the response. A base on
+// another origin would turn a relative link into a path on that origin, so it
+// is ignored and the response URL stays the base; a cross-origin base can
+// therefore never grant issuance to either host.
+func sameOriginBase(responseURL *url.URL, href string) *url.URL {
+	if href == "" {
+		return responseURL
+	}
+	ref, err := url.Parse(href)
+	if err != nil {
+		return responseURL
+	}
+	resolved := responseURL.ResolveReference(ref)
+	host, port, ok := issuerCookieOrigin(resolved)
+	responseHost, responsePort, responseOK := issuerCookieOrigin(responseURL)
+	// issuerCookieOrigin admits only https, so a matching host and port is a
+	// matching origin.
+	if !ok || !responseOK || host != responseHost || port != responsePort {
+		return responseURL
+	}
+	return resolved
 }
 
 // recordIssuerQueryAllow records an issuer-query allow. cfg is the request's

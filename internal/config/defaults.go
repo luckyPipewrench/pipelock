@@ -349,6 +349,17 @@ func Defaults() *Config {
 					// loops on its bot check. The host is Cloudflare's own, so
 					// the exemption reaches no third-party origin.
 					{Host: defaultCloudflareChallengeHost, PathPrefix: defaultCloudflareChallengePathPrefix, Reason: "Cloudflare challenge route; per-challenge tokens in the path"},
+					// Mail APIs that address one object by a service-issued ID
+					// in the path. Gmail's users.settings.filters get/delete is
+					// /gmail/v1/users/{userId}/settings/filters/{id}; Microsoft
+					// Graph's message get/update/delete/move is
+					// /v1.0/me/messages/{id}. Both IDs are opaque and long, so
+					// managing a mailbox through either API was blocked as an
+					// exfiltration-shaped path. The prefixes pin the
+					// authenticated-user form ("me"), so a request that names
+					// another mailbox stays checked.
+					{Host: "gmail.googleapis.com", PathPrefix: "/gmail/v1/users/me/settings/filters/", Reason: "Gmail filter route; opaque vendor filter id"},
+					{Host: "graph.microsoft.com", PathPrefix: "/v1.0/me/messages/", Reason: "Microsoft Graph message route; opaque vendor message id"},
 				},
 			},
 		},

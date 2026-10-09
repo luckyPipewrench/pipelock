@@ -213,6 +213,8 @@ func TestPathEntropyExclusionDefaults(t *testing.T) {
 		{Host: "docs.google.com", PathPrefix: "/forms/d/e/"},
 		{Host: "drive.google.com", PathPrefix: "/file/d/"},
 		{Host: "challenges.cloudflare.com", PathPrefix: "/cdn-cgi/challenge-platform/"},
+		{Host: "gmail.googleapis.com", PathPrefix: "/gmail/v1/users/me/settings/filters/"},
+		{Host: "graph.microsoft.com", PathPrefix: "/v1.0/me/messages/"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("default path_entropy_exclusions has %d entries, want %d: %+v", len(got), len(want), got)

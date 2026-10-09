@@ -33,6 +33,8 @@ func TestVendorRouteDefaults(t *testing.T) {
 
 	const id = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
 	const formID = "1FAIpQLSf1xQ2mGh7kVJd0pWqYxNzR3TbLcMnOpQrStUvWxYz012345"
+	// Synthetic vendor-shaped mail object id: long, mixed case, base64url.
+	const mailID = "AQkR7vXw2pLm9ZbT4cNq8YdHs3FjKu6GeWa1Ot5Bx0Ci"
 
 	cases := []struct {
 		name      string
@@ -44,6 +46,17 @@ func TestVendorRouteDefaults(t *testing.T) {
 		{"docs presentation", "https://docs.google.com/presentation/d/" + id + "/edit", true},
 		{"docs form", "https://docs.google.com/forms/d/e/" + formID + "/viewform", true},
 		{"drive file", "https://drive.google.com/file/d/" + id + "/view", true},
+		{"gmail filter", "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters/" + mailID, true},
+		{"graph message", "https://graph.microsoft.com/v1.0/me/messages/" + mailID, true},
+		{"graph message move", "https://graph.microsoft.com/v1.0/me/messages/" + mailID + "/move", true},
+
+		// Must STILL block: mail hosts on a route not on the list, and the
+		// listed shapes naming a mailbox other than the authenticated user.
+		{"gmail other route", "https://gmail.googleapis.com/gmail/v1/" + mailID, false},
+		{"gmail other user filter", "https://gmail.googleapis.com/gmail/v1/users/" + mailID + "/settings/filters/x", false},
+		{"graph other route", "https://graph.microsoft.com/v1.0/" + mailID, false},
+		{"graph other user message", "https://graph.microsoft.com/v1.0/users/" + mailID + "/messages", false},
+		{"graph route on lookalike", "https://graph.microsoft.com.evil.test/v1.0/me/messages/" + mailID, false},
 
 		// Must STILL block: same host, route not on the list.
 		{"same host other route", "https://docs.google.com/random/" + id, false},

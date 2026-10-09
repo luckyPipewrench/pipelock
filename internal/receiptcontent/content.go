@@ -190,10 +190,13 @@ const (
 	AtomKey
 )
 
-// Atom is one decoded projection leaf. Path is the concrete JSON path and is
-// safe to report; Text is the decoded value and must never be echoed.
+// Atom is one decoded projection leaf. Path is the concrete JSON path, used
+// to locate a value for redaction; under a Dynamic object it contains caller
+// member names and must never be reported. Field is the schema path ("ext.*")
+// and is safe to report. Text is the decoded value and must never be echoed.
 type Atom struct {
 	Path     string
+	Field    string
 	Kind     AtomKind
 	Identity bool
 	Text     string
@@ -291,7 +294,7 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 				continue
 			}
 			mirror[f.name] = f.text
-			w.atoms = append(w.atoms, Atom{Path: OuterKey + "." + f.name, Kind: AtomValue, Text: f.text})
+			w.atoms = append(w.atoms, Atom{Path: OuterKey + "." + f.name, Field: OuterKey + "." + f.name, Kind: AtomValue, Text: f.text})
 		}
 		if len(mirror) > 0 {
 			out[OuterKey] = mirror
@@ -369,13 +372,13 @@ func (w *walker) walk(v any, schemaPath, path string, depth int) (any, bool, err
 			// the nested path a -> b) or an undeclared name is caller data.
 			if !dynamic && w.p != nil {
 				if _, declared := w.p.schema.Fields[childSchema]; !declared || strings.ContainsAny(k, ".[]*") {
-					w.atoms = append(w.atoms, Atom{Path: childPath, Kind: AtomKey, Text: k})
+					w.atoms = append(w.atoms, Atom{Path: childPath, Field: joinPath(schemaPath, "*"), Kind: AtomKey, Text: k})
 					childSchema = joinPath(schemaPath, "*")
 				}
 			}
 			if dynamic {
 				childSchema = joinPath(schemaPath, "*")
-				w.atoms = append(w.atoms, Atom{Path: childPath, Kind: AtomKey, Text: k})
+				w.atoms = append(w.atoms, Atom{Path: childPath, Field: joinPath(schemaPath, "*"), Kind: AtomKey, Text: k})
 			}
 			child, keep, err := w.walk(val[k], childSchema, childPath, depth+1)
 			if err != nil {
@@ -433,6 +436,6 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 	if text == "" {
 		return v, true, nil
 	}
-	w.atoms = append(w.atoms, Atom{Path: path, Kind: AtomValue, Identity: identity, Text: text})
+	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Text: text})
 	return v, true, nil
 }

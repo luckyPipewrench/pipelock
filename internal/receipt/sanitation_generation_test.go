@@ -34,18 +34,35 @@ func TestEmitterSanitationUnknownRedactorFallback(t *testing.T) {
 		t.Fatal("arbitrary callback acquired immutable guarantee")
 	}
 	em := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key})
+	target := "https://api.vendor.example/item?q=rotating-secret-value"
+	// The detector changes after content is frozen and scanned but before
+	// the chain lock. The write boundary binds the frozen scan by projection
+	// digest instead of rescanning, so the first receipt keeps its target and
+	// a write never fails on a detector change it was not scanned under.
 	em.beforeChainLockForTest = func() { changed.Store(true) }
-	if err := em.EmitDurable(EmitOpts{ActionID: "fallback", Target: "https://api.vendor.example/item?q=rotating-secret-value", Transport: "intercept", Method: "GET", Verdict: config.ActionAllow}); err != nil {
+	if err := em.EmitDurable(EmitOpts{ActionID: "fallback-1", Target: target, Transport: "intercept", Method: "GET", Verdict: config.ActionAllow}); err != nil {
+		t.Fatal(err)
+	}
+	em.beforeChainLockForTest = nil
+	// The next receipt is frozen under the changed detector and redacted.
+	if err := em.EmitDurable(EmitOpts{ActionID: "fallback-2", Target: target, Transport: "intercept", Method: "GET", Verdict: config.ActionAllow}); err != nil {
 		t.Fatal(err)
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r := readReceiptFromDir(t, dir, key.Public().(ed25519.PublicKey))
-	if strings.Contains(r.ActionRecord.Target, "rotating-secret-value") || !strings.Contains(strings.ToLower(r.ActionRecord.Target), "redacted") {
-		t.Fatalf("target=%q", r.ActionRecord.Target)
+	receipts := readReceiptsRaw(t, dir)
+	if len(receipts) != 2 || receipts[0].ActionRecord.Target != target {
+		t.Fatalf("receipts=%+v", receipts)
 	}
-	t.Log("unknown mutable callback uses current locked sanitation; signature verifies PASS")
+	if got := receipts[1].ActionRecord.Target; strings.Contains(got, "rotating-secret-value") || !strings.Contains(strings.ToLower(got), "redacted") {
+		t.Fatalf("second target=%q", got)
+	}
+	for _, r := range receipts {
+		if err := VerifyWithKey(r, hex.EncodeToString(key.Public().(ed25519.PublicKey))); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestEmitterSanitationBoundGeneration(t *testing.T) {
@@ -84,20 +101,20 @@ func TestEmitterSanitationBoundGeneration(t *testing.T) {
 }
 
 func TestEmitterSanitationOutsideChain(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "sanitation warning", Regex: "sanitation-signal", Action: config.ActionWarn, Severity: config.SeverityHigh})
-	sc := scanner.MustNew(cfg)
-	defer sc.Close()
+	// The receipt detector is quiet, so the signal is the detector call
+	// itself: it must happen while another goroutine holds chainMu.
 	seen := make(chan struct{}, 1)
-	sc.SetDLPWarnHook(func(context.Context, string, string) {
-		select {
-		case seen <- struct{}{}:
-		default:
+	detector := func(_ context.Context, text string) scanner.TextDLPResult {
+		if strings.Contains(text, "sanitation-signal") {
+			select {
+			case seen <- struct{}{}:
+			default:
+			}
 		}
-	})
+		return scanner.TextDLPResult{Clean: true}
+	}
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	rec, err := recorder.NewWithScanner(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, sc, key)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), Redact: true}, detector, key)
 	if err != nil {
 		t.Fatal(err)
 	}

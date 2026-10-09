@@ -85,10 +85,13 @@ func (e *RejectionError) Error() string {
 func (e *RejectionError) Is(target error) bool { return target == ErrRejected }
 
 // Finding is one detector hit. Atom findings name one path; joint findings
-// name every participating path.
+// name every participating path. Paths are concrete and may contain caller
+// member names, so they are for redaction only; Fields are schema paths and
+// are what errors report.
 type Finding struct {
 	View     View
 	Paths    []string
+	Fields   []string
 	Pattern  string
 	Identity bool
 	Key      bool
@@ -124,7 +127,7 @@ func (r Report) Err() error {
 		return nil
 	}
 	f := r.Findings[0]
-	return &RejectionError{Kind: r.kind, View: f.View, Path: strings.Join(f.Paths, ","), Pattern: f.Pattern, Identity: f.Identity}
+	return &RejectionError{Kind: r.kind, View: f.View, Path: strings.Join(f.Fields, ","), Pattern: f.Pattern, Identity: f.Identity}
 }
 
 func firstPattern(res scanner.TextDLPResult) string {
@@ -153,7 +156,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 			verdict[a.Text] = pattern
 		}
 		if pattern != "" {
-			rep.Findings = append(rep.Findings, Finding{View: ViewAtom, Paths: []string{a.Path}, Pattern: pattern, Identity: a.Identity, Key: a.Kind == AtomKey})
+			rep.Findings = append(rep.Findings, Finding{View: ViewAtom, Paths: []string{a.Path}, Fields: []string{a.Field}, Pattern: pattern, Identity: a.Identity, Key: a.Kind == AtomKey})
 		}
 	}
 	if len(rep.Findings) > 0 {
@@ -168,16 +171,17 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 
 	// (ii) Values only, in projection order, joined without a separator.
 	var values strings.Builder
-	var valuePaths []string
+	var valuePaths, valueFields []string
 	for _, a := range p.atoms {
 		if a.Kind == AtomValue {
 			values.WriteString(a.Text)
 			valuePaths = append(valuePaths, a.Path)
+			valueFields = append(valueFields, a.Field)
 		}
 	}
 	if values.Len() > 0 {
 		if res := det(ctx, values.String()); !res.Clean {
-			rep.Findings = append(rep.Findings, Finding{View: ViewValues, Paths: valuePaths, Pattern: firstPattern(res)})
+			rep.Findings = append(rep.Findings, Finding{View: ViewValues, Paths: valuePaths, Fields: valueFields, Pattern: firstPattern(res)})
 			return rep, nil
 		}
 	}
@@ -199,7 +203,7 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 // unrelated atom between it and the next. More candidates, or more work than
 // maxFragmentWorkBytes, is a budget rejection rather than a partial pass.
 func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, error) {
-	var parts, paths []string
+	var parts, paths, fields []string
 	seen := make(map[string]struct{}, len(p.atoms))
 	for _, a := range p.atoms {
 		if _, dup := seen[a.Text]; dup {
@@ -208,6 +212,7 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 		seen[a.Text] = struct{}{}
 		parts = append(parts, a.Text)
 		paths = append(paths, a.Path)
+		fields = append(fields, a.Field)
 	}
 	n := len(parts)
 	if n < 2 {
@@ -231,11 +236,12 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 				b.WriteString(parts[i])
 			}
 			if res := det(ctx, b.String()); !res.Clean {
-				hit := make([]string, 0, size)
+				hit, hitFields := make([]string, 0, size), make([]string, 0, size)
 				for _, i := range idx {
 					hit = append(hit, paths[i])
+					hitFields = append(hitFields, fields[i])
 				}
-				return &Finding{View: ViewFragments, Paths: hit, Pattern: firstPattern(res)}, nil
+				return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
 			}
 			if !scanner.NextSubsequence(idx, n) {
 				break

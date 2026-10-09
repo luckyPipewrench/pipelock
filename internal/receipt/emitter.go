@@ -83,6 +83,10 @@ const (
 	FailReasonSync = "sync"
 	// FailReasonSealed is an emit attempt after the transcript root was emitted.
 	FailReasonSealed = "sealed"
+	// FailReasonContent: receipt content was refused by the content boundary
+	// (a detector hit in an identity or joint view, or an exceeded bound).
+	// The chain did not advance and the emitter stays healthy.
+	FailReasonContent = "content"
 	// FailReasonUnavailable is a required-receipt emission attempt when no
 	// receipt emitter is configured. Best-effort receipt paths intentionally
 	// remain silent when receipts are disabled; this reason is for fail-closed
@@ -711,14 +715,46 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		sideEffect = sideEffectFromMCPAction(actionType)
 		reversibility = ReversibilityUnknown
 	}
-	// Only a recorder-bound immutable detector can prepare value-owned fields
-	// before the chain lock. Unknown callbacks retain locked sanitation.
-	target, pattern := opts.Target, opts.Pattern
-	rf, sanitationPrepared := e.recorder.ImmutableReceiptRedactor()
-	if sanitationPrepared && rf != nil {
-		clean := func(text string) bool { return rf(context.Background(), text).Clean }
-		target = sanitizeTarget(target, clean)
-		pattern = cleanOrRedacted(pattern, clean)
+	// PolicyHash precedence: a non-empty per-emission opts.PolicyHash is the
+	// canonical policy hash of the config snapshot that actually decided this
+	// request, so it wins over the emitter's mutable configHash atomic. The
+	// atomic is updated on hot reload and can advance to the NEW policy while an
+	// in-flight request decided under the OLD policy is still being receipted;
+	// preferring the per-emission hash binds the receipt to the policy that made
+	// the decision. Callers with no request snapshot (session_open, non-proxy
+	// emitters) leave opts.PolicyHash empty and fall back to the atomic.
+	policyHash := configHashString(e.configHash.Load())
+	if opts.PolicyHash != "" {
+		normalizedPolicyHash, normalizeErr := normalizeCanonicalPolicyHash(opts.PolicyHash)
+		if normalizeErr != nil {
+			e.recordFailure(FailReasonHash)
+			return fmt.Errorf("policy hash override: %w", normalizeErr)
+		}
+		policyHash = normalizedPolicyHash
+	}
+
+	// Content is frozen and scanned BEFORE the chain lock: it does not depend
+	// on chain state, so a slow or rejected scan never holds chainMu and a
+	// content rejection never advances or poisons the chain. Lifecycle control
+	// records are built under the lock and are validated there instead.
+	tmpl := Receipt{Version: ReceiptVersion, ActionRecord: e.contentRecord(opts, actionType, sideEffect, reversibility, policyHash)}
+	if len(bytes.TrimSpace(opts.Extension)) != 0 {
+		var mergeErr error
+		tmpl.Ext, mergeErr = mergeReceiptExtensions(nil, opts.Extension)
+		if mergeErr != nil {
+			e.recordFailure(FailReasonMarshal)
+			return fmt.Errorf("%w: %w", ErrExtensionMerge, mergeErr)
+		}
+	}
+	lifecycle := opts.SessionControl != nil || buildControl != nil
+	var content *recorder.ContentScan
+	if !lifecycle {
+		var scanErr error
+		tmpl, content, scanErr = e.scanActionContent(tmpl)
+		if scanErr != nil {
+			e.recordFailure(FailReasonContent)
+			return fmt.Errorf("validating receipt content: %w", scanErr)
+		}
 	}
 	if e.beforeChainLockForTest != nil {
 		e.beforeChainLockForTest()
@@ -758,103 +794,28 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		return err
 	}
 
-	// PolicyHash precedence: a non-empty per-emission opts.PolicyHash is the
-	// canonical policy hash of the config snapshot that actually decided this
-	// request, so it wins over the emitter's mutable configHash atomic. The
-	// atomic is updated on hot reload and can advance to the NEW policy while an
-	// in-flight request decided under the OLD policy is still being receipted;
-	// preferring the per-emission hash binds the receipt to the policy that made
-	// the decision. Callers with no request snapshot (session_open, non-proxy
-	// emitters) leave opts.PolicyHash empty and fall back to the atomic exactly
-	// as before.
-	policyHash := configHashString(e.configHash.Load())
-	if opts.PolicyHash != "" {
-		normalizedPolicyHash, normalizeErr := normalizeCanonicalPolicyHash(opts.PolicyHash)
-		if normalizeErr != nil {
-			e.recordFailure(FailReasonHash)
-			return fmt.Errorf("policy hash override: %w", normalizeErr)
-		}
-		policyHash = normalizedPolicyHash
-	}
-
-	// A callback can close over mutable detector state, so it must be read and
-	// used under the original chain lock unless its generation is bound.
-	if !sanitationPrepared {
-		if rf := e.recorder.ReceiptRedactor(); rf != nil {
-			clean := func(text string) bool { return rf(context.Background(), text).Clean }
-			target = sanitizeTarget(target, clean)
-			pattern = cleanOrRedacted(pattern, clean)
-		}
-	}
-
-	ar := ActionRecord{
-		Version:               ActionRecordVersion,
-		ActionID:              opts.ActionID,
-		ParentActionID:        opts.ParentActionID,
-		ActionType:            actionType,
-		Timestamp:             e.now().UTC(),
-		Principal:             e.principal,
-		Actor:                 e.actorLabel(opts),
-		DelegationChain:       nil, // Populated when delegation tracking ships
-		Target:                target,
-		SideEffectClass:       sideEffect,
-		Reversibility:         reversibility,
-		PolicyHash:            policyHash,
-		Verdict:               NormalizeVerdict(opts.Verdict),
-		DecisionPhase:         opts.DecisionPhase,
-		DeferID:               opts.DeferID,
-		ResolutionPolicy:      opts.ResolutionPolicy,
-		ResolutionSource:      opts.ResolutionSource,
-		SessionID:             opts.SessionID,
-		SessionIDOriginal:     opts.SessionIDOriginal,
-		SessionTaintLevel:     opts.SessionTaintLevel,
-		SessionContaminated:   opts.SessionContaminated,
-		RecentTaintSources:    append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
-		SessionTaskID:         opts.SessionTaskID,
-		SessionTaskLabel:      opts.SessionTaskLabel,
-		AuthorityKind:         opts.AuthorityKind,
-		TaintDecision:         opts.TaintDecision,
-		TaintDecisionReason:   opts.TaintDecisionReason,
-		TaskOverrideApplied:   opts.TaskOverrideApplied,
-		ContractWinningSource: opts.ContractWinningSource,
-		ContractLiveVerdict:   opts.ContractLiveVerdict,
-		ContractPolicySources: append([]string(nil), opts.ContractPolicySources...),
-		ContractRuleID:        opts.ContractRuleID,
-		ActiveManifestHash:    opts.ActiveManifestHash,
-		ContractHash:          opts.ContractHash,
-		ContractSelectorID:    opts.ContractSelectorID,
-		ContractGeneration:    opts.ContractGeneration,
-		Transport:             opts.Transport,
-		Method:                opts.Method,
-		Layer:                 opts.Layer,
-		Pattern:               pattern,
-		Severity:              opts.Severity,
-		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
-		Shield:                cloneShieldSummary(opts.Shield),
-		RequestID:             opts.RequestID,
-		ChainPrevHash:         chainPrevHash,
-		ChainSeq:              e.chainSeq,
-		RunNonce:              e.runNonce,
-		// pendingTransition is non-nil only on the first receipt of a new
-		// segment opened by resumeChain after a legitimate key rotation. It
-		// is bound into the signed record so the segment boundary is provable
-		// from this receipt alone, then cleared after a successful write.
-		KeyTransition:  e.pendingTransition,
-		SessionControl: sessionControl,
-	}
+	// Only generated fields are added under the lock: the timestamp, the
+	// chain position, the run nonce, a pending key transition and any
+	// lifecycle control. The content projection of the final receipt must
+	// equal the one scanned above, which BindReceiptContent re-derives.
+	ar := tmpl.ActionRecord
+	ar.Timestamp = e.now().UTC()
+	ar.ChainPrevHash = chainPrevHash
+	ar.ChainSeq = e.chainSeq
+	ar.RunNonce = e.runNonce
+	// pendingTransition is non-nil only on the first receipt of a new
+	// segment opened by resumeChain after a legitimate key rotation. It is
+	// bound into the signed record so the segment boundary is provable from
+	// this receipt alone, then cleared after a successful write.
+	ar.KeyTransition = e.pendingTransition
+	ar.SessionControl = sessionControl
 
 	rcpt, err := Sign(ar, e.privKey)
 	if err != nil {
 		e.recordFailure(FailReasonSign)
 		return fmt.Errorf("signing receipt: %w", err)
 	}
-	if len(bytes.TrimSpace(opts.Extension)) != 0 {
-		rcpt.Ext, err = mergeReceiptExtensions(rcpt.Ext, opts.Extension)
-		if err != nil {
-			e.recordFailure(FailReasonMarshal)
-			return fmt.Errorf("%w: %w", ErrExtensionMerge, err)
-		}
-	}
+	rcpt.Ext = tmpl.Ext
 	if isSessionOpenControl(sessionControl) && e.postureAvailability != "" {
 		rcpt.Ext, err = mergePostureAvailabilityExtension(rcpt.Ext, e.postureAvailability)
 		if err != nil {
@@ -874,7 +835,20 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.recordFailure(FailReasonMarshal)
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
-	scan, err := e.recorder.PreflightSignedReceiptDetail(json.RawMessage(receiptJSON))
+	if lifecycle {
+		// Lifecycle controls are validate-or-fail: never redacted, and a
+		// refusal reports no success.
+		rep, cs, scanErr := e.recorder.ScanReceiptContent(context.Background(), actionReceiptProducer, receiptJSON)
+		if scanErr == nil && cs == nil {
+			scanErr = rep.Err()
+		}
+		if scanErr != nil {
+			e.recordFailure(FailReasonContent)
+			return fmt.Errorf("validating receipt content: %w", scanErr)
+		}
+		content = cs
+	}
+	scan, err := e.recorder.BindReceiptContent(content, actionReceiptProducer, receiptJSON)
 	if err != nil {
 		e.recordFailure(FailReasonRecord)
 		return fmt.Errorf("validating signed receipt for recording: %w", err)

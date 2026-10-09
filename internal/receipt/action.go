@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -26,13 +26,15 @@ const (
 
 // NewActionID generates a UUIDv7 for action records. UUIDv7 is time-ordered
 // (millisecond precision in the high bits) and globally unique, suitable for
-// correlation handles in mediation envelopes and receipt lookups.
+// correlation handles in mediation envelopes and receipt lookups. The ID
+// carries this process's origin proof (receiptcontent.NewGeneratedID), so the
+// receipt content boundary excludes it without trusting its spelling; an ID a
+// caller chose stays content and is scanned.
 func NewActionID() string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return "00000000-0000-7000-8000-000000000000"
+	if id := receiptcontent.NewGeneratedID().String(); id != "" {
+		return id
 	}
-	return id.String()
+	return "00000000-0000-7000-8000-000000000000"
 }
 
 // ActionType classifies what kind of operation a mediated action represents.

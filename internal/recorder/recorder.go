@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/directorysync"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -153,13 +154,14 @@ type durableReservation struct {
 
 // Recorder writes hash-chained evidence entries to JSONL files.
 type Recorder struct {
-	receiptScanner *scanner.Scanner // immutable generation bound by NewWithScanner
-	cfg            Config
-	redactFn       RedactFunc
-	privKey        ed25519.PrivateKey
-	escrowPub      *[x25519KeySize]byte
-	observer       EntryObserver
-	metrics        MetricsSink
+	receiptScanner  *scanner.Scanner // immutable generation bound by NewWithScanner
+	cfg             Config
+	redactFn        RedactFunc
+	contentDetector receiptcontent.Detector
+	privKey         ed25519.PrivateKey
+	escrowPub       *[x25519KeySize]byte
+	observer        EntryObserver
+	metrics         MetricsSink
 
 	mu      sync.Mutex
 	groupMu sync.Mutex
@@ -290,6 +292,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	r := &Recorder{
 		cfg:                 cfg,
 		redactFn:            redactFn,
+		contentDetector:     receiptcontent.Detector(redactFn),
 		privKey:             privKey,
 		metrics:             cfg.Metrics,
 		prevHash:            GenesisHash,
@@ -1924,6 +1927,11 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 		return nil, err
 	}
 	r.receiptScanner = sc
+	if cfg.Redact && !r.nop {
+		// Content views scan many small texts per receipt; the quiet variant
+		// keeps warn telemetry to the one request scan that owns it.
+		r.contentDetector = sc.ScanTextForDLPQuiet
+	}
 	return r, nil
 }
 

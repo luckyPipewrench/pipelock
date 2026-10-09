@@ -48,19 +48,19 @@ func testDetector(t *testing.T) Detector {
 var testProducer = Register(Schema{
 	Kind: "test.kind",
 	Fields: map[string]Class{
-		"version":   Generated,
-		"signature": Generated,
-		"crypto":    Generated,
-		"id":        ProvenID,
-		"parent":    Identity,
-		"verdict":   Enum,
-		"note":      Content,
-		"list":      Content,
-		"list[]":    Content,
+		"version":    Generated,
+		"signature":  Generated,
+		"crypto":     Generated,
+		"id":         ProvenID,
+		"parent":     Identity,
+		"verdict":    Enum,
+		"note":       Content,
+		"list":       Content,
+		"list[]":     Content,
 		"nested":     Content,
 		"nested.gen": Generated,
-		"ext":       Dynamic,
-		"ext.*":     Content,
+		"ext":        Dynamic,
+		"ext.*":      Content,
 	},
 	Enums: map[string][]string{"verdict": {"allow", "block"}},
 	Outer: func(detail []byte) (Outer, error) {
@@ -144,6 +144,9 @@ func TestScanAtomViewCatchesCanaryInKeyAndEscapedValue(t *testing.T) {
 	requireView(t, rep, err, ViewAtom)
 	if !rep.Findings[0].Key || rep.Redactable() {
 		t.Fatalf("member-name hit must be a non-redactable key finding: %+v", rep.Findings[0])
+	}
+	if msg := rep.Err().Error(); strings.Contains(msg, canaryFixture) || !strings.Contains(msg, `"*"`) {
+		t.Fatalf("rejection must report the schema path, never the member name: %s", msg)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -223,6 +224,25 @@ func TestVerifiedDialContext_RefusesUnpinnedOwner(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "verified local service local-tools") {
 		t.Errorf("error does not name the registration: %v", err)
+	}
+
+	// Concurrent refusals share one log writer; under -race an unsynchronized
+	// write to the builder fails this test.
+	var concurrent strings.Builder
+	dialAll := verifiedDialContext(inner, res, &concurrent)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if c, derr := dialAll(context.Background(), "tcp", ln.Addr().String()); derr == nil {
+				_ = c.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	if got := strings.Count(concurrent.String(), "refused upstream connection"); got != 8 {
+		t.Errorf("concurrent refusals logged %d times, want 8", got)
 	}
 }
 

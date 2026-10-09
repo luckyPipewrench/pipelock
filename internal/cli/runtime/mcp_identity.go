@@ -43,6 +43,11 @@ func verifiedDialContext(inner localservice.DialContextFunc, res identity.Resolu
 	pin := *res.Pin
 	name := res.Name
 	verifier := localServiceVerifier()
+	// Dials run concurrently (pooled POSTs, the SSE GET stream, reconnects), so
+	// refusals are serialized onto logW.
+	if logW != nil {
+		logW = &safeWriter{w: logW}
+	}
 	return localservice.VerifyingDialContext(inner, func(ctx context.Context, conn net.Conn) error {
 		if _, err := verifier.VerifyConnContext(ctx, conn, pin); err != nil {
 			err = fmt.Errorf("verified local service %s: %w", name, err)

@@ -30,7 +30,7 @@ const (
 	fakeUID     = 31337
 	fakeInode   = 90210
 	fakeStart   = 1000
-	fakeBootID  = "11111111-2222-3333-4444-555555555555"
+	fakeBootID  = "boot-identifier-fixture"
 	fakeExeBody = "fake executable image"
 )
 

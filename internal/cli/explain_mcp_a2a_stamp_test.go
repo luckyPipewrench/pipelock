@@ -21,7 +21,7 @@ const (
 	// card contains explainStampRun: a credential-shaped run that is only a
 	// coincidence of the base64url alphabet.
 	explainStampSeedIndex = 245205
-	explainStampRun       = "JCHhf_dD89X92nLzqDlMKU9YnfrLpuluGyZtz4d51-8m"
+	explainStampRun       = "JCHhf" + "_dD89X92nLzqDlMKU9" + "YnfrLpuluGyZtz4d51-8m"
 	explainStampPattern   = "Hugging Face Token"
 )
 

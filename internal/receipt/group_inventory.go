@@ -66,7 +66,8 @@ func (m groupAELMembership) Finish(incomplete bool) error {
 
 // fingerprintGroupDirectory streams directory entries in fixed batches. The
 // XOR accumulator is order-independent because Readdirnames has no stable
-// order; each name, mode, size, and modification time is SHA-256 separated.
+// order; each name, identity, change time, mode, size, and modification time
+// is SHA-256 separated.
 // A count distinguishes an added pair that might otherwise cancel itself.
 func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
 	var result groupInventoryFingerprint
@@ -154,12 +155,16 @@ func fingerprintOpenedDirectory(dir string, f *os.File) ([32]byte, uint64, error
 			if err != nil {
 				return fingerprint, count, err
 			}
+			identity, err := recorder.EvidenceMetadataIdentity(filepath.Join(dir, name), info)
+			if err != nil {
+				return fingerprint, count, err
+			}
 			var length [8]byte
 			h := sha256.New()
 			binary.BigEndian.PutUint64(length[:], uint64(len(name)))
 			_, _ = h.Write(length[:])
 			_, _ = h.Write([]byte(name))
-			_, _ = fmt.Fprintf(h, "%v|%d|%d", info.Mode(), info.Size(), info.ModTime().UnixNano())
+			_, _ = fmt.Fprintf(h, "%s|%v|%d|%d", identity, info.Mode(), info.Size(), info.ModTime().UnixNano())
 			sum := h.Sum(nil)
 			for i := range fingerprint {
 				fingerprint[i] ^= sum[i]

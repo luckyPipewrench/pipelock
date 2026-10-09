@@ -748,10 +748,8 @@ func TestChainCLIPreservesIntegrityFailureInsteadOfRelabelingItAsLifecycle(t *te
 	}
 }
 
-// The bare-v1 detector reads the whole file before deciding a route, so its
-// failure paths decide whether an unreadable or oversized file is refused or
-// silently falls through to the v2 route. Each case below drives the real
-// command so the exit path is proven, not just the helper.
+// The complete-history reader keeps its line bound while removing the
+// aggregate evidence byte budget. Drive the real command to pin that boundary.
 
 func TestChainRefusesOversizedEvidenceFile(t *testing.T) {
 	t.Parallel()
@@ -771,15 +769,11 @@ func TestChainRefusesOversizedEvidenceFile(t *testing.T) {
 	// Ordinary malformed input is classified as not-bare-v1 and refused later on
 	// a different route. Pinning the detector scan error is what proves this test
 	// exercises the line-length bound rather than generic rejection.
-	// The detector reads the whole file before classifying it, so the reader's
-	// total-size bound is what stops an oversized input from being buffered.
-	// Pinning that message is what proves this test exercises the size bound
-	// rather than ordinary malformed-input rejection.
-	if !strings.Contains(err.Error(), "input exceeds") {
-		t.Fatalf("oversized file must fail on the reader size bound: err=%v", err)
+	if !strings.Contains(err.Error(), "token too long") {
+		t.Fatalf("oversized line must fail on the line bound: err=%v", err)
 	}
-	if got := exitCodeFor(err); got != cliutil.ExitConfig {
-		t.Fatalf("oversized line exit=%d, want %d", got, cliutil.ExitConfig)
+	if got := exitCodeFor(err); got != cliutil.ExitGeneral {
+		t.Fatalf("oversized line exit=%d, want %d", got, cliutil.ExitGeneral)
 	}
 }
 

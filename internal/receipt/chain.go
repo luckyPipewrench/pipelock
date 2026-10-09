@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1006,7 +1005,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 		// compatibility path: that path would return the receipts it managed
 		// to parse as though they were the whole chain. Mirrors
 		// ExtractReceiptsBytes.
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || errors.Is(err, recorder.ErrEvidenceChanged) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
@@ -1035,7 +1034,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	entries, err := recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || errors.Is(err, recorder.ErrEvidenceChanged) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLBytes(data)
@@ -1286,23 +1285,14 @@ func receiptFromChainEntry(e recorder.Entry) (Receipt, bool, error) {
 }
 
 func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
-	// Stream through the secured no-follow open: a raw receipt chain is
-	// verification input, so its length is never a reason to refuse it.
-	file, before, err := recorder.OpenEvidenceFile(filepath.Clean(path))
+	var receipts []Receipt
+	err := recorder.WalkEvidenceFileReader(filepath.Clean(path), func(input io.ReadSeeker) error {
+		var parseErr error
+		receipts, parseErr = extractRawReceiptsJSONLReader(input)
+		return parseErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("reading raw receipts: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	receipts, err := extractRawReceiptsJSONLReader(io.NewSectionReader(file, 0, before.Size()))
-	if err != nil {
-		return nil, err
-	}
-	after, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("reading raw receipts: %w", err)
-	}
-	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
-		return nil, errors.New("reading raw receipts: evidence file changed during read")
 	}
 	return receipts, nil
 }

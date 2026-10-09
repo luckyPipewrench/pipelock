@@ -56,6 +56,7 @@ var displayBudgetNames = map[string]bool{
 // authoritativeRoots are the recorder readers that lifecycle code relies on
 // to read complete history. Nothing they reach may name a display budget.
 var authoritativeRoots = []string{
+	"WithSessionHistorySnapshot",
 	"WalkHistorySessions",
 	"WalkSessionHistory",
 	"WalkSessionHistoryResolved",
@@ -64,6 +65,7 @@ var authoritativeRoots = []string{
 	"ReadHistoryEntries",
 	"ReadHistoryEntriesFromReader",
 	"WalkEvidenceFile",
+	"WalkEvidenceFileReader",
 	"ValidateEvidenceFile",
 }
 

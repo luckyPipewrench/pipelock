@@ -236,7 +236,11 @@ Examples:
 					return out.err
 				}
 				if groupErr != nil {
-					_, _ = fmt.Fprintf(out, "GROUP_INVALID inventory: %v\n", groupErr)
+					verdict := receipt.GroupInvalid
+					if errors.Is(groupErr, recorder.ErrEvidenceChanged) {
+						verdict = receipt.GroupIncomplete
+					}
+					_, _ = fmt.Fprintf(out, "%s inventory: %v\n", verdict, groupErr)
 					return evidenceReadError(fmt.Errorf("receipt group inventory failed: %w", groupErr))
 				}
 				if groupSummary.Incomplete > 0 || groupSummary.Invalid > 0 {
@@ -516,11 +520,6 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 // is the filename the operator gave, which may differ from the base of the
 // resolved path when the operator named a symlink.
 func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return fmt.Errorf("reading recorder file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
 	scan := newWholeRecorderScan(trustedKeys, opts)
 	defer scan.close()
 	// A file named for a session holds only that session's entries. The
@@ -530,13 +529,17 @@ func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys [
 	// Stream the handle so the file is never held in memory. Only the
 	// recorder's per-entry line limit applies: verification never refuses
 	// a valid file for its length.
-	if err := recorder.WalkHistoryEntriesFromReader(file, func(e recorder.Entry) error {
+	if _, err := recorder.WalkEvidenceFile(path, nil, func(e recorder.Entry) error {
 		if named && sessionErr == nil && e.SessionID != fileSession {
 			sessionErr = recorder.EntrySessionError(e, fileSession)
 		}
 		scan.add(e)
 		return nil
 	}); err != nil {
+		var torn *recorder.TornTailError
+		if errors.As(err, &torn) {
+			err = torn
+		}
 		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}
 	if sessionErr != nil {
@@ -1253,6 +1256,8 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 		if isRecorder {
 			return verifyTypedChainDetailed(out, path, actions, evidenceReceipts, trustedKeys, opts)
 		}
+	} else if errors.Is(readErr, recorder.ErrEvidenceChanged) {
+		return readErr
 	}
 	var (
 		receipts []receipt.Receipt
@@ -1408,14 +1413,23 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
-	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+	var receipts []receipt.Receipt
+	var evidenceReceipts []contractreceipt.EvidenceReceipt
+	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
+		var readErr error
+		receipts, readErr = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+		if readErr != nil {
+			return fmt.Errorf("extracting session receipts: %w", readErr)
+		}
+		evidenceReceipts, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
+		return readErr
+	})
 	if err != nil {
-		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
-		return fmt.Errorf("extracting session receipts: %w", err)
-	}
-	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
-	if err != nil {
-		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
+		verdict := "CHAIN BROKEN"
+		if errors.Is(err, recorder.ErrEvidenceChanged) {
+			verdict = "CHAIN UNAVAILABLE"
+		}
+		_, _ = fmt.Fprintf(out, "%s: %s\n  Error:    %v\n", verdict, label, err)
 		return fmt.Errorf("extracting session evidence receipts: %w", err)
 	}
 	return verifyTypedChainDetailed(out, label, receipts, evidenceReceipts, trustedKeys, opts)
@@ -1431,6 +1445,8 @@ func extractFileChains(name, path string) ([]receipt.Receipt, []contractreceipt.
 		if err != nil || isRecorder {
 			return actions, evidenceReceipts, err
 		}
+	} else if errors.Is(readErr, recorder.ErrEvidenceChanged) {
+		return nil, nil, readErr
 	}
 	actions, err := receipt.ExtractReceipts(path)
 	return actions, nil, err

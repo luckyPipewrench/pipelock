@@ -319,12 +319,16 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 			return err
 		})
 		if groupErr != nil {
+			verdict := actionreceipt.GroupInvalid
+			if errors.Is(groupErr, recorder.ErrEvidenceChanged) {
+				verdict = actionreceipt.GroupIncomplete
+			}
 			if opts.jsonOutput {
-				if err := writeGroupJSONSpool(opts, actionreceipt.ReceiptGroupResult{Verdict: actionreceipt.GroupInvalid, Error: groupErr.Error()}); err != nil {
+				if err := writeGroupJSONSpool(opts, actionreceipt.ReceiptGroupResult{Verdict: verdict, Error: groupErr.Error()}); err != nil {
 					return err
 				}
 			} else {
-				_, _ = fmt.Fprintf(stdout, "GROUP_INVALID inventory: %v\n", groupErr)
+				_, _ = fmt.Fprintf(stdout, "%s inventory: %v\n", verdict, groupErr)
 			}
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("receipt group inventory failed: %w", groupErr))
 		}
@@ -360,12 +364,12 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 			return setErr
 		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
-		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, trust, opts); handled || handleErr != nil {
-			return handleErr
-		}
-		receipts, extractErr := actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
+		receipts, evidence, extractErr := readChainSessionInput(location, opts.sessionID)
 		if extractErr != nil {
 			return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
+		}
+		if len(evidence) > 0 {
+			return verifyEvidenceChain(stdout, stderr, label, evidence, receipts, trust, opts)
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
 	}
@@ -388,32 +392,15 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve %q: %w", target, evalErr))
 	}
 	label = target
-	isBareV1, bareData, detectErr := isBareActionReceiptJSONL(resolved)
-	if detectErr != nil {
-		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
+	actions, evidence, readErr := readChainFileInput(filepath.Base(clean), resolved, trust)
+	if readErr != nil {
+		emitChainReport(stdout, stderr, chainReport{Path: label, Error: readErr.Error()}, opts.jsonOutput)
+		return evidenceContentError(readErr)
 	}
-	if isBareV1 {
-		// Verify the exact bytes the routing decision was made on. Reopening
-		// the path here would let a file replaced between the two reads be
-		// verified under a decision taken about different evidence.
-		receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
-		if extractErr != nil {
-			return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
-		}
-		return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
+	if len(evidence) > 0 {
+		return verifyEvidenceChain(stdout, stderr, label, evidence, actions, trust, opts)
 	}
-	if fileErr := checkRecorderFileBytes(filepath.Base(clean), bareData, trust); fileErr != nil {
-		emitChainReport(stdout, stderr, chainReport{Path: label, Error: fileErr.Error()}, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fileErr)
-	}
-	if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, bareData, label, trust, opts); handled || handleErr != nil {
-		return handleErr
-	}
-	receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
-	if extractErr != nil {
-		return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
-	}
-	return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
+	return verifyActionChain(stdout, stderr, label, actions, trust, opts)
 }
 
 // resolveChainTrust resolves every --key and loads every
@@ -475,39 +462,101 @@ func evidenceContentError(err error) error {
 	return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 }
 
-// isBareActionReceiptJSONL identifies the legacy compatibility format without
-// treating malformed or mixed input as an action chain. Recorder-backed v1 and
-// all v2 input keep the v2-first route below, which preserves its strict
-// recorder validation before the v1 fallback.
-// It returns the bytes it classified so the caller can verify those exact bytes
-// rather than reopening the path.
+// readChainFileInput keeps format detection and extraction inside one secured
+// file snapshot. Only per-line format limits apply, not an artifact byte budget.
+func readChainFileInput(name, path string, trust chainTrust) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	var actions []actionreceipt.Receipt
+	var evidence []contractreceipt.EvidenceReceipt
+	err := recorder.WalkEvidenceFileReader(path, func(input io.ReadSeeker) error {
+		bare, rawReceipts, err := parseBareActionReceiptJSONL(input)
+		if err != nil {
+			return err
+		}
+		if bare {
+			actions = rawReceipts
+			return nil
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		entries, entryErr := recorder.ReadHistoryEntriesFromReader(input)
+		if entryErr == nil {
+			if len(trust.endorsements) > 0 && len(entries) > 0 && entries[0].SessionID != trust.session {
+				return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", trust.session, entries[0].SessionID)
+			}
+			var isRecorder bool
+			actions, evidence, isRecorder, err = actionreceipt.RecorderFileChains(name, entries)
+			if err != nil {
+				return err
+			}
+			if isRecorder {
+				if _, err := input.Seek(-1, io.SeekEnd); err != nil {
+					return err
+				}
+				var last [1]byte
+				if _, err := io.ReadFull(input, last[:]); err != nil {
+					return err
+				}
+				if last[0] != '\n' {
+					return fmt.Errorf("%w: recorder file has an unterminated final record", recorder.ErrTornTail)
+				}
+				return nil
+			}
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		evidence, err = contractreceipt.ExtractEvidenceReceiptsFromReader(input)
+		if err != nil {
+			return err
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if len(evidence) > 0 && !hasActionReceiptEntry(input) {
+			return nil
+		}
+		// The legacy extractor retains its raw-receipt compatibility. The outer
+		// snapshot check binds this read to the descriptor used for classification.
+		actions, err = actionreceipt.ExtractReceipts(path)
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return actions, evidence, nil
+}
+
+// isBareActionReceiptJSONL is for bounded audit-packet evidence artifacts.
+// Complete standalone history uses readChainFileInput instead.
 func isBareActionReceiptJSONL(path string) (bool, []byte, error) {
 	data, err := readVerifierFile(path)
 	if err != nil {
 		return false, nil, fmt.Errorf("read evidence file: %w", err)
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	bare, _, err := parseBareActionReceiptJSONL(bytes.NewReader(data))
+	return bare, data, err
+}
+
+func parseBareActionReceiptJSONL(input io.Reader) (bool, []actionreceipt.Receipt, error) {
+	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
-	found := false
+	var receipts []actionreceipt.Receipt
 	for scanner.Scan() {
 		raw := bytes.TrimSpace(scanner.Bytes())
 		if len(raw) == 0 {
 			continue
 		}
-		r, unmarshalErr := actionreceipt.Unmarshal(raw)
-		if unmarshalErr != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
-			return false, data, nil
+		r, err := actionreceipt.Unmarshal(raw)
+		if err != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
+			return false, nil, nil
 		}
-		found = true
+		receipts = append(receipts, r)
 	}
-	// Defensive only while readVerifierFile's total-size bound stays below this
-	// scanner's per-line bound: a single line cannot exceed the line limit when
-	// the whole file is already capped lower. It is kept so that raising the
-	// reader's cap cannot silently turn an oversized line into a parse attempt.
 	if err := scanner.Err(); err != nil {
 		return false, nil, fmt.Errorf("scan evidence file: %w", err)
 	}
-	return found, data, nil
+	return len(receipts) > 0, receipts, nil
 }
 
 func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, trust chainTrust, opts chainOptions) error {
@@ -607,9 +656,6 @@ func runEvidenceChainWith(stdout, stderr io.Writer, label string, trust chainTru
 }
 
 func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label string, trust chainTrust, opts chainOptions) (bool, error) {
-	if int64(len(data)) > maxVerifierInputBytes {
-		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("evidence input exceeds %d bytes", maxVerifierInputBytes))
-	}
 	return runEvidenceChainWith(stdout, stderr, label, trust, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
 		return contractreceipt.ExtractEvidenceReceiptsBytes(data)
 	}, func() ([]actionreceipt.Receipt, error) {
@@ -621,11 +667,36 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label strin
 }
 
 func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.EvidenceLocation, label string, trust chainTrust, opts chainOptions) (bool, error) {
-	return runEvidenceChainWith(stdout, stderr, label, trust, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
-		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, opts.sessionID)
-	}, func() ([]actionreceipt.Receipt, error) {
-		return sessionActionReceipts(location, opts.sessionID)
+	actions, evidence, err := readChainSessionInput(location, opts.sessionID)
+	if err != nil {
+		return true, evidenceContentError(err)
+	}
+	if len(evidence) == 0 {
+		return false, nil
+	}
+	return true, verifyEvidenceChain(stdout, stderr, label, evidence, actions, trust, opts)
+}
+
+func readChainSessionInput(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	var actions []actionreceipt.Receipt
+	var evidence []contractreceipt.EvidenceReceipt
+	err := recorder.WithSessionHistorySnapshot(location, session, func() error {
+		var readErr error
+		evidence, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
+		if readErr != nil {
+			return readErr
+		}
+		if len(evidence) > 0 {
+			actions, readErr = sessionActionReceipts(location, session)
+		} else {
+			actions, readErr = actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, session)
+		}
+		return readErr
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return actions, evidence, nil
 }
 
 // actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.

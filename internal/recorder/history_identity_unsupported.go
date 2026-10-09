@@ -13,3 +13,12 @@ import (
 func historyFileIdentity(_ EvidenceLocation, _ string, _ os.FileInfo) (string, error) {
 	return "", errors.New("evidence shard identity is unsupported on this platform")
 }
+
+func historyHandleIdentity(_ *os.File, _ os.FileInfo) (string, error) {
+	return "", errors.New("evidence shard identity is unsupported on this platform")
+}
+
+// EvidenceMetadataIdentity refuses platforms without reliable file identity.
+func EvidenceMetadataIdentity(_ string, _ os.FileInfo) (string, error) {
+	return "", errors.New("evidence shard identity is unsupported on this platform")
+}

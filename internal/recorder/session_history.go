@@ -55,6 +55,53 @@ import (
 // session with at most this many shards is walked in a single pass.
 const sessionHistoryWindow = 1024
 
+// ErrEvidenceChanged means a read could not establish a stable snapshot.
+// It is unavailable evidence, not proof of corruption or a recoverable torn tail.
+var ErrEvidenceChanged = errors.New("evidence changed during read; no verdict reached")
+
+// WithSessionHistorySnapshot binds multiple authoritative reads of one session
+// to the same inventory. The consumer must defer verdicts and durable side
+// effects until this function returns successfully. It is a consistency check,
+// not an atomic filesystem snapshot.
+func WithSessionHistorySnapshot(location EvidenceLocation, session string, consume func() error) error {
+	if consume == nil {
+		return errors.New("evidence snapshot consumer is required")
+	}
+	if err := validateHistorySessionID(session); err != nil {
+		return err
+	}
+	_, _, inventory, err := scanHistoryWindow(location, session, nil, 1)
+	if err != nil {
+		return err
+	}
+	c := historyCursor{location: location, sessionID: session, inventory: &inventory}
+	err = consume()
+	if changed := c.checkInventory(); changed != nil {
+		return changed
+	}
+	return err
+}
+
+// finishHistoryRead checks the snapshot even when parsing or the consumer failed.
+// A concurrent change takes precedence over a verdict derived from mixed bytes.
+func finishHistoryRead(file *os.File, before os.FileInfo, identity string, readErr error) error {
+	if err := ensureEvidenceFileUnchanged(file, before); err != nil {
+		return fmt.Errorf("%w: %s", ErrEvidenceChanged, err.Error())
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrEvidenceChanged, err.Error())
+	}
+	current, err := historyHandleIdentity(file, after)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrEvidenceChanged, err.Error())
+	}
+	if identity != current {
+		return ErrEvidenceChanged
+	}
+	return readErr
+}
+
 // sessionHistoryDirBatch is how many directory entries are read per call.
 const sessionHistoryDirBatch = 128
 
@@ -101,6 +148,9 @@ func WalkHistorySessions(dir string, consume func(string) error) error {
 		}
 		for _, key := range keys {
 			if err := consume(key.name); err != nil {
+				if changed := c.checkInventory(); changed != nil {
+					return changed
+				}
 				return err
 			}
 		}
@@ -172,10 +222,12 @@ func readHistoryShard(location EvidenceLocation, shard SessionHistoryShard, cons
 		return fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	if err := consume(shard, io.NewSectionReader(file, 0, before.Size())); err != nil {
+	identity, err := historyHandleIdentity(file, before)
+	if err != nil {
 		return err
 	}
-	return ensureEvidenceFileUnchanged(file, before)
+	err = consume(shard, io.NewSectionReader(file, 0, before.Size()))
+	return finishHistoryRead(file, before, identity, err)
 }
 
 // walkHistoryShardEntries streams one shard's entries through the pinned
@@ -186,7 +238,13 @@ func walkHistoryShardEntries(location EvidenceLocation, name, sessionID string, 
 		return fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	if err := walkHistoryEntries(io.NewSectionReader(file, 0, before.Size()), filepath.Join(location.Dir, name), sessionID, consume); err != nil {
+	identity, err := historyHandleIdentity(file, before)
+	if err != nil {
+		return err
+	}
+	err = walkHistoryEntries(io.NewSectionReader(file, 0, before.Size()), filepath.Join(location.Dir, name), sessionID, consume)
+	err = finishHistoryRead(file, before, identity, err)
+	if err != nil {
 		if errors.Is(err, ErrEvidenceRefused) {
 			// A membership refusal names the evidence, not the read; every
 			// session reader reports it in this shape.
@@ -194,7 +252,7 @@ func walkHistoryShardEntries(location EvidenceLocation, name, sessionID string, 
 		}
 		return fmt.Errorf("reading evidence file: %w", err)
 	}
-	return ensureEvidenceFileUnchanged(file, before)
+	return nil
 }
 
 // walkHistoryEntries parses one shard line by line. Its only size limit is
@@ -264,6 +322,21 @@ func WalkHistoryEntriesFromReader(r io.Reader, consume func(Entry) error) error 
 	if consume == nil {
 		return errors.New("entry consumer is required")
 	}
+	if file, ok := r.(*os.File); ok {
+		before, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		identity, err := historyHandleIdentity(file, before)
+		if err != nil {
+			return err
+		}
+		if err := inspectJSONLTail(file, before, file.Name(), evidenceTailValidator(nil)); err != nil {
+			return finishHistoryRead(file, before, identity, err)
+		}
+		_, _, err = walkEntriesFromReader(io.NewSectionReader(file, 0, before.Size()), entryReadLimits{}, consume)
+		return finishHistoryRead(file, before, identity, err)
+	}
 	_, _, err := walkEntriesFromReader(r, entryReadLimits{}, consume)
 	return err
 }
@@ -313,14 +386,19 @@ func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os
 		return nil, fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	identity, err := historyHandleIdentity(file, info)
+	if err != nil {
+		return nil, err
+	}
 	if err := inspectJSONLTail(file, info, file.Name(), evidenceTailValidator(nil)); err != nil {
-		return nil, fmt.Errorf("reading evidence file: %w", err)
+		return nil, finishHistoryPathRead(file, info, identity, fmt.Errorf("reading evidence file: %w", err))
 	}
 	var src io.Reader = io.NewSectionReader(file, 0, info.Size())
 	if raw != nil {
 		src = io.TeeReader(src, raw)
 	}
 	_, bytesRead, err := walkEntriesFromReader(src, entryReadLimits{}, consume)
+	err = finishHistoryPathRead(file, info, identity, err)
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence file: %w", err)
 	}
@@ -369,6 +447,12 @@ func walkSessionHistoryShards(location EvidenceLocation, sessionID string, windo
 			return c.checkInventory()
 		}
 		if err := visit(shard); err != nil {
+			if errors.Is(err, ErrEvidenceChanged) {
+				return err
+			}
+			if changed := c.checkInventory(); changed != nil {
+				return changed
+			}
 			return err
 		}
 	}
@@ -430,6 +514,9 @@ func (c *historyCursor) next() (SessionHistoryShard, bool, error) {
 func (c *historyCursor) fill() error {
 	keys, more, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, c.window)
 	if err != nil {
+		if c.inventory != nil {
+			return fmt.Errorf("%w: reading evidence directory: %s", ErrEvidenceChanged, err.Error())
+		}
 		return fmt.Errorf("reading evidence directory: %w", err)
 	}
 	if err := c.acceptInventory(inventory); err != nil {
@@ -481,7 +568,7 @@ func (c *historyCursor) acceptInventory(inventory historyInventory) error {
 		return nil
 	}
 	if !os.SameFile(c.inventory.directory, inventory.directory) || c.inventory.count != inventory.count || c.inventory.digest != inventory.digest {
-		return errors.New("evidence session inventory changed during read")
+		return fmt.Errorf("%w: evidence session inventory changed during read", ErrEvidenceChanged)
 	}
 	return nil
 }
@@ -489,7 +576,7 @@ func (c *historyCursor) acceptInventory(inventory historyInventory) error {
 func (c *historyCursor) checkInventory() error {
 	_, _, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, 1)
 	if err != nil {
-		return fmt.Errorf("rechecking evidence directory: %w", err)
+		return fmt.Errorf("%w: rechecking evidence directory: %s", ErrEvidenceChanged, err.Error())
 	}
 	return c.acceptInventory(inventory)
 }
@@ -522,6 +609,9 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 			}
 			info, err := de.Info()
 			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					err = fmt.Errorf("%w: listed shard disappeared: %s", ErrEvidenceChanged, err.Error())
+				}
 				return nil, false, inventory, err
 			}
 			identity, err := historyFileIdentity(location, name, info)

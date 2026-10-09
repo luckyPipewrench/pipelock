@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
@@ -363,11 +362,30 @@ type recorderLine struct {
 // while unknown types fail closed so junk cannot ride beside a valid receipt
 // subsequence.
 func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	var receipts []EvidenceReceipt
+	err := recorder.WalkEvidenceFileReader(filepath.Clean(path), func(input io.ReadSeeker) error {
+		var parseErr error
+		receipts, parseErr = extractEvidenceReceiptsFromReader(input, path)
+		return parseErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read evidence file: %w", err)
 	}
-	return extractEvidenceReceiptsFromBytes(data, filepath.Clean(path))
+	return receipts, nil
+}
+
+// ExtractEvidenceReceiptsFromReader streams complete recorder JSONL and retains
+// only its signed evidence receipts. The caller establishes a stable snapshot.
+func ExtractEvidenceReceiptsFromReader(input io.Reader) ([]EvidenceReceipt, error) {
+	return extractEvidenceReceiptsFromReader(input, "evidence reader")
+}
+
+func extractEvidenceReceiptsFromReader(input io.Reader, source string) ([]EvidenceReceipt, error) {
+	var receipts []EvidenceReceipt
+	if err := walkEvidenceReceiptLines(input, source, func(r EvidenceReceipt) { receipts = append(receipts, r) }); err != nil {
+		return nil, err
+	}
+	return receipts, nil
 }
 
 // ExtractEvidenceReceiptsBytes parses an already-read evidence snapshot.

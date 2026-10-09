@@ -795,9 +795,9 @@ func TestParseMapsLine(t *testing.T) {
 		want heldFile
 		ok   bool
 	}{
-		{name: "file mapping", line: "7f00-7f01 r--p 00000000 08:01 1234 /usr/lib/libx.so", want: heldFile{dev: dev, ino: 1234, path: "/usr/lib/libx.so"}, ok: true},
-		{name: "deleted suffix is trimmed", line: "7f00-7f01 r--p 00000000 08:01 1234 /tmp/x (deleted)", want: heldFile{dev: dev, ino: 1234, path: "/tmp/x"}, ok: true},
-		{name: "path with spaces", line: "7f00-7f01 r--p 00000000 08:01 1234 /opt/my app/x.bin", want: heldFile{dev: dev, ino: 1234, path: "/opt/my app/x.bin"}, ok: true},
+		{name: "file mapping", line: "7f00-7f01 r--p 00000000 08:01 1234 /usr/lib/libx.so", want: heldFile{dev: dev, ino: 1234, path: "/usr/lib/libx.so", mapped: true}, ok: true},
+		{name: "deleted suffix is trimmed", line: "7f00-7f01 r--p 00000000 08:01 1234 /tmp/x (deleted)", want: heldFile{dev: dev, ino: 1234, path: "/tmp/x", mapped: true}, ok: true},
+		{name: "path with spaces", line: "7f00-7f01 r--p 00000000 08:01 1234 /opt/my app/x.bin", want: heldFile{dev: dev, ino: 1234, path: "/opt/my app/x.bin", mapped: true}, ok: true},
 		{name: "anonymous", line: "7f00-7f01 rw-p 00000000 00:00 0"},
 		{name: "heap", line: "7f00-7f01 rw-p 00000000 00:00 0 [heap]"},
 		{name: "pseudo path with inode", line: "7f00-7f01 rw-p 00000000 00:05 55 anon_inode:x"},

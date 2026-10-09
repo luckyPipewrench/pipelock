@@ -124,7 +124,7 @@ func observeFiles(held []heldFile) []ObservedFile {
 		}
 		seen[k] = true
 		file := ObservedFile{Path: filepath.Clean(h.path), Dev: h.dev, Ino: h.ino}
-		file.SHA256, file.Path = hashIfSameInode(file)
+		file.SHA256, file.Path = hashIfSameInode(file, h)
 		if file.SHA256 == "" && file.Path == "" {
 			continue
 		}
@@ -143,11 +143,12 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 	return false
 }
 
-// hashIfSameInode opens the path without blocking, requires a regular file with
-// the held device and inode, and hashes that opened descriptor. It returns the
-// digest and the path; an empty digest means the path is not tied to the held
-// file. A path that is no regular file at all returns both empty.
-func hashIfSameInode(file ObservedFile) (sum, path string) {
+// hashIfSameInode opens the path without blocking, requires a regular file that
+// is the held one (heldMatches: stat identity for a descriptor, maps identity
+// for a mapping), and hashes that opened descriptor. It returns the digest and
+// the path; an empty digest means the path is not tied to the held file. A path
+// that is no regular file at all returns both empty.
+func hashIfSameInode(file ObservedFile, held heldFile) (sum, path string) {
 	f, err := os.OpenFile(file.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", file.Path
@@ -161,7 +162,15 @@ func hashIfSameInode(file ObservedFile) (sum, path string) {
 		return "", ""
 	}
 	dev, ino, _, ok := fileIdentity(fi)
-	if !ok || dev != file.Dev || ino != file.Ino {
+	if !ok {
+		return "", file.Path
+	}
+	var mapsID heldFile
+	var mapsOK bool
+	if held.mapped {
+		mapsID, mapsOK = mapsIdentity(f, fi.Size())
+	}
+	if !heldMatches(held, dev, ino, mapsID, mapsOK) {
 		return "", file.Path
 	}
 	sum, err = hashFile(f)

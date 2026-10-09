@@ -566,6 +566,72 @@ type heldFile struct {
 	// special marks a descriptor that is not a regular file (device, socket
 	// file, directory).
 	special bool
+	// mapped marks an entry read from maps. Its device is the filesystem's
+	// superblock device, which on btrfs and overlayfs differs from the device
+	// stat reports for the same file, so it is compared only with the maps
+	// identity of Pipelock's own mapping of the file (see mapsIdentity).
+	mapped bool
+}
+
+// mapsIdentity reports how the kernel names an open file in a maps line: the
+// superblock device, the inode and the path. It is a variable so tests can
+// stand in for a filesystem whose maps and stat devices differ.
+var mapsIdentity = mapsIdentityOf
+
+// mapsIdentityOf maps the first page of f read-only into this process and reads
+// that mapping's line from this process's own maps, so both sides of a
+// comparison with an owner's maps entry come from the same kernel report. An
+// empty or unmappable file has no maps identity.
+func mapsIdentityOf(f *os.File, size int64) (heldFile, bool) {
+	if size <= 0 {
+		return heldFile{}, false
+	}
+	length := os.Getpagesize()
+	if size < int64(length) {
+		length = int(size)
+	}
+	fd := int(f.Fd()) // #nosec G115 -- descriptors fit in int
+	page, err := unix.Mmap(fd, 0, length, unix.PROT_READ, unix.MAP_PRIVATE)
+	if err != nil {
+		return heldFile{}, false
+	}
+	defer func() { _ = unix.Munmap(page) }()
+	fi, err := f.Stat()
+	if err != nil {
+		return heldFile{}, false
+	}
+	_, ino, _, ok := fileIdentity(fi)
+	if !ok {
+		return heldFile{}, false
+	}
+	link, err := os.Readlink(filepath.Join(defaultProcRoot, "self", "fd", strconv.Itoa(fd)))
+	if err != nil {
+		return heldFile{}, false
+	}
+	link = strings.TrimSuffix(link, deletedSuffix)
+	self, err := os.ReadFile(filepath.Join(defaultProcRoot, "self", "maps"))
+	if err != nil {
+		return heldFile{}, false
+	}
+	for _, line := range strings.Split(string(self), "\n") {
+		if h, ok := parseMapsLine(line); ok && h.ino == ino && h.path == link {
+			return h, true
+		}
+	}
+	return heldFile{}, false
+}
+
+// heldMatches reports whether held entry h is the file Pipelock opened. A
+// descriptor entry is compared by its stat device and inode. A maps entry is
+// compared with the file's maps identity by device, inode and path: on btrfs
+// the maps device names the whole filesystem while inode numbers are unique
+// only per subvolume, so the path keeps a same-numbered file in another
+// subvolume from standing in for the pinned one.
+func heldMatches(h heldFile, statDev, statIno uint64, mapsID heldFile, mapsOK bool) bool {
+	if !h.mapped {
+		return h.dev == statDev && h.ino == statIno
+	}
+	return mapsOK && h.dev == mapsID.dev && h.ino == mapsID.ino && h.path == mapsID.path
 }
 
 // heldFiles lists regular-path files the owner holds. Descriptors are resolved
@@ -630,7 +696,7 @@ func parseMapsLine(line string) (heldFile, bool) {
 	if !strings.HasPrefix(p, "/") {
 		return heldFile{}, false
 	}
-	return heldFile{dev: unix.Mkdev(uint32(maj), uint32(mnr)), ino: ino, path: strings.TrimSuffix(p, deletedSuffix)}, true
+	return heldFile{dev: unix.Mkdev(uint32(maj), uint32(mnr)), ino: ino, path: strings.TrimSuffix(p, deletedSuffix), mapped: true}, true
 }
 
 // checkMappedFiles requires the owner to hold each pinned file as the very
@@ -672,10 +738,11 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 		return "", fmt.Errorf("%s.path %s is not a regular file: %w", field, clean, ErrApplicationMismatch)
 	}
 
+	mapsID, mapsOK := mapsIdentity(f, fi.Size())
 	var samePath bool
 	var holds bool
 	for _, h := range held {
-		if h.dev == dev && h.ino == ino {
+		if heldMatches(h, dev, ino, mapsID, mapsOK) {
 			holds = true
 			break
 		}

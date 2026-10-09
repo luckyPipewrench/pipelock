@@ -417,11 +417,11 @@ func TestObserveFilesHelpers(t *testing.T) {
 		}
 	}
 	missing := filepath.Join(t.TempDir(), "absent")
-	if sum, path := hashIfSameInode(ObservedFile{Path: missing}); sum != "" || path != missing {
+	if sum, path := hashIfSameInode(ObservedFile{Path: missing}, heldFile{}); sum != "" || path != missing {
 		t.Fatalf("hashIfSameInode(missing) = %q, %q", sum, path)
 	}
 	dir := t.TempDir()
-	if sum, path := hashIfSameInode(ObservedFile{Path: dir}); sum != "" || path != "" {
+	if sum, path := hashIfSameInode(ObservedFile{Path: dir}, heldFile{}); sum != "" || path != "" {
 		t.Fatalf("hashIfSameInode(dir) = %q, %q; want both empty", sum, path)
 	}
 	unreadable := filepath.Join(t.TempDir(), "locked")
@@ -429,7 +429,7 @@ func TestObserveFilesHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Geteuid() != 0 {
-		if sum, path := hashIfSameInode(ObservedFile{Path: unreadable}); sum != "" || path != unreadable {
+		if sum, path := hashIfSameInode(ObservedFile{Path: unreadable}, heldFile{}); sum != "" || path != unreadable {
 			t.Fatalf("hashIfSameInode(unreadable) = %q, %q", sum, path)
 		}
 	}

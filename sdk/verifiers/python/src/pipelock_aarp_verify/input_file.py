@@ -35,14 +35,12 @@ def iter_verifier_jsonl_lines(path: str | Path) -> Iterator[bytes]:
     except OSError as exc:
         raise OSError("input changed while opening") from exc
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    initial = os.fstat(fd)
-    if not stat.S_ISREG(initial.st_mode):
-        os.close(fd)
-        raise OSError("input must be a regular file")
-    if (initial.st_dev, initial.st_ino) != (path_before.st_dev, path_before.st_ino):
-        os.close(fd)
-        raise OSError("input changed while opening")
     with os.fdopen(fd, "rb") as stream:
+        initial = os.fstat(stream.fileno())
+        if not stat.S_ISREG(initial.st_mode):
+            raise OSError("input must be a regular file")
+        if (initial.st_dev, initial.st_ino) != (path_before.st_dev, path_before.st_ino):
+            raise OSError("input changed while opening")
         before = initial
         remaining = initial.st_size
         try:

@@ -122,3 +122,23 @@ def test_jsonl_stream_stops_at_initial_size_when_file_is_appended(tmp_path):
         for line in lines:
             observed.append(line)
     assert observed == [b"second\n"], "appended entries must not enter the snapshot"
+
+
+def test_jsonl_reader_closes_descriptor_after_initial_metadata_failure(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import input_file
+
+    target = tmp_path / "metadata-unavailable.jsonl"
+    target.write_bytes(b"first\n")
+    real_fstat = os.fstat
+    opened = []
+
+    def unavailable(fd):
+        opened.append(fd)
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(input_file.os, "fstat", unavailable)
+    with pytest.raises(OSError, match="metadata unavailable"):
+        next(input_file.iter_verifier_jsonl_lines(target))
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened[0])

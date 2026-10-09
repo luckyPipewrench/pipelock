@@ -3945,13 +3945,6 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 	return shieldUninspectableBlock(shieldPartialResponseBlockReason)
 }
 
-// applyShield runs Browser Shield rewriting on a response body when enabled
-// and the hostname is not exempt. A nonnil block result prevents delivery and
-// supplies the transport's status, reason, and receipt classification.
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
-	return p.applyShieldResponse(body, contentType, respHeaders, cfg, shieldResponseContext{hostname: hostname, actx: actx, clientIP: clientIP, requestID: requestID, transport: transport, parentActionID: parentActionID})
-}
-
 type shieldResponseContext struct {
 	hostname                                       string
 	actx                                           audit.LogContext
@@ -3959,6 +3952,10 @@ type shieldResponseContext struct {
 	shard                                          receipt.EmitOpts
 }
 
+// applyShieldResponse runs Browser Shield rewriting on a response body when
+// enabled and the hostname is not exempt. A nonnil block result prevents
+// delivery and supplies the transport's status, reason, and receipt
+// classification.
 func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders http.Header, cfg *config.Config, response shieldResponseContext) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
 	hostname, actx := response.hostname, response.actx
 	clientIP, requestID, transport := response.clientIP, response.requestID, response.transport

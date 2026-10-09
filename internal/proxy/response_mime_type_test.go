@@ -172,7 +172,7 @@ func TestApplyShieldSummaryAndRelabelForConflictingContentTypes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			headers := contentTypeHeaders(tc.values...)
-			body, summary, _, blocked := p.applyShield([]byte(mimePixelFixture), responseContentType(headers), "example.com", headers, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportFetch, "action")
+			body, summary, _, blocked := p.applyShieldResponse([]byte(mimePixelFixture), responseContentType(headers), headers, cfg, shieldResponseContext{hostname: "example.com", actx: audit.LogContext{}, clientIP: "127.0.0.1", requestID: "req", transport: TransportFetch, parentActionID: "action"})
 			if blocked != nil {
 				t.Fatalf("unexpected block: %v", blocked.reason)
 			}

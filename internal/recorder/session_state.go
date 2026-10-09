@@ -121,6 +121,12 @@ func (r *Recorder) AcquireGroupSessions(sessions []string) error {
 	if len(sessions) < 2 || len(sessions) > 32 {
 		return errors.New("recorder: group requires 2 to 32 sessions")
 	}
+	// Content first, so no later diagnostic echoes a detector-positive handle.
+	for _, session := range sessions {
+		if err := r.checkSessionContent(session); err != nil {
+			return fmt.Errorf("recorder: group run session: %w", err)
+		}
+	}
 	r.groupMu.Lock()
 	defer r.groupMu.Unlock()
 	r.mu.Lock()

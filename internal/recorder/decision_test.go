@@ -921,7 +921,11 @@ func TestClose_CheckpointFailure(t *testing.T) {
 func TestRedactDetail_NilDetail(t *testing.T) {
 	// Calling redactDetail with nil should return nil
 	dir := t.TempDir()
-	redactFn := func(_ context.Context, _ string) scanner.TextDLPResult {
+	redactFn := func(_ context.Context, text string) scanner.TextDLPResult {
+		// The session handle is validated once at acquisition.
+		if strings.Contains(text, "nil-detail") {
+			return scanner.TextDLPResult{Clean: true}
+		}
 		t.Fatal("redact function should not be called for nil detail")
 		return scanner.TextDLPResult{}
 	}

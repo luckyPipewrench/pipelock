@@ -5,6 +5,7 @@ package recorder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -59,6 +60,39 @@ func (r *Recorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Pro
 		return rep, nil, err
 	}
 	return rep, &ContentScan{recorder: r, kind: p.Kind(), digest: proj.Digest()}, nil
+}
+
+// recorderSessionProducer classifies a recorder session handle on its own.
+// Every entry's SessionID must equal a session this recorder acquired, so the
+// handle is validated once, when it is acquired, instead of on every entry.
+var recorderSessionProducer = receiptcontent.Register(receiptcontent.Schema{
+	Kind:   "pipelock.recorder_session.v1",
+	Fields: map[string]receiptcontent.Class{"session_id": receiptcontent.RunSession},
+})
+
+// checkSessionContent validates a session handle before this recorder binds
+// it. The operator base of a run session minted by this process is scanned
+// as an identity and its generated suffix is excluded; any other handle is
+// scanned whole. A hit is a typed rejection: a session handle names the
+// evidence file and is never redacted.
+func (r *Recorder) checkSessionContent(session string) error {
+	det := r.ReceiptDetector()
+	if det == nil {
+		return nil
+	}
+	detail, err := json.Marshal(map[string]string{"session_id": session})
+	if err != nil {
+		return fmt.Errorf("recorder: marshal session handle: %w", err)
+	}
+	proj, err := recorderSessionProducer.Project(detail)
+	if err != nil {
+		return err
+	}
+	rep, err := receiptcontent.Scan(context.Background(), det, proj)
+	if err != nil {
+		return err
+	}
+	return rep.Err()
 }
 
 // ErrContentChanged means the final detail's content projection differs from

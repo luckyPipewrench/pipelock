@@ -19,12 +19,13 @@ import (
 const ActionReceiptContentKind = "pipelock.action_receipt.v1"
 
 const (
-	cContent   = receiptcontent.Content
-	cIdentity  = receiptcontent.Identity
-	cGenerated = receiptcontent.Generated
-	cEnum      = receiptcontent.Enum
-	cProvenID  = receiptcontent.ProvenID
-	cDynamic   = receiptcontent.Dynamic
+	cContent    = receiptcontent.Content
+	cIdentity   = receiptcontent.Identity
+	cGenerated  = receiptcontent.Generated
+	cEnum       = receiptcontent.Enum
+	cProvenID   = receiptcontent.ProvenID
+	cDynamic    = receiptcontent.Dynamic
+	cRunSession = receiptcontent.RunSession
 )
 
 // actionReceiptProducer is the only capability that may exclude the
@@ -54,11 +55,12 @@ var groupGateProducer = receiptcontent.Register(receiptcontent.Schema{
 })
 
 // transcriptRootProducer classifies a transcript root. Every value is the
-// emitter's own chain state except the session handle, an identity.
+// emitter's own chain state except the session handle, whose operator base is
+// an identity.
 var transcriptRootProducer = receiptcontent.Register(receiptcontent.Schema{
 	Kind: "pipelock.transcript_root.v1",
 	Fields: map[string]receiptcontent.Class{
-		"session_id":    cIdentity,
+		"session_id":    cRunSession,
 		"final_seq":     cGenerated,
 		"root_hash":     cGenerated,
 		"receipt_count": cGenerated,
@@ -178,8 +180,9 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"session_control.heartbeat":           cContent,
 		"session_control.close":               cContent,
 		// The recorder session embeds the operator's session base; it is a
-		// pairing identity, validated at acquisition and never redacted.
-		"session_control.open.recorder_session":   cIdentity,
+		// pairing identity, validated at acquisition and never redacted. Only
+		// the base is projected; the proven run suffix is generated.
+		"session_control.open.recorder_session":   cRunSession,
 		"session_control.open.policy_hash":        cContent,
 		"session_control.open.heartbeat_seconds":  cContent,
 		"session_control.open.genesis_anchor_log": cContent,

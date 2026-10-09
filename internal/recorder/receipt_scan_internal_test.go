@@ -16,7 +16,8 @@ func TestInternalReceiptWriteWithoutAttestationScansAtBoundary(t *testing.T) {
 	dir := t.TempDir()
 	var scans int
 	rec, err := New(Config{Enabled: true, Dir: dir, Redact: true}, func(_ context.Context, text string) scanner.TextDLPResult {
-		if strings.HasPrefix(text, "{") {
+		// The session handle's own view is validated once at acquisition.
+		if strings.HasPrefix(text, "{") && !strings.HasPrefix(text, `{"session_id":`) {
 			scans++
 		}
 		return scanner.TextDLPResult{Clean: !strings.Contains(text, "test-sensitive-value")}

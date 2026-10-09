@@ -229,7 +229,9 @@ var ErrOuterMismatch = errors.New("recorder: entry mirror fields differ from the
 // must equal the producer's derivation from the exact detail (that text was
 // scanned in the projection), and it may carry no TraceID, which no producer
 // derives. An unattested entry's mirror fields are scanned with the receipt
-// detector, alone and joined.
+// detector, alone and joined. SessionID is not scanned per entry: it must
+// equal a handle this recorder acquired, and acquisition validated it (see
+// checkSessionContent), so a generated run suffix never reaches the detector.
 func (r *Recorder) checkBoundOuter(e Entry, scan *ReceiptScan) error {
 	if scan != nil && scan.outer != nil {
 		o := scan.outer
@@ -242,7 +244,7 @@ func (r *Recorder) checkBoundOuter(e Entry, scan *ReceiptScan) error {
 	if det == nil {
 		return nil
 	}
-	fields := []string{e.SessionID, e.EventKind, e.Transport, e.Summary, e.TraceID}
+	fields := []string{e.EventKind, e.Transport, e.Summary, e.TraceID}
 	for _, text := range append(fields, strings.Join(fields, "")) {
 		if text != "" && !det(context.Background(), text).Clean {
 			return &receiptcontent.RejectionError{View: receiptcontent.ViewAtom, Path: receiptcontent.OuterKey, Reason: "unattested mirror field contains sensitive data"}
@@ -484,7 +486,7 @@ func (r *Recorder) record(e Entry, scan *ReceiptScan, advance func()) error {
 	state := r.groupSessions[e.SessionID]
 	r.groupMu.Unlock()
 	if state == nil {
-		return fmt.Errorf("recorder: session %q is not an acquired group member", e.SessionID)
+		return errors.New("recorder: entry session is not an acquired group member")
 	}
 	state.writeMu.Lock()
 	defer state.writeMu.Unlock()
@@ -558,7 +560,7 @@ func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan, advance func()) err
 	state := r.groupSessions[e.SessionID]
 	r.groupMu.Unlock()
 	if state == nil {
-		return fmt.Errorf("recorder: session %q is not an acquired group member", e.SessionID)
+		return errors.New("recorder: entry session is not an acquired group member")
 	}
 	state.writeMu.Lock()
 	defer state.writeMu.Unlock()
@@ -763,6 +765,11 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 		return Entry{}, fmt.Errorf("recorder: session_id is not valid UTF-8")
 	}
 	if r.sessionID == "" {
+		// An implicit first-write binding is an acquisition: the handle is
+		// validated once here, and every later entry must equal it.
+		if err := r.checkSessionContent(e.SessionID); err != nil {
+			return Entry{}, fmt.Errorf("recorder: session_id: %w", err)
+		}
 		if err := r.resumeSessionLocked(e.SessionID); err != nil {
 			if advance != nil {
 				advance()
@@ -771,7 +778,8 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 		}
 	}
 	if e.SessionID != r.sessionID {
-		return Entry{}, fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
+		// The caller's value was never validated, so it is not echoed.
+		return Entry{}, fmt.Errorf("recorder: session_id mismatch (expected %q)", r.sessionID)
 	}
 
 	e.Version = CurrentWriteEntryVersion

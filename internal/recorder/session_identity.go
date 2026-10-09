@@ -4,14 +4,13 @@
 package recorder
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
 
 // IsNop reports whether this recorder is a no-op (persistence disabled, or
@@ -52,6 +51,9 @@ func (r *Recorder) AcquireSession(sessionID string) error {
 	}
 	if !utf8.ValidString(sessionID) {
 		return fmt.Errorf("recorder: session_id is not valid UTF-8")
+	}
+	if err := r.checkSessionContent(sessionID); err != nil {
+		return fmt.Errorf("recorder: session_id: %w", err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -109,14 +111,10 @@ func AcquireRunSession(r *Recorder, base string) (string, error) {
 	return runSession, nil
 }
 
-// runSessionRandomBytes is the amount of crypto/rand entropy in a run-session
-// suffix. 16 bytes (128 bits) makes an accidental collision between two
-// concurrently started processes unreachable in practice, matching the
-// existing escrow filename token size in this package.
-const runSessionRandomBytes = 16
-
 // NewRunSessionID mints a fresh, process-start-scoped recorder session ID of
-// the form "<base>.run.<32 lowercase hex characters>".
+// the form "<base>.run.<32 lowercase hex characters>". The suffix holds 96
+// random bits, which keeps two concurrently started processes from colliding,
+// and a proof of origin (see receiptcontent.NewRunSessionSuffix).
 //
 // Every Pipelock process that opens a recorder for evidence generates one of
 // these exactly once, at startup, and never reopens it. That is the fix for
@@ -140,11 +138,9 @@ func NewRunSessionID(base string) (string, error) {
 	if err := evidencename.ValidateOperatorSessionID(base); err != nil {
 		return "", fmt.Errorf("run session base: %w", err)
 	}
-	var buf [runSessionRandomBytes]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("generating run session id: %w", err)
-	}
-	return base + evidencename.RunInfix + hex.EncodeToString(buf[:]), nil
+	// The suffix carries this process's origin proof, so the content boundary
+	// scans the operator base and never the generated suffix.
+	return base + evidencename.RunInfix + receiptcontent.NewRunSessionSuffix(base), nil
 }
 
 // RecoverTornRunSession abandons a damaged run without flushing or modifying its
@@ -156,6 +152,9 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	next, err := NewRunSessionID(base)
 	if err != nil {
 		return "", err
+	}
+	if err := r.checkSessionContent(next); err != nil {
+		return "", fmt.Errorf("recorder: recovery session: %w", err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

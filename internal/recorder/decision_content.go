@@ -24,7 +24,7 @@ var decisionRecordProducer = receiptcontent.Register(receiptcontent.Schema{
 		"timestamp":                 receiptcontent.Generated,
 		"signature":                 receiptcontent.Generated,
 		"type":                      receiptcontent.Content,
-		"session_id":                receiptcontent.Identity,
+		"session_id":                receiptcontent.RunSession,
 		"manifest_ref":              receiptcontent.Content,
 		"verdict":                   receiptcontent.Content,
 		"scanner_result":            receiptcontent.Content,
@@ -77,13 +77,14 @@ const GroupGateContentKind = "pipelock.receipt_group_gate.v1"
 
 // GroupGateFields classifies a receipt group gate detail. Every member is
 // produced by the group opener from its own manifest, key and generated group
-// identity; only the shard session embeds the operator's session base, and it
-// is an identity that is validated, never redacted.
+// identity; only the shard session embeds the operator's session base. Its
+// proven run suffix is excluded and the base is an identity: validated, never
+// redacted.
 func GroupGateFields() map[string]receiptcontent.Class {
 	return map[string]receiptcontent.Class{
 		"group_id":                      receiptcontent.Generated,
 		"shard_index":                   receiptcontent.Generated,
-		"session_id":                    receiptcontent.Identity,
+		"session_id":                    receiptcontent.RunSession,
 		"open_manifest_sha256":          receiptcontent.Generated,
 		"signer_key":                    receiptcontent.Generated,
 		"previous_group_id":             receiptcontent.Generated,

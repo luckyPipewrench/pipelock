@@ -134,6 +134,14 @@ func (p *Proxy) recordCredentialAudienceAllow(cfg *config.Config, ctx audit.LogC
 // the signed receipt itself (not just the advisory extension) could not be
 // recorded; callers under require_receipts treat that as fail-closed.
 func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
+	return p.emitAllowPathReceipt(cfg, opts)
+}
+
+// emitAllowPathReceipt confirms both configured families for a decision that
+// permits an effect. Unlike request admission, it does not open an intent that
+// would need a later outcome. Required writes use the same durable family and
+// group-quarantine rules as credential and issuer exceptions.
+func (p *Proxy) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
 	if p == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}
@@ -235,6 +243,10 @@ func (rp *ReverseProxyHandler) recordCredentialAudienceAllow(cfg *config.Config,
 }
 
 func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
+	return rp.emitAllowPathReceipt(cfg, opts)
+}
+
+func (rp *ReverseProxyHandler) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) error {
 	if rp == nil {
 		return errCredentialAudienceReceiptEmitterUnavailable
 	}

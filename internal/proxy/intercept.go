@@ -2161,6 +2161,12 @@ func newInterceptHandler(
 					Target:             targetURL,
 					Suppress:           ic.Config.Suppress,
 					ResponseScanExempt: interceptRespExempt,
+					ConfirmFinding: sseFindingReceiptConfirmer(ic.Config, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}, ic.receiptShard), func(cfg *config.Config, opts receipt.EmitOpts) error {
+						if ic.Proxy == nil {
+							return errReceiptEmitterUnavailable
+						}
+						return ic.Proxy.emitAllowPathReceipt(cfg, opts)
+					}),
 					OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 						recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, []scanner.ObservedCoreMatch{observed}, TransportConnect)
 					},
@@ -2231,6 +2237,13 @@ func newInterceptHandler(
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
+			if errors.Is(streamErr, mcp.ErrReceiptRequired) {
+				ic.Logger.LogError(actx, streamErr)
+				ic.Metrics.RecordTLSResponseBlocked(receiptEmissionFailedLayer)
+				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, receiptEmissionFailedLayer)
+				_ = httpstream.Abort(r.Context(), streamErr)
+				return
+			}
 			// Findings and incomplete scans keep their evidence below, even
 			// when the client also went away.
 			if streamErr != nil && !IsSSEStreamFinding(streamErr) && !IsSSEStreamScanError(streamErr) {
@@ -2879,6 +2892,23 @@ func newInterceptHandler(
 				default:
 					// warn/forward: log and forward unmodified.
 					ic.Logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
+				}
+				if ic.Config.FlightRecorder.RequireReceipts {
+					var receiptErr error
+					if ic.Proxy == nil {
+						receiptErr = errReceiptEmitterUnavailable
+					} else {
+						receiptErr = ic.Proxy.emitAllowPathReceipt(ic.Config, withReceiptShard(receipt.EmitOpts{
+							ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+							Layer: responseScanLayer, Pattern: reason, Transport: "intercept",
+							Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+						}, ic.receiptShard))
+					}
+					if receiptErr != nil {
+						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), receiptEmissionBlockReason, http.StatusForbidden)
+						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
+						return
+					}
 				}
 			}
 		}

@@ -2957,6 +2957,7 @@ responseScanning:
 				Target:             resp.Request.URL.String(),
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: revRespExempt,
+				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())), rp.emitAllowPathReceipt),
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportReverse)
 				},
@@ -2986,6 +2987,11 @@ responseScanning:
 				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", sseResponsePromptHit || IsSSEStreamFinding(err))
 			}
 			if err == nil {
+				return
+			}
+			if errors.Is(err, mcp.ErrReceiptRequired) {
+				rp.recordRequiredReceiptBlock(err, TransportReverse)
+				recordReverseOutcome(resp.StatusCode, -1, receiptEmissionFailedLayer)
 				return
 			}
 			// Findings and incomplete scans keep their evidence below, even
@@ -3506,6 +3512,20 @@ responseScanning:
 		return nil
 	}
 
+	if cfg.FlightRecorder.RequireReceipts {
+		err := rp.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
+			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL,
+			RequestID: requestID, Agent: agent,
+		}, receiptShardFromContext(resp.Request.Context())))
+		if err != nil {
+			rp.recordRequiredReceiptBlock(err, TransportReverse)
+			replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))
+			recordReverseOutcome(http.StatusForbidden, 0, receiptEmissionFailedLayer)
+			return nil
+		}
+	}
 	if action == config.ActionStrip {
 		if result.TransformedContent != "" && resp.StatusCode != http.StatusPartialContent {
 			// Replace body with redacted content. Remove body-derived

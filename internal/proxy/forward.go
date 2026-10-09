@@ -2440,6 +2440,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Target:             targetURL,
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: fwdRespExempt,
+				ConfirmFinding:     sseFindingReceiptConfirmer(cfg, withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard), p.emitAllowPathReceipt),
 				OnObservedCoreResponse: func(observed scanner.ObservedCoreMatch) {
 					recordObservedCoreResponseMatches(p.metrics, p.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportForward)
 				},
@@ -2512,6 +2513,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, sc, sseOpts); err != nil {
+			if errors.Is(err, mcp.ErrReceiptRequired) {
+				p.recordRequiredReceiptBlock(err, TransportForward)
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = receiptEmissionFailedLayer
+				_ = httpstream.Abort(r.Context(), err)
+				return
+			}
 			// Findings and incomplete scans keep their evidence below, even
 			// when the client also went away.
 			if !IsSSEStreamFinding(err) && !IsSSEStreamScanError(err) {
@@ -3201,6 +3209,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
 				default:
 					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
+				}
+				if cfg.FlightRecorder.RequireReceipts {
+					err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+						ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+						Layer: responseScanLayer, Pattern: reason, Transport: TransportForward,
+						Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+					}, selectedReceiptShard))
+					if err != nil {
+						p.recordRequiredReceiptBlock(err, TransportForward)
+						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), receiptEmissionBlockReason, http.StatusForbidden)
+						outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+						return
+					}
 				}
 			}
 		} // end ResponseScanningEnabled

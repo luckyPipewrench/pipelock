@@ -6985,6 +6985,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		})
 		switch d {
 		case hitl.DecisionAllow:
+			action = config.ActionAllow
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			if result.TransformedContent == "" {
@@ -7002,6 +7003,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				return true, "", true, false
 			}
 			out = result.TransformedContent
+			action = config.ActionStrip
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
@@ -7034,6 +7036,20 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	default:
 		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
+	}
+	if cfg.FlightRecorder.RequireReceipts {
+		err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
+			Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
+			RequestID: requestID, Agent: agent,
+		}, receiptShardFromContext(reqCtx)))
+		if err != nil {
+			p.recordRequiredReceiptBlock(err, TransportFetch)
+			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden,
+				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
+			return true, "", true, false
+		}
 	}
 	return false, out, true, false
 }

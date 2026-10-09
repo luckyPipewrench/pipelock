@@ -2893,6 +2893,24 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	default:
 		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	}
+	// A warning or successful strip permits this response to leave an already
+	// established socket. Its handshake receipt cannot confirm this later
+	// decision, and a clean-stream summary does not describe the finding.
+	if r.cfg.FlightRecorder.RequireReceipts {
+		err := r.proxy.emitAllowPathReceipt(r.cfg, withReceiptShard(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: wsAction, Layer: responseScanLayer,
+			Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
+			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+		}, r.receiptShard))
+		if err != nil {
+			r.proxy.recordRequiredReceiptBlock(err, TransportWS)
+			log.LogError(actx, fmt.Errorf("confirm WebSocket response receipt: %w", err))
+			payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+			return nil, true
+		}
+	}
 	return msg, false
 }
 

@@ -589,18 +589,11 @@ func (m *MediaExposureFields) ToAuditInfo(transport string) audit.MediaExposureI
 	}
 }
 
-// mediaPolicyLogger captures the audit hooks a transport needs to emit
-// media_exposure events. Kept as an interface so tests and sites can pass
-// any object satisfying the shape (the real *audit.Logger does).
-type mediaPolicyLogger interface {
-	LogMediaExposure(ctx audit.LogContext, info audit.MediaExposureInfo)
-}
-
 // logMediaExposureIfPresent emits a media_exposure event when the verdict
 // carries an exposure payload. Centralizes the per-site logging so all
 // transport wires look identical and SIEM output stays consistent across
 // forward / connect / fetch / reverse.
-func logMediaExposureIfPresent(logger mediaPolicyLogger, ctx audit.LogContext, verdict MediaPolicyVerdict, transport string) {
+func logMediaExposureIfPresent(logger *audit.Logger, ctx audit.LogContext, verdict MediaPolicyVerdict, transport string) {
 	if verdict.Exposure == nil || logger == nil {
 		return
 	}

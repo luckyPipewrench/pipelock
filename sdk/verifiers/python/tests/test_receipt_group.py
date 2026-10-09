@@ -29,6 +29,24 @@ from pipelock_aarp_verify.group import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "receipt-groups.zip"
+
+
+def test_unreadable_group_manifest_is_incomplete(tmp_path):
+    for phase in ("open", "close"):
+        fixture = _extract_fixture("group-valid", tmp_path / phase)
+        trust = json.loads((fixture / "trust.json").read_text())
+        group_id = trust["group_id"]
+        keys = trust["trusted_keys"]
+        assert verify_receipt_group(fixture, group_id, keys)["verdict"] == GROUP_VALID
+        artifact = fixture / f"receipt-group-{group_id}-{phase}.json"
+        artifact.chmod(0)
+        try:
+            artifact.read_bytes()
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("cannot reproduce unreadable file")
+        assert verify_receipt_group(fixture, group_id, keys)["verdict"] == GROUP_INCOMPLETE
 ATTACK_FIXTURE_PARTS = tuple(
     Path(__file__).parents[2]
     / "fixtures"

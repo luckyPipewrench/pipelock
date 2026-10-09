@@ -115,15 +115,31 @@ fn read_entry_lines_prefix_using(
         .get_ref()
         .metadata()
         .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
+    finish_entry_snapshot(path, reader.get_ref().get_ref(), &before, &after)?;
+    parsed
+}
+
+fn finish_entry_snapshot(
+    path: &Path,
+    file: &std::fs::File,
+    before: &Metadata,
+    after: &Metadata,
+) -> Result<()> {
     let reopened = open_verifier_file(path)?;
-    if !same_open_file(reader.get_ref().get_ref(), &reopened)?
-        || !same_file_snapshot(&before, &after)
+    if !same_open_file(file, &reopened)?
+        || !same_file_snapshot(before, after)
+        || !same_file_snapshot(
+            before,
+            &reopened
+                .metadata()
+                .map_err(|err| VerifierError::Runtime(err.to_string()))?,
+        )
     {
         return Err(VerifierError::Runtime(
             "input changed while reading".to_string(),
         ));
     }
-    parsed
+    Ok(())
 }
 
 // Unix ctime detects ordinary same-inode overwrites even when mtime is
@@ -524,4 +540,25 @@ fn validate_projected_strings(entry: &serde_json::Value, line: usize, version: u
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod late_snapshot_tests {
+    #[test]
+    fn path_restat_detects_late_rewrite() {
+        let path = std::env::temp_dir().join(format!(
+            "pipelock-rust-late-snapshot-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"first\nsecond\n").unwrap();
+        let file = super::open_verifier_file(&path).unwrap();
+        let before = file.metadata().unwrap();
+        let after = file.metadata().unwrap();
+        super::finish_entry_snapshot(&path, &file, &before, &after).unwrap();
+        std::fs::write(&path, b"other\nsecond\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"other\nsecond\n");
+        let err = super::finish_entry_snapshot(&path, &file, &before, &after).unwrap_err();
+        assert!(err.to_string().contains("changed while reading"));
+        std::fs::remove_file(path).unwrap();
+    }
 }

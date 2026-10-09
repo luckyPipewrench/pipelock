@@ -3,6 +3,7 @@
 
 import { mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1239,3 +1240,35 @@ function trustedKeys(): string {
   };
   return `${keyInfo.public_key_hex},${keyInfo.rotated_public_key_hex}`;
 }
+
+test("JSONL pathname restat detects a rewrite after descriptor restat", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-late-snapshot-"));
+  const file = join(dir, "history.jsonl");
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const original = fs.fstatSync;
+  const fixed = new Date(1_700_000_000_000);
+  let calls = 0;
+  try {
+    writeFileSync(file, "first\nsecond\n");
+    utimesSync(file, fixed, fixed);
+    let lines = 0;
+    forEachVerifierJSONLLine(file, false, () => lines++);
+    assert.equal(lines, 2, "stable control");
+    t.mock.method(fs, "fstatSync", (...args: unknown[]) => {
+      const info = Reflect.apply(original, fs, args);
+      if (++calls === 2) {
+        writeFileSync(file, "other\nsecond\n");
+        utimesSync(file, fixed, fixed);
+        assert.equal(readFileSync(file, "utf8"), "other\nsecond\n");
+      }
+      return info;
+    });
+    syncBuiltinESMExports();
+    assert.throws(() => forEachVerifierJSONLLine(file, false, () => {}), /changed while reading/u);
+    assert.equal(calls, 2, "mutation followed the final descriptor stat");
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

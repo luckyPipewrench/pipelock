@@ -554,7 +554,15 @@ export function readSessionEvidence(
   session: string,
   tail: SessionTail = "whole",
 ): SessionEvidence {
-  const read = readSessionLines(indexRecorderFiles(dir), session, tail);
+  const before = baseInventory(dir, session, false);
+  let read: SessionLinesRead;
+  try {
+    read = readSessionLines(indexRecorderFiles(dir), session, tail);
+  } finally {
+    if (baseInventory(dir, session, false) !== before) {
+      throw new InvalidError("evidence changed during verification; no verdict reached");
+    }
+  }
   return {
     lines: read.lines,
     typed: extractTypedFromEntries(
@@ -1121,6 +1129,55 @@ function chainAcceptable(res: ChainResult): boolean {
 // It throws only when the directory cannot be enumerated; a caller must treat
 // that as incomplete, never as healthy.
 export async function verifyBase(
+  dir: string,
+  base: string,
+  opts: BaseVerifyOptions,
+): Promise<BaseReport> {
+  return withBaseHistorySnapshot(dir, base, () => verifyBaseInner(dir, base, opts));
+}
+
+// Defer publication until all reads used to assemble a base report finish.
+export async function withBaseHistorySnapshot<T>(
+  dir: string,
+  base: string,
+  consume: () => Promise<T>,
+): Promise<T> {
+  const before = baseInventory(dir, base);
+  try {
+    return await consume();
+  } finally {
+    let changed = true;
+    try {
+      changed = baseInventory(dir, base) !== before;
+    } catch {
+      // Unavailable final inventory cannot support either verdict.
+    }
+    if (changed) throw new InvalidError("evidence changed during verification; no verdict reached");
+  }
+}
+
+function baseInventory(dir: string, base: string, baseMode = true): string {
+  const root = statSync(dir, { bigint: true });
+  const items: unknown[] = [[root.dev.toString(), root.ino.toString()]];
+  for (const name of readdirSync(dir).sort()) {
+    const parsed = parseEvidenceFilename(name);
+    if (
+      !(
+        parsed !== undefined &&
+        (baseMode ? isBaseChain(parsed.session, base) : parsed.session === base)
+      ) &&
+      !(baseMode && chainLinkFilePredecessor(name) !== undefined)
+    )
+      continue;
+    const info = lstatSync(path.join(dir, name), { bigint: true });
+    items.push(
+      [name, info.dev, info.ino, info.mode, info.size, info.mtimeNs, info.ctimeNs].map(String),
+    );
+  }
+  return sha256Hex(JSON.stringify(items));
+}
+
+async function verifyBaseInner(
   dir: string,
   base: string,
   opts: BaseVerifyOptions,

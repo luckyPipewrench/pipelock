@@ -142,3 +142,27 @@ def test_jsonl_reader_closes_descriptor_after_initial_metadata_failure(tmp_path,
     assert len(opened) == 1
     with pytest.raises(OSError):
         real_fstat(opened[0])
+
+
+def test_jsonl_path_restat_detects_late_same_inode_rewrite(tmp_path, monkeypatch):
+    from pipelock_aarp_verify import input_file
+
+    target = tmp_path / "late-change.jsonl"
+    target.write_bytes(b"first\nsecond\n")
+    assert list(input_file.iter_verifier_jsonl_lines(target)) == [b"first\n", b"second\n"]
+    real_fstat = os.fstat
+    calls = 0
+
+    def restat_then_rewrite(fd):
+        nonlocal calls
+        calls += 1
+        info = real_fstat(fd)
+        if calls == 2:
+            target.write_bytes(b"other\nsecond\n")
+            os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+            assert target.read_bytes() == b"other\nsecond\n"
+        return info
+
+    monkeypatch.setattr(input_file.os, "fstat", restat_then_rewrite)
+    with pytest.raises(OSError, match="changed while reading"):
+        list(input_file.iter_verifier_jsonl_lines(target))

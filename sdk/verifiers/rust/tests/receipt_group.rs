@@ -19,6 +19,82 @@ const ATTACK_FIXTURE_PARTS: [&[u8]; 7] = [
 const MATRIX_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-matrix.zip.gz");
 const V2_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-v2.zip");
 
+#[cfg(unix)]
+#[test]
+fn unreadable_manifests_are_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    for phase in ["open", "close"] {
+        let dir = fixture("group-valid");
+        let (group, keys) = trust(&dir);
+        assert_eq!(
+            verify_receipt_group(&dir, &group, &keys).verdict,
+            "GROUP_VALID"
+        );
+        let path = dir.join(format!("receipt-group-{group}-{phase}.json"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        let error = fs::read(&path).expect_err("must reproduce an unreadable manifest");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let report = verify_receipt_group(&dir, &group, &keys);
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{phase}: {report:?}");
+    }
+}
+
+#[test]
+fn malformed_opening_field_names_do_not_change_the_invalid_verdict() {
+    let dir = fixture("group-valid");
+    let (group, keys) = trust(&dir);
+    assert_eq!(
+        verify_receipt_group(&dir, &group, &keys).verdict,
+        "GROUP_VALID"
+    );
+    let path = dir.join(format!("receipt-group-{group}-open.json"));
+    let mut opening: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    opening
+        .as_object_mut()
+        .unwrap()
+        .insert("evidence read unavailable: field".into(), Value::Bool(true));
+    fs::write(path, serde_json::to_vec(&opening).unwrap()).unwrap();
+    let report = verify_receipt_group(&dir, &group, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_native_ael_files_are_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    for artifact in ["manifest", "key", "recorder"] {
+        let dir = fixture("group-valid");
+        let (group, keys) = trust(&dir);
+        assert_eq!(
+            verify_receipt_group(&dir, &group, &keys).verdict,
+            "GROUP_VALID"
+        );
+        let run = fs::read_dir(dir.join("ael"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let path = match artifact {
+            "manifest" => run.join("manifest.json"),
+            "key" => fs::read_dir(run.join("keys"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+            _ => run.join("recorders/pipelock.jsonl"),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let report = verify_receipt_group(&dir, &group, &keys);
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{artifact}: {report:?}");
+    }
+}
+
 fn attack_fixture() -> Vec<u8> {
     ATTACK_FIXTURE_PARTS.concat()
 }

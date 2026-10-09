@@ -6,8 +6,8 @@ use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
     chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
     refuse_symlink_in_evidence_root_path, resolve_base_sessions, run_session_base, verify_base,
-    with_pinned_evidence_directory, BaseVerifyOptions, SessionReadError,
-    FINDING_OUTER_CHAIN_BROKEN,
+    with_base_history_snapshot, with_pinned_evidence_directory, BaseVerifyOptions,
+    SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
@@ -320,84 +320,85 @@ fn run_chain_set_command(
         .filter(|key| !key.is_empty())
         .map(str::to_string)
         .collect();
-    let (sessions, base_report) = resolve_base_sessions(dir, base)
-        .and_then(|sessions| {
+    let report = with_base_history_snapshot(dir, base, || {
+        let (sessions, base_report) = resolve_base_sessions(dir, base).and_then(|sessions| {
             let opts = BaseVerifyOptions {
                 trusted_keys: trusted_keys.clone(),
                 endorsements: endorsements.clone(),
             };
             verify_base(dir, base, &opts).map(|report| (sessions, report))
-        })
-        .map_err(|err| {
-            VerifierError::Runtime(format!("restart continuity check incomplete: {err}"))
         })?;
-    let mut chains = Vec::new();
-    for session in targets.as_ref().unwrap_or(&sessions) {
-        let label = format!("{} (session {session})", display_dir.display());
-        let (keys, own) = chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
-        let chain = match read_session_receipts(dir, session) {
-            Ok((action, evidence)) => typed_chain_report(
-                label,
-                ExtractedReceipts { action, evidence },
-                &keys.join(","),
-                parsed.allow_unpinned,
-                &own,
-                session,
-            ),
-            Err(err) => ChainCommandReport {
-                path: label,
-                error: Some(format!("extract receipts: {err}")),
-                ..ChainCommandReport::default()
+        let mut chains = Vec::new();
+        for session in targets.as_ref().unwrap_or(&sessions) {
+            let label = format!("{} (session {session})", display_dir.display());
+            let (keys, own) =
+                chain_scoped_trust(&base_report, session, &trusted_keys, &endorsements);
+            let chain = match read_session_receipts(dir, session) {
+                Ok((action, evidence)) => typed_chain_report(
+                    label,
+                    ExtractedReceipts { action, evidence },
+                    &keys.join(","),
+                    parsed.allow_unpinned,
+                    &own,
+                    session,
+                ),
+                Err(err) => ChainCommandReport {
+                    path: label,
+                    error: Some(format!("extract receipts: {err}")),
+                    ..ChainCommandReport::default()
+                },
+            };
+            chains.push(ChainSetEntry {
+                session: session.clone(),
+                report: chain,
+            });
+        }
+        let healthy = base_report.healthy();
+        let report = ChainSetReport {
+            path: display_dir.display().to_string(),
+            base: base.to_string(),
+            valid: healthy && chains.iter().all(|c| c.report.valid),
+            chains,
+            continuity: ChainSetContinuity {
+                healthy,
+                chain_count: base_report.chains.len(),
+                linked: base_report
+                    .chains
+                    .iter()
+                    .filter_map(|c| {
+                        c.link.as_ref().map(|link| ChainSetLink {
+                            session: c.session.clone(),
+                            predecessor_session: link.predecessor_session.clone(),
+                            predecessor_tail_seq: link.predecessor_tail_seq,
+                            trust: if c.link_trust.is_empty() {
+                                "untrusted".to_string()
+                            } else {
+                                c.link_trust.clone()
+                            },
+                        })
+                    })
+                    .collect(),
+                discontinuities: base_report
+                    .chains
+                    .iter()
+                    .filter_map(|c| {
+                        c.recovery_seal
+                            .as_ref()
+                            .map(|seal| crate::types::ChainSetDiscontinuity {
+                                session: c.session.clone(),
+                                predecessor_session: seal.predecessor_session.clone(),
+                                shard: seal.shard.clone(),
+                                damage_offset: seal.damage_offset,
+                            })
+                    })
+                    .collect(),
+                unlinked: base_report.unlinked(),
+                findings: base_report.findings.clone(),
             },
         };
-        chains.push(ChainSetEntry {
-            session: session.clone(),
-            report: chain,
-        });
-    }
-    let healthy = base_report.healthy();
-    let report = ChainSetReport {
-        path: display_dir.display().to_string(),
-        base: base.to_string(),
-        valid: healthy && chains.iter().all(|c| c.report.valid),
-        chains,
-        continuity: ChainSetContinuity {
-            healthy,
-            chain_count: base_report.chains.len(),
-            linked: base_report
-                .chains
-                .iter()
-                .filter_map(|c| {
-                    c.link.as_ref().map(|link| ChainSetLink {
-                        session: c.session.clone(),
-                        predecessor_session: link.predecessor_session.clone(),
-                        predecessor_tail_seq: link.predecessor_tail_seq,
-                        trust: if c.link_trust.is_empty() {
-                            "untrusted".to_string()
-                        } else {
-                            c.link_trust.clone()
-                        },
-                    })
-                })
-                .collect(),
-            discontinuities: base_report
-                .chains
-                .iter()
-                .filter_map(|c| {
-                    c.recovery_seal
-                        .as_ref()
-                        .map(|seal| crate::types::ChainSetDiscontinuity {
-                            session: c.session.clone(),
-                            predecessor_session: seal.predecessor_session.clone(),
-                            shard: seal.shard.clone(),
-                            damage_offset: seal.damage_offset,
-                        })
-                })
-                .collect(),
-            unlinked: base_report.unlinked(),
-            findings: base_report.findings.clone(),
-        },
-    };
+        Ok(report)
+    })
+    .map_err(|err| VerifierError::Runtime(format!("restart continuity check incomplete: {err}")))?;
     emit_chain_set(&report, parsed.json)?;
     if !report.valid {
         let mut reasons = Vec::new();
@@ -415,11 +416,12 @@ fn run_chain_set_command(
                 failed.join(", ")
             ));
         }
-        if !healthy {
+        if !report.continuity.healthy {
             reasons.push(format!(
                 "restart continuity: {} finding(s): {}",
-                base_report.findings.len(),
-                base_report
+                report.continuity.findings.len(),
+                report
+                    .continuity
                     .findings
                     .iter()
                     .map(|f| format!("{} ({})", f.kind, f.session))

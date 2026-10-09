@@ -30,8 +30,9 @@ use crate::rotation::{
 };
 use crate::types::{ChainResult, Receipt};
 use crate::util::{
-    read_verifier_bytes, reject_duplicate_keys, same_open_file, set_pinned_evidence_directory,
-    sha256_hex, string_at, u64_at, Result as VerifierResult, VerifierError,
+    metadata_identity, read_verifier_bytes, reject_duplicate_keys, same_directory_identity,
+    same_open_file, set_pinned_evidence_directory, sha256_hex, string_at, u64_at,
+    Result as VerifierResult, VerifierError,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Serialize;
@@ -819,7 +820,11 @@ pub(crate) fn read_session_evidence(
     dir: &Path,
     session: &str,
 ) -> Result<(Option<String>, ExtractedReceipts), SessionReadError> {
-    let lines = read_session_lines(&index_recorder_files(dir)?, session)?;
+    let lines = with_history_snapshot(
+        dir,
+        |name| parse_evidence_filename(name).is_some_and(|(found, _)| found == session),
+        || read_session_lines(&index_recorder_files(dir)?, session),
+    )?;
     let outer = verify_recorder_chain(&lines.iter().map(|l| l.line.as_str()).collect::<Vec<_>>());
     let typed =
         extract_typed_from_lines(lines).map_err(|err| SessionReadError::from(err.to_string()))?;
@@ -1569,6 +1574,69 @@ fn chain_acceptable(res: &ChainResult) -> bool {
 /// error means the directory could not be enumerated; a caller must treat
 /// that as incomplete, never as healthy.
 pub fn verify_base(dir: &Path, base: &str, opts: &BaseVerifyOptions) -> Result<BaseReport, String> {
+    with_base_history_snapshot(dir, base, || verify_base_inner(dir, base, opts))
+}
+
+pub(crate) fn with_base_history_snapshot<T>(
+    dir: &Path,
+    base: &str,
+    consume: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_history_snapshot(
+        dir,
+        |name| {
+            parse_evidence_filename(name).is_some_and(|(session, _)| is_base_chain(&session, base))
+                || chain_link_file_predecessor(name).is_some()
+        },
+        consume,
+    )
+}
+
+// Bind all constituent reads, including error exits, to one selected inventory.
+fn with_history_snapshot<T, E: From<String>>(
+    dir: &Path,
+    selected: impl Fn(&str) -> bool,
+    consume: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let root = fs::metadata(dir).map_err(|err| E::from(err.to_string()))?;
+    let before = history_inventory(dir, &selected).map_err(E::from)?;
+    let result = consume();
+    let stable_root = fs::metadata(dir).is_ok_and(|after| same_directory_identity(&root, &after));
+    if !stable_root || history_inventory(dir, &selected).ok().as_ref() != Some(&before) {
+        return Err(E::from(
+            "evidence changed during verification; no verdict reached".to_string(),
+        ));
+    }
+    result
+}
+
+fn history_inventory(dir: &Path, selected: &impl Fn(&str) -> bool) -> Result<String, String> {
+    let mut items = BTreeMap::new();
+    for entry in fs::read_dir(dir).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !selected(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|err| err.to_string())?;
+        let stamp = format!(
+            "{:?}:{}:{:?}:{:?}",
+            metadata_identity(&metadata),
+            metadata.len(),
+            metadata.modified().ok(),
+            metadata.file_type()
+        );
+        items.insert(name, stamp);
+    }
+    let bytes = serde_json::to_vec(&items).map_err(|err| err.to_string())?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn verify_base_inner(
+    dir: &Path,
+    base: &str,
+    opts: &BaseVerifyOptions,
+) -> Result<BaseReport, String> {
     let ix = index_recorder_files(dir)?;
     let sessions: Vec<String> = ix
         .files
@@ -2187,6 +2255,75 @@ mod go_json_escape_tests {
             .join("../../conformance/testdata/go-json-escapes")
             .join(name);
         std::fs::read_to_string(path).expect("read fixture")
+    }
+
+    #[test]
+    fn base_snapshot_rejects_changes_after_success_and_error() {
+        use super::*;
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/testdata/run-chains");
+        let key = fs::read_to_string(fixture.join("signer-key.hex")).unwrap();
+        for change in ["add", "rewrite", "remove", "error", "unrelated"] {
+            let dir = std::env::temp_dir().join(format!(
+                "pipelock-rust-base-snapshot-{}-{change}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            for entry in fs::read_dir(fixture.join("valid")).unwrap() {
+                let entry = entry.unwrap();
+                if entry.path().is_file() {
+                    fs::copy(entry.path(), dir.as_path().join(entry.file_name())).unwrap();
+                }
+            }
+            let opts = BaseVerifyOptions {
+                trusted_keys: vec![key.trim().to_string()],
+                ..Default::default()
+            };
+            assert!(verify_base(dir.as_path(), "proxy", &opts)
+                .unwrap()
+                .healthy());
+            let target = fs::read_dir(dir.as_path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "jsonl")
+                })
+                .unwrap();
+            let result: Result<BaseReport, String> =
+                with_base_history_snapshot(dir.as_path(), "proxy", || {
+                    let report = verify_base(dir.as_path(), "proxy", &opts)?;
+                    assert!(report.healthy(), "producer control after read");
+                    for chain in &report.chains {
+                        let (action, _) =
+                            read_session_receipts(dir.as_path(), &chain.session).unwrap();
+                        assert!(!action.is_empty());
+                    }
+                    match change {
+                        "add" | "error" => {
+                            fs::write(dir.as_path().join("evidence-proxy-999.jsonl"), "not-json\n")
+                                .unwrap()
+                        }
+                        "rewrite" => fs::write(&target, fs::read(&target).unwrap()).unwrap(),
+                        "remove" => fs::remove_file(&target).unwrap(),
+                        _ => fs::write(dir.as_path().join("unrelated.txt"), "other").unwrap(),
+                    }
+                    if change == "error" {
+                        Err("signature mismatch".to_string())
+                    } else {
+                        Ok(report)
+                    }
+                });
+            if change == "unrelated" {
+                assert!(result.unwrap().healthy());
+            } else {
+                assert!(
+                    result.unwrap_err().contains("no verdict reached"),
+                    "{change}"
+                );
+            }
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]

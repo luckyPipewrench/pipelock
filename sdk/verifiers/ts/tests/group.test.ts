@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -378,6 +379,32 @@ test("group verification fails closed for missing close, deleted shard, tampered
     assert.equal((await verifyReceiptGroup(base, id, [])).verdict, "GROUP_INVALID");
   } finally {
     rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("unreadable group manifests are incomplete rather than invalid", async (t) => {
+  const base = join(fixtures, "group-valid"),
+    id = groupID(base),
+    trusted = keys(base);
+  for (const phase of ["open", "close"]) {
+    const dir = mkdtempSync(join(tmpdir(), "ts-group-unavailable-"));
+    try {
+      cpSync(base, dir, { recursive: true });
+      assert.equal((await verifyReceiptGroup(dir, id, trusted)).verdict, "GROUP_VALID");
+      const file = join(dir, `receipt-group-${id}-${phase}.json`);
+      chmodSync(file, 0);
+      try {
+        readFileSync(file);
+        t.skip("cannot reproduce unreadable file");
+        return;
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, "EACCES");
+        assert.equal(typeof (error as NodeJS.ErrnoException).errno, "number");
+      }
+      assert.equal((await verifyReceiptGroup(dir, id, trusted)).verdict, "GROUP_INCOMPLETE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

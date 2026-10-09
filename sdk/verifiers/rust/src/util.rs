@@ -562,3 +562,37 @@ mod tests {
             .expect("maximum exact integer must remain valid");
     }
 }
+
+pub(crate) fn same_directory_identity(
+    before: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir() && after.is_dir()
+    }
+}
+
+pub(crate) fn metadata_identity(metadata: &std::fs::Metadata) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        [
+            metadata.dev().to_be_bytes().as_slice(),
+            metadata.ino().to_be_bytes().as_slice(),
+            metadata.ctime().to_be_bytes().as_slice(),
+            metadata.ctime_nsec().to_be_bytes().as_slice(),
+        ]
+        .concat()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Vec::new()
+    }
+}

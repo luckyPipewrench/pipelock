@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baseHealthy, baseUnlinked, verifyBase } from "../src/chain-set.js";
+import {
+  baseHealthy,
+  baseUnlinked,
+  readSessionReceipts,
+  verifyBase,
+  withBaseHistorySnapshot,
+} from "../src/chain-set.js";
 import { loadRotationEndorsementFile, type RotationEndorsement } from "../src/rotation.js";
 import { findPackageRoot } from "./paths.js";
 
@@ -374,4 +380,67 @@ test("malformed link files are findings, not skipped", async () => {
   const control = await verifyBase(valid, "proxy", { trustedKeys: [KEY], endorsements: [] });
   assert.deepEqual(control.findings, []);
   assert.equal(control.chains.filter((c) => c.link !== undefined).length, 1);
+});
+
+test("base inventory changes cannot produce a healthy result", async () => {
+  for (const change of [
+    "add shard",
+    "rewrite consumed",
+    "remove shard",
+    "stable malformed",
+    "unrelated",
+  ] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-base-snapshot-"));
+    try {
+      cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
+      const opts = { trustedKeys: [KEY], endorsements: [] };
+      assert.ok(baseHealthy(await verifyBase(dir, "proxy", opts)), "producer control");
+      const name = readdirSync(dir).find(
+        (file) => file.startsWith("evidence-") && file.endsWith(".jsonl"),
+      )!;
+      const target = join(dir, name);
+      if (change === "stable malformed") writeFileSync(target, "not-json\n");
+      const pending = verifyBase(dir, "proxy", opts);
+      if (change === "add shard")
+        writeFileSync(join(dir, name.replace(/-0\.jsonl$/u, "-999.jsonl")), "not-json\n");
+      if (change === "rewrite consumed") writeFileSync(target, readFileSync(target));
+      if (change === "remove shard") rmSync(target);
+      if (change === "unrelated") writeFileSync(join(dir, "unrelated.txt"), "other");
+      if (change !== "unrelated" && change !== "stable malformed") {
+        await assert.rejects(pending, /no verdict reached/u, change);
+        continue;
+      }
+      const report = await pending;
+      if (change === "unrelated")
+        assert.ok(baseHealthy(report), "unrelated files do not alter the base");
+      else {
+        assert.ok(!baseHealthy(report), `${change}: partial evidence cannot be healthy`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("report snapshot binds a verified base to later session reads and error exits", async () => {
+  for (const failure of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-report-snapshot-"));
+    try {
+      cpSync(join(FIXTURES, "valid"), dir, { recursive: true });
+      await assert.rejects(
+        withBaseHistorySnapshot(dir, "proxy", async () => {
+          const report = await verifyBase(dir, "proxy", { trustedKeys: [KEY], endorsements: [] });
+          assert.ok(baseHealthy(report), "producer base control");
+          for (const chain of report.chains)
+            assert.ok(readSessionReceipts(dir, chain.session).action.length > 0);
+          writeFileSync(join(dir, "evidence-proxy-999.jsonl"), "not-json\n");
+          if (failure) throw new Error("consumer failure");
+          return report;
+        }),
+        /no verdict reached/u,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });

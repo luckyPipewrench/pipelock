@@ -1548,6 +1548,12 @@ def verify_receipt_group(
         ValueError,
     ) as exc:
         result["verdict"] = GROUP_INVALID
+        cause: BaseException | None = exc
+        while cause is not None:
+            if isinstance(cause, OSError) and not isinstance(cause, FileNotFoundError):
+                result["verdict"] = GROUP_INCOMPLETE
+                break
+            cause = cause.__cause__
         result["error"] = str(exc)
         return result
     except Exception as exc:  # noqa: BLE001 - untrusted input must never traceback

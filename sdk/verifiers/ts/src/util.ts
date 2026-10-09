@@ -222,6 +222,9 @@ export function forEachVerifierJSONLLine(
       after.isSymbolicLink() ||
       after.dev !== initial.dev ||
       after.ino !== initial.ino ||
+      after.size !== initial.size ||
+      after.mtimeNs !== initial.mtimeNs ||
+      after.ctimeNs !== initial.ctimeNs ||
       after.ino === 0n
     ) {
       throw new RuntimeError("evidence file changed while reading");

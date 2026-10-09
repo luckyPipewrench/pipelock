@@ -302,6 +302,15 @@ if (!isMainThread) {
     assert.equal(stringResult.valid, true, stringResult.error);
   });
 
+  test("large valid raw evidence is not refused by the archive budget", async () => {
+    const source = readFileSync(path.join(testdata, "g1-valid-chain.jsonl"));
+    const bytes = Buffer.concat([source, Buffer.alloc((8 << 20) + 1, "\n")]);
+    const result = await verifyBytes(bytes, primaryKey, "uint8array");
+    const control = oracleByName.get("g1-valid-chain.jsonl");
+    assert.equal(result.valid, true, result.error);
+    assertChainParity(result, control, "large valid raw evidence");
+  });
+
   test("all raw JSONL golden fixtures match the Go receipt verifier", async () => {
     assertCaseListCoversTopLevelJSONLFixtures(cases, testdata);
     for (const tc of cases) {

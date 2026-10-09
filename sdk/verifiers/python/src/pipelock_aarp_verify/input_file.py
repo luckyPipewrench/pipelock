@@ -77,5 +77,8 @@ def iter_verifier_jsonl_lines(path: str | Path) -> Iterator[bytes]:
                 or before.st_ctime_ns != after.st_ctime_ns
                 or path_after.st_dev != before.st_dev
                 or path_after.st_ino != before.st_ino
+                or path_after.st_size != before.st_size
+                or path_after.st_mtime_ns != before.st_mtime_ns
+                or path_after.st_ctime_ns != before.st_ctime_ns
             ):
                 raise OSError("input changed while reading")

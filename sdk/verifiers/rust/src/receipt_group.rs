@@ -15,7 +15,7 @@ use crate::recorder::{
     extract_typed_from_lines, read_entry_lines_prefix, read_entry_lines_text, RecorderLine,
 };
 use crate::recorder_chain::verify_recorder_chain;
-use crate::util::{reject_duplicate_keys, sha256_hex};
+use crate::util::{metadata_identity, reject_duplicate_keys, same_directory_identity, sha256_hex};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -294,18 +294,6 @@ fn report_from_inner(
     }
 }
 
-fn same_directory_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        before.dev() == after.dev() && before.ino() == after.ino()
-    }
-    #[cfg(not(unix))]
-    {
-        before.is_dir() && after.is_dir()
-    }
-}
-
 fn verify_inner(
     dir: &Path,
     group_id: &str,
@@ -382,7 +370,7 @@ fn verify_inner(
                 error: Some("receipt group has no signed close manifest".into()),
             });
         }
-        Err(reason) => return Err(("GROUP_INVALID", reason)),
+        Err(reason) => return Err(invalid(reason)),
     };
     let close: ReceiptGroupClose = strict_artifact(&close_raw).map_err(invalid)?;
     validate_close(&close, &open, &open_hash).map_err(invalid)?;
@@ -446,7 +434,19 @@ fn verify_inner(
 }
 
 fn invalid(reason: String) -> (&'static str, String) {
-    ("GROUP_INVALID", reason)
+    if reason.starts_with("evidence read unavailable: ") {
+        ("GROUP_INCOMPLETE", reason)
+    } else {
+        ("GROUP_INVALID", reason)
+    }
+}
+
+fn unavailable_read(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        error.to_string()
+    } else {
+        format!("evidence read unavailable: {error}")
+    }
 }
 
 fn strict_artifact<T: for<'de> Deserialize<'de> + Serialize>(raw: &[u8]) -> Result<T, String> {
@@ -1366,8 +1366,13 @@ fn verify_ael_inventory(
         let Some((signer, group_id, completed, _session)) = owners.get(&run) else {
             return Err(format!("native AEL run {run} has no signed session owner"));
         };
-        verify_ael_records(dir, &run, signer, *completed)
-            .map_err(|err| format!("native AEL run {run} invalid: {err}"))?;
+        verify_ael_records(dir, &run, signer, *completed).map_err(|err| {
+            if let Some(detail) = err.strip_prefix("evidence read unavailable: ") {
+                format!("evidence read unavailable: native AEL run {run}: {detail}")
+            } else {
+                format!("native AEL run {run} invalid: {err}")
+            }
+        })?;
         if !completed {
             if group_id == &open.group_id {
                 open_tail = true;
@@ -1986,7 +1991,7 @@ fn bounded_read(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
         return Err("invalid artifact basename".into());
     }
     let p = dir.join(name);
-    let m = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+    let m = fs::symlink_metadata(&p).map_err(unavailable_read)?;
     if !m.is_file() || m.file_type().is_symlink() || m.len() > MAX_GROUP_FILE {
         return Err("invalid receipt group artifact file".into());
     }
@@ -2005,8 +2010,8 @@ fn open_checked_regular(path: &Path, before: &fs::Metadata) -> Result<fs::File, 
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = options.open(path).map_err(|e| e.to_string())?;
-    let opened = file.metadata().map_err(|e| e.to_string())?;
+    let file = options.open(path).map_err(unavailable_read)?;
+    let opened = file.metadata().map_err(unavailable_read)?;
     if !opened.is_file() {
         return Err("evidence artifact is not a regular file".into());
     }
@@ -2023,12 +2028,12 @@ fn open_checked_regular(path: &Path, before: &fs::Metadata) -> Result<fs::File, 
 }
 
 fn read_regular(path: &Path, max: u64) -> Result<Vec<u8>, String> {
-    let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    let before = fs::symlink_metadata(path).map_err(unavailable_read)?;
     if !before.is_file() || before.file_type().is_symlink() || before.len() > max {
         return Err("evidence artifact is not a bounded regular file".into());
     }
     let raw = read_bounded_stream(open_checked_regular(path, &before)?, max)?;
-    let after = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    let after = fs::symlink_metadata(path).map_err(unavailable_read)?;
     if !after.is_file()
         || after.file_type().is_symlink()
         || before.len() != after.len()
@@ -2044,7 +2049,7 @@ fn read_bounded_stream(reader: impl Read, max: u64) -> Result<Vec<u8>, String> {
     reader
         .take(max + 1)
         .read_to_end(&mut raw)
-        .map_err(|e| e.to_string())?;
+        .map_err(unavailable_read)?;
     if raw.len() as u64 > max {
         return Err("evidence artifact exceeds size limit during read".into());
     }
@@ -2124,25 +2129,6 @@ fn fingerprint_entry(
         .checked_add(1)
         .ok_or("inventory entry count overflow")?;
     Ok(())
-}
-
-fn metadata_identity(metadata: &fs::Metadata) -> Vec<u8> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        [
-            metadata.dev().to_be_bytes().as_slice(),
-            metadata.ino().to_be_bytes().as_slice(),
-            metadata.ctime().to_be_bytes().as_slice(),
-            metadata.ctime_nsec().to_be_bytes().as_slice(),
-        ]
-        .concat()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        Vec::new()
-    }
 }
 
 fn hex_exact(s: &str, n: usize) -> bool {

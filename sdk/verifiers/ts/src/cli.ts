@@ -21,6 +21,7 @@ import {
   resolveBaseSessions,
   runSessionBase,
   verifyBase,
+  withBaseHistorySnapshot,
   type BaseFinding,
   type ChainLink,
 } from "./chain-set.js";
@@ -311,74 +312,79 @@ async function runChainSetCommand(
   json: boolean,
   targets?: string[],
 ): Promise<number> {
-  const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
-  const trustedKeys = keyHex
-    .split(",")
-    .map((key) => key.trim())
-    .filter((key) => key !== "");
-  let baseReport;
-  let sessions: string[];
-  try {
-    sessions = resolveBaseSessions(dir, base);
-    baseReport = await verifyBase(dir, base, { trustedKeys, endorsements });
-  } catch (err) {
-    throw new RuntimeError(`restart continuity check incomplete: ${errorMessage(err)}`);
-  }
-  const chains: ChainSetReport["chains"] = [];
-  for (const session of targets ?? sessions) {
-    const label = `${displayDir} (session ${session})`;
-    const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
-    let chainReport: ChainCommandReport;
+  const report = await withBaseHistorySnapshot(dir, base, async () => {
+    const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
+    const trustedKeys = keyHex
+      .split(",")
+      .map((key) => key.trim())
+      .filter((key) => key !== "");
+    let baseReport;
+    let sessions: string[];
     try {
-      chainReport = await typedChainReport(
-        label,
-        readSessionReceipts(dir, session),
-        scoped.keys.join(","),
-        allowUnpinned,
-        scoped.endorsements,
-        session,
-      );
+      sessions = resolveBaseSessions(dir, base);
+      baseReport = await verifyBase(dir, base, { trustedKeys, endorsements });
     } catch (err) {
-      chainReport = {
-        path: label,
-        valid: false,
-        receipt_count: 0,
-        final_seq: 0,
-        error: `extract receipts: ${errorMessage(err)}`,
-      };
+      throw new RuntimeError(`restart continuity check incomplete: ${errorMessage(err)}`);
     }
-    chains.push({ session, ...chainReport });
-  }
-  const healthy = baseHealthy(baseReport);
-  const report: ChainSetReport = {
-    path: displayDir,
-    base,
-    valid: healthy && chains.every((c) => c.valid),
-    chains,
-    continuity: {
-      healthy,
-      chain_count: baseReport.chains.length,
-      linked: baseReport.chains
-        .filter((c) => c.link !== undefined)
-        .map((c) => ({
-          session: c.session,
-          predecessor_session: (c.link as ChainLink).predecessor_session,
-          predecessor_tail_seq: Number((c.link as ChainLink).predecessor_tail_seq),
-          trust: c.link_trust === "" ? "untrusted" : c.link_trust,
-        })),
-      discontinuities: baseReport.chains
-        .filter((c) => c.recovery_seal !== undefined)
-        .map((c) => ({
-          session: c.session,
-          predecessor_session: (c.recovery_seal as NonNullable<typeof c.recovery_seal>)
-            .predecessor_session,
-          shard: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).shard,
-          damage_offset: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).damage_offset,
-        })),
-      unlinked: baseUnlinked(baseReport),
-      findings: baseReport.findings,
-    },
-  };
+    const chains: ChainSetReport["chains"] = [];
+    for (const session of targets ?? sessions) {
+      const label = `${displayDir} (session ${session})`;
+      const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
+      let chainReport: ChainCommandReport;
+      try {
+        chainReport = await typedChainReport(
+          label,
+          readSessionReceipts(dir, session),
+          scoped.keys.join(","),
+          allowUnpinned,
+          scoped.endorsements,
+          session,
+        );
+      } catch (err) {
+        chainReport = {
+          path: label,
+          valid: false,
+          receipt_count: 0,
+          final_seq: 0,
+          error: `extract receipts: ${errorMessage(err)}`,
+        };
+      }
+      chains.push({ session, ...chainReport });
+    }
+    const healthy = baseHealthy(baseReport);
+    const report: ChainSetReport = {
+      path: displayDir,
+      base,
+      valid: healthy && chains.every((c) => c.valid),
+      chains,
+      continuity: {
+        healthy,
+        chain_count: baseReport.chains.length,
+        linked: baseReport.chains
+          .filter((c) => c.link !== undefined)
+          .map((c) => ({
+            session: c.session,
+            predecessor_session: (c.link as ChainLink).predecessor_session,
+            predecessor_tail_seq: Number((c.link as ChainLink).predecessor_tail_seq),
+            trust: c.link_trust === "" ? "untrusted" : c.link_trust,
+          })),
+        discontinuities: baseReport.chains
+          .filter((c) => c.recovery_seal !== undefined)
+          .map((c) => ({
+            session: c.session,
+            predecessor_session: (c.recovery_seal as NonNullable<typeof c.recovery_seal>)
+              .predecessor_session,
+            shard: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).shard,
+            damage_offset: (c.recovery_seal as NonNullable<typeof c.recovery_seal>).damage_offset,
+          })),
+        unlinked: baseUnlinked(baseReport),
+        findings: baseReport.findings,
+      },
+    };
+    return report;
+  });
+  const chains = report.chains;
+  const healthy = report.continuity.healthy;
   emitChainSet(report, json);
   if (!report.valid) {
     const reasons: string[] = [];
@@ -390,7 +396,7 @@ async function runChainSetCommand(
     }
     if (!healthy) {
       reasons.push(
-        `restart continuity: ${baseReport.findings.length} finding(s): ${baseReport.findings
+        `restart continuity: ${report.continuity.findings.length} finding(s): ${report.continuity.findings
           .map((f) => `${f.kind} (${f.session})`)
           .join(", ")}`,
       );

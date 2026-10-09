@@ -727,6 +727,10 @@ async function verifyGroupAt(
     return result;
   } catch (err) {
     result.error = (err as Error).message;
+    const code = (err as NodeJS.ErrnoException).code;
+    const errno = (err as NodeJS.ErrnoException).errno;
+    if (typeof code === "string" && typeof errno === "number" && code !== "ENOENT")
+      result.verdict = "GROUP_INCOMPLETE";
     if (snapshot !== undefined) {
       try {
         checkDirectoryIdentity(snapshot.path, snapshot.root, snapshot.ael, snapshot.inventory);

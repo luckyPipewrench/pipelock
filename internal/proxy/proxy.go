@@ -2029,7 +2029,9 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PriorSignerKeys: append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex()),
 	})
 	if emitter != nil {
-		if initErr := emitter.InitError(); initErr != nil {
+		if initErr := emitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {
+			return receiptEmitterStage{}, fmt.Errorf("flight_recorder: %w", initErr)
+		} else if initErr != nil {
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", initErr)
 		}
 	}

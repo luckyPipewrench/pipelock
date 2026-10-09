@@ -91,7 +91,7 @@ func (c *Config) computeCanonicalPolicyHash() string {
 		return c.Hash()
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return policyHashOrigin.Record(hex.EncodeToString(sum[:]))
 }
 
 // policySemanticView returns a shallow copy of Config with noise fields

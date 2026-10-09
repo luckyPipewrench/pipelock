@@ -26,6 +26,9 @@ const (
 	cProvenID   = receiptcontent.ProvenID
 	cDynamic    = receiptcontent.Dynamic
 	cRunSession = receiptcontent.RunSession
+	// A policy hash this process computed from its configuration is a
+	// generated digest; an override a caller chose stays content.
+	cComputedDigest = receiptcontent.ComputedDigest
 )
 
 // actionReceiptProducer is the only capability that may exclude the
@@ -119,7 +122,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"intent":                              cContent,
 		"side_effect_class":                   cEnum,
 		"reversibility":                       cEnum,
-		"policy_hash":                         cContent,
+		"policy_hash":                         cComputedDigest,
 		"verdict":                             cEnum,
 		"decision_phase":                      cEnum,
 		"defer_id":                            cProvenID,
@@ -183,7 +186,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		// pairing identity, validated at acquisition and never redacted. Only
 		// the base is projected; the proven run suffix is generated.
 		"session_control.open.recorder_session":   cRunSession,
-		"session_control.open.policy_hash":        cContent,
+		"session_control.open.policy_hash":        cComputedDigest,
 		"session_control.open.heartbeat_seconds":  cContent,
 		"session_control.open.genesis_anchor_log": cContent,
 		"session_control.open.contained_uid":      cContent,

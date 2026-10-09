@@ -1246,11 +1246,6 @@ Key-free evidence capture:
 					EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
 				}
 
-				var redactFn recorder.RedactFunc
-				if cfg.FlightRecorder.Redact {
-					redactFn = sc.ScanTextForDLP
-				}
-
 				var recPrivKey ed25519.PrivateKey
 				if cfg.FlightRecorder.SigningKeyPath != "" {
 					k, kErr := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
@@ -1260,7 +1255,9 @@ Key-free evidence capture:
 					recPrivKey = k
 				}
 
-				rec, recErr := recorder.New(recCfg, redactFn, recPrivKey)
+				// The recorder owns this scanner generation as its receipt
+				// detector for its whole lifetime (see recorder.NewWithScanner).
+				rec, recErr := recorder.NewWithScanner(recCfg, sc, recPrivKey)
 				if recErr != nil {
 					return fmt.Errorf("creating flight recorder: %w", recErr)
 				}

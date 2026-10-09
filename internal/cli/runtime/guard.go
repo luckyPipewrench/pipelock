@@ -291,8 +291,17 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 	if e.shards != nil {
 		openErr = e.shards.Activate(proof.ConfigPolicyHash)
 	} else {
+		// Every receipt carries this hash. Retained content that trips the
+		// receipt detector refuses the run, required or not: it is a
+		// configuration refusal, not an emission failure.
+		if err := e.emitter.ValidateConfigHash(proof.ConfigPolicyHash); err != nil {
+			return fmt.Errorf("guard receipts: %w", err)
+		}
 		e.emitter.UpdateConfigHash(proof.ConfigPolicyHash)
 		openErr = emitStartupSessionOpen(e.emitter)
+	}
+	if errors.Is(openErr, receipt.ErrRetainedContent) {
+		return fmt.Errorf("guard receipts: %w", openErr)
 	}
 	if err := openErr; err != nil {
 		if e.require {
@@ -352,10 +361,6 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
 		Metrics:            m,
 	}
-	var redactFn recorder.RedactFunc
-	if cfg.FlightRecorder.Redact {
-		redactFn = sc.ScanTextForDLP
-	}
 	var privateKey ed25519.PrivateKey
 	if cfg.FlightRecorder.SigningKeyPath != "" {
 		key, err := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
@@ -364,7 +369,9 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		}
 		privateKey = key
 	}
-	rec, err := recorder.New(recorderConfig, redactFn, privateKey)
+	// The recorder owns this scanner generation as its receipt detector for
+	// its whole lifetime (see recorder.NewWithScanner).
+	rec, err := recorder.NewWithScanner(recorderConfig, sc, privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating Guard flight recorder: %w", err)
 	}

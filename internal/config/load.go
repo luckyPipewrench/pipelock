@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"gopkg.in/yaml.v3"
@@ -537,5 +538,10 @@ func (c *Config) Hash() string {
 		return HashDefaults
 	}
 	h := sha256.Sum256(c.rawBytes)
-	return hex.EncodeToString(h[:])
+	return policyHashOrigin.Record(hex.EncodeToString(h[:]))
 }
+
+// policyHashOrigin records the policy hashes this package computes, so the
+// receipt content boundary excludes them as generated values while a
+// caller-chosen hash with the same spelling stays content.
+var policyHashOrigin = digestorigin.NewIssuer("config.policy_hash")

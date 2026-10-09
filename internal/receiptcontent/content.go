@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
@@ -61,6 +62,10 @@ const (
 	// SplitProvenRunSession), only the operator base is projected, as an
 	// Identity; the generated suffix is excluded. Any other value is Identity.
 	RunSession
+	// ComputedDigest is excluded only when the value (optionally labeled
+	// "sha256:") is a digest this process computed (see digestorigin); any
+	// other value, including a chosen 64-character hex string, is Content.
+	ComputedDigest
 )
 
 // Limits bound projection work before any expanded allocation. MaxDetailBytes
@@ -120,7 +125,7 @@ func Register(s Schema) *Producer {
 	}
 	p := &Producer{schema: &Schema{Kind: s.Kind, Outer: s.Outer, Fields: map[string]Class{}}, enums: map[string]map[string]struct{}{}}
 	for path, class := range s.Fields {
-		if class < Content || class > RunSession {
+		if class < Content || class > ComputedDigest {
 			panic(fmt.Sprintf("receiptcontent: %s: invalid class for %q", s.Kind, path))
 		}
 		p.schema.Fields[path] = class
@@ -436,6 +441,10 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 			identity = true
 		case Identity:
 			identity = true
+		case ComputedDigest:
+			if digestorigin.Computed(strings.TrimPrefix(text, "sha256:")) {
+				return nil, false, nil
+			}
 		case RunSession:
 			// The structured view keeps the base too, so the generated
 			// suffix never reaches any detector view.

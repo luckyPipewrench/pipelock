@@ -40,7 +40,7 @@ var evidenceReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 		"chain_prev_hash":      receiptcontent.Generated,
 		"active_manifest_hash": receiptcontent.Content,
 		"contract_hash":        receiptcontent.Content,
-		"policy_hash":          receiptcontent.Content,
+		"policy_hash":          receiptcontent.ComputedDigest,
 		"selector_id":          receiptcontent.Content,
 		"contract_generation":  receiptcontent.Content,
 		"payload":              receiptcontent.Content,

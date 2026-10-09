@@ -312,10 +312,18 @@ func (s *ReceiptShardSet) Activate(configHash string) error {
 	if s == nil {
 		return errors.New("receipt group is nil")
 	}
+	// Every shard stamps the hash on every receipt. Validate it with each
+	// shard's retained content before any shard opens, so a refusal writes no
+	// partial group.
 	for i, emitter := range s.emitters {
 		if emitter == nil {
 			return fmt.Errorf("receipt group shard %d has no emitter", i)
 		}
+		if err := emitter.ValidateConfigHash(configHash); err != nil {
+			return fmt.Errorf("receipt group shard %d: %w", i, err)
+		}
+	}
+	for i, emitter := range s.emitters {
 		emitter.UpdateConfigHash(configHash)
 		if err := emitter.EmitSessionOpen(); err != nil {
 			return fmt.Errorf("open receipt group shard %d: %w", i, err)

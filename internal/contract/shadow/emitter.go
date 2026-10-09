@@ -6,6 +6,7 @@
 package shadow
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -349,15 +350,10 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 		return fmt.Errorf("marshal shadow delta receipt: %w", err)
 	}
 
-	if err := e.recorder.Record(recorder.Entry{
-		SessionID: e.sessionID,
-		Type:      evidenceReceiptEntryType,
-		EventKind: string(contractreceipt.PayloadShadowDelta),
-		Transport: shadowTransport,
-		Summary: fmt.Sprintf("shadow_delta: %s %s->%s x%d",
-			batch.RuleID, batch.OriginalVerdict, batch.CandidateVerdict, batch.LosslessCount),
-		Detail: json.RawMessage(receiptJSON),
-	}); err != nil {
+	// The recorder validates the signed receipt's content with its own
+	// detector (generated fields excluded) and derives the mirror fields
+	// from the exact bytes, so no unscanned summary text reaches the entry.
+	if err := contractreceipt.RecordEvidence(context.Background(), e.recorder, e.sessionID, receiptJSON, false); err != nil {
 		return fmt.Errorf("record shadow delta receipt: %w", err)
 	}
 	e.chainPrevHash = receiptHash

@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
@@ -211,12 +211,14 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	}
 }
 
+// newEventID mints a UUIDv7 carrying this process's origin proof, so the
+// content boundary excludes it without trusting its spelling.
 func newEventID() (string, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return "", err
+	id := receiptcontent.NewGeneratedID().String()
+	if id == "" {
+		return "", errors.New("generate event id: system random source failed")
 	}
-	return id.String(), nil
+	return id, nil
 }
 
 // ChainState returns the current chain head (next seq, prev hash). A reload
@@ -383,30 +385,18 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		return fmt.Errorf("marshal proxy_decision receipt: %w", err)
 	}
 
-	entry := recorder.Entry{
-		SessionID: e.session,
-		Type:      evidenceReceiptEntryType,
-		EventKind: string(rcpt.PayloadKind),
-		Transport: d.Transport,
-		Summary:   fmt.Sprintf("%s: %s %s via %s", rcpt.PayloadKind, d.ActionType, d.Verdict, d.WinningSource),
-		Detail:    json.RawMessage(rcptJSON),
-	}
-	var recordErr error
-	if durable {
-		rec, ok := e.recorder.(interface{ RecordDurable(recorder.Entry) error })
-		if !ok {
-			return errors.New("proxy_decision recorder does not support durable writes")
-		}
-		recordErr = rec.RecordDurable(entry)
-	} else {
-		recordErr = e.recorder.Record(entry)
+	recordErr := contractreceipt.RecordEvidence(context.Background(), e.recorder, e.session, rcptJSON, durable)
+	if errors.Is(recordErr, contractreceipt.ErrNoDurableRecorder) {
+		return errors.New("proxy_decision recorder does not support durable writes")
 	}
 	if err := recordErr; err != nil {
-		// The recorder rejects an oversized serialized line before opening or
-		// writing a file. It consumed no chain position, so another decision
-		// may still be recorded under this emitter. Durability and other write
-		// failures remain sticky because their on-disk outcome can be uncertain.
-		if !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
+		// The recorder rejects an oversized serialized line, and the content
+		// boundary rejects refused content, before opening or writing a file.
+		// Neither consumed a chain position, and both are deterministic for
+		// their input, so a later clean decision may still be recorded.
+		// Durability and other write failures remain sticky because their
+		// on-disk outcome can be uncertain.
+		if !errors.Is(err, recorder.ErrSerializedEntryTooLarge) && !errors.Is(err, receiptcontent.ErrRejected) {
 			e.healthErr = err
 		}
 		return fmt.Errorf("record proxy_decision receipt: %w", err)

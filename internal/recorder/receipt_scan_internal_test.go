@@ -16,7 +16,9 @@ func TestInternalReceiptWriteWithoutAttestationScansAtBoundary(t *testing.T) {
 	dir := t.TempDir()
 	var scans int
 	rec, err := New(Config{Enabled: true, Dir: dir, Redact: true}, func(_ context.Context, text string) scanner.TextDLPResult {
-		scans++
+		if strings.HasPrefix(text, "{") {
+			scans++
+		}
 		return scanner.TextDLPResult{Clean: !strings.Contains(text, "test-sensitive-value")}
 	}, nil)
 	if err != nil {

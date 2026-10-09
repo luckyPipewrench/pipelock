@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -285,5 +286,170 @@ func TestBindReceiptContentRefusesChangedContent(t *testing.T) {
 	}
 	if _, _, err := f.rec.ScanReceiptContent(context.Background(), nil, raw); err == nil {
 		t.Fatal("nil producer accepted")
+	}
+}
+
+func jsonTags(typ reflect.Type) map[string]bool {
+	out := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		if name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func TestCanonicalAndWireActionRecordParity(t *testing.T) {
+	// The signed canonical projection and the wire struct must name the same
+	// fields, and every one must be classified by the content schema, so a
+	// signed field can never be persisted without a content decision.
+	canonical := jsonTags(reflect.TypeOf(actionRecordCanonicalV1{}))
+	wire := jsonTags(reflect.TypeOf(ActionRecord{}))
+	classes := actionReceiptProducer.Classification()
+	for name := range canonical {
+		if !wire[name] {
+			t.Errorf("canonical field %q has no wire field", name)
+		}
+	}
+	for name := range wire {
+		if !canonical[name] {
+			t.Errorf("wire field %q is not signed by the canonical projection", name)
+		}
+		if _, ok := classes["action_record."+name]; !ok {
+			t.Errorf("wire field %q is not classified", name)
+		}
+	}
+}
+
+func TestOuterMirrorMustMatchSignedReceipt(t *testing.T) {
+	// Round-2 C reproduction: a clean signed receipt with a bound scan and a
+	// detector-positive outer Summary written through RecordWithReceiptScan.
+	f := newBoundaryFixture(t)
+	defer func() { _ = f.rec.Close() }()
+	tmpl := Receipt{Version: ReceiptVersion, ActionRecord: f.em.contentRecord(baseOpts(), ActionRead, SideEffectNone, ReversibilityFull, testConfigHash)}
+	raw, _ := json.Marshal(tmpl)
+	_, cs, err := f.rec.ScanReceiptContent(context.Background(), actionReceiptProducer, raw)
+	if err != nil || cs == nil {
+		t.Fatal(err)
+	}
+	ar := tmpl.ActionRecord
+	ar.Timestamp = time.Now().UTC()
+	ar.ChainPrevHash = recorder.GenesisHash
+	signed, err := Sign(ar, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, _ := Marshal(signed)
+	scan, err := f.rec.BindReceiptContent(cs, actionReceiptProducer, final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, _ := actionReceiptOuter(final)
+	entry := recorder.Entry{SessionID: recorderSessionID, Type: outer.Type, EventKind: outer.EventKind, Transport: outer.Transport, Summary: "mirror " + boundaryCanary, Detail: json.RawMessage(final)}
+	if err := f.rec.RecordWithReceiptScan(entry, &scan); !errors.Is(err, recorder.ErrOuterMismatch) {
+		t.Fatalf("detector-positive mirror err = %v, want ErrOuterMismatch", err)
+	}
+	entry.Summary = outer.Summary
+	if err := f.rec.RecordWithReceiptScan(entry, &scan); err != nil {
+		t.Fatalf("derived mirror refused: %v", err)
+	}
+}
+
+func TestRetainedContentRefusedAtActivation(t *testing.T) {
+	cases := []struct {
+		name, principal, actor, session, field string
+	}{
+		{"principal", "op-" + boundaryCanary, testActor, "", "action_record.principal"},
+		{"joint split across principal and actor", boundaryCanary[:10], boundaryCanary[10:], "", "action_record."},
+		{"operator session base (round-3 session id)", testPrincipal, testActor, boundaryCanary + ".run.0123456789abcdef0123456789abcdef", "recorder_session"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBoundaryFixture(t)
+			defer func() { _ = f.rec.Close() }()
+			em := NewEmitter(EmitterConfig{Recorder: f.rec, PrivKey: f.key, ConfigHash: testConfigHash, Principal: tc.principal, Actor: tc.actor, Session: tc.session})
+			err := em.InitError()
+			if !errors.Is(err, ErrRetainedContent) || !errors.Is(err, receiptcontent.ErrRejected) || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("activation err = %v, want retained-content refusal naming %s", err, tc.field)
+			}
+			if strings.Contains(err.Error(), boundaryCanary) {
+				t.Fatalf("refusal echoed the value: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateConfigHashOnReload(t *testing.T) {
+	hashCanary := strings.Repeat("cd34", 16)
+	f := newBoundaryFixture(t, hashCanary)
+	defer func() { _ = f.rec.Close() }()
+	if err := f.em.ValidateConfigHash(hashCanary); !errors.Is(err, ErrRetainedContent) || !strings.Contains(err.Error(), "policy_hash") {
+		t.Fatalf("reload hash err = %v", err)
+	}
+	if err := f.em.ValidateConfigHash(testConfigHash); err != nil {
+		t.Fatalf("clean reload hash refused: %v", err)
+	}
+	var nilEmitter *Emitter
+	if err := nilEmitter.ValidateConfigHash(hashCanary); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReceiptDetectorOutlivesRequestScannerClose(t *testing.T) {
+	// Detector ownership: the recorder keeps the generation it was built
+	// with. A reload closes the old request scanner; receipt content must
+	// still be detected by the recorder's own detector afterwards.
+	f := newBoundaryFixture(t)
+	defer func() { _ = f.rec.Close() }()
+	f.sc.Close()
+	if f.rec.ReceiptDetector()(context.Background(), boundaryCanary).Clean {
+		t.Fatal("receipt detector stopped detecting after the request scanner closed")
+	}
+	opts := baseOpts()
+	opts.RequestID = boundaryCanary
+	if err := f.em.Emit(opts); !errors.Is(err, receiptcontent.ErrRejected) {
+		t.Fatalf("emit after scanner close: %v", err)
+	}
+}
+
+func TestTranscriptRootIsValidateOrFail(t *testing.T) {
+	// Round-1: a root matching the detector was replaced by a redaction
+	// wrapper while sealing reported success.
+	f := newBoundaryFixture(t)
+	if err := f.em.Emit(baseOpts()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.em.EmitTranscriptRoot("root-" + boundaryCanary); !errors.Is(err, receiptcontent.ErrRejected) {
+		t.Fatalf("dirty root err = %v, want content rejection", err)
+	}
+	if err := f.em.Emit(baseOpts()); err != nil {
+		t.Fatalf("a refused root sealed the chain: %v", err)
+	}
+	if err := f.em.EmitTranscriptRoot("root-clean"); err != nil {
+		t.Fatalf("clean root: %v", err)
+	}
+	if err := f.rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(f.dir, "*.jsonl"))
+	roots := 0
+	for _, file := range files {
+		entries, err := recorder.ReadEntries(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Type != recorder.TranscriptRootEntryType {
+				continue
+			}
+			roots++
+			raw, _ := json.Marshal(e.Detail)
+			if strings.Contains(string(raw), "redacted") || !strings.Contains(string(raw), "root-clean") || strings.Contains(e.Summary, "root=") {
+				t.Fatalf("root entry = %s / %q", raw, e.Summary)
+			}
+		}
+	}
+	if roots != 1 {
+		t.Fatalf("roots written = %d, want 1", roots)
 	}
 }

@@ -291,6 +291,12 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
 		return e
 	}
+	// Retained content is refused here, at activation, rather than
+	// discovered as a refusal of every later receipt.
+	if err := validateRetainedContent(cfg.Recorder, cfg.Principal, cfg.Actor, cfg.ConfigHash, session); err != nil {
+		e.initErr = err
+		return e
+	}
 	if cfg.GroupBinding != nil {
 		binding := *cfg.GroupBinding
 		if err := validateEmitterGroupBinding(binding, session, cfg.PrivKey); err != nil {
@@ -861,7 +867,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		SessionID: e.session,
 		Type:      recorderEntryType,
 		EventKind: string(ar.ActionType),
-		Transport: opts.Transport,
+		// Mirror fields come from the signed record, never from opts: the
+		// recorder refuses an entry whose mirror differs from the producer's
+		// derivation of the exact detail.
+		Transport: ar.Transport,
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
 	}
@@ -1366,13 +1375,25 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 		EndTime:      e.chainEnd,
 	}
 
-	if err := e.recorder.Record(recorder.Entry{
+	// The root is validate-or-fail: a refusal leaves rootEmitted unset and
+	// reports no seal. Generic redaction never replaces a root's detail.
+	rootJSON, err := json.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("marshal transcript root: %w", err)
+	}
+	scan, err := e.recorder.BindLifecycleContent(transcriptRootProducer, rootJSON)
+	if err != nil {
+		e.recordFailure(FailReasonContent)
+		return fmt.Errorf("validating transcript root: %w", err)
+	}
+	outer, _ := transcriptRootOuter(rootJSON)
+	if err := e.recorder.RecordWithReceiptScan(recorder.Entry{
 		SessionID: e.session,
-		Type:      transcriptRootEntryType,
-		EventKind: transcriptRootEntryType,
-		Summary:   fmt.Sprintf("transcript_root: %d receipts, root=%s", root.ReceiptCount, root.RootHash[:16]),
-		Detail:    root,
-	}); err != nil {
+		Type:      outer.Type,
+		EventKind: outer.EventKind,
+		Summary:   outer.Summary,
+		Detail:    json.RawMessage(rootJSON),
+	}, scan); err != nil {
 		return fmt.Errorf("recording transcript root: %w", err)
 	}
 

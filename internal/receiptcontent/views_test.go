@@ -333,7 +333,7 @@ func TestBinomialAndWork(t *testing.T) {
 	if binomial(5, 2) != 10 || binomial(3, 4) != 0 || binomial(3, -1) != 0 {
 		t.Fatal("binomial")
 	}
-	if got := fragmentWorkBytes([]string{"ab", "c"}); got != 3 {
-		t.Fatalf("work = %d, want 3", got)
+	if got := fragmentWorkBytes([]string{"ab", "c"}); got != 6 { // one pair, both orders
+		t.Fatalf("work = %d, want 6", got)
 	}
 }

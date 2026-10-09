@@ -6,6 +6,7 @@ package receipt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
@@ -44,6 +45,42 @@ var actionReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 	},
 	Outer: actionReceiptOuter,
 })
+
+// groupGateProducer is the group opener's capability for its gate entries.
+var groupGateProducer = receiptcontent.Register(receiptcontent.Schema{
+	Kind:   recorder.GroupGateContentKind,
+	Fields: recorder.GroupGateFields(),
+	Outer:  recorder.GroupGateOuter,
+})
+
+// transcriptRootProducer classifies a transcript root. Every value is the
+// emitter's own chain state except the session handle, an identity.
+var transcriptRootProducer = receiptcontent.Register(receiptcontent.Schema{
+	Kind: "pipelock.transcript_root.v1",
+	Fields: map[string]receiptcontent.Class{
+		"session_id":    cIdentity,
+		"final_seq":     cGenerated,
+		"root_hash":     cGenerated,
+		"receipt_count": cGenerated,
+		"start_time":    cGenerated,
+		"end_time":      cGenerated,
+	},
+	Outer: transcriptRootOuter,
+})
+
+// transcriptRootOuter derives a root's mirror. It no longer embeds the root
+// hash prefix: generated values never enter mirror text.
+func transcriptRootOuter(detail []byte) (receiptcontent.Outer, error) {
+	var root TranscriptRoot
+	if err := json.Unmarshal(detail, &root); err != nil {
+		return receiptcontent.Outer{}, fmt.Errorf("decode transcript root mirror fields: %w", err)
+	}
+	return receiptcontent.Outer{
+		Type:      recorder.TranscriptRootEntryType,
+		EventKind: recorder.TranscriptRootEntryType,
+		Summary:   fmt.Sprintf("transcript_root: %d receipts", root.ReceiptCount),
+	}, nil
+}
 
 func actionTypeNames() []string {
 	out := make([]string, 0, len(allActionTypes))
@@ -209,6 +246,50 @@ func actionReceiptOuter(detail []byte) (receiptcontent.Outer, error) {
 		Transport: ar.Transport,
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 	}, nil
+}
+
+// ErrRetainedContent means configuration content that every receipt of an
+// emitter carries (principal, actor, policy hash, recorder session) trips the
+// recorder's receipt detector. It is a configuration refusal raised at
+// activation or reload, never a per-request refusal.
+var ErrRetainedContent = errors.New("receipt content: configuration content trips the receipt detector")
+
+// validateRetainedContent scans the content every receipt of this emitter
+// carries as one joint projection, with the same union of views and the
+// recorder's own receipt detector that emission uses. The template is a
+// session_open receipt, which carries every retained field at once.
+func validateRetainedContent(rec *recorder.Recorder, principal, actor, policyHash, session string) error {
+	if rec.ReceiptDetector() == nil {
+		return nil
+	}
+	tmpl := Receipt{Version: ReceiptVersion, ActionRecord: ActionRecord{
+		Version: ActionRecordVersion, ActionType: ActionRead, Principal: principal, Actor: actor, PolicyHash: policyHash,
+		SideEffectClass: SideEffectNone, Reversibility: ReversibilityFull, Verdict: "allow", Transport: sessionControlTransport,
+		Target:         sessionOpenTarget,
+		SessionControl: &SessionControl{Kind: SessionControlOpen, Open: &SessionOpen{RecorderSession: session, PolicyHash: policyHash}},
+	}}
+	raw, err := json.Marshal(tmpl)
+	if err != nil {
+		return fmt.Errorf("%w: marshal template: %w", ErrRetainedContent, err)
+	}
+	rep, cs, err := rec.ScanReceiptContent(context.Background(), actionReceiptProducer, raw)
+	if err == nil && cs == nil {
+		err = rep.Err()
+	}
+	if err != nil {
+		// The rejection names the field path and pattern, never the value.
+		return fmt.Errorf("%w: %w", ErrRetainedContent, err)
+	}
+	return nil
+}
+
+// ValidateConfigHash checks a reloaded policy hash together with this
+// emitter's retained content before UpdateConfigHash publishes it.
+func (e *Emitter) ValidateConfigHash(hash string) error {
+	if e == nil {
+		return nil
+	}
+	return validateRetainedContent(e.recorder, e.principal, e.actor, hash, e.session)
 }
 
 // contentRecord builds every field of an action record that does not depend

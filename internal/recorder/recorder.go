@@ -215,6 +215,40 @@ type Recorder struct {
 type ReceiptScan struct {
 	recorder *Recorder
 	detail   []byte
+	// outer is the mirror derived by the detail's registered producer; nil
+	// for the unattested whole-detail preflight.
+	outer *receiptcontent.Outer
+}
+
+// ErrOuterMismatch means an entry's unencrypted mirror fields differ from
+// the ones its producer derives from the bound detail.
+var ErrOuterMismatch = errors.New("recorder: entry mirror fields differ from the bound detail")
+
+// checkBoundOuter enforces origin-or-scan for every unencrypted field of a
+// bound entry. A producer-bound entry's Type, EventKind, Transport and Summary
+// must equal the producer's derivation from the exact detail (that text was
+// scanned in the projection), and it may carry no TraceID, which no producer
+// derives. An unattested entry's mirror fields are scanned with the receipt
+// detector, alone and joined.
+func (r *Recorder) checkBoundOuter(e Entry, scan *ReceiptScan) error {
+	if scan != nil && scan.outer != nil {
+		o := scan.outer
+		if e.Type != o.Type || e.EventKind != o.EventKind || e.Transport != o.Transport || e.Summary != o.Summary || e.TraceID != "" {
+			return ErrOuterMismatch
+		}
+		return nil
+	}
+	det := r.ReceiptDetector()
+	if det == nil {
+		return nil
+	}
+	fields := []string{e.SessionID, e.EventKind, e.Transport, e.Summary, e.TraceID}
+	for _, text := range append(fields, strings.Join(fields, "")) {
+		if text != "" && !det(context.Background(), text).Clean {
+			return &receiptcontent.RejectionError{View: receiptcontent.ViewAtom, Path: receiptcontent.OuterKey, Reason: "unattested mirror field contains sensitive data"}
+		}
+	}
+	return nil
 }
 
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
@@ -645,15 +679,6 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 		}
 	}
 
-	layer := dr.ScannerResult.Layer
-	if layer == "" {
-		layer = "unknown"
-	}
-	summary := fmt.Sprintf("%s: %s", dr.Verdict, layer)
-	if dr.ScannerResult.Pattern != "" {
-		summary = fmt.Sprintf("%s (%s)", summary, dr.ScannerResult.Pattern)
-	}
-
 	// Store decision detail as generic JSON map so hash computation remains
 	// stable after ReadEntries unmarshals Detail into interface{}.
 	data, err := json.Marshal(dr)
@@ -664,15 +689,49 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 	if err := json.Unmarshal(data, &detail); err != nil {
 		return fmt.Errorf("unmarshal decision record detail: %w", err)
 	}
-
-	return r.Record(Entry{
+	canonical, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("marshal decision record detail: %w", err)
+	}
+	outer, err := decisionRecordOuter(canonical)
+	if err != nil {
+		return err
+	}
+	// A signed record is validate-or-fail: redacting it after signing would
+	// store an unverifiable wrapper while reporting success.
+	scan, err := r.BindLifecycleContent(decisionRecordProducer, canonical)
+	if err != nil {
+		return fmt.Errorf("decision record: %w", err)
+	}
+	return r.record(Entry{
 		SessionID: dr.SessionID,
-		Type:      decisionEntryType,
-		EventKind: eventKindProxyDecision,
-		Transport: dr.RequestContext.Transport,
-		Summary:   summary,
+		Type:      outer.Type,
+		EventKind: outer.EventKind,
+		Transport: outer.Transport,
+		Summary:   outer.Summary,
 		Detail:    detail,
-	})
+	}, scan, nil)
+}
+
+// BindLifecycleContent validates a lifecycle or signed detail through the
+// content boundary and binds the result to its exact bytes. Any finding is a
+// typed rejection: lifecycle evidence is never redacted.
+func (r *Recorder) BindLifecycleContent(p *receiptcontent.Producer, detail []byte) (*ReceiptScan, error) {
+	if r.nop {
+		return nil, nil
+	}
+	rep, cs, err := r.ScanReceiptContent(context.Background(), p, detail)
+	if err == nil && cs == nil {
+		err = rep.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	scan, err := r.BindReceiptContent(cs, p, detail)
+	if err != nil {
+		return nil, err
+	}
+	return &scan, nil
 }
 
 // prepareAndWriteEntryLocked validates, stamps, redacts, hashes, opens the
@@ -720,6 +779,9 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 	// never be able to smuggle stale or unredacted provenance bytes into a new
 	// write: escrow, redaction, and hashing below all derive from Detail.
 	e.RawDetail = nil
+	// RawRef names an escrow sidecar and is written below only by this
+	// recorder. A caller value would be unscanned, unencrypted metadata.
+	e.RawRef = ""
 	// Namespace fields are authenticated only by the v3 projection. Strip any
 	// caller-supplied values while this binary emits v2 so unhashed metadata
 	// cannot leak into the evidence file or an enterprise audit envelope.
@@ -729,7 +791,10 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 	e.Sequence = r.seq
 	e.Timestamp = time.Now().UTC()
 	e.PrevHash = r.prevHash
-	if e.Type == recorderTypeReceipt || e.Type == recorderTypeEvidenceReceipt || e.Type == GroupGateEntryType {
+	if isBoundEntryType(e.Type) {
+		if err := r.checkBoundOuter(e, scan); err != nil {
+			return Entry{}, err
+		}
 		var err error
 		e.Detail, err = r.checkedReceiptDetail(e.Detail, scan)
 		if err != nil {
@@ -764,7 +829,7 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 	// Raw escrow preserves the exact detail passed to the recorder for
 	// forensic replay.
 	if r.cfg.Redact && r.redactFn != nil {
-		if e.Type != recorderTypeReceipt && e.Type != recorderTypeEvidenceReceipt && e.Type != GroupGateEntryType {
+		if !isBoundEntryType(e.Type) {
 			e.Detail = r.redactDetail(e.Detail)
 		}
 	}
@@ -821,7 +886,7 @@ func (r *Recorder) ValidateSignedReceiptDetail(detail any) error {
 }
 
 func (r *Recorder) prepareReceiptScan(e Entry, scan *ReceiptScan) (*ReceiptScan, error) {
-	if e.Type != recorderTypeReceipt && e.Type != recorderTypeEvidenceReceipt {
+	if !isBoundEntryType(e.Type) || e.Type == GroupGateEntryType {
 		return nil, nil
 	}
 	if !r.cfg.Redact || r.redactFn == nil || scan != nil {

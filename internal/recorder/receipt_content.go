@@ -84,5 +84,11 @@ func (r *Recorder) BindReceiptContent(cs *ContentScan, p *receiptcontent.Produce
 			return ReceiptScan{}, fmt.Errorf("recorder: %s: %w", p.Kind(), ErrContentChanged)
 		}
 	}
-	return ReceiptScan{recorder: r, detail: append([]byte(nil), detail...)}, nil
+	// The mirror is derived from the exact bytes; the write boundary refuses
+	// an entry whose unencrypted mirror differs from it.
+	outer, err := p.Outer(detail)
+	if err != nil {
+		return ReceiptScan{}, &receiptcontent.RejectionError{Kind: p.Kind(), View: receiptcontent.ViewMalformed, Reason: "outer fields cannot be derived"}
+	}
+	return ReceiptScan{recorder: r, detail: append([]byte(nil), detail...), outer: &outer}, nil
 }

@@ -231,17 +231,23 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 			idx[i] = i
 		}
 		for {
-			b.Reset()
-			for _, i := range idx {
-				b.WriteString(parts[i])
-			}
-			if res := det(ctx, b.String()); !res.Clean {
-				hit, hitFields := make([]string, 0, size), make([]string, 0, size)
-				for _, i := range idx {
-					hit = append(hit, paths[i])
-					hitFields = append(hitFields, fields[i])
+			// Projection order is fixed by the schema's sorted keys, so a
+			// caller choosing which field holds which fragment controls the
+			// order. Every order of 2 and 3 fragments is tried, and both
+			// directions of 4.
+			for _, order := range fragmentOrders[size] {
+				b.Reset()
+				for _, o := range order {
+					b.WriteString(parts[idx[o]])
 				}
-				return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
+				if res := det(ctx, b.String()); !res.Clean {
+					hit, hitFields := make([]string, 0, size), make([]string, 0, size)
+					for _, o := range order {
+						hit = append(hit, paths[idx[o]])
+						hitFields = append(hitFields, fields[idx[o]])
+					}
+					return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
+				}
 			}
 			if !scanner.NextSubsequence(idx, n) {
 				break
@@ -251,14 +257,22 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	return nil, nil
 }
 
-// fragmentWorkBytes is the total length of every combination scanFragments
-// would build: each part appears in C(n-1, k-1) combinations of size k.
+// fragmentOrders lists the fragment orders tried for each combination size.
+var fragmentOrders = map[int][][]int{
+	2: {{0, 1}, {1, 0}},
+	3: {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}},
+	4: {{0, 1, 2, 3}, {3, 2, 1, 0}},
+}
+
+// fragmentWorkBytes is the total length of every candidate scanFragments
+// would build: each part appears in C(n-1, k-1) combinations of size k, once
+// per tried order.
 func fragmentWorkBytes(parts []string) int {
 	n := len(parts)
 	total := 0
 	for _, part := range parts {
 		for k := 2; k <= scanner.SubsequenceMaxSize && k <= n; k++ {
-			total += len(part) * binomial(n-1, k-1)
+			total += len(part) * binomial(n-1, k-1) * len(fragmentOrders[k])
 		}
 	}
 	return total

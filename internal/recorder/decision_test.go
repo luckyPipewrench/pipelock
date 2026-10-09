@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -750,36 +752,17 @@ func TestRecorder_RecordDecisionUsesRecorderRedactionAndEscrow(t *testing.T) {
 		},
 	}
 
-	if err := rec.RecordDecision(dr); err != nil {
-		t.Fatalf("RecordDecision: %v", err)
+	// A signed decision record is validate-or-fail: it is never redacted
+	// after signing (that stored an unverifiable wrapper while reporting
+	// success), so a dirty record is refused and nothing is written.
+	if err := rec.RecordDecision(dr); !errors.Is(err, receiptcontent.ErrRejected) {
+		t.Fatalf("RecordDecision err = %v, want content rejection", err)
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-
-	entries, err := ReadEntries(filepath.Join(dir, "evidence-redact-session-0.jsonl"))
-	if err != nil {
-		t.Fatalf("ReadEntries: %v", err)
-	}
-	if len(entries) < 1 {
-		t.Fatal("expected at least one entry")
-	}
-
-	first := entries[0]
-	if first.RawRef == "" {
-		t.Fatal("expected raw escrow reference on decision entry")
-	}
-
-	detailJSON, err := json.Marshal(first.Detail)
-	if err != nil {
-		t.Fatalf("marshal detail: %v", err)
-	}
-	var envelope map[string]any
-	if err := json.Unmarshal(detailJSON, &envelope); err != nil {
-		t.Fatalf("unmarshal detail: %v", err)
-	}
-	if redacted, ok := envelope["redacted"].(bool); !ok || !redacted {
-		t.Fatalf("expected redaction envelope, got %s", string(detailJSON))
+	if _, err := os.Stat(filepath.Join(dir, "evidence-redact-session-0.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("decision evidence written despite refusal: %v", err)
 	}
 }
 

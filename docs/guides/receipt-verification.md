@@ -623,6 +623,35 @@ unverifiable. `pipelock evidence doctor DIR` reports duplicate sequence values,
 conflicting `prev_hash` values, receipt-chain collisions, missing genesis, and
 gaps without modifying the directory.
 
+## Receipt content boundary
+
+With `flight_recorder.redact: true`, Pipelock scans what a receipt says, not
+the cryptography that proves it. Each receipt kind (v1 action receipts, v2
+evidence receipts, session controls, transcript roots, receipt group gates and
+signed decision records) classifies every field. Chain hashes, signatures,
+signer keys, nonces, timestamps and IDs that Pipelock generated are never
+scanned, so a signature or chain head that happens to resemble a rule-bundle
+pattern cannot refuse receipts. An ID or hash a caller supplied is scanned like
+any other content.
+
+Content is scanned alone, as a joined value list, as reassembled fragments
+split across up to four fields, and as structured JSON. Before signing:
+
+- A matching content field (target, pattern, agent label and similar) is
+  redacted, and the receipt is signed and recorded as usual.
+- A matching identity field, a match that spans fields, or content beyond the
+  scan bounds refuses that one receipt with `receipt content rejected`. The
+  error names the field and pattern, never the value. The chain does not
+  advance, and the next clean receipt succeeds.
+- Transcript roots, session controls, group gates and signed decision records
+  are never redacted. A match refuses them, and no seal or success is reported.
+
+The recorder entry's `type`, `event_kind`, `transport` and `summary` are
+derived from the signed receipt and checked at write time. Content that every
+receipt carries (principal, actor, policy hash and session base) is checked at
+startup and reload; a match refuses the configuration with
+`configuration content trips the receipt detector`.
+
 ## Resume and rotation integrity
 
 When one pipelock writer process restarts or rotates the evidence file, the

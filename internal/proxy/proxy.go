@@ -1975,6 +1975,12 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	}
 	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
 	if current := p.receiptEmitterPtr.Load(); !tornRecovery && current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
+		// The reused emitter will stamp the new policy hash on every receipt.
+		// Validate it with the emitter's retained content before publication,
+		// so a refusal keeps the old generation instead of refusing receipts.
+		if err := current.ValidateConfigHash(cfg.Hash()); err != nil {
+			return receiptEmitterStage{}, err
+		}
 		v2 := p.v2EmitterPtr.Load()
 		if v2 == nil {
 			v2 = proxydecision.NewEmitter(proxydecision.EmitterConfig{

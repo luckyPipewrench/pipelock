@@ -2790,7 +2790,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						reason := unscannablePassthroughReason(fwdRespHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 						p.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
 						passthroughReceipt := withForwardRedaction(receipt.EmitOpts{
-							ActionID:            actionID,
+							ActionID:            receipt.NewActionID(),
+							ParentActionID:      actionID,
 							Verdict:             config.ActionAllow,
 							Layer:               "unscannable_passthrough",
 							Pattern:             reason,
@@ -3031,15 +3032,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					pattern := "verified key_id=" + cardResult.SignatureKeyID
 					p.logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
 					signatureReceipt := withReceiptShard(withForwardRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionAllow,
-						Layer:     scannerLabelA2ACardSignature,
-						Pattern:   pattern,
-						Transport: "forward",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: requestID,
-						Agent:     agent,
+						ActionID:       receipt.NewActionID(),
+						ParentActionID: actionID,
+						Verdict:        config.ActionAllow,
+						Layer:          scannerLabelA2ACardSignature,
+						Pattern:        pattern,
+						Transport:      "forward",
+						Method:         r.Method,
+						Target:         targetURL,
+						RequestID:      requestID,
+						Agent:          agent,
 					}), selectedReceiptShard)
 					if a2aResponseDecisionBlocks(cfg, a2aResult, false) {
 						emitForwardReceipt(signatureReceipt)

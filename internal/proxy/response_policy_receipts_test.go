@@ -32,7 +32,7 @@ import (
 func TestRequiredResponsePolicyReceipts(t *testing.T) {
 	artifactKey := installArtifactOfficialKey(t)
 	for _, surface := range []string{"fetch", "forward", "intercept", "reverse"} {
-		for _, shape := range []string{"media", "media relabel", "shield", "shield head", "shield warn", "a2a", "card first", "card adopt", "card signature", "scan warn", "scan strip", "sse warn", "approve", "approve strip", "artifact", "passthrough"} {
+		for _, shape := range []string{"media", "media relabel", "shield", "shield head", "shield warn", "a2a", "card first", "card adopt", "card signature", "scan warn", "scan strip", "scan hidden", "sse warn", "approve", "approve strip", "artifact", "passthrough"} {
 			if (shape == "artifact" && surface != "forward" && surface != "intercept") || (shape == "passthrough" && surface == "fetch") {
 				continue
 			}
@@ -152,6 +152,9 @@ func TestRequiredResponsePolicyReceipts(t *testing.T) {
 						if strings.HasPrefix(shape, "scan") || strings.HasPrefix(shape, "approve") {
 							ctype, payload, marker = "text/plain", "ordinary text POLICY_MARKER rest", "ordinary text"
 						}
+						if shape == "scan hidden" {
+							ctype, payload, marker = "text/html", "<html><body><p>ordinary text</p><!-- POLICY_MARKER --></body></html>", "ordinary text"
+						}
 						if shape == "sse warn" {
 							ctype, payload, marker = "text/event-stream", "data: {\"text\":\"ordinary text POLICY_MARKER rest\"}\n\n", "ordinary text"
 						}
@@ -244,9 +247,11 @@ func TestRequiredResponsePolicyReceipts(t *testing.T) {
 							newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt).ServeHTTP(w, req)
 						case "reverse":
 							selected := p.admitReceiptShard()
+							reverseActionID := receipt.NewActionID()
+							req = req.WithContext(context.WithValue(req.Context(), ctxKeyReverseActionID, reverseActionID))
 							tracker = newReverseOutcomeTracker(cfg, receipt.EmitOpts{})
 							req = req.WithContext(context.WithValue(context.WithValue(req.Context(), ctxKeyReceiptShard, selected), ctxKeyReverseOutcome, tracker))
-							if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportReverse, Method: http.MethodGet, Target: target}, selected)); err != nil {
+							if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: reverseActionID, Verdict: config.ActionAllow, Transport: TransportReverse, Method: http.MethodGet, Target: target}, selected)); err != nil {
 								t.Fatal(err)
 							}
 							resp, rtErr := rt.RoundTrip(req)
@@ -262,6 +267,9 @@ func TestRequiredResponsePolicyReceipts(t *testing.T) {
 							}
 							b, readErr := io.ReadAll(resp.Body)
 							_ = resp.Body.Close()
+							if shape == "sse warn" && failure != "healthy" && failure != "optional" && !errors.Is(readErr, mcp.ErrReceiptRequired) {
+								t.Fatalf("receipt failure ended stream without error: %v", readErr)
+							}
 							if readErr != nil && (shape != "sse warn" || !errors.Is(readErr, mcp.ErrReceiptRequired)) {
 								t.Fatal(readErr)
 							}
@@ -342,6 +350,50 @@ func TestRequiredResponsePolicyReceipts(t *testing.T) {
 							t.Fatal("strip kept finding")
 						}
 
+						if !grouped && failure == "healthy" {
+							if err := rec.Close(); err != nil {
+								t.Fatal(err)
+							}
+							records := extractReceiptsFromDir(t, f.dir)
+							var requestID string
+							for _, rcpt := range records {
+								if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
+									requestID = rcpt.ActionRecord.ActionID
+									break
+								}
+							}
+							if requestID == "" {
+								t.Fatal("missing request receipt positive control")
+							}
+							for _, rcpt := range records {
+								r := rcpt.ActionRecord
+								if r.DecisionPhase != "" || r.Verdict == config.ActionBlock {
+									continue
+								}
+								if r.ActionID == requestID || r.ParentActionID != requestID {
+									t.Errorf("response decision is not a child of request: %+v", r)
+								}
+							}
+						}
+						if !grouped && surface == "fetch" && !want && failure == "v2" && strings.HasPrefix(shape, "scan") {
+							if err := rec.Close(); err != nil {
+								t.Fatal(err)
+							}
+							records := extractReceiptsFromDir(t, f.dir)
+							found := false
+							for _, rcpt := range records {
+								r := rcpt.ActionRecord
+								if r.DecisionPhase == receipt.DecisionPhaseOutcome {
+									found = true
+									if !strings.Contains(r.Pattern, "reason="+receiptEmissionFailedLayer) || !strings.Contains(r.Pattern, "status=403") {
+										t.Errorf("receipt failure misclassified: %s", r.Pattern)
+									}
+								}
+							}
+							if !found {
+								t.Fatal("missing fetch outcome")
+							}
+						}
 						if failure == "healthy" && w.syncsAtDelivery < 2 {
 							t.Fatalf("both families not synced before delivery: %d", w.syncsAtDelivery)
 						}

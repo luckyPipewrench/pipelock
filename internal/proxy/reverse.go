@@ -2494,7 +2494,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			summary = partialShieldSummary(summary, scanned, responseContentType(resp.Header), bodyBytes, shieldMaxBytes)
 			if !confirmReverseDecision(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
-				ParentActionID: actionID,
+				ParentActionID: requestActionID,
 				Verdict:        config.ActionAllow,
 				Layer:          browserShieldLayer,
 				Pattern:        browserShieldPattern,
@@ -2519,7 +2519,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			summary := partialShieldSummary(nil, body, responseContentType(resp.Header), bodyBytes, 0)
 			if !confirmReverseDecision(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
-				ParentActionID: actionID,
+				ParentActionID: requestActionID,
 				Verdict:        config.ActionAllow,
 				Layer:          "shield_oversize",
 				Pattern:        reason,
@@ -2563,15 +2563,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 	emitUnscannablePassthrough := func(reason string) bool {
 		passthroughReceipt := receipt.EmitOpts{
-			ActionID:  requestActionID,
-			Verdict:   config.ActionAllow,
-			Layer:     "unscannable_passthrough",
-			Pattern:   reason,
-			Transport: TransportReverse,
-			Method:    resp.Request.Method,
-			Target:    targetURL,
-			RequestID: requestID,
-			Agent:     agent,
+			ActionID:       receipt.NewActionID(),
+			ParentActionID: requestActionID,
+			Verdict:        config.ActionAllow,
+			Layer:          "unscannable_passthrough",
+			Pattern:        reason,
+			Transport:      TransportReverse,
+			Method:         resp.Request.Method,
+			Target:         targetURL,
+			RequestID:      requestID,
+			Agent:          agent,
 		}
 		return confirmReverseDecision(passthroughReceipt)
 	}
@@ -2761,7 +2762,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			if verdict.Relabeled != "" || (verdict.StripResult != nil && verdict.StripResult.Changed()) {
 				if cfg.FlightRecorder.RequireReceipts {
-					if err := rp.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())))); err != nil {
+					if err := rp.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: requestActionID, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}, receiptShardFromContext(resp.Request.Context())))); err != nil {
 						rp.recordRequiredReceiptBlock(err, TransportReverse)
 						replaceWithBlockReason(resp, receiptEmissionBlockReason, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer))
 						recordReverseOutcome(http.StatusForbidden, 0, receiptEmissionFailedLayer)
@@ -3385,7 +3386,7 @@ responseScanning:
 				shieldSummary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
 				if !confirmReverseDecision(receipt.EmitOpts{
 					ActionID:       receipt.NewActionID(),
-					ParentActionID: actionID,
+					ParentActionID: requestActionID,
 					Verdict:        config.ActionAllow,
 					Layer:          browserShieldLayer,
 					Pattern:        browserShieldPattern,
@@ -3541,7 +3542,7 @@ responseScanning:
 
 	if cfg.FlightRecorder.RequireReceipts {
 		err := rp.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
-			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+			ActionID: receipt.NewActionID(), ParentActionID: requestActionID, Verdict: action,
 			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
 			Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL,
 			RequestID: requestID, Agent: agent,

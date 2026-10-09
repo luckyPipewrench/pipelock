@@ -64,7 +64,8 @@ func TestWSRequiredResponseDecision(t *testing.T) {
 						p.cfgPtr.Store(cfg)
 						sc := scanner.MustNew(cfg)
 						defer sc.Close()
-						if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: TransportWS, Method: "GET", Target: "wss://api.vendor.example/socket"}, shard)); err != nil {
+						requestActionID := receipt.NewActionID()
+						if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: requestActionID, Verdict: config.ActionAllow, Transport: TransportWS, Method: "GET", Target: "wss://api.vendor.example/socket"}, shard)); err != nil {
 							t.Fatal(err)
 						}
 						var syncs atomic.Int32
@@ -103,7 +104,7 @@ func TestWSRequiredResponseDecision(t *testing.T) {
 						}
 						source := &receiptFrameConn{input: bytes.NewReader(wire.Bytes())}
 						sink := &receiptFrameConn{input: bytes.NewReader(nil), syncs: &syncs}
-						relay := &wsRelay{proxy: p, cfg: cfg, scanner: sc, receiptShard: shard, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket", maxMsg: 4096, allowBinary: true, scanText: true}
+						relay := &wsRelay{requestActionID: requestActionID, proxy: p, cfg: cfg, scanner: sc, receiptShard: shard, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket", maxMsg: 4096, allowBinary: true, scanText: true}
 						ctx, cancel := context.WithCancel(t.Context())
 						defer cancel()
 						relay.upstreamConn = source
@@ -132,6 +133,26 @@ func TestWSRequiredResponseDecision(t *testing.T) {
 						want := failure == "healthy" || failure == "optional"
 						if delivered != want || blocked == want {
 							t.Fatalf("delivered=%t blocked=%t want deliver=%t", delivered, blocked, want)
+						}
+						if !grouped && failure == "healthy" {
+							if err := rec.Close(); err != nil {
+								t.Fatal(err)
+							}
+							records := extractReceiptsFromDir(t, f.dir)
+							decisions := 0
+							for _, rcpt := range records {
+								r := rcpt.ActionRecord
+								if r.DecisionPhase != "" || r.Verdict == config.ActionBlock {
+									continue
+								}
+								decisions++
+								if r.ActionID == requestActionID || r.ParentActionID != requestActionID {
+									t.Errorf("WebSocket response does not name its handshake parent: id=%s parent=%s want=%s", r.ActionID, r.ParentActionID, requestActionID)
+								}
+							}
+							if decisions != 1 {
+								t.Fatalf("response decisions=%d", decisions)
+							}
 						}
 						if failure == "healthy" && sink.syncsAtDelivery < 2 {
 							t.Fatalf("delivery before both durable families: syncs=%d", sink.syncsAtDelivery)

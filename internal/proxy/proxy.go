@@ -6569,7 +6569,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			recordObservedCoreResponseMatches(p.metrics, log, actx, rawResult.ObservedCoreMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
+			blocked, _, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 				requestContext: r.Context(),
 				shard:          selectedReceiptShard,
 				writer:         w,
@@ -6591,9 +6591,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if blocked {
 				outcomeLayer := responseScanLayer
 				outcomeCode := http.StatusForbidden
-				if scanFailed {
-					outcomeLayer = "response_scan_error"
-					outcomeCode = http.StatusServiceUnavailable
+				if scanFailureLayer != "" {
+					outcomeLayer = scanFailureLayer
+					if scanFailureLayer == "response_scan_error" {
+						outcomeCode = http.StatusServiceUnavailable
+					}
 				}
 				p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
 				outcomeStatus = strconv.Itoa(outcomeCode)
@@ -6718,7 +6720,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
+		blocked, newContent, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 			requestContext: r.Context(),
 			shard:          selectedReceiptShard,
 			writer:         w,
@@ -6743,9 +6745,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if blocked {
 			outcomeLayer := responseScanLayer
 			outcomeCode := http.StatusForbidden
-			if scanFailed {
-				outcomeLayer = "response_scan_error"
-				outcomeCode = http.StatusServiceUnavailable
+			if scanFailureLayer != "" {
+				outcomeLayer = scanFailureLayer
+				if scanFailureLayer == "response_scan_error" {
+					outcomeCode = http.StatusServiceUnavailable
+				}
 			}
 			p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
 			outcomeStatus = strconv.Itoa(outcomeCode)
@@ -6879,11 +6883,12 @@ type responseScanContext struct {
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
 // (possibly stripped), and found=true if unsuppressed findings remain.
+// failureLayer distinguishes incomplete scanning from required receipt failure.
 // sessionLevel is the current adaptive escalation level from recordSessionActivity.
 // exempt indicates the domain was in exempt_domains: findings are logged as
 // warn but adaptive scoring is skipped and UpgradeAction is not applied.
 // This preserves operator visibility without triggering escalation death spirals.
-func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found, scanFailed bool) {
+func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found bool, failureLayer string) {
 	reqCtx := in.requestContext
 	w := in.writer
 	result := in.result
@@ -6908,7 +6913,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	}
 
 	if result.Clean {
-		return false, out, false, false
+		return false, out, false, ""
 	}
 	if result.Failed() {
 		reason := "response scan failed: " + result.ScanError
@@ -6921,7 +6926,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			blockInfoFor(blockreason.ParseError, "response_scan_error"),
 			http.StatusServiceUnavailable,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", false, true
+		return true, "", false, "response_scan_error"
 	}
 
 	patternNames := make([]string, len(result.Matches))
@@ -6995,7 +7000,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", true, false
+		return true, "", true, ""
 	case config.ActionAsk:
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
@@ -7016,7 +7021,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true, false
+			return true, "", true, ""
 		}
 		preview := content
 		if len(preview) > 200 {
@@ -7046,7 +7051,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 					blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 					http.StatusForbidden,
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-				return true, "", true, false
+				return true, "", true, ""
 			}
 			out = result.TransformedContent
 			action = config.ActionStrip
@@ -7070,7 +7075,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true, false
+			return true, "", true, ""
 		}
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
@@ -7094,10 +7099,10 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			p.recordRequiredReceiptBlock(err, TransportFetch)
 			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
-			return true, "", true, false
+			return true, "", true, receiptEmissionFailedLayer
 		}
 	}
-	return false, out, true, false
+	return false, out, true, ""
 }
 
 // stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL

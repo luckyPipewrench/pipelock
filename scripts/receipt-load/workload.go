@@ -30,6 +30,7 @@ const fakeToken = "ghp_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 // has a unique non-secret key; all expectations (sink, receipts, response
 // class) are derived from the plan rather than from observed counts.
 type workload struct {
+	runNonce    string
 	seed        uint64
 	warmup      int
 	measured    int
@@ -40,7 +41,13 @@ func newWorkload(seed uint64, warmup, measured int) workload {
 	return workload{seed: seed, warmup: warmup, measured: measured, blockOffset: int(seed % blockEvery)}
 }
 
-func (w workload) tag() string { return "s" + strconv.FormatUint(w.seed, 10) }
+func (w workload) tag() string {
+	tag := "s" + strconv.FormatUint(w.seed, 10)
+	if w.runNonce != "" {
+		tag += "-r" + w.runNonce
+	}
+	return tag
+}
 
 // total is the number of planned requests across both phases. Global slot
 // numbers run warmup first, then measured.

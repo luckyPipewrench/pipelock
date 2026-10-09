@@ -222,7 +222,8 @@ func TestWorkloadKeySurvivesTheRealProxy(t *testing.T) {
 	bin := realPipelock(t)
 	opt := smallOptions(t, bin)
 	opt.requests, opt.warmup = 60, 10
-	if _, err := runMode(context.Background(), opt, modeBest); err != nil {
+	res, err := runMode(context.Background(), opt, modeBest)
+	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(opt.out, modeBest, "recorder")
@@ -239,6 +240,7 @@ func TestWorkloadKeySurvivesTheRealProxy(t *testing.T) {
 	}
 	evidence := text.String()
 	plan := newWorkload(opt.seed, opt.warmup, opt.requests)
+	plan.runNonce = strings.TrimPrefix(res.Inputs.Workload.Tag, plan.tag()+"-r")
 	for slot := range plan.total() {
 		if !strings.Contains(evidence, workloadKeyParam+"="+plan.key(slot)) {
 			t.Fatalf("key %s was not found in any receipt", plan.key(slot))

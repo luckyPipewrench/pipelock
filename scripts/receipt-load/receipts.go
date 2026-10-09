@@ -51,6 +51,7 @@ const (
 type slotObservation struct {
 	counts    [kindCount]int32
 	actionIDs []string
+	session   string
 }
 
 func (o *slotObservation) add(kind receiptKind) { o.counts[kind]++ }
@@ -82,10 +83,11 @@ type recorderObservation struct {
 	aelFiles      int
 	lastReceipt   time.Time
 	latestFileMod time.Time
+	nativeRuns    map[string]string
 }
 
 func newRecorderObservation(total int) *recorderObservation {
-	return &recorderObservation{slots: make([]slotObservation, total)}
+	return &recorderObservation{slots: make([]slotObservation, total), nativeRuns: make(map[string]string)}
 }
 
 func (r *recorderObservation) slot(slot int) *slotObservation { return &r.slots[slot] }
@@ -107,7 +109,9 @@ type recorderScanner struct {
 	controlIDs map[string]struct{}
 	// aelIDs collects AEL activity ids so they can be attributed after every
 	// v1 receipt has been read.
-	aelIDs []string
+	aelIDs     []aelActivity
+	actionRuns map[string]string
+	eventIDs   map[string]bool
 }
 
 // scanRecorder reads every v1 and v2 evidence record and every native AEL
@@ -119,6 +123,8 @@ func scanRecorder(dir string, plan workload, sinkAddr string) (*recorderObservat
 		obs:        newRecorderObservation(plan.total()),
 		actionSlot: make(map[string]int),
 		controlIDs: make(map[string]struct{}),
+		eventIDs:   make(map[string]bool),
+		actionRuns: make(map[string]string),
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -147,7 +153,9 @@ func scanRecorder(dir string, plan workload, sinkAddr string) (*recorderObservat
 	if err != nil {
 		return nil, err
 	}
-	s.attributeAEL()
+	if err := s.attributeAEL(); err != nil {
+		return nil, err
+	}
 	return s.obs, nil
 }
 
@@ -176,9 +184,10 @@ func (s *recorderScanner) scanFile(root *os.Root, rel, path string, handle func(
 }
 
 type evidenceEnvelope struct {
-	Type   string          `json:"type"`
-	TS     time.Time       `json:"ts"`
-	Detail json.RawMessage `json:"detail"`
+	Session string          `json:"session_id"`
+	Type    string          `json:"type"`
+	TS      time.Time       `json:"ts"`
+	Detail  json.RawMessage `json:"detail"`
 }
 
 func (s *recorderScanner) evidenceLine(line []byte) error {
@@ -213,15 +222,27 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	var detail struct {
 		ActionRecord struct {
 			ActionID string `json:"action_id"`
+			RunNonce string `json:"run_nonce"`
 			Phase    string `json:"decision_phase"`
 			Verdict  string `json:"verdict"`
 			Target   string `json:"target"`
 		} `json:"action_record"`
+		SignerKey string `json:"signer_key"`
 	}
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
 		return fmt.Errorf("action detail: %w", err)
 	}
 	ar := detail.ActionRecord
+	if run, seen := s.actionRuns[ar.ActionID]; seen && run != ar.RunNonce {
+		return errors.New("ActionID maps to multiple native runs")
+	}
+	s.actionRuns[ar.ActionID] = ar.RunNonce
+	if ar.RunNonce != "" {
+		if signer, seen := s.obs.nativeRuns[ar.RunNonce]; seen && signer != detail.SignerKey {
+			return errors.New("native AEL run has conflicting signers")
+		}
+		s.obs.nativeRuns[ar.RunNonce] = detail.SignerKey
+	}
 	kind := v1Kind(ar.Phase, ar.Verdict)
 	switch s.classify(ar.Target) {
 	case targetControl:
@@ -240,7 +261,20 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 			s.obs.sampleOrphan(kind.String() + " for key outside the plan: " + key)
 			break
 		}
+		if ar.ActionID == "" {
+			return errors.New("workload receipt has no ActionID")
+		}
+		if owner, seen := s.actionSlot[ar.ActionID]; seen && owner != slot {
+			return errors.New("ActionID maps to multiple workload keys")
+		}
+		if (kind == kindV1Intent || kind == kindV1Outcome) && ar.Verdict != verdictAllow {
+			return errors.New("workload phase has an unexpected verdict")
+		}
 		o := s.obs.slot(slot)
+		if o.session != "" && o.session != env.Session {
+			return errors.New("workload key maps to multiple recorder shards")
+		}
+		o.session = env.Session
 		o.add(kind)
 		o.addActionID(ar.ActionID)
 		if _, seen := s.actionSlot[ar.ActionID]; !seen {
@@ -253,6 +287,7 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 
 func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 	var detail struct {
+		EventID string `json:"event_id"`
 		Payload struct {
 			Target string `json:"target"`
 		} `json:"payload"`
@@ -260,6 +295,10 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
 		return fmt.Errorf("v2 detail: %w", err)
 	}
+	if detail.EventID == "" || s.eventIDs[detail.EventID] {
+		return errors.New("missing or duplicate v2 EventID")
+	}
+	s.eventIDs[detail.EventID] = true
 	switch s.classify(detail.Payload.Target) {
 	case targetControl:
 		s.obs.controlReceipts++
@@ -274,7 +313,12 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 			s.obs.sampleOrphan("v2 for key outside the plan: " + key)
 			break
 		}
-		s.obs.slot(slot).add(kindV2)
+		o := s.obs.slot(slot)
+		if o.session != "" && o.session != env.Session {
+			return errors.New("v2 workload key maps to another recorder shard")
+		}
+		o.session = env.Session
+		o.add(kindV2)
 		s.noteReceiptTime(env.TS)
 	}
 	return nil
@@ -302,8 +346,12 @@ func (s *recorderScanner) classify(target string) targetClass {
 	if strings.HasPrefix(target, "[redacted-") {
 		return targetUncorrelatable
 	}
-	if targetHost(target) != s.sinkAddr {
+	switch target {
+	case "pipelock://session/open", "pipelock://session/heartbeat", "pipelock://session/close":
 		return targetControl
+	}
+	if targetHost(target) != s.sinkAddr {
+		return targetUncorrelatable
 	}
 	key, ok := keyFromTarget(target)
 	if !ok || strings.HasPrefix(key, "[redacted-") {
@@ -314,7 +362,10 @@ func (s *recorderScanner) classify(target string) targetClass {
 
 // aelPayload is the decoded payload of one native AEL activity record. The
 // event id is the v1 ActionID of the action the activity describes.
+type aelActivity struct{ id, run string }
+
 type aelPayload struct {
+	Run   string `json:"run"`
 	Type  string `json:"type"`
 	Event struct {
 		ID string `json:"id"`
@@ -338,7 +389,7 @@ func (s *recorderScanner) aelLine(line []byte) error {
 		return fmt.Errorf("ael payload: %w", err)
 	}
 	if p.Type == "activity" {
-		s.aelIDs = append(s.aelIDs, p.Event.ID)
+		s.aelIDs = append(s.aelIDs, aelActivity{id: p.Event.ID, run: p.Run})
 	}
 	return nil
 }
@@ -346,8 +397,12 @@ func (s *recorderScanner) aelLine(line []byte) error {
 // attributeAEL assigns each activity to the request whose v1 ActionID it
 // names. An activity whose id matches neither a request nor a control receipt
 // is an orphan.
-func (s *recorderScanner) attributeAEL() {
-	for _, id := range s.aelIDs {
+func (s *recorderScanner) attributeAEL() error {
+	for _, activity := range s.aelIDs {
+		id := activity.id
+		if run, ok := s.actionRuns[id]; ok && run != activity.run {
+			return errors.New("AEL activity belongs to another native run")
+		}
 		if slot, ok := s.actionSlot[id]; ok {
 			s.obs.slot(slot).add(kindAEL)
 			continue
@@ -359,4 +414,5 @@ func (s *recorderScanner) attributeAEL() {
 		s.obs.orphans[kindAEL]++
 		s.obs.sampleOrphan("ael activity for unknown action id: " + id)
 	}
+	return nil
 }

@@ -47,7 +47,8 @@ func startSink(ctx context.Context, plan workload) (*sink, error) {
 func (s *sink) addr() string { return s.listener.Addr().String() }
 
 func (s *sink) handle(w http.ResponseWriter, r *http.Request) {
-	s.record(r.URL.Query().Get(workloadKeyParam))
+	key, _ := keyFromTarget(r.URL.String())
+	s.record(key)
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = io.WriteString(w, sinkBody)
 }

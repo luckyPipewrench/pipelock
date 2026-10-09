@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +20,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/ael"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -52,6 +57,9 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 		return nil, err
 	}
 	plan := newWorkload(opt.seed, opt.warmup, opt.requests)
+	nonce := make([]byte, 16)
+	_, _ = rand.Read(nonce)
+	plan.runNonce = hex.EncodeToString(nonce)
 	res := &result{
 		SchemaVersion: resultSchemaVersion, Mode: mode, ReceiptChains: opt.chains,
 		Requests: opt.requests, WarmupRequests: opt.warmup, Concurrency: opt.concurrency,
@@ -404,7 +412,7 @@ func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs
 		rep.fail("shutdown: " + shutdown.Error)
 	}
 	if mode != modeOff {
-		rep.Verify = verifyRecorder(ctx, opt.binary, dirs, env)
+		rep.Verify = verifyRecorder(ctx, opt.binary, dirs, env, obs)
 		if rep.Verify.Exit != 0 {
 			rep.fail(fmt.Sprintf("verify-receipt exited %d", rep.Verify.Exit))
 		}
@@ -412,7 +420,7 @@ func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs
 	return rep
 }
 
-func verifyRecorder(ctx context.Context, binary string, dirs runDirs, env []string) verifyReport {
+func verifyRecorder(ctx context.Context, binary string, dirs runDirs, env []string, obs *recorderObservation) verifyReport {
 	pubKey := filepath.Join(dirs.keys, "flight-recorder-signing.key.pub")
 	out, err := localCommand(ctx, binary, dirs.cwd, env, "verify-receipt", "--chain", dirs.recorder, "--whole-recorder", "--require-seal", "--key", pubKey).CombinedOutput()
 	rep := verifyReport{Ran: true, Output: string(out)}
@@ -424,9 +432,49 @@ func verifyRecorder(ctx context.Context, binary string, dirs runDirs, env []stri
 			rep.Exit = -1
 		}
 	}
-	if werr := os.WriteFile(filepath.Join(dirs.root, "verify.txt"), out, 0o600); werr != nil && rep.Exit == 0 {
+	if rep.Exit == 0 {
+		if err := verifyNativeAEL(dirs, obs); err != nil {
+			rep.Exit = -1
+			rep.Output += "\nnative AEL: " + err.Error()
+		}
+	}
+	if werr := os.WriteFile(filepath.Join(dirs.root, "verify.txt"), []byte(rep.Output), 0o600); werr != nil && rep.Exit == 0 {
 		rep.Exit = -1
 		rep.Output += "\nwriting verify.txt: " + werr.Error()
 	}
 	return rep
+}
+
+// verifyNativeAEL joins the shipped native verifier to the signed v1 run claims.
+// Directory names alone cannot establish ownership or the trusted signing key.
+func verifyNativeAEL(dirs runDirs, obs *recorderObservation) error {
+	if obs == nil || len(obs.nativeRuns) == 0 {
+		return errors.New("no signed native AEL run claims")
+	}
+	key, err := signing.LoadPublicKey(filepath.Join(dirs.keys, "flight-recorder-signing.key.pub"))
+	if err != nil {
+		return err
+	}
+	trusted := hex.EncodeToString(key)
+	entries, err := os.ReadDir(filepath.Join(dirs.recorder, "ael"))
+	if err != nil {
+		return err
+	}
+	if len(entries) != len(obs.nativeRuns) {
+		return errors.New("native AEL inventory differs from signed run claims")
+	}
+	for _, entry := range entries {
+		if _, ok := obs.nativeRuns[entry.Name()]; !ok {
+			return errors.New("unclaimed native AEL run")
+		}
+	}
+	for run, signer := range obs.nativeRuns {
+		if signer != trusted {
+			return errors.New("native AEL signer differs from pinned key")
+		}
+		if _, err := ael.VerifyRun(dirs.recorder, run, trusted); err != nil {
+			return err
+		}
+	}
+	return nil
 }

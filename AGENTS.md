@@ -104,7 +104,7 @@ Three proxy modes share the main listener:
 7. SigV4 presigned-URL credential carve-out
 8. Core DLP immutable floor
 9. DLP (65 built-in credential patterns + checksum validators + env/file leak detection)
-10. Path entropy analysis (also runs query entropy)
+10. Path entropy analysis (also runs query entropy; a final filename may discount one copy of its immediately preceding semantic version)
 11. Subdomain entropy analysis
 12. Nested URL destinations in query parameters (allowlist, blocklist, SSRF on URL-shaped values)
 13. SSRF / DNS resolution for private IPs, metadata, and rebinding

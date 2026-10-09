@@ -617,7 +617,8 @@ function fileInventory(): string {
       const child = path.join(dir, de.name),
         rel = prefix ? `${prefix}/${de.name}` : de.name;
       const s = lstatSync(child, { bigint: true });
-      digest.update(`${rel}\0${s.dev}:${s.ino}:${s.mode}:${s.size}:${s.mtimeNs}\n`);
+      if (s.isSymbolicLink()) throw new Error("symlink in receipt group inventory");
+      digest.update(`${rel}\0${s.dev}:${s.ino}:${s.mode}:${s.size}:${s.mtimeNs}:${s.ctimeNs}\n`);
       if (s.isDirectory() && !s.isSymbolicLink()) walk(child, rel);
     }
   };
@@ -628,19 +629,40 @@ function fileInventory(): string {
 async function verifyGroupAt(
   groupID: string,
   trustedKeys: readonly string[],
+  afterInventory?: () => void,
+  beforeInventory?: () => void,
 ): Promise<ReceiptGroupResult> {
   const result: ReceiptGroupResult = {
     group_id: groupID,
     verdict: "GROUP_INVALID",
     shard_count: 0,
   };
+  let snapshot:
+    | {
+        path: string;
+        root: { dev: bigint; ino: bigint };
+        ael: { dev: bigint; ino: bigint };
+        inventory: string;
+      }
+    | undefined;
+  let inventoryAttempted = false;
   try {
     if (!isHex(groupID, 32)) throw new Error("invalid receipt group ID");
     const trusted = new Set(trustedKeys.map((k) => k.trim().toLowerCase()).filter(Boolean));
     if (!trusted.size) throw new Error("receipt group verification requires a trusted signer key");
     const rootStart = statSync(".", { bigint: true }),
       aelStart = statSync("ael", { bigint: true });
+    const physicalRoot = process.cwd();
+    inventoryAttempted = true;
+    beforeInventory?.();
     const before = fileInventory();
+    snapshot = {
+      path: physicalRoot,
+      root: { dev: rootStart.dev, ino: rootStart.ino },
+      ael: { dev: aelStart.dev, ino: aelStart.ino },
+      inventory: before,
+    };
+    afterInventory?.();
     for (const name of readdirSync(".")) {
       if (
         name.startsWith("receipt-group-") &&
@@ -665,7 +687,7 @@ async function verifyGroupAt(
       // Do not promote absent close to success; still validate any successor claim and inventory.
       await verifySuccessorTransitionInventory(open, result.open_manifest_sha256, "", trusted);
       await verifyAELInventory(open, trusted, true);
-      checkDirectoryIdentity(rootStart, aelStart, before);
+      checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before);
       result.verdict = "GROUP_INCOMPLETE";
       result.error = "receipt group has no signed close manifest";
       return result;
@@ -692,7 +714,7 @@ async function verifyGroupAt(
     const predecessorIncomplete =
       open.previous_group_id &&
       !existsNoFollow(`receipt-group-${open.previous_group_id}-close.json`);
-    checkDirectoryIdentity(rootStart, aelStart, before);
+    checkDirectoryIdentity(physicalRoot, rootStart, aelStart, before);
     result.close_manifest_sha256 = sha(closeBytes);
     result.verdict = openAELTail === "own" ? "GROUP_INCOMPLETE" : "GROUP_VALID";
     if (openAELTail)
@@ -705,7 +727,41 @@ async function verifyGroupAt(
     return result;
   } catch (err) {
     result.error = (err as Error).message;
+    if (snapshot !== undefined) {
+      try {
+        checkDirectoryIdentity(snapshot.path, snapshot.root, snapshot.ael, snapshot.inventory);
+      } catch {
+        result.verdict = "GROUP_INCOMPLETE";
+        result.error = "receipt group directory changed during verification";
+      }
+    } else if (inventoryAttempted && !result.error.includes("symlink in receipt group inventory")) {
+      result.verdict = "GROUP_INCOMPLETE";
+      result.error = "receipt group inventory was unavailable during verification";
+    }
     return result;
+  }
+}
+
+// Narrow deterministic seam for proving that a mutation after inventory
+// capture cannot turn malformed evidence into a stable invalid verdict.
+export async function verifyReceiptGroupAfterInventoryForTest(
+  dir: string,
+  groupID: string,
+  trustedKeys: readonly string[],
+  afterInventory: () => void,
+  beforeInventory?: () => void,
+): Promise<ReceiptGroupResult> {
+  try {
+    return await withPinnedEvidenceDirectory(dir, () =>
+      verifyGroupAt(groupID, trustedKeys, afterInventory, beforeInventory),
+    );
+  } catch (err) {
+    return {
+      group_id: groupID,
+      verdict: "GROUP_INVALID",
+      shard_count: 0,
+      error: (err as Error).message,
+    };
   }
 }
 
@@ -732,13 +788,18 @@ function requireCloseBindsOpen(
 }
 
 function checkDirectoryIdentity(
+  rootPath: string,
   root: { dev: bigint; ino: bigint },
   ael: { dev: bigint; ino: bigint },
   before: string,
 ): void {
   const re = statSync(".", { bigint: true }),
-    ae = statSync("ael", { bigint: true });
+    ae = statSync("ael", { bigint: true }),
+    requestedRoot = lstatSync(rootPath, { bigint: true });
   if (
+    requestedRoot.isSymbolicLink() ||
+    requestedRoot.dev !== root.dev ||
+    requestedRoot.ino !== root.ino ||
     re.dev !== root.dev ||
     re.ino !== root.ino ||
     ae.dev !== ael.dev ||

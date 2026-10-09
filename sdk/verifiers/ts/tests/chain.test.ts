@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import * as ed25519 from "@noble/ed25519";
 import { canonicalizeBytes } from "../src/aarp/canonical.js";
 import { canonicalizeActionRecord } from "../src/canonical.js";
-import { extractReceipts, readEntries } from "../src/recorder.js";
+import { extractReceipts, readEntries, readEntryLinesPrefix } from "../src/recorder.js";
 import { computeSessionOpenGenesis, receiptHash, verifyChain } from "../src/chain.js";
 import {
   loadRotationEndorsementFile,
@@ -19,7 +19,7 @@ import {
   verifyRotationEndorsement,
 } from "../src/rotation.js";
 import type { Receipt } from "../src/types.js";
-import { InvalidError } from "../src/util.js";
+import { forEachVerifierJSONLLine, InvalidError } from "../src/util.js";
 
 const validChain = "../../conformance/testdata/valid-chain.jsonl";
 const brokenChain = "../../conformance/testdata/broken-chain.jsonl";
@@ -1006,6 +1006,127 @@ test("JSONL recorder reader preserves maximum uint64 v3 sequence", () => {
     const entries = readEntries(file);
     assert.equal(entries.length, 1);
     assert.equal(entries[0]?.seq, "18446744073709551615");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL recorder reader streams large signed evidence and bounds each CRLF line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-streaming-"));
+  const file = join(dir, "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl");
+  const fixture =
+    "../../conformance/testdata/run-chains/valid/evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl";
+  try {
+    writeFileSync(
+      file,
+      Buffer.concat([readFileSync(fixture), Buffer.from("\r\n".repeat((8 << 19) + 1))]),
+    );
+    const entries = readEntries(file);
+    assert.equal(entries.filter((entry) => entry.type === "action_receipt").length, 5);
+
+    writeFileSync(
+      file,
+      Buffer.concat([
+        readFileSync(fixture),
+        Buffer.from("\r\n".repeat((8 << 19) + 1)),
+        Buffer.from("{"),
+      ]),
+    );
+    const prefix = readEntryLinesPrefix(file);
+    assert.equal(prefix.lines.filter((line) => line.entry.type === "action_receipt").length, 5);
+    assert.equal(prefix.torn, true);
+
+    writeFileSync(file, `${" ".repeat((1 << 20) + 1)}\r\n`);
+    assert.throws(() => readEntries(file), /recorder entry limit/u);
+    assert.throws(() => readEntries(dir), /regular file/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL stream detects a same-inode rewrite after mtime is restored", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Unix ctime semantics are required");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-changed-"));
+  const file = join(dir, "changed.jsonl");
+  try {
+    writeFileSync(file, "first\nsecond\n");
+    const fixed = new Date(1_700_000_000_000);
+    utimesSync(file, fixed, fixed);
+    let changed = false;
+    assert.throws(
+      () =>
+        forEachVerifierJSONLLine(file, false, () => {
+          if (changed) return;
+          changed = true;
+          writeFileSync(file, "other\nsecond\n");
+          utimesSync(file, fixed, fixed);
+        }),
+      /changed while reading/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL stream change takes precedence over a consumer parse error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-parse-race-"));
+  const file = join(dir, "changed.jsonl");
+  try {
+    writeFileSync(file, "malformed\nsecond\n");
+    assert.throws(
+      () =>
+        forEachVerifierJSONLLine(file, false, () => {
+          writeFileSync(file, "replacement\nsecond\n");
+          throw new Error("malformed JSON");
+        }),
+      /changed while reading/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL stream detects pathname replacement after a consumer error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-path-race-"));
+  const file = join(dir, "evidence.jsonl");
+  const replacement = join(dir, "replacement.jsonl");
+  try {
+    writeFileSync(file, "malformed\n");
+    writeFileSync(replacement, "replacement\n");
+    assert.throws(
+      () =>
+        forEachVerifierJSONLLine(file, false, () => {
+          renameSync(replacement, file);
+          throw new Error("malformed JSON");
+        }),
+      /changed while reading/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSONL stream stops at initial size when the file is appended", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-append-"));
+  const file = join(dir, "evidence.jsonl");
+  try {
+    writeFileSync(file, "first\nsecond\n");
+    let appended = false;
+    let visited = 0;
+    assert.throws(
+      () =>
+        forEachVerifierJSONLLine(file, false, () => {
+          visited++;
+          if (appended) return;
+          appended = true;
+          writeFileSync(file, "first\nsecond\nlater\n");
+        }),
+      /changed while reading/u,
+    );
+    assert.equal(visited, 2, "appended entries must not enter the snapshot");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

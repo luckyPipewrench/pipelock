@@ -16,7 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonicalize
-from .input_file import read_verifier_file
+from .input_file import iter_verifier_jsonl_lines, read_verifier_file
 from .line_space import trim_go_space
 from .number import (
     StrictParseError,
@@ -480,6 +480,22 @@ def verify_evidence_chain_file(
 
 
 def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
+    """Load a chain and give file-change errors precedence over parse errors."""
+    lines = iter_verifier_jsonl_lines(path)
+    try:
+        return _load_evidence_chain_lines(lines)
+    except Exception as original:
+        # A malformed row must not skip the final descriptor/path identity
+        # check. Drain the bounded stream; any read or snapshot failure wins.
+        try:
+            for _ in lines:
+                pass
+        except Exception as changed:
+            raise changed from original
+        raise
+
+
+def _load_evidence_chain_lines(lines: Any) -> list[dict[str, Any]]:
     """Load the receipt chain carried in a flight-recorder JSONL file.
 
     Mirrors the Go reference receipt-chain mode: the action_receipt
@@ -493,10 +509,12 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
     # Split on LF only, like Go's line scanner. str.splitlines() also splits
     # on U+0085, U+2028 and other separators that Go's encoder leaves raw
     # inside JSON strings, which would cut a valid entry in half.
-    for index, line in enumerate(
-        read_verifier_file(path).decode("utf-8").split("\n"), start=1
-    ):
-        raw = trim_go_space(line)
+    for index, line in enumerate(lines, start=1):
+        try:
+            decoded = line.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ReceiptError(f"line {index}: input is not UTF-8: {exc}") from exc
+        raw = trim_go_space(decoded)
         if raw == "":
             continue
         try:

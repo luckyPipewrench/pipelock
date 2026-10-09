@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  renameSync,
   rmSync,
   truncateSync,
   writeFileSync,
@@ -28,6 +29,7 @@ import {
   setPidNamespaceProbeForTest,
   receiptGroupEvidencePresent,
   verifyReceiptGroup,
+  verifyReceiptGroupAfterInventoryForTest,
 } from "../src/group.js";
 import { parseEvidenceFilename } from "../src/chain-set.js";
 import { findPackageRoot } from "./paths.js";
@@ -374,6 +376,58 @@ test("group verification fails closed for missing close, deleted shard, tampered
     writeFileSync(stream, `${readFileSync(stream, "utf8")}tamper\n`);
     assert.equal((await verifyReceiptGroup(ael, id, trusted)).verdict, "GROUP_INVALID");
     assert.equal((await verifyReceiptGroup(base, id, [])).verdict, "GROUP_INVALID");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("group inventory mutation during malformed artifact read is incomplete", async () => {
+  const base = join(fixtures, "group-valid"),
+    id = groupID(base),
+    trusted = keys(base),
+    temp = mkdtempSync(join(tmpdir(), "ts-receipt-group-inventory-"));
+  try {
+    const changed = join(temp, "changed"),
+      stable = join(temp, "stable"),
+      unavailable = join(temp, "unavailable"),
+      renamed = join(temp, "renamed"),
+      displaced = join(temp, "displaced");
+    cpSync(base, changed, { recursive: true });
+    const changedOpen = join(changed, `receipt-group-${id}-open.json`);
+    const changedResult = await verifyReceiptGroupAfterInventoryForTest(changed, id, trusted, () =>
+      writeFileSync(changedOpen, "{"),
+    );
+    assert.equal(changedResult.verdict, "GROUP_INCOMPLETE", JSON.stringify(changedResult));
+    assert.match(changedResult.error ?? "", /changed during verification/u);
+
+    cpSync(base, stable, { recursive: true });
+    writeFileSync(join(stable, `receipt-group-${id}-open.json`), "{");
+    const stableResult = await verifyReceiptGroup(stable, id, trusted);
+    assert.equal(stableResult.verdict, "GROUP_INVALID", JSON.stringify(stableResult));
+
+    cpSync(base, unavailable, { recursive: true });
+    const unavailableResult = await verifyReceiptGroupAfterInventoryForTest(
+      unavailable,
+      id,
+      trusted,
+      () => {},
+      () => {
+        throw new Error("simulated inventory permission failure");
+      },
+    );
+    assert.equal(unavailableResult.verdict, "GROUP_INCOMPLETE", JSON.stringify(unavailableResult));
+
+    cpSync(base, renamed, { recursive: true });
+    const renamedResult = await verifyReceiptGroupAfterInventoryForTest(
+      renamed,
+      id,
+      trusted,
+      () => {
+        renameSync(renamed, displaced);
+        mkdirSync(renamed);
+      },
+    );
+    assert.equal(renamedResult.verdict, "GROUP_INCOMPLETE", JSON.stringify(renamedResult));
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

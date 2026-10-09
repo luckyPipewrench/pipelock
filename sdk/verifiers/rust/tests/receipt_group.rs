@@ -310,6 +310,63 @@ fn go_produced_groups_verify_with_native_ael() {
 }
 
 #[test]
+fn ordinary_group_shard_streams_large_history_and_rejects_bad_tails() {
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    use std::io::Write;
+    file.write_all(&b"\r\n".repeat((8 << 20) / 2 + 1)).unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_VALID", "{report:?}");
+
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    file.write_all(&vec![b' '; (1 << 20) + 1]).unwrap();
+    file.write_all(b"\r\n").unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("recorder entry limit"));
+
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    file.write_all(b"torn-tail").unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("torn segment"));
+}
+
+#[test]
 fn successor_and_recovery_transition_verification() {
     for name in ["group-successor", "group-recovery-successor"] {
         let dir = fixture(name);

@@ -108,7 +108,7 @@ pub(crate) fn same_open_file(a: &File, b: &File) -> Result<bool> {
     }
 }
 
-pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+pub fn open_verifier_file(path: &Path) -> Result<File> {
     // Operator-supplied keys and endorsements were made absolute before the
     // directory is entered. Only relative child names belong to the pinned
     // evidence directory.
@@ -159,6 +159,14 @@ pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
             "refuse symlink in evidence directory".to_string(),
         ));
     }
+    Ok(file)
+}
+
+pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+    let file = open_verifier_file(path)?;
+    let info = file
+        .metadata()
+        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
     if info.len() > MAX_VERIFIER_INPUT_BYTES {
         return Err(VerifierError::Runtime(format!(
             "input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes"

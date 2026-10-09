@@ -11,7 +11,9 @@ use crate::canonical::go_json_bytes;
 use crate::chain::{receipt_hash, verify_chain_with_options};
 use crate::chain_set::{indexed_session_files, parse_evidence_filename};
 use crate::line_space::trim_go_space;
-use crate::recorder::{extract_typed_from_lines, read_entry_lines_text, RecorderLine};
+use crate::recorder::{
+    extract_typed_from_lines, read_entry_lines_prefix, read_entry_lines_text, RecorderLine,
+};
 use crate::recorder_chain::verify_recorder_chain;
 use crate::util::{reject_duplicate_keys, sha256_hex};
 use base64::Engine;
@@ -192,7 +194,93 @@ pub fn verify_receipt_group(
     group_id: &str,
     trusted_keys: &[String],
 ) -> ReceiptGroupReport {
-    match verify_inner(dir, group_id, trusted_keys) {
+    verify_receipt_group_after_inventory(dir, group_id, trusted_keys, || {})
+}
+
+fn verify_receipt_group_after_inventory(
+    dir: &Path,
+    group_id: &str,
+    trusted_keys: &[String],
+    after_inventory: impl FnOnce(),
+) -> ReceiptGroupReport {
+    verify_receipt_group_with_inventory(
+        dir,
+        group_id,
+        trusted_keys,
+        after_inventory,
+        inventory_fingerprint,
+    )
+}
+
+fn verify_receipt_group_with_inventory(
+    dir: &Path,
+    group_id: &str,
+    trusted_keys: &[String],
+    after_inventory: impl FnOnce(),
+    inventory: impl Fn(&Path) -> Result<InventoryFingerprint, String>,
+) -> ReceiptGroupReport {
+    if trusted_keys.is_empty() || !hex_exact(group_id, 32) {
+        return report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id);
+    }
+    let root = match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => meta,
+        _ => return report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id),
+    };
+    let before = match inventory(dir) {
+        Ok(before) => before,
+        Err(reason) if reason.contains("symlink in receipt group inventory") => {
+            return ReceiptGroupReport {
+                group_id: group_id.to_string(),
+                verdict: "GROUP_INVALID".into(),
+                base_session: None,
+                shard_count: 0,
+                open_manifest_sha256: None,
+                close_manifest_sha256: None,
+                error: Some(reason),
+            };
+        }
+        Err(_) => {
+            return ReceiptGroupReport {
+                group_id: group_id.to_string(),
+                verdict: "GROUP_INCOMPLETE".into(),
+                base_session: None,
+                shard_count: 0,
+                open_manifest_sha256: None,
+                close_manifest_sha256: None,
+                error: Some("receipt group inventory was unavailable during verification".into()),
+            };
+        }
+    };
+    after_inventory();
+    let mut report = report_from_inner(verify_inner(dir, group_id, trusted_keys), group_id);
+    let root_after = match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => meta,
+        _ => {
+            report.verdict = "GROUP_INCOMPLETE".into();
+            report.error = Some("receipt group directory changed during verification".into());
+            return report;
+        }
+    };
+    if !same_directory_identity(&root, &root_after) {
+        report.verdict = "GROUP_INCOMPLETE".into();
+        report.error = Some("receipt group directory changed during verification".into());
+        return report;
+    }
+    match inventory(dir) {
+        Ok(after) if after == before => {}
+        _ => {
+            report.verdict = "GROUP_INCOMPLETE".into();
+            report.error = Some("receipt group directory changed during verification".into());
+        }
+    }
+    report
+}
+
+fn report_from_inner(
+    result: Result<ReceiptGroupReport, (&'static str, String)>,
+    group_id: &str,
+) -> ReceiptGroupReport {
+    match result {
         Ok(report) => report,
         Err((verdict, reason)) => ReceiptGroupReport {
             group_id: group_id.to_string(),
@@ -203,6 +291,18 @@ pub fn verify_receipt_group(
             close_manifest_sha256: None,
             error: Some(reason),
         },
+    }
+}
+
+fn same_directory_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir() && after.is_dir()
     }
 }
 
@@ -228,7 +328,6 @@ fn verify_inner(
             "receipt group path is not a real directory".into(),
         ));
     }
-    let before = inventory_fingerprint(dir).map_err(invalid)?;
     verify_group_artifact_names(dir).map_err(invalid)?;
     let open_name = format!("receipt-group-{group_id}-open.json");
     let open_raw = bounded_read(dir, &open_name).map_err(invalid)?;
@@ -272,12 +371,6 @@ fn verify_inner(
             }
             verify_transitions_referencing(dir, &open_hash, trusted, true).map_err(invalid)?;
             verify_ael_inventory(dir, &open, trusted, true).map_err(invalid)?;
-            if inventory_fingerprint(dir).map_err(invalid)? != before {
-                return Err((
-                    "GROUP_INVALID",
-                    "receipt group directory changed during verification".into(),
-                ));
-            }
             let _ = reason;
             return Ok(ReceiptGroupReport {
                 group_id: group_id.to_string(),
@@ -328,12 +421,6 @@ fn verify_inner(
             Err(err) => return Err(invalid(err.to_string())),
         }
     };
-    if inventory_fingerprint(dir).map_err(invalid)? != before {
-        return Err((
-            "GROUP_INVALID",
-            "receipt group directory changed during verification".into(),
-        ));
-    }
     Ok(ReceiptGroupReport {
         group_id: group_id.to_string(),
         verdict: if open_ael_tail {
@@ -509,21 +596,11 @@ fn read_group_session(
     let mut lines = Vec::new();
     let mut torn = false;
     for (file_index, path) in files.iter().enumerate() {
-        let raw = read_regular(path, crate::util::MAX_VERIFIER_INPUT_BYTES)?;
-        let complete = if raw.is_empty() || raw.ends_with(b"\n") {
-            raw.as_slice()
-        } else if allow_torn && file_index + 1 == files.len() {
-            torn = true;
-            let end = raw
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |pos| pos + 1);
-            &raw[..end]
-        } else {
+        let (part, segment_torn) = read_entry_lines_prefix(path).map_err(|e| e.to_string())?;
+        if segment_torn && (!allow_torn || file_index + 1 != files.len()) {
             return Err("receipt group session has a torn segment".into());
-        };
-        let text = std::str::from_utf8(complete).map_err(|e| e.to_string())?;
-        let part = read_entry_lines_text(text).map_err(|e| e.to_string())?;
+        }
+        torn |= segment_torn;
         if part.is_empty() {
             // Go reads an empty file or a lone torn fragment as no entries.
             continue;
@@ -1985,6 +2062,11 @@ fn inventory_fingerprint(dir: &Path) -> Result<InventoryFingerprint, String> {
         xor: [0; 32],
         count: 0,
     };
+    let root = fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+    if root.file_type().is_symlink() {
+        return Err("symlink in receipt group inventory".into());
+    }
+    fingerprint_entry(".", &root, &mut out)?;
     fingerprint_tree(dir, dir, &mut out)?;
     Ok(out)
 }
@@ -2001,37 +2083,66 @@ fn fingerprint_tree(
         if m.file_type().is_symlink() {
             return Err("symlink in receipt group inventory".into());
         }
-        let mt = m
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
         let rel = path
             .strip_prefix(root)
             .map_err(|e| e.to_string())?
             .to_string_lossy()
             .into_owned();
-        let kind = if m.is_dir() {
-            b"dir".as_slice()
-        } else {
-            b"file".as_slice()
-        };
-        let size = m.len().to_be_bytes();
-        let modified = mt.to_be_bytes();
-        let digest = Sha256::digest([rel.as_bytes(), kind, &size, &modified].concat());
-        for (dst, src) in out.xor.iter_mut().zip(digest) {
-            *dst ^= src;
-        }
-        out.count = out
-            .count
-            .checked_add(1)
-            .ok_or("inventory entry count overflow")?;
+        fingerprint_entry(&rel, &m, out)?;
         if m.is_dir() {
             fingerprint_tree(root, &path, out)?;
         }
     }
     Ok(())
+}
+
+fn fingerprint_entry(
+    rel: &str,
+    metadata: &fs::Metadata,
+    out: &mut InventoryFingerprint,
+) -> Result<(), String> {
+    let mt = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let kind = if metadata.is_dir() {
+        b"dir".as_slice()
+    } else {
+        b"file".as_slice()
+    };
+    let size = metadata.len().to_be_bytes();
+    let modified = mt.to_be_bytes();
+    let identity = metadata_identity(metadata);
+    let digest = Sha256::digest([rel.as_bytes(), kind, &size, &modified, &identity].concat());
+    for (dst, src) in out.xor.iter_mut().zip(digest) {
+        *dst ^= src;
+    }
+    out.count = out
+        .count
+        .checked_add(1)
+        .ok_or("inventory entry count overflow")?;
+    Ok(())
+}
+
+fn metadata_identity(metadata: &fs::Metadata) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        [
+            metadata.dev().to_be_bytes().as_slice(),
+            metadata.ino().to_be_bytes().as_slice(),
+            metadata.ctime().to_be_bytes().as_slice(),
+            metadata.ctime_nsec().to_be_bytes().as_slice(),
+        ]
+        .concat()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Vec::new()
+    }
 }
 
 fn hex_exact(s: &str, n: usize) -> bool {
@@ -2108,6 +2219,69 @@ fn canonical_time(s: &str) -> bool {
             || fraction.len() <= 9
                 && fraction.bytes().all(|b| b.is_ascii_digit())
                 && !fraction.ends_with('0'))
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::{
+        verify_receipt_group, verify_receipt_group_after_inventory,
+        verify_receipt_group_with_inventory,
+    };
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn malformed_group_dir(label: &str) -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pipelock-rust-group-inventory-{}-{stamp}-{label}",
+            std::process::id()
+        ));
+        fs::create_dir_all(dir.join("ael")).expect("create group directory");
+        fs::write(
+            dir.join("receipt-group-00000000000000000000000000000000-open.json"),
+            b"{}",
+        )
+        .expect("write malformed opening");
+        dir
+    }
+
+    #[test]
+    fn changed_malformed_group_is_incomplete_but_stable_malformed_is_invalid() {
+        let changed = malformed_group_dir("changed");
+        let open = changed.join("receipt-group-00000000000000000000000000000000-open.json");
+        let replacement = open.clone();
+        let report = verify_receipt_group_after_inventory(
+            &changed,
+            "00000000000000000000000000000000",
+            &["00".to_string()],
+            move || fs::write(replacement, b"{").expect("mutate opening after inventory"),
+        );
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{report:?}");
+        let _ = fs::remove_dir_all(changed);
+
+        let stable = malformed_group_dir("stable");
+        let report = verify_receipt_group(
+            &stable,
+            "00000000000000000000000000000000",
+            &["00".to_string()],
+        );
+        assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+        let _ = fs::remove_dir_all(stable);
+
+        let unavailable = malformed_group_dir("unavailable");
+        let report = verify_receipt_group_with_inventory(
+            &unavailable,
+            "00000000000000000000000000000000",
+            &["00".to_string()],
+            || {},
+            |_| Err("simulated inventory permission failure".to_string()),
+        );
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{report:?}");
+        let _ = fs::remove_dir_all(unavailable);
+    }
 }
 
 #[cfg(test)]

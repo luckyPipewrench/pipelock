@@ -268,6 +268,42 @@ def test_go_producer_group_fixture_verifies(tmp_path: Path) -> None:
     assert result["shard_count"] == 2
 
 
+def test_inventory_change_during_malformed_group_read_is_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pipelock_aarp_verify import group as group_module
+
+    changed = _extract_fixture("group-valid", tmp_path / "changed")
+    stable = _extract_fixture("group-valid", tmp_path / "stable")
+    open_path = changed / f"receipt-group-{GROUP_ID}-open.json"
+    original = group_module._strict_artifact
+
+    def mutate_then_parse(path: Path, kind: str):
+        if kind == "open":
+            path.write_text("{")
+        return original(path, kind)
+
+    monkeypatch.setattr(group_module, "_strict_artifact", mutate_then_parse)
+    changed_result = verify_receipt_group(changed, GROUP_ID, TRUSTED_KEYS)
+    assert changed_result["verdict"] == GROUP_INCOMPLETE, changed_result
+    assert "changed during verification" in changed_result["error"]
+
+    stable_open = stable / f"receipt-group-{GROUP_ID}-open.json"
+    stable_open.write_text("{")
+    monkeypatch.setattr(group_module, "_strict_artifact", original)
+    stable_result = verify_receipt_group(stable, GROUP_ID, TRUSTED_KEYS)
+    assert stable_result["verdict"] == GROUP_INVALID, stable_result
+
+    unavailable = _extract_fixture("group-valid", tmp_path / "unavailable")
+
+    def inventory_unavailable(_directory: Path):
+        raise OSError("simulated inventory permission failure")
+
+    monkeypatch.setattr(group_module, "_inventory", inventory_unavailable)
+    unavailable_result = verify_receipt_group(unavailable, GROUP_ID, TRUSTED_KEYS)
+    assert unavailable_result["verdict"] == GROUP_INCOMPLETE, unavailable_result
+
+
 def test_go_producer_successor_group_and_transition_verify(tmp_path: Path) -> None:
     fixture = _extract_fixture("group-successor", tmp_path / "successor")
     result = verify_receipt_group(fixture, SUCCESSOR_ID, SUCCESSOR_KEYS)

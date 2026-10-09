@@ -1445,6 +1445,11 @@ def verify_receipt_group(
         result["error"] = "receipt group verification requires a trusted signer key"
         return result
     root = Path(directory)
+    before = None
+    root_info = None
+    ael_info = None
+    inventory_attempted = False
+    inventory_unavailable = False
     try:
         root_info = root.lstat()
         if not stat.S_ISDIR(root_info.st_mode) or root.is_symlink():
@@ -1455,7 +1460,12 @@ def verify_receipt_group(
             raise GroupVerificationError(
                 "receipt group AEL path is not a real directory"
             )
-        before = _inventory(root)
+        inventory_attempted = True
+        try:
+            before = _inventory(root)
+        except OSError:
+            inventory_unavailable = True
+            raise
         for artifact in root.iterdir():
             if artifact.name.startswith(
                 "receipt-group-"
@@ -1526,16 +1536,6 @@ def verify_receipt_group(
             result["error"] = (
                 "predecessor group is GROUP_INCOMPLETE: no signed close manifest"
             )
-        if _inventory(root) != before:
-            raise GroupVerificationError(
-                "receipt group directory changed during verification"
-            )
-        if not os.path.samestat(root_info, root.stat()) or not os.path.samestat(
-            ael_info, ael_root.stat()
-        ):
-            raise GroupVerificationError(
-                "receipt group directory identity changed during verification"
-            )
         return result
     except (
         OSError,
@@ -1558,9 +1558,31 @@ def verify_receipt_group(
             f"receipt group verification failed: {type(exc).__name__}: {exc}"
         )
         return result
+    finally:
+        if (
+            inventory_attempted
+            and inventory_unavailable
+            and before is None
+            and root_info is not None
+            and ael_info is not None
+        ):
+            result["verdict"] = GROUP_INCOMPLETE
+            result["error"] = "receipt group inventory was unavailable during verification"
+        if before is not None and root_info is not None and ael_info is not None:
+            try:
+                changed = (
+                    _inventory(root) != before
+                    or not os.path.samestat(root_info, root.stat())
+                    or not os.path.samestat(ael_info, (root / "ael").stat())
+                )
+            except (OSError, GroupVerificationError):
+                changed = True
+            if changed:
+                result["verdict"] = GROUP_INCOMPLETE
+                result["error"] = "receipt group directory changed during verification"
 
 
-def _inventory(directory: Path) -> tuple[tuple[str, int, int, int], ...]:
+def _inventory(directory: Path) -> tuple[tuple[str, int, int, int, int, int, int], ...]:
     items = []
     paths = list(directory.iterdir())
     ael = directory / "ael"
@@ -1571,5 +1593,15 @@ def _inventory(directory: Path) -> tuple[tuple[str, int, int, int], ...]:
         if path.is_symlink():
             raise GroupVerificationError("symlink in receipt group inventory")
         relative = str(path.relative_to(directory))
-        items.append((relative, info.st_ino, info.st_size, info.st_mtime_ns))
+        items.append(
+            (
+                relative,
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+        )
     return tuple(sorted(items))

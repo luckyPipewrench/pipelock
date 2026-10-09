@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestDisplayVersionForStartupBanner(t *testing.T) {
@@ -581,7 +583,7 @@ cosign() {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 			defer cancel()
 			// #nosec G204 -- executes the checked-in action loop with a local mock, not external input.
 			cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", mock+loop+"\necho ACTION_CONTINUED\n")

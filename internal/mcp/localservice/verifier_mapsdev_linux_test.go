@@ -6,6 +6,7 @@
 package localservice
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,36 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+func TestMappedFilePathWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"ordinary.bin", "two  spaces.bin", "tab\tname.bin", "trailing.bin "} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(path, []byte(pinnedContent), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			h := startServer(t, modeServe, loopbackAny, envHold+"="+path, envHoldMmap+"=1")
+			conn := dialAccepted(t, h, "")
+			pin := basePin(t)
+			pin.MappedFiles = []FilePin{{Path: path, SHA256: sha256Hex([]byte(pinnedContent))}}
+			if _, err := NewVerifier().VerifyConn(conn, pin); err != nil {
+				t.Fatalf("VerifyConn refused a held mapping: %v", err)
+			}
+			obs, err := NewVerifier().Observe(context.Background(), conn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range obs.Files {
+				if file.Path == path && file.SHA256 == pin.MappedFiles[0].SHA256 {
+					return
+				}
+			}
+			t.Fatalf("Observe did not report the exact held file %q with its digest: %+v", path, obs.Files)
+		})
+	}
+}
 
 func TestMapsIdentityOfRealFile(t *testing.T) {
 	t.Parallel()

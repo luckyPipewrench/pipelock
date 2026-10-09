@@ -692,10 +692,13 @@ func parseMapsLine(line string) (heldFile, bool) {
 	if err != nil || ino == 0 {
 		return heldFile{}, false
 	}
-	p := strings.Join(fields[5:], " ")
-	if !strings.HasPrefix(p, "/") {
+	if !strings.HasPrefix(fields[5], "/") {
 		return heldFile{}, false
 	}
+	// The first five fields contain no slash. Preserve the pathname's bytes:
+	// Fields/Join would collapse repeated, trailing or tab whitespace in a
+	// legitimate filename, making it differ from the open descriptor's link.
+	p := line[strings.IndexByte(line, '/'):]
 	return heldFile{dev: unix.Mkdev(uint32(maj), uint32(mnr)), ino: ino, path: strings.TrimSuffix(p, deletedSuffix), mapped: true}, true
 }
 

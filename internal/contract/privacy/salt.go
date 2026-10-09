@@ -31,6 +31,10 @@ var (
 	// or trailing slash).
 	ErrSaltNotAbsolute = errors.New("learn salt file path must be absolute")
 
+	// ErrSaltFileUnsupported indicates a file: source on a platform that
+	// cannot open it with the symlink and permission guards it relies on.
+	ErrSaltFileUnsupported = errors.New("salt file source unsupported on this platform")
+
 	// ErrSaltMissing indicates a file: salt source pointing to a path that
 	// does not exist on disk at resolution time.
 	ErrSaltMissing = errors.New("learn salt file not found")
@@ -88,6 +92,9 @@ func LoadSalt(source string) ([]byte, error) {
 // race where the symlink is swapped in between Lstat and Open. After the
 // fd is open it pins the inode, so the mode check is no longer racy.
 func loadSaltFile(rawPath string) ([]byte, error) {
+	if !fileSourceSupported {
+		return nil, ErrSaltFileUnsupported
+	}
 	if !filepath.IsAbs(rawPath) {
 		return nil, fmt.Errorf("%w: %q", ErrSaltNotAbsolute, rawPath)
 	}

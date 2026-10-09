@@ -1030,7 +1030,7 @@ test("JSONL recorder extraction rejects invalid UTF-8", () => {
   const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
   const file = join(dir, "invalid-utf8.jsonl");
   try {
-    writeFileSync(file, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]));
+    writeFileSync(file, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d, 0x0a]));
     assert.throws(() => extractReceipts(file), /invalid UTF-8/u);
   } finally {
     rmSync(dir, { recursive: true, force: true });

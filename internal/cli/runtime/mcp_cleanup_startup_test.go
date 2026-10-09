@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -153,5 +154,42 @@ func TestMCPProxyCmd_RemoteRoutesDoNotReportSubprocessCleanup(t *testing.T) {
 				t.Fatalf("remote route reported subprocess cleanup capability:\n%s", stderr)
 			}
 		})
+	}
+}
+
+// The transport binding digest is an unkeyed hash over the upstream URL,
+// including its user info, so a reader of the proxy's output could test a
+// guessed credential against it. Startup prints neither the digest nor the
+// credential, with a server name set or not.
+func TestMCPProxyCmd_StartupDoesNotExposeBindingDigest(t *testing.T) {
+	password := "stdio-" + "pass-4Rv"
+	addr := unavailableTCPAddr(t)
+	upstream := "http://ops:" + password + "@" + addr + "/mcp"
+	wsUpstream := "ws://ops:" + password + "@" + addr + "/mcp"
+	digest := regexp.MustCompile(`[0-9a-fA-F]{64}`)
+	for _, args := range [][]string{
+		{"proxy", "--server-name", "vault", "--upstream", upstream},
+		{"proxy", "--upstream", upstream},
+		{"proxy", "--server-name", "vault", "--upstream", wsUpstream},
+		{"proxy", "--server-name", "vault", "--listen", "127.0.0.1:0", "--upstream", wsUpstream},
+		// Malformed upstreams: the refusal and dial errors name the
+		// endpoint without its user info or query.
+		{"proxy", "--upstream", "http://ops:" + password + "@/mcp?token=" + password},
+		{"proxy", "--upstream", "ws://ops:" + password + "@[::1/mcp?token=" + password},
+		// Opaque and host-less upstreams: the refusal shows the scheme only.
+		{"proxy", "--upstream", "http:ops:" + password + "@mcp.vendor.example/mcp?token=" + password},
+		{"proxy", "--upstream", "ws:ops:" + password + "@mcp.vendor.example/mcp"},
+		// An unsupported scheme is refused naming the endpoint only.
+		{"proxy", "--upstream", "ftp://ops:" + password + "@" + addr + "/mcp?token=" + password},
+	} {
+		stdout, stderr, err := runMCPProxyCommandWithInput(t, args,
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
+		out := stdout + stderr
+		if err != nil {
+			out += err.Error()
+		}
+		if digest.MatchString(out) || strings.Contains(out, password) || strings.Contains(out, "transport binding") {
+			t.Fatalf("McpCmd(%v) output exposes the binding digest or credential:\n%s", args, out)
+		}
 	}
 }

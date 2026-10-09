@@ -12,9 +12,9 @@ on:
         required: true
         type: string
       reviewer_sha:
-        description: Full immutable Pipelock commit containing the review
-          action.
-        required: true
+        description: Optional compatibility pin; must match the loaded workflow commit.
+        required: false
+        default: ''
         type: string
     secrets:
       review_token:
@@ -34,7 +34,16 @@ permissions:
   pull-requests: write
 
 jobs:
+  source:
+    # Local reusable calls load the helper from this workflow's own revision.
+    # Do not pass secrets: source identity must be validated before admission.
+    permissions: {}
+    uses: ./.github/workflows/pr-review-source.yaml
+    with:
+      reviewer_sha: ${{ inputs.reviewer_sha }}
+
   admit:
+    needs: source
     # Serialize only the fast admission step. It persists a running status
     # comment before provider work begins, so a later command can reply with
     # that comment's link rather than start another review.
@@ -57,27 +66,14 @@ jobs:
       status_comment_id: ${{ steps.claim.outputs.status_comment_id }}
       correlation: ${{ steps.claim.outputs.correlation }}
     steps:
-      # reviewer_sha is a free-form workflow input used directly as a checkout
-      # ref. A branch or tag name would execute action code from a mutable ref,
-      # so reject anything that is not a full commit SHA before any fetch.
-      - name: Require an immutable reviewer commit
-        env:
-          REVIEWER_SHA: ${{ inputs.reviewer_sha }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${REVIEWER_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "reviewer_sha must be a full 40-character commit SHA" >&2
-            exit 1
-          fi
-
       # A called workflow's normal checkout is the caller repository. Fetch
-      # Pipelock by the caller-provided full SHA so the composite action and
-      # runner cannot silently come from a caller's stale local copy.
+      # Pipelock at the validated loaded workflow SHA so the workflow, action,
+      # and runner all come from the same immutable revision.
       - name: Check out immutable Pipelock review source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: luckyPipewrench/pipelock
-          ref: ${{ inputs.reviewer_sha }}
+          ref: ${{ needs.source.outputs.reviewer_sha }}
           path: trusted-pr-review
           persist-credentials: false
 
@@ -89,14 +85,14 @@ jobs:
           repo: ${{ github.repository }}
           pr-number: ${{ inputs.pr_number }}
           review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
+          reviewer-sha: ${{ needs.source.outputs.reviewer_sha }}
           model-fast: ${{ vars.PR_REVIEW_MODEL_FAST }}
           model-deep: ${{ vars.PR_REVIEW_MODEL_DEEP }}
           operation: claim
 
 
   review:
-    needs: admit
+    needs: [source, admit]
     if: needs.admit.outputs.claimed == 'true'
     runs-on: ubuntu-latest
     # Must exceed the reviewer's REVIEW_WALL_CLOCK_SECONDS with room for the
@@ -112,7 +108,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: luckyPipewrench/pipelock
-          ref: ${{ inputs.reviewer_sha }}
+          ref: ${{ needs.source.outputs.reviewer_sha }}
           path: trusted-pr-review
           persist-credentials: false
 
@@ -172,7 +168,7 @@ jobs:
           repo: ${{ github.repository }}
           pr-number: ${{ inputs.pr_number }}
           review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
+          reviewer-sha: ${{ needs.source.outputs.reviewer_sha }}
           operation: review
           base-sha: ${{ needs.admit.outputs.base_sha }}
           head-sha: ${{ needs.admit.outputs.head_sha }}
@@ -193,7 +189,7 @@ jobs:
           repo: ${{ github.repository }}
           pr-number: ${{ inputs.pr_number }}
           review-mode: ${{ inputs.review_mode }}
-          reviewer-sha: ${{ inputs.reviewer_sha }}
+          reviewer-sha: ${{ needs.source.outputs.reviewer_sha }}
           operation: review
           base-sha: ${{ needs.admit.outputs.base_sha }}
           head-sha: ${{ needs.admit.outputs.head_sha }}
@@ -208,8 +204,8 @@ jobs:
   # review job never starts, leaving the comment reading running until its stale
   # timeout blocks later reviews.
   finalize:
-    needs: [admit, review]
-    if: always() && needs.admit.outputs.claimed == 'true'
+    needs: [source, admit, review]
+    if: always() && needs.source.result == 'success' && needs.admit.outputs.claimed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -260,7 +256,7 @@ jobs:
               echo "::warning title=pr-review finalize::could not read the status comment; the review job succeeded, so its verdict stands and the comment was left unchanged (state ${REVIEW_STATE})"
               exit 0
             fi
-            echo "::error title=pr-review finalize::could not read the status comment, so it may still read running (review job ${REVIEW_RESULT}). Reruns stay blocked until the claim is 105 minutes old (the stale-claim timeout) or the comment is deleted."
+            echo "::error title=pr-review finalize::could not read the status comment, so it may still read running (review job ${REVIEW_RESULT}). Re-run only the finalize job to retry finalization without starting provider work. New review commands stay blocked until finalization closes the claim or the claim is 105 minutes old (the stale-claim timeout)."
             exit 1
           fi
           # Both conditions matter. The state check leaves a completed review
@@ -299,7 +295,7 @@ jobs:
                   exit 0 ;;
               esac
             fi
-            echo "::error title=pr-review finalize::could not close the status comment, so it may still read running. Reruns stay blocked until the claim is 105 minutes old (the stale-claim timeout) or the comment is deleted."
+            echo "::error title=pr-review finalize::could not close the status comment, so it may still read running. Re-run only the finalize job to retry finalization without starting provider work. New review commands stay blocked until finalization closes the claim or the claim is 105 minutes old (the stale-claim timeout)."
             exit 1
           fi
           echo "pr-review phase=finalize status=closed"

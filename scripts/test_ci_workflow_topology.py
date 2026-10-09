@@ -24,9 +24,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {
-    "proxy-0", "proxy-1", "scanner-0", "scanner-1", "mcp-0", "mcp-1", "rest-0", "rest-1", "rest-2",
+    "proxy-0", "proxy-1", "proxy-2", "scanner-0", "scanner-1", "scanner-2", "scanner-3",
+    "mcp-0", "mcp-1", "mcp-2",
+    "runtime-0", "runtime-1", "rest-0", "rest-1", "rest-2",
 }
 MINORS = ("126", "127")
+POLICY_OUTPUT = "${{ needs.changed-files.outputs.ci_policy }}"
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
 NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
@@ -46,8 +49,8 @@ SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # producer actually skips.
 SKIP_CARVEOUT_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
-    "&& (github.event_name != 'pull_request' "
-    "|| needs.changed-files.outputs.ci_policy == 'true') }}"
+    "&& github.event_name == 'pull_request' "
+    "&& needs.changed-files.outputs.ci_policy == 'true' }}"
 )
 REQUIRED_PRODUCERS = {
     "security-scan",
@@ -90,9 +93,12 @@ def gate_script_is_safe(run: str) -> bool:
         r'''^(?:
             set\ -u|
             echo\ "[^"]*"|
-            test\ "[^"]*"\ =\ "success"(?:\ \|\|\ \{)?|
+            test\ "[^"]*"\ =\ "(?:success|true|false)"(?:\ \|\|\ \{)?|
+            if\ \[\ "\$EVENT_NAME"\ =\ "pull_request"\ \];\ then|
+            if\ \[\ "[^"]*"\ !=\ "false"\ \];\ then|
             if\ !\ test\ "[^"]*"\ =\ "success";\ then|
             if\ \[\ "\$EVENT_NAME"\ !=\ "pull_request"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
+            if\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
             \[\ "\$EVENT_NAME"\ (?:=|!=)\ "pull_request"\ \]\ \&\&|
             \[\ "[^"]*"\ (?:=|!=)\ "skipped"\ \]|
             exit\ 1|fi|\}
@@ -110,7 +116,7 @@ def gate_script_is_safe(run: str) -> bool:
     # the file, because an absolute path needs no PATH lookup. The empty PATH in
     # execute_gate is therefore not the backstop it appears to be, and the
     # docstring above was claiming a property the grammar did not hold.
-    neutralized = NEEDS_RESULT_RE.sub("success", run)
+    neutralized = NEEDS_RESULT_RE.sub("success", run.replace(POLICY_OUTPUT, "false"))
     # Then refuse the backslash. `echo "x\"` satisfies the `echo\ "[^"]*"`
     # alternative below -- the escaped quote is just another `[^"]` byte -- while
     # bash reads it as an OPEN string, so the next line is string content rather
@@ -137,13 +143,13 @@ def gate_script_is_safe(run: str) -> bool:
     )
 
 
-def execute_gate(run: str, results: dict[str, str], event_name: str) -> int:
+def execute_gate(run: str, results: dict[str, str], event_name: str, ci_policy: str = "false") -> int:
     """Run a safe aggregate gate as GitHub's bash shell would run it."""
     if not gate_script_is_safe(run):
         raise ValueError("aggregate gate contains shell outside the safe execution subset")
     with tempfile.TemporaryDirectory(prefix="pipelock-ci-gate-") as temp_dir:
         completed = subprocess.run(
-            ["/usr/bin/bash", "-eo", "pipefail", "-c", substitute_needs_results(run, results)],
+            ["/usr/bin/bash", "-eo", "pipefail", "-c", substitute_needs_results(run.replace(POLICY_OUTPUT, ci_policy), results)],
             cwd=temp_dir,
             env={
                 "EVENT_NAME": event_name,
@@ -162,45 +168,50 @@ def execute_gate(run: str, results: dict[str, str], event_name: str) -> int:
 def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> list[str]:
     """Return failures from executing every aggregate result state.
 
-    Go 1.27 may accept a skipped shard producer only on a pull request.  Every
-    other omitted, unknown, cancelled, or failed producer result must red the
-    aggregate required check.
+    Go 1.27 may accept a skipped shard producer, which runs only on a pull
+    request that changes CI policy.  Every other omitted, unknown, cancelled,
+    or failed producer result must red the aggregate required check.
     """
     errors = []
     successful = {dependency: "success" for dependency in dependencies}
     cases = [
-        ("all producers succeed", successful, event_name, 0)
+        ("all producers succeed", successful, event_name, "false", 0)
         for event_name in EVENT_NAMES
     ]
     for dependency in sorted(dependencies):
         for result in ("failure", "cancelled", "", "unknown", "skipped"):
             values = successful | {dependency: result}
-            legitimate_skip = (
-                aggregate == SKIP_CARVEOUT_AGGREGATE
-                and dependency in SKIP_CARVEOUT_PRODUCERS
-                and result == "skipped"
-            )
-            # Run EVERY state under BOTH events. Testing failures only on `push`
-            # left a reproduced fail-open: the accepted grammar permits a gate to
-            # branch on $EVENT_NAME, so a gate whose skip test compares two
-            # literals -- `[ "skipped" != "skipped" ]` -- reds every failure on a
-            # push and silently returns zero for the SAME failure on a pull
-            # request, which is the event where the required check gates a merge.
-            # The carve-out is the one state allowed to pass, and only on a pull
-            # request; the identical skip on a push must still red.
             for event_name in EVENT_NAMES:
-                passes = legitimate_skip and event_name == "pull_request"
-                cases.append(
-                    (
-                        f"{dependency}={result or 'empty'}",
-                        values,
-                        event_name,
-                        0 if passes else 1,
-                    )
+                legitimate_skip = (
+                    aggregate == SKIP_CARVEOUT_AGGREGATE
+                    and dependency in SKIP_CARVEOUT_PRODUCERS
+                    and result == "skipped"
                 )
-    for description, values, event_name, expected in cases:
+                # Policy detection intentionally does not run on pushes.
+                ignored_policy = dependency == "changed-files" and event_name == "push"
+                cases.append((
+                    f"{dependency}={result or 'empty'}", values, event_name, "false",
+                    0 if legitimate_skip or ignored_policy else 1,
+                ))
+    if aggregate == SKIP_CARVEOUT_AGGREGATE:
+        skipped = successful | dict.fromkeys(SKIP_CARVEOUT_PRODUCERS, "skipped")
+        for policy in ("true", "", "unknown", "TRUE"):
+            cases.append((f"skipped race producers, ci_policy={policy!r}",
+                          skipped, "pull_request", policy, 1))
+        for producer in sorted(SKIP_CARVEOUT_PRODUCERS):
+            cases.append((f"{producer}=skipped with ci_policy=true",
+                          successful | {producer: "skipped"}, "pull_request", "true", 1))
+        cases.append(("CI-policy change proved", successful, "pull_request", "true", 0))
+        for policy in ("", "unknown", "TRUE"):
+            cases.append((f"invalid ci_policy={policy!r}", successful, "pull_request", policy, 1))
+        for result in ("failure", "cancelled", "", "unknown", "skipped"):
+            cases.append((f"skipped race producers, changed-files={result!r}",
+                          skipped | {"changed-files": result}, "pull_request", "false", 1))
+        cases.append(("intentional push skips", skipped | {"changed-files": "skipped"},
+                      "push", "", 0))
+    for description, values, event_name, policy, expected in cases:
         try:
-            actual = execute_gate(run, values, event_name)
+            actual = execute_gate(run, values, event_name, policy)
         except (subprocess.TimeoutExpired, ValueError) as error:
             errors.append(f"{aggregate} gate cannot safely execute: {error}")
             break
@@ -213,16 +224,12 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
 
 
 def skip_carveout_errors(jobs: dict) -> list[str]:
-    """Return failures when a producer's skip carve-out is no longer justified.
+    """Pin the race producers to the approved event and policy predicate.
 
-    `gate_execution_errors` accepts a `skipped` Go 1.27 producer on a pull
-    request and reds every other omitted result.  That acceptance is only
-    correct while the producer skips for the single reason the carve-out was
-    written for: the pull request touched no CI-policy path.  Nothing else
-    checks this, so a producer whose `if` loses that guard -- or gains a
-    broader one -- would start skipping for another reason entirely and the
-    aggregate required check would still go green.  Assert the producer's own
-    condition here rather than inferring it from the gate under test.
+    The aggregate independently checks detector success and an explicit false
+    output on pull requests before accepting a skip. Pinning this predicate
+    prevents an additional producer-side condition from skipping a required
+    CI-policy run.
     """
     errors = []
     approved = " ".join(SKIP_CARVEOUT_CONDITION.split())
@@ -231,8 +238,8 @@ def skip_carveout_errors(jobs: dict) -> list[str]:
         normalized = " ".join(condition.split()) if isinstance(condition, str) else None
         if normalized != approved:
             errors.append(
-                f"{producer} no longer skips only when the pull request touches no "
-                f"CI-policy path, so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
+                f"{producer} changed its approved event / CI-policy path predicate, "
+                f"so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
                 f"carve-out is unjustified"
             )
     return errors
@@ -281,6 +288,8 @@ def topology_errors(jobs: dict) -> list[str]:
         expected = {"security-scan", oss, enterprise, replay}
         if minor == "126":
             expected.add("test-subprocess-coverage")
+        else:
+            expected.add("changed-files")
         if aggregate_needs != expected:
             errors.append(f"{aggregate} needs {sorted(aggregate_needs)}, expected {sorted(expected)}")
         opposite = "127" if minor == "126" else "126"
@@ -313,6 +322,9 @@ def topology_errors(jobs: dict) -> list[str]:
         # `needs` is inert under `if: always()`.  Execute the gate with every
         # producer state instead of treating a matching shell substring as proof
         # that the runner's bash control flow will return failure.
+        if minor == "127" and len(gate_steps) == 1:
+            if gate_steps[0].get("env", {}).get("EVENT_NAME") != "${{ github.event_name }}":
+                errors.append(f"{aggregate} does not bind the actual event name")
         gate_run = gate_steps[0].get("run", "") if len(gate_steps) == 1 else ""
         errors.extend(gate_execution_errors(aggregate, gate_run, expected))
         for producer in (oss, enterprise):
@@ -368,6 +380,26 @@ class CIWorkflowTopologyTest(unittest.TestCase):
 
     def test_topology_is_truthful_and_complete(self):
         self.assertEqual(topology_errors(self.jobs), [])
+
+    def test_failed_policy_detection_cannot_green_skipped_race_producers(self):
+        gate = self.jobs["test-go127"]["steps"][0]["run"]
+        results = dict.fromkeys(self.jobs["test-go127"]["needs"], "success")
+        results.update(dict.fromkeys(SKIP_CARVEOUT_PRODUCERS, "skipped"))
+        for result in ("failure", "cancelled", "skipped", "", "unknown"):
+            with self.subTest(result=result):
+                self.assertNotEqual(execute_gate(
+                    gate, results | {"changed-files": result}, "pull_request"), 0)
+        self.assertEqual(execute_gate(gate, results, "pull_request", "false"), 0)
+        for policy in ("true", "", "unknown", "TRUE"):
+            with self.subTest(policy=policy):
+                self.assertNotEqual(execute_gate(gate, results, "pull_request", policy), 0)
+        self.assertEqual(execute_gate(
+            gate, results | {"changed-files": "skipped"}, "push", ""), 0)
+
+    def test_missing_event_binding_fails_the_contract(self):
+        broken = copy.deepcopy(self.jobs)
+        broken["test-go127"]["steps"][0]["env"]["EVENT_NAME"] = "push"
+        self.assertIn("test-go127 does not bind the actual event name", topology_errors(broken))
 
     def test_unparseable_workflow_fails_closed(self):
         with tempfile.TemporaryDirectory(prefix="pipelock-invalid-workflow-") as temp_dir:

@@ -41,6 +41,7 @@ struct ParsedArgs {
     session_id: String,
     session_explicit: bool,
     rotation_endorsements: Vec<String>,
+    group_id: String,
 }
 
 pub fn run(args: &[String]) -> Result<i32> {
@@ -51,6 +52,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         "aarp" => crate::aarp::run_aarp(rest),
         "audit-packet" => run_audit_packet_command(rest),
         "chain" => run_chain_command(rest),
+        "group" => run_group_command(rest),
         "receipt" => run_receipt_command(rest),
         "provenance" => run_provenance_command(rest),
         _ => Err(VerifierError::Usage(format!(
@@ -542,6 +544,18 @@ fn run_chain_at(
     // other session is its own base. Without --session-id every chain of the
     // base is verified; with it only that chain, plus the whole-base checks.
     if parsed.dir {
+        let grouped = crate::receipt_group::receipt_group_evidence_present(clean)
+            .map_err(|err| VerifierError::Runtime(format!("inspect receipt groups: {err}")))?;
+        if grouped {
+            let report = ChainCommandReport {
+                path: display.display().to_string(),
+                error: Some(
+                    "GROUP_INVALID: receipt group evidence requires the group command".into(),
+                ),
+                ..ChainCommandReport::default()
+            };
+            return emit_chain_result(&report, parsed.json);
+        }
         let base = run_session_base(&parsed.session_id).unwrap_or(&parsed.session_id);
         let has_runs = resolve_base_sessions(clean, base)
             .map_err(|err| VerifierError::Runtime(format!("extract receipts: {err}")))?
@@ -642,6 +656,43 @@ fn run_receipt_command(args: &[String]) -> Result<i32> {
     Ok(if report.valid { 0 } else { 1 })
 }
 
+fn run_group_command(args: &[String]) -> Result<i32> {
+    let parsed = parse_args(args, "group")?;
+    let target = require_one_arg(&parsed.positionals, "group")?;
+    if parsed.group_id.is_empty() {
+        return Err(VerifierError::Usage(format!(
+            "group requires --group-id\n{}",
+            usage(Some("group"))
+        )));
+    }
+    let keys = resolve_signer_keys(&parsed.keys)?;
+    let trusted: Vec<String> = keys
+        .split(',')
+        .filter(|x| !x.is_empty())
+        .map(str::to_string)
+        .collect();
+    let report =
+        crate::receipt_group::verify_receipt_group(Path::new(target), &parsed.group_id, &trusted);
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|e| VerifierError::Runtime(format!("encode group report: {e}")))?
+        );
+    } else {
+        println!("{}: {}", report.verdict, report.group_id);
+        if let Some(error) = &report.error {
+            println!("  error: {error}");
+        }
+        println!("  shards: {}", report.shard_count);
+    }
+    Ok(if report.verdict == "GROUP_VALID" {
+        0
+    } else {
+        1
+    })
+}
+
 fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
     let mut parsed = ParsedArgs {
         session_id: "proxy".to_string(),
@@ -666,6 +717,18 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 parsed.allow_unpinned = true;
             }
             "--allow-incomplete" if command == "provenance" => parsed.allow_incomplete = true,
+            "--group-id" if command == "group" => {
+                index += 1;
+                parsed.group_id = args
+                    .get(index)
+                    .ok_or_else(|| {
+                        VerifierError::Usage(format!(
+                            "--group-id requires a value\n{}",
+                            usage(Some(command))
+                        ))
+                    })?
+                    .clone();
+            }
             "--no-trust-required" if command == "audit-packet" => parsed.no_trust_required = true,
             "--dir" if command == "chain" => parsed.dir = true,
             "--key" => {
@@ -734,6 +797,8 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     parsed
                         .rotation_endorsements
                         .push(inline_value.expect("split flag produced value").to_string());
+                } else if flag == "--group-id" && command == "group" {
+                    parsed.group_id = inline_value.expect("split flag produced value").to_string();
                 } else {
                     return Err(VerifierError::Usage(format!(
                         "Unknown option {arg}\n{}",
@@ -770,11 +835,12 @@ fn usage(command: Option<&str>) -> String {
     match command {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
         Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
+        Some("group") => "Usage: pipelock-verifier-rs group EVIDENCE_DIR --group-id ID --key HEX_OR_FILE... [--json]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
         Some("provenance") => {
             "Usage: pipelock-verifier-rs provenance PATH [--allow-incomplete]".to_string()
         }
-        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|provenance|receipt} PATH [flags]"
+        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|group|provenance|receipt} PATH [flags]"
             .to_string(),
     }
 }

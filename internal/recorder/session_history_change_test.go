@@ -12,7 +12,7 @@ import (
 )
 
 func TestSessionHistoryRefusesChangedMembership(t *testing.T) {
-	for _, mutation := range []string{"remove future shard", "add earlier shard", "add final shard", "replace directory"} {
+	for _, mutation := range []string{"remove future shard", "add earlier shard", "add final shard", "replace directory", "replace consumed shard with matching metadata"} {
 		t.Run(mutation, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "evidence")
 			if err := os.Mkdir(dir, 0o750); err != nil {
@@ -28,6 +28,17 @@ func TestSessionHistoryRefusesChangedMembership(t *testing.T) {
 					return nil
 				}
 				switch mutation {
+				case "replace consumed shard with matching metadata":
+					path := filepath.Join(dir, "evidence-change-1.jsonl")
+					info, err := os.Stat(path)
+					if err != nil {
+						return err
+					}
+					if err := os.Rename(path, path+".old"); err != nil {
+						return err
+					}
+					writeHistoryShard(t, dir, "change", 1, 1)
+					return os.Chtimes(path, info.ModTime(), info.ModTime())
 				case "remove future shard":
 					return os.Remove(filepath.Join(dir, "evidence-change-5.jsonl"))
 				case "add earlier shard":
@@ -63,6 +74,13 @@ func TestReadHistoryEntriesRefusesSymlink(t *testing.T) {
 	}
 	if _, err := ReadHistoryEntries(link); err == nil {
 		t.Fatal("symlinked history accepted")
+	}
+	parentLink := filepath.Join(t.TempDir(), "evidence")
+	if err := os.Symlink(dir, parentLink); err != nil {
+		t.Skipf("directory symlink unsupported: %v", err)
+	}
+	if _, err := ReadHistoryEntries(filepath.Join(parentLink, name)); err == nil {
+		t.Fatal("history through a symlinked ancestor accepted")
 	}
 }
 

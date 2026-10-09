@@ -278,7 +278,7 @@ func ReadHistoryEntries(path string) ([]Entry, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("reading evidence file: %w", err)
+		return nil, err
 	}
 	return entries, nil
 }
@@ -464,8 +464,8 @@ type historyInventory struct {
 	count     uint64
 }
 
-func (s *historyInventory) add(name string, info os.FileInfo) {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", name, info.Size(), info.Mode(), info.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z"))))
+func (s *historyInventory) add(name string, info os.FileInfo, identity string) {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", name, identity, info.Size(), info.Mode(), info.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z"))))
 	carry := uint16(0)
 	for i := len(h) - 1; i >= 0; i-- {
 		n := uint16(s.digest[i]) + uint16(h[i]) + carry
@@ -524,7 +524,11 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 			if err != nil {
 				return nil, false, inventory, err
 			}
-			inventory.add(name, info)
+			identity, err := historyFileIdentity(location, name, info)
+			if err != nil {
+				return nil, false, inventory, err
+			}
+			inventory.add(name, info, identity)
 			k := historyKey{name: name, seq: seq}
 			if sessionID == "" {
 				k = historyKey{name: parsed}

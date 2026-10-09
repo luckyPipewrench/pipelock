@@ -31,8 +31,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
 
-const coverageCertReceiptReadLimit = 100000
-
 // coverageCertCmd returns the `coverage-cert` command group with generate + verify.
 func coverageCertCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -145,11 +143,6 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		return fmt.Errorf("--signing-key: %w", err)
 	}
 
-	sessions, err := recorder.ListSessions(cleanDir)
-	if err != nil {
-		return fmt.Errorf("listing sessions: %w", err)
-	}
-
 	// priv.Public() has dynamic type ed25519.PublicKey (whose underlying type is
 	// []byte); a direct []byte type assertion matches the wrong concrete type and
 	// panics, so assert the exact type.
@@ -172,21 +165,21 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	var chainGaps uint64
 	var chainsIntact, chainsBroken int
 
-	for _, sid := range sessions {
-		receipts, extractErr := loadCoverageCertSessionReceipts(cleanDir, sid, coverageCertReceiptReadLimit)
+	err = recorder.WalkHistorySessions(cleanDir, func(sid string) error {
+		receipts, extractErr := loadCoverageCertSessionReceipts(cleanDir, sid)
 		if extractErr != nil {
 			return extractErr
 		}
 		receipts = filterReceiptsToWindow(receipts, windowStart, windowEnd)
 		if len(receipts) == 0 {
-			continue
+			return nil
 		}
 		include, filterErr := sessionBelongsToAgent(sid, receipts, agent)
 		if filterErr != nil {
 			return filterErr
 		}
 		if !include {
-			continue
+			return nil
 		}
 
 		chainResult := receipt.VerifyChainTrusted(receipts, trustedReceiptKeys)
@@ -209,6 +202,10 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 			chainsBroken++
 			chainGaps++
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	body := coveragecert.Body{
@@ -283,14 +280,12 @@ func parseCoverageCertTrustedReceiptSigners(raw []string) ([]string, error) {
 	return keys, nil
 }
 
-func loadCoverageCertSessionReceipts(dir, sessionID string, limit int) ([]receipt.Receipt, error) {
-	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirBounded(dir, sessionID, limit)
+func loadCoverageCertSessionReceipts(dir, sessionID string) ([]receipt.Receipt, error) {
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("reading receipts for session %q: %w", sessionID, err)
 	}
-	if readLimited {
-		return nil, fmt.Errorf("reading receipts for session %q: receipt read limit %d reached; refusing partial coverage certificate", sessionID, limit)
-	}
+
 	return receipts, nil
 }
 

@@ -75,11 +75,12 @@ func TestVerifyReceiptCmd_ChainPastDisplayBudgetVerifies(t *testing.T) {
 		t.Skip("writes a recorder with hundreds of shards")
 	}
 	t.Parallel()
-	dir, key := writeLongSealedChain(t, recorder.MaxEvidenceReadDirectoryEntries+20)
+	dir, key := writeLongSealedChain(t, 730)
 	shards, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
-	if err != nil || len(shards) <= recorder.MaxEvidenceReadDirectoryEntries {
-		t.Fatalf("fixture has %d shards, want more than %d: %v", len(shards), recorder.MaxEvidenceReadDirectoryEntries, err)
+	if err != nil || len(shards) < 730 {
+		t.Fatalf("fixture has %d shards, want at least 730: %v", len(shards), err)
 	}
+	t.Logf("single-chain recorder has %d evidence files", len(shards))
 	writeUnrelatedSessions(t, dir, 300)
 
 	// Control: the bounded display reader cannot read this session.

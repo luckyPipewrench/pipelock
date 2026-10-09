@@ -53,11 +53,12 @@ type groupScaleFixture struct {
 	dir     string
 	keys    []ed25519.PrivateKey
 	trusted []string
+	shards  int
 }
 
 func newGroupScaleFixture(t *testing.T) *groupScaleFixture {
 	t.Helper()
-	f := &groupScaleFixture{dir: t.TempDir()}
+	f := &groupScaleFixture{dir: t.TempDir(), shards: 2}
 	for range 2 {
 		_, key := generateTestKey(t)
 		f.keys = append(f.keys, key)
@@ -79,14 +80,14 @@ func (f *groupScaleFixture) run(t *testing.T, generation int, previous string, r
 	cfg := EmitterConfig{Recorder: rec, PrivKey: key, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor, PriorSignerKeys: f.trusted[:generation]}
 	var set *ReceiptShardSet
 	if previous == "" {
-		set, err = OpenInitialReceiptShardSet(cfg, "proxy", 2, 0)
+		set, err = OpenInitialReceiptShardSet(cfg, "proxy", f.shards, 0)
 	} else {
-		set, err = OpenSuccessorReceiptShardSet(cfg, "proxy", 2, 0, previous)
+		set, err = OpenSuccessorReceiptShardSet(cfg, "proxy", f.shards, 0, previous)
 	}
 	if err != nil {
 		t.Fatalf("open generation %d: %v", generation, err)
 	}
-	for range 2 * receiptsPerShard {
+	for range f.shards * receiptsPerShard {
 		opts := set.Admit(EmitOpts{ActionID: NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/data"})
 		if err := set.EmitDurable(opts); err != nil {
 			t.Fatal(err)
@@ -144,6 +145,32 @@ func TestReceiptGroupLifecycleIgnoresUnrelatedEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("group inventory beside unrelated files: %v", err)
 	}
+}
+
+// Eight chains reproduce the original long-run directory shape: each chain
+// fits the display directory budget, while their combined history does not.
+// Rotate every entry to exercise the file-count failure without a load test.
+func TestReceiptGroupEightChainsPast745Files(t *testing.T) {
+	f := newGroupScaleFixture(t)
+	f.shards = 8
+	first := f.run(t, 0, "", 93, 1)
+	open := mustOpening(t, f.dir, first, f.trusted)
+	total := 0
+	for _, shard := range open.Shards {
+		files, err := filepath.Glob(filepath.Join(f.dir, "evidence-"+shard.SessionID+"-*.jsonl"))
+		if err != nil || len(files) == 0 || len(files) > recorder.MaxEvidenceReadDirectoryEntries {
+			t.Fatalf("shard %s: %d files, want 1..%d: %v", shard.SessionID, len(files), recorder.MaxEvidenceReadDirectoryEntries, err)
+		}
+		total += len(files)
+	}
+	if total < 745 {
+		t.Fatalf("eight-chain fixture: %d files, want at least 745", total)
+	}
+	t.Logf("eight-chain group closed with %d evidence files", total)
+	f.assertValid(t, first, "eight-chain group past 745 files")
+	second := f.run(t, 1, first, 1, 0)
+	f.assertValid(t, first, "eight-chain predecessor")
+	f.assertValid(t, second, "eight-chain successor")
 }
 
 // TestAnchoringWalkReadsLongChainBesideUnrelatedEvidence covers the anchoring

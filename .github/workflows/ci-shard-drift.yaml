@@ -56,7 +56,7 @@ jobs:
       - name: Refresh weights and check the budget
         run: |
           set -uo pipefail
-          python3 scripts/ci_test_durations.py --write "$RUNNER_TEMP"/timing/*/*.json || exit $?
+          python3 scripts/ci_test_durations.py --write --ci-artifacts "$RUNNER_TEMP/timing" || exit $?
           status=0
           {
             echo '## CI shard drift'

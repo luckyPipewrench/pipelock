@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -170,6 +171,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	if endErr != nil {
 		endSample = lastSample
 	}
+	peakRSS = max(peakRSS, startSample.rss)
 	if endSample.rss > peakRSS {
 		peakRSS = endSample.rss
 	}
@@ -188,9 +190,11 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	}
 	perf.RSSStartBytes, perf.RSSEndBytes, perf.RSSPeakBytes = startSample.rss, endSample.rss, peakRSS
 	perf.EvidenceAtStart = evidenceAtStart
-	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {
+	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && ticks > 0 && !math.IsNaN(ticks) && !math.IsInf(ticks, 0) && endErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {
 		perf.CPUSeconds = float64(endSample.ticks-startSample.ticks) / ticks
 		perf.CPUCores = perf.CPUSeconds / perf.Seconds
+	} else {
+		perf.invalidate("CPU measurement unavailable or invalid")
 	}
 
 	integrity := finishIntegrity(context.WithoutCancel(ctx), opt, mode, dirs, childEnv, plan, sink, warm, measured, end, shutdown, &perf)

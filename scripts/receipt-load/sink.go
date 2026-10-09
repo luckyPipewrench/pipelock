@@ -48,6 +48,9 @@ func (s *sink) addr() string { return s.listener.Addr().String() }
 
 func (s *sink) handle(w http.ResponseWriter, r *http.Request) {
 	key, _ := keyFromTarget(r.URL.String())
+	if r.Method != http.MethodGet || !workloadURLPath(r.URL) {
+		key = ""
+	}
 	s.record(key)
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = io.WriteString(w, sinkBody)

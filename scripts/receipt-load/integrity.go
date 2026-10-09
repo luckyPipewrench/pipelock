@@ -170,7 +170,7 @@ func evaluateIntegrity(in integrityInput) integrityReport {
 	if obs == nil {
 		obs = newRecorderObservation(in.plan.total())
 	}
-	if in.mode == modeOff && (obs.controlReceipts > 0 || obs.recorderFiles > 0 || obs.aelFiles > 0) {
+	if in.mode == modeOff && (obs.controlReceipts > 0 || obs.recorderFiles > 0 || obs.aelFiles > 0 || obs.totalFiles > 0) {
 		rep.fail("off mode contains recorder evidence")
 	}
 	var kinds [kindCount]kindReport

@@ -10,10 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
 // Receipt kinds the harness accounts for. v2 receipts carry neither an
@@ -84,6 +87,7 @@ type recorderObservation struct {
 	lastReceipt   time.Time
 	latestFileMod time.Time
 	nativeRuns    map[string]string
+	totalFiles    int
 }
 
 func newRecorderObservation(total int) *recorderObservation {
@@ -109,9 +113,12 @@ type recorderScanner struct {
 	controlIDs map[string]struct{}
 	// aelIDs collects AEL activity ids so they can be attributed after every
 	// v1 receipt has been read.
-	aelIDs     []aelActivity
-	actionRuns map[string]string
-	eventIDs   map[string]bool
+	aelIDs      []aelActivity
+	actionRuns  map[string]string
+	eventIDs    map[string]bool
+	sessionRuns map[string]string
+	runSessions map[string]string
+	fileSession string
 }
 
 // scanRecorder reads every v1 and v2 evidence record and every native AEL
@@ -139,12 +146,21 @@ func scanRecorder(dir string, plan workload, sinkAddr string) (*recorderObservat
 		if relErr != nil {
 			return relErr
 		}
+		s.obs.totalFiles++
 		base := filepath.Base(path)
 		switch {
 		case strings.HasPrefix(base, "evidence-") && strings.HasSuffix(base, ".jsonl"):
+			session, _, ok := evidencename.Parse(base)
+			if rel != base || !ok || session == "" {
+				return errors.New("recorder file is outside the verified inventory")
+			}
+			s.fileSession = session
 			s.obs.recorderFiles++
 			return s.scanFile(root, rel, path, s.evidenceLine)
 		case strings.HasSuffix(base, ".jsonl") && strings.Contains(filepath.ToSlash(rel), "ael/") && strings.Contains(filepath.ToSlash(rel), "/recorders/"):
+			if filepath.ToSlash(rel) != "ael/"+filepath.Base(filepath.Dir(filepath.Dir(path)))+"/recorders/pipelock.jsonl" {
+				return errors.New("native AEL file is outside the verified stream")
+			}
 			s.obs.aelFiles++
 			return s.scanFile(root, rel, path, s.aelLine)
 		}
@@ -195,6 +211,9 @@ func (s *recorderScanner) evidenceLine(line []byte) error {
 	if err := json.Unmarshal(line, &env); err != nil {
 		return fmt.Errorf("envelope: %w", err)
 	}
+	if (env.Type == recordTypeAction || env.Type == recordTypeEvidence) && env.Session != s.fileSession {
+		return errors.New("receipt session differs from recorder filename")
+	}
 	switch env.Type {
 	case recordTypeAction:
 		return s.v1Receipt(env)
@@ -233,6 +252,20 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 		return fmt.Errorf("action detail: %w", err)
 	}
 	ar := detail.ActionRecord
+	if env.Session == "" || ar.RunNonce == "" {
+		return errors.New("v1 receipt lacks recorder session or native run")
+	}
+	if s.sessionRuns == nil {
+		s.sessionRuns = make(map[string]string)
+		s.runSessions = make(map[string]string)
+	}
+	if run, ok := s.sessionRuns[env.Session]; ok && run != ar.RunNonce {
+		return errors.New("recorder session maps to multiple native runs")
+	}
+	if session, ok := s.runSessions[ar.RunNonce]; ok && session != env.Session {
+		return errors.New("native run maps to multiple recorder sessions")
+	}
+	s.sessionRuns[env.Session], s.runSessions[ar.RunNonce] = ar.RunNonce, env.Session
 	if run, seen := s.actionRuns[ar.ActionID]; seen && run != ar.RunNonce {
 		return errors.New("ActionID maps to multiple native runs")
 	}
@@ -301,6 +334,9 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
 		return fmt.Errorf("v2 detail: %w", err)
 	}
+	if env.Session == "" {
+		return errors.New("v2 receipt lacks recorder session")
+	}
 	if detail.EventID == "" || s.eventIDs[detail.EventID] {
 		return errors.New("missing or duplicate v2 EventID")
 	}
@@ -356,7 +392,8 @@ func (s *recorderScanner) classify(target string) targetClass {
 	case "pipelock://session/open", "pipelock://session/heartbeat", "pipelock://session/close":
 		return targetControl
 	}
-	if targetHost(target) != s.sinkAddr {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "http" || u.Host != s.sinkAddr || !workloadURLPath(u) {
 		return targetUncorrelatable
 	}
 	key, ok := keyFromTarget(target)

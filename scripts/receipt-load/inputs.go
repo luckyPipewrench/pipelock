@@ -25,7 +25,7 @@ import (
 // harnessContractVersion is bumped by hand whenever the measurement contract
 // (what is measured, how it is timed, what integrity means) changes. The
 // source hash below changes on any edit; this number names the contract.
-const harnessContractVersion = "3"
+const harnessContractVersion = "4"
 
 //go:embed *.go
 var harnessSource embed.FS

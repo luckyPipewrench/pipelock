@@ -14,6 +14,7 @@ import (
 func fakeResult(rps, windowMin, windowMedian float64, integrity, performance string) result {
 	r := result{SchemaVersion: resultSchemaVersion, Mode: modeRequired, ReceiptChains: 1}
 	r.Inputs.Harness.ContractVersion = harnessContractVersion
+	r.Inputs.Host = hostReport{HarnessGOMAXPROCS: 2, ChildGOMAXPROCS: "2", CgroupCPUQuota: "200000/100000 us (/scope)"}
 	r.Performance = performanceReport{
 		Verdict: performance, RequestsPerSecond: rps, CPUCores: 2,
 		Latency: latencyReport{P95MS: 10, P99MS: 20},
@@ -40,6 +41,9 @@ func putResult(t *testing.T, root string, cores, chains, sample int, mode string
 		t.Fatal(err)
 	}
 	r.Mode, r.ReceiptChains = mode, chains
+	r.Inputs.Host.HarnessGOMAXPROCS = cores
+	r.Inputs.Host.ChildGOMAXPROCS = strconv.Itoa(cores)
+	r.Inputs.Host.CgroupCPUQuota = strconv.Itoa(cores*100000) + "/100000 us (/scope)"
 	if err := writeResult(dir, &r); err != nil {
 		t.Fatal(err)
 	}

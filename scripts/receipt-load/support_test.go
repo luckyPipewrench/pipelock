@@ -254,7 +254,7 @@ func (r synthReceipt) targetFor(plan workload, sinkAddr string) string {
 }
 
 func v1Line(kind receiptKind, actionID, target string) string {
-	record := map[string]any{"action_id": actionID, "target": target, "verdict": verdictAllow}
+	record := map[string]any{"run_nonce": "run0", "action_id": actionID, "target": target, "verdict": verdictAllow}
 	switch kind {
 	case kindV1Intent:
 		record["decision_phase"] = "intent"
@@ -273,12 +273,12 @@ func v2Line(target string) string {
 }
 
 func envelope(typ string, detail map[string]any) string {
-	raw, _ := json.Marshal(map[string]any{"v": 2, "type": typ, "ts": time.Now().UTC().Format(time.RFC3339Nano), "detail": detail})
+	raw, _ := json.Marshal(map[string]any{"session_id": "proxy.run.x", "v": 2, "type": typ, "ts": time.Now().UTC().Format(time.RFC3339Nano), "detail": detail})
 	return string(raw)
 }
 
 func aelRecord(typ, id string) string {
-	payload, _ := json.Marshal(map[string]any{"type": typ, "event": map[string]any{"id": id}})
+	payload, _ := json.Marshal(map[string]any{"run": "run0", "type": typ, "event": map[string]any{"id": id}})
 	return base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
 }
 

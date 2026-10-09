@@ -164,7 +164,7 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 	baseline := sampleIdentity(results[0])
 	for _, r := range results {
 		perf, integ := r.Performance, r.Integrity
-		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || sampleIdentity(r) != baseline {
+		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || !matchesCPU(r.Inputs.Host, cores) || sampleIdentity(r) != baseline {
 			compatible = false
 		}
 		if integ.Verdict != verdictPass {
@@ -262,4 +262,25 @@ func median(values []float64) float64 {
 		return sorted[mid]
 	}
 	return (sorted[mid-1] + sorted[mid]) / 2
+}
+
+// matchesCPU binds the matrix label to the observed quota and scheduling inputs.
+func matchesCPU(host hostReport, cores int) bool {
+	if cores < 1 || host.HarnessGOMAXPROCS != cores || host.ChildGOMAXPROCS != strconv.Itoa(cores) {
+		return false
+	}
+	quota, _, ok := strings.Cut(host.CgroupCPUQuota, " us (")
+	if !ok {
+		return false
+	}
+	numerator, denominator, ok := strings.Cut(quota, "/")
+	if !ok {
+		return false
+	}
+	q, err := strconv.ParseInt(numerator, 10, 64)
+	if err != nil || q <= 0 {
+		return false
+	}
+	period, err := strconv.ParseInt(denominator, 10, 64)
+	return err == nil && period > 0 && q/period == int64(cores) && q%period == 0
 }

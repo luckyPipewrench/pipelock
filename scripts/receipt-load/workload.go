@@ -19,6 +19,7 @@ const (
 	// workload key. A query value survives receipt target sanitation as long
 	// as it is DLP-clean, which keeps the key readable in v1 and v2 receipts.
 	workloadKeyParam = "wk"
+	workloadPath     = "/ok"
 
 	phaseWarmup  = 'w'
 	phaseMeasure = 'm'
@@ -116,7 +117,7 @@ func (w workload) parseKey(key string) (int, bool) {
 
 // pathAndQuery returns the path and query a request for a slot sends to the sink.
 func (w workload) pathAndQuery(slot int) string {
-	target := "/ok?" + workloadKeyParam + "=" + w.key(slot)
+	target := workloadPath + "?" + workloadKeyParam + "=" + w.key(slot)
 	if w.blocked(slot) {
 		target += "&token=" + fakeToken
 	}
@@ -131,19 +132,18 @@ func keyFromTarget(target string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	values := u.Query()[workloadKeyParam]
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "", false
+	}
+	values := query[workloadKeyParam]
 	if len(values) != 1 || values[0] == "" {
 		return "", false
 	}
 	return values[0], true
 }
 
-// targetHost returns the host:port of a receipt target, or "" when the target
-// is not a URL.
-func targetHost(target string) string {
-	u, err := url.Parse(target)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	return u.Host
+// workloadURLPath rejects target shapes that the request plan never produces.
+func workloadURLPath(u *url.URL) bool {
+	return u.Path == workloadPath && u.RawPath == "" && u.User == nil && u.Fragment == ""
 }

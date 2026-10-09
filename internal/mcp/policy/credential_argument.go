@@ -7,9 +7,40 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
+
+// matchCredentialDestinations checks each scoped path and its expanded local
+// identities independently. Joining a public-key path to another identity must
+// not manufacture text after its .pub extension. Custom rules retain their
+// ordinary matching semantics.
+func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []string) (matched, handled bool) {
+	if rule.Name != "Credential File Write" || rule.ArgPattern == nil || rule.ArgKey == nil || rule.ToolPattern == nil {
+		return false, false
+	}
+	shipped, ok := shippedCredentialWriteRuleShapes[rule.ToolPattern.String()]
+	if !ok || rule.ArgPattern.String() != shipped.ArgPattern || rule.ArgKey.String() != shipped.ArgKey || rule.ArgSource != shipped.ArgSource {
+		return false, false
+	}
+	for _, candidate := range candidates {
+		if pc.credentialCandidateMatches(rule, candidate) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+var shippedCredentialWriteRuleShapes = func() map[string]config.ToolPolicyRule {
+	out := make(map[string]config.ToolPolicyRule, 3)
+	for _, rule := range DefaultToolPolicyRules() {
+		if rule.Name == "Credential File Write" {
+			out[rule.ToolPattern] = rule
+		}
+	}
+	return out
+}()
 
 // matchSingleCredentialArgument applies the shipped public-key boundary to one
 // submitted string and each of its local identities independently. Aliases of

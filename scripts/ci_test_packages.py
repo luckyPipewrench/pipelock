@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -256,7 +257,7 @@ def _seconds_map(path: Path, label: str, values: object) -> dict[str, float]:
         raise ValueError(f"{path.name}: {label!r} must map names to seconds")
     clean: dict[str, float] = {}
     for name, seconds in values.items():
-        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0:
             raise ValueError(f"{path.name}: {label}.{name} must be non-negative seconds")
         clean[name] = float(seconds)
     return clean

@@ -614,6 +614,18 @@ class TestTestNameSplit(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         load_durations(path)
 
+    def test_nonfinite_tree_and_package_weights_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "durations.json"
+            for value in ("NaN", "Infinity", "-Infinity", "1e999"):
+                with self.subTest(value=value):
+                    path.write_text('{"trees": {"scanner": {"TestA": ' + value + '}}}', encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_durations(path)
+                    path.write_text('{"packages": {"example.test/slow": ' + value + '}}', encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        ci_test_packages.load_package_durations(path)
+
     def test_unsplit_shards_have_no_selector(self) -> None:
         for shard in ("rest-0", "rest-1", "rest-2"):
             self.assertEqual(shard_selector(shard, self.NAMES), "")

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -217,20 +219,31 @@ type rulesReport struct {
 
 var bundleLogPattern = regexp.MustCompile(`(?i)rule bundle|rule_bundle_|\bbundle "[^"]+"|bundle\(s\)`)
 
-const maxBundleLogLines = 20
+const (
+	maxBundleLogLines    = 20
+	maxProxyLogLineBytes = 64 * 1024
+)
 
 // bundleLogLines returns the lines of a proxy log that talk about rule
 // bundles, bounded so a noisy log cannot bloat the result.
 func bundleLogLines(logPath string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Clean(logPath))
+	file, err := os.Open(filepath.Clean(logPath))
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = file.Close() }()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
 	lines := []string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		if bundleLogPattern.MatchString(line) && len(lines) < maxBundleLogLines {
-			lines = append(lines, strings.TrimSpace(line))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		// Every pattern alternative contains b or B. Skip regexp work for unrelated lines.
+		if len(lines) < maxBundleLogLines && bytes.ContainsAny(line, "bB") && bundleLogPattern.Match(line) {
+			lines = append(lines, strings.TrimSpace(string(line)))
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan proxy log: %w", err)
 	}
 	return lines, nil
 }

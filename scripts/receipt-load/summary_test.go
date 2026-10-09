@@ -5,15 +5,22 @@ package main
 
 import (
 	"encoding/csv"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+var syntheticResultCounter atomic.Uint64
 
 func fakeResult(rps, windowMin, windowMedian float64, integrity, performance string) result {
 	r := result{SchemaVersion: resultSchemaVersion, Mode: modeRequired, ReceiptChains: 1}
 	r.Inputs.Harness.ContractVersion = harnessContractVersion
+	r.Inputs.Harness.SourceSHA256 = strings.Repeat("c", 64)
+	r.Inputs.Workload.Tag = fmt.Sprintf("s0-r%032x", syntheticResultCounter.Add(1))
 	r.Inputs.Host = hostReport{HarnessGOMAXPROCS: 2, ChildGOMAXPROCS: "2", CgroupCPUQuota: "200000/100000 us (/scope)"}
 	r.Performance = performanceReport{
 		Verdict: performance, RequestsPerSecond: rps, CPUCores: 2,
@@ -22,8 +29,8 @@ func fakeResult(rps, windowMin, windowMedian float64, integrity, performance str
 	}
 	r.Integrity = integrityReport{Verdict: integrity, Verify: verifyReport{Ran: true}}
 	r.Inputs.Rules.Mode = rulesEmpty
-	r.Inputs.Config.CanonicalSHA256 = "aaaaaaaaaaaaaaaaaaaa"
-	r.Inputs.Binary.SHA256 = "bbbbbbbbbbbbbbbbbbbb"
+	r.Inputs.Config.CanonicalSHA256 = strings.Repeat("a", 64)
+	r.Inputs.Binary.SHA256 = strings.Repeat("b", 64)
 	return r
 }
 

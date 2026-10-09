@@ -10,13 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // Receipt kinds the harness accounts for. v2 receipts carry neither an
@@ -240,11 +243,14 @@ func v1Kind(phase, verdict string) receiptKind {
 func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	var detail struct {
 		ActionRecord struct {
-			ActionID string `json:"action_id"`
-			RunNonce string `json:"run_nonce"`
-			Phase    string `json:"decision_phase"`
-			Verdict  string `json:"verdict"`
-			Target   string `json:"target"`
+			ActionID   string `json:"action_id"`
+			RunNonce   string `json:"run_nonce"`
+			Phase      string `json:"decision_phase"`
+			Verdict    string `json:"verdict"`
+			Target     string `json:"target"`
+			Method     string `json:"method"`
+			Transport  string `json:"transport"`
+			ActionType string `json:"action_type"`
 		} `json:"action_record"`
 		SignerKey string `json:"signer_key"`
 	}
@@ -300,6 +306,9 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 		if _, control := s.controlIDs[ar.ActionID]; control {
 			return errors.New("workload ActionID also owns a control receipt")
 		}
+		if ar.Method != http.MethodGet || ar.Transport != workloadTransport || ar.ActionType != string(receipt.ActionRead) || !s.plan.matchesTargetQuery(ar.Target, slot, true) {
+			return errors.New("v1 workload receipt differs from the planned request shape")
+		}
 		if ar.ActionID == "" {
 			return errors.New("workload receipt has no ActionID")
 		}
@@ -326,9 +335,13 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 
 func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 	var detail struct {
-		EventID string `json:"event_id"`
-		Payload struct {
-			Target string `json:"target"`
+		EventID     string                      `json:"event_id"`
+		PayloadKind contractreceipt.PayloadKind `json:"payload_kind"`
+		Payload     struct {
+			Target     string `json:"target"`
+			Transport  string `json:"transport"`
+			ActionType string `json:"action_type"`
+			Verdict    string `json:"verdict"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
@@ -354,6 +367,13 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 			s.obs.orphans[kindV2]++
 			s.obs.sampleOrphan("v2 for key outside the plan: " + key)
 			break
+		}
+		wantVerdict := verdictAllow
+		if s.plan.blocked(slot) {
+			wantVerdict = verdictBlock
+		}
+		if (detail.PayloadKind != contractreceipt.PayloadProxyDecision && detail.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans) || detail.Payload.Transport != workloadTransport || detail.Payload.ActionType != "http_request" || detail.Payload.Verdict != wantVerdict || !s.plan.matchesTargetQuery(detail.Payload.Target, slot, true) {
+			return errors.New("v2 workload receipt differs from the planned decision")
 		}
 		o := s.obs.slot(slot)
 		if o.session != "" && o.session != env.Session {
@@ -405,13 +425,15 @@ func (s *recorderScanner) classify(target string) targetClass {
 
 // aelPayload is the decoded payload of one native AEL activity record. The
 // event id is the v1 ActionID of the action the activity describes.
-type aelActivity struct{ id, run string }
+type aelActivity struct{ id, run, class, direction string }
 
 type aelPayload struct {
 	Run   string `json:"run"`
 	Type  string `json:"type"`
 	Event struct {
-		ID string `json:"id"`
+		ID        string `json:"id"`
+		Class     string `json:"class"`
+		Direction string `json:"dir"`
 	} `json:"event"`
 }
 
@@ -432,7 +454,7 @@ func (s *recorderScanner) aelLine(line []byte) error {
 		return fmt.Errorf("ael payload: %w", err)
 	}
 	if p.Type == "activity" {
-		s.aelIDs = append(s.aelIDs, aelActivity{id: p.Event.ID, run: p.Run})
+		s.aelIDs = append(s.aelIDs, aelActivity{id: p.Event.ID, run: p.Run, class: p.Event.Class, direction: p.Event.Direction})
 	}
 	return nil
 }
@@ -447,6 +469,9 @@ func (s *recorderScanner) attributeAEL() error {
 			return errors.New("AEL activity belongs to another native run")
 		}
 		if slot, ok := s.actionSlot[id]; ok {
+			if activity.class != string(receipt.ActionRead) || activity.direction != "in" {
+				return errors.New("native workload activity differs from the planned action")
+			}
 			s.obs.slot(slot).add(kindAEL)
 			continue
 		}

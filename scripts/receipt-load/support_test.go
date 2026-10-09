@@ -254,7 +254,7 @@ func (r synthReceipt) targetFor(plan workload, sinkAddr string) string {
 }
 
 func v1Line(kind receiptKind, actionID, target string) string {
-	record := map[string]any{"run_nonce": "run0", "action_id": actionID, "target": target, "verdict": verdictAllow}
+	record := map[string]any{"run_nonce": "run0", "action_id": actionID, "target": target, "verdict": verdictAllow, "method": http.MethodGet, "transport": "forward", "action_type": "read"}
 	switch kind {
 	case kindV1Intent:
 		record["decision_phase"] = "intent"
@@ -269,7 +269,11 @@ func v1Line(kind receiptKind, actionID, target string) string {
 var syntheticEventCounter atomic.Uint64
 
 func v2Line(target string) string {
-	return envelope(recordTypeEvidence, map[string]any{"event_id": fmt.Sprintf("event-%d", syntheticEventCounter.Add(1)), "payload": map[string]any{"target": target}})
+	verdict := verdictAllow
+	if strings.Contains(target, "&token=") {
+		verdict = verdictBlock
+	}
+	return envelope(recordTypeEvidence, map[string]any{"event_id": fmt.Sprintf("event-%d", syntheticEventCounter.Add(1)), "payload_kind": "proxy_decision", "payload": map[string]any{"target": target, "transport": "forward", "action_type": "http_request", "verdict": verdict}})
 }
 
 func envelope(typ string, detail map[string]any) string {
@@ -278,7 +282,7 @@ func envelope(typ string, detail map[string]any) string {
 }
 
 func aelRecord(typ, id string) string {
-	payload, _ := json.Marshal(map[string]any{"run": "run0", "type": typ, "event": map[string]any{"id": id}})
+	payload, _ := json.Marshal(map[string]any{"run": "run0", "type": typ, "event": map[string]any{"id": id, "class": "read", "dir": "in"}})
 	return base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
 }
 

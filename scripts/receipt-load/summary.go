@@ -6,6 +6,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -162,9 +163,14 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 	var rulesModes, configs, binaries []string
 	compatible := true
 	baseline := sampleIdentity(results[0])
+	runTags := make(map[string]bool, len(results))
 	for _, r := range results {
 		perf, integ := r.Performance, r.Integrity
-		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || !matchesCPU(r.Inputs.Host, cores) || sampleIdentity(r) != baseline {
+		if r.Inputs.Workload.Tag == "" || runTags[r.Inputs.Workload.Tag] {
+			compatible = false
+		}
+		runTags[r.Inputs.Workload.Tag] = true
+		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || !matchesCPU(r.Inputs.Host, cores) || !hasSampleFingerprints(r) || sampleIdentity(r) != baseline {
 			compatible = false
 		}
 		if integ.Verdict != verdictPass {
@@ -212,6 +218,16 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 		}
 	}
 	return row
+}
+
+func hasSampleFingerprints(r result) bool {
+	for _, digest := range []string{r.Inputs.Harness.SourceSHA256, r.Inputs.Binary.SHA256, r.Inputs.Config.CanonicalSHA256} {
+		decoded, err := hex.DecodeString(digest)
+		if err != nil || len(decoded) != sha256.Size {
+			return false
+		}
+	}
+	return true
 }
 
 // sampleIdentity compares the full pinned inputs before any display shortening.
@@ -277,10 +293,6 @@ func matchesCPU(host hostReport, cores int) bool {
 	if !ok {
 		return false
 	}
-	q, err := strconv.ParseInt(numerator, 10, 64)
-	if err != nil || q <= 0 {
-		return false
-	}
-	period, err := strconv.ParseInt(denominator, 10, 64)
-	return err == nil && period > 0 && q/period == int64(cores) && q%period == 0
+	q, period, ok := parseCPUQuotaRatio(numerator, denominator)
+	return ok && q/period == int64(cores) && q%period == 0
 }

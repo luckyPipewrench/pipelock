@@ -18,8 +18,10 @@ const (
 	// workloadKeyParam is the query parameter that carries the per-request
 	// workload key. A query value survives receipt target sanitation as long
 	// as it is DLP-clean, which keeps the key readable in v1 and v2 receipts.
-	workloadKeyParam = "wk"
-	workloadPath     = "/ok"
+	workloadKeyParam   = "wk"
+	workloadPath       = "/ok"
+	workloadTransport  = "forward"
+	workloadTokenParam = "token"
 
 	phaseWarmup  = 'w'
 	phaseMeasure = 'm'
@@ -119,7 +121,7 @@ func (w workload) parseKey(key string) (int, bool) {
 func (w workload) pathAndQuery(slot int) string {
 	target := workloadPath + "?" + workloadKeyParam + "=" + w.key(slot)
 	if w.blocked(slot) {
-		target += "&token=" + fakeToken
+		target += "&" + workloadTokenParam + "=" + fakeToken
 	}
 	return target
 }
@@ -146,4 +148,23 @@ func keyFromTarget(target string) (string, bool) {
 // workloadURLPath rejects target shapes that the request plan never produces.
 func workloadURLPath(u *url.URL) bool {
 	return u.Path == workloadPath && u.RawPath == "" && u.User == nil && u.Fragment == ""
+}
+
+// matchesTargetQuery binds the other query fields to the request plan too.
+// Receipts may carry the producer's redacted credential value; origin requests
+// must carry the original value. Extra fields describe a different request.
+func (w workload) matchesTargetQuery(target string, slot int, sanitized bool) bool {
+	u, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || len(query[workloadKeyParam]) != 1 || query.Get(workloadKeyParam) != w.key(slot) {
+		return false
+	}
+	if !w.blocked(slot) {
+		return len(query) == 1
+	}
+	values := query[workloadTokenParam]
+	return len(query) == 2 && len(values) == 1 && (values[0] == fakeToken || (sanitized && values[0] == "[redacted-value]"))
 }

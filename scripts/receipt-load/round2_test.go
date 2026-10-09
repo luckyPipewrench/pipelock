@@ -65,7 +65,7 @@ func TestReviewR2RunShardPairing(t *testing.T) {
 						session = "shard-two"
 					}
 				}
-				env := evidenceEnvelope{Session: session, Detail: []byte(`{"action_record":{"action_id":"` + actionIDFor(slot) + `","run_nonce":"` + run + `","verdict":"allow","target":"` + sinkTarget(synthSink, "wk="+plan.key(slot)) + `"}}`)}
+				env := evidenceEnvelope{Session: session, Detail: []byte(`{"action_record":{"action_id":"` + actionIDFor(slot) + `","run_nonce":"` + run + `","verdict":"allow","method":"GET","transport":"forward","action_type":"read","target":"` + sinkTarget(synthSink, "wk="+plan.key(slot)) + `"}}`)}
 				err := s.v1Receipt(env)
 				if slot == 0 && err != nil {
 					t.Fatal(err)

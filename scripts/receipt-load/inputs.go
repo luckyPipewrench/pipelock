@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,7 +26,7 @@ import (
 // harnessContractVersion is bumped by hand whenever the measurement contract
 // (what is measured, how it is timed, what integrity means) changes. The
 // source hash below changes on any edit; this number names the contract.
-const harnessContractVersion = "4"
+const harnessContractVersion = "5"
 
 //go:embed *.go
 var harnessSource embed.FS
@@ -521,8 +522,8 @@ func describeHost(env []string, out string) hostReport {
 	}
 }
 
-// cgroupCPUQuota reports the nearest cgroup v2 cpu.max limit above this
-// process, or why none is visible.
+// cgroupCPUQuota reports the tightest visible cgroup v2 cpu.max limit above
+// this process. Ancestor limits apply even when a child has a larger quota.
 func cgroupCPUQuota() string {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
@@ -537,18 +538,51 @@ func cgroupCPUQuota() string {
 	if rel == "" {
 		return "unavailable: not a cgroup v2 process"
 	}
-	for dir := filepath.Join("/sys/fs/cgroup", rel); strings.HasPrefix(dir, "/sys/fs/cgroup"); dir = filepath.Dir(dir) {
+	return cgroupCPUQuotaFrom("/sys/fs/cgroup", rel)
+}
+
+func cgroupCPUQuotaFrom(root, rel string) string {
+	var tightest *big.Rat
+	quota := "none visible"
+	for dir := filepath.Join(root, rel); dir == root || strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
 		raw, readErr := os.ReadFile(filepath.Join(filepath.Clean(dir), "cpu.max"))
-		if readErr == nil {
-			if fields := strings.Fields(string(raw)); len(fields) == 2 && fields[0] != "max" {
-				return fmt.Sprintf("%s/%s us (%s)", fields[0], fields[1], strings.TrimPrefix(dir, "/sys/fs/cgroup"))
+		if readErr != nil {
+			// The unified root has no cpu.max interface.
+			if dir != root || !errors.Is(readErr, os.ErrNotExist) {
+				return "unavailable: cannot read quota hierarchy"
+			}
+		} else {
+			fields := strings.Fields(string(raw))
+			if len(fields) != 2 {
+				return "unavailable: malformed quota hierarchy"
+			}
+			period, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil || period <= 0 {
+				return "unavailable: invalid quota period"
+			}
+			if fields[0] != "max" {
+				q, p, ok := parseCPUQuotaRatio(fields[0], fields[1])
+				if !ok {
+					return "unavailable: invalid quota hierarchy"
+				}
+				ratio := big.NewRat(q, p)
+				if tightest == nil || ratio.Cmp(tightest) < 0 {
+					tightest = ratio
+					quota = fmt.Sprintf("%s/%s us (%s)", fields[0], fields[1], strings.TrimPrefix(dir, root))
+				}
 			}
 		}
-		if dir == "/sys/fs/cgroup" {
+		if dir == root {
 			break
 		}
 	}
-	return "none visible"
+	return quota
+}
+
+func parseCPUQuotaRatio(numerator, denominator string) (int64, int64, bool) {
+	q, qErr := strconv.ParseInt(numerator, 10, 64)
+	p, pErr := strconv.ParseInt(denominator, 10, 64)
+	return q, p, qErr == nil && pErr == nil && q > 0 && p > 0
 }
 
 // binaryReport identifies the exact proxy under test.

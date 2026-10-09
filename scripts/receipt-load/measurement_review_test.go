@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,11 +22,11 @@ func TestReviewSummaryRefusesInvalidPopulation(t *testing.T) {
 			case "failed":
 				b.Integrity.Verdict = verdictFail
 			case "mixed-config":
-				b.Inputs.Config.CanonicalSHA256 = "different"
+				b.Inputs.Config.CanonicalSHA256 = strings.Repeat("d", 64)
 			case "mixed-seed":
 				b.Inputs.Workload.Seed = 2
 			case "hash-prefix":
-				b.Inputs.Binary.SHA256 += "different"
+				b.Inputs.Binary.SHA256 = b.Inputs.Binary.SHA256[:63] + "c"
 			case "wrong-mode":
 				b.Mode = modeOff
 			case "old-contract":

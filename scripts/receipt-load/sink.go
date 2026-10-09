@@ -51,6 +51,9 @@ func (s *sink) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet || !workloadURLPath(r.URL) {
 		key = ""
 	}
+	if slot, ok := s.plan.parseKey(key); ok && !s.plan.matchesTargetQuery(r.URL.String(), slot, false) {
+		key = ""
+	}
 	s.record(key)
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = io.WriteString(w, sinkBody)

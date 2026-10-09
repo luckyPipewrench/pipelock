@@ -59,12 +59,26 @@ HEAVY_TREES = {
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 3,
-    "scanner": 4,
-    "mcp": 3,
+    "proxy": 4,
+    "scanner": 3,
+    "mcp": 4,
     "runtime": 2,
 }
 REST_SHARDS = ("rest-0", "rest-1", "rest-2")
+
+# Trees whose coverage is collected by a separate non-race pass instead of the
+# race run. -race forces atomic coverage counters, which made the scanner's
+# tight matching loops two to three times slower; the same tests without -race
+# and with set-mode coverage take a fraction of the race run.
+SEPARATE_COVERAGE_TREES = frozenset({"scanner"})
+
+# Predicted-load budget per shard, in seconds. A shard's test step should finish
+# in about ten minutes so the whole run, security scan and aggregates included,
+# stays under fifteen.
+SHARD_BUDGET_SECONDS = 600
+# Rest shards run their packages two at a time (-p=2), so summed package time
+# overstates wall time by about that factor.
+REST_PACKAGE_PARALLELISM = 2
 
 # Measured race-test seconds per top-level test, used to balance sub-shards by
 # time instead of by name count. Regenerate it from CI shard timings with
@@ -386,6 +400,59 @@ def check_partition(tags: str, only_tree: str | None = None) -> int:
     return status
 
 
+def coverage_mode(shard: str) -> str:
+    """Return "separate" when a shard's coverage comes from a non-race pass."""
+    located = shard_tree(shard)
+    if located is None:
+        if shard in REST_SHARDS:
+            return "race"
+        raise ValueError(f"unknown shard {shard!r}")
+    return "separate" if located[0] in SEPARATE_COVERAGE_TREES else "race"
+
+
+def predicted_loads(tags: str) -> dict[str, float]:
+    """Predict each shard's test seconds from the checked-in measurements.
+
+    A sub-shard's load is the summed time of its top-level tests; a name with
+    no measurement is charged its tree's median. A rest shard's load is its
+    summed package time divided by the packages it runs at once.
+    """
+    durations = load_durations()
+    loads: dict[str, float] = {}
+    for tree, count in TEST_SPLITS.items():
+        names = tree_test_names(ROOT / HEAVY_TREES[tree])
+        weights = durations.get(tree, {})
+        known = sorted(weights[name] for name in set(names) if name in weights)
+        default = known[len(known) // 2] if known else 1.0
+        for index, bucket in enumerate(partition_names(names, count, weights or None)):
+            loads[f"{tree}-{index}"] = sum(weights.get(name, default) for name in bucket)
+    package_weights = load_package_durations()
+    packages = list_packages(tags)
+    known = sorted(package_weights.values())
+    default = known[len(known) // 2] if known else 1.0
+    for shard in REST_SHARDS:
+        selected = select_packages(packages, shard, package_weights)
+        loads[shard] = sum(package_weights.get(pkg, default) for pkg in selected) / REST_PACKAGE_PARALLELISM
+    return loads
+
+
+def check_budget(tags: str, budget: float) -> int:
+    loads = predicted_loads(tags)
+    over = {shard: load for shard, load in loads.items() if load > budget}
+    for shard in SHARDS:
+        mark = "  OVER" if shard in over else ""
+        print(f"{shard:12s} {loads[shard]:7.0f}s{mark}")
+    if over:
+        print(
+            f"ci_test_packages.py: {len(over)} shard(s) predicted over the {budget:.0f}s budget "
+            f"(tags={tags or 'none'}); raise TEST_SPLITS for the tree, split slow tests, "
+            "or refresh scripts/ci_test_durations.json if the measurements are stale",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select CI package shard")
     parser.add_argument("--shard", choices=SHARDS, help="shard to print")
@@ -400,9 +467,32 @@ def main() -> int:
         action="store_true",
         help="verify sub-shard selectors against go test -list (scoped to --shard's tree if given)",
     )
+    parser.add_argument(
+        "--coverage-mode",
+        action="store_true",
+        help="print race or separate: where the shard's coverage profile comes from",
+    )
+    parser.add_argument(
+        "--check-budget",
+        action="store_true",
+        help="fail when the checked-in measurements predict any shard over the budget",
+    )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=SHARD_BUDGET_SECONDS,
+        help=f"predicted-load budget per shard (default {SHARD_BUDGET_SECONDS})",
+    )
     args = parser.parse_args()
 
     try:
+        if args.check_budget:
+            return check_budget(args.tags, args.budget_seconds)
+        if args.coverage_mode:
+            if not args.shard:
+                parser.error("--coverage-mode needs --shard")
+            print(coverage_mode(args.shard))
+            return 0
         if args.check_partition:
             tree = None
             if args.shard:

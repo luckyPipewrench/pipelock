@@ -327,9 +327,22 @@ class UploadCountTest(unittest.TestCase):
                 uploads = [step for step in steps if str(step.get("uses", "")).startswith("codecov/codecov-action@")]
                 self.assertEqual(len(uploads), 1)
                 self.assertEqual(uploads[0]["with"]["files"], f"./{profile}${{{{ matrix.shard }}}}.out")
-                commands = [line.strip() for step in steps for line in step.get("run", "").splitlines() if line.strip().startswith("go test ")]
-                self.assertEqual(len(commands), 1)
-                self.assertIn(f'-coverprofile="{profile}${{TEST_SHARD}}.out"', commands[0])
+                run = "\n".join(step.get("run", "") for step in steps)
+                commands = [line.strip() for line in run.splitlines() if line.strip().startswith("go test ")]
+                # The race run plus the non-race coverage pass for separate-coverage trees.
+                self.assertEqual(len(commands), 2)
+                race, cover = commands
+                self.assertIn("-race", race)
+                self.assertIn('"${race_cover[@]}"', race)
+                self.assertNotIn("-race", cover)
+                self.assertIn('-covermode=set -coverprofile="$coverprofile"', cover)
+                self.assertIn(f'coverprofile="{profile}${{TEST_SHARD}}.out"', run)
+                self.assertIn('race_cover=(-coverprofile="$coverprofile")', run)
+                # Both coverage sources write the one profile the upload names.
+                verify = [step for step in steps if step.get("name") == "Verify coverage profile"]
+                self.assertEqual(len(verify), 1)
+                self.assertEqual(verify[0]["run"], f"bash scripts/check-coverage-profile.sh {profile}${{{{ matrix.shard }}}}.out")
+                self.assertLess(steps.index(verify[0]), steps.index(uploads[0]))
 
 
 if __name__ == "__main__":

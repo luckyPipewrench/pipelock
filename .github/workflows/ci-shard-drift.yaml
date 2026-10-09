@@ -1,0 +1,84 @@
+name: CI shard drift
+
+# Weekly check that the race shards still fit the CI time budget. New slow
+# tests land without anyone re-measuring the shards, which is how CI crept from
+# about fifteen minutes to over thirty before. This rebuilds the shard weights
+# from the latest successful main run's go test timings and fails when they
+# predict any shard over budget, attaching the refreshed weights file for the
+# rebalancing PR. It only reads: the repository token cannot push or open a PR
+# here, and a PR opened with it would not run CI anyway.
+
+on:
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  drift:
+    name: Shard budget from main's timings
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Download main's shard timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --branch main --event push \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+            echo "::error title=No main CI run::found no successful main CI run to measure"
+            exit 1
+          fi
+          echo "measuring CI run $run_id"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern 'go-test-json-*-go126-*' \
+            --dir "$RUNNER_TEMP/timing"
+          count="$(find "$RUNNER_TEMP/timing" -name '*.json' | wc -l)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=No timings::CI run $run_id kept no go-test-json artifacts"
+            exit 1
+          fi
+          echo "downloaded $count timing files"
+
+      - name: Refresh weights and check the budget
+        run: |
+          set -uo pipefail
+          python3 scripts/ci_test_durations.py --write "$RUNNER_TEMP"/timing/*/*.json || exit $?
+          status=0
+          {
+            echo '## CI shard drift'
+            echo
+            echo 'Predicted test seconds per shard from the refreshed weights.'
+            echo
+            echo '```'
+            python3 scripts/ci_test_packages.py --check-budget || status=1
+            python3 scripts/ci_test_packages.py --tags enterprise --check-budget || status=1
+            echo '```'
+            echo
+            git diff --stat -- scripts/ci_test_durations.json
+          } >> "$GITHUB_STEP_SUMMARY" 2>&1
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=CI shard over budget::a shard is predicted over budget; commit the attached ci_test_durations.json and rebalance TEST_SPLITS in scripts/ci_test_packages.py"
+          fi
+          exit "$status"
+
+      - name: Upload refreshed weights
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-test-durations
+          path: scripts/ci_test_durations.json
+          retention-days: 30

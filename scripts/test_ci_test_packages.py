@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from fnmatch import fnmatchcase
 from pathlib import Path
+from unittest.mock import patch
 
 import os
 import subprocess
@@ -20,9 +23,13 @@ from scripts import ci_test_packages
 from scripts.ci_test_packages import (
     HEAVY_TREES,
     PACKAGE_SHARDS,
+    SEPARATE_COVERAGE_TREES,
+    SHARD_BUDGET_SECONDS,
     SHARDS,
     TEST_SPLITS,
+    coverage_mode,
     exact_names_regex,
+    predicted_loads,
     load_durations,
     load_package_durations,
     name_bucket,
@@ -268,6 +275,56 @@ class TestPackageSharding(unittest.TestCase):
         self.assertLessEqual(max(loads) - min(loads), 300.0)
         self.assertTrue(all(shards), shards)
 
+    def test_coverage_mode_is_separate_only_for_listed_trees(self) -> None:
+        self.assertEqual(SEPARATE_COVERAGE_TREES, frozenset({"scanner"}))
+        for shard in SHARDS:
+            with self.subTest(shard=shard):
+                expected = "separate" if shard.startswith("scanner-") else "race"
+                self.assertEqual(coverage_mode(shard), expected)
+        with self.assertRaisesRegex(ValueError, "unknown shard"):
+            coverage_mode("scanner")
+
+    def test_predicted_loads_cover_every_shard_and_fail_over_budget(self) -> None:
+        packages = [
+            "example.test/pipelock/internal/proxy",
+            "example.test/pipelock/internal/scanner",
+            "example.test/pipelock/internal/mcp",
+            "example.test/pipelock/internal/cli/runtime",
+            "example.test/pipelock/internal/a",
+            "example.test/pipelock/internal/b",
+            "example.test/pipelock/internal/c",
+        ]
+        trees = {tree: {f"Test{tree}{index}": 10.0 for index in range(20)} for tree in TEST_SPLITS}
+        with patch.object(ci_test_packages, "list_packages", return_value=packages), \
+             patch.object(ci_test_packages, "load_durations", return_value=trees), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={pkg: 100.0 for pkg in packages}), \
+             patch.object(ci_test_packages, "tree_test_names", side_effect=lambda root: list(next(
+                 tests for tree, tests in trees.items() if str(root).endswith(HEAVY_TREES[tree])))):
+            loads = predicted_loads("")
+            self.assertEqual(set(loads), set(SHARDS))
+            # 20 tests of 10s: every second is charged once and buckets differ by
+            # at most one test. Rest packages run two at a time.
+            for tree, count in TEST_SPLITS.items():
+                tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
+                self.assertAlmostEqual(sum(tree_loads), 200.0)
+                self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0)
+            self.assertEqual(sorted(loads[shard] for shard in ("rest-0", "rest-1", "rest-2")), [50.0, 50.0, 50.0])
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
+                self.assertEqual(ci_test_packages.check_budget("", 40.0), 1)
+            self.assertIn("over the 40s budget", err.getvalue())
+
+    def test_checked_in_measurements_cover_every_split_tree(self) -> None:
+        durations = load_durations()
+        for tree in TEST_SPLITS:
+            with self.subTest(tree=tree):
+                names = set(tree_test_names(ci_test_packages.ROOT / HEAVY_TREES[tree]))
+                measured = names & set(durations.get(tree, {}))
+                # An unmeasured name is charged the median, so a stale file
+                # still balances; most names must be measured for the budget
+                # prediction to mean anything.
+                self.assertGreater(len(measured), 0.9 * len(names), f"{tree} measurements are stale")
+
     def test_real_package_weights_load_and_are_valid(self) -> None:
         weights = load_package_durations()
         self.assertTrue(weights, "scripts/ci_test_durations.json has no rest package weights")
@@ -465,7 +522,8 @@ class TestTestNameSplit(unittest.TestCase):
             shard_selector("proxy-0", ["TestOnlyOne"])
         with self.assertRaisesRegex(ValueError, "empty name set"):
             exact_names_regex([])
-        huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
+        # Enough oversize names that even one bucket of the split overflows.
+        huge = [f"Test{'x' * 200}{index}" for index in range(1000 * TEST_SPLITS["proxy"])]
         with self.assertRaisesRegex(ValueError, "raise TEST_SPLITS"):
             shard_selector("proxy-0", huge)
 

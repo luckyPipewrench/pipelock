@@ -202,9 +202,12 @@ If `explain` resolves no name, because you omit `--server-name` and either omit
 blocking pattern but prints the target as the placeholder
 `mcp://<server-name>/response` and adds a note that the suppress entry cannot
 match until you re-run with the name the proxy runs under. When `--upstream`
-matches a registration on Linux, `explain` uses the registered name and needs
-no `--server-name`. Otherwise run `explain` with the same `--server-name` you pass
-to `mcp proxy` so the printed `path` is the one that will actually take effect.
+matches a registration, `explain` uses the registered name and needs no
+`--server-name`; that resolution needs Linux, and on any other host both
+`explain` and the proxy refuse a matched registration whatever name you pass.
+For an upstream that matches no registration, run `explain` with the same
+`--server-name` you pass to `mcp proxy` so the printed `path` is the one that
+will actually take effect.
 
 `--json` emits the same report as a structured object (`scanned`,
 `scanner`, `patterns`, and a `remediation.suppress_entries` array) for scripting.

@@ -123,7 +123,7 @@ func TestHeldMatches(t *testing.T) {
 // where the device in a maps line is not the device stat reports for the same
 // file. It replaces the package maps-identity seam, so it does not run in
 // parallel.
-func TestVerifyConnMappedFileWhenMapsDeviceDiffers(t *testing.T) { //nolint:paralleltest // replaces a package seam
+func TestVerifyConnMappedFileWhenMapsDeviceDiffers(t *testing.T) {
 	const content = "native module"
 	superDev := unix.Mkdev(0, 0x1d)
 

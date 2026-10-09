@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -463,8 +464,8 @@ func (v *Verifier) effectiveUID(pid int) (uint32, error) {
 			break
 		}
 		euid, err := strconv.ParseUint(fields[2], 10, 32)
-		if err == nil {
-			return uint32(euid), nil //nolint:gosec // ParseUint bitSize 32 bounds the value
+		if err == nil && euid <= math.MaxUint32 {
+			return uint32(euid), nil
 		}
 		break
 	}

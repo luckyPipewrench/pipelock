@@ -168,7 +168,7 @@ type identityE2EServerOpts struct {
 func startIdentityE2EServer(t *testing.T, o identityE2EServerOpts) *identityE2EServer {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIdentityE2EHelperProcess$") //nolint:gosec // G204: re-exec of the test binary
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestIdentityE2EHelperProcess$") // #nosec G204 G702 -- test re-execs its own binary with a fixed run filter
 	env := append(os.Environ(), e2eHelperEnv+"=1")
 	if o.Hold != "" {
 		env = append(env, e2eHoldEnv+"="+o.Hold)

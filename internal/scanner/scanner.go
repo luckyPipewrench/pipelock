@@ -4602,15 +4602,13 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
-		for _, segment := range strings.Split(parsed.Path, "/") {
-			if entropy, blocked := s.pathSegmentEntropy(segment); blocked {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Class:   ClassHeuristicEntropy,
-					Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
-				}
+		if entropy, blocked := s.pathEntropy(parsed.Path); blocked {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),
+				Scanner: ScannerEntropy,
+				Class:   ClassHeuristicEntropy,
+				Score:   math.Min(entropy/8.0, 1.0), // normalize to 0-1
 			}
 		}
 	}

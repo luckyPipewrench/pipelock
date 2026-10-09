@@ -42,6 +42,7 @@ type options struct {
 	seed            uint64
 	window          time.Duration
 	shutdownTimeout time.Duration
+	verifyTimeout   time.Duration
 }
 
 // runMode runs one recorder mode end to end and always writes result.json once
@@ -106,10 +107,11 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return fmt.Errorf("hashing harness source: %w", err)
 	}
 	res.Inputs.Harness = harnessReport{ContractVersion: harnessContractVersion, SourceSHA256: sourceHash, GoVersion: runtime.Version()}
-	binarySum, err := sha256File(opt.binary)
+	pinned, binarySum, err := pinBinary(opt.binary, dirs)
 	if err != nil {
-		return fmt.Errorf("hashing binary: %w", err)
+		return fmt.Errorf("pinning binary: %w", err)
 	}
+	opt.binary = pinned
 	res.Inputs.Binary = binaryReport{SHA256: binarySum, Version: versionText(ctx, opt.binary, dirs, childEnv)}
 	if res.Inputs.Rules, err = prepareRules(opt.rules, dirs); err != nil {
 		return err
@@ -134,7 +136,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return err
 	}
 	defer proxy.cleanup()
-	if err := awaitProxy(ctx, proxyAddr, proxy.exited); err != nil {
+	if err := awaitProxy(ctx, proxyAddr, proxy); err != nil {
 		return err
 	}
 	logf("%s: proxy ready; warmup %d then %d requests at concurrency %d", mode, opt.warmup, opt.requests, opt.concurrency)
@@ -269,7 +271,8 @@ func prepareConfig(ctx context.Context, opt options, mode string, dirs runDirs, 
 // blocks on a process that already ended.
 type proxyProc struct {
 	cmd     *exec.Cmd
-	exited  chan error
+	exited  chan struct{}
+	exitErr error
 	log     *os.File
 	stopped bool
 }
@@ -285,8 +288,11 @@ func startProxy(ctx context.Context, binary string, dirs runDirs, env []string, 
 		_ = logFile.Close()
 		return nil, err
 	}
-	p := &proxyProc{cmd: cmd, exited: make(chan error, 1), log: logFile}
-	go func() { p.exited <- cmd.Wait() }()
+	p := &proxyProc{cmd: cmd, exited: make(chan struct{}), log: logFile}
+	go func() {
+		p.exitErr = cmd.Wait()
+		close(p.exited)
+	}()
 	return p, nil
 }
 
@@ -296,14 +302,14 @@ func startProxy(ctx context.Context, binary string, dirs runDirs, env []string, 
 func (p *proxyProc) stop(timeout time.Duration) shutdownReport {
 	p.stopped = true
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		return shutdownReport{Error: fmt.Sprintf("proxy was not running at shutdown: %v (exit: %v)", err, <-p.exited)}
+		return shutdownReport{Error: fmt.Sprintf("proxy was not running at shutdown: %v (exit: %v)", err, p.waitExit())}
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case err := <-p.exited:
-		if err != nil {
-			return shutdownReport{Error: "proxy did not shut down cleanly: " + err.Error()}
+	case <-p.exited:
+		if p.exitErr != nil {
+			return shutdownReport{Error: "proxy did not shut down cleanly: " + p.exitErr.Error()}
 		}
 		return shutdownReport{Clean: true}
 	case <-timer.C:
@@ -311,6 +317,12 @@ func (p *proxyProc) stop(timeout time.Duration) shutdownReport {
 		<-p.exited
 		return shutdownReport{Error: fmt.Sprintf("proxy ignored SIGTERM for %s and was killed", timeout)}
 	}
+}
+
+// waitExit reads the stored result after the completion broadcast.
+func (p *proxyProc) waitExit() error {
+	<-p.exited
+	return p.exitErr
 }
 
 // cleanup makes sure no proxy outlives the run when execute returns early.
@@ -416,7 +428,13 @@ func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs
 		rep.fail("shutdown: " + shutdown.Error)
 	}
 	if mode != modeOff {
-		rep.Verify = verifyRecorder(ctx, opt.binary, dirs, env, obs)
+		timeout := opt.verifyTimeout
+		if timeout <= 0 {
+			timeout = time.Minute
+		}
+		verifyCtx, cancel := context.WithTimeout(ctx, timeout)
+		rep.Verify = verifyRecorder(verifyCtx, opt.binary, dirs, env, obs)
+		cancel()
 		if rep.Verify.Exit != 0 {
 			rep.fail(fmt.Sprintf("verify-receipt exited %d", rep.Verify.Exit))
 		}
@@ -428,6 +446,10 @@ func verifyRecorder(ctx context.Context, binary string, dirs runDirs, env []stri
 	pubKey := filepath.Join(dirs.keys, "flight-recorder-signing.key.pub")
 	out, err := localCommand(ctx, binary, dirs.cwd, env, "verify-receipt", "--chain", dirs.recorder, "--whole-recorder", "--require-seal", "--key", pubKey).CombinedOutput()
 	rep := verifyReport{Ran: true, Output: string(out)}
+	if ctx.Err() != nil {
+		rep.Output += "\nverification: " + ctx.Err().Error()
+		err = ctx.Err()
+	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -481,4 +503,31 @@ func verifyNativeAEL(dirs runDirs, obs *recorderObservation) error {
 		}
 	}
 	return nil
+}
+
+// pinBinary copies and hashes the executable that every child command uses.
+func pinBinary(source string, dirs runDirs) (string, string, error) {
+	resolved, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return "", "", err
+	}
+	root, err := os.OpenRoot(filepath.Dir(resolved))
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = root.Close() }()
+	binDir := filepath.Join(dirs.root, "bin")
+	if err := os.Mkdir(binDir, 0o750); err != nil {
+		return "", "", err
+	}
+	target := filepath.Join(binDir, filepath.Base(source))
+	digest, err := copyHashed(root, filepath.Base(resolved), target)
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(target, 0o700); err != nil { // #nosec G302 -- private pinned executable needs owner execute permission
+
+		return "", "", err
+	}
+	return target, digest.SHA256, nil
 }

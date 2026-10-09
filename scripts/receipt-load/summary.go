@@ -116,21 +116,33 @@ func writeSummary(p summaryParams) error {
 			}
 		}
 	}
-	out, err := os.OpenFile(filepath.Clean(filepath.Join(p.root, "summary.csv")), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	path := filepath.Clean(filepath.Join(p.root, "summary.csv"))
+	out, err := os.CreateTemp(filepath.Dir(path), ".summary-*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create summary temporary file: %w", err)
 	}
+	tempPath := out.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = out.Close()
+		}
+		_ = os.Remove(tempPath)
+	}()
 	w := csv.NewWriter(out)
 	if err := w.Write(summaryColumns); err != nil {
-		_ = out.Close()
-		return err
+		return fmt.Errorf("write summary header: %w", err)
 	}
 	if err := w.WriteAll(rows); err != nil {
-		_ = out.Close()
-		return err
+		return fmt.Errorf("write summary rows: %w", err)
 	}
 	if err := out.Close(); err != nil {
-		return err
+		closed = true
+		return fmt.Errorf("close summary temporary file: %w", err)
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace summary: %w", err)
 	}
 	if failed {
 		return errors.New("matrix contains unusable samples; see summary.csv")

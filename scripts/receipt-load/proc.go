@@ -33,6 +33,7 @@ func localCommand(ctx context.Context, binary, dir string, env []string, args ..
 	cmd.Args = append([]string{binary}, args...)
 	cmd.Dir = dir
 	cmd.Env = env
+	cmd.WaitDelay = time.Second
 	return cmd
 }
 
@@ -49,7 +50,7 @@ func freePort(ctx context.Context) (int, error) {
 	return tcp.Port, l.Close()
 }
 
-func awaitProxy(ctx context.Context, addr string, exited <-chan error) error {
+func awaitProxy(ctx context.Context, addr string, p *proxyProc) error {
 	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -63,11 +64,11 @@ func awaitProxy(ctx context.Context, addr string, exited <-chan error) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case exitErr := <-exited:
-			if exitErr == nil {
+		case <-p.exited:
+			if p.exitErr == nil {
 				return fmt.Errorf("proxy exited before listening on %s", addr)
 			}
-			return fmt.Errorf("proxy exited before listening on %s: %w", addr, exitErr)
+			return fmt.Errorf("proxy exited before listening on %s: %w", addr, p.exitErr)
 		case <-deadline.C:
 			return fmt.Errorf("proxy did not listen on %s", addr)
 		case <-ticker.C:
@@ -101,14 +102,6 @@ func readProc(pid int) (procSample, error) {
 		return procSample{}, err
 	}
 	return procSample{at: time.Now(), ticks: u + s, rss: rssPages * int64(os.Getpagesize())}, nil
-}
-
-func clockTicks(ctx context.Context) (float64, error) {
-	out, err := exec.CommandContext(ctx, "getconf", "CLK_TCK").Output()
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 }
 
 func evidenceBytes(dir string) int64 {

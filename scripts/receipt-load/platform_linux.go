@@ -6,11 +6,53 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 )
+
+const atClockTicks = 17
+
+// readProcessAuxv is a test seam for the Linux process auxiliary vector.
+var readProcessAuxv = func() ([]byte, error) { return os.ReadFile("/proc/self/auxv") }
+
+func clockTicks(context.Context) (float64, error) { return readClockTicks() }
+
+func readClockTicks() (float64, error) {
+	data, err := readProcessAuxv()
+	if err != nil {
+		return 0, fmt.Errorf("read /proc/self/auxv: %w", err)
+	}
+	wordSize := strconv.IntSize / 8
+	entrySize := 2 * wordSize
+	if len(data)%entrySize != 0 {
+		return 0, fmt.Errorf("invalid /proc/self/auxv length %d", len(data))
+	}
+	for offset := 0; offset < len(data); offset += entrySize {
+		var kind, value uint64
+		if wordSize == 8 {
+			kind = binary.NativeEndian.Uint64(data[offset : offset+wordSize])
+			value = binary.NativeEndian.Uint64(data[offset+wordSize : offset+entrySize])
+		} else {
+			kind = uint64(binary.NativeEndian.Uint32(data[offset : offset+wordSize]))
+			value = uint64(binary.NativeEndian.Uint32(data[offset+wordSize : offset+entrySize]))
+		}
+		if kind == atClockTicks {
+			if value == 0 {
+				return 0, fmt.Errorf("AT_CLKTCK is zero in /proc/self/auxv")
+			}
+			return float64(value), nil
+		}
+		if kind == 0 {
+			break
+		}
+	}
+	return 0, fmt.Errorf("AT_CLKTCK missing from /proc/self/auxv")
+}
 
 // Filesystem magic numbers from statfs(2) for the filesystems a benchmark
 // output directory realistically lives on.

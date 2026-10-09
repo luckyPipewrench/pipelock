@@ -135,6 +135,37 @@ func TestSummaryMissingCellFails(t *testing.T) {
 	}
 }
 
+func TestSummaryReplacesSymlinkWithoutFollowingIt(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.csv")
+	if err := os.WriteFile(outside, []byte("preserve this file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "summary.csv")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	putResult(t, root, 2, 1, 1, modeRequired, fakeResult(100, 90, 95, verdictPass, perfMeasured))
+
+	if err := writeSummary(summaryParams{root: root, samples: 1, modes: []string{modeRequired}, cpus: []int{2}, chains: []int{1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Clean(outside))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "preserve this file\n" {
+		t.Fatalf("symlink target changed to %q", got)
+	}
+	info, err := os.Lstat(filepath.Join(root, "summary.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		t.Fatalf("summary.csv was not replaced by a regular file: mode=%v", info.Mode())
+	}
+}
+
 func TestSummarizeCommandValidatesInput(t *testing.T) {
 	root := t.TempDir()
 	putResult(t, root, 4, 1, 1, modeOff, fakeResult(10, 9, 10, verdictPass, perfMeasured))

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 )
 
@@ -104,26 +103,6 @@ func writeReviewFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestReviewR2CPUUnavailable(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "getconf")
-	writeReviewFile(t, path, "#!/bin/sh\nexit 1\n")
-	if err := syscall.Chmod(path, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", root+":"+os.Getenv("PATH"))
-	res, err := runMode(context.Background(), smallOptions(t, newFakePipelock(t, "clean")), modeOff)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Integrity.Verdict != verdictPass {
-		t.Fatal("positive control integrity failed")
-	}
-	if res.Performance.Verdict != perfInvalid {
-		t.Fatal("unavailable CPU accounting reported a usable zero")
 	}
 }
 

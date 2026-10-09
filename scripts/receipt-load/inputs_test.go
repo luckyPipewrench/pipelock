@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // hostileEnv is a developer machine's environment: a real profile, real XDG
@@ -224,19 +227,24 @@ func TestApplyConfigPinsRulesAndPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			text := string(out)
+			var generated map[string]any
+			if err := yaml.Unmarshal(out, &generated); err != nil {
+				t.Fatal(err)
+			}
 			for _, want := range []string{"rules_dir: " + dirs.rules, "receipt_chains: 3", "quarantine_dir: " + filepath.Join(dirs.tmp, "quarantine")} {
-				if !strings.Contains(text, want) {
-					t.Fatalf("effective config lacks %q:\n%s", want, text)
+				if !strings.Contains(string(out), want) {
+					t.Fatalf("effective config lacks %q:\n%s", want, out)
 				}
 			}
-			if strings.Contains(text, "/tmp/pipelock-quarantine") {
+			if strings.Contains(string(out), "/tmp/pipelock-quarantine") {
 				t.Fatal("the shared default quarantine path survived")
 			}
-			wantEnabled := "enabled: " + map[bool]string{true: "true", false: "false"}[tt.enabled]
-			wantRequired := "require_receipts: " + map[bool]string{true: "true", false: "false"}[tt.required]
-			if !strings.Contains(text, wantEnabled) || !strings.Contains(text, wantRequired) {
-				t.Fatalf("mode %s: want %q and %q in\n%s", tt.mode, wantEnabled, wantRequired, text)
+			fr, err := configSection(generated, "flight_recorder")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fr["enabled"] != tt.enabled || fr["require_receipts"] != tt.required {
+				t.Fatalf("mode %s: flight_recorder.enabled=%v require_receipts=%v, want %v and %v", tt.mode, fr["enabled"], fr["require_receipts"], tt.enabled, tt.required)
 			}
 		})
 	}
@@ -338,7 +346,9 @@ func TestParseFlags(t *testing.T) {
 		append(append([]string{}, good...), "--modes", "sideways"),
 		append(append([]string{}, good...), "--chains", "33"),
 		append(append([]string{}, good...), "--window", "0s"),
+		append(append([]string{}, good...), "--verify-timeout", "0s"),
 		append(append([]string{}, good...), "--warmup", "-1"),
+		append(append([]string{}, good...), "--requests", strconv.Itoa(int(^uint(0)>>1)), "--warmup", "1"),
 		{"--binary", filepath.Join(t.TempDir(), "absent"), "--out", t.TempDir()},
 	} {
 		if _, _, _, err := parseFlags(bad); err == nil {

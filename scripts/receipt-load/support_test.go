@@ -119,6 +119,10 @@ func fakeMain(behavior string, args []string) int {
 		fmt.Println("pipelock version fake")
 		return 0
 	case "verify-receipt":
+		if behavior == "verifyslow" {
+			timer := time.NewTimer(2 * time.Second)
+			<-timer.C
+		}
 		if behavior == "verifyfail" {
 			fmt.Println("CHAIN_BROKEN")
 			return 1
@@ -126,6 +130,9 @@ func fakeMain(behavior string, args []string) int {
 		fmt.Println("GROUP_VALID")
 		return 0
 	case "run":
+		if behavior == "exitfast" {
+			return 9
+		}
 		return fakeRun(behavior, flagValue(args, "--listen"))
 	}
 	return 2

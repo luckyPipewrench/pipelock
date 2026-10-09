@@ -157,12 +157,18 @@ func scanRecorder(dir string, plan workload, sinkAddr string) (*recorderObservat
 			if rel != base || !ok || session == "" {
 				return errors.New("recorder file is outside the verified inventory")
 			}
+			if err := requireRegularRecorderEntry(entry); err != nil {
+				return err
+			}
 			s.fileSession = session
 			s.obs.recorderFiles++
 			return s.scanFile(root, rel, path, s.evidenceLine)
 		case strings.HasSuffix(base, ".jsonl") && strings.Contains(filepath.ToSlash(rel), "ael/") && strings.Contains(filepath.ToSlash(rel), "/recorders/"):
 			if filepath.ToSlash(rel) != "ael/"+filepath.Base(filepath.Dir(filepath.Dir(path)))+"/recorders/pipelock.jsonl" {
 				return errors.New("native AEL file is outside the verified stream")
+			}
+			if err := requireRegularRecorderEntry(entry); err != nil {
+				return err
 			}
 			s.obs.aelFiles++
 			return s.scanFile(root, rel, path, s.aelLine)
@@ -176,6 +182,17 @@ func scanRecorder(dir string, plan workload, sinkAddr string) (*recorderObservat
 		return nil, err
 	}
 	return s.obs, nil
+}
+
+func requireRegularRecorderEntry(entry fs.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return fmt.Errorf("inspect recorder entry %q: %w", entry.Name(), err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("recorder entry %q is not a regular file", entry.Name())
+	}
+	return nil
 }
 
 func (s *recorderScanner) scanFile(root *os.Root, rel, path string, handle func(line []byte) error) error {

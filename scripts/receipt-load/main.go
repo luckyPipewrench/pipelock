@@ -73,7 +73,7 @@ func runModes(ctx context.Context, opt options, modes []string) int {
 		switch {
 		case res == nil:
 			logf("%q: %v", mode, err)
-			return exitIntegrity
+			code = exitIntegrity
 		case res.Integrity.Verdict != verdictPass || err != nil:
 			code = exitIntegrity
 		case res.Performance.Verdict != perfMeasured && code == exitOK:
@@ -99,12 +99,14 @@ func parseFlags(args []string) (options, []string, string, error) {
 	seed := fs.Uint64("seed", 1, "workload seed; fixes request keys and which requests are blocked")
 	window := fs.Duration("window", 5*time.Second, "width of each per-window rate")
 	shutdown := fs.Duration("shutdown-timeout", time.Minute, "how long the proxy gets to exit after SIGTERM before it is killed")
+	verifyTimeout := fs.Duration("verify-timeout", time.Minute, "maximum time allowed for external receipt verification")
 	lock := fs.String("lock-file", "", "advisory lock file held for the whole invocation, to serialize runs on one machine")
 	if err := fs.Parse(args); err != nil {
 		return options{}, nil, "", err
 	}
-	if *out == "" || *n < 1 || *warmup < 0 || *concurrency < 1 || *chains < 1 || *chains > 32 || *window <= 0 || *shutdown <= 0 {
-		return options{}, nil, "", fmt.Errorf("--out, positive --requests, non-negative --warmup, positive --concurrency, --chains from 1 to 32, and positive --window and --shutdown-timeout are required")
+	maxInt := int(^uint(0) >> 1)
+	if *out == "" || *n < 1 || *warmup < 0 || *n > maxInt-*warmup || *concurrency < 1 || *chains < 1 || *chains > 32 || *window <= 0 || *shutdown <= 0 || *verifyTimeout <= 0 {
+		return options{}, nil, "", fmt.Errorf("--out, positive --requests, non-negative --warmup with a non-overflowing total, positive --concurrency, --chains from 1 to 32, and positive --window, --shutdown-timeout, and --verify-timeout are required")
 	}
 	absBinary, err := filepath.Abs(*binary)
 	if err != nil {
@@ -129,6 +131,6 @@ func parseFlags(args []string) (options, []string, string, error) {
 	}
 	return options{
 		binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
-		chains: *chains, seed: *seed, window: *window, shutdownTimeout: *shutdown,
+		chains: *chains, seed: *seed, window: *window, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout,
 	}, list, *lock, nil
 }

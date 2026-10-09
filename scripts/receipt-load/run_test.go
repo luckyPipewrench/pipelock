@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -135,6 +134,21 @@ func TestCleanOffRunPassesBothVerdicts(t *testing.T) {
 	}
 }
 
+func TestRunModesContinuesAfterOneModeSetupFailure(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "ok"))
+	if err := os.Mkdir(filepath.Join(opt.out, modeOff), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runModes(context.Background(), opt, []string{modeOff, modeBest}); code != exitIntegrity {
+		t.Fatalf("exit code = %d, want %d after a failed mode", code, exitIntegrity)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeBest))
+	if got.Integrity.Verdict != verdictFail || got.Performance.Verdict != perfMeasured {
+		t.Fatalf("later mode result = %+v, want it to run after the first mode failed", got)
+	}
+}
+
 func TestPerformanceFailureHasItsOwnExitCode(t *testing.T) {
 	opt := smallOptions(t, newFakePipelock(t, "badbody"))
 	code := runModes(context.Background(), opt, []string{modeOff})
@@ -155,7 +169,7 @@ func TestInterruptedRunFailsClosed(t *testing.T) {
 		t.Logf("runMode: %v", err)
 	}
 	got := readResult(t, filepath.Join(opt.out, modeOff))
-	if got.Integrity.Verdict != verdictFail && got.Performance.Verdict != perfInvalid {
+	if got.Integrity.Verdict != verdictFail || got.Performance.Verdict != perfInvalid {
 		t.Fatalf("an interrupted run reported success: %+v", got)
 	}
 }
@@ -339,26 +353,22 @@ func TestHostileHomeBundlesDoNotLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := "127.0.0.1:" + strconv.Itoa(port)
-	controlLog, err := os.Create(filepath.Clean(filepath.Join(root, "control.log")))
+	controlDirs := newRunDirs(root)
+	controlDirs.cwd = root
+	controlDirs.home = filepath.Join(root, "control-home")
+	controlCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	controlProxy, err := startProxy(controlCtx, bin, controlDirs,
+		[]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_DATA_HOME=" + xdgData}, controlCfg, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = controlLog.Close() }()
-	cmd := localCommand(context.Background(), bin, root,
-		[]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_DATA_HOME=" + xdgData},
-		"run", "--config", controlCfg, "--home", filepath.Join(root, "control-home"), "--listen", addr)
-	cmd.Stdout, cmd.Stderr = controlLog, controlLog
-	if err := cmd.Start(); err != nil {
+	defer controlProxy.cleanup()
+	if err := awaitProxy(controlCtx, addr, controlProxy); err != nil {
 		t.Fatal(err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	if err := awaitProxy(context.Background(), addr, exited); err != nil {
-		t.Fatal(err)
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	<-exited
-	control, _ := os.ReadFile(filepath.Clean(filepath.Join(root, "control.log")))
+	_ = controlProxy.stop(5 * time.Second)
+	control, _ := os.ReadFile(filepath.Clean(filepath.Join(root, "proxy.log")))
 	if !strings.Contains(string(control), "hostile-home-bundle") && !strings.Contains(string(control), "hostile-xdg-bundle") {
 		t.Fatalf("the control run did not see the hostile bundle, so the fixture proves nothing:\n%s", control)
 	}
@@ -391,5 +401,81 @@ func TestRulesDirectoryModeRecordsBundleHashes(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(bundle); len(entries) != 1 {
 		t.Fatalf("source rules directory was modified: %d entries", len(entries))
+	}
+}
+
+func TestEarlyProxyExitWritesFailure(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "exitfast"))
+	res, err := runMode(context.Background(), opt, modeOff)
+	if err == nil || res == nil {
+		t.Fatalf("runMode = %v, %v", res, err)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if got.Integrity.Verdict != verdictFail || got.Performance.Verdict != perfInvalid || !hasReason(got.Integrity.Reasons, "before listening") {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestVerificationDeadlineWritesFailure(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "verifyslow"))
+	opt.verifyTimeout = 150 * time.Millisecond
+	if _, err := runMode(context.Background(), opt, modeBest); err != nil {
+		t.Fatal(err)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeBest))
+	if got.Integrity.Verify.Exit == 0 || !strings.Contains(got.Integrity.Verify.Output, "deadline") {
+		t.Fatalf("verification was not bounded: %+v", got.Integrity.Verify)
+	}
+	if got.Integrity.Verdict != verdictFail {
+		t.Fatal("timeout passed integrity")
+	}
+}
+
+func TestRunUsesPinnedBinaryCopy(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "ok"))
+	original, err := sha256File(opt.binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runMode(context.Background(), opt, modeOff); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(opt.out, modeOff, "bin", filepath.Base(opt.binary))
+	copied, err := sha256File(copyPath)
+	if err != nil {
+		t.Fatalf("no pinned executable copy: %v", err)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if copied != original || got.Inputs.Binary.SHA256 != copied {
+		t.Fatal("executed copy and recorded hash differ")
+	}
+}
+
+func TestPinnedCopySurvivesSourceReplacement(t *testing.T) {
+	source := newFakePipelock(t, "ok")
+	dirs := newRunDirs(filepath.Join(t.TempDir(), "run"))
+	if err := dirs.create(); err != nil {
+		t.Fatal(err)
+	}
+	pinned, digest, err := pinBinary(source, dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("changed source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := sha256File(pinned)
+	if err != nil || after != digest {
+		t.Fatalf("copy changed: %s, %v", after, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	env, _ := buildChildEnv(os.Environ(), dirs)
+	out, err := localCommand(ctx, pinned, dirs.cwd, env, "version").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "pipelock version fake") {
+		t.Fatalf("pinned execution: %s, %v", out, err)
 	}
 }

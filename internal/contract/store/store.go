@@ -488,7 +488,7 @@ func ActiveManifestHash(m contract.ActiveManifest) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("manifest preimage: %w", err)
 	}
-	return hashPrefix + contractDigestOrigin.Sum(preimage), nil
+	return hashPrefix + contractDigestOrigin.Sum(preimage).String(), nil
 }
 
 // ContractHash returns sha256 over the canonical contract body with
@@ -499,7 +499,7 @@ func ContractHash(c contract.Contract) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("contract preimage: %w", err)
 	}
-	return hashPrefix + contractDigestOrigin.Sum(preimage), nil
+	return hashPrefix + contractDigestOrigin.Sum(preimage).String(), nil
 }
 
 func (s Store) loadContracts(selectors []contract.ManifestSelector, opts Options) (map[string]contract.ContractEnvelope, error) {

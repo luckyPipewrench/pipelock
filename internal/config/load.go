@@ -535,7 +535,7 @@ func (c *Config) Hash() string {
 	if c.rawBytes == nil {
 		return HashDefaults
 	}
-	return policyHashOrigin.Sum(c.rawBytes)
+	return policyHashOrigin.Sum(c.rawBytes).String()
 }
 
 // policyHashOrigin records the policy hashes this package computes, so the

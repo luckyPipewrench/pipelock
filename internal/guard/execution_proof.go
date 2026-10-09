@@ -80,5 +80,5 @@ func (p ExecutionProof) recomputeHash() string {
 		Command          []string          `json:"command"`
 	}{p.Record, p.ConfigPolicyHash, p.Profile, p.Workspace, p.TempDir, p.Binary, p.Command}
 	encoded, _ := json.Marshal(material)
-	return executionDigestOrigin.Sum(encoded)
+	return executionDigestOrigin.Sum(encoded).String()
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	guardfs "github.com/luckyPipewrench/pipelock/internal/guard"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -136,5 +137,23 @@ func TestUnprovenContractAndGuardDigestsStayContent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEmitterHoldsItsConfigHashOrigin proves the emitter keeps the origin
+// of the computed config hash it stamps for as long as it stamps it, so the
+// hash stays excluded however long the emitter outlives the Config that
+// computed it. A chosen hash gains nothing.
+func TestEmitterHoldsItsConfigHashOrigin(t *testing.T) {
+	f := newBoundaryFixture(t)
+	computed := config.Defaults().CanonicalPolicyHash()
+	f.em.UpdateConfigHash(computed)
+	if h, ok := f.em.configHash.Load().(heldConfigHash); !ok || h.hash != computed || !h.origin.Held() {
+		t.Fatal("emitter does not hold the origin of its computed config hash")
+	}
+	chosen := strings.Repeat("c4", 32)
+	f.em.UpdateConfigHash(chosen)
+	if h, ok := f.em.configHash.Load().(heldConfigHash); !ok || h.hash != chosen || h.origin.Held() || digestorigin.Computed(chosen) {
+		t.Fatal("a chosen config hash acquired origin")
 	}
 }

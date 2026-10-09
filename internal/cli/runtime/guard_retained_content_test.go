@@ -68,6 +68,11 @@ func TestGuardRetainedPolicyHashIsAConfigurationRefusal(t *testing.T) {
 	if err := generated.activateReceipts(proof); err != nil {
 		t.Fatalf("generated Guard request ID refused by required receipt path: %v", err)
 	}
+	// The run holds the execution digest's origin for its whole life, not
+	// only for the grace period after verification computed it.
+	if !generated.requestOrigin.Held() || generated.requestOrigin.String() != proof.EffectivePolicyHash {
+		t.Fatal("Guard run does not hold its request digest origin")
+	}
 
 	computed := config.Defaults().CanonicalPolicyHash()
 	accepted := newEvidence(t, computed)

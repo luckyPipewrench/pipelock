@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,12 +16,31 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestComputedContractDigestsDoNotRefuseProxyDecisions(t *testing.T) {
+	requireComputedContractDigestsRecorded(t)
+}
+
+// TestComputedDigestsSurviveUnrelatedOrigins is the regression for a bounded
+// process-wide origin record: after 4096 unrelated computed digests, new
+// origins were discarded and the scanner-backed emitter refused computed
+// contract and manifest hashes again. Origins now live with their holders,
+// so no number of unrelated digests can crowd them out.
+func TestComputedDigestsSurviveUnrelatedOrigins(t *testing.T) {
+	issuer := digestorigin.NewIssuer("proxydecision.test.unrelated")
+	for i := 0; i < 2*4096; i++ {
+		issuer.Sum([]byte("unrelated-" + strconv.Itoa(i)))
+	}
+	requireComputedContractDigestsRecorded(t)
+}
+
+func requireComputedContractDigestsRecorded(t *testing.T) {
+	t.Helper()
 	contractHash, err := store.ContractHash(contract.Contract{})
 	if err != nil {
 		t.Fatal(err)

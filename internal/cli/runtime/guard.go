@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	guardfs "github.com/luckyPipewrench/pipelock/internal/guard"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
@@ -257,6 +258,9 @@ type guardEvidence struct {
 	requiredFailure   atomic.Pointer[error]
 	activateOnce      sync.Once
 	activateErr       error
+	// requestOrigin holds the execution digest behind the run's guard-exec
+	// request ID for the whole run, so it is never scanned as content.
+	requestOrigin digestorigin.Digest
 }
 
 func (e *guardEvidence) close() {
@@ -287,6 +291,9 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 	if e.require && e.onRequiredFailure == nil {
 		return errors.New("required Guard receipt heartbeat has no failure cancellation callback")
 	}
+	// VerifyInvocation computed this digest moments ago; holding it here
+	// keeps its origin past the grace period for a long run.
+	e.requestOrigin, _ = digestorigin.Retain(proof.EffectivePolicyHash)
 	var openErr error
 	if e.shards != nil {
 		openErr = e.shards.Activate(proof.ConfigPolicyHash)

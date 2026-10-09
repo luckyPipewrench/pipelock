@@ -25,6 +25,7 @@ import (
 
 	aelpkg "github.com/luckyPipewrench/pipelock/internal/ael"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -286,7 +287,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		session:             session,
 		priorSignerKeys:     slices.Clone(cfg.PriorSignerKeys),
 	}
-	e.configHash.Store(cfg.ConfigHash)
+	e.configHash.Store(holdConfigHash(cfg.ConfigHash))
 	if nonceErr != nil {
 		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
 		return e
@@ -1293,7 +1294,21 @@ func (e *Emitter) UpdateConfigHash(hash string) {
 	if e == nil {
 		return
 	}
-	e.configHash.Store(hash)
+	e.configHash.Store(holdConfigHash(hash))
+}
+
+// heldConfigHash is the emitter's config hash. When the hash is one this
+// process computed, the emitter holds its origin for as long as it stamps
+// the hash, so the hash stays excluded from receipt content however long
+// the emitter outlives the Config that computed it.
+type heldConfigHash struct {
+	hash   string
+	origin digestorigin.Digest
+}
+
+func holdConfigHash(hash string) heldConfigHash {
+	origin, _ := digestorigin.Retain(strings.TrimPrefix(hash, canonicalPolicyHashLabel))
+	return heldConfigHash{hash: hash, origin: origin}
 }
 
 func (e *Emitter) classifyAction(opts EmitOpts) ActionType {
@@ -1401,11 +1416,14 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 	return nil
 }
 
-// configHashString safely extracts a string from an atomic.Value.
-// Returns empty string if the value is nil or not a string.
+// configHashString safely extracts the hash from an atomic.Value.
+// Returns empty string if the value is nil or holds no hash.
 func configHashString(v any) string {
-	if s, ok := v.(string); ok {
-		return s
+	switch h := v.(type) {
+	case heldConfigHash:
+		return h.hash
+	case string:
+		return h
 	}
 	return ""
 }

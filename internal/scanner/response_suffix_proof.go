@@ -13,17 +13,17 @@ import (
 	"unicode/utf8"
 )
 
-// responseSuffixProof proves a regex has no match by running it anchored at
-// each position where one of its mandatory suffix literals in reversed text occurs. Any
-// positive or inconclusive result falls back to the original FindAll on the
-// full input, so findings, spans and order are produced only by the original
-// matcher.
+// responseSuffixProof is the bounded anchored negative engine. Suffix proofs
+// use a reversed expression and text; interior proofs use a necessary forward
+// suffix. Positive or inconclusive results fall back to the original FindAll on
+// the full input, so only the original matcher produces findings and spans.
 type responseSuffixProof struct {
-	anchors []string       // simple-folded reversed suffixes
-	head    *regexp.Regexp // ^(?:R), for a candidate at offset 0
-	mid     *regexp.Regexp // ^(?s:.)(?:R), consumes the real preceding rune
-	tree    *syntax.Regexp
-	once    sync.Once
+	anchors    []string       // simple-folded required starts in the proof's direction
+	head       *regexp.Regexp // ^(?:R), for a candidate at offset 0
+	mid        *regexp.Regexp // ^(?s:.)(?:R), consumes the real preceding rune
+	tree       *syntax.Regexp
+	expression string
+	once       sync.Once
 }
 
 func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
@@ -35,6 +35,72 @@ func newResponseSuffixProof(re *regexp.Regexp) *responseSuffixProof {
 	if tree == nil {
 		return nil
 	}
+	return newResponseAnchoredProof(tree)
+}
+
+// newResponsePrefixProof constructs a forward negative proof beginning at a
+// mandatory interior literal. It reads the complete remaining text, or reports
+// an exhausted budget as inconclusive. Its caller establishes Perl compilation
+// provenance; the original matcher owns all findings.
+func newResponsePrefixProof(re *regexp.Regexp) *responseSuffixProof {
+	tree, err := syntax.Parse(re.String(), syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	original := tree
+	tree = responseInteriorProofSyntax(original)
+	if tree == nil {
+		return nil
+	}
+	proof := newResponseAnchoredProof(tree)
+	if proof != nil && tree == original {
+		proof.expression = re.String()
+	}
+	return proof
+}
+
+// responseInteriorProofSyntax drops only consumed prefixes. Every match of the
+// input expression therefore contains a match of the returned suffix ending at
+// the same position. Alternation requires a suffix for EVERY branch; a required
+// repetition uses its final iteration. Optional iterations cannot prove a suffix.
+// Assertions are retained and evaluated with the real preceding rune by mid.
+func responseInteriorProofSyntax(tree *syntax.Regexp) *syntax.Regexp {
+	if newResponseAnchoredProof(tree) != nil {
+		return tree
+	}
+	switch tree.Op {
+	case syntax.OpCapture:
+		if len(tree.Sub) == 1 {
+			return responseInteriorProofSyntax(tree.Sub[0])
+		}
+	case syntax.OpConcat:
+		for i, sub := range tree.Sub {
+			if suffix := responseInteriorProofSyntax(sub); suffix != nil {
+				parts := append([]*syntax.Regexp{suffix}, tree.Sub[i+1:]...)
+				return &syntax.Regexp{Op: syntax.OpConcat, Sub: parts}
+			}
+		}
+	case syntax.OpAlternate:
+		parts := make([]*syntax.Regexp, 0, len(tree.Sub))
+		for _, sub := range tree.Sub {
+			suffix := responseInteriorProofSyntax(sub)
+			if suffix == nil {
+				return nil
+			}
+			parts = append(parts, suffix)
+		}
+		if len(parts) > 0 {
+			return &syntax.Regexp{Op: syntax.OpAlternate, Sub: parts}
+		}
+	case syntax.OpPlus, syntax.OpRepeat:
+		if (tree.Op == syntax.OpPlus || tree.Min > 0) && len(tree.Sub) == 1 {
+			return responseInteriorProofSyntax(tree.Sub[0])
+		}
+	}
+	return nil
+}
+
+func newResponseAnchoredProof(tree *syntax.Regexp) *responseSuffixProof {
 	starts, _ := leadingLiteralAnchors(responseSuffixAnchorSyntax(tree))
 	if len(starts) == 0 {
 		return nil
@@ -62,7 +128,10 @@ func (p *responseSuffixProof) compile() bool {
 		if p.tree == nil {
 			return
 		}
-		expr := p.tree.String()
+		expr := p.expression
+		if expr == "" {
+			expr = p.tree.String()
+		}
 		head, err1 := regexp.Compile(`^(?:` + expr + `)`)
 		mid, err2 := regexp.Compile(`^(?s:.)(?:` + expr + `)`)
 		if err1 == nil && err2 == nil {
@@ -78,13 +147,16 @@ func (p *responseSuffixProof) compile() bool {
 type responseFoldView struct {
 	content, folded string
 	sameOffsets     bool
+	literals        responseLiteralMemo
+	candidates      map[string][]int
+	candidateCount  int
 }
 
 // folded must be responseSimpleFold(content). Folding picks the lowest code
-// point of an orbit and UTF-8 length never decreases with code point, so no
-// rune grows: equal total length means every rune kept its byte offset.
+// point of an orbit and UTF-8 length never decreases with code point. For valid
+// UTF-8 no rune grows, so equal total length preserves every byte offset.
 func newResponseFoldView(content, folded string) *responseFoldView {
-	return &responseFoldView{content: content, folded: folded, sameOffsets: len(content) == len(folded)}
+	return &responseFoldView{content: content, folded: folded, sameOffsets: utf8.ValidString(content) && len(content) == len(folded)}
 }
 
 // contentOffsets rewrites sorted folded byte offsets as content byte offsets
@@ -117,26 +189,55 @@ func (v *responseFoldView) contentOffsets(sorted []int) bool {
 
 const responseSuffixProofMaxCandidateRatio = 32 // one candidate per 32 bytes
 
+// Candidate lists contain complete folded offsets, never a truncated search.
+// They are bounded across the view and copied before mapping to source offsets.
+func (v *responseFoldView) anchorCandidates(anchor string, limit int) ([]int, bool) {
+	if positions, known := v.candidates[anchor]; known {
+		return positions, true
+	}
+	var positions []int
+	for off := 0; off < len(v.folded); {
+		i := strings.Index(v.folded[off:], anchor)
+		if i < 0 {
+			break
+		}
+		at := off + i
+		off = at + 1
+		positions = append(positions, at)
+		if len(positions) > limit {
+			return nil, false
+		}
+	}
+	if len(positions) > 0 && len(v.candidates) < responseMemoMaxEntries && v.candidateCount+len(positions) <= limit {
+		if v.candidates == nil {
+			v.candidates = make(map[string][]int)
+		}
+		v.candidates[anchor] = positions
+		v.candidateCount += len(positions)
+	}
+	return positions, true
+}
+
 // provesEmpty reports true only when no match of the original regex can exist.
 func (p *responseSuffixProof) provesEmpty(v *responseFoldView) bool {
 	if p == nil || v == nil {
 		return false
 	}
-	content, folded := v.content, v.folded
+	content := v.content
 	limit := min(len(content)/responseSuffixProofMaxCandidateRatio+1, 16384)
 	var cands []int
 	for _, anchor := range p.anchors {
-		for off := 0; off < len(folded); {
-			i := strings.Index(folded[off:], anchor)
-			if i < 0 {
-				break
-			}
-			at := off + i
-			off = at + 1
-			cands = append(cands, at)
-			if len(cands) > limit {
-				return false
-			}
+		key := responseLiteralKey{text: anchor, fold: true}
+		if present, known := v.literals[key]; known && !present {
+			continue
+		}
+		positions, complete := v.anchorCandidates(anchor, limit)
+		if !complete || len(cands)+len(positions) > limit {
+			return false
+		}
+		cands = append(cands, positions...)
+		if v.literals != nil && len(v.literals) < responseMemoMaxEntries {
+			v.literals[key] = len(positions) > 0
 		}
 	}
 	slices.Sort(cands)

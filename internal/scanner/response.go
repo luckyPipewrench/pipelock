@@ -958,10 +958,14 @@ var responseMatchSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
 // is configured, falls back to running all patterns. On clean 10KB content,
 // the pre-filter finds no candidates and zero regex patterns execute.
 func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern, content string) []ResponseMatch {
+	return matchPatternsPreFilteredWithMemo(pf, patterns, content, nil)
+}
+
+func matchPatternsPreFilteredWithMemo(pf *responsePreFilter, patterns []*compiledPattern, content string, view *responsePreFilterView) []ResponseMatch {
 	if pf == nil {
 		return matchPatternsAgainst(patterns, content)
 	}
-	indices := pf.patternsToCheck(content)
+	indices := pf.patternsToCheckWithMemo(content, view)
 	if len(indices) == 0 {
 		return nil
 	}

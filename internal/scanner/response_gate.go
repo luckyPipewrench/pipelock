@@ -22,30 +22,52 @@ type responseGate struct {
 	near    *responseNearGate
 }
 
+type responseLiteralKey struct {
+	text string
+	fold bool
+}
+
+// A prefilter call has one immutable raw/folded text pair. Repeated necessary
+// literals share only their exact presence result within that call.
+type responseLiteralMemo map[responseLiteralKey]bool
+
 func (g *responseGate) matches(content, folded string) bool {
 	return g.matchesWithDistance(content, folded, responseDistanceText(folded))
 }
 
 func (g *responseGate) matchesWithDistance(content, folded, distanceText string) bool {
+	return g.matchesWithMemo(content, folded, distanceText, nil)
+}
+
+func (g *responseGate) matchesWithMemo(content, folded, distanceText string, memo responseLiteralMemo) bool {
 	if g.near != nil {
 		return g.near.matches(distanceText)
 	}
 	if g.literal != "" {
-		if !g.hasFold {
-			return strings.Contains(content, g.literal)
+		text, literal := content, g.literal
+		if g.hasFold {
+			text, literal = folded, g.folded
 		}
-		return strings.Contains(folded, g.folded)
+		key := responseLiteralKey{text: literal, fold: g.hasFold}
+		if found, known := memo[key]; known {
+			return found
+		}
+		found := strings.Contains(text, literal)
+		if memo != nil && len(memo) < responseMemoMaxEntries {
+			memo[key] = found
+		}
+		return found
 	}
 	if g.all != nil {
 		for _, part := range g.all {
-			if !part.matchesWithDistance(content, folded, distanceText) {
+			if !part.matchesWithMemo(content, folded, distanceText, memo) {
 				return false
 			}
 		}
 		return true
 	}
 	for _, branch := range g.any {
-		if branch.matchesWithDistance(content, folded, distanceText) {
+		if branch.matchesWithMemo(content, folded, distanceText, memo) {
 			return true
 		}
 	}
@@ -220,6 +242,9 @@ func newResponseLiteralGate(literal string, fold bool) *responseGate {
 		return nil
 	}
 	gate := &responseGate{literal: literal}
+	// regexp decodes each malformed byte as U+FFFD, so a literal U+FFFD matches
+	// input that does not contain its bytes. Only the folded text carries it.
+	fold = fold || strings.ContainsRune(literal, utf8.RuneError)
 	if fold {
 		gate.hasFold = true
 		gate.folded = responseSimpleFold(literal)

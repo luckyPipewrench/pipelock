@@ -637,7 +637,20 @@ configuration. An ID, hash or session suffix a caller supplied is scanned like
 any other content, even when it has the same shape as a generated one.
 
 Content is scanned alone, as a joined value list, as reassembled fragments
-split across up to four fields, and as structured JSON. Before signing:
+split across up to four fields, and as structured JSON.
+
+Reassembly uses the ordered-subsequence bound of split-secret detection on
+the request path. It takes at most 20 scanned parts (content values and member names Pipelock
+did not declare, with a repeated value counted once per occurrence) and joins
+2, 3 or 4 of them in a fixed field order, skipping any unrelated part in
+between. It
+also tries every order of 2 or 3 parts and the reverse order of 4. A receipt
+with more than 20 parts, or whose combinations would build more than 4 MiB of
+text, is refused whole rather than partly scanned. A secret split into five or
+more pieces, or into four pieces in any other order, is outside that bound and
+is not reassembled.
+
+Before signing:
 
 - A matching content field (target, pattern, agent label and similar) is
   redacted, and the receipt is signed and recorded as usual.

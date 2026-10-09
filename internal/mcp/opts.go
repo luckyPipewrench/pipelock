@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -85,6 +86,24 @@ func (o MCPProxyOpts) withServerIdentity(id ServerIdentity) MCPProxyOpts {
 	o.ServerBindingMode = id.BindingMode
 	o.ServerRevision = id.Revision
 	return o
+}
+
+// checkServerIdentity refuses an in-flight response after its registration
+// changes. The response keeps its admission identity; it cannot switch to a
+// new identity midway through scanning or while awaiting operator approval.
+func (o MCPProxyOpts) checkServerIdentity() error {
+	if o.ServerIdentityFn == nil {
+		return nil
+	}
+	id := o.ServerIdentityFn()
+	if id.Refusal != "" {
+		return fmt.Errorf("MCP upstream identity refused: %s", id.Refusal)
+	}
+	if id.Name != o.ServerName || id.PolicyName != o.PolicyServerName ||
+		id.Binding != o.ServerBinding || id.BindingMode != o.ServerBindingMode || id.Revision != o.ServerRevision {
+		return fmt.Errorf("MCP upstream identity changed during response; restart the listener")
+	}
+	return nil
 }
 
 // MCPRedactionConfig snapshots the request-side redaction settings used for a

@@ -323,6 +323,7 @@ func RunHTTPListenerProxy(
 		ServerBinding:             opts.ServerBinding,
 		ServerBindingMode:         opts.ServerBindingMode,
 		ServerRevision:            opts.ServerRevision,
+		ServerIdentityFn:          opts.ServerIdentityFn,
 		Suppress:                  opts.Suppress,
 		SuppressFn:                opts.SuppressFn,
 		ResponseTrustClass:        opts.ResponseTrustClass,
@@ -1893,6 +1894,9 @@ func RunHTTPListenerProxy(
 			return
 		}
 		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)
+		if scanErr == nil {
+			scanErr = reqOpts.checkServerIdentity()
+		}
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")

@@ -35,6 +35,7 @@ const (
 	modeServe   = "serve"
 	modeForward = "forward"
 	modeExec    = "exec"
+	modeShare   = "share"
 	// modeLateAccept listens, then accepts only after the test writes
 	// helperAcceptCmd to its stdin; modeNoAccept never accepts.
 	modeLateAccept = "lateaccept"
@@ -116,6 +117,22 @@ func runHelper(mode string) int {
 		}
 		go func() { _, _ = io.Copy(up, conn) }()
 		go func() { _, _ = io.Copy(conn, up) }()
+	}
+	if mode == modeShare {
+		file, fileErr := conn.(*net.TCPConn).File()
+		if fileErr != nil {
+			return 1
+		}
+		child := exec.CommandContext(ctx, "/bin/cat")
+		child.Env = []string{"PATH=/usr/bin:/bin"}
+		child.Stdin = os.Stdin
+		child.ExtraFiles = []*os.File{file}
+		startErr := child.Start()
+		_ = file.Close()
+		if startErr != nil {
+			return 1
+		}
+		go func() { _ = child.Wait() }()
 	}
 	helperf("%s", helperAccepted)
 	if mode == modeExec {

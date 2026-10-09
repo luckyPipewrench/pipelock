@@ -10,6 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
 const (
@@ -43,7 +47,7 @@ func TestHTTPListener_ServerIdentityFn(t *testing.T) {
 			},
 			wantStatus:   http.StatusOK,
 			wantUpstream: 1,
-			wantCalls:    1,
+			wantCalls:    4,
 		},
 		{
 			name: "a refusal answers 503 with a JSON-RPC error and never reaches the upstream",
@@ -102,5 +106,77 @@ func TestHTTPListener_ServerIdentityFn(t *testing.T) {
 				t.Errorf("log = %q, want containing %q", logBuf.String(), tt.wantLog)
 			}
 		})
+	}
+}
+
+func TestHTTPListenerIdentityChangeDuringResponse(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		name := "json"
+		if sse {
+			name = "sse"
+		}
+		t.Run(name, func(t *testing.T) {
+			var changed atomic.Bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				// Model a reload after admission, before the first upstream byte.
+				changed.Store(true)
+				body := identityUpstreamOK
+				w.Header().Set("Content-Type", "application/json")
+				if sse {
+					w.Header().Set("Content-Type", "text/event-stream")
+					body = "data: " + body + "\n\n"
+				}
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner: testScannerForHTTP(t),
+				ServerIdentityFn: func() ServerIdentity {
+					if changed.Load() {
+						return ServerIdentity{Refusal: identityRefusalText}
+					}
+					return ServerIdentity{Name: "vendor-indexer", PolicyName: "vendor-indexer", Binding: "binding", BindingMode: config.MCPAckBindingModeVerifiedLocalSession, Revision: "rev"}
+				},
+			})
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), `"text":"hi"`) || resp.StatusCode < http.StatusBadRequest {
+				t.Fatalf("changed registration forwarded response: status %d body %s", resp.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestStatelessListenerRestoresAcknowledgmentIdentity(t *testing.T) {
+	entry := proxyAckEntry(t)
+	set := tools.NewCredentialAckSet([]config.MCPAcknowledgedFinding{entry}, proxyAckKey)
+	for _, revoked := range []bool{false, true} {
+		if revoked {
+			set.Revoke()
+		}
+		opts := listenerStatelessRequestOpts(MCPProxyOpts{
+			Scanner:       testScannerWithAction(t, config.ActionWarn),
+			ToolCfg:       &tools.ToolScanConfig{Action: config.ActionBlock, CredentialAcks: set},
+			ServerName:    proxyAckServer,
+			ServerBinding: proxyAckBinding,
+		})
+		var output, log strings.Builder
+		line := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` + proxyAckTool + `]}}`
+		_, err := ForwardScanned(&transport.SingleMessageReader{Body: io.NopCloser(strings.NewReader(line))}, transport.NewStdioWriter(&output), &log, nil, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(output.String(), `"store_secret"`); got == revoked {
+			t.Fatalf("forwarded=%v revoked=%v, output=%s", got, revoked, output.String())
+		}
 	}
 }

@@ -124,3 +124,11 @@ func TestVerifyConnRejectsExecDuringVerification(t *testing.T) {
 		t.Fatalf("VerifyConn after exec = %v, want ErrOwnerChanged; evidence %+v", err, ev)
 	}
 }
+
+func TestVerifyConnRealInheritedSocket(t *testing.T) {
+	h := startServer(t, modeShare, loopbackAny)
+	conn := dialAccepted(t, h, "")
+	if ev, err := NewVerifier().VerifyConn(conn, basePin(t)); !errors.Is(err, ErrMultipleOwners) || ev.PID != 0 {
+		t.Fatalf("inherited socket: %v, evidence %+v; want ErrMultipleOwners", err, ev)
+	}
+}

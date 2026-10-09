@@ -523,6 +523,13 @@ func TestServerRunListenerVerifiedLocalServiceFollowsRegistration(t *testing.T) 
 		if got := toolsList(); !strings.Contains(got, e2eStoreSecret) {
 			t.Fatalf("restoring the registered pin did not restore service: %s", got)
 		}
+		reloadFromDisk(func(next *config.Config) {
+			next.MCPIdentities = nil
+			next.MCPToolScanning.AcknowledgedFindings = nil
+		})
+		if got := toolsList(); strings.Contains(got, e2eStoreSecret) || !strings.Contains(got, "-32003") {
+			t.Fatalf("removing the registration did not refuse requests: %s", got)
+		}
 		return nil
 	})
 }

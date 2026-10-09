@@ -162,6 +162,9 @@ func isRequest(msg []byte) bool {
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	if opts.ServerIdentityFn != nil {
+		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
+	}
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
@@ -222,6 +225,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+		if err := opts.checkServerIdentity(); err != nil {
+			return foundInjection, err
+		}
 
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.

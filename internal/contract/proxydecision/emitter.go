@@ -23,7 +23,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -247,6 +246,10 @@ func (e *Emitter) HealthError() error {
 // ErrEmitterRetired marks an emitter whose chain head was handed to a successor.
 var ErrEmitterRetired = errors.New("proxydecision: emitter retired")
 
+// evidenceStamper is this package's capability to record the v2 receipts it
+// builds and signs. It never leaves the package.
+var evidenceStamper = contractreceipt.NewStamper("contract.proxydecision")
+
 // Retire atomically stops further emission and returns the final chain head,
 // so a successor resumes from the last recorded receipt even when requests
 // were still emitting while the successor was being built. An unhealthy
@@ -380,12 +383,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 	if err != nil {
 		return fmt.Errorf("hash proxy_decision receipt: %w", err)
 	}
-	rcptJSON, err := json.Marshal(rcpt)
-	if err != nil {
-		return fmt.Errorf("marshal proxy_decision receipt: %w", err)
-	}
-
-	recordErr := contractreceipt.RecordEvidence(context.Background(), e.recorder, e.session, rcptJSON, durable)
+	recordErr := evidenceStamper.Record(context.Background(), e.recorder, e.session, rcpt, durable)
 	if errors.Is(recordErr, contractreceipt.ErrNoDurableRecorder) {
 		return errors.New("proxy_decision recorder does not support durable writes")
 	}

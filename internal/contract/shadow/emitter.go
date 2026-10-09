@@ -40,6 +40,10 @@ var (
 	newUUIDV7   = uuid.NewV7
 )
 
+// evidenceStamper is this package's capability to record the v2 receipts it
+// builds and signs. It never leaves the package.
+var evidenceStamper = contractreceipt.NewStamper("contract.shadow")
+
 var (
 	// ErrInvalidConfig rejects unusable aggregation or emission settings.
 	ErrInvalidConfig = errors.New("shadow: invalid config")
@@ -345,15 +349,12 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 	if err != nil {
 		return fmt.Errorf("hash shadow delta receipt: %w", err)
 	}
-	receiptJSON, err := jsonMarshal(rcpt)
-	if err != nil {
-		return fmt.Errorf("marshal shadow delta receipt: %w", err)
-	}
 
 	// The recorder validates the signed receipt's content with its own
-	// detector (generated fields excluded) and derives the mirror fields
-	// from the exact bytes, so no unscanned summary text reaches the entry.
-	if err := contractreceipt.RecordEvidence(context.Background(), e.recorder, e.sessionID, receiptJSON, false); err != nil {
+	// detector (generated fields excluded, because this package stamped
+	// them) and derives the mirror fields from the exact bytes, so no
+	// unscanned summary text reaches the entry.
+	if err := evidenceStamper.Record(context.Background(), e.recorder, e.sessionID, rcpt, false); err != nil {
 		return fmt.Errorf("record shadow delta receipt: %w", err)
 	}
 	e.chainPrevHash = receiptHash

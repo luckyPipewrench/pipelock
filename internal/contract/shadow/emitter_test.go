@@ -415,20 +415,6 @@ func TestEmitter_ErrorSeams(t *testing.T) {
 	}
 	resetSeams()
 
-	marshalCalls := 0
-	jsonMarshal = func(v any) ([]byte, error) {
-		marshalCalls++
-		if marshalCalls == 2 {
-			return nil, boom
-		}
-		return json.Marshal(v)
-	}
-	emitter = NewEmitter(EmitterConfig{Recorder: &memoryRecorder{}, Signer: newTestSigner()})
-	if err := emitter.EmitBatch(batch); !errors.Is(err, boom) {
-		t.Fatalf("receipt marshal seam error = %v, want boom", err)
-	}
-	resetSeams()
-
 	newUUIDV7 = func() (uuid.UUID, error) { return uuid.Nil, boom }
 	if id, err := newEventID(); !errors.Is(err, boom) || id != "" {
 		t.Fatalf("newEventID error = id %q err %v, want boom", id, err)

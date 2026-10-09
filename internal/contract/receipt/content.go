@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -107,13 +108,58 @@ type EntryRecorder interface {
 // that cannot confirm durability.
 var ErrNoDurableRecorder = errors.New("evidence recorder does not support durable writes")
 
-// RecordEvidence writes one signed v2 receipt. On a content-binding recorder
-// the receipt's content is validated with the recorder's own detector and the
-// result is bound to rcptJSON, so generated fields are never scanned; content
-// is validate-or-fail and is never redacted after signing. The entry's mirror
-// fields are derived from rcptJSON. A *receiptcontent.RejectionError is
-// deterministic for its input: callers must not treat it as a storage failure.
-func RecordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool) error {
+// ErrNoStamper means a v2 receipt was recorded without its producer's Stamper.
+var ErrNoStamper = errors.New("evidence receipt recorded without a producer stamper")
+
+// Stamper is one v2 receipt producer's capability to record the receipts it
+// built, stamped and signed itself. Only a Stamper's receipts are projected
+// with the producer schema, under which the envelope fields the producer
+// generated (event ID, timestamp, chain position, signature) are excluded
+// from content. A Stamper records a receipt value, never bytes, so serialized
+// receipt bytes have no path to that classification. NewStamper returns it
+// once per producer, which keeps it private to the producing package.
+type Stamper struct{ name string }
+
+var (
+	stampersMu sync.Mutex
+	stampers   = map[string]struct{}{}
+)
+
+// NewStamper returns the recording capability for producer. It panics on an
+// empty or duplicate name; both are programming errors caught at
+// initialization.
+func NewStamper(producer string) *Stamper {
+	if producer == "" {
+		panic("contract receipt: stamper producer name is required")
+	}
+	stampersMu.Lock()
+	defer stampersMu.Unlock()
+	if _, dup := stampers[producer]; dup {
+		panic(fmt.Sprintf("contract receipt: stamper %q created twice", producer))
+	}
+	stampers[producer] = struct{}{}
+	return &Stamper{name: producer}
+}
+
+// Record writes one signed v2 receipt that this stamper's producer built.
+// On a content-binding recorder the receipt's content is validated with the
+// recorder's own detector and the result is bound to the exact serialized
+// bytes, so generated fields are never scanned; content is validate-or-fail
+// and is never redacted after signing. The entry's mirror fields are derived
+// from those bytes. A *receiptcontent.RejectionError is deterministic for its
+// input: callers must not treat it as a storage failure.
+func (s *Stamper) Record(ctx context.Context, rec EntryRecorder, session string, rcpt EvidenceReceipt, durable bool) error {
+	if s == nil || s.name == "" {
+		return ErrNoStamper
+	}
+	rcptJSON, err := json.Marshal(rcpt)
+	if err != nil {
+		return fmt.Errorf("marshal evidence receipt: %w", err)
+	}
+	return recordEvidence(ctx, rec, session, rcptJSON, durable)
+}
+
+func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool) error {
 	outer, err := evidenceReceiptOuter(rcptJSON)
 	if err != nil {
 		return err

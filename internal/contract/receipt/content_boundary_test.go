@@ -92,7 +92,7 @@ func TestRecordEvidenceExcludesGeneratedFields(t *testing.T) {
 	}
 	session := recorder.DefaultSessionBase
 	for i := 0; i < 3; i++ {
-		if err := RecordEvidence(context.Background(), rec, session, raw, i%2 == 1); err != nil {
+		if err := recordEvidence(context.Background(), rec, session, raw, i%2 == 1); err != nil {
 			t.Fatalf("v2 receipt with generated wedged head refused: %v", err)
 		}
 	}
@@ -113,11 +113,11 @@ func TestRecordEvidenceRejectsContentWithoutRedacting(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := v2Recorder(t)
-			err := RecordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, mutate), false)
+			err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, mutate), false)
 			if !errors.Is(err, receiptcontent.ErrRejected) || strings.Contains(err.Error(), v2Canary) {
 				t.Fatalf("err = %v, want content rejection without echo", err)
 			}
-			if err := RecordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, nil), false); err != nil {
+			if err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, nil), false); err != nil {
 				t.Fatalf("clean receipt after rejection: %v", err)
 			}
 		})
@@ -131,20 +131,20 @@ func (p *plainRecorder) Record(e recorder.Entry) error { p.entries = append(p.en
 func TestRecordEvidenceFallbackAndMirrorDerivation(t *testing.T) {
 	p := &plainRecorder{}
 	raw := v2Detail(t, nil)
-	if err := RecordEvidence(context.Background(), p, "s", raw, false); err != nil {
+	if err := recordEvidence(context.Background(), p, "s", raw, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.entries) != 1 || p.entries[0].Summary != "proxy_decision: read allow via policy" || p.entries[0].Transport != "forward" {
 		t.Fatalf("entry = %+v", p.entries)
 	}
-	if err := RecordEvidence(context.Background(), p, "s", raw, true); !errors.Is(err, ErrNoDurableRecorder) {
+	if err := recordEvidence(context.Background(), p, "s", raw, true); !errors.Is(err, ErrNoDurableRecorder) {
 		t.Fatalf("durable on plain recorder: %v", err)
 	}
-	if err := RecordEvidence(context.Background(), p, "s", []byte(`{`), false); err == nil {
+	if err := recordEvidence(context.Background(), p, "s", []byte(`{`), false); err == nil {
 		t.Fatal("malformed detail accepted")
 	}
 	shadow := v2Detail(t, func(m map[string]any) { m["payload_kind"] = string(PayloadShadowDelta) })
-	if err := RecordEvidence(context.Background(), p, "s", shadow, false); err != nil || p.entries[1].Summary != string(PayloadShadowDelta) {
+	if err := recordEvidence(context.Background(), p, "s", shadow, false); err != nil || p.entries[1].Summary != string(PayloadShadowDelta) {
 		t.Fatalf("shadow mirror = %+v, %v", p.entries, err)
 	}
 }

@@ -137,8 +137,11 @@ pipelock explain mcp-response [--config <file>] [--server-name <name>] [--upstre
 
 Pass `--upstream` with the same upstream URL the proxy uses when the config
 registers local services under `mcp_identities`. `explain` then resolves the
-name the same way the proxy does, prints an `Identity:` line, and prints the
-refusal reason if the proxy would refuse to start for that upstream.
+name the same way the proxy does, prints an `Identity:` line, and prints any
+refusal it can determine from the URL and name alone. It does not read launch
+credentials or check the live process, so a missing or malformed session
+header, or an owner that fails verification, is caught only at launch; use
+`pipelock mcp identity inspect` against the running service for that.
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,
 scans it for response prompt injection and generic inbound credentials with the

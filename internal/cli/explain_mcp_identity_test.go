@@ -126,6 +126,11 @@ func TestExplainMCPResponse_IdentityResolution(t *testing.T) {
 			wantErr: "--upstream must be an absolute",
 		},
 		{
+			name:    "an upstream the URL parser rejects is refused",
+			args:    []string{"--upstream", "http://127.0.0.1/%zz"},
+			wantErr: "--upstream must be an absolute",
+		},
+		{
 			name:    "an unsupported upstream scheme is rejected",
 			args:    []string{"--upstream", "ftp://api.vendor.example/mcp"},
 			wantErr: "--upstream must be an absolute",

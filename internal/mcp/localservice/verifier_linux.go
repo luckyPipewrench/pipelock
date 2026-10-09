@@ -521,19 +521,36 @@ func (v *Verifier) executableDigest(pid int) (dev, ino uint64, sum string, err e
 	if !ok {
 		return 0, 0, "", fmt.Errorf("pid %d executable has no inode identity: %w", pid, ErrOwnerNotVisible)
 	}
-	key := exeKey{
-		dev: dev, ino: ino, size: fi.Size(),
+	sum, err = v.digestOpened(f, digestKey(dev, ino, fi.Size(), st))
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("pid %d executable cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
+	}
+	return dev, ino, sum, nil
+}
+
+// digestKey identifies an opened file's content for the digest cache. Any
+// write changes the change time, which a process cannot set back, so a cached
+// digest never outlives the content it was computed from.
+func digestKey(dev, ino uint64, size int64, st *syscall.Stat_t) exeKey {
+	return exeKey{
+		dev: dev, ino: ino, size: size,
 		mtimeNs: toI64(st.Mtim.Sec)*nsecPerSec + toI64(st.Mtim.Nsec),
 		ctimeNs: toI64(st.Ctim.Sec)*nsecPerSec + toI64(st.Ctim.Nsec),
 	}
-	sum, hit := v.cachedSum(key)
-	if !hit {
-		if sum, err = hashFile(f); err != nil {
-			return 0, 0, "", fmt.Errorf("pid %d executable cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
-		}
-		v.storeSum(key, sum)
+}
+
+// digestOpened returns the SHA-256 of an opened file, hashing it only when its
+// key is not already cached.
+func (v *Verifier) digestOpened(f *os.File, key exeKey) (string, error) {
+	if sum, hit := v.cachedSum(key); hit {
+		return sum, nil
 	}
-	return dev, ino, sum, nil
+	sum, err := hashFile(f)
+	if err != nil {
+		return "", err
+	}
+	v.storeSum(key, sum)
+	return sum, nil
 }
 
 func (v *Verifier) cachedSum(k exeKey) (string, bool) {
@@ -740,7 +757,7 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 	if err != nil {
 		return "", fmt.Errorf("%s.path %s cannot be inspected: %w: %w", field, clean, ErrApplicationMismatch, err)
 	}
-	dev, ino, _, ok := fileIdentity(fi)
+	dev, ino, st, ok := fileIdentity(fi)
 	if !ok || !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s.path %s is not a regular file: %w", field, clean, ErrApplicationMismatch)
 	}
@@ -765,7 +782,9 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 		return "", fmt.Errorf("%s.path %s is not open or mapped by the owner (pid %d): %w", field, clean, pid, ErrApplicationMismatch)
 	}
 
-	sum, err := hashFile(f)
+	// The held-file identity check above runs on every call; only the content
+	// hash is cached, keyed by the opened descriptor's identity and times.
+	sum, err := v.digestOpened(f, digestKey(dev, ino, fi.Size(), st))
 	if err != nil {
 		return "", fmt.Errorf("%s.path %s cannot be read: %w: %w", field, clean, ErrApplicationMismatch, err)
 	}

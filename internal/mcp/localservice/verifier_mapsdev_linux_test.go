@@ -194,3 +194,37 @@ func TestVerifyConnPinnedFIFORefusesPromptly(t *testing.T) {
 		t.Fatal("verification blocked opening a FIFO at a pinned path")
 	}
 }
+
+// TestVerifyConnPinnedFileDigestCacheSeesInPlaceRewrite: pinned-file digests
+// are cached by the opened file's identity and times, so rewriting the same
+// inode in place after a verified dial must still be refused on the next one.
+func TestVerifyConnPinnedFileDigestCacheSeesInPlaceRewrite(t *testing.T) {
+	t.Parallel()
+	const original, rewritten = "module bytes A", "module bytes B"
+	f := newFakeProc(t)
+	path := f.pinnedFile(original)
+	f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
+	f.pin.MappedFiles = []FilePin{{Path: path, SHA256: sha256Hex([]byte(original))}}
+
+	if _, err := f.verify(); err != nil {
+		t.Fatalf("first VerifyConn = %v", err)
+	}
+	_, inoBefore := fileIdent(t, path)
+	w, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString(rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, inoAfter := fileIdent(t, path); inoAfter != inoBefore {
+		t.Fatal("rewrite must keep the inode for this test to exercise the cache")
+	}
+	_, err = f.verify()
+	if !errors.Is(err, ErrApplicationMismatch) || !strings.Contains(err.Error(), "mapped_files[0].sha256") {
+		t.Fatalf("VerifyConn after in-place rewrite = %v, want a mapped_files[0].sha256 mismatch", err)
+	}
+}

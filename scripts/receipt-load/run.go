@@ -162,9 +162,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	// phase; only the measured phase feeds the performance numbers.
 	warm := runPhase(ctx, params, phaseWarmup, opt.warmup)
 	startSample, startErr := readProc(proxy.cmd.Process.Pid)
-	if startErr != nil {
-		return startErr
-	}
+
 	evidenceAtStart := evidenceBytes(dirs.recorder)
 	measured := runPhase(ctx, params, phaseMeasure, opt.requests)
 	end := time.Now()
@@ -192,7 +190,10 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	}
 	perf.RSSStartBytes, perf.RSSEndBytes, perf.RSSPeakBytes = startSample.rss, endSample.rss, peakRSS
 	perf.EvidenceAtStart = evidenceAtStart
-	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && ticks > 0 && !math.IsNaN(ticks) && !math.IsInf(ticks, 0) && endErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {
+	if startErr != nil || endErr != nil {
+		perf.invalidate("process measurement unavailable or invalid")
+	}
+	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && ticks > 0 && !math.IsNaN(ticks) && !math.IsInf(ticks, 0) && startErr == nil && endErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {
 		perf.CPUSeconds = float64(endSample.ticks-startSample.ticks) / ticks
 		perf.CPUCores = perf.CPUSeconds / perf.Seconds
 	} else {
@@ -300,36 +301,42 @@ func startProxy(ctx context.Context, binary string, dirs runDirs, env []string, 
 // proxy that ignores SIGTERM is killed after the timeout rather than waited on
 // forever.
 func (p *proxyProc) stop(timeout time.Duration) shutdownReport {
-	p.stopped = true
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		return shutdownReport{Error: fmt.Sprintf("proxy was not running at shutdown: %v (exit: %v)", err, p.waitExit())}
+		p.killAndWait(timeout)
+		return shutdownReport{Error: fmt.Sprintf("proxy termination signal failed: %v (reaped: %t)", err, p.stopped)}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-p.exited:
+	if p.waitForExit(timeout) {
 		if p.exitErr != nil {
 			return shutdownReport{Error: "proxy did not shut down cleanly: " + p.exitErr.Error()}
 		}
 		return shutdownReport{Clean: true}
+	}
+	p.killAndWait(timeout)
+	return shutdownReport{Error: fmt.Sprintf("proxy ignored SIGTERM for %s and was killed (reaped: %t)", timeout, p.stopped)}
+}
+
+// waitForExit marks the process stopped only after observing its exit.
+func (p *proxyProc) waitForExit(timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-p.exited:
+		p.stopped = true
+		return true
 	case <-timer.C:
-		_ = p.cmd.Process.Kill()
-		<-p.exited
-		return shutdownReport{Error: fmt.Sprintf("proxy ignored SIGTERM for %s and was killed", timeout)}
+		return false
 	}
 }
 
-// waitExit reads the stored result after the completion broadcast.
-func (p *proxyProc) waitExit() error {
-	<-p.exited
-	return p.exitErr
+func (p *proxyProc) killAndWait(timeout time.Duration) {
+	_ = p.cmd.Process.Kill()
+	p.waitForExit(timeout)
 }
 
-// cleanup makes sure no proxy outlives the run when execute returns early.
+// cleanup retries termination when shutdown could not observe an exit.
 func (p *proxyProc) cleanup() {
 	if !p.stopped {
-		_ = p.cmd.Process.Kill()
-		<-p.exited
+		p.killAndWait(5 * time.Second)
 	}
 	_ = p.log.Close()
 }

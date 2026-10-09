@@ -18,6 +18,8 @@ import (
 	"strings"
 )
 
+const maxSummarySamples = 1000
+
 var summaryColumns = []string{
 	"cpu_cores", "chains", "mode", "samples",
 	"integrity", "integrity_failures", "performance_invalid",
@@ -56,8 +58,8 @@ func summarizeCommand(args []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("--chains: %w", err)
 	}
-	if *root == "" || *samples < 1 {
-		return "", errors.New("--root and a positive --samples are required")
+	if *root == "" || *samples < 1 || *samples > maxSummarySamples {
+		return "", fmt.Errorf("--root and --samples from 1 to %d are required", maxSummarySamples)
 	}
 	modeList := strings.Split(*modes, ",")
 	seenModes := map[string]bool{}
@@ -87,6 +89,9 @@ func parseInts(list string) ([]int, error) {
 // an unreadable result.json counts as a failure of both verdicts: a missing
 // result cannot have passed.
 func writeSummary(p summaryParams) error {
+	if p.samples < 1 || p.samples > maxSummarySamples {
+		return fmt.Errorf("--samples must be from 1 to %d", maxSummarySamples)
+	}
 	var rows [][]string
 	failed := false
 	for _, cores := range p.cpus {
@@ -185,7 +190,7 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || !matchesCPU(r.Inputs.Host, cores) || !hasSampleFingerprints(r) || sampleIdentity(r) != baseline {
 			compatible = false
 		}
-		if integ.Verdict != verdictPass {
+		if integ.Verdict != verdictPass || (integ.Verify.Ran && integ.Verify.Exit != 0) {
 			failures++
 		}
 		if perf.Verdict != perfMeasured {

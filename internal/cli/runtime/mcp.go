@@ -707,6 +707,8 @@ Examples:
 			// detection is scoped to definitions repeated within this run.
 			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
+				// ack-exempt: the offline scan has no configured server or
+				// transport binding, so no acknowledgment can apply to it.
 				toolCfg = &tools.ToolScanConfig{
 					Baseline:         tools.NewToolBaseline(),
 					Action:           cfg.MCPToolScanning.Action,
@@ -867,6 +869,36 @@ Key-free evidence capture:
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
 			}
+			// Headers and child-environment overrides are resolved once here and
+			// reused by the transport, so the server binding covers exactly
+			// what is sent.
+			var upstreamHeaders http.Header
+			var extraEnv []string
+			bindingInputs := mcpBindingInputs{}
+			if hasUpstream {
+				fileHeaders, fileErr := readHeaderFile(headerFile)
+				if fileErr != nil {
+					return fileErr
+				}
+				mergedHeaders := append([]string{}, fileHeaders...)
+				mergedHeaders = append(mergedHeaders, rawHeaders...)
+				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
+				var headerErr error
+				upstreamHeaders, headerErr = parseHeaderFlags(mergedHeaders)
+				if headerErr != nil {
+					return headerErr
+				}
+				bindingInputs = mcpUpstreamBindingInputs(upstreamURL, upstreamHeaders)
+			} else {
+				var envErr error
+				extraEnv, envErr = buildChildExtraEnv(resolvedEnv, envVars, os.LookupEnv)
+				if envErr != nil {
+					return envErr
+				}
+				bindingInputs.Command = args[dashIdx:]
+				bindingInputs.ChildEnv = extraEnv
+			}
+			serverBinding := mcpServerBinding(bindingInputs)
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
@@ -912,7 +944,7 @@ Key-free evidence capture:
 			if hasUpstream {
 				u, err := url.Parse(upstreamURL)
 				if err != nil || u.Host == "" {
-					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", upstreamURL)
+					return fmt.Errorf("invalid upstream URL %q: must include a scheme and host", RedactEndpoint(upstreamURL))
 				}
 				switch u.Scheme {
 				case schemeHTTP, schemeHTTPS:
@@ -920,7 +952,7 @@ Key-free evidence capture:
 				case "ws", "wss":
 					isWSUpstream = true
 				default:
-					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", upstreamURL)
+					return fmt.Errorf("invalid upstream URL %q: scheme must be http, https, ws, or wss", RedactEndpoint(upstreamURL))
 				}
 			}
 
@@ -957,6 +989,9 @@ Key-free evidence capture:
 			dowAgentName := resolvedMCPDoWAgentName(agentName, resolved.Name, found)
 			cfg = resolved.Config
 			bootSC.Close() // done with bootstrap scanner
+			if err := ackKeyWithheldFromChild(cfg.MCPToolScanning.AcknowledgmentKey, extraEnv); err != nil {
+				return err
+			}
 
 			// Set up Sentry error reporting
 			sentryClient, sentryErr := plsentry.Init(cfg, cliutil.Version)
@@ -1051,6 +1086,7 @@ Key-free evidence capture:
 					NewToolAdmission:       cfg.MCPToolScanning.NewToolAdmission,
 					ListenerDriftResetFile: cfg.MCPToolScanning.ListenerDriftResetFile,
 					ExtraPoison:            extraPoison,
+					CredentialAcks:         tools.NewCredentialAckSet(cfg.MCPToolScanning.AcknowledgedFindings, cfg.MCPToolScanning.AcknowledgmentKeyBytes),
 				}
 				resetTarget := cfg.MCPToolScanning.ListenerDriftResetTarget
 				if cfg.MCPToolScanning.ListenerDriftResetAuthorityPublicKeyFile != "" &&
@@ -1448,17 +1484,7 @@ Key-free evidence capture:
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
 				}
 
-				fileHeaders, fileErr := readHeaderFile(headerFile)
-				if fileErr != nil {
-					return fileErr
-				}
-				mergedHeaders := append([]string{}, fileHeaders...)
-				mergedHeaders = append(mergedHeaders, rawHeaders...)
-				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
-				extraHeaders, headerErr := parseHeaderFlags(mergedHeaders)
-				if headerErr != nil {
-					return headerErr
-				}
+				extraHeaders := upstreamHeaders
 				if len(extraHeaders) > 0 && isWSUpstream {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored for HTTP upstreams; ignored for ws/wss upstreams")
 				}
@@ -1468,7 +1494,7 @@ Key-free evidence capture:
 
 				// HTTP reverse proxy mode: --listen + --upstream.
 				if hasListen && isWSUpstream {
-					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", upstreamURL)
+					err := fmt.Errorf("--listen with WebSocket upstream (ws/wss) is not yet supported; use stdio mode: pipelock mcp proxy --upstream %s", RedactEndpoint(upstreamURL))
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -1520,11 +1546,12 @@ Key-free evidence capture:
 					}
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
+					listenerOpts.ServerBinding = serverBinding
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					listenerOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						listenAddr, upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1572,11 +1599,12 @@ Key-free evidence capture:
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
+					wsOpts.ServerBinding = serverBinding
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					wsOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1628,11 +1656,12 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
+				httpOpts.ServerBinding = serverBinding
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				httpOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-					upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+					RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 						return heartbeatErr
@@ -1648,28 +1677,7 @@ Key-free evidence capture:
 				return nil
 			}
 
-			// Parse --env flags into KEY=VALUE pairs for the child process.
-			// KEY without value: pass through from current environment.
-			// KEY=VALUE: set explicitly.
-			// Empty keys, safe-list keys, and dangerous keys are rejected.
-			extraEnv := append([]string(nil), resolvedEnv...)
-			for _, e := range envVars {
-				key, _, hasValue := strings.Cut(e, "=")
-				if key == "" {
-					return errors.New("--env requires a non-empty variable name")
-				}
-				if mcp.IsSafeEnvKey(key) {
-					return fmt.Errorf("--env %s is already set by pipelock and cannot be overridden", key)
-				}
-				if mcp.IsDangerousEnvKey(key) {
-					return fmt.Errorf("--env %s is blocked: this variable can inject code or redirect traffic in the child process", key)
-				}
-				if hasValue {
-					extraEnv = append(extraEnv, e)
-				} else if val, found := os.LookupEnv(e); found {
-					extraEnv = append(extraEnv, e+"="+val)
-				}
-			}
+			// extraEnv was resolved once above, with the server binding.
 			if len(extraEnv) > 0 {
 				keys := make([]string, 0, len(extraEnv))
 				for _, e := range extraEnv {
@@ -1841,6 +1849,7 @@ Key-free evidence capture:
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
@@ -1998,6 +2007,7 @@ Key-free evidence capture:
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+			proxyOpts.ServerBinding = serverBinding
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			proxyOpts.ReceiptGroup = receiptGroup
 			// The unsandboxed path has no UID/GID map setup. Harden before

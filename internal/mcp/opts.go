@@ -321,6 +321,11 @@ type MCPProxyOpts struct {
 	// match against. Empty disables target-scoped response suppression. Set
 	// from `pipelock mcp proxy --server-name`.
 	ServerName string
+	// ServerBinding is the transport binding digest of the configured server
+	// (tools.ServerBindingDigest). Credential-request acknowledgments must
+	// name it, so a server name reused for another destination cannot carry
+	// an acknowledgment over.
+	ServerBinding string
 
 	// ResponseTrustClass is the effective trust class for this server's MCP
 	// responses. Empty is treated as "untrusted" and fails closed. Set from

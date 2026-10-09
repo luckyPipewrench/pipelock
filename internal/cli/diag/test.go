@@ -755,6 +755,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 					},
 				}
 				payload := buildMCPToolsList(1, tools)
+				// ack-exempt: fixed diagnostic configuration with no configured server identity.
 				toolCfg := &mcptools.ToolScanConfig{
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
@@ -785,6 +786,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 					},
 				}
 				payload := buildMCPToolsList(2, tools)
+				// ack-exempt: fixed diagnostic configuration with no configured server identity.
 				toolCfg := &mcptools.ToolScanConfig{
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,
@@ -823,6 +825,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 					},
 				}
 				payload := buildMCPToolsList(3, tools)
+				// ack-exempt: fixed diagnostic configuration with no configured server identity.
 				toolCfg := &mcptools.ToolScanConfig{
 					Baseline:    mcptools.NewToolBaseline(),
 					Action:      config.ActionBlock,

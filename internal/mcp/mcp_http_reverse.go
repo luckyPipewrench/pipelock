@@ -319,6 +319,7 @@ func RunHTTPListenerProxy(
 		MediaPolicy:               opts.mediaPolicy(),
 		MediaPolicyFn:             opts.MediaPolicyFn,
 		ServerName:                opts.ServerName,
+		ServerBinding:             opts.ServerBinding,
 		Suppress:                  opts.Suppress,
 		SuppressFn:                opts.SuppressFn,
 		ResponseTrustClass:        opts.ResponseTrustClass,
@@ -2437,6 +2438,8 @@ func listenerStatelessRequestOpts(opts MCPProxyOpts) MCPProxyOpts {
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	} else {
 		opts.ToolCfg = nil

@@ -903,13 +903,14 @@ jobs:
           go-version: '1.27'
 
       - name: Run browser target fallback contracts
-        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform" ./internal/securefile/... ./internal/recorder/...
+        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" -count=1 -run "TestOpenRegularNonblockingFailsClosedOnUnsupportedPlatform|TestEvidenceFileOperationsFailClosedOnUnsupportedPlatform|TestLoadSaltFileFailsClosedOnUnsupportedPlatform|TestMCPAckKeyFileSourceRefusedOnBrowserTarget" ./internal/securefile/... ./internal/recorder/... ./internal/contract/privacy/...
 
       - name: Compile WASI fallback contracts
         run: |
           GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/securefile-wasi.test ./internal/securefile
           GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/recorder-wasi.test ./internal/recorder
           GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/license-wasi.test ./internal/license
+          GOOS=wasip1 GOARCH=wasm go test -c -o /tmp/privacy-wasi.test ./internal/contract/privacy
 
       - name: Compile AIX fallback contracts
         run: |
@@ -1123,7 +1124,7 @@ jobs:
           # half-done bump fails loudly instead of scanning the wrong toolchain.
           # Revert to '1.26' + check-latest for steady-state self-healing once
           # the manifest reliably carries the newest patch.
-          go-version: '1.26.8'
+          go-version: '1.26.9'
           check-latest: true
 
       - name: Verify Go version
@@ -1132,7 +1133,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.8"
+          test "$got" = "go1.26.9"
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

@@ -530,6 +530,12 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 	} else {
 		verdict.Action = config.StricterAction(verdict.Action, toolCfg.Action)
 	}
+	// A configured acknowledgment that no longer matches its tool is a
+	// reviewed exception gone stale. It refuses under every action rather
+	// than quietly becoming a warning.
+	if result.CredentialAckRefused() {
+		verdict.Action = config.ActionBlock
+	}
 	return verdict
 }
 

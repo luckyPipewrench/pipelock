@@ -360,8 +360,10 @@ func drivePoisonedMCPTool(sc *scanner.Scanner, emitter *receipt.Emitter, policyH
 		mcptransport.NewStdioWriter(&out),
 		&logs,
 		nil,
+		// ack-exempt: fixed replay configuration with no real transport binding.
 		mcp.MCPProxyOpts{
-			Scanner:        sc,
+			Scanner: sc,
+			// ack-exempt: fixed diagnostic configuration with no configured server identity.
 			ToolCfg:        &tools.ToolScanConfig{Action: config.ActionBlock},
 			ReceiptEmitter: emitter,
 			Transport:      TransportMCPStdio,

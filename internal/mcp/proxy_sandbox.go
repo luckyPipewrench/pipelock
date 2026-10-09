@@ -228,6 +228,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	}
 

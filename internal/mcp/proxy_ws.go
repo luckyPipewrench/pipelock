@@ -109,6 +109,8 @@ func RunWSProxy(
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	}
 

@@ -324,6 +324,7 @@ func RunHTTPListenerProxy(
 		ServerBindingMode:         opts.ServerBindingMode,
 		ServerRevision:            opts.ServerRevision,
 		ServerIdentityFn:          opts.ServerIdentityFn,
+		ServerIdentityHeadersFn:   opts.ServerIdentityHeadersFn,
 		Suppress:                  opts.Suppress,
 		SuppressFn:                opts.SuppressFn,
 		ResponseTrustClass:        opts.ResponseTrustClass,
@@ -541,8 +542,20 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
-		if opts.ServerIdentityFn != nil {
-			identity := opts.ServerIdentityFn()
+		if opts.ServerIdentityHeadersFn != nil {
+			// Use the same header merger as the actual upstream request. Bind only
+			// operator/client-selected headers, not transport-generated framing.
+			upReq := &http.Request{Header: opts.UpstreamHeaders.Clone()}
+			if upReq.Header == nil {
+				upReq.Header = make(http.Header)
+			}
+			forwardListenerUpstreamHeaders(upReq, r, r.Method == http.MethodGet)
+			requestBaseOpts.ServerIdentityFn = func() ServerIdentity {
+				return opts.ServerIdentityHeadersFn(upReq.Header)
+			}
+		}
+		if requestBaseOpts.ServerIdentityFn != nil {
+			identity := requestBaseOpts.ServerIdentityFn()
 			if identity.Refusal != "" {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", identity.Refusal)
 				w.Header().Set("Content-Type", "application/json")

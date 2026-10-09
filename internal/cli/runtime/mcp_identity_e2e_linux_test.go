@@ -505,6 +505,26 @@ func TestServerRunListenerVerifiedLocalServiceFollowsRegistration(t *testing.T) 
 		if got := toolsList(); !strings.Contains(got, e2eStoreSecret) {
 			t.Fatalf("registered service not served through the run listener: %s (log: %s)", got, buf.String())
 		}
+		// A listener can forward a client's upstream credential. An acknowledgment
+		// minted without that credential must not authorize its tool list.
+		credentialReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+mcpAddr, strings.NewReader(e2eToolsListLine))
+		if err != nil {
+			t.Fatal(err)
+		}
+		credentialReq.Header.Set("Content-Type", "application/json")
+		credentialReq.Header.Set("Authorization", "Bearer other-upstream-principal")
+		credentialResp, err := http.DefaultClient.Do(credentialReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credentialBody, err := io.ReadAll(credentialResp.Body)
+		_ = credentialResp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(credentialBody), e2eStoreSecret) {
+			t.Fatalf("acknowledgment ignored forwarded upstream credential: %s", credentialBody)
+		}
 		reloadFromDisk(nil)
 		if got := toolsList(); !strings.Contains(got, e2eStoreSecret) {
 			t.Fatalf("an unrelated reload refused the registered service: %s", got)

@@ -1703,6 +1703,8 @@ A registration always binds this way, even when it declares no session header. I
 
 A credential change on a server that is not registered still invalidates its acknowledgment, as before. Removing a registration makes any `verified-local-session` acknowledgment for it refuse at load.
 
+For HTTP listeners (`pipelock run` and `mcp proxy --listen`), the binding also covers the effective upstream headers selected for each request, including client credentials the listener forwards. A changed header invalidates the acknowledgment unless it is the declared session header. Operator-pinned headers take precedence over client values.
+
 #### Operator commands and diagnostics
 
 - `pipelock mcp identity register --upstream URL --name NAME [--mapped-file PATH ...] [--session-header NAME --carrier VAR]` dials a running service you trust right now, observes its owner and prints an `mcp_identities` entry to review. It never writes a configuration file. The other files the process holds are printed as comments, operating-system libraries last, and any deny-listed variable the process carries appears as a `control_environment` key whose value you fill in after review.

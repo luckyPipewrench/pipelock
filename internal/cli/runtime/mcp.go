@@ -1597,6 +1597,9 @@ Key-free evidence capture:
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
 					applyMCPResponseSuppressOpts(&listenerOpts, cfg, launchIdentity)
 					listenerOpts.ServerBinding = serverBinding
+					listenerOpts.ServerIdentityHeadersFn = listenerIdentityHeadersFn(launchIdentity, launchTransport, func() mcp.ServerIdentity {
+						return mcp.ServerIdentity{Name: launchIdentity.Name, PolicyName: launchIdentity.ArmingName, Binding: serverBinding, BindingMode: launchIdentity.BindingMode, Revision: launchIdentity.Revision}
+					})
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					listenerOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)

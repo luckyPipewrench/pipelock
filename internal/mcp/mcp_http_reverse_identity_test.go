@@ -180,3 +180,57 @@ func TestStatelessListenerRestoresAcknowledgmentIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPListenerIdentityBindsEffectiveHeaders(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			var changed atomic.Bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer operator-credential" {
+					t.Error("operator credential was not forwarded")
+				}
+				changed.Store(true)
+				if method == http.MethodGet {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+identityUpstreamOK+"\n\n")
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, identityUpstreamOK)
+				}
+			}))
+			defer upstream.Close()
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				Scanner:         testScannerForHTTP(t),
+				UpstreamHeaders: http.Header{"Authorization": {"Bearer operator-credential"}},
+				ServerIdentityHeadersFn: func(headers http.Header) ServerIdentity {
+					if headers.Get("Authorization") != "Bearer operator-credential" || headers.Get("Mcp-Protocol-Version") != "2025-06-18" {
+						t.Errorf("binding saw different effective headers: %v", headers)
+					}
+					if headers.Get("Content-Type") != "" || headers.Get("Accept") != "" {
+						t.Error("transport framing entered the selected-header binding")
+					}
+					if changed.Load() {
+						return ServerIdentity{Refusal: identityRefusalText}
+					}
+					return ServerIdentity{Name: "vendor-indexer", PolicyName: "vendor-indexer", Binding: "request-binding", BindingMode: config.MCPAckBindingModeVerifiedLocalSession, Revision: "rev"}
+				},
+			})
+			req, err := http.NewRequestWithContext(t.Context(), method, baseURL+"/", strings.NewReader(jsonToolsCallEcho))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer client-credential")
+			req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode < http.StatusBadRequest || strings.Contains(string(body), `"text":"hi"`) {
+				t.Fatalf("request-specific identity lost revocation: status=%d body=%s", resp.StatusCode, body)
+			}
+		})
+	}
+}

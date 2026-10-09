@@ -383,6 +383,10 @@ type MCPProxyOpts struct {
 	// registration is seen. Its result replaces the five static identity fields
 	// above for that request. Nil keeps the static fields.
 	ServerIdentityFn func() ServerIdentity
+	// ServerIdentityHeadersFn binds a listener request's effective upstream
+	// headers. It takes precedence over ServerIdentityFn when present, including
+	// at the in-flight response gates. Legacy listeners leave it nil.
+	ServerIdentityHeadersFn func(http.Header) ServerIdentity
 
 	// ResponseTrustClass is the effective trust class for this server's MCP
 	// responses. Empty is treated as "untrusted" and fails closed. Set from

@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/localservice"
 )
@@ -403,5 +405,41 @@ func TestListenerTransport(t *testing.T) {
 	got := listenerTransport(testListenerUpstream)
 	if got.Kind != identity.KindHTTP || got.UpstreamURL != testListenerUpstream || len(got.Headers) != 0 {
 		t.Errorf("listenerTransport = %+v", got)
+	}
+}
+
+func TestListenerIdentityHeadersBinding(t *testing.T) {
+	for _, sessionHeader := range []bool{false, true} {
+		cfg := registeredConfig(testListenerLabel, "/mcp", sessionHeader)
+		entry := cfg.MCPIdentities[0]
+		res := identity.Resolution{
+			Name: entry.Name, ArmingName: entry.Name, Entry: &entry, Revision: entry.Revision(), BindingMode: config.MCPAckBindingModeVerifiedLocalSession,
+			Pin: &localservice.Pin{PrincipalUID: *entry.VerifiedLocalService.PrincipalUID, ExecutableSHA256: entry.VerifiedLocalService.ExecutableSHA256},
+		}
+		tr := listenerTransport(testListenerUpstream)
+		current := mcp.ServerIdentity{Name: res.Name, PolicyName: res.ArmingName, Revision: res.Revision, BindingMode: res.BindingMode}
+		fn := listenerIdentityHeadersFn(res, tr, func() mcp.ServerIdentity { return current })
+		first := fn(http.Header{"Authorization": {"Bearer first"}})
+		second := fn(http.Header{"Authorization": {"Bearer second"}})
+		if first.Refusal != "" || second.Refusal != "" || first.Binding == "" || (first.Binding == second.Binding) != sessionHeader {
+			t.Fatalf("session header=%v: first=%+v second=%+v", sessionHeader, first, second)
+		}
+		changed := fn(http.Header{"Authorization": {"Bearer first"}, "X-Tenant": {"other"}})
+		if changed.Binding == first.Binding {
+			t.Fatal("unrelated forwarded header was not bound")
+		}
+		current.Refusal = "registration changed"
+		if got := fn(nil); got.Refusal != current.Refusal {
+			t.Fatalf("request binding erased reload refusal: %+v", got)
+		}
+		res.Entry = nil
+		current.Refusal = ""
+		invalid := listenerIdentityHeadersFn(res, tr, func() mcp.ServerIdentity { return current })
+		if got := invalid(nil); got.Refusal == "" || got.Binding != "" {
+			t.Fatalf("invalid resolution returned usable binding: %+v", got)
+		}
+	}
+	if fn := listenerIdentityHeadersFn(identity.Legacy(testListenerLabel), listenerTransport(testListenerUpstream), nil); fn != nil {
+		t.Fatal("legacy listener binding must be unchanged")
 	}
 }

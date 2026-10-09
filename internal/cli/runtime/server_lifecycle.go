@@ -1128,6 +1128,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				ServerBindingMode:        mcpResolution.BindingMode,
 				ServerRevision:           mcpResolution.Revision,
 				ServerIdentityFn:         mcpIdentity.identityFn(s.proxy.CurrentConfig),
+				ServerIdentityHeadersFn:  listenerIdentityHeadersFn(mcpResolution, mcpTransport, mcpIdentity.identityFn(s.proxy.CurrentConfig)),
 				SuppressFn:               mcpResponseSuppressFn,
 				ResponseTrustClassFn:     mcpResponseTrustFn,
 				ResponseActionOverrideFn: mcpResponseActionFn,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -68,6 +69,34 @@ func launchBinding(res identity.Resolution, t identity.Transport, in mcpBindingI
 		return identity.SessionBinding(res, t)
 	}
 	return mcpServerBinding(in), nil
+}
+
+// listenerIdentityHeadersFn binds every operator/client-selected header on a
+// verified listener request. The live identity resolver still governs reload
+// revocation; only the binding is specialized to the request's headers.
+func listenerIdentityHeadersFn(res identity.Resolution, t identity.Transport, current func() mcp.ServerIdentity) func(http.Header) mcp.ServerIdentity {
+	if res.BindingMode != config.MCPAckBindingModeVerifiedLocalSession {
+		return nil
+	}
+	return func(headers http.Header) mcp.ServerIdentity {
+		id := current()
+		if id.Refusal != "" {
+			return id
+		}
+		requestTransport := t
+		requestTransport.Headers = nil
+		for name, values := range headers {
+			for _, value := range values {
+				requestTransport.Headers = append(requestTransport.Headers, identity.Header{Name: name, Value: value})
+			}
+		}
+		binding, err := identity.SessionBinding(res, requestTransport)
+		if err != nil {
+			return mcp.ServerIdentity{Refusal: fmt.Sprintf("verified local service %s binding refused: %v", res.Name, err)}
+		}
+		id.Binding = binding
+		return id
+	}
 }
 
 // resolveLaunchIdentity resolves the identity of a launch and prints the

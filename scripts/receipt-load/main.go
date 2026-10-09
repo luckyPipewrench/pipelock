@@ -36,6 +36,15 @@ func logf(format string, args ...any) {
 }
 
 func realMain(args []string) int {
+	if len(args) > 0 && args[0] == "summarize" {
+		path, err := summarizeCommand(args[1:])
+		if err != nil {
+			logf("summarize: %v", err)
+			return exitUsage
+		}
+		logf("matrix summary: %q", path)
+		return exitOK
+	}
 	opt, modes, lockFile, err := parseFlags(args)
 	if err != nil {
 		logf("%v", err)

@@ -782,11 +782,23 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		return AgentCardScanResult{Clean: true}
 	}
 
+	// Verify before scanning. A signature that verified against a trusted,
+	// origin-scoped key is a stamp, not content: only that one string, found by
+	// its position in the card, is left out of the text the credential rules
+	// read. With no trusted key, a wrong origin, or any verification failure
+	// nothing is left out and the card is scanned exactly as it arrived.
+	var sig CardSignatureResult
+	scanBody := body
+	if CardSignatureVerificationActive(cfg) {
+		sig = VerifyAgentCardSignatures(body, CardOriginFromURL(key.cardURL), cfg)
+		scanBody = cardBodyWithoutVerifiedSignature(body, nil, sig)
+	}
+
 	var card A2AAgentCard
 	if err := json.Unmarshal(body, &card); err != nil {
 		// Unparseable card: fail closed for card-specific checks,
 		// but still run generic field scanning.
-		findings := scanA2ABody(ctx, body, sc, cfg, nil)
+		findings := scanA2ABody(ctx, scanBody, sc, cfg, nil)
 		unparseable := AgentCardScanResult{
 			Clean:    findings.Clean,
 			Action:   findings.Action,
@@ -797,7 +809,7 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		// signed card, so require_signed_agent_cards (and any claimed-but-
 		// invalid signature) must fail closed here too, not be skipped by the
 		// early return.
-		applyCardSignatureVerification(&unparseable, body, key, cfg)
+		applyCardSignatureVerification(&unparseable, sig, cfg)
 		return unparseable
 	}
 
@@ -811,7 +823,7 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 
 	// Card content scanning via field walker.
 	if cfg.ScanAgentCards {
-		result.Findings = scanA2ABody(ctx, body, sc, cfg, nil)
+		result.Findings = scanA2ABody(ctx, scanBody, sc, cfg, nil)
 		if !result.Findings.Clean {
 			result.Clean = false
 			result.Action = result.Findings.Action
@@ -878,7 +890,7 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// Independent attestation: cryptographically verify the card's signature
 	// against the operator's trusted, origin-scoped keys. This runs in addition
 	// to (not instead of) content scanning and drift detection.
-	applyCardSignatureVerification(&result, body, key, cfg)
+	applyCardSignatureVerification(&result, sig, cfg)
 
 	// The verdict is final here. Learn the card only if nothing rejected it;
 	// otherwise the baseline keeps what it already trusted, and the result must
@@ -926,17 +938,18 @@ func applyFreshDriftOutcome(result *AgentCardScanResult, fresh cardDriftOutcome,
 	}
 }
 
-// applyCardSignatureVerification verifies the card's signature (when verification
-// is active) and updates result in place. It is fail-closed: a claimed-but-
+// applyCardSignatureVerification applies the card's signature outcome (computed
+// by the caller, which verifies before it scans) to result in place when
+// verification is active. It is fail-closed: a claimed-but-
 // invalid signature blocks; an unsigned card blocks only when
 // require_signed_agent_cards is set; a verified signature records the attesting
 // key_id. Called from both the normal and unparseable-card paths so the
 // require-signed invariant cannot be skipped by an early return.
-func applyCardSignatureVerification(result *AgentCardScanResult, body []byte, key cardCacheKey, cfg *config.A2AScanning) {
+func applyCardSignatureVerification(result *AgentCardScanResult, sig CardSignatureResult, cfg *config.A2AScanning) {
 	if !CardSignatureVerificationActive(cfg) {
 		return
 	}
-	switch sig := VerifyAgentCardSignatures(body, CardOriginFromURL(key.cardURL), cfg); sig.Outcome {
+	switch sig.Outcome {
 	case SigOutcomeVerified:
 		result.SignatureVerified = true
 		result.SignatureKeyID = sig.KeyID

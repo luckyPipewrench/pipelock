@@ -40,6 +40,13 @@ type CardSignatureResult struct {
 	Outcome CardSigOutcome
 	KeyID   string // verifying key_id, set when Outcome == SigOutcomeVerified
 	Reason  string // failure detail, set when Outcome == SigOutcomeFailed
+
+	// SignatureIndex and Signature name the signatures[] entry that verified:
+	// its position in the array and its exact signature string. They are set
+	// only when Outcome == SigOutcomeVerified. Credential scanning uses them to
+	// omit that one string by position, never by value.
+	SignatureIndex int
+	Signature      string
 }
 
 const (
@@ -137,9 +144,14 @@ func VerifyAgentCardSignatures(rawCard []byte, cardOrigin string, cfg *config.A2
 	if limit > maxCardSignatures {
 		limit = maxCardSignatures
 	}
-	for _, entry := range sigEntries[:limit] {
+	for i, entry := range sigEntries[:limit] {
 		if keyID, ok := verifyOneSignature(entry, preimage, origin, keys); ok {
-			return CardSignatureResult{Outcome: SigOutcomeVerified, KeyID: keyID}
+			return CardSignatureResult{
+				Outcome:        SigOutcomeVerified,
+				KeyID:          keyID,
+				SignatureIndex: i,
+				Signature:      entry.Signature,
+			}
 		}
 	}
 	return CardSignatureResult{
@@ -478,4 +490,162 @@ func originForReason(origin string) string {
 		return "(unknown)"
 	}
 	return origin
+}
+
+// --- Verified signature exemption from credential scanning ---
+
+// blankedSignature replaces a verified signature string in the document that
+// credential scanning reads. An empty string leaves the JSON valid and every
+// other byte, key and sibling value exactly as the peer sent it.
+const blankedSignature = `""`
+
+// jsonPathStep is one hop through a JSON document: an object member when key
+// is set, otherwise an array element at index.
+type jsonPathStep struct {
+	key   string
+	index int
+}
+
+// cardBodyWithoutVerifiedSignature returns doc with the one signature string
+// that just verified blanked out, for use as the text every credential view is
+// built from. prefix names the object members that lead from the document root
+// to the Agent Card (empty for a bare card, "result" for a JSON-RPC response).
+//
+// A verified Ed25519 signature is a 64-byte stamp the signer cannot choose the
+// spelling of, so a credential-shaped run inside it is a coincidence of the
+// base64url alphabet, not smuggled content. Everything else a signer or peer
+// controls stays scanned: the card body, protected (including kid and unknown
+// members), the unprotected header, every entry that did not verify, and every
+// entry past maxCardSignatures.
+//
+// The string is removed by its position in the JSON, never by value, so the
+// same characters copied into another field still reach the scanner. doc is
+// returned unchanged, and nothing is exempt, unless every condition holds: the
+// signature verified, it is the canonical unpadded base64url spelling of exactly
+// ed25519.SignatureSize bytes, and the string literal found at that position
+// decodes to the verified string.
+func cardBodyWithoutVerifiedSignature(doc []byte, prefix []string, sig CardSignatureResult) []byte {
+	if sig.Outcome != SigOutcomeVerified || !canonicalEd25519Signature(sig.Signature) {
+		return doc
+	}
+	steps := make([]jsonPathStep, 0, len(prefix)+3)
+	for _, key := range prefix {
+		steps = append(steps, jsonPathStep{key: key})
+	}
+	steps = append(steps,
+		jsonPathStep{key: a2aSignaturesField},
+		jsonPathStep{index: sig.SignatureIndex},
+		jsonPathStep{key: "signature"},
+	)
+	start, end, ok := jsonStringSpan(doc, steps)
+	if !ok {
+		return doc
+	}
+	var literal string
+	if err := json.Unmarshal(doc[start:end], &literal); err != nil || literal != sig.Signature {
+		return doc
+	}
+	out := make([]byte, 0, len(doc)-(end-start)+len(blankedSignature))
+	out = append(out, doc[:start]...)
+	out = append(out, blankedSignature...)
+	return append(out, doc[end:]...)
+}
+
+// canonicalEd25519Signature reports whether s is the one canonical unpadded
+// base64url spelling of an Ed25519 signature. The verifier's decoder tolerates
+// embedded line breaks and non-zero trailing bits; an exemption must not, so a
+// verified string with any spare bytes in its spelling stays scanned. The round
+// trip is what rejects them: only the canonical spelling re-encodes to itself.
+func canonicalEd25519Signature(s string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || len(raw) != ed25519.SignatureSize {
+		return false
+	}
+	return base64.RawURLEncoding.EncodeToString(raw) == s
+}
+
+// jsonStringSpan returns the byte range of the string literal (quotes
+// included) that steps reach in doc. It reports false for anything but exactly
+// one string at that position: a missing member, a repeated member along the
+// path, a non-string value, or malformed JSON.
+func jsonStringSpan(doc []byte, steps []jsonPathStep) (start, end int, ok bool) {
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	end, ok = walkToString(dec, steps)
+	if !ok {
+		return 0, 0, false
+	}
+	// The decoder reports where the literal ends. Inside a JSON string literal a
+	// quote byte can only appear escaped, so the opening quote is the nearest
+	// preceding quote that is not.
+	for start = end - 2; start >= 0; start-- {
+		if doc[start] != '"' {
+			continue
+		}
+		backslashes := 0
+		for i := start - 1; i >= 0 && doc[i] == '\\'; i-- {
+			backslashes++
+		}
+		if backslashes%2 == 0 {
+			return start, end, true
+		}
+	}
+	return 0, 0, false
+}
+
+// walkToString consumes one JSON value from dec, following steps to a string,
+// and returns the offset just past that string. Every other member and element
+// is consumed too, so a repeated key on the path is detected rather than
+// first-wins.
+func walkToString(dec *json.Decoder, steps []jsonPathStep) (int, bool) {
+	if len(steps) == 0 {
+		tok, err := dec.Token()
+		if _, isString := tok.(string); err != nil || !isString {
+			return 0, false
+		}
+		return int(dec.InputOffset()), true
+	}
+	step := steps[0]
+	open, err := dec.Token()
+	if err != nil {
+		return 0, false
+	}
+	want := json.Delim('[')
+	if step.key != "" {
+		want = '{'
+	}
+	if delim, isDelim := open.(json.Delim); !isDelim || delim != want {
+		return 0, false
+	}
+
+	found, end := false, 0
+	for i := 0; dec.More(); i++ {
+		hit := i == step.index
+		if step.key != "" {
+			ktok, err := dec.Token()
+			key, isString := ktok.(string)
+			if err != nil || !isString {
+				return 0, false
+			}
+			hit = key == step.key
+		}
+		if !hit {
+			// skipJSONValue carries its own nesting bound for siblings.
+			if err := skipJSONValue(dec, 0); err != nil {
+				return 0, false
+			}
+			continue
+		}
+		if found {
+			return 0, false
+		}
+		found = true
+		var ok bool
+		if end, ok = walkToString(dec, steps[1:]); !ok {
+			return 0, false
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return 0, false
+	}
+	return end, found
 }

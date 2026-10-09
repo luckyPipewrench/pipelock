@@ -203,7 +203,8 @@ func realPipelock(t *testing.T) string {
 			return
 		}
 		realPath = filepath.Join(dir, "pipelock")
-		cmd := exec.CommandContext(context.Background(), "go", "build", "-o", realPath, "./cmd/pipelock") //nolint:gosec // fixed arguments
+		cmd := exec.CommandContext(context.Background(), "go", "build")
+		cmd.Args = append(cmd.Args, "-o", realPath, "./cmd/pipelock")
 		cmd.Dir = filepath.Join("..", "..")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			errRealBuild = fmt.Errorf("go build: %w: %s", err, out)

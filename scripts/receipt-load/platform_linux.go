@@ -35,7 +35,7 @@ func filesystemType(path string) string {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return "unavailable: " + err.Error()
 	}
-	kind := int64(st.Type) //nolint:unconvert // Type is int32 or int64 depending on the architecture
+	kind := widen(st.Type)
 	if name, ok := filesystemNames[kind]; ok {
 		return name
 	}
@@ -50,12 +50,17 @@ func holdLock(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec // fd fits in int
+	fd := int(f.Fd()) // #nosec G115 -- file descriptors fit in int
+	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // fd fits in int
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
 }
+
+// widen converts Statfs_t.Type, which is int32 or int64 depending on the
+// architecture, to int64 without a conversion that is a no-op on some targets.
+func widen[T int32 | int64](v T) int64 { return int64(v) }

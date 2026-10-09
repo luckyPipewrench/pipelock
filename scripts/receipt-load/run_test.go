@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -345,9 +344,9 @@ func TestHostileHomeBundlesDoNotLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = controlLog.Close() }()
-	cmd := exec.CommandContext(context.Background(), bin, "run", "--config", controlCfg, "--home", filepath.Join(root, "control-home"), "--listen", addr) //nolint:gosec // test binary built from this repo
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_DATA_HOME=" + xdgData}
-	cmd.Dir = root
+	cmd := localCommand(context.Background(), bin, root,
+		[]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_DATA_HOME=" + xdgData},
+		"run", "--config", controlCfg, "--home", filepath.Join(root, "control-home"), "--listen", addr)
 	cmd.Stdout, cmd.Stderr = controlLog, controlLog
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

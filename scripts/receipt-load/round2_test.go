@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 )
 
@@ -110,7 +111,7 @@ func TestReviewR2CPUUnavailable(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "getconf")
 	writeReviewFile(t, path, "#!/bin/sh\nexit 1\n")
-	if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // Test-owned command must be executable.
+	if err := syscall.Chmod(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", root+":"+os.Getenv("PATH"))

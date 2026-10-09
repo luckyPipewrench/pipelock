@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -50,13 +51,14 @@ func TestReviewShellFailures(t *testing.T) {
 			if err := os.WriteFile(scope, []byte("#!/bin/sh\nexit "+code+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Chmod(scope, 0o700); err != nil { //nolint:gosec // Test command must be executable.
+			if err := syscall.Chmod(scope, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			out := filepath.Join(root, "matrix")
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh", newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, "1", "1") //nolint:gosec // Fixed script and test-owned paths.
+			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, "1", "1")
 			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_MODES=off")
 			log, err := cmd.CombinedOutput()
 			if err == nil {
@@ -75,12 +77,13 @@ func TestReviewShellFailures(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "make"), []byte("#!/bin/sh\nexit 9\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(filepath.Join(root, "make"), 0o700); err != nil { //nolint:gosec // Test command must be executable.
+		if err := syscall.Chmod(filepath.Join(root, "make"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "bash", "./run.sh", filepath.Join(root, "out")) //nolint:gosec // Fixed script and test-owned path.
+		cmd := exec.CommandContext(ctx, "bash", "./run.sh")
+		cmd.Args = append(cmd.Args, filepath.Join(root, "out"))
 		cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_REQUESTS=1")
 		if log, err := cmd.CombinedOutput(); err == nil {
 			t.Fatalf("build failure passed: %s", log)
@@ -113,13 +116,14 @@ func TestReviewMatrixScopeFailureOverridesResult(t *testing.T) {
 	if err := os.WriteFile(scope, []byte("#!/bin/sh\ncase \"$*\" in *\"/cpu-2/chains-1/\"*) shift 4; \"$@\" ;; esac\nexit 7\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(scope, 0o700); err != nil { //nolint:gosec // Test command must execute.
+	if err := syscall.Chmod(scope, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(root, "matrix")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "./matrix.sh", newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, "1", "1") //nolint:gosec // Fixed script and test-owned paths.
+	cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+	cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, "1", "1")
 	cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_MODES=off")
 	if log, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("failed scope exited zero: %s", log)

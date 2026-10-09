@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"crypto/sha256"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,13 +22,17 @@ func responsePassFixture(t testing.TB) []byte {
 	if path == "" {
 		t.Skip("set PIPELOCK_RESPONSE_PASS_SAMPLE to a local response fixture")
 	}
-	body, err := os.ReadFile(filepath.Clean(path))
+	// Read no more than the fixture cap, so a large file or a device that
+	// never ends cannot exhaust memory or stall the test.
+	const size = 2108646
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const size = 2108646
-	if len(body) > size {
-		body = body[:size]
+	defer func() { _ = f.Close() }()
+	body, err := io.ReadAll(io.LimitReader(f, size))
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Logf("bytes=%d sha256=%x", len(body), sha256.Sum256(body))
 	return body

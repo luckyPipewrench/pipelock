@@ -21,17 +21,23 @@ func TestHTMLLinksAndBase(t *testing.T) {
 		wantBase  string
 		wantLinks string
 		limit     int
+		unknown   bool
 	}{
-		{"no base", `<img src="a.png">`, "", "a.png", 0},
-		{"base is not a link", `<base href="/assets/"><img src="a.png">`, "/assets/", "a.png", 0},
-		{"first base wins", `<base href="/a/"><base href="/b/"><img src="a.png">`, "/a/", "a.png", 0},
-		{"base without href does not count", `<base target="_blank"><base href="/b/">`, "/b/", "", 0},
-		{"base after the link still applies", `<img src="a.png"><base href="/late/">`, "/late/", "a.png", 0},
-		{"upper case tag and attribute", `<BASE HREF=" /x/ "><img src=a.png>`, "/x/", "a.png", 0},
-		{"base inside a comment is ignored", `<!-- <base href="/c/"> --><img src="a.png">`, "", "a.png", 0},
-		{"base inside template content is inert", `<template><base href="/t/"></template><img src="a.png">`, "", "a.png", 0},
-		{"nested template", `<template><template></template><base href="/t/"></template><base href="/real/">`, "/real/", "", 0},
-		{"base after the link limit still counts", `<img src="a.png"><img src="b.png"><base href="/late/">`, "/late/", "a.png", 1},
+		{"no base", `<img src="a.png">`, "", "a.png", 0, false},
+		{"base is not a link", `<base href="/assets/"><img src="a.png">`, "/assets/", "a.png", 0, false},
+		{"two base tags are ambiguous even if one has no href", `<base target="_blank"><base href="/b/">`, "/b/", "", 0, true},
+		{"base target only, no href", `<base target="_blank"><img src="a.png">`, "", "a.png", 0, true},
+		{"base after the link still applies", `<img src="a.png"><base href="/late/">`, "/late/", "a.png", 0, false},
+		{"upper case tag and attribute", `<BASE HREF=" /x/ "><img src=a.png>`, "/x/", "a.png", 0, false},
+		{"base spelled in a comment is treated as ambiguous", `<!-- <base href="/c/"> --><img src="a.png">`, "", "a.png", 0, true},
+		{"base after the link limit still counts", `<img src="a.png"><img src="b.png"><base href="/late/">`, "/late/", "a.png", 1, false},
+		// Ambiguous documents: the browser's choice depends on parse state
+		// Pipelock does not share, so the base is unknown.
+		{"two bases are ambiguous", `<base href="/a/"><base href="/b/"><img src="a.png">`, "/a/", "a.png", 0, true},
+		{"inert template base is ambiguous", `<template><base href="/t/"></template><img src="a.png">`, "", "a.png", 0, true},
+		{"nested template", `<template><template></template><base href="/t/"></template><base href="/real/">`, "/real/", "", 0, true},
+		{"noscript base depends on scripting", `<noscript><base href="/n/"></noscript><img src="a.png">`, "", "a.png", 0, true},
+		{"svg decoy base", `<svg><base href="/p/"></svg><base href="/real/">`, "/real/", "", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,8 +46,8 @@ func TestHTMLLinksAndBase(t *testing.T) {
 				limit = 16
 			}
 			links, base, known := htmlLinksAndBase([]byte(tt.body), limit)
-			if !known {
-				t.Fatal("base unknown for an untruncated document")
+			if known == tt.unknown {
+				t.Fatalf("known=%v, want %v", known, !tt.unknown)
 			}
 			if base != tt.wantBase || strings.Join(links, "|") != tt.wantLinks {
 				t.Fatalf("base=%q links=%q, want base=%q links=%q", base, links, tt.wantBase, tt.wantLinks)
@@ -88,6 +94,8 @@ func TestDocumentBaseFollowsTreeConstruction(t *testing.T) {
 		{"base in body", `<body><div><base href="` + realBase + `"></div>`, realBase},
 		{"malformed template", `<template><div></template></template><base href="` + realBase + `">`, realBase},
 		{"base without href is skipped", `<base target="x"><base href="/b/">`, "/b/"},
+		{"html base inside svg foreignObject counts", `<svg><foreignObject><div><base href="/fo/"></div></foreignObject></svg><base href="` + realBase + `">`, "/fo/"},
+		{"html base inside mathml annotation-xml html counts", `<math><annotation-xml encoding="text/html"><div><base href="/ax/"></div></annotation-xml></math>`, "/ax/"},
 		{"no base", `<img src="a.png">`, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,7 +158,11 @@ func TestInterceptBaseHref(t *testing.T) {
 		base = strings.ReplaceAll(base, "OTHER", other.URL)
 		page := `<base href="` + base + `"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
 		if base == "SVGDECOY" {
-			page = `<svg><base href="/phantom/"></svg><base href="` + other.URL + `/real/"><img src="` + baseHrefAsset + `">`
+			page = `<svg><base href="/phantom/"></svg><base href="` + other.URL + `/real/"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
+		}
+		if base == "XHTML" {
+			w.Header().Set("Content-Type", "application/xhtml+xml")
+			page = `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="` + baseHrefAsset + `"/><img src="` + siteURL + `/abs/` + baseHrefAsset + `"/></body></html>`
 		}
 		if base == "TEMPLATE" {
 			page = `<template><base href="/assets/"></template><img src="` + baseHrefAsset + `">`
@@ -178,9 +190,12 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"cross origin base issues nothing on its own host", "OTHER/assets/", other, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"cross origin base issues nothing on its host at the response path", "OTHER/assets/", other, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"absolute link still issues under a cross origin base", "OTHER/assets/", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"absolute link still issues under an ambiguous base", "SVGDECOY", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"xhtml relative link is untrusted", "XHTML", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
+		{"xhtml absolute link issues", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"svg decoy base issues nothing", "SVGDECOY", site, "/phantom/" + baseHrefAsset, http.StatusForbidden},
 		{"svg decoy base issues nothing in the response directory", "SVGDECOY", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
-		{"template base is inert", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusOK},
+		{"inert template base makes relative links untrusted", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"template base issues nothing under it", "TEMPLATE", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"other scheme base is ignored", siteHTTP + "/assets/", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"other scheme base issues no relative link", siteHTTP + "/assets/", site, "/dir/" + baseHrefAsset, http.StatusForbidden},

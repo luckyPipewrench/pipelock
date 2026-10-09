@@ -593,6 +593,11 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		// may name it as the page it is embedded in.
 		store.rememberDocument(session, response.Request.URL, time.Now())
 		links, baseHref, baseKnown := htmlLinksAndBase(body, remaining)
+		if mediaType == "application/xhtml+xml" {
+			// XHTML is parsed as XML, not by the HTML algorithm that found
+			// this base, so its base is not known.
+			baseKnown = false
+		}
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)
 		for _, link := range links {
 			if !baseKnown || !usable {

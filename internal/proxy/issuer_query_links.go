@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -30,6 +31,10 @@ const issuerQueryMaxHTMLBytes = 4 << 20
 var htmlLinkAttrs = map[string]bool{
 	"src": true, "href": true, "poster": true, "data-src": true,
 }
+
+// baseTagSpelling matches anything an HTML parser could read as a <base>
+// start tag.
+var baseTagSpelling = regexp.MustCompile(`(?i)<base[\t\n\f\r />]`)
 
 // htmlSrcsetAttrs hold image candidates in the WHATWG srcset syntax.
 var htmlSrcsetAttrs = map[string]bool{
@@ -62,44 +67,65 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	base, baseSeen := documentBase(body)
 	var out []string
 	z := html.NewTokenizer(bytes.NewReader(body))
-	for len(out) < limit {
-		switch z.Next() {
-		case html.ErrorToken:
-			return out, base, baseSeen || !truncated
-		case html.StartTagToken, html.SelfClosingTagToken:
-			tag, hasAttr := z.TagName()
-			if string(tag) == "base" {
-				// A <base> is not a link; documentBase reads it.
-				continue
-			}
-			for hasAttr {
-				key, val, more := z.TagAttr()
-				hasAttr = more
-				attr := strings.ToLower(string(key))
-				switch {
-				case htmlLinkAttrs[attr]:
-					if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
-						out = append(out, v)
-					}
-				case htmlSrcsetAttrs[attr]:
-					for _, candidate := range srcsetURLs(string(val)) {
-						if len(out) < limit {
-							out = append(out, candidate)
-						}
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		if tt != html.StartTagToken && tt != html.SelfClosingTagToken {
+			continue
+		}
+		tag, hasAttr := z.TagName()
+		if string(tag) == "base" {
+			// A <base> is not a link; documentBase reads it.
+			continue
+		}
+		if len(out) >= limit {
+			continue
+		}
+		for hasAttr {
+			key, val, more := z.TagAttr()
+			hasAttr = more
+			attr := strings.ToLower(string(key))
+			switch {
+			case htmlLinkAttrs[attr]:
+				if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
+					out = append(out, v)
+				}
+			case htmlSrcsetAttrs[attr]:
+				for _, candidate := range srcsetURLs(string(val)) {
+					if len(out) < limit {
+						out = append(out, candidate)
 					}
 				}
 			}
 		}
 	}
-	return out, base, baseSeen || !truncated
+	// Which <base> a browser uses depends on the parse: scripting turns
+	// <noscript> content inert or live, foreign content and integration
+	// points move elements in and out of the HTML namespace. A document with
+	// exactly one base tag that the tree selected is trusted; anything else
+	// is treated as unknown, so only absolute links are issued.
+	known := !truncated || baseSeen
+	// Count base tags in the raw bytes, not the token stream: the tokenizer
+	// reads <noscript> as text, yet a browser with scripting off honors a
+	// <base> inside it. A spelling in a comment or script also counts, which
+	// can only make the answer more cautious.
+	switch tags := len(baseTagSpelling.FindAllIndex(body, 2)); {
+	case tags == 0:
+	case tags == 1 && baseSeen:
+	default:
+		known = false
+	}
+	return out, base, known
 }
 
 // documentBase returns the href of the first <base> element with an href in
 // the document tree, the one a browser resolves relative links against. It
 // runs the WHATWG tree-construction algorithm rather than scanning tags,
-// because where a <base> sits decides whether it counts: one inside an SVG or
-// MathML subtree is a foreign element, one inside <template> or <noscript>
-// content is inert, and a self-closing flag does not close a <template>.
+// because where a <base> sits decides whether it counts: one parsed as an SVG
+// or MathML element is foreign, one inside <template> content is inert, and a
+// self-closing flag does not close a <template>.
 // Only those structural rules separate the base a browser uses from a tag
 // that merely looks like one.
 func documentBase(body []byte) (string, bool) {
@@ -110,10 +136,13 @@ func documentBase(body []byte) (string, bool) {
 	var find func(*html.Node) (string, bool)
 	find = func(n *html.Node) (string, bool) {
 		if n.Type == html.ElementNode {
-			if n.Namespace != "" || n.DataAtom == atom.Template {
+			if n.Namespace == "" && n.DataAtom == atom.Template {
 				return "", false
 			}
-			if n.DataAtom == atom.Base {
+			// A foreign (SVG or MathML) element is never the base, but an
+			// integration point such as <foreignObject> puts HTML elements
+			// back under it, so its subtree is still searched.
+			if n.Namespace == "" && n.DataAtom == atom.Base {
 				for _, a := range n.Attr {
 					if a.Namespace == "" && a.Key == "href" {
 						return strings.TrimSpace(a.Val), true

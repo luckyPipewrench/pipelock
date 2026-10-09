@@ -62,6 +62,14 @@ const (
 	// signs release checksums for a tag.
 	releaseWorkflowIdentity = "https://github.com/luckyPipewrench/pipelock/.github/workflows/release.yaml@refs/tags/%s"
 
+	// orgReleaseWorkflowIdentity is the same release workflow after the
+	// repository moves to the pipelab-org organization. A certificate's
+	// identity names the repository that signed it and does not follow
+	// GitHub's redirects, so a binary that knew only the first identity would
+	// refuse every release signed after the move. Each is still an exact
+	// string bound to the requested tag; no pattern is accepted.
+	orgReleaseWorkflowIdentity = "https://github.com/pipelab-org/pipelock/.github/workflows/release.yaml@refs/tags/%s"
+
 	// httpTimeout bounds every network operation.
 	httpTimeout = 60 * time.Second
 

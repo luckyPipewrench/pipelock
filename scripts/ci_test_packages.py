@@ -415,7 +415,8 @@ def predicted_loads(tags: str) -> dict[str, float]:
 
     A sub-shard's load is the summed time of its top-level tests; a name with
     no measurement is charged its tree's median. A rest shard's load is its
-    summed package time divided by the packages it runs at once.
+    summed package time divided by the packages it runs at once, bounded
+    below by the longest indivisible package.
     """
     durations = load_durations()
     loads: dict[str, float] = {}
@@ -432,7 +433,8 @@ def predicted_loads(tags: str) -> dict[str, float]:
     default = known[len(known) // 2] if known else 1.0
     for shard in REST_SHARDS:
         selected = select_packages(packages, shard, package_weights)
-        loads[shard] = sum(package_weights.get(pkg, default) for pkg in selected) / REST_PACKAGE_PARALLELISM
+        seconds = [package_weights.get(pkg, default) for pkg in selected]
+        loads[shard] = max(sum(seconds) / REST_PACKAGE_PARALLELISM, max(seconds, default=0.0))
     return loads
 
 

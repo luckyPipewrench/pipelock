@@ -308,11 +308,20 @@ class TestPackageSharding(unittest.TestCase):
                 tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
                 self.assertAlmostEqual(sum(tree_loads), 200.0)
                 self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0)
-            self.assertEqual(sorted(loads[shard] for shard in ("rest-0", "rest-1", "rest-2")), [50.0, 50.0, 50.0])
+            self.assertEqual(sorted(loads[shard] for shard in ("rest-0", "rest-1", "rest-2")), [100.0, 100.0, 100.0])
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
                 self.assertEqual(ci_test_packages.check_budget("", 40.0), 1)
             self.assertIn("over the 40s budget", err.getvalue())
+
+    def test_rest_budget_cannot_divide_a_single_slow_package(self) -> None:
+        with patch.object(ci_test_packages, "list_packages", return_value=["example.test/slow"]), \
+             patch.object(ci_test_packages, "load_durations", return_value={}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={"example.test/slow": 700.0}), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
+            self.assertEqual(predicted_loads("")["rest-0"], 700.0)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
 
     def test_checked_in_measurements_cover_every_split_tree(self) -> None:
         durations = load_durations()

@@ -54,8 +54,12 @@ type issuerQueryStore struct {
 	// redirects holds keyed digests of (authorization server origin,
 	// redirect_uri origin and path) pairs declared by the session.
 	redirects map[string][][32]byte
-	used      map[string]time.Time
-	disabled  bool
+	// paths holds keyed digests of the URL paths a response served from its
+	// own origin linked to. They live apart from values so a page that links
+	// to hundreds of assets cannot push a paging token out of its list.
+	paths    map[string][][32]byte
+	used     map[string]time.Time
+	disabled bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -66,6 +70,7 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 	s := &issuerQueryStore{
 		sessions:  make(map[string][]issuerQueryEntry),
 		redirects: make(map[string][][32]byte),
+		paths:     make(map[string][][32]byte),
 		used:      make(map[string]time.Time),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
@@ -130,6 +135,7 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	}
 	delete(s.sessions, oldest)
 	delete(s.redirects, oldest)
+	delete(s.paths, oldest)
 	delete(s.used, oldest)
 }
 
@@ -188,6 +194,69 @@ func (s *issuerQueryStore) match(session string, target *url.URL, name, value st
 		}
 	}
 	return "", false
+}
+
+// pathDigest binds one escaped URL path to the scheme, host and port that
+// served the link. The leading tag keeps it apart from a value digest.
+func (s *issuerQueryStore) pathDigest(target *url.URL) ([32]byte, bool) {
+	host, port, ok := issuerCookieOrigin(target)
+	if !ok {
+		return [32]byte{}, false
+	}
+	path := issuerQueryPath(target)
+	if len(path) > issuerCookieMaxPairBytes {
+		return [32]byte{}, false
+	}
+	return s.digestFields("url_path", strings.ToLower(target.Scheme), host, port, path), true
+}
+
+// rememberPath records that the origin in target linked to target's exact
+// path, so a later request for that same path on that same origin is a link the
+// origin issued rather than a path the agent composed.
+func (s *issuerQueryStore) rememberPath(session string, target *url.URL, now time.Time) {
+	if s == nil || s.disabled || session == "" {
+		return
+	}
+	digest, ok := s.pathDigest(target)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admitSessionLocked(session)
+	issued := s.paths[session]
+	for _, existing := range issued {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = now
+			return
+		}
+	}
+	if len(issued) >= issuerCookieMaxEntries {
+		issued = issued[1:]
+	}
+	s.paths[session] = append(issued, digest)
+	s.used[session] = now
+}
+
+// pathIssued reports whether the session saw the origin in target link to
+// target's exact path.
+func (s *issuerQueryStore) pathIssued(session string, target *url.URL) bool {
+	if s == nil || s.disabled || session == "" {
+		return false
+	}
+	digest, ok := s.pathDigest(target)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.paths[session] {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = time.Now()
+			return true
+		}
+	}
+	return false
 }
 
 // redirectDigest binds an authorization server origin to one redirect_uri
@@ -381,9 +450,19 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		store.declareRedirect(session, response.Request.URL, redirect, time.Now())
 	}
 	remaining := issuerCookieMaxSetCookies
-	observe := func(value string, redirectHop bool) {
+	// observe records the URL a response carried. linkAttr marks a value the
+	// document itself declares to be a URL (an HTML link attribute), so a
+	// bare relative reference is a link. A JSON string is only a link when it
+	// has a scheme or starts with a single slash; otherwise any word the
+	// server returned would resolve to a path it never issued.
+	observe := func(value string, redirectHop, linkAttr bool) {
 		candidate, err := url.Parse(value)
-		if err != nil || candidate.RawQuery == "" {
+		if err != nil {
+			return
+		}
+		pathIssued := linkAttr || candidate.IsAbs() ||
+			(strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//"))
+		if candidate.RawQuery == "" && !pathIssued {
 			return
 		}
 		if !candidate.IsAbs() {
@@ -401,7 +480,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		if host != issuerHost || port != issuerPort {
 			// A value may cross to another host only on a redirect that is
 			// one of the two OAuth authorization-code hops.
-			if !redirectHop || !ic.oauthCrossHostPermitted() {
+			if !redirectHop || !ic.oauthCrossHostPermitted() || candidate.RawQuery == "" {
 				return
 			}
 			names, hop := oauthCrossHostHop(store, session, response.Request.URL, candidate)
@@ -410,6 +489,11 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			}
 			kind = issuerQueryOAuthRedirect
 			allowed = names
+		} else if pathIssued && remaining > 0 {
+			// Only the origin's own link counts: a cross-host redirect above
+			// returned before this point and issues no path.
+			store.rememberPath(session, candidate, time.Now())
+			remaining--
 		}
 		for name, values := range candidate.Query() {
 			if allowed != nil && !allowed[name] {
@@ -430,13 +514,19 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// another host issues nothing unless it is a declared OAuth callback.
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		if location := response.Header.Get("Location"); location != "" {
-			observe(location, true)
+			observe(location, true, false)
 		}
 	}
 	if len(body) == 0 {
 		return
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		for _, link := range htmlLinkValues(body, remaining) {
+			observe(link, false, true)
+		}
+		return
+	}
 	if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
 		return
 	}
@@ -482,7 +572,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				levels[n-1].expectKey = false
 				continue
 			}
-			observe(t, false)
+			observe(t, false, false)
 			valueDone()
 		default:
 			valueDone()
@@ -512,7 +602,7 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
 	}
-	if kind != issuerQueryOAuthRedirect {
+	if kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin {
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()

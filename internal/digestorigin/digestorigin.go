@@ -3,17 +3,19 @@
 
 // Package digestorigin records SHA-256 digests that this process computed
 // itself, so the receipt content boundary can tell a digest Pipelock derived
-// (a configuration policy hash) from a caller-chosen value with the same
+// (a policy, contract, manifest, or execution hash) from a caller-chosen value with the same
 // spelling. A digest is a one-way function of its input, so excluding a
 // computed digest from detector input exposes nothing; a caller-chosen value
 // is never recorded and stays content.
 //
 // Recording is a capability: NewIssuer returns it once per name, so only the
 // package that computes a digest holds the means to record it. The package
-// has no dependencies so the lowest layers (config) can import it.
+// depends only on the standard library so the lowest layers can import it.
 package digestorigin
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 )
@@ -47,11 +49,14 @@ func NewIssuer(name string) *Issuer {
 	return &Issuer{name: name}
 }
 
-// Record notes digest as computed by this process and returns it unchanged.
-// Only a lowercase 64-character hex string is recorded, so even a misuse
-// cannot mark arbitrary text as computed.
-func (i *Issuer) Record(digest string) string {
-	if i == nil || !isSHA256Hex(digest) {
+// Sum computes SHA-256 over preimage, records its generated origin, and
+// returns the lowercase hex digest. No API accepts a caller-chosen digest:
+// possessing an issuer can establish origin only by computing the preimage.
+// A nil or zero issuer still computes the digest but cannot record origin.
+func (i *Issuer) Sum(preimage []byte) string {
+	sum := sha256.Sum256(preimage)
+	digest := hex.EncodeToString(sum[:])
+	if i == nil || i.name == "" {
 		return digest
 	}
 	mu.Lock()

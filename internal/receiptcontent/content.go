@@ -66,6 +66,9 @@ const (
 	// "sha256:") is a digest this process computed (see digestorigin); any
 	// other value, including a chosen 64-character hex string, is Content.
 	ComputedDigest
+	// ProvenRequestID accepts generated UUIDs and Guard correlation IDs whose
+	// digest was computed locally. Every other value remains an Identity.
+	ProvenRequestID
 )
 
 // Limits bound projection work before any expanded allocation. MaxDetailBytes
@@ -125,7 +128,7 @@ func Register(s Schema) *Producer {
 	}
 	p := &Producer{schema: &Schema{Kind: s.Kind, Outer: s.Outer, Fields: map[string]Class{}}, enums: map[string]map[string]struct{}{}}
 	for path, class := range s.Fields {
-		if class < Content || class > ComputedDigest {
+		if class < Content || class > ProvenRequestID {
 			panic(fmt.Sprintf("receiptcontent: %s: invalid class for %q", s.Kind, path))
 		}
 		p.schema.Fields[path] = class
@@ -434,7 +437,12 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 			if _, ok := w.p.enums[schemaPath][text]; ok {
 				return nil, false, nil
 			}
-		case ProvenID:
+		case ProvenID, ProvenRequestID:
+			if class == ProvenRequestID {
+				if digest, ok := strings.CutPrefix(text, "guard-exec:"); ok && digestorigin.Computed(digest) {
+					return nil, false, nil
+				}
+			}
 			if VerifyGeneratedID(text) {
 				return nil, false, nil
 			}

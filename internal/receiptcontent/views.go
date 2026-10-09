@@ -198,18 +198,15 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 }
 
 // scanFragments reuses the scanner's ordered-subsequence bounds and order:
-// at most scanner.SubsequenceMaxParts distinct atoms, combined in ordered
+// at most scanner.SubsequenceMaxParts atoms, combined in ordered
 // subsets of 2..scanner.SubsequenceMaxSize, so a fragment may skip any
 // unrelated atom between it and the next. More candidates, or more work than
 // maxFragmentWorkBytes, is a budget rejection rather than a partial pass.
 func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, error) {
 	var parts, paths, fields []string
-	seen := make(map[string]struct{}, len(p.atoms))
+	// Equal fragments at different positions are distinct candidates. A token
+	// can need the same bytes twice, so deduplication would lose its shape.
 	for _, a := range p.atoms {
-		if _, dup := seen[a.Text]; dup {
-			continue
-		}
-		seen[a.Text] = struct{}{}
 		parts = append(parts, a.Text)
 		paths = append(paths, a.Path)
 		fields = append(fields, a.Field)
@@ -219,7 +216,7 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 		return nil, nil
 	}
 	if n > scanner.SubsequenceMaxParts {
-		return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("%d distinct content atoms exceed the %d-part reconstruction bound", n, scanner.SubsequenceMaxParts)}
+		return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("%d content atoms exceed the %d-part reconstruction bound", n, scanner.SubsequenceMaxParts)}
 	}
 	if work := fragmentWorkBytes(parts); work > maxFragmentWorkBytes {
 		return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("reconstruction work %d bytes exceeds %d", work, maxFragmentWorkBytes)}

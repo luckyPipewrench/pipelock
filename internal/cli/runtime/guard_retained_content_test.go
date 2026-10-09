@@ -61,6 +61,14 @@ func TestGuardRetainedPolicyHashIsAConfigurationRefusal(t *testing.T) {
 		t.Fatalf("activation err = %v, want a retained-content refusal without the value", err)
 	}
 
+	proof := guardfs.NewExecutionProof(guardfs.EnforcementRecord{}, guardfs.ExecControlOptions{PolicyHash: config.Defaults().CanonicalPolicyHash(), Binary: "/usr/bin/true"}, []string{"/usr/bin/true"})
+	generated := newEvidence(t, proof.EffectivePolicyHash)
+	generated.require = true
+	generated.onRequiredFailure = func(error) {}
+	if err := generated.activateReceipts(proof); err != nil {
+		t.Fatalf("generated Guard request ID refused by required receipt path: %v", err)
+	}
+
 	computed := config.Defaults().CanonicalPolicyHash()
 	accepted := newEvidence(t, computed)
 	if err := accepted.activateReceipts(guardfs.ExecutionProof{ConfigPolicyHash: computed, EffectivePolicyHash: strings.Repeat("b", 64), Binary: "/usr/bin/true"}); err != nil {

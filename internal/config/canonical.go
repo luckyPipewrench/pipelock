@@ -4,8 +4,6 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -90,8 +88,7 @@ func (c *Config) computeCanonicalPolicyHash() string {
 		// regression; a panicked proxy is not.
 		return c.Hash()
 	}
-	sum := sha256.Sum256(data)
-	return policyHashOrigin.Record(hex.EncodeToString(sum[:]))
+	return policyHashOrigin.Sum(data)
 }
 
 // policySemanticView returns a shallow copy of Config with noise fields

@@ -5,8 +5,6 @@ package config
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -537,8 +535,7 @@ func (c *Config) Hash() string {
 	if c.rawBytes == nil {
 		return HashDefaults
 	}
-	h := sha256.Sum256(c.rawBytes)
-	return policyHashOrigin.Record(hex.EncodeToString(h[:]))
+	return policyHashOrigin.Sum(c.rawBytes)
 }
 
 // policyHashOrigin records the policy hashes this package computes, so the

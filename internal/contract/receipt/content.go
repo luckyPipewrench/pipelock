@@ -22,8 +22,13 @@ const EvidenceReceiptContentKind = "pipelock.evidence_receipt.v2"
 // envelope's generated fields. Payload members are all content: every
 // registered payload kind is scanned, and an unknown member is scanned too.
 var evidenceReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
-	Kind: EvidenceReceiptContentKind,
-	Fields: map[string]receiptcontent.Class{
+	Kind:   EvidenceReceiptContentKind,
+	Fields: evidenceReceiptFields(),
+	Outer:  evidenceReceiptOuter,
+})
+
+func evidenceReceiptFields() map[string]receiptcontent.Class {
+	f := map[string]receiptcontent.Class{
 		"record_type":          receiptcontent.Generated,
 		"receipt_version":      receiptcontent.Generated,
 		"payload_kind":         receiptcontent.Content,
@@ -38,15 +43,23 @@ var evidenceReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 		"signature":            receiptcontent.Generated,
 		"chain_seq":            receiptcontent.Generated,
 		"chain_prev_hash":      receiptcontent.Generated,
-		"active_manifest_hash": receiptcontent.Content,
-		"contract_hash":        receiptcontent.Content,
+		"active_manifest_hash": receiptcontent.ComputedDigest,
+		"contract_hash":        receiptcontent.ComputedDigest,
 		"policy_hash":          receiptcontent.ComputedDigest,
 		"selector_id":          receiptcontent.Content,
 		"contract_generation":  receiptcontent.Content,
 		"payload":              receiptcontent.Content,
-	},
-	Outer: evidenceReceiptOuter,
-})
+	}
+	// Declared payload members have fixed names; unknown members remain key
+	// atoms. Payload values remain content.
+	for _, name := range []string{
+		"action_type", "target", "transport", "verdict", "live_verdict", "policy_sources", "winning_source", "rule_id",
+	} {
+		f["payload."+name] = receiptcontent.Content
+	}
+	f["payload.policy_sources[]"] = receiptcontent.Content
+	return f
+}
 
 // evidenceReceiptOuter derives the recorder mirror fields of a v2 receipt
 // from its exact detail, reading only content values.

@@ -21,7 +21,7 @@ func TestRecordAndComputed(t *testing.T) {
 	if Computed(d) {
 		t.Fatal("digest computed before it was recorded")
 	}
-	if got := iss.Record(d); got != d || !Computed(d) {
+	if got := iss.Sum([]byte("config bytes")); got != d || !Computed(d) {
 		t.Fatalf("recorded digest not computed: %q", got)
 	}
 	for name, s := range map[string]string{
@@ -38,7 +38,7 @@ func TestRecordAndComputed(t *testing.T) {
 		}
 	}
 	// Non-digests are never recorded, even through the capability.
-	if iss.Record("not a digest") != "not a digest" || Computed("not a digest") {
+	if iss.Sum([]byte("not a digest")) == "not a digest" || Computed("not a digest") {
 		t.Fatal("non-digest recorded")
 	}
 	mu.Lock()
@@ -49,7 +49,7 @@ func TestRecordAndComputed(t *testing.T) {
 	}
 	var nilIssuer *Issuer
 	other := digestOf("other")
-	if nilIssuer.Record(other) != other || Computed(other) {
+	if nilIssuer.Sum([]byte("other")) != other || Computed(other) {
 		t.Fatal("nil issuer recorded a digest")
 	}
 }
@@ -69,7 +69,7 @@ func TestRecordIsBounded(t *testing.T) {
 		mu.Unlock()
 	})
 	over := digestOf("over the bound")
-	if iss.Record(over); Computed(over) {
+	if iss.Sum([]byte("over the bound")); Computed(over) {
 		t.Fatal("digest recorded past the bound")
 	}
 }
@@ -85,5 +85,19 @@ func TestNewIssuerRefusesDuplicatesAndEmpty(t *testing.T) {
 			}()
 			NewIssuer(issuer)
 		}()
+	}
+}
+
+func TestChosenDigestCannotAcquireOrigin(t *testing.T) {
+	chosen := strings.Repeat("ab57", 16)
+	iss := NewIssuer("test.chosen")
+	computed := iss.Sum([]byte(chosen))
+	if computed == chosen || Computed(chosen) || !Computed(computed) {
+		t.Fatal("a chosen digest acquired origin instead of its computed hash")
+	}
+	var zero Issuer
+	other := zero.Sum([]byte("zero issuer input"))
+	if Computed(other) {
+		t.Fatal("zero issuer recorded origin")
 	}
 }

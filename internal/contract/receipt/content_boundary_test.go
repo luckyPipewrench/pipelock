@@ -148,3 +148,34 @@ func TestRecordEvidenceFallbackAndMirrorDerivation(t *testing.T) {
 		t.Fatalf("shadow mirror = %+v, %v", p.entries, err)
 	}
 }
+
+func TestDeclaredPayloadMembersAreNotKeyCandidates(t *testing.T) {
+	keys := func(detail []byte) []string {
+		t.Helper()
+		proj, err := evidenceReceiptProducer.Project(detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, a := range proj.Atoms() {
+			if a.Kind == receiptcontent.AtomKey && strings.HasPrefix(a.Path, "payload.") {
+				out = append(out, a.Path)
+			}
+		}
+		return out
+	}
+	// Fixed member names are not caller content, so they take no slot in the
+	// bounded fragment reconstruction; their values still do.
+	full := v2Detail(t, func(m map[string]any) {
+		p := m["payload"].(map[string]any)
+		p["live_verdict"], p["policy_sources"], p["rule_id"] = "allow", []string{"policy"}, "r1"
+	})
+	if got := keys(full); len(got) != 0 {
+		t.Fatalf("declared payload members projected as key atoms: %v", got)
+	}
+	// An undeclared member name is caller content and stays a key atom.
+	extra := v2Detail(t, func(m map[string]any) { m["payload"].(map[string]any)["undeclared"] = "x" })
+	if got := keys(extra); len(got) != 1 {
+		t.Fatalf("undeclared payload member key atoms = %v, want one", got)
+	}
+}

@@ -252,16 +252,17 @@ func TestScanCleanProjection(t *testing.T) {
 
 func TestScanBudgetExhaustionRejects(t *testing.T) {
 	det := testDetector(t)
-	t.Run("too many distinct atoms", func(t *testing.T) {
-		fields := map[string]any{}
+	t.Run("too many atoms", func(t *testing.T) {
+		var values []string
 		for i := 0; i <= scanner.SubsequenceMaxParts; i++ {
-			fields["k"] = nil
-			fields["f"+strconv.Itoa(i)] = "value" + strconv.Itoa(i)
+			values = append(values, strconv.Itoa(i))
 		}
-		delete(fields, "k")
-		p, err := testProducer.Project(mustJSON(t, map[string]any{"verdict": "allow", "nested": fields}))
+		p, err := testProducer.Project(mustJSON(t, map[string]any{"list": values}))
 		if err != nil {
 			t.Fatal(err)
+		}
+		if fragmentWorkBytes(values) > maxFragmentWorkBytes {
+			t.Fatal("part-limit fixture also exceeds the work limit")
 		}
 		_, err = Scan(context.Background(), det, p)
 		var rej *RejectionError
@@ -272,15 +273,40 @@ func TestScanBudgetExhaustionRejects(t *testing.T) {
 	t.Run("too much reconstruction work", func(t *testing.T) {
 		// The unproven root's "list" member name is one candidate, so 19
 		// values keep the candidate count at the part bound and leave only
-		// the work bound to refuse.
+		// the work bound to refuse. The values repeat, so the work comes from
+		// multiplicity: every occurrence is a separate candidate.
 		values := make([]string, scanner.SubsequenceMaxParts-1)
 		for i := range values {
-			values[i] = strings.Repeat("word"+strconv.Itoa(i)+" ", 4000)
+			values[i] = strings.Repeat("abc.", 25)
 		}
-		_, err := scanDetail(t, det, mustJSON(t, map[string]any{"list": values}))
+		p, err := ProjectUnproven(mustJSON(t, map[string]any{"list": values}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := make([]string, 0, len(p.atoms))
+		distinct := map[string]struct{}{}
+		for _, a := range p.atoms {
+			parts = append(parts, a.Text)
+			distinct[a.Text] = struct{}{}
+		}
+		if len(parts) > scanner.SubsequenceMaxParts || fragmentWorkBytes(parts) <= maxFragmentWorkBytes {
+			t.Fatalf("fixture must exceed only the work bound: %d parts, %d work bytes", len(parts), fragmentWorkBytes(parts))
+		}
+		// The bound refuses before any combination is built: the detector
+		// sees each distinct atom, the structured view and the values join,
+		// and no fragment candidate.
+		calls := 0
+		counting := func(ctx context.Context, text string) scanner.TextDLPResult {
+			calls++
+			return det(ctx, text)
+		}
+		_, err = Scan(context.Background(), counting, p)
 		var rej *RejectionError
 		if !errors.As(err, &rej) || rej.View != ViewBudget {
 			t.Fatalf("err = %v, want budget rejection", err)
+		}
+		if limit := len(distinct) + 2; calls > limit {
+			t.Fatalf("detector called %d times, want at most %d: reconstruction ran before the work bound", calls, limit)
 		}
 	})
 }
@@ -336,4 +362,24 @@ func TestBinomialAndWork(t *testing.T) {
 	if got := fragmentWorkBytes([]string{"ab", "c"}); got != 6 { // one pair, both orders
 		t.Fatalf("work = %d, want 6", got)
 	}
+}
+
+func TestRepeatedFragmentsRetainMultiplicity(t *testing.T) {
+	fragment := "rpAa1B"
+	token := fragment + "2cD3eF" + fragment
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.CanaryTokens = config.CanaryTokens{Enabled: true, Tokens: []config.CanaryToken{{Name: "repeated", Value: token}}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p := &Producer{schema: &Schema{Kind: "test.repeated", Fields: map[string]Class{"parts": Content, "parts[]": Content}}}
+	proj, err := p.Project(mustJSON(t, map[string]any{"parts": []string{fragment, "!", "2cD3eF", "#", fragment}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.ScanTextForDLPQuiet(t.Context(), token).Clean || !sc.ScanTextForDLPQuiet(t.Context(), fragment+"!2cD3eF#"+fragment).Clean {
+		t.Fatal("controls must detect the selected token and accept the polluted full join")
+	}
+	rep, err := Scan(t.Context(), sc.ScanTextForDLPQuiet, proj)
+	requireView(t, rep, err, ViewFragments)
 }

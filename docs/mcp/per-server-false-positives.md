@@ -197,12 +197,14 @@ Copy the printed `suppress:` entry into the config that server's proxy loads,
 then relaunch the proxy with the same `--server-name` (or the same upstream, when
 the name comes from a registration).
 
-If you omit `--server-name`, `explain` still names the blocking pattern but
-prints the target as the placeholder `mcp://<server-name>/response` and adds a
-note that the suppress entry cannot match until you re-run with a `--server-name`
-matching how the proxy is launched. Run `explain` with the same `--server-name`
-you pass to `mcp proxy` so the printed `path` is the one that will actually take
-effect.
+If `explain` resolves no name, because you omit `--server-name` and either omit
+`--upstream` or pass one that matches no registration, it still names the
+blocking pattern but prints the target as the placeholder
+`mcp://<server-name>/response` and adds a note that the suppress entry cannot
+match until you re-run with the name the proxy runs under. When `--upstream`
+matches a registration on Linux, `explain` uses the registered name and needs
+no `--server-name`. Otherwise run `explain` with the same `--server-name` you pass
+to `mcp proxy` so the printed `path` is the one that will actually take effect.
 
 `--json` emits the same report as a structured object (`scanned`,
 `scanner`, `patterns`, and a `remediation.suppress_entries` array) for scripting.

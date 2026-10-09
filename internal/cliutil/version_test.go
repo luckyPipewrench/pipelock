@@ -4,13 +4,16 @@
 package cliutil
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDisplayVersionForStartupBanner(t *testing.T) {
@@ -523,6 +526,90 @@ func TestSourceVersionFromBuildSettingsArtifactSafety(t *testing.T) {
 			}
 			if !artifactPattern.MatchString(version) {
 				t.Fatalf("version is not OCI tag/Kubernetes label safe: %q", version)
+			}
+		})
+	}
+}
+
+// Exercise the actual action loop under the runner's shell flags. Text parity
+// alone cannot prove that rejected signatures stop installation.
+func TestActionCosignVerification(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is required to exercise the action's verification loop")
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	start := strings.Index(source, "            verified=false")
+	if start < 0 {
+		// Still execute the loop if its initial state changes; the rejection
+		// cases must catch an initialization that would accept failures.
+		start = strings.Index(source, "            verified=")
+	}
+	if start < 0 {
+		t.Fatal("action verification initialization not found")
+	}
+	end := strings.Index(source[start:], "            echo \"Cosign signature verified.\"")
+	if end < 0 {
+		t.Fatal("action verification success marker not found")
+	}
+	loop := source[start : start+end]
+	const mock = `calls=0
+cosign() {
+  calls=$((calls+1))
+  printf 'IDENTITY:%s\nISSUER:%s\n' "$7" "$9"
+  echo "Verified OK (output alone must not grant trust)"
+  if [ "$calls" -eq 1 ]; then return "$FIRST_STATUS"; fi
+  return "$SECOND_STATUS"
+}
+`
+	tests := []struct {
+		name          string
+		first, second string
+		wantSuccess   bool
+		wantCalls     int
+	}{
+		{"original signer", "0", "1", true, 1},
+		{"organization signer", "1", "0", true, 2},
+		{"both reject", "1", "1", false, 2},
+		{"usage error", "2", "2", false, 2},
+		{"command disappears", "127", "127", false, 2},
+		{"process killed", "137", "137", false, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			// #nosec G204 -- executes the checked-in action loop with a local mock, not external input.
+			cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", mock+loop+"\necho ACTION_CONTINUED\n")
+			cmd.Env = append(os.Environ(),
+				"FIRST_STATUS="+tt.first, "SECOND_STATUS="+tt.second,
+				"VERSION=3.7.0-beta.1", "COSIGN_PEM=certificate.pem",
+				"COSIGN_SIG=signature.sig", "INSTALL_DIR=release",
+				"verified=true")
+			out, runErr := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("action loop timed out: %v", ctx.Err())
+			}
+			output := string(out)
+			if (runErr == nil) != tt.wantSuccess || strings.Contains(output, "ACTION_CONTINUED") != tt.wantSuccess {
+				t.Fatalf("success = %v, want %v: %v\n%s", runErr == nil, tt.wantSuccess, runErr, output)
+			}
+			if got := strings.Count(output, "IDENTITY:"); got != tt.wantCalls {
+				t.Fatalf("cosign calls = %d, want %d\n%s", got, tt.wantCalls, output)
+			}
+			owners := []string{"luckyPipewrench", "pipelab-org"}
+			for _, owner := range owners[:tt.wantCalls] {
+				want := "IDENTITY:https://github.com/" + owner + "/pipelock/.github/workflows/release.yaml@refs/tags/v3.7.0-beta.1\n"
+				if !strings.Contains(output, want) {
+					t.Fatalf("missing exact identity %q\n%s", want, output)
+				}
+			}
+			if got := strings.Count(output, "ISSUER:https://token.actions.githubusercontent.com\n"); got != tt.wantCalls {
+				t.Fatalf("issuer calls = %d, want %d\n%s", got, tt.wantCalls, output)
 			}
 		})
 	}

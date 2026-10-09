@@ -448,7 +448,7 @@ func resolveChainTrust(opts chainOptions) (chainTrust, error) {
 // are not recorder output are left to the extractors. With endorsements, the
 // file must be the session the endorsements are bound to.
 func checkRecorderFileBytes(name string, data []byte, trust chainTrust) error {
-	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+	entries, err := recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
 		return nil
 	}
@@ -613,7 +613,7 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label strin
 	return runEvidenceChainWith(stdout, stderr, label, trust, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
 		return contractreceipt.ExtractEvidenceReceiptsBytes(data)
 	}, func() ([]actionreceipt.Receipt, error) {
-		if !hasActionReceiptEntry(data) {
+		if !hasActionReceiptEntry(bytes.NewReader(data)) {
 			return nil, nil
 		}
 		return actionreceipt.ExtractReceiptsBytes(data)
@@ -631,15 +631,15 @@ func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.Evidenc
 // actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.
 const actionReceiptEntryType = "action_receipt"
 
-// hasActionReceiptEntry reports whether evidence bytes hold an action_receipt
+// hasActionReceiptEntry reports whether evidence holds an action_receipt
 // entry. It reads each line's type the way the EvidenceReceipt v2 extractor
 // does, so the two agree on what every line is. Evidence without one has no
 // ActionReceipt v1 chain whatever its format: a v2-only file written as bare
 // entry lines is not recorder output, and the v1 extractor rejects it rather
 // than returning an empty chain. A scan error answers true, so the strict
 // extractor runs and reports it.
-func hasActionReceiptEntry(data []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+func hasActionReceiptEntry(r io.Reader) bool {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
 	for scanner.Scan() {
 		var probe struct {
@@ -655,32 +655,23 @@ func hasActionReceiptEntry(data []byte) bool {
 // sessionActionReceipts returns the ActionReceipt v1 chain of one session in a
 // directory, or none when no file of that session holds an action_receipt
 // entry. Membership is the parsed session name, as the v2 extractor uses.
+//
+// The probe uses the recorder's authoritative session walk, so the session's
+// length and unrelated files in the directory cannot hide its action chain.
 func sessionActionReceipts(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, error) {
-	entries, err := recorder.ReadEvidenceLocationEntries(location)
-	if err != nil {
-		return nil, fmt.Errorf("read evidence directory: %w", err)
-	}
 	want := filepath.Base(session)
-	found := false
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	errFound := errors.New("action receipt found")
+	err := recorder.WalkSessionHistoryFiles(location, want, func(_ recorder.SessionHistoryShard, r io.Reader) error {
+		if hasActionReceiptEntry(r) {
+			return errFound
 		}
-		name, _, ok := recorder.ParseEvidenceFilename(e.Name())
-		if !ok || name != want {
-			continue
-		}
-		data, readErr := recorder.ReadEvidenceFileBounded(filepath.Join(location.Dir, e.Name()), recorder.MaxEvidenceReadFileBytes)
-		if readErr != nil {
-			return nil, fmt.Errorf("read %s: %w", e.Name(), readErr)
-		}
-		if hasActionReceiptEntry(data) {
-			found = true
-			break
-		}
-	}
-	if !found {
+		return nil
+	})
+	if err == nil {
 		return nil, nil
+	}
+	if !errors.Is(err, errFound) {
+		return nil, fmt.Errorf("read evidence session %s: %w", want, err)
 	}
 	return actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, session)
 }

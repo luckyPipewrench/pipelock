@@ -192,19 +192,18 @@ func UnmarshalRecoverySeal(raw []byte) (RecoverySeal, error) {
 
 // observeRecovery validates all readable records, including a valid final JSON
 // record missing its newline, while binding only the durable complete prefix.
-func observeRecovery(dir, predecessor, observerKey string, trusted []string, maxBytes int64) (RecoverySeal, error) {
-	return observeRecoveryWithOptions(dir, predecessor, observerKey, recoveryObservationOptions{trusted: trusted, maxBytes: maxBytes})
+func observeRecovery(dir, predecessor, observerKey string, trusted []string) (RecoverySeal, error) {
+	return observeRecoveryWithOptions(dir, predecessor, observerKey, recoveryObservationOptions{trusted: trusted})
 }
 
 type recoveryObservationOptions struct {
 	trusted        []string
-	maxBytes       int64
 	signaturesOnly bool
 	groupBinding   *ReceiptGroupBinding
 }
 
 func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recoveryObservationOptions) (RecoverySeal, error) {
-	trusted, maxBytes := opts.trusted, opts.maxBytes
+	trusted := opts.trusted
 	if len(trusted) == 0 {
 		trusted = nil
 	}
@@ -238,31 +237,14 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 			}
 			return complete(e)
 		}
-		if maxBytes > 0 {
-			// Offline reads keep their independent per-shard ceiling. Only
-			// this one bounded shard is retained, never the whole archive.
-			raw, readErr := recorder.ReadEvidenceFileBounded(f, maxBytes)
-			if readErr != nil {
-				return RecoverySeal{}, readErr
-			}
-			if len(raw) == 0 || raw[len(raw)-1] != '\n' {
-				return RecoverySeal{}, errors.New("recovery predecessor has a torn non-final segment")
-			}
-			es, readErr := recorder.ReadEntriesFromReader(bytes.NewReader(raw))
-			if readErr != nil {
-				return RecoverySeal{}, readErr
-			}
-			for _, e := range es {
-				if err := validate(e); err != nil {
-					return RecoverySeal{}, err
-				}
-			}
-		} else if err := recorder.ValidateEvidenceFile(f, validate); err != nil {
+		// Every shard streams one bounded line at a time, so no shard is
+		// refused for its size and none is held in memory.
+		if err := recorder.ValidateEvidenceFile(f, validate); err != nil {
 			return RecoverySeal{}, err
 		}
 	}
 	lastFile := files[len(files)-1]
-	snapshot, err := recorder.CaptureTornEvidence(lastFile, maxBytes, v.add, complete)
+	snapshot, err := recorder.CaptureTornEvidence(lastFile, 0, v.add, complete)
 	if err != nil {
 		return RecoverySeal{}, err
 	}
@@ -467,7 +449,7 @@ func verifyRecoveryBinding(dir string, seal RecoverySeal, trusted []string, sign
 	if err := VerifyRecoverySeal(seal); err != nil {
 		return err
 	}
-	got, err := observeRecoveryWithOptions(dir, seal.PredecessorSession, seal.SuccessorSignerKey, recoveryObservationOptions{trusted: trusted, maxBytes: recorder.MaxEvidenceReadFileBytes, signaturesOnly: signaturesOnly})
+	got, err := observeRecoveryWithOptions(dir, seal.PredecessorSession, seal.SuccessorSignerKey, recoveryObservationOptions{trusted: trusted, signaturesOnly: signaturesOnly})
 	if err != nil {
 		return err
 	}

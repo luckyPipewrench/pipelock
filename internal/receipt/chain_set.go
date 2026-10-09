@@ -1256,7 +1256,7 @@ func readIndexedEntries(ix evidenceIndex, session string) ([]recorder.Entry, err
 	}
 	var entries []recorder.Entry
 	for _, f := range files {
-		es, readErr := recorder.ReadEntries(f)
+		es, readErr := recorder.ReadHistoryEntries(f)
 		if readErr != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), readErr)
 		}

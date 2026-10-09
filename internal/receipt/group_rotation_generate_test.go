@@ -37,7 +37,7 @@ func TestRecoveryObserverRejectsTornNonFinalSegment(t *testing.T) {
 	if err != nil || len(raw) == 0 || raw[len(raw)-1] != '\n' {
 		t.Fatalf("earlier writer segment: %v", err)
 	}
-	opts := recoveryObservationOptions{trusted: []string{signer}, maxBytes: recorder.MaxEvidenceReadFileBytes}
+	opts := recoveryObservationOptions{trusted: []string{signer}}
 	if _, err := observeRecoveryWithOptions(dir, predecessor, signer, opts); err != nil {
 		t.Fatalf("intact recovery predecessor: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestReceiptGroupRejectsBadHashUnterminatedRecoveryTail(t *testing.T) {
 	if err := os.WriteFile(last, damaged, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := observeRecoveryWithOptions(dir, predecessor, signer, recoveryObservationOptions{trusted: []string{signer}, maxBytes: recorder.MaxEvidenceReadFileBytes}); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+	if _, err := observeRecoveryWithOptions(dir, predecessor, signer, recoveryObservationOptions{trusted: []string{signer}}); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Fatalf("recovery classified bad hash as torn: %v", err)
 	}
 	if result := VerifyReceiptGroup(dir, groupID, []string{signer}); result.Verdict == GroupValid {
@@ -220,7 +220,7 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 			if err := os.WriteFile(first, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := observeRecoveryWithOptions(caseDir, predecessor, signer, recoveryObservationOptions{trusted: []string{signer}, maxBytes: recorder.MaxEvidenceReadFileBytes}); variant == "torn-earlier" && err == nil {
+			if _, err := observeRecoveryWithOptions(caseDir, predecessor, signer, recoveryObservationOptions{trusted: []string{signer}}); variant == "torn-earlier" && err == nil {
 				t.Fatal("bounded recovery observer accepted a torn earlier segment")
 			}
 		}

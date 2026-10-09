@@ -225,7 +225,7 @@ func verifyGroupSessionInventory(dir string, open ReceiptGroupOpen) error {
 				// Classification uses only a terminated first entry. Recovery
 				// validates complete JSON in the final fragment but must not
 				// supply that fragment to a verifier as durable evidence.
-				_, err = recorder.CaptureTornEvidence(path, recorder.MaxEvidenceReadFileBytes, nil, captureFirst)
+				_, err = recorder.CaptureTornEvidence(path, 0, nil, captureFirst)
 			}
 			if err != nil || !seen {
 				return fmt.Errorf("unlisted receipt run %q cannot be classified: %w", session, err)
@@ -425,7 +425,7 @@ func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
 	}
 	var torn *recorder.TornTailError
 	if errors.As(err, &torn) {
-		_, err = recorder.CaptureTornEvidence(path, recorder.MaxEvidenceReadFileBytes, nil, func(entry recorder.Entry) error {
+		_, err = recorder.CaptureTornEvidence(path, 0, nil, func(entry recorder.Entry) error {
 			if !seen {
 				first, seen = entry, true
 			}
@@ -457,7 +457,7 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 	groupID := ""
 	first := true
 	var err error
-	err = recorder.WalkSessionEntries(dir, session, func(entry recorder.Entry) error {
+	err = recorder.WalkSessionHistory(dir, session, func(entry recorder.Entry) error {
 		if entry.Type == transcriptRootEntryType {
 			completed = true
 		}

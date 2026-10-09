@@ -72,7 +72,7 @@ func TestQuerySession_NoFilter(t *testing.T) {
 	}
 }
 
-func TestWalkSessionEntriesMatchesQueryOrder(t *testing.T) {
+func TestWalkSessionHistoryMatchesQueryOrder(t *testing.T) {
 	dir := t.TempDir()
 	writeTestEntries(t, dir, "walk-session", 5)
 
@@ -81,11 +81,11 @@ func TestWalkSessionEntriesMatchesQueryOrder(t *testing.T) {
 		t.Fatalf("QuerySession: %v", err)
 	}
 	var walked []recorder.Entry
-	if err := recorder.WalkSessionEntries(dir, "walk-session", func(entry recorder.Entry) error {
+	if err := recorder.WalkSessionHistory(dir, "walk-session", func(entry recorder.Entry) error {
 		walked = append(walked, entry)
 		return nil
 	}); err != nil {
-		t.Fatalf("WalkSessionEntries: %v", err)
+		t.Fatalf("WalkSessionHistory: %v", err)
 	}
 	if !reflect.DeepEqual(walked, queried.Entries) {
 		t.Fatalf("walked %d entries differ from QuerySession's %d entries", len(walked), len(queried.Entries))
@@ -115,18 +115,18 @@ func TestWalkSessionEntriesMatchesQueryOrder(t *testing.T) {
 		t.Fatalf("QuerySession(multi-shard): %v", err)
 	}
 	walked = nil
-	if err := recorder.WalkSessionEntries(multiDir, "multi-walk", func(entry recorder.Entry) error {
+	if err := recorder.WalkSessionHistory(multiDir, "multi-walk", func(entry recorder.Entry) error {
 		walked = append(walked, entry)
 		return nil
 	}); err != nil {
-		t.Fatalf("WalkSessionEntries(multi-shard): %v", err)
+		t.Fatalf("WalkSessionHistory(multi-shard): %v", err)
 	}
 	if !reflect.DeepEqual(walked, queried.Entries) {
 		t.Fatalf("multi-shard walk entries %#v differ from QuerySession entries %#v", walked, queried.Entries)
 	}
 }
 
-func TestWalkSessionEntriesFailsClosed(t *testing.T) {
+func TestWalkSessionHistoryFailsClosed(t *testing.T) {
 	t.Run("foreign session entry", func(t *testing.T) {
 		dir := t.TempDir()
 		entry := recorder.Entry{
@@ -142,8 +142,8 @@ func TestWalkSessionEntriesFailsClosed(t *testing.T) {
 		if err := writeFile(filepath.Join(dir, "evidence-victim-0.jsonl"), append(data, '\n')); err != nil {
 			t.Fatal(err)
 		}
-		if err := recorder.WalkSessionEntries(dir, "victim", func(recorder.Entry) error { return nil }); !errors.Is(err, recorder.ErrEvidenceRefused) {
-			t.Fatalf("WalkSessionEntries error = %v, want ErrEvidenceRefused", err)
+		if err := recorder.WalkSessionHistory(dir, "victim", func(recorder.Entry) error { return nil }); !errors.Is(err, recorder.ErrEvidenceRefused) {
+			t.Fatalf("WalkSessionHistory error = %v, want ErrEvidenceRefused", err)
 		}
 	})
 
@@ -165,65 +165,8 @@ func TestWalkSessionEntriesFailsClosed(t *testing.T) {
 		if err := f.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := recorder.WalkSessionEntries(dir, "torn-session", func(recorder.Entry) error { return nil }); err == nil {
-			t.Fatal("WalkSessionEntries accepted torn tail")
-		}
-	})
-
-	t.Run("directory ceiling", func(t *testing.T) {
-		dir := t.TempDir()
-		for i := range recorder.MaxEvidenceReadDirectoryEntries + 1 {
-			name := filepath.Join(dir, fmt.Sprintf("evidence-ceiling-%d.jsonl", i))
-			if err := os.WriteFile(name, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := recorder.WalkSessionEntries(dir, "ceiling", func(recorder.Entry) error { return nil }); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-			t.Fatalf("WalkSessionEntries error = %v, want ErrEvidenceReadLimitExceeded", err)
-		}
-	})
-
-	t.Run("file byte ceiling", func(t *testing.T) {
-		dir := t.TempDir()
-		name := filepath.Join(dir, "evidence-large-0.jsonl")
-		if err := os.WriteFile(name, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Truncate(name, recorder.MaxEvidenceReadFileBytes+1); err != nil {
-			t.Fatal(err)
-		}
-		if err := recorder.WalkSessionEntries(dir, "large", func(recorder.Entry) error { return nil }); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-			t.Fatalf("WalkSessionEntries error = %v, want ErrEvidenceReadLimitExceeded", err)
-		}
-	})
-
-	t.Run("file entry ceiling", func(t *testing.T) {
-		dir := t.TempDir()
-		entry := recorder.Entry{
-			Version: recorder.EntryVersion, Sequence: 0, Timestamp: time.Now().UTC(),
-			SessionID: "entry-ceiling", Type: testType, Transport: testTransport,
-			Summary: "entry", PrevHash: recorder.GenesisHash,
-		}
-		entry.Hash = recorder.ComputeHash(entry)
-		data, err := json.Marshal(entry)
-		if err != nil {
-			t.Fatal(err)
-		}
-		file, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "evidence-entry-ceiling-0.jsonl")), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for range recorder.MaxEvidenceReadEntries + 1 {
-			if _, err := file.Write(append(data, '\n')); err != nil {
-				_ = file.Close()
-				t.Fatal(err)
-			}
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := recorder.WalkSessionEntries(dir, "entry-ceiling", func(recorder.Entry) error { return nil }); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-			t.Fatalf("WalkSessionEntries error = %v, want ErrEvidenceReadLimitExceeded", err)
+		if err := recorder.WalkSessionHistory(dir, "torn-session", func(recorder.Entry) error { return nil }); err == nil {
+			t.Fatal("WalkSessionHistory accepted torn tail")
 		}
 	})
 
@@ -235,7 +178,7 @@ func TestWalkSessionEntriesFailsClosed(t *testing.T) {
 			t.Fatalf("find evidence shard: files=%v err=%v", files, err)
 		}
 		changed := false
-		err = recorder.WalkSessionEntries(dir, "changed-session", func(recorder.Entry) error {
+		err = recorder.WalkSessionHistory(dir, "changed-session", func(recorder.Entry) error {
 			if changed {
 				return nil
 			}
@@ -243,7 +186,7 @@ func TestWalkSessionEntriesFailsClosed(t *testing.T) {
 			return os.WriteFile(files[0], []byte("changed\n"), 0o600)
 		})
 		if err == nil || !strings.Contains(err.Error(), "evidence file changed during read") {
-			t.Fatalf("WalkSessionEntries error = %v, want evidence file changed during read", err)
+			t.Fatalf("WalkSessionHistory error = %v, want evidence file changed during read", err)
 		}
 	})
 }

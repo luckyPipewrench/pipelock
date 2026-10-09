@@ -1274,7 +1274,7 @@ func (e *Emitter) receiptHashRecorded(wantHash string) bool {
 		return false
 	}
 	for _, file := range files {
-		entries, readErr := recorder.ReadEntries(file)
+		entries, readErr := recorder.ReadHistoryEntries(file)
 		if readErr != nil {
 			continue
 		}

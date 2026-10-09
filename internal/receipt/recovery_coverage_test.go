@@ -123,15 +123,16 @@ func TestUnmarshalRecoverySealMalformedBytes(t *testing.T) {
 func TestObserveRecoveryRejectsMissingAndOversizeShards(t *testing.T) {
 	_, seal, _ := recoveryFixture(t)
 	t.Run("missing", func(t *testing.T) {
-		if _, err := observeRecovery(t.TempDir(), seal.PredecessorSession, seal.SuccessorSignerKey, nil, 0); err == nil {
+		if _, err := observeRecovery(t.TempDir(), seal.PredecessorSession, seal.SuccessorSignerKey, nil); err == nil {
 			t.Fatal("missing predecessor accepted")
 		}
 	})
-	t.Run("per_shard_limit", func(t *testing.T) {
+	t.Run("no_per_shard_budget", func(t *testing.T) {
+		// Recovery observation is a lifecycle read: it streams every shard
+		// and refuses none for its size.
 		dir, s, _ := recoveryFixture(t)
-		_, err := observeRecovery(dir, s.PredecessorSession, s.SuccessorSignerKey, []string{s.SuccessorSignerKey}, 1)
-		if err == nil || !strings.Contains(err.Error(), "evidence read limit exceeded") {
-			t.Fatalf("bounded recovery error = %v", err)
+		if _, err := observeRecovery(dir, s.PredecessorSession, s.SuccessorSignerKey, []string{s.SuccessorSignerKey}); err != nil {
+			t.Fatalf("recovery observation refused a valid archive: %v", err)
 		}
 	})
 	t.Run("missing_successor", func(t *testing.T) {

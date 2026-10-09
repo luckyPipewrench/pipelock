@@ -773,11 +773,11 @@ func TestAnchorWalkerHoldsOnlyOneReceiptGap(t *testing.T) {
 // TestAnchorWalkerCapsPendingCheckpoints pins that the hard bound on one
 // receipt gap fails verification rather than skipping the checkpoints past
 // it, that its error names the setting that avoids it, and that the bound
-// sits where no honest recorder within the evidence read limits can reach.
+// stays at its documented resource bound.
 func TestAnchorWalkerCapsPendingCheckpoints(t *testing.T) {
 	t.Parallel()
-	if maxPendingCheckpoints < recorder.MaxEvidenceReadDirectoryEntries*recorder.MaxEvidenceReadEntries {
-		t.Fatalf("pending bound %d is below the session read ceiling; an honest recorder could reach it", maxPendingCheckpoints)
+	if maxPendingCheckpoints != 2_560_000 {
+		t.Fatalf("pending bound %d moved from its documented 2,560,000", maxPendingCheckpoints)
 	}
 	if !strings.Contains(errTooManyPendingCheckpoints.Error(), "checkpoint_interval") {
 		t.Fatalf("pending bound error names no control: %v", errTooManyPendingCheckpoints)

@@ -151,6 +151,11 @@ func walkHistoryShardEntries(location EvidenceLocation, name, sessionID string, 
 	}
 	defer func() { _ = file.Close() }()
 	if err := walkHistoryEntries(io.NewSectionReader(file, 0, before.Size()), filepath.Join(location.Dir, name), sessionID, consume); err != nil {
+		if errors.Is(err, ErrEvidenceRefused) {
+			// A membership refusal names the evidence, not the read; every
+			// session reader reports it in this shape.
+			return err
+		}
 		return fmt.Errorf("reading evidence file: %w", err)
 	}
 	return ensureEvidenceFileUnchanged(file, before)

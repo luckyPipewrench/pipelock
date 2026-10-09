@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,21 +261,27 @@ func TestVerifyReceiptCmd_WholeRecorderOperationalEntryAfterSealIncomplete(t *te
 	}
 }
 
-func TestVerifyReceiptCmd_WholeRecorderDirectFileBoundedRead(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "evidence-proxy-0.jsonl")
+// writeLinkedCheckpointsWithFinalBreak writes count hash-linked checkpoint
+// entries to path, the last one linked to the wrong predecessor, so a
+// verifier only reports the break if it read the whole file.
+func writeLinkedCheckpointsWithFinalBreak(t *testing.T, path string, count int) {
+	t.Helper()
 	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
 	enc := json.NewEncoder(file)
-	for seq := range recorder.MaxEvidenceReadEntries + 1 {
+	prev := recorder.GenesisHash
+	for seq := range count {
+		if seq == count-1 {
+			prev = recorder.GenesisHash
+		}
 		entry := recorder.Entry{
 			Version: recorder.EntryVersion, Sequence: uint64(seq), Timestamp: time.Now().UTC(),
-			SessionID: "proxy", Type: "checkpoint", Transport: "fetch", Summary: "checkpoint", PrevHash: recorder.GenesisHash,
+			SessionID: "proxy", Type: "checkpoint", Transport: "fetch", Summary: "checkpoint", PrevHash: prev,
 		}
 		entry.Hash = recorder.ComputeHash(entry)
+		prev = entry.Hash
 		if err := enc.Encode(entry); err != nil {
 			_ = file.Close()
 			t.Fatalf("Encode: %v", err)
@@ -283,10 +290,19 @@ func TestVerifyReceiptCmd_WholeRecorderDirectFileBoundedRead(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+}
+
+func TestVerifyReceiptCmd_WholeRecorderDirectFileReadsPastDisplayBudget(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "evidence-proxy-0.jsonl")
+	count := recorder.MaxEvidenceReadEntries + 2
+	writeLinkedCheckpointsWithFinalBreak(t, path, count)
 
 	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--allow-unpinned")
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || strings.Contains(out, "CHAIN VALID") {
-		t.Fatalf("direct file over the read limit err=%v output:\n%s", err, out)
+	want := fmt.Sprintf("entry seq %d: chain break", count-1)
+	if err == nil || errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || !strings.Contains(err.Error(), want) || strings.Contains(out, "CHAIN VALID") {
+		t.Fatalf("direct file past the display budget: want %q, err=%v output:\n%s", want, err, out)
 	}
 }
 

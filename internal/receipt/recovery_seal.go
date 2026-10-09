@@ -240,6 +240,9 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 		// Every shard streams one bounded line at a time, so no shard is
 		// refused for its size and none is held in memory.
 		if err := recorder.ValidateEvidenceFile(f, validate); err != nil {
+			if errors.Is(err, recorder.ErrTornTail) {
+				return RecoverySeal{}, fmt.Errorf("recovery predecessor has a torn non-final segment: %w", err)
+			}
 			return RecoverySeal{}, err
 		}
 	}

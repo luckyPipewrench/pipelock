@@ -841,7 +841,9 @@ func TestExtractReceiptsBytes_RejectsUnreadableEvidence(t *testing.T) {
 	}
 }
 
-func TestExtractReceiptsBytes_RejectsRecorderReadLimitBeforeRawFallback(t *testing.T) {
+// The recorder parse reads the whole input before the raw-receipt fallback
+// decides, however long it is, so the fallback never sees a truncated prefix.
+func TestExtractReceiptsBytes_ReadsWholeInputBeforeRawFallback(t *testing.T) {
 	t.Parallel()
 
 	_, priv := generateTestKey(t)
@@ -859,9 +861,9 @@ func TestExtractReceiptsBytes_RejectsRecorderReadLimitBeforeRawFallback(t *testi
 	data.Write(raw)
 	data.WriteByte('\n')
 
-	_, err = ExtractReceiptsBytes([]byte(data.String()))
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("ExtractReceiptsBytes error = %v, want ErrEvidenceReadLimitExceeded", err)
+	got, err := ExtractReceiptsBytes([]byte(data.String()))
+	if err != nil || len(got) != 1 || got[0].Signature != r.Signature {
+		t.Fatalf("ExtractReceiptsBytes = %d receipts, err %v; want the one receipt after the padding", len(got), err)
 	}
 }
 
@@ -886,7 +888,9 @@ func TestExtractReceipts_RawJSONLRejectsMissingFieldsTail(t *testing.T) {
 	}
 }
 
-func TestExtractReceipts_RawJSONLRejectsOverCapFile(t *testing.T) {
+// A raw receipt chain is verification input: its file size is no reason to
+// refuse it. The raw format's own per-line limit still applies.
+func TestExtractReceipts_RawJSONLReadsPastDisplayBudget(t *testing.T) {
 	t.Parallel()
 
 	_, priv := generateTestKey(t)
@@ -905,13 +909,25 @@ func TestExtractReceipts_RawJSONLRejectsOverCapFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err = ExtractReceipts(path)
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("ExtractReceipts error = %v, want ErrEvidenceReadLimitExceeded", err)
+	got, err := ExtractReceipts(path)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ExtractReceipts = %d receipts, err %v; want the large receipt", len(got), err)
+	}
+
+	r.Ext = json.RawMessage(`{"pad":"` + strings.Repeat("x", 10<<20) + `"}`)
+	data, err = Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := ExtractReceipts(path); err == nil || !strings.Contains(err.Error(), "scan raw receipts") {
+		t.Fatalf("ExtractReceipts over the raw line limit error = %v", err)
 	}
 }
 
-func TestExtractReceipts_RejectsRecorderReadLimitBeforeRawFileFallback(t *testing.T) {
+func TestExtractReceipts_ReadsWholeFileBeforeRawFileFallback(t *testing.T) {
 	t.Parallel()
 
 	_, priv := generateTestKey(t)
@@ -933,16 +949,15 @@ func TestExtractReceipts_RejectsRecorderReadLimitBeforeRawFileFallback(t *testin
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err = ExtractReceipts(path)
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("ExtractReceipts error = %v, want ErrEvidenceReadLimitExceeded", err)
-	}
-	if got := err.Error(); !strings.Contains(got, "reading entries") || strings.Contains(got, "raw receipts") {
-		t.Fatalf("ExtractReceipts error = %q, want recorder read-limit rejection before raw fallback", got)
+	got, err := ExtractReceipts(path)
+	if err != nil || len(got) != 1 || got[0].Signature != r.Signature {
+		t.Fatalf("ExtractReceipts = %d receipts, err %v; want the one receipt after the padding", len(got), err)
 	}
 }
 
-func TestExtractReceiptsFromSessionDirRejectsTruncatedQuery(t *testing.T) {
+// Verification extraction reads the complete session: a shard past the
+// display entry budget is read to its end, never truncated or refused.
+func TestExtractReceiptsFromSessionDirReadsPastDisplayBudget(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -976,17 +991,25 @@ func TestExtractReceiptsFromSessionDirRejectsTruncatedQuery(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	_, err = ExtractReceiptsFromSessionDir(dir, "proxy")
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("ExtractReceiptsFromSessionDir error = %v, want ErrEvidenceReadLimitExceeded", err)
+	want := recorder.MaxEvidenceReadEntries + 1
+	got, err := ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil || len(got) != want {
+		t.Fatalf("ExtractReceiptsFromSessionDir = %d receipts, err %v; want %d", len(got), err, want)
 	}
 	location, err := recorder.ResolveEvidenceLocation(dir, "")
 	if err != nil {
 		t.Fatalf("ResolveEvidenceLocation: %v", err)
 	}
-	_, err = ExtractReceiptsFromResolvedSessionDir(location, "proxy")
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("ExtractReceiptsFromResolvedSessionDir error = %v, want ErrEvidenceReadLimitExceeded", err)
+	got, err = ExtractReceiptsFromResolvedSessionDir(location, "proxy")
+	if err != nil || len(got) != want {
+		t.Fatalf("ExtractReceiptsFromResolvedSessionDir = %d receipts, err %v; want %d", len(got), err, want)
+	}
+	// Control: the bounded display extraction still reports truncation.
+	if _, truncated, err := ExtractReceiptsFromSessionDirBounded(dir, "proxy", 0); err != nil || !truncated {
+		t.Fatalf("display extraction truncated=%v err=%v, want truncation", truncated, err)
+	}
+	if _, err := ExtractReceiptsFromSessionDir(filepath.Join(dir, "missing"), "proxy"); err == nil {
+		t.Fatal("missing evidence directory accepted")
 	}
 }
 

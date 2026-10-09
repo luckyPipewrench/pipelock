@@ -430,6 +430,46 @@ func TestMCPIdentityRegister_OutputLoads(t *testing.T) {
 	}
 }
 
+// TestMCPIdentityRegister_ObservedPathCannotInjectYAML: the observed service
+// names its own files, so a path with a newline must not end a comment or a
+// scalar and add live YAML to the entry the operator copies into a config.
+func TestMCPIdentityRegister_ObservedPathCannotInjectYAML(t *testing.T) {
+	t.Parallel()
+	injected := "/opt/vendor/x.so\n  - name: injected-identity\n    verified_local_service: {}"
+	pinnedPath := "/opt/vendor/odd\nname.so"
+	obs := localservice.Observation{
+		PID: 1, UID: 1000, ExecutableSHA256: testIdentityDigest,
+		Files: []localservice.ObservedFile{
+			{Path: injected, SHA256: testIdentityOtherHash},
+			{Path: pinnedPath, SHA256: testIdentityModDigest},
+		},
+	}
+	probe, _ := fakeIdentityProbe(t, obs, nil, nil)
+	out, err := runIdentityCmd(t, probe, "register", "--upstream", testIdentityUpstream, "--name", testIdentityName,
+		"--mapped-file", pinnedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "\n  - name: injected-identity") {
+		t.Fatalf("an observed path added live YAML:\n%s", out)
+	}
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\n"+out), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("printed entry does not load: %v\n%s", err, out)
+	}
+	if len(cfg.MCPIdentities) != 1 || cfg.MCPIdentities[0].Name != testIdentityName {
+		t.Fatalf("loaded identities = %+v, want only %s", cfg.MCPIdentities, testIdentityName)
+	}
+	v := cfg.MCPIdentities[0].VerifiedLocalService
+	if v == nil || len(v.MappedFiles) != 1 || v.MappedFiles[0].Path != pinnedPath {
+		t.Fatalf("pinned path did not round-trip: %+v", v)
+	}
+}
+
 func TestMCPIdentityRegister_ControlEnvironmentPlaceholder(t *testing.T) {
 	t.Parallel()
 	obs := localservice.Observation{UID: 1, ExecutableSHA256: testIdentityDigest, ControlEnvironment: []string{"LD_PRELOAD"}}

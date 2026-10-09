@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -395,10 +397,10 @@ func writeRegistration(out io.Writer, entry config.MCPIdentity, obs localservice
 		w("%s# configuration the service loads; operating-system libraries are listed last.\n", identityYAMLIndent)
 		for _, f := range held {
 			if f.SHA256 == "" {
-				w("%s#   %s (digest unavailable: the path is not tied to the held file)\n", identityYAMLIndent, f.Path)
+				w("%s#   %s (digest unavailable: the path is not tied to the held file)\n", identityYAMLIndent, commentPath(f.Path))
 				continue
 			}
-			w("%s#   %s sha256=%s\n", identityYAMLIndent, f.Path, f.SHA256)
+			w("%s#   %s sha256=%s\n", identityYAMLIndent, commentPath(f.Path), f.SHA256)
 		}
 	}
 	if len(obs.ControlEnvironment) > 0 {
@@ -482,8 +484,30 @@ func isSystemLibrary(path string) bool {
 	return false
 }
 
-// yamlScalar renders s as a YAML scalar, quoting it when needed.
+// hasControl reports whether s holds a control character or invalid UTF-8.
+// The observed service chooses its file names, and such a character in a path
+// could end a YAML comment or an indented scalar and add live YAML to an entry
+// the operator copies into a config.
+func hasControl(s string) bool {
+	return !utf8.ValidString(s) || strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
+// commentPath renders an observed path for a YAML comment line, quoting it
+// with escapes when it holds a control character.
+func commentPath(p string) string {
+	if hasControl(p) {
+		return strconv.Quote(p)
+	}
+	return p
+}
+
+// yamlScalar renders s as a YAML scalar, quoting it when needed. A value with
+// a control character becomes one double-quoted line with escapes, never a
+// block scalar whose continuation lines would ignore this entry's indentation.
 func yamlScalar(s string) string {
+	if hasControl(s) {
+		return strconv.Quote(s)
+	}
 	b, err := yaml.Marshal(s)
 	if err != nil {
 		return strconv.Quote(s)

@@ -68,7 +68,7 @@ jobs:
             tags: ''
           - name: enterprise
             tags: enterprise
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
         # 1.26.9 is the floor and mirrors the pin already verified in ci.yaml's
         # govulncheck job, which documents its own provenance: it is the newest
         # published 1.26 patch that job has confirmed, chosen there for stdlib
@@ -126,7 +126,7 @@ jobs:
           # package list, so the first stands for all of them here; the
           # partition check below proves they divide its tests exactly.
           : > "$tmpdir/shards.txt"
-          for shard in proxy-0 scanner-0 mcp-0 runtime-0 rest-0 rest-1 rest-2; do
+          for shard in proxy-0 scanner-0 mcp-0 runtime-0 rest-0 rest-1 rest-2 rest-3; do
             if [ -n "$GO_TEST_TAGS" ]; then
               python3 scripts/ci_test_packages.py --tags "$GO_TEST_TAGS" --shard "$shard"
             else

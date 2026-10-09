@@ -235,24 +235,18 @@ class TestPackageSharding(unittest.TestCase):
             "example.test/pipelock/internal/gamma",
         ]
 
-        rest_shards = [
-            select_packages(packages, "rest-0"),
-            select_packages(packages, "rest-1"),
-            select_packages(packages, "rest-2"),
-        ]
+        rest_shards = [select_packages(packages, shard) for shard in ci_test_packages.REST_SHARDS]
 
         self.assertEqual(
             rest_shards,
             [
                 [
                     "example.test/pipelock/internal/alpha",
-                    "example.test/pipelock/internal/gamma",
-                ],
-                [
-                    "example.test/pipelock/internal/beta",
                     "example.test/pipelock/internal/zeta",
                 ],
+                ["example.test/pipelock/internal/beta"],
                 ["example.test/pipelock/internal/delta"],
+                ["example.test/pipelock/internal/gamma"],
             ],
         )
         self.assertLessEqual(
@@ -267,7 +261,7 @@ class TestPackageSharding(unittest.TestCase):
         ]
         weights = {"example.test/pipelock/internal/p0": 300.0, "example.test/pipelock/internal/p1": 290.0}
         weights.update({f"example.test/pipelock/internal/p{index}": 10.0 for index in range(2, 12)})
-        shards = [select_packages(packages, shard, weights) for shard in ("rest-0", "rest-1", "rest-2")]
+        shards = [select_packages(packages, shard, weights) for shard in ci_test_packages.REST_SHARDS]
         rest = [pkg for pkg in packages if pkg in weights]
         self.assertCountEqual([pkg for shard in shards for pkg in shard], rest)
         self.assertFalse(any("p0" in pkg for pkg in shards[0]) and any("p1" in pkg for pkg in shards[0]))
@@ -310,7 +304,7 @@ class TestPackageSharding(unittest.TestCase):
                 tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
                 self.assertAlmostEqual(sum(tree_loads), 200.0 * factor)
                 self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0 * factor)
-            self.assertEqual(sorted(loads[shard] for shard in ("rest-0", "rest-1", "rest-2")), [100.0, 100.0, 100.0])
+            self.assertEqual(sorted(loads[shard] for shard in ci_test_packages.REST_SHARDS), [0.0, 100.0, 100.0, 100.0])
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
                 self.assertEqual(ci_test_packages.check_budget("", 40.0), 1)
@@ -347,6 +341,10 @@ class TestPackageSharding(unittest.TestCase):
         self.assertEqual(ci_test_packages.package_makespan([100.0, 100.0, 100.0], 2), 200.0)
         self.assertEqual(ci_test_packages.package_makespan([700.0], 2), 700.0)
         self.assertEqual(ci_test_packages.package_makespan([], 2), 0.0)
+        # go test does not start packages longest first. Longest-first packs
+        # 300,200,200,100,100 into 450s; starting the 300s package last takes
+        # 500s. The estimate must cover every order, not the best one.
+        self.assertGreaterEqual(ci_test_packages.package_makespan([300.0, 200.0, 200.0, 100.0, 100.0], 2), 500.0)
         packages = [f"example.test/p{index}" for index in range(3)]
         with patch.object(ci_test_packages, "list_packages", return_value=packages), \
              patch.object(ci_test_packages, "load_durations", return_value={}), \
@@ -397,7 +395,7 @@ class TestPackageSharding(unittest.TestCase):
         self.assertFalse(package_in_tree(package, "internal/proxy"))
         selected = [
             selected_package
-            for shard in ("rest-0", "rest-1", "rest-2")
+            for shard in ci_test_packages.REST_SHARDS
             for selected_package in select_packages([package], shard)
         ]
         self.assertEqual(selected, [package])
@@ -407,7 +405,7 @@ class TestPackageSharding(unittest.TestCase):
         self.assertFalse(package_in_tree(package, "internal/proxy"))
         selected = [
             selected_package
-            for shard in ("rest-0", "rest-1", "rest-2")
+            for shard in ci_test_packages.REST_SHARDS
             for selected_package in select_packages([package], shard)
         ]
         self.assertEqual(selected, [package])
@@ -672,7 +670,7 @@ class TestTestNameSplit(unittest.TestCase):
                         ci_test_packages.load_package_durations(path)
 
     def test_unsplit_shards_have_no_selector(self) -> None:
-        for shard in ("rest-0", "rest-1", "rest-2"):
+        for shard in ci_test_packages.REST_SHARDS:
             self.assertEqual(shard_selector(shard, self.NAMES), "")
         with self.assertRaisesRegex(ValueError, "unknown shard"):
             shard_selector("proxy", self.NAMES)

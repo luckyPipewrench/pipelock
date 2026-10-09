@@ -65,7 +65,7 @@ TEST_SPLITS = {
     "mcp": 4,
     "runtime": 2,
 }
-REST_SHARDS = ("rest-0", "rest-1", "rest-2")
+REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 
 # Trees whose coverage is collected by a separate non-race pass instead of the
 # race run. -race forces atomic coverage counters, which made the scanner's
@@ -450,18 +450,19 @@ def predicted_loads(tags: str) -> dict[str, float]:
 
 
 def package_makespan(seconds: list[float], slots: int) -> float:
-    """Finish time of whole packages run on a fixed number of slots.
+    """Worst-case finish time of whole packages run on a fixed number of slots.
 
-    A package cannot be split, so three 350s packages on two slots take 700s,
-    not the 525s that dividing the total would claim. Packages are placed
-    longest first on the slot that frees soonest, which is how a pool of go
-    test workers drains a queue once the long ones are at its head.
+    go test -p starts packages in build-graph order, not longest first, so any
+    estimate that assumes a good order can come in under the real shard time.
+    For any order in which a free slot never sits idle while a package waits,
+    the finish time is at most total/slots + (1 - 1/slots) * longest. That
+    bound is what the budget is checked against. Three 350s packages on two
+    slots therefore predict 700s, and a single package can never be divided.
     """
-    finish = [0.0] * max(slots, 1)
-    for duration in sorted(seconds, reverse=True):
-        slot = min(range(len(finish)), key=lambda index: (finish[index], index))
-        finish[slot] += duration
-    return max(finish)
+    if not seconds:
+        return 0.0
+    slots = max(slots, 1)
+    return sum(seconds) / slots + (1 - 1 / slots) * max(seconds)
 
 
 def check_budget(tags: str, budget: float) -> int:

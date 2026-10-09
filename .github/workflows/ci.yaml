@@ -172,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -230,8 +230,14 @@ jobs:
             # Same packages and selector without -race: set-mode coverage only.
             # A failure here is a test failure and fails the shard.
             # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages
+            go test -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages 2>&1 | tee /tmp/coverage-pass.log
             test_status=$?
+            # Package init code bumps coverage counters on its own, so the
+            # profile cannot prove a test ran; go test says when none did.
+            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.log; then
+              echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
+              test_status=1
+            fi
           fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
@@ -282,7 +288,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -351,7 +357,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -409,8 +415,14 @@ jobs:
             # Same packages and selector without -race: set-mode coverage only.
             # A failure here is a test failure and fails the shard.
             # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -tags enterprise -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages
+            go test -tags enterprise -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages 2>&1 | tee /tmp/coverage-pass.log
             test_status=$?
+            # Package init code bumps coverage counters on its own, so the
+            # profile cannot prove a test ran; go test says when none did.
+            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.log; then
+              echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
+              test_status=1
+            fi
           fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
@@ -463,7 +475,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

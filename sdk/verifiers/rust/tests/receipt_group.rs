@@ -31,7 +31,7 @@ fn unreadable_manifests_are_incomplete() {
             "GROUP_VALID"
         );
         let path = dir.join(format!("receipt-group-{group}-{phase}.json"));
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let error = fs::read(&path).expect_err("must reproduce an unreadable manifest");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         let report = verify_receipt_group(&dir, &group, &keys);
@@ -85,7 +85,7 @@ fn unreadable_native_ael_files_are_incomplete() {
                 .path(),
             _ => run.join("recorders/pipelock.jsonl"),
         };
-        fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(
             fs::read(&path).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied

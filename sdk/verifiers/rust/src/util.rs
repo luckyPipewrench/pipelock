@@ -548,21 +548,6 @@ pub fn string_vec_at(value: &Value, path: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::reject_duplicate_keys;
-
-    #[test]
-    fn rejects_numbers_outside_cross_language_exact_range() {
-        let err = reject_duplicate_keys(r#"{"count":9007199254740993}"#)
-            .expect_err("unsafe integer must be rejected");
-        assert!(err.to_string().contains("cross-language exact range"));
-
-        reject_duplicate_keys(r#"{"count":9007199254740991}"#)
-            .expect("maximum exact integer must remain valid");
-    }
-}
-
 pub(crate) fn same_directory_identity(
     before: &std::fs::Metadata,
     after: &std::fs::Metadata,
@@ -594,5 +579,20 @@ pub(crate) fn metadata_identity(metadata: &std::fs::Metadata) -> Vec<u8> {
     {
         let _ = metadata;
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_duplicate_keys;
+
+    #[test]
+    fn rejects_numbers_outside_cross_language_exact_range() {
+        let err = reject_duplicate_keys(r#"{"count":9007199254740993}"#)
+            .expect_err("unsafe integer must be rejected");
+        assert!(err.to_string().contains("cross-language exact range"));
+
+        reject_duplicate_keys(r#"{"count":9007199254740991}"#)
+            .expect("maximum exact integer must remain valid");
     }
 }

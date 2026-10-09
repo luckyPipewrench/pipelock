@@ -141,7 +141,8 @@ name the same way the proxy does, prints an `Identity:` line, and prints any
 refusal it can determine from the URL and name alone. It does not read launch
 credentials or check the live process, so a missing or malformed session
 header is caught when the proxy launches, and an owner that fails verification
-is caught when the proxy launches or opens any later connection; use
+is caught each time the proxy opens a connection to the upstream, starting
+with the one for the first forwarded request, not at launch; use
 `pipelock mcp identity inspect` against the running service for that.
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,

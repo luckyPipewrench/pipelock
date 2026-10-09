@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -263,13 +264,22 @@ Examples:
 						return err
 					}
 				}
-				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-				if extractErr != nil {
-					return evidenceReadError(fmt.Errorf("extracting session receipts: %w", extractErr))
-				}
-				evidenceReceipts, evidenceErr := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-				if evidenceErr != nil {
-					return evidenceReadError(fmt.Errorf("extracting session evidence receipts: %w", evidenceErr))
+				var receipts []receipt.Receipt
+				var evidenceReceipts []contractreceipt.EvidenceReceipt
+				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
+					var extractErr error
+					receipts, extractErr = receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+					if extractErr != nil {
+						return fmt.Errorf("extracting session receipts: %w", extractErr)
+					}
+					evidenceReceipts, extractErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+					if extractErr != nil {
+						return fmt.Errorf("extracting session evidence receipts: %w", extractErr)
+					}
+					return nil
+				})
+				if readErr != nil {
+					return evidenceReadError(readErr)
 				}
 				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
 				return outputResult(out, verifyCleanReport(out, label, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
@@ -435,6 +445,12 @@ func resolveOneReceiptSession(location recorder.EvidenceLocation, base string) (
 }
 
 func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	return withDirectoryReportSnapshot(out, location, sessionID, func(buffer io.Writer) error {
+		return verifyWholeRecorderDirInner(buffer, location, sessionID, explicit, trustedKeys, opts)
+	})
+}
+
+func verifyWholeRecorderDirInner(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
 	base := sessionID
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b
@@ -1285,6 +1301,29 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 // the base's restart continuity, and fails when any chain fails or any link
 // file does not verify.
 func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	return withDirectoryReportSnapshot(out, location, sessionID, func(buffer io.Writer) error {
+		return verifyChainDirWithContinuityInner(buffer, location, sessionID, explicit, trustedKeys, opts)
+	})
+}
+
+func withDirectoryReportSnapshot(out io.Writer, location recorder.EvidenceLocation, session string, consume func(io.Writer) error) error {
+	base := session
+	if b, ok := receipt.RunSessionBase(base); ok {
+		base = b
+	}
+	var buffer bytes.Buffer
+	err := receipt.WithBaseHistorySnapshot(location.Dir, base, func() error { return consume(&buffer) })
+	if errors.Is(err, recorder.ErrEvidenceChanged) {
+		_, _ = fmt.Fprintf(out, "VERIFICATION INCOMPLETE: %s\n", err)
+		return err
+	}
+	if _, writeErr := io.Copy(out, &buffer); writeErr != nil {
+		return writeErr
+	}
+	return err
+}
+
+func verifyChainDirWithContinuityInner(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
 	base := sessionID
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b

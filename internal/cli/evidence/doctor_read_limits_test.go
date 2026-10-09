@@ -98,6 +98,13 @@ func TestDoctorSuppressedDamageRetainsVerdict(t *testing.T) {
 	if !report.Damaged() || report.Conclusive() {
 		t.Fatalf("suppressed damage lost or partial scan certified: %+v", report)
 	}
+	var out bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&out)
+	printEvidenceDoctorReport(cmd, report)
+	if !strings.Contains(out.String(), "doctor: inconclusive") || strings.Contains(out.String(), "doctor: damaged") {
+		t.Fatalf("partial audit claimed a conclusive headline: %s", out.String())
+	}
 }
 
 func TestDoctorEntryLimitIsInconclusive(t *testing.T) {
@@ -124,5 +131,111 @@ func TestDoctorEntryLimitIsInconclusive(t *testing.T) {
 	}
 	if report.Damaged() || report.Conclusive() || !hasDoctorFinding(report, "file_read_limit") {
 		t.Fatalf("entry display budget became corruption: %+v", report)
+	}
+}
+
+func TestDoctorChangedInventoryDiscardsVerdict(t *testing.T) {
+	for _, initial := range []string{"healthy", "damaged", "empty"} {
+		t.Run(initial, func(t *testing.T) {
+			dir := t.TempDir()
+			if initial == "healthy" {
+				writeActualDoctorReceipt(t, dir)
+			}
+			if initial == "damaged" {
+				if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-0.jsonl"), []byte("not-json\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			location, err := recorder.ResolveEvidenceLocation(dir, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := evidenceDoctor{dir: dir, location: location, sidecarFiles: make(map[string]struct{}), receiptRefs: make(map[string][]doctorChainRef), escrowRefs: make(map[string][]doctorEntryRef)}
+			d.scanSnapshot(func() {
+				d.scanFiles()
+				if initial == "damaged" && !d.structuralDamage {
+					t.Fatal("stable malformed positive control")
+				}
+				if initial != "damaged" && (d.structuralDamage || d.readIncomplete) {
+					t.Fatalf("producer control: %+v", d)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "evidence-changing-0.jsonl"), []byte("changed\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			})
+			report := evidenceDoctorReport{Dir: dir, FilesRead: d.filesRead, Findings: d.findings, StructuralDamage: d.structuralDamage, ReadIncomplete: d.readIncomplete}
+			if report.Damaged() || report.Conclusive() {
+				t.Fatalf("changing evidence supported a verdict: %+v", report)
+			}
+			var out bytes.Buffer
+			cmd := Cmd()
+			cmd.SetOut(&out)
+			printEvidenceDoctorReport(cmd, report)
+			if !strings.Contains(out.String(), "doctor: inconclusive") {
+				t.Fatalf("verdict output: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestDoctorCorpusSnapshotIncludesDiscoveryAndContinuity(t *testing.T) {
+	for _, change := range []string{"namespace", "link", "unrelated"} {
+		t.Run(change, func(t *testing.T) {
+			dir := t.TempDir()
+			writeActualDoctorReceipt(t, dir)
+			control, err := runEvidenceDoctor(dir)
+			if err != nil || !control.Conclusive() || control.Damaged() {
+				t.Fatalf("producer control: %+v, %v", control, err)
+			}
+			report, err := runEvidenceDoctorSnapshot(dir, func() {
+				switch change {
+				case "namespace":
+					nested := filepath.Join(dir, "another")
+					if err := os.Mkdir(nested, 0o750); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(nested, "evidence-new-0.jsonl"), []byte("bad\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "link":
+					if err := os.WriteFile(filepath.Join(dir, "chain-link-proxy.json"), []byte("bad\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "unrelated":
+					if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("other\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Damaged() || report.Conclusive() != (change == "unrelated") {
+				t.Fatalf("changed corpus supported a verdict: %+v", report)
+			}
+		})
+	}
+}
+
+func TestDoctorIncludesRootLinksBesideNestedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "writer")
+	if err := os.Mkdir(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeActualDoctorReceipt(t, nested)
+	control, err := runEvidenceDoctor(dir)
+	if err != nil || !control.Conclusive() || control.Damaged() {
+		t.Fatalf("producer control: %+v %v", control, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chain-link-proxy.json"), []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runEvidenceDoctor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Damaged() {
+		t.Fatalf("root continuity artifact ignored: %+v", report)
 	}
 }

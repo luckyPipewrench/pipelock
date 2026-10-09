@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +69,30 @@ type chainSetFinding struct {
 // matches its link, whether the predecessor has a second successor, or
 // whether another chain replays it.
 func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocation, trust chainTrust, opts chainOptions) (bool, error) {
+	base := opts.sessionID
+	if b, ok := actionreceipt.RunSessionBase(base); ok {
+		base = b
+	}
+	var output, diagnostics bytes.Buffer
+	var handled bool
+	err := actionreceipt.WithBaseHistorySnapshot(location.Dir, base, func() error {
+		var consumeErr error
+		handled, consumeErr = runChainSetIfRunsInner(&output, &diagnostics, location, trust, opts)
+		return consumeErr
+	})
+	if errors.Is(err, recorder.ErrEvidenceChanged) {
+		return true, evidenceContentError(err)
+	}
+	if _, writeErr := io.Copy(stdout, &output); writeErr != nil {
+		return true, writeErr
+	}
+	if _, writeErr := io.Copy(stderr, &diagnostics); writeErr != nil {
+		return true, writeErr
+	}
+	return handled, err
+}
+
+func runChainSetIfRunsInner(stdout, stderr io.Writer, location recorder.EvidenceLocation, trust chainTrust, opts chainOptions) (bool, error) {
 	base := opts.sessionID
 	if b, ok := actionreceipt.RunSessionBase(base); ok {
 		base = b

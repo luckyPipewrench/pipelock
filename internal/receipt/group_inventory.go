@@ -86,7 +86,10 @@ func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
 		}
 		runDir := filepath.Join(dir, "ael", run)
 		info, err := os.Lstat(runDir)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
+			return fmt.Errorf("inspect native AEL run %q: %w", run, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("native AEL run %q is not a real directory", run)
 		}
 		h := sha256.New()

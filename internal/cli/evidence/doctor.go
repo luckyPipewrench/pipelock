@@ -187,6 +187,7 @@ type evidenceDoctor struct {
 	recorderRefs     []doctorEntryRef
 	receiptRefs      map[string][]doctorChainRef
 	escrowRefs       map[string][]doctorEntryRef
+	continuity       []doctorContinuity
 }
 
 func doctorCmd() *cobra.Command {
@@ -227,16 +228,16 @@ what Pipelock observed; it does not prove the damage was accidental.`,
 			if err := writeEvidenceCorpusMetric(prometheusTextfile, healthy); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
+			if !report.Conclusive() {
+				// A finding can describe an observed bad record without giving
+				// an incomplete audit a conclusive whole-corpus verdict.
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor scan was incomplete; absence of damage not confirmed"))
+			}
 			if report.Damaged() && !report.ContinuityDamaged() {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found structural damage"))
 			}
 			if report.ContinuityDamaged() {
 				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor found restart-continuity link findings"))
-			}
-			if !report.Conclusive() {
-				// Fail closed: a partial scan cannot certify an intact chain, so
-				// a CI gate must not go green on it.
-				return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("evidence doctor scan was incomplete; absence of damage not confirmed"))
 			}
 			return nil
 		},
@@ -286,6 +287,10 @@ func writeEvidenceCorpusMetric(path string, healthy bool) error {
 }
 
 func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
+	return runEvidenceDoctorSnapshot(dir, nil)
+}
+
+func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorReport, error) {
 	cleanDir := filepath.Clean(dir)
 	info, err := os.Stat(cleanDir)
 	if err != nil {
@@ -308,6 +313,30 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 			}},
 		}, nil
 	}
+	if len(locations) == 0 || locations[0].ID != "" {
+		locations = append([]recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}, locations...)
+	}
+	before, err := doctorCorpusInventory(locations)
+	if err != nil {
+		return inconclusiveDoctorReport(cleanDir, err), nil
+	}
+	report, scanErr := scanEvidenceDoctorLocations(cleanDir, locations)
+	if afterScan != nil {
+		afterScan()
+	}
+	afterLocations, discoverErr := recorder.DiscoverEvidenceLocations(cleanDir)
+	if len(afterLocations) == 0 || afterLocations[0].ID != "" {
+		afterLocations = append([]recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}, afterLocations...)
+	}
+	afterRoot, rootErr := os.Stat(cleanDir)
+	after, inventoryErr := doctorCorpusInventory(afterLocations)
+	if discoverErr != nil || rootErr != nil || !os.SameFile(info, afterRoot) || inventoryErr != nil || before != after {
+		return inconclusiveDoctorReport(cleanDir, recorder.ErrEvidenceChanged), nil
+	}
+	return report, scanErr
+}
+
+func scanEvidenceDoctorLocations(cleanDir string, locations []recorder.EvidenceLocation) (evidenceDoctorReport, error) {
 	if len(locations) == 0 {
 		locations = []recorder.EvidenceLocation{{Root: cleanDir, Dir: cleanDir}}
 	}
@@ -325,7 +354,7 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 			escrowRefs:   make(map[string][]doctorEntryRef),
 		}
 		d.scan()
-		report.Continuity = append(report.Continuity, checkDoctorContinuity(location.Dir)...)
+		report.Continuity = append(report.Continuity, d.continuity...)
 		report.FilesRead += d.filesRead
 		report.Findings = append(report.Findings, d.findings...)
 		report.Truncated = report.Truncated || d.truncated
@@ -345,6 +374,38 @@ func runEvidenceDoctor(dir string) (evidenceDoctorReport, error) {
 }
 
 func (d *evidenceDoctor) scan() {
+	d.scanSnapshot(func() {
+		d.scanFiles()
+		d.continuity = checkDoctorContinuity(d.dir)
+	})
+}
+
+func (d *evidenceDoctor) scanSnapshot(scan func()) {
+	beforeRoot, err := os.Stat(d.dir)
+	var before [32]byte
+	if err == nil {
+		before, err = doctorCorpusInventory([]recorder.EvidenceLocation{d.location})
+	}
+	if err == nil {
+		scan()
+		after, inventoryErr := doctorCorpusInventory([]recorder.EvidenceLocation{d.location})
+		afterRoot, rootErr := os.Stat(d.dir)
+		if inventoryErr != nil || rootErr != nil || !os.SameFile(beforeRoot, afterRoot) || before != after {
+			err = recorder.ErrEvidenceChanged
+		}
+	}
+	if err != nil {
+		// Neither damage nor health is established by an unstable corpus. Do
+		// not publish findings assembled from different versions of its files.
+		d.findings = nil
+		d.structuralDamage = false
+		d.readIncomplete = true
+		d.continuity = []doctorContinuity{{Dir: d.dir, Err: err.Error()}}
+		d.addIncompleteRead("recorder inventory", err)
+	}
+}
+
+func (d *evidenceDoctor) scanFiles() {
 	dirEntries, skipped, err := readEvidenceDoctorDir(d.location)
 	if err != nil {
 		d.readIncomplete = true
@@ -771,11 +832,11 @@ func printEvidenceDoctorReport(cmd *cobra.Command, report evidenceDoctorReport) 
 
 	verdict := "healthy"
 	switch {
-	case report.Damaged():
-		verdict = "damaged"
 	case !report.Conclusive():
 		// Absence of findings over a partial scan is not health.
 		verdict = "inconclusive"
+	case report.Damaged():
+		verdict = "damaged"
 	}
 	_, _ = fmt.Fprintf(out, "evidence doctor: %s (%s, %d JSONL file(s) read)\n", verdict, report.Dir, report.FilesRead)
 	if report.ScanTruncated {

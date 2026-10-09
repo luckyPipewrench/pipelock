@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -39,7 +40,10 @@ type ReceiptGroupResult struct {
 // setReadError keeps unavailable evidence distinct from a stable invalid group.
 func (r *ReceiptGroupResult) setReadError(err error) {
 	r.Error = err.Error()
-	if errors.Is(err, recorder.ErrEvidenceChanged) {
+	var pathErr *os.PathError
+	var systemErr syscall.Errno
+	if errors.Is(err, recorder.ErrEvidenceChanged) || errors.Is(err, os.ErrPermission) ||
+		((errors.As(err, &pathErr) || errors.As(err, &systemErr)) && !errors.Is(err, os.ErrNotExist)) {
 		r.Verdict = GroupIncomplete
 	}
 }
@@ -101,7 +105,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	}
 	openBytes, err := readBoundedGroupFile(dir, openName)
 	if err != nil {
-		result.Error = fmt.Sprintf("read receipt group opening: %v", err)
+		result.setReadError(fmt.Errorf("read receipt group opening: %w", err))
 		return result
 	}
 	open, err := UnmarshalReceiptGroupOpen(openBytes, trusted)
@@ -146,7 +150,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		return result
 	}
 	if err != nil {
-		result.Error = fmt.Sprintf("read receipt group close: %v", err)
+		result.setReadError(fmt.Errorf("read receipt group close: %w", err))
 		return result
 	}
 	closed, err := UnmarshalReceiptGroupClose(closeBytes, open, result.OpenManifestSHA, trusted)
@@ -372,11 +376,17 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 
 func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error) {
 	root, err := os.Lstat(filepath.Clean(dir))
-	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
+	if err != nil {
+		return nil, nil, fmt.Errorf("inspect receipt group evidence path: %w", err)
+	}
+	if !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
 		return nil, nil, errors.New("receipt group evidence path is not a real directory")
 	}
 	ael, err := os.Lstat(filepath.Join(filepath.Clean(dir), "ael"))
-	if err != nil || !ael.IsDir() || ael.Mode()&os.ModeSymlink != 0 {
+	if err != nil {
+		return nil, nil, fmt.Errorf("inspect receipt group AEL path: %w", err)
+	}
+	if !ael.IsDir() || ael.Mode()&os.ModeSymlink != 0 {
 		return nil, nil, errors.New("receipt group AEL path is not a real directory")
 	}
 	return root, ael, nil

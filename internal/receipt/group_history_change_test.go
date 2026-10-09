@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -81,5 +82,59 @@ func TestGroupChangedReadErrorIsIncomplete(t *testing.T) {
 	got = verifyReceiptGroupWithIndex(f.dir, id, f.trusted, failedGroupAELBatchIndex{err: errors.New("stable integrity failure")})
 	if got.Verdict != GroupInvalid {
 		t.Fatalf("stable invalid control: %+v", got)
+	}
+	got = verifyReceiptGroupWithIndex(f.dir, id, f.trusted, failedGroupAELBatchIndex{err: syscall.EIO})
+	if got.Verdict != GroupIncomplete {
+		t.Fatalf("unavailable device reported invalid evidence: %+v", got)
+	}
+}
+
+func TestGroupUnreadableInventoryIsIncomplete(t *testing.T) {
+	f := newGroupScaleFixture(t)
+	id := f.run(t, 0, "", 1, 100)
+	if got := VerifyReceiptGroup(f.dir, id, f.trusted); got.Verdict != GroupValid {
+		t.Fatalf("producer control: %+v", got)
+	}
+	ael := filepath.Join(f.dir, "ael")
+	info, err := os.Stat(ael)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ael, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ael, info.Mode().Perm()) })
+	if _, err := os.ReadDir(ael); !errors.Is(err, os.ErrPermission) {
+		t.Skipf("cannot reproduce unreadable directory: %v", err)
+	}
+	got := VerifyReceiptGroup(f.dir, id, f.trusted)
+	if got.Verdict != GroupIncomplete || !strings.Contains(got.Error, "permission denied") {
+		t.Fatalf("unavailable inventory reported corruption: %+v", got)
+	}
+}
+
+func TestGroupUnreadableManifestIsIncomplete(t *testing.T) {
+	for _, phase := range []string{"open", "close"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newGroupScaleFixture(t)
+			id := f.run(t, 0, "", 1, 100)
+			if got := VerifyReceiptGroup(f.dir, id, f.trusted); got.Verdict != GroupValid {
+				t.Fatalf("producer control: %+v", got)
+			}
+			name, err := ReceiptGroupFileName(id, phase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(f.dir, name)
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.ReadFile(filepath.Clean(path)); !errors.Is(err, os.ErrPermission) {
+				t.Skipf("cannot reproduce unavailable file: %v", err)
+			}
+			if got := VerifyReceiptGroup(f.dir, id, f.trusted); got.Verdict != GroupIncomplete {
+				t.Fatalf("unavailable manifest reported invalid: %+v", got)
+			}
+		})
 	}
 }

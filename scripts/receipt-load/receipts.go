@@ -246,6 +246,9 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	kind := v1Kind(ar.Phase, ar.Verdict)
 	switch s.classify(ar.Target) {
 	case targetControl:
+		if _, seen := s.actionSlot[ar.ActionID]; seen {
+			return errors.New("control ActionID also owns a workload request")
+		}
 		s.obs.controlReceipts++
 		if ar.ActionID != "" {
 			s.controlIDs[ar.ActionID] = struct{}{}
@@ -260,6 +263,9 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 			s.obs.orphans[kind]++
 			s.obs.sampleOrphan(kind.String() + " for key outside the plan: " + key)
 			break
+		}
+		if _, control := s.controlIDs[ar.ActionID]; control {
+			return errors.New("workload ActionID also owns a control receipt")
 		}
 		if ar.ActionID == "" {
 			return errors.New("workload receipt has no ActionID")

@@ -160,3 +160,58 @@ func TestReviewRunIdentityIsFresh(t *testing.T) {
 		t.Fatal("repeated seed reused run identity")
 	}
 }
+
+func TestReviewControlActionIDCannotOwnWorkload(t *testing.T) {
+	plan := newWorkload(1, 2, 40)
+	var receipts []synthReceipt
+	for _, r := range perfectReceipts(plan, modeBest) {
+		if r.slot == 0 && r.kind == kindAEL {
+			continue
+		}
+		if r.slot == 0 {
+			r.actionID = "control-open"
+		}
+		receipts = append(receipts, r)
+	}
+	for _, order := range []string{"control-first", "control-last"} {
+		t.Run(order, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSynthRecorder(t, dir, plan, synthSink, receipts)
+			if order == "control-last" {
+				path := filepath.Join(dir, "evidence-proxy.run.x-0.jsonl")
+				data, err := os.ReadFile(filepath.Clean(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+				lines = append(lines[1:], lines[0])
+				if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := scanRecorder(dir, plan, synthSink); err == nil {
+				t.Fatal("control activity can replace a missing request activity")
+			}
+		})
+	}
+}
+
+func TestReviewOffDoesNotExemptControls(t *testing.T) {
+	plan := newWorkload(1, 2, 40)
+	dir := t.TempDir()
+	writeSynthRecorder(t, dir, plan, synthSink, nil)
+	obs, err := scanRecorder(dir, plan, synthSink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := make([]int, plan.total())
+	for slot := range hits {
+		if !plan.blocked(slot) {
+			hits[slot] = 1
+		}
+	}
+	rep := evaluateIntegrity(integrityInput{mode: modeOff, plan: plan, obs: obs, outcomes: make([]requestOutcome, plan.total()), sinkHits: hits})
+	if rep.Verdict != verdictFail {
+		t.Fatal("off mode exempted unverified control evidence")
+	}
+}

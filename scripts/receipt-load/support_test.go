@@ -321,7 +321,9 @@ func evaluateSynth(t *testing.T, mode string, receipts []synthReceipt) integrity
 	t.Helper()
 	plan := newWorkload(1, 2, 40)
 	dir := t.TempDir()
-	writeSynthRecorder(t, dir, plan, synthSink, receipts)
+	if mode != modeOff || len(receipts) > 0 {
+		writeSynthRecorder(t, dir, plan, synthSink, receipts)
+	}
 	obs, err := scanRecorder(dir, plan, synthSink)
 	if err != nil {
 		t.Fatal(err)

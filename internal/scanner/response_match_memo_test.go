@@ -160,7 +160,7 @@ func TestResponseMatchMemoRequiresKnownRegexSemantics(t *testing.T) {
 	if got := memo.match(nil, []*compiledPattern{posix}, content); len(got) != 1 {
 		t.Fatal("POSIX newline anchors must not reuse a Perl negative")
 	}
-	// Required-literal state is deliberately excluded from reuse.
+	// A change to required-literal state must use a distinct cache identity.
 	extra := memoTestPattern("extra", "fixture-marker")
 	extra.requiredLiteralsAny = []string{"not-present"}
 	memo.match(nil, []*compiledPattern{extra}, content)

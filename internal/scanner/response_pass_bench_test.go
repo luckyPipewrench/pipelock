@@ -22,10 +22,19 @@ func responsePassFixture(t testing.TB) []byte {
 	if path == "" {
 		t.Skip("set PIPELOCK_RESPONSE_PASS_SAMPLE to a local response fixture")
 	}
-	// Read no more than the fixture cap, so a large file or a device that
-	// never ends cannot exhaust memory or stall the test.
+	// Accept only a regular file, and read no more than the fixture cap: a
+	// FIFO or device could block on open or read, and a huge file could
+	// exhaust memory.
 	const size = 2108646
-	f, err := os.Open(filepath.Clean(path))
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("response fixture %q is not a regular file", path)
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}

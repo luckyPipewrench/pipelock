@@ -1047,9 +1047,10 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, true)
 			responseencoding.RequestIdentity(upReq.Header)
 
-			if !admitLegacyMethod() {
-				return
-			}
+			// A GET opens the legacy server-to-client event stream. It carries no
+			// tool call, so it is not a mediated action and gets no admission
+			// receipt; every message delivered on the stream is scanned and its
+			// decision is confirmed before delivery.
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
 				if handleMetadataDialError(err, nil) {

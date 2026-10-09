@@ -187,11 +187,13 @@ func TestHTTPListenerRequiredLegacyMethodAdmission(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					wantForward := failure == "healthy" || failure == "optional"
+					// A GET subscription is not a mediated action; only DELETE needs
+					// an admission receipt before it reaches upstream.
+					wantForward := method == http.MethodGet || failure == "healthy" || failure == "optional"
 					if got := hits.Load() != 0; got != wantForward {
 						t.Errorf("upstream reached=%t, want %t; status=%d body=%s", got, wantForward, resp.StatusCode, body)
 					}
-					if failure == "healthy" && syncedAtEntry.Load() < 2 {
+					if method == http.MethodDelete && failure == "healthy" && syncedAtEntry.Load() < 2 {
 						t.Errorf("upstream reached after %d syncs, want both families", syncedAtEntry.Load())
 					}
 					if !wantForward && (resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed)) {

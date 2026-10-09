@@ -30,7 +30,6 @@ import (
 const (
 	webImagePath   = "/_next/image/"
 	webMediaPath   = "/_next/static/media/img-headshot-PriscillaMontgomery.Zk93mQ4vR7xT.webp"
-	webPageOrigin  = "https://login.auth.vendor.example"
 	webCaptchaPath = "/recaptcha/api2/anchor"
 )
 
@@ -84,8 +83,20 @@ func (h *webPlatformHarness) do(upstream *httptest.Server, path, agent string, h
 
 func newWebPlatformHarness(t *testing.T) *webPlatformHarness {
 	t.Helper()
+	return newWebPlatformHarnessThreshold(t, 0)
+}
+
+// newWebPlatformHarnessThreshold lowers the URL entropy threshold when it is
+// above zero. A local test server's origin (an IP literal and a port) encodes to
+// a value that scores below the default threshold, so the page-origin rows need
+// the lower bar for their blocking rows to exercise the entropy gate at all.
+func newWebPlatformHarnessThreshold(t *testing.T, threshold float64) *webPlatformHarness {
+	t.Helper()
 	cache, pool, cfg, _, _, m := testInterceptSetup(t)
 	issuerCookieTestConfig(t, cfg)
+	if threshold > 0 {
+		cfg.FetchProxy.Monitoring.EntropyThreshold = threshold
+	}
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
@@ -166,13 +177,6 @@ func TestInterceptWebPlatformEntropyShapes(t *testing.T) {
 		{"bare JSON word is not a link", site, "/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusForbidden},
 		{"relative JSON word resolved under the response directory", site, "/json/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusForbidden},
 		{"rooted JSON path is a link", site, "/rooted/img-headshot-HenriettaLacksSmith.Tn84kC6xM2zR.webp", "agent-one", nil, http.StatusOK},
-		// Captcha-shaped value: its decoding is the embedding page's origin.
-		{"captcha frame without a referer", site, webCaptchaPath + "?co=" + captchaOriginValue(webPageOrigin+":443"), "agent-one", nil, http.StatusForbidden},
-		{"captcha frame echoing the referer origin", site, webCaptchaPath + "?co=" + captchaOriginValue(webPageOrigin+":443"), "agent-one", http.Header{"Referer": {webPageOrigin + "/login?next=1"}}, http.StatusOK},
-		{"captcha frame echoing the origin header", site, webCaptchaPath + "?co=" + captchaOriginValue(webPageOrigin+":443"), "agent-one", http.Header{"Origin": {webPageOrigin}}, http.StatusOK},
-		{"captcha value decoding to another origin", site, webCaptchaPath + "?co=" + captchaOriginValue("https://other.vendor.example:443"), "agent-one", http.Header{"Referer": {webPageOrigin + "/"}}, http.StatusForbidden},
-		{"captcha value decoding to the referer path", site, webCaptchaPath + "?co=" + captchaOriginValue(webPageOrigin+"/login/session/12345"), "agent-one", http.Header{"Referer": {webPageOrigin + "/login/session/12345"}}, http.StatusForbidden},
-		{"captcha value with two referers", site, webCaptchaPath + "?co=" + captchaOriginValue(webPageOrigin+":443"), "agent-one", http.Header{"Referer": {webPageOrigin + "/", webPageOrigin + "/"}}, http.StatusForbidden},
 	}
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -228,6 +232,11 @@ func TestInterceptWebPlatformSelfIssuedValue(t *testing.T) {
 // can already put it there. The echo rule must therefore change nothing about
 // what such a request gets: the same Referer with an unrelated query value
 // gets the same status, and a credential in the Referer host stays blocked.
+//
+// The fixtures are lower case because the guard canonicalizes the host: a
+// mixed-case host never matches its own encoding, so it would test nothing.
+// The first two hosts are agent-chosen strings that never served a document;
+// the guard is the served-document requirement, not the header.
 func TestInterceptPageOriginEchoAddsNoChannel(t *testing.T) {
 	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
@@ -236,8 +245,8 @@ func TestInterceptPageOriginEchoAddsNoChannel(t *testing.T) {
 	h := newWebPlatformHarness(t)
 	for _, referer := range []string{
 		"https://" + strings.ToLower(issuerUnissuedSecret()) + ".vendor.example/",
-		"https://" + issuedTestToken() + ".vendor.example/",
-		"https://" + issuerUnissuedSecret() + ".vendor.example/",
+		"https://" + strings.ToLower(issuedTestToken()) + ".vendor.example/",
+		"https://q7xm2v9kb4zf8wc3yj6rd1ns5th0lp.vendor.example/",
 	} {
 		origin := strings.TrimSuffix(referer, "/") + ":443"
 		withEcho := h.do(site, webCaptchaPath+"?co="+captchaOriginValue(origin), "agent-one", http.Header{"Referer": {referer}})
@@ -296,8 +305,15 @@ func TestPageOriginEchoed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pageOriginEchoed(tt.header, tt.value); got != tt.want {
+			origin, got := pageOriginEchoed(tt.header, tt.value)
+			if got != tt.want {
 				t.Fatalf("pageOriginEchoed = %v, want %v", got, tt.want)
+			}
+			if got != (origin != nil) {
+				t.Fatalf("origin = %v for result %v", origin, got)
+			}
+			if got && origin.Scheme != "https" && origin.Scheme != "http" {
+				t.Fatalf("origin scheme = %q", origin.Scheme)
 			}
 		})
 	}

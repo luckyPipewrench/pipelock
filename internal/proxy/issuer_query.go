@@ -57,8 +57,12 @@ type issuerQueryStore struct {
 	// paths holds keyed digests of the URL paths a response served from its
 	// own origin linked to. They live apart from values so a page that links
 	// to hundreds of assets cannot push a paging token out of its list.
-	paths    map[string][][32]byte
-	used     map[string]time.Time
+	paths map[string][][32]byte
+	// documents holds keyed digests of the origins that served the session an
+	// HTML document. A request's page-origin value is accepted only for an
+	// origin in this list, so a header the agent wrote cannot name one.
+	documents map[string][][32]byte
+	used      map[string]time.Time
 	disabled bool
 }
 
@@ -71,7 +75,8 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		sessions:  make(map[string][]issuerQueryEntry),
 		redirects: make(map[string][][32]byte),
 		paths:     make(map[string][][32]byte),
-		used:      make(map[string]time.Time),
+		documents: make(map[string][][32]byte),
+		used:     make(map[string]time.Time),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true
@@ -136,6 +141,7 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.sessions, oldest)
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
+	delete(s.documents, oldest)
 	delete(s.used, oldest)
 }
 
@@ -251,6 +257,64 @@ func (s *issuerQueryStore) pathIssued(session string, target *url.URL) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.paths[session] {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = time.Now()
+			return true
+		}
+	}
+	return false
+}
+
+// documentDigest binds one origin. The leading tag keeps it apart from the
+// other digests.
+func (s *issuerQueryStore) documentDigest(origin *url.URL) ([32]byte, bool) {
+	host, port, ok := issuerCookieOrigin(origin)
+	if !ok {
+		return [32]byte{}, false
+	}
+	return s.digestFields("html_document_origin", strings.ToLower(origin.Scheme), host, port), true
+}
+
+// rememberDocument records that the session received an HTML document from the
+// origin of target.
+func (s *issuerQueryStore) rememberDocument(session string, target *url.URL, now time.Time) {
+	if s == nil || s.disabled || session == "" {
+		return
+	}
+	digest, ok := s.documentDigest(target)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admitSessionLocked(session)
+	served := s.documents[session]
+	for _, existing := range served {
+		if hmac.Equal(existing[:], digest[:]) {
+			s.used[session] = now
+			return
+		}
+	}
+	if len(served) >= issuerCookieMaxEntries {
+		served = served[1:]
+	}
+	s.documents[session] = append(served, digest)
+	s.used[session] = now
+}
+
+// documentServed reports whether the session received an HTML document from
+// the origin of target.
+func (s *issuerQueryStore) documentServed(session string, target *url.URL) bool {
+	if s == nil || s.disabled || session == "" {
+		return false
+	}
+	digest, ok := s.documentDigest(target)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.documents[session] {
 		if hmac.Equal(existing[:], digest[:]) {
 			s.used[session] = time.Now()
 			return true
@@ -525,6 +589,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		// The agent received a document from this origin, so a later request
+		// may name it as the page it is embedded in.
+		store.rememberDocument(session, response.Request.URL, time.Now())
 		links, baseHref := htmlLinksAndBase(body, remaining)
 		base = sameOriginBase(response.Request.URL, baseHref)
 		for _, link := range links {

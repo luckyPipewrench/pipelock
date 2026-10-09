@@ -14,8 +14,9 @@ import (
 )
 
 // issuerQueryPageOrigin names the rule that admitted a value that is only the
-// request's own Referer or Origin origin, base64 encoded. It carries nothing
-// the destination does not already receive in that header.
+// request's own Referer or Origin origin, base64 encoded, for an origin that
+// served this session an HTML document. It carries nothing the destination
+// does not already receive in that header.
 const issuerQueryPageOrigin issuerQueryKind = "page_origin_echo"
 
 // issuerQueryMaxHTMLBytes bounds how much of one HTML response is tokenized
@@ -143,24 +144,28 @@ func srcsetURLs(input string) []string {
 }
 
 // pageOriginEchoed reports whether value is exactly the base64 encoding of the
-// origin of this request's own Referer or Origin header. The destination
-// already receives that header unchanged, so the value tells it nothing new
-// and is not a channel for data the agent holds. Only the origin form is
-// accepted: scheme, host and port, with no path, query or userinfo. A value
-// that decodes to anything else, or that is absent a single such header, is
-// scored normally.
+// origin of this request's own Referer or Origin header, and returns that
+// origin. Only the origin form is accepted: scheme, host and port, with no
+// path, query or userinfo. A value that decodes to anything else, or that is
+// absent a single such header, is scored normally.
+//
+// The header is written by the agent, so matching it proves nothing about the
+// page. The caller must also confirm the returned origin served this session
+// an HTML document (issuerQueryStore.documentServed) before skipping the
+// entropy gate; with that, the value names an origin the session actually
+// navigated to and the destination already receives in the header.
 //
 // The encoding is not chosen by name. Standard and URL alphabets, padded or
 // not, are accepted, as is "." for padding, because that is how a widely
 // embedded captcha frame spells it. Strict decoding rejects non-zero trailing
 // bits, so one origin has a handful of spellings and no more.
-func pageOriginEchoed(h http.Header, value string) bool {
+func pageOriginEchoed(h http.Header, value string) (*url.URL, bool) {
 	if len(value) < 8 || len(value) > 512 {
-		return false
+		return nil, false
 	}
 	origins := headerOrigins(h)
 	if len(origins) == 0 {
-		return false
+		return nil, false
 	}
 	padded := strings.TrimRight(value, ".")
 	if pad := len(value) - len(padded); pad > 0 {
@@ -175,12 +180,17 @@ func pageOriginEchoed(h http.Header, value string) bool {
 			continue
 		}
 		for _, origin := range origins {
-			if string(decoded) == origin {
-				return true
+			if string(decoded) != origin {
+				continue
 			}
+			parsed, err := url.Parse(origin)
+			if err != nil {
+				return nil, false
+			}
+			return parsed, true
 		}
 	}
-	return false
+	return nil, false
 }
 
 // headerOrigins returns the canonical origin spellings of the request's single

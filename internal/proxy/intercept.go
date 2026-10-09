@@ -895,8 +895,10 @@ func newInterceptHandler(
 					kind, ok := store.match(session, r.URL, key, value)
 					if !ok {
 						// A value that is only this request's own Referer or
-						// Origin origin adds nothing the destination lacks.
-						if pageOriginEchoed(r.Header, value) {
+						// Origin origin adds nothing the destination lacks, but
+						// only for an origin that served this session a document:
+						// those headers are written by the agent.
+						if origin, echoed := pageOriginEchoed(r.Header, value); echoed && store.documentServed(session, origin) {
 							if allowKind == issuerQueryObserved {
 								allowKind = issuerQueryPageOrigin
 							}

@@ -3409,7 +3409,7 @@ func urlCredentialWindowsBounded(value string, maxEntries int) (map[string][]int
 	rest := totalSpan - reserve
 	stride := 0
 	if left := maxKnownValuePartialAnchors - reserve; left > 0 && rest > 0 {
-		stride = (rest + left - 1) / left
+		stride = 1 + (rest-1)/left
 	}
 	for _, q := range seqs {
 		if _, err := add(q.text[:minKnownSecretSubstringLen], q.base, 1, 0); err != nil {
@@ -3456,7 +3456,7 @@ func knownValueStride(span int) int {
 	if span <= maxKnownValuePartialAnchors {
 		return 1
 	}
-	return (span + maxKnownValuePartialAnchors - 1) / maxKnownValuePartialAnchors
+	return 1 + (span-1)/maxKnownValuePartialAnchors
 }
 
 func collectValueWindowsBounded(value string, maxEntries int) (map[string][]int, error) {
@@ -3471,22 +3471,25 @@ func collectValueWindowsBounded(value string, maxEntries int) (map[string][]int,
 // span passes it to the next part.
 func collectValueWindowsPhased(value string, base, maxEntries, minStride, phase int) (map[string][]int, int, error) {
 	stride := max(minStride, knownValueStride(len(value)-minKnownSecretSubstringLen+1), 1)
-	starts := len(value) - minKnownSecretSubstringLen + 1
+	starts := max(len(value)-minKnownSecretSubstringLen+1, 0)
 	phase = max(phase, 0)
-	capacity := 0
-	if starts > phase {
-		capacity = (starts - phase + stride - 1) / stride
-	}
-	if maxEntries <= 0 {
-		capacity = 0
-	} else if capacity > maxEntries {
-		capacity = maxEntries
-	}
-	windows := make(map[string][]int, capacity)
+	// Grow from accepted windows instead of sizing an allocation from input
+	// length, phase, and stride. Duplicate and low-entropy windows are omitted.
+	windows := make(map[string][]int)
 	repeated := make(map[string]struct{})
 	start := phase
-	for ; start < starts; start += stride {
+	nextPhase := max(phase-starts, 0)
+	for start < starts {
 		window := value[start : start+minKnownSecretSubstringLen]
+		offset := start
+		// Express the next position relative to the end before adding stride;
+		// even a maximum-int stride must not wrap the loop index.
+		if stride >= starts-start {
+			nextPhase = stride - (starts - start)
+			start = starts
+		} else {
+			start += stride
+		}
 		// The whole-value entropy floor does not protect a low-entropy prefix
 		// or a repeated 16-byte block inside an otherwise high-entropy secret.
 		if ShannonEntropy(window) <= envLeakMinEntropy {
@@ -3500,7 +3503,7 @@ func collectValueWindowsPhased(value string, base, maxEntries, minStride, phase 
 			repeated[window] = struct{}{}
 			continue
 		}
-		windows[window] = []int{base + start}
+		windows[window] = []int{base + offset}
 	}
 	if len(windows) > maxEntries {
 		return nil, 0, fmt.Errorf("%w: need %d entries (%d bytes), %d entries (%d bytes) remain",
@@ -3508,7 +3511,7 @@ func collectValueWindowsPhased(value string, base, maxEntries, minStride, phase 
 			len(windows), len(windows)*knownValueWindowEntryBytes,
 			maxEntries, maxEntries*knownValueWindowEntryBytes)
 	}
-	return windows, max(start-starts, 0), nil
+	return windows, nextPhase, nil
 }
 
 // knownValueWindow is one exact partial-match candidate. Keeping its bytes and

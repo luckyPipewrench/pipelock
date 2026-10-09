@@ -319,7 +319,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	}
 	// Build the baseline exposure payload so all branches can share it.
 	exposure := &MediaExposureFields{
-		ContentType: mt,
+		ContentType: audit.MediaContentType(mt),
 		SizeBytes:   len(body),
 	}
 
@@ -371,7 +371,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 
 	if mt != svgMediaType && !cfg.MediaPolicy.ImageTypeAllowed(mt) {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", mt)
+		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", exposure.ContentType)
 		return MediaPolicyVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -416,7 +416,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	relabeled := ""
 	if sniffed, bad := media.MislabeledDisallowed(mt, body, cfg.MediaPolicy.ImageTypeAllowed); bad {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mt, sniffed)
+		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", exposure.ContentType, sniffed)
 		return MediaPolicyVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -427,7 +427,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	if proven := media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed); proven != mt {
 		relabeled = proven
 		mt = proven
-		exposure.ContentType = proven
+		exposure.ContentType = audit.MediaContentType(proven)
 	}
 	if cfg.MediaPolicy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)
@@ -554,7 +554,7 @@ func sniffMediaType(body []byte) string {
 // on top before dispatching the event.
 func (m *MediaExposureFields) ToEventFields() map[string]any {
 	f := map[string]any{
-		"content_type": m.ContentType,
+		"content_type": audit.MediaContentType(m.ContentType),
 		"size_bytes":   m.SizeBytes,
 		"blocked":      m.Blocked,
 	}
@@ -579,7 +579,7 @@ func (m *MediaExposureFields) ToEventFields() map[string]any {
 func (m *MediaExposureFields) ToAuditInfo(transport string) audit.MediaExposureInfo {
 	return audit.MediaExposureInfo{
 		Transport:       transport,
-		ContentType:     m.ContentType,
+		ContentType:     audit.MediaContentType(m.ContentType),
 		Format:          m.Format,
 		SizeBytes:       m.SizeBytes,
 		MetadataRemoved: m.MetadataRemoved,

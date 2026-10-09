@@ -57,9 +57,12 @@ installed binary unchanged**:
 4. **Optional cosign cross-check.** If a `cosign` binary is on `PATH`, also run
    `cosign verify-blob` against `checksums.txt.sig`/`checksums.txt.pem`, pinned
    to the GitHub Actions OIDC issuer
-   (`https://token.actions.githubusercontent.com`) and the
-   `luckyPipewrench/pipelock` release workflow identity for the target tag. If
-   cosign is present and rejects the signature, the update **aborts**. If cosign
+   (`https://token.actions.githubusercontent.com`) and the release workflow
+   identity for the target tag. Two exact identities are accepted: the
+   `luckyPipewrench/pipelock` release workflow and the same workflow under
+   `pipelab-org/pipelock`, where the repository is moving. No pattern is
+   accepted. If cosign is present and rejects the signature under both
+   identities, the update **aborts**. If cosign
    is **absent**, this step is skipped — it is a secondary ecosystem check, not
    the publisher-authentication path, so its absence is **not** a bypass (native
    verification in step 2 already proved authenticity).

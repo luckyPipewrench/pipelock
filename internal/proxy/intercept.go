@@ -2503,6 +2503,10 @@ func newInterceptHandler(
 					if !ic.Config.FlightRecorder.RequireReceipts {
 						_ = interceptEmitReceipt(ic, passthroughReceipt)
 					}
+					// The outcome closes the request's intent, so it carries the
+					// request action ID, not the passthrough decision's child ID.
+					passthroughOutcome := passthroughReceipt
+					passthroughOutcome.ActionID, passthroughOutcome.ParentActionID = actionID, ""
 					for k, vv := range resp.Header {
 						for _, v := range vv {
 							w.Header().Add(k, v)
@@ -2513,13 +2517,13 @@ func newInterceptHandler(
 					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					if copyErr != nil {
 						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
-						interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, reason)
+						interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, reason)
 						ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 						_ = httpstream.Abort(r.Context(), copyErr)
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
-					interceptEmitOutcomeReceipt(ic, passthroughReceipt, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
+					interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{

@@ -10,15 +10,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// TestFragmentReconstructionContract pins the fragment view's bound. It is
-// the request path's ordered-subsequence bound for split secrets: at most
-// scanner.SubsequenceMaxParts parts, joined scanner.SubsequenceMaxSize or
-// fewer at a time in projection order, skipping unrelated parts between;
-// the receipt view also tries every order of two or three parts and the
-// reverse of four. Widening it is a scanner-wide decision that has to move
-// both paths together, so the cases outside the bound are recorded here as
-// outside it, not as guarantees. docs/guides/receipt-verification.md states
-// the same bound.
+// TestFragmentReconstructionContract pins the fragment view's bound for a
+// receipt inside scanner.SubsequenceMaxParts. Joins use
+// scanner.SubsequenceMaxSize or fewer parts in projection order, skipping
+// unrelated parts between; the receipt view also tries every order of two or
+// three parts and the reverse of four. Widening that search is a scanner-wide
+// decision that has to move both paths together, so the cases outside the
+// bound are recorded here as outside it, not as guarantees. A wider receipt
+// degrades to a complete smaller search instead of refusing for width;
+// docs/guides/receipt-verification.md states both bounds.
 func TestFragmentReconstructionContract(t *testing.T) {
 	const whole = "r4Aa1Bb2Cc3Dd4Ee5Ff6"
 	cfg := config.Defaults()

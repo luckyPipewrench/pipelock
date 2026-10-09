@@ -3037,9 +3037,13 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 }
 
 // SubsequenceMaxParts and SubsequenceMaxSize bound the ordered subsequence
-// search: at most this many parts are combined, in ordered combinations of
-// 2..SubsequenceMaxSize. The receipt content boundary reuses the same bounds
-// and combination order so both reconstruction paths share one contract.
+// search on the request path: at most this many parts are combined, in
+// ordered combinations of 2..SubsequenceMaxSize, and further values are
+// truncated. The receipt content boundary uses the same combination order.
+// Within SubsequenceMaxParts it runs the same sizes. A wider receipt degrades
+// to a complete smaller search or refuses, which
+// docs/guides/receipt-verification.md describes. The request path does not
+// refuse when the part cap is exceeded.
 const (
 	SubsequenceMaxParts = 20
 	SubsequenceMaxSize  = 4

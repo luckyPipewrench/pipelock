@@ -252,7 +252,11 @@ func TestScanCleanProjection(t *testing.T) {
 
 func TestScanBudgetExhaustionRejects(t *testing.T) {
 	det := testDetector(t)
-	t.Run("too many atoms", func(t *testing.T) {
+	t.Run("width alone is not a refusal", func(t *testing.T) {
+		// One past the request-path part cap. The producer's outer mirror adds
+		// two more atoms. The work of a full size-2..4 search of these short
+		// parts is under the byte budget; the receipt used to be refused for
+		// the part count alone.
 		var values []string
 		for i := 0; i <= scanner.SubsequenceMaxParts; i++ {
 			values = append(values, strconv.Itoa(i))
@@ -261,13 +265,31 @@ func TestScanBudgetExhaustionRejects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fragmentWorkBytes(values) > maxFragmentWorkBytes {
-			t.Fatal("part-limit fixture also exceeds the work limit")
+		parts := atomTexts(p)
+		if len(parts) <= scanner.SubsequenceMaxParts {
+			t.Fatalf("fixture has %d atoms, want more than %d", len(parts), scanner.SubsequenceMaxParts)
 		}
-		_, err = Scan(context.Background(), det, p)
-		var rej *RejectionError
-		if !errors.As(err, &rej) || rej.View != ViewBudget || !errors.Is(err, ErrRejected) {
-			t.Fatalf("err = %v, want budget rejection", err)
+		if fragmentWorkBytes(parts) > maxFragmentWorkBytes {
+			t.Fatal("width fixture also exceeds the work limit")
+		}
+		calls := 0
+		counting := func(ctx context.Context, text string) scanner.TextDLPResult {
+			calls++
+			return det(ctx, text)
+		}
+		rep, err := Scan(context.Background(), counting, p)
+		if err != nil || !rep.Clean() {
+			t.Fatalf("wide clean receipt refused: %+v %v", rep, err)
+		}
+		// Size 4 on this width schedules more detector calls than the 20-part
+		// search. The wide path stops at size 3.
+		full, ok := combinationCandidates(len(parts), scanner.SubsequenceMaxSize)
+		if !ok {
+			t.Fatal("candidate count overflow")
+		}
+		limit, ok := combinationCandidates(scanner.SubsequenceMaxParts, scanner.SubsequenceMaxSize)
+		if !ok || calls > int(limit)+len(parts)+2 || int64(calls) >= full {
+			t.Fatalf("detector called %d times; full size-4 search is %d calls, 20-part ceiling %d", calls, full, limit)
 		}
 	})
 	t.Run("too much reconstruction work", func(t *testing.T) {
@@ -362,6 +384,132 @@ func TestBinomialAndWork(t *testing.T) {
 	if got := fragmentWorkBytes([]string{"ab", "c"}); got != 6 { // one pair, both orders
 		t.Fatalf("work = %d, want 6", got)
 	}
+	// C(20,2)*2 + C(20,3)*6 + C(20,4)*2. The wide path may not schedule more
+	// detector calls than this search.
+	got, ok := combinationCandidates(scanner.SubsequenceMaxParts, scanner.SubsequenceMaxSize)
+	if !ok || got != 16910 {
+		t.Fatalf("20-part candidate count = %d ok=%v, want 16910", got, ok)
+	}
+	wide, ok := combinationCandidates(30, 3)
+	if !ok || wide <= got {
+		t.Fatalf("30-part size-3 count = %d, want above the 20-part ceiling", wide)
+	}
+}
+
+// TestWideFragmentSearchKeepsCompleteSmallerSizes pins the search that runs
+// once a receipt is past the 20-part cap. A two-part and a three-part split
+// are caught while size 3 still fits. Past the candidate ceiling, pairs are
+// still caught and a three-part split is outside the bound. A wide receipt
+// whose pairs do not fit the byte budget is refused before any fragment
+// candidate is built.
+func TestWideFragmentSearchKeepsCompleteSmallerSizes(t *testing.T) {
+	det := testDetector(t)
+	canary := canaryFixture
+
+	t.Run("two-part split past the part cap", func(t *testing.T) {
+		values := wideFillers(scanner.SubsequenceMaxParts, canary[:11], canary[11:])
+		rep, err := scanList(t, det, values)
+		requireView(t, rep, err, ViewFragments)
+	})
+	t.Run("three-part split while size 3 fits", func(t *testing.T) {
+		// ProjectUnproven adds the member name, so 21 values is 22 atoms:
+		// past the part cap, and still inside the size-3 candidate ceiling.
+		values := wideFillers(scanner.SubsequenceMaxParts+1, canary[:7], canary[7:14], canary[14:])
+		rep, err := scanList(t, det, values)
+		requireView(t, rep, err, ViewFragments)
+	})
+	t.Run("three-part split past the candidate ceiling is outside the bound", func(t *testing.T) {
+		const n = 30
+		values := wideFillers(n-1, canary[:7], canary[7:14], canary[14:])
+		p := projectList(t, values)
+		parts := atomTexts(p)
+		if len(parts) != n {
+			t.Fatalf("atoms = %d, want %d", len(parts), n)
+		}
+		size, ok := widestFragmentSearch(parts)
+		if !ok || size != 2 {
+			t.Fatalf("widest search = %d ok=%v, want pairs only", size, ok)
+		}
+		requireClean(t, det, "values join", strings.Join(values, ""))
+		calls := 0
+		counting := func(ctx context.Context, text string) scanner.TextDLPResult {
+			calls++
+			return det(ctx, text)
+		}
+		rep, err := Scan(context.Background(), counting, p)
+		if err != nil || !rep.Clean() {
+			t.Fatalf("three-part split on a pair-only receipt: report %+v, err %v", rep.Findings, err)
+		}
+		if calls > 2000 {
+			t.Fatalf("detector called %d times; size 3 ran on a pair-only receipt", calls)
+		}
+	})
+	t.Run("pairs that do not fit are refused before reconstruction", func(t *testing.T) {
+		const n = 50
+		values := make([]string, n-1)
+		for i := range values {
+			values[i] = strings.Repeat("abc.", 2048)
+		}
+		p := projectList(t, values)
+		parts := atomTexts(p)
+		if _, ok := widestFragmentSearch(parts); ok {
+			t.Fatal("fixture fits a wide search; it must exceed the pair budget")
+		}
+		distinct := map[string]struct{}{}
+		for _, part := range parts {
+			distinct[part] = struct{}{}
+		}
+		calls := 0
+		counting := func(ctx context.Context, text string) scanner.TextDLPResult {
+			calls++
+			return det(ctx, text)
+		}
+		_, err := Scan(context.Background(), counting, p)
+		var rej *RejectionError
+		if !errors.As(err, &rej) || rej.View != ViewBudget {
+			t.Fatalf("err = %v, want budget rejection", err)
+		}
+		if limit := len(distinct) + 2; calls > limit {
+			t.Fatalf("detector called %d times, want at most %d: reconstruction ran before the work bound", calls, limit)
+		}
+	})
+}
+
+func atomTexts(p *Projection) []string {
+	parts := make([]string, 0, len(p.atoms))
+	for _, a := range p.atoms {
+		parts = append(parts, a.Text)
+	}
+	return parts
+}
+
+func projectList(t *testing.T, values []string) *Projection {
+	t.Helper()
+	p, err := ProjectUnproven(mustJSON(t, map[string]any{"list": values}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func scanList(t *testing.T, det Detector, values []string) (Report, error) {
+	t.Helper()
+	p := projectList(t, values)
+	requireClean(t, det, "values join", strings.Join(values, ""))
+	return Scan(context.Background(), det, p)
+}
+
+// wideFillers returns n values of "x" with pieces written at even indexes, so
+// the pieces are not adjacent and the values join cannot reassemble them.
+func wideFillers(n int, pieces ...string) []string {
+	values := make([]string, n)
+	for i := range values {
+		values[i] = "x"
+	}
+	for i, piece := range pieces {
+		values[i*2] = piece
+	}
+	return values
 }
 
 func TestRepeatedFragmentsRetainMultiplicity(t *testing.T) {

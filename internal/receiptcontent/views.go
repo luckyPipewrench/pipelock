@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -197,11 +198,17 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	return rep, nil
 }
 
-// scanFragments reuses the scanner's ordered-subsequence bounds and order:
-// at most scanner.SubsequenceMaxParts atoms, combined in ordered
-// subsets of 2..scanner.SubsequenceMaxSize, so a fragment may skip any
-// unrelated atom between it and the next. More candidates, or more work than
-// maxFragmentWorkBytes, is a budget rejection rather than a partial pass.
+// scanFragments reuses the scanner's ordered-subsequence combination order.
+// A receipt of at most scanner.SubsequenceMaxParts atoms is searched at sizes
+// 2..scanner.SubsequenceMaxSize, the same sizes the request path combines,
+// and is refused before any candidate is built when that work exceeds
+// maxFragmentWorkBytes. A taint list plus a shield summary already has more
+// parts than that cap. Refusing the receipt for width drops ordinary evidence.
+// The wide path runs the largest complete search in
+// {3, 2} whose byte total and candidate count stay inside the limits of the
+// 20-part search, and refuses before building a candidate when even the pairs
+// do not fit. It never scans a prefix of a larger combination set. Joins of
+// 4 stay inside the 20-part receipt.
 func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, error) {
 	var parts, paths, fields []string
 	// Equal fragments at different positions are distinct candidates. A token
@@ -215,23 +222,34 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	if n < 2 {
 		return nil, nil
 	}
-	if n > scanner.SubsequenceMaxParts {
-		return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("%d content atoms exceed the %d-part reconstruction bound", n, scanner.SubsequenceMaxParts)}
+	maxSize := scanner.SubsequenceMaxSize
+	if n <= scanner.SubsequenceMaxParts {
+		if work := fragmentWorkBytes(parts); work > maxFragmentWorkBytes {
+			return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("reconstruction work %d bytes exceeds %d", work, maxFragmentWorkBytes)}
+		}
+	} else {
+		size, ok := widestFragmentSearch(parts)
+		if !ok {
+			return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("%d content atoms exceed the reconstruction work bound", n)}
+		}
+		maxSize = size
 	}
-	if work := fragmentWorkBytes(parts); work > maxFragmentWorkBytes {
-		return nil, &RejectionError{Kind: p.kind, View: ViewBudget, Reason: fmt.Sprintf("reconstruction work %d bytes exceeds %d", work, maxFragmentWorkBytes)}
-	}
+	return combineFragments(ctx, det, parts, paths, fields, maxSize)
+}
+
+// combineFragments scans every combination of size 2..maxSize. Every order of
+// 2 and 3 fragments is tried, and both directions of 4. Projection order is
+// fixed by the schema's sorted keys, so a caller choosing which field holds
+// which fragment controls the order.
+func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) (*Finding, error) {
+	n := len(parts)
 	var b strings.Builder
-	for size := 2; size <= scanner.SubsequenceMaxSize && size <= n; size++ {
+	for size := 2; size <= maxSize && size <= n; size++ {
 		idx := make([]int, size)
 		for i := range idx {
 			idx[i] = i
 		}
 		for {
-			// Projection order is fixed by the schema's sorted keys, so a
-			// caller choosing which field holds which fragment controls the
-			// order. Every order of 2 and 3 fragments is tried, and both
-			// directions of 4.
 			for _, order := range fragmentOrders[size] {
 				b.Reset()
 				for _, o := range order {
@@ -254,6 +272,29 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	return nil, nil
 }
 
+// widestFragmentSearch returns the largest size in {3, 2} whose complete
+// search fits the byte budget and the candidate count of a full 20-part
+// search. Size 4 is not a wide-path size. ok is false when even pairs do not
+// fit, which the caller refuses before building a candidate.
+func widestFragmentSearch(parts []string) (int, bool) {
+	limit, ok := combinationCandidates(scanner.SubsequenceMaxParts, scanner.SubsequenceMaxSize)
+	if !ok || limit <= 0 {
+		return 0, false
+	}
+	n := len(parts)
+	for size := 3; size >= 2; size-- {
+		if size > n {
+			continue
+		}
+		work, wok := combinationWork(parts, size)
+		cands, cok := combinationCandidates(n, size)
+		if wok && cok && work <= maxFragmentWorkBytes && cands <= limit {
+			return size, true
+		}
+	}
+	return 0, false
+}
+
 // fragmentOrders lists the fragment orders tried for each combination size.
 var fragmentOrders = map[int][][]int{
 	2: {{0, 1}, {1, 0}},
@@ -261,27 +302,106 @@ var fragmentOrders = map[int][][]int{
 	4: {{0, 1, 2, 3}, {3, 2, 1, 0}},
 }
 
-// fragmentWorkBytes is the total length of every candidate scanFragments
-// would build: each part appears in C(n-1, k-1) combinations of size k, once
-// per tried order.
-func fragmentWorkBytes(parts []string) int {
-	n := len(parts)
-	total := 0
-	for _, part := range parts {
-		for k := 2; k <= scanner.SubsequenceMaxSize && k <= n; k++ {
-			total += len(part) * binomial(n-1, k-1) * len(fragmentOrders[k])
-		}
+// fragmentWorkBytes is the total length of every candidate a full size-2..4
+// search would build. Each part appears in C(n-1, k-1) combinations of size
+// k, once per tried order. Overflow is reported as the maximum int64 so the
+// caller treats it as over budget.
+func fragmentWorkBytes(parts []string) int64 {
+	total, ok := combinationWork(parts, scanner.SubsequenceMaxSize)
+	if !ok {
+		return math.MaxInt64
 	}
 	return total
 }
 
+// combinationWork is fragmentWorkBytes limited to sizes 2..maxSize. The bool
+// is false when the total does not fit in int64.
+func combinationWork(parts []string, maxSize int) (int64, bool) {
+	n := len(parts)
+	var total int64
+	for _, part := range parts {
+		plen := int64(len(part))
+		if plen == 0 {
+			continue
+		}
+		for k := 2; k <= maxSize && k <= n; k++ {
+			ways, ok := binomial64(n-1, k-1)
+			if !ok {
+				return 0, false
+			}
+			orders := int64(len(fragmentOrders[k]))
+			prod, ok := mul64(plen, ways)
+			if !ok {
+				return 0, false
+			}
+			prod, ok = mul64(prod, orders)
+			if !ok {
+				return 0, false
+			}
+			if total > math.MaxInt64-prod {
+				return 0, false
+			}
+			total += prod
+		}
+	}
+	return total, true
+}
+
+// combinationCandidates is the number of detector calls a complete search of
+// sizes 2..maxSize makes. The bool is false when the count does not fit in
+// int64.
+func combinationCandidates(n, maxSize int) (int64, bool) {
+	var total int64
+	for k := 2; k <= maxSize && k <= n; k++ {
+		ways, ok := binomial64(n, k)
+		if !ok {
+			return 0, false
+		}
+		prod, ok := mul64(ways, int64(len(fragmentOrders[k])))
+		if !ok {
+			return 0, false
+		}
+		if total > math.MaxInt64-prod {
+			return 0, false
+		}
+		total += prod
+	}
+	return total, true
+}
+
+func mul64(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 {
+		return 0, false
+	}
+	if a != 0 && b > math.MaxInt64/a {
+		return 0, false
+	}
+	return a * b, true
+}
+
 func binomial(n, k int) int {
+	v, ok := binomial64(n, k)
+	if !ok || v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
+}
+
+func binomial64(n, k int) (int64, bool) {
 	if k < 0 || k > n {
-		return 0
+		return 0, true
 	}
-	r := 1
+	if k > n-k {
+		k = n - k
+	}
+	var r int64 = 1
 	for i := 1; i <= k; i++ {
-		r = r * (n - k + i) / i
+		num := int64(n - k + i)
+		prod, ok := mul64(r, num)
+		if !ok {
+			return 0, false
+		}
+		r = prod / int64(i)
 	}
-	return r
+	return r, true
 }

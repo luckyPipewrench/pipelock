@@ -636,19 +636,22 @@ session (`<base>.run.<suffix>`) and for a policy hash Pipelock computed from its
 configuration. An ID, hash or session suffix a caller supplied is scanned like
 any other content, even when it has the same shape as a generated one.
 
-Content is scanned alone, as a joined value list, as reassembled fragments
-split across up to four fields, and as structured JSON.
+Content is scanned alone, as a joined value list, as reassembled fragments,
+and as structured JSON.
 
-Reassembly uses the ordered-subsequence bound of split-secret detection on
-the request path. It takes at most 20 scanned parts (content values and member names Pipelock
-did not declare, with a repeated value counted once per occurrence) and joins
-2, 3 or 4 of them in a fixed field order, skipping any unrelated part in
-between. It
-also tries every order of 2 or 3 parts and the reverse order of 4. A receipt
-with more than 20 parts, or whose combinations would build more than 4 MiB of
-text, is refused whole rather than partly scanned. A secret split into five or
-more pieces, or into four pieces in any other order, is outside that bound and
-is not reassembled.
+Reassembly joins scanned parts (content values and member names Pipelock did
+not declare, with a repeated value counted once per occurrence) in field
+order, skipping any unrelated part in between. It tries every order of 2 or 3
+parts and the reverse order of 4. A receipt of at most 20 parts runs that
+full search when the combinations would build at most 4 MiB of text, and is
+refused whole when they would build more. A wider receipt is ordinary
+evidence, so width alone doesn't refuse it. Pipelock then runs every pair, in
+both orders, when that work and the number of combinations stay inside those
+same limits, and every order of 3 when those fit too. The receipt is refused
+whole when even the pairs don't fit. A secret split into five or more pieces,
+into four pieces in any order other than forward or reverse, or into three
+pieces on a receipt too wide for the 3-part search, is outside that bound and
+isn't reassembled. Joins of 4 run only on a receipt of at most 20 parts.
 
 Before signing:
 

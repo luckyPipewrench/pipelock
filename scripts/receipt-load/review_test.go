@@ -139,8 +139,9 @@ func TestReviewShardCorrelation(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.Session = "shard-two"
-	if err := scanner.v1Receipt(env); err == nil {
-		t.Fatal("same workload key accepted across shards")
+	env.Detail = json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(env.Detail), `"run0"`, `"run1"`), actionIDFor(0), "other-action"))
+	if err := scanner.v1Receipt(env); err == nil || err.Error() != "workload key maps to multiple recorder shards" {
+		t.Fatalf("cross-shard correlation returned %v", err)
 	}
 }
 

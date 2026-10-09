@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -76,8 +77,13 @@ func awaitProxy(ctx context.Context, addr string, p *proxyProc) error {
 	}
 }
 
+var readProcessStat = os.ReadFile
+
 func readProc(pid int) (procSample, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if runtime.GOOS != "linux" {
+		return procSample{}, errors.New("process measurement unavailable: not linux")
+	}
+	data, err := readProcessStat(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return procSample{}, err
 	}

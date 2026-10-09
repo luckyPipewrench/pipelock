@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -39,6 +40,11 @@ const (
 // token is not scored. The match is case-sensitive: build tools emit these in
 // lower case, and a segment that does not match keeps the whole-segment score.
 var assetExtensions = []string{".js", ".mjs", ".css", ".woff2"}
+
+// releaseVersionRE recognizes a complete SemVer 2.0.0 value. Numeric core and
+// prerelease identifiers cannot have leading zeroes; build identifiers can.
+// See https://semver.org/ for the version grammar.
+var releaseVersionRE = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`)
 
 const sourceMapExtension = ".map"
 
@@ -184,6 +190,49 @@ func (s *Scanner) pathSegmentEntropy(segment string) (float64, bool) {
 	return entropy, entropy > s.entropyThreshold
 }
 
+// releaseFilenameEntropySubject removes one copy of the preceding release
+// version's literal bytes from a filename, including within a longer token.
+// The preceding segment must be a complete semantic version, optionally prefixed
+// by one lower-case v. Other filename bytes remain scored.
+func releaseFilenameEntropySubject(tag, segment string) string {
+	version := strings.TrimPrefix(tag, "v")
+	if !releaseVersionRE.MatchString(version) {
+		return segment
+	}
+	before, after, found := strings.Cut(segment, tag)
+	if !found {
+		before, after, found = strings.Cut(segment, version)
+	}
+	if !found {
+		return segment
+	}
+	return before + after
+}
+
+// pathEntropy scores every segment, allowing a repeated release version only in
+// the final filename and only from its immediate predecessor. Earlier segments
+// are still scored in full. The original score is checked first: deleting text
+// can raise Shannon entropy and must never introduce a new block.
+func (s *Scanner) pathEntropy(path string) (float64, bool) {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		entropy, blocked := s.pathSegmentEntropy(segment)
+		if !blocked {
+			continue
+		}
+		if i > 0 && i == len(segments)-1 {
+			subject := releaseFilenameEntropySubject(segments[i-1], segment)
+			if subject != segment {
+				entropy, blocked = s.pathSegmentEntropy(subject)
+			}
+		}
+		if blocked {
+			return entropy, true
+		}
+	}
+	return 0, false
+}
+
 // parseEntropyNestedURL returns value as a URL whose parts can be scored
 // separately. The value is iteratively percent-decoded first, so an extra
 // encoding layer cannot lower the entropy of what it carries. Only an http or
@@ -286,10 +335,8 @@ func (s *Scanner) nestedURLEntropy(u *url.URL, depth int) (entropyFinding, bool)
 			}
 		}
 	}
-	for _, segment := range strings.Split(u.Path, "/") {
-		if entropy, blocked := s.pathSegmentEntropy(segment); blocked {
-			return entropyFinding{part: "nested URL path segment", entropy: entropy}, true
-		}
+	if entropy, blocked := s.pathEntropy(u.Path); blocked {
+		return entropyFinding{part: "nested URL path segment", entropy: entropy}, true
 	}
 	pairs := splitQueryEntropyPairs(u.RawQuery)
 	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))

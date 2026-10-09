@@ -29,7 +29,7 @@ var htmlLinkAttrs = map[string]bool{
 	"src": true, "href": true, "poster": true, "data-src": true,
 }
 
-// htmlSrcsetAttrs hold comma separated image candidates.
+// htmlSrcsetAttrs hold image candidates in the WHATWG srcset syntax.
 var htmlSrcsetAttrs = map[string]bool{
 	"srcset": true, "data-srcset": true, "imagesrcset": true,
 }
@@ -61,16 +61,65 @@ func htmlLinkValues(body []byte, limit int) []string {
 						out = append(out, v)
 					}
 				case htmlSrcsetAttrs[name]:
-					for _, candidate := range strings.Split(string(val), ",") {
-						fields := strings.Fields(candidate)
-						if len(fields) > 0 && len(out) < limit {
-							out = append(out, fields[0])
+					for _, candidate := range srcsetURLs(string(val)) {
+						if len(out) < limit {
+							out = append(out, candidate)
 						}
 					}
 				}
 				if !more {
 					break
 				}
+			}
+		}
+	}
+	return out
+}
+
+// srcsetURLs returns the candidate URLs of a srcset attribute value, following
+// the WHATWG "parse a srcset attribute" algorithm: a candidate URL runs to the
+// next ASCII whitespace, so a comma inside it belongs to the URL, trailing
+// commas are separators and are stripped, and descriptors (w, x, h) are
+// skipped. Splitting on every comma instead would invent a URL out of the tail
+// of a data: URL and miss a real URL that contains a comma.
+func srcsetURLs(input string) []string {
+	isSpace := func(c byte) bool {
+		return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
+	}
+	var out []string
+	pos := 0
+	for pos < len(input) {
+		for pos < len(input) && (isSpace(input[pos]) || input[pos] == ',') {
+			pos++
+		}
+		if pos >= len(input) {
+			break
+		}
+		start := pos
+		for pos < len(input) && !isSpace(input[pos]) {
+			pos++
+		}
+		candidate := input[start:pos]
+		if trimmed := strings.TrimRight(candidate, ","); trimmed != candidate {
+			// The URL ended in commas: the candidate has no descriptors.
+			if trimmed != "" {
+				out = append(out, trimmed)
+			}
+			continue
+		}
+		out = append(out, candidate)
+		// Skip the descriptors up to the comma that ends the candidate; a
+		// comma inside parentheses does not end it.
+		inParens := false
+		for pos < len(input) {
+			c := input[pos]
+			pos++
+			if inParens {
+				inParens = c != ')'
+			} else if c == '(' {
+				inParens = true
+			} else if c == ',' {
+				break
 			}
 		}
 	}

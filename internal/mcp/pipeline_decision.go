@@ -70,7 +70,8 @@ type MCPDecision struct {
 	// receipts for forwardable verdicts are always durable; this extends that to
 	// a receipt whose loss after a later durable write would leave a gap, such
 	// as a deferred resolution written before its journal entry. It changes how
-	// the receipt is written, not which emitter failures are accepted.
+	// the receipt is written. When RequireReceipt is set, every configured
+	// family must confirm this write before the caller can commit its state.
 	Durable bool
 }
 
@@ -169,8 +170,9 @@ func emitMCPDecision(
 	}
 	// A forwardable verdict is one whose request or response actually egresses to
 	// its peer: allow, warn, and forward carry a request upstream, and strip
-	// writes the redacted response back to the client. redirect goes to an
-	// audited handler and block/ask/defer do not egress. Every egressing required
+	// writes the redacted response back to the client. redirect invokes a
+	// handler that can perform work and return bytes; block/ask/defer deny or
+	// hold the original action. Every egressing required
 	// receipt is recorded DURABLY (fsync-confirmed) before those bytes leave, so a
 	// crash between the write and the next flush cannot lose the decision record
 	// for traffic that already went out. This closes the crash-durability window
@@ -181,9 +183,10 @@ func emitMCPDecision(
 		(verdict == config.ActionAllow ||
 			verdict == config.ActionWarn ||
 			verdict == config.ActionForward ||
-			verdict == config.ActionStrip)
+			verdict == config.ActionStrip ||
+			verdict == config.ActionRedirect)
 	// Only allow carries the DecisionPhaseIntent label (it is paired with a
-	// downstream DecisionPhaseOutcome); warn/forward/strip stay single-phase
+	// downstream DecisionPhaseOutcome); warn/forward/strip/redirect stay single-phase
 	// durable decision receipts, which the completeness verifier counts as
 	// neither an intent nor an outcome, so broadening durability cannot create an
 	// unmatched-intent. The DecisionPhase=="" guard means a caller that already
@@ -214,7 +217,7 @@ func emitMCPDecision(
 	}
 	if d.Receipt.ActionID != "" && v2Emitter != nil {
 		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired, syncReceipt); v2Err != nil {
-			if err == nil || durableReceipt {
+			if err == nil || syncReceipt {
 				err = v2Err
 			}
 		} else {
@@ -226,7 +229,17 @@ func emitMCPDecision(
 	// v2 success never stands in for a required outcome's v1 receipt, or the
 	// caller would report an outcome the chain can't pair.
 	v2Covers := v2Emitted && d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome
-	if receiptRequired && !strictPair && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
+	// Before bytes egress, every configured receipt family must record the
+	// decision; one family never stands in for another's failure. A v2 record
+	// carries no action ID or phase and has no native AEL activity, so it
+	// cannot represent a missing v1 intent, and a v1 record cannot represent a
+	// missing v2 one. Explicitly durable required decisions also need every
+	// family, since a caller may persist state based on that confirmation.
+	// An unconfigured (nil) family is not required. Other decisions that do not
+	// egress keep best-effort receipts: the action is already denied.
+	v1Satisfied := receiptEmitter == nil || v1Emitted
+	v2Satisfied := v2Emitter == nil || v2Emitted
+	if receiptRequired && !strictPair && (v1Emitted || v2Covers) && (!syncReceipt || (v1Satisfied && v2Satisfied)) {
 		err = nil
 	}
 	if strictPair && receiptRequired && (!v1Emitted || !v2Emitted) && err == nil {

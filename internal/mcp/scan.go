@@ -1125,8 +1125,12 @@ func hasScannableToolsList(line []byte) bool {
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.
 // All fields are nil-safe: when nil, A2A response scanning is skipped.
 type A2AResponseOpts struct {
-	Cfg      *config.A2AScanning
-	Baseline *CardBaseline
+	// ConfirmCardAcceptance confirms evidence before accepting a verified
+	// signature or a first/changed baseline. An error denies adoption and
+	// delivery. Nil preserves callers without required receipt confirmation.
+	ConfirmCardAcceptance func(AgentCardScanResult) error
+	Cfg                   *config.A2AScanning
+	Baseline              *CardBaseline
 	// OnCardDriftAdopted observes a benign descriptive Agent Card change that
 	// was accepted as the new baseline. It must not change the scan verdict:
 	// adoption remains clean, while the transport records the audit event.
@@ -1314,7 +1318,7 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 	}
 	cardResult := scanAgentCard(
 		context.Background(), rpc.Result, sc,
-		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean},
+		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean, confirmAcceptance: a2aOpts.ConfirmCardAcceptance},
 	)
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
 		a2aOpts.OnCardDriftAdopted()

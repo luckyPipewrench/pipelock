@@ -76,6 +76,9 @@ type GenericSSEScanOptions struct {
 	// OnFinding is called for warn-mode findings that are forwarded rather
 	// than returned. It must be safe to call inline from the stream loop.
 	OnFinding func(error)
+	// ConfirmFinding runs before an event with warned findings is forwarded.
+	// A failure terminates the stream before writing that event.
+	ConfirmFinding func(error) error
 	// OnDroppedDLP receives DLP matches removed by a scoped suppression. It is
 	// observational only and must not alter stream control flow.
 	OnDroppedDLP func(scanner.TextDLPMatch, string)
@@ -157,7 +160,15 @@ func ScanGenericSSEStreamWithOptions(
 	// duplicate this recorder exists to stop.
 	observedCore := newSSEObservedCoreRecorder(opts)
 
+	var warnedFinding error
+	onFinding := func(err error) {
+		warnedFinding = errors.Join(warnedFinding, err)
+		if opts.OnFinding != nil {
+			opts.OnFinding(err)
+		}
+	}
 	for {
+		warnedFinding = nil
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -181,9 +192,7 @@ func ScanGenericSSEStreamWithOptions(
 				// to the caller via OnFinding, drop this oversize event so
 				// unscanned bytes never reach the client, and keep streaming
 				// subsequent events. Block mode terminates the stream.
-				if opts.OnFinding != nil {
-					opts.OnFinding(findingErr)
-				}
+				onFinding(findingErr)
 				continue
 			}
 			return findingErr
@@ -204,9 +213,7 @@ func ScanGenericSSEStreamWithOptions(
 		if !utf8.Valid(event) || !utf8.ValidString(canonicalSSEEventText(event, reader)) {
 			findingErr := fmt.Errorf("%w: %w", ErrSSEStreamFinding, ErrSSEInvalidUTF8)
 			if cfg.Action == config.ActionWarn {
-				if opts.OnFinding != nil {
-					opts.OnFinding(findingErr)
-				}
+				onFinding(findingErr)
 				reader.ClearInvalidLastEventID()
 				continue
 			}
@@ -250,9 +257,7 @@ func ScanGenericSSEStreamWithOptions(
 			findingErr := fmt.Errorf("%w: injection: %s",
 				ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
 			if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-				if opts.OnFinding != nil {
-					opts.OnFinding(findingErr)
-				}
+				onFinding(findingErr)
 				clearInjectionTailAfterCurrent = true
 				skipTailInjection = true
 			} else {
@@ -291,9 +296,7 @@ func ScanGenericSSEStreamWithOptions(
 			findingErr := fmt.Errorf("%w: dlp: %s",
 				ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			if cfg.Action == config.ActionWarn {
-				if opts.OnFinding != nil {
-					opts.OnFinding(findingErr)
-				}
+				onFinding(findingErr)
 				clearDLPTailAfterCurrent = true
 				skipTailDLP = true
 			} else {
@@ -320,9 +323,7 @@ func ScanGenericSSEStreamWithOptions(
 				findingErr := fmt.Errorf("%w: cross-event injection: %s",
 					ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-					if opts.OnFinding != nil {
-						opts.OnFinding(findingErr)
-					}
+					onFinding(findingErr)
 					resetInjectionTail = true
 				} else {
 					return findingErr
@@ -338,9 +339,7 @@ func ScanGenericSSEStreamWithOptions(
 			if !result.Clean {
 				findingErr := fmt.Errorf("%w: cross-event injection: %s", ErrSSEStreamFinding, sseInjectionNames(result.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-					if opts.OnFinding != nil {
-						opts.OnFinding(findingErr)
-					}
+					onFinding(findingErr)
 					resetInjectionTail = true
 				} else {
 					return findingErr
@@ -377,9 +376,7 @@ func ScanGenericSSEStreamWithOptions(
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
 					ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
 				if cfg.Action == config.ActionWarn {
-					if opts.OnFinding != nil {
-						opts.OnFinding(findingErr)
-					}
+					onFinding(findingErr)
 					resetDLPTail = true
 				} else {
 					return findingErr
@@ -395,9 +392,7 @@ func ScanGenericSSEStreamWithOptions(
 			if !result.Clean {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
 				if cfg.Action == config.ActionWarn {
-					if opts.OnFinding != nil {
-						opts.OnFinding(findingErr)
-					}
+					onFinding(findingErr)
 					resetDLPTail = true
 				} else {
 					return findingErr
@@ -457,6 +452,11 @@ func ScanGenericSSEStreamWithOptions(
 		} else {
 			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")
 			payloadInjectionTail = advanceSSERollingTail(payloadInjectionTail, event, resetInjectionTail, " ")
+		}
+		if warnedFinding != nil && opts.ConfirmFinding != nil {
+			if err := opts.ConfirmFinding(warnedFinding); err != nil {
+				return fmt.Errorf("sse finding confirmation: %w", err)
+			}
 		}
 		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
 			// Downstream consumer went away (e.g. the io.Pipe in the

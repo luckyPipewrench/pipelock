@@ -151,6 +151,11 @@ Examples:
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if mcpServerName != "" {
+				if err := config.ValidateMCPServerName(mcpServerName, "--mcp-server-name"); err != nil {
+					return err
+				}
+			}
 			opts := ServerOpts{
 				ConfigFile:              configFile,
 				Mode:                    mode,
@@ -199,7 +204,7 @@ Examples:
 	cmd.Flags().StringVarP(&listen, "listen", "l", "", "listen address (default 127.0.0.1:8888)")
 	cmd.Flags().StringVar(&mcpListen, "mcp-listen", "", "MCP HTTP listener address (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringVar(&mcpUpstream, "mcp-upstream", "", "upstream MCP server URL for HTTP listener")
-	cmd.Flags().StringVar(&mcpServerName, "mcp-server-name", "", "stable identity for the MCP listener; enables per-server response trust and suppression via target 'mcp://<name>/response'")
+	cmd.Flags().StringVar(&mcpServerName, "mcp-server-name", "", "operator label for an unregistered MCP listener upstream; enables per-server response trust and suppression via target 'mcp://<name>/response'. An upstream registered in mcp_identities supplies its own verified name; an explicit name equal to a registered identity must match it")
 	cmd.Flags().StringVar(&mcpAuthTokenFile, "mcp-auth-token-file", "", "secure file containing the MCP listener bearer token")
 	cmd.Flags().StringArrayVar(&mcpAllowedOrigins, "mcp-allowed-origin", nil, "browser Origin allowed to call the MCP listener (repeatable, exact serialized origin)")
 	cmd.Flags().BoolVar(&mcpAllowUnauthenticated, "mcp-allow-unauthenticated", false, "explicitly allow a non-loopback MCP listener without authentication (network-policy-isolated deployments only)")

@@ -248,7 +248,8 @@ func TestResolve_UpstreamShape(t *testing.T) {
 	}{
 		{"exact upstream", httpLaunch(urlIndexer, sessionHeader(bearerOne)), true, nameIndexer},
 		{"different ephemeral port", httpLaunch("http://127.0.0.1:50000/rpc/v1", sessionHeader(bearerOne)), true, nameIndexer},
-		{"port omitted", httpLaunch("http://127.0.0.1/rpc/v1", sessionHeader(bearerOne)), false, ""},
+		{"port omitted on another host", httpLaunch("http://127.0.0.2/rpc/v1", sessionHeader(bearerOne)), false, ""},
+		{"port omitted on another path", httpLaunch("http://127.0.0.1/other", sessionHeader(bearerOne)), false, ""},
 		{"port zero", httpLaunch("http://127.0.0.1:0/rpc/v1", sessionHeader(bearerOne)), false, ""},
 		{"port out of range", httpLaunch("http://127.0.0.1:70000/rpc/v1", sessionHeader(bearerOne)), false, ""},
 		{"query present", httpLaunch(urlIndexer+"?tenant=a", sessionHeader(bearerOne)), false, ""},
@@ -292,12 +293,37 @@ func TestResolve_UpstreamShape(t *testing.T) {
 	}
 }
 
+func TestResolve_PortlessMatchRefuses(t *testing.T) {
+	cfg := cfgWith(registry()...)
+	tests := []struct {
+		name      string
+		explicit  string
+		transport Transport
+		wantIndex string
+	}{
+		{"http upstream without a port", "", httpLaunch("http://127.0.0.1/rpc/v1", sessionHeader(bearerOne)), "mcp_identities[0]"},
+		{"trailing colon without a port", "", httpLaunch("http://127.0.0.1:/rpc/v1", sessionHeader(bearerOne)), "mcp_identities[0]"},
+		{"with the registered name", nameIndexer, httpLaunch("http://127.0.0.1/rpc/v1", sessionHeader(bearerOne)), "mcp_identities[0]"},
+		{"before the session header check", "", httpLaunch("http://127.0.0.1/rpc/v1"), "mcp_identities[0]"},
+		{"ws upstream without a port", "", Transport{Kind: KindWS, UpstreamURL: "ws://[::1]/bridge"}, "mcp_identities[1]"},
+		{"ipv6 http upstream without a port", "", httpLaunch("http://[::1]/api"), "mcp_identities[2]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolve(cfg, tt.explicit, tt.transport, true)
+			want := tt.wantIndex + " requires an explicit port in the upstream URL"
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestResolve_UnmatchedShapeStillRefusesRegisteredName(t *testing.T) {
 	cfg := cfgWith(registry()...)
 	// A near miss of a registered upstream must not become a plain server that
 	// merely shares the registered name.
 	for _, raw := range []string{
-		"http://127.0.0.1/rpc/v1",
 		urlIndexer + "?tenant=a",
 		"http://user@127.0.0.1:41873/rpc/v1",
 		urlIndexer + "#x",
@@ -734,6 +760,66 @@ func TestSessionBinding_RejectsUnverifiedResolution(t *testing.T) {
 			got, err := SessionBinding(tt.r, launch)
 			if err == nil || got != "" || !strings.Contains(err.Error(), "is not a verified local service") {
 				t.Fatalf("binding = %q, err = %v", got, err)
+			}
+		})
+	}
+}
+
+func TestResolution_SameAs(t *testing.T) {
+	base := Resolution{
+		Name: nameIndexer, ArmingName: nameIndexer, Source: SourceVerifiedLocalService,
+		Revision: "rev-1", BindingMode: config.MCPAckBindingModeVerifiedLocalSession,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Resolution)
+		want   bool
+	}{
+		{"identical", func(*Resolution) {}, true},
+		{"name", func(r *Resolution) { r.Name = nameOther }, false},
+		{"arming name", func(r *Resolution) { r.ArmingName = "" }, false},
+		{"source", func(r *Resolution) { r.Source = SourceExplicit }, false},
+		{"revision", func(r *Resolution) { r.Revision = "rev-2" }, false},
+		{"binding mode", func(r *Resolution) { r.BindingMode = config.MCPAckBindingModeTransportV2 }, false},
+		{"pin and entry are not compared", func(r *Resolution) { r.Pin = &localservice.Pin{}; r.Entry = &config.MCPIdentity{} }, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			other := base
+			tt.mutate(&other)
+			if got := base.SameAs(other); got != tt.want {
+				t.Errorf("SameAs = %v, want %v", got, tt.want)
+			}
+			if got := other.SameAs(base); got != tt.want {
+				t.Errorf("SameAs is not symmetric: reverse = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeclaresSessionHeader(t *testing.T) {
+	dup := registry()[0]
+	dup.Name = nameOther
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		launch  Transport
+		wantIdx int
+		want    bool
+	}{
+		{"nil config", nil, httpLaunch(urlIndexer), 0, false},
+		{"entry with a session header", cfgWith(registry()...), httpLaunch(urlIndexer), 0, true},
+		{"entry without a session header", cfgWith(registry()...), httpLaunch(urlV6API), 0, false},
+		{"websocket entry without a session header", cfgWith(registry()...), Transport{Kind: KindWS, UpstreamURL: urlBridge}, 0, false},
+		{"no registration matches", cfgWith(registry()...), httpLaunch("http://127.0.0.1:5000/other"), 0, false},
+		{"empty registry", cfgWith(), httpLaunch(urlIndexer), 0, false},
+		{"ambiguous match declares nothing", cfgWith(append(registry(), dup)...), httpLaunch(urlIndexer), 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, got := DeclaresSessionHeader(tt.cfg, tt.launch)
+			if got != tt.want || (got && idx != tt.wantIdx) {
+				t.Errorf("DeclaresSessionHeader = (%d, %v), want (%d, %v)", idx, got, tt.wantIdx, tt.want)
 			}
 		})
 	}

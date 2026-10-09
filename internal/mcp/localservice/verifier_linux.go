@@ -132,6 +132,21 @@ func (v *Verifier) VerifyConn(conn net.Conn, pin Pin) (Evidence, error) {
 // the package cap elapses, then the last error is returned. Every other error
 // returns at once: a wrong owner is not a timing problem and is never retried.
 func (v *Verifier) VerifyConnContext(ctx context.Context, conn net.Conn, pin Pin) (Evidence, error) {
+	var ev Evidence
+	err := v.retryPending(ctx, func() error {
+		var attemptErr error
+		ev, attemptErr = v.verifyOnce(conn, pin)
+		return attemptErr
+	})
+	if err != nil {
+		return Evidence{}, err
+	}
+	return ev, nil
+}
+
+// retryPending runs attempt until it returns anything other than
+// errServerPending, polling until ctx is done or the retry cap elapses.
+func (v *Verifier) retryPending(ctx context.Context, attempt func() error) error {
 	limit := v.retryCap
 	if limit <= 0 {
 		limit = verifyRetryCap
@@ -141,9 +156,9 @@ func (v *Verifier) VerifyConnContext(ctx context.Context, conn net.Conn, pin Pin
 		if v.onAttempt != nil {
 			v.onAttempt()
 		}
-		ev, err := v.verifyOnce(conn, pin)
+		err := attempt()
 		if err == nil || !errors.Is(err, errServerPending) {
-			return ev, err
+			return err
 		}
 		if poll == nil {
 			poll = time.NewTimer(verifyRetryInterval)
@@ -155,9 +170,9 @@ func (v *Verifier) VerifyConnContext(ctx context.Context, conn net.Conn, pin Pin
 		}
 		select {
 		case <-ctx.Done():
-			return Evidence{}, err
+			return err
 		case <-deadline.C:
-			return Evidence{}, err
+			return err
 		case <-poll.C:
 		}
 	}
@@ -398,12 +413,23 @@ func (v *Verifier) readIncarnation(pid int) (incarnation, error) {
 // checkPrincipal requires both the process's effective uid and the uid the
 // kernel recorded on the socket to equal the registered principal.
 func (v *Verifier) checkPrincipal(pid int, socketUID uint32, pin Pin) (uint32, error) {
+	euid, err := v.effectiveUID(pid)
+	if err != nil {
+		return 0, err
+	}
+	if euid != pin.PrincipalUID || socketUID != pin.PrincipalUID {
+		return 0, fmt.Errorf("%s is %d but the process serving the connection runs as effective uid %d and its socket is recorded for uid %d: %w",
+			fieldPrincipalUID, pin.PrincipalUID, euid, socketUID, ErrPrincipalMismatch)
+	}
+	return euid, nil
+}
+
+// effectiveUID reads the effective uid from the process status file.
+func (v *Verifier) effectiveUID(pid int) (uint32, error) {
 	status, err := os.ReadFile(v.pidPath(pid, "status"))
 	if err != nil {
 		return 0, procReadError(pid, "status", err)
 	}
-	var euid uint64
-	var found bool
 	for _, line := range strings.Split(string(status), "\n") {
 		if !strings.HasPrefix(line, "Uid:") {
 			continue
@@ -412,18 +438,13 @@ func (v *Verifier) checkPrincipal(pid int, socketUID uint32, pin Pin) (uint32, e
 		if len(fields) != statusUIDFields {
 			break
 		}
-		euid, err = strconv.ParseUint(fields[2], 10, 32)
-		found = err == nil
+		euid, err := strconv.ParseUint(fields[2], 10, 32)
+		if err == nil {
+			return uint32(euid), nil //nolint:gosec // ParseUint bitSize 32 bounds the value
+		}
 		break
 	}
-	if !found {
-		return 0, fmt.Errorf("pid %d status has no usable Uid line: %w", pid, ErrOwnerNotVisible)
-	}
-	if euid != uint64(pin.PrincipalUID) || uint64(socketUID) != uint64(pin.PrincipalUID) {
-		return 0, fmt.Errorf("%s is %d but the process serving the connection runs as effective uid %d and its socket is recorded for uid %d: %w",
-			fieldPrincipalUID, pin.PrincipalUID, euid, socketUID, ErrPrincipalMismatch)
-	}
-	return uint32(euid), nil
+	return 0, fmt.Errorf("pid %d status has no usable Uid line: %w", pid, ErrOwnerNotVisible)
 }
 
 // fileIdentity returns the device and inode of an open file's fstat.
@@ -447,18 +468,33 @@ func hashFile(f *os.File) (string, error) {
 // exe link, so replacing the file on disk after launch does not change what is
 // measured.
 func (v *Verifier) checkExecutable(pid int, pin Pin, ev *Evidence) error {
+	dev, ino, sum, err := v.executableDigest(pid)
+	if err != nil {
+		return err
+	}
+	if sum != pin.ExecutableSHA256 {
+		return fmt.Errorf("%s does not match the executable of the process serving the connection (pid %d runs %s, registered %s): %w",
+			fieldExecutable, pid, shortHash(sum), shortHash(pin.ExecutableSHA256), ErrApplicationMismatch)
+	}
+	ev.ExecutableDev, ev.ExecutableIno, ev.ExecutableSHA256 = dev, ino, sum
+	return nil
+}
+
+// executableDigest hashes the image the process is running, opened through its
+// exe link, and caches the digest by file identity.
+func (v *Verifier) executableDigest(pid int) (dev, ino uint64, sum string, err error) {
 	f, err := os.Open(v.pidPath(pid, "exe"))
 	if err != nil {
-		return fmt.Errorf("pid %d executable cannot be opened: %w: %w", pid, ErrOwnerNotVisible, err)
+		return 0, 0, "", fmt.Errorf("pid %d executable cannot be opened: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
 	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("pid %d executable cannot be inspected: %w: %w", pid, ErrOwnerNotVisible, err)
+		return 0, 0, "", fmt.Errorf("pid %d executable cannot be inspected: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
 	dev, ino, st, ok := fileIdentity(fi)
 	if !ok {
-		return fmt.Errorf("pid %d executable has no inode identity: %w", pid, ErrOwnerNotVisible)
+		return 0, 0, "", fmt.Errorf("pid %d executable has no inode identity: %w", pid, ErrOwnerNotVisible)
 	}
 	key := exeKey{
 		dev: dev, ino: ino, size: fi.Size(),
@@ -468,16 +504,11 @@ func (v *Verifier) checkExecutable(pid int, pin Pin, ev *Evidence) error {
 	sum, hit := v.cachedSum(key)
 	if !hit {
 		if sum, err = hashFile(f); err != nil {
-			return fmt.Errorf("pid %d executable cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
+			return 0, 0, "", fmt.Errorf("pid %d executable cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
 		}
 		v.storeSum(key, sum)
 	}
-	if sum != pin.ExecutableSHA256 {
-		return fmt.Errorf("%s does not match the executable of the process serving the connection (pid %d runs %s, registered %s): %w",
-			fieldExecutable, pid, shortHash(sum), shortHash(pin.ExecutableSHA256), ErrApplicationMismatch)
-	}
-	ev.ExecutableDev, ev.ExecutableIno, ev.ExecutableSHA256 = dev, ino, sum
-	return nil
+	return dev, ino, sum, nil
 }
 
 func (v *Verifier) cachedSum(k exeKey) (string, bool) {
@@ -508,6 +539,9 @@ func (v *Verifier) storeSum(k exeKey, sum string) {
 type heldFile struct {
 	dev, ino uint64
 	path     string
+	// special marks a descriptor that is not a regular file (device, socket
+	// file, directory).
+	special bool
 }
 
 // heldFiles lists regular-path files the owner holds. Descriptors are resolved
@@ -530,7 +564,7 @@ func (v *Verifier) heldFiles(pid int) ([]heldFile, error) {
 			continue
 		}
 		if dev, ino, _, ok := fileIdentity(fi); ok {
-			held = append(held, heldFile{dev: dev, ino: ino, path: strings.TrimSuffix(link, deletedSuffix)})
+			held = append(held, heldFile{dev: dev, ino: ino, path: strings.TrimSuffix(link, deletedSuffix), special: !fi.Mode().IsRegular()})
 		}
 	}
 	maps, err := os.ReadFile(v.pidPath(pid, "maps"))
@@ -644,20 +678,30 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 	return sum, nil
 }
 
-// checkEnvironment refuses loader and interpreter control variables unless the
-// registration names them with the exact value. Only names are reported.
-func (v *Verifier) checkEnvironment(pid int, pin Pin) error {
+// readEnviron reads the whole initial environment of the process. A larger
+// environment is refused rather than truncated.
+func (v *Verifier) readEnviron(pid int) ([]byte, error) {
 	f, err := os.Open(v.pidPath(pid, "environ"))
 	if err != nil {
-		return fmt.Errorf("pid %d environment cannot be opened: %w: %w", pid, ErrOwnerNotVisible, err)
+		return nil, fmt.Errorf("pid %d environment cannot be opened: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, environMaxBytes+1))
 	if err != nil {
-		return fmt.Errorf("pid %d environment cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
+		return nil, fmt.Errorf("pid %d environment cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
 	if len(data) > environMaxBytes {
-		return fmt.Errorf("pid %d environment exceeds %d bytes and cannot be fully checked: %w", pid, environMaxBytes, ErrOwnerNotVisible)
+		return nil, fmt.Errorf("pid %d environment exceeds %d bytes and cannot be fully checked: %w", pid, environMaxBytes, ErrOwnerNotVisible)
+	}
+	return data, nil
+}
+
+// checkEnvironment refuses loader and interpreter control variables unless the
+// registration names them with the exact value. Only names are reported.
+func (v *Verifier) checkEnvironment(pid int, pin Pin) error {
+	data, err := v.readEnviron(pid)
+	if err != nil {
+		return err
 	}
 	var offending []string
 	for _, entry := range bytes.Split(data, []byte{0}) {

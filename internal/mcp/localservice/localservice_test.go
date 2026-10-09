@@ -223,3 +223,17 @@ func TestVerifyConnUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("VerifyConnContext = %v, want ErrUnsupportedPlatform", err)
 	}
 }
+
+func TestObserveUnsupportedPlatform(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "linux" {
+		t.Skip("Linux observes; the refusal applies to every other platform")
+	}
+	obs, err := NewVerifier().Observe(context.Background(), &stubConn{})
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatalf("Observe = %v, want ErrUnsupportedPlatform", err)
+	}
+	if obs.PID != 0 || len(obs.Files) != 0 {
+		t.Fatalf("refusal returned %+v", obs)
+	}
+}

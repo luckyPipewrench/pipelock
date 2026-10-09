@@ -22,17 +22,13 @@ const (
 )
 
 func resolveHeaderCarriers(mappings []string) ([]string, error) {
-	lines := make([]string, 0, len(mappings))
-	for _, mapping := range mappings {
-		header, carrier, err := parseCarrierMapping("--header-carrier", mapping)
-		if err != nil {
-			return nil, err
-		}
-		value, ok := os.LookupEnv(carrier)
-		if !ok {
-			return nil, fmt.Errorf("--header-carrier %q: required carrier %s is unset", mapping, carrier)
-		}
-		lines = append(lines, header+": "+value)
+	entries, err := resolveHeaderCarrierEntries(mappings)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, e.Header+": "+e.Value)
 	}
 	return lines, nil
 }

@@ -66,6 +66,27 @@ const (
 	mcpServerResponse = "server_response"
 )
 
+// ServerIdentity is the per-request identity of a long-lived listener's
+// upstream. A non-empty Refusal refuses the request outright.
+type ServerIdentity struct {
+	Name        string
+	PolicyName  string
+	Binding     string
+	BindingMode string
+	Revision    string
+	Refusal     string
+}
+
+// withServerIdentity stamps a per-request identity over the static fields.
+func (o MCPProxyOpts) withServerIdentity(id ServerIdentity) MCPProxyOpts {
+	o.ServerName = id.Name
+	o.PolicyServerName = id.PolicyName
+	o.ServerBinding = id.Binding
+	o.ServerBindingMode = id.BindingMode
+	o.ServerRevision = id.Revision
+	return o
+}
+
 // MCPRedactionConfig snapshots the request-side redaction settings used for a
 // single MCP message or HTTP request.
 type MCPRedactionConfig struct {
@@ -338,6 +359,11 @@ type MCPProxyOpts struct {
 	// ServerRevision is the registered identity revision of a verified local
 	// service, empty for a legacy launch. It versions the adaptive session key.
 	ServerRevision string
+	// ServerIdentityFn re-resolves the server identity for each request of a
+	// long-lived listener, so a hot reload that changes or removes the
+	// registration is seen. Its result replaces the five static identity fields
+	// above for that request. Nil keeps the static fields.
+	ServerIdentityFn func() ServerIdentity
 
 	// ResponseTrustClass is the effective trust class for this server's MCP
 	// responses. Empty is treated as "untrusted" and fails closed. Set from

@@ -126,7 +126,10 @@ func resolve(cfg *config.Config, explicitName string, t Transport, canVerify boo
 		identities = cfg.MCPIdentities
 	}
 
-	matched := matchingIdentities(identities, t)
+	matched, portless := matchingIdentities(identities, t)
+	if portless && len(matched) > 0 {
+		return Resolution{}, fmt.Errorf("mcp_identities[%d] requires an explicit port in the upstream URL", matched[0])
+	}
 	switch len(matched) {
 	case 0:
 		if explicitName != "" {
@@ -186,6 +189,32 @@ func Legacy(name string) Resolution {
 	return r
 }
 
+// SameAs reports whether two resolutions are the same identity for a
+// long-lived surface that pinned one at startup. The revision covers every pin,
+// the matcher and the session header declaration, so a changed registration
+// differs.
+func (r Resolution) SameAs(o Resolution) bool {
+	return r.Name == o.Name && r.ArmingName == o.ArmingName && r.Source == o.Source &&
+		r.Revision == o.Revision && r.BindingMode == o.BindingMode
+}
+
+// DeclaresSessionHeader returns the index of the one registered entry that
+// matches the launch shape and declares a per-session header.
+func DeclaresSessionHeader(cfg *config.Config, t Transport) (int, bool) {
+	if cfg == nil {
+		return 0, false
+	}
+	matched, _ := matchingIdentities(cfg.MCPIdentities, t)
+	if len(matched) != 1 {
+		return 0, false
+	}
+	v := cfg.MCPIdentities[matched[0]].VerifiedLocalService
+	if v == nil || v.SessionHeader == nil {
+		return 0, false
+	}
+	return matched[0], true
+}
+
 // StartupLine is the one line a launch prints so the operator sees which
 // identity the launch resolved to and which binding its acknowledgments use.
 func StartupLine(r Resolution) string {
@@ -210,12 +239,16 @@ type shape struct {
 	scheme string
 	host   string
 	path   string
+	// portless is set when the URL has no explicit port. An entry that otherwise
+	// matches such a URL refuses the launch: a connection to an implicit default
+	// port is not something the pins were registered for.
+	portless bool
 }
 
 // upstreamShape extracts the matchable shape of an upstream. It reports false
 // for anything an entry may never match: a subprocess, an unparsable URL, a
-// kind that disagrees with the scheme, and any URL carrying user info, a query
-// (including an empty one), a fragment, an opaque part, or no explicit port.
+// kind that disagrees with the scheme, an invalid port, and any URL carrying
+// user info, a query (including an empty one), a fragment or an opaque part.
 func upstreamShape(t Transport) (shape, bool) {
 	var schemes [2]string
 	switch t.Kind {
@@ -239,22 +272,26 @@ func upstreamShape(t Transport) (shape, bool) {
 	if u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
 		return shape{}, false
 	}
-	port, err := strconv.Atoi(u.Port())
-	if err != nil || port < 1 || port > 65535 {
-		return shape{}, false
+	portless := u.Port() == ""
+	if !portless {
+		port, err := strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return shape{}, false
+		}
 	}
 	host := u.Hostname()
 	if host == "" {
 		return shape{}, false
 	}
-	return shape{kind: t.Kind, scheme: u.Scheme, host: host, path: u.EscapedPath()}, true
+	return shape{kind: t.Kind, scheme: u.Scheme, host: host, path: u.EscapedPath(), portless: portless}, true
 }
 
-// matchingIdentities returns the indexes of every entry the launch matches.
-func matchingIdentities(identities []config.MCPIdentity, t Transport) []int {
+// matchingIdentities returns the indexes of every entry the launch matches, and
+// whether the launch URL lacked the explicit port a match requires.
+func matchingIdentities(identities []config.MCPIdentity, t Transport) ([]int, bool) {
 	s, ok := upstreamShape(t)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	var matched []int
 	for i, e := range identities {
@@ -269,7 +306,7 @@ func matchingIdentities(identities []config.MCPIdentity, t Transport) []int {
 			matched = append(matched, i)
 		}
 	}
-	return matched
+	return matched, s.portless
 }
 
 // checkSessionHeader enforces the declared session header: exactly one header

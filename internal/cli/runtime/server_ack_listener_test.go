@@ -56,10 +56,15 @@ func writeAckListenerKey(t *testing.T, dir string) string {
 // ackListenerKeyed computes the keyed binding independently of the code
 // under test, from the published v1 construction.
 func ackListenerKeyed(key, digest string) string {
+	return ackListenerKeyedDomain(key, "pipelock-mcp-ack-binding-v1", digest)
+}
+
+// ackListenerKeyedDomain is ackListenerKeyed for a binding mode's domain.
+func ackListenerKeyedDomain(key, domain, digest string) string {
 	id := hmac.New(sha256.New, []byte(key))
 	_, _ = id.Write([]byte("pipelock-mcp-ack-key-id-v1"))
 	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte("pipelock-mcp-ack-binding-v1\x00" + digest))
+	_, _ = mac.Write([]byte(domain + "\x00" + digest))
 	return "hmac-sha256-v1:" + hex.EncodeToString(id.Sum(nil)[:8]) + ":" + hex.EncodeToString(mac.Sum(nil))
 }
 

@@ -127,6 +127,31 @@ type Evidence struct {
 	MappedFiles      []FilePin // each verified file with the digest observed
 }
 
+// ObservedFile is a regular file an observed process holds open or mapped.
+type ObservedFile struct {
+	Path     string
+	Dev, Ino uint64
+	// SHA256 is the digest of the file, set only when Pipelock's own open of
+	// Path is the very same device and inode the process holds. An empty digest
+	// means the path could not be tied to the held file.
+	SHA256 string
+}
+
+// Observation describes the owner of the server end of a loopback connection
+// without comparing it with a registration.
+type Observation struct {
+	PID              int
+	UID              uint32 // effective uid
+	StartTime        uint64 // process start, clock ticks since boot
+	BootID           string
+	ExecutableSHA256 string
+	// Files are the regular files the process holds, sorted by path.
+	Files []ObservedFile
+	// ControlEnvironment holds the NAMES of the deny-listed control variables the
+	// process carries. Values are never read into the result.
+	ControlEnvironment []string
+}
+
 // controlEnvironmentDenyList names variables that make a loader or an
 // interpreter load code or change behavior outside the pinned files.
 var controlEnvironmentDenyList = []string{

@@ -114,7 +114,7 @@ func newFakeProc(t *testing.T) *fakeProc {
 	f.pin = Pin{PrincipalUID: fakeUID, ExecutableSHA256: sha256Hex([]byte(fakeExeBody))}
 	f.writeTables("tcp", f.rows(fakeUID, fakeInode, 1))
 	f.write("sys/kernel/random/boot_id", fakeBootID+"\n")
-	f.addProcess(fakePID, fakeInode)
+	f.addProcess(fakePID)
 	// A numeric entry that is not a process directory, like a stray file.
 	f.write("123", "not a process directory")
 	return f
@@ -166,7 +166,7 @@ func (f *fakeProc) writeTables(name, content string) {
 	f.write("thread-self/net/"+name, content)
 }
 
-func (f *fakeProc) addProcess(pid int, socketInode uint64) {
+func (f *fakeProc) addProcess(pid int) {
 	f.t.Helper()
 	dir := strconv.Itoa(pid)
 	f.write(dir+"/stat", statText("svc", fakeStart))
@@ -174,11 +174,7 @@ func (f *fakeProc) addProcess(pid int, socketInode uint64) {
 	f.write(dir+"/environ", "PATH=/usr/bin\x00HOME=/nonexistent\x00")
 	f.write(dir+"/maps", "")
 	f.write(dir+"/exe", fakeExeBody)
-	if socketInode != 0 {
-		f.symlink("socket:["+strconv.FormatUint(socketInode, 10)+"]", dir+"/fd/3")
-	} else {
-		f.write(dir+"/fd/.keep", "")
-	}
+	f.symlink("socket:["+strconv.FormatUint(fakeInode, 10)+"]", dir+"/fd/3")
 }
 
 func (f *fakeProc) verify() (Evidence, error) {
@@ -310,7 +306,7 @@ func TestVerifyConnFakeProc(t *testing.T) {
 		{
 			name: "two processes hold the socket",
 			setup: func(_ *testing.T, f *fakeProc) {
-				f.addProcess(fakePID+1, fakeInode)
+				f.addProcess(fakePID + 1)
 			},
 			wantErr: ErrMultipleOwners,
 			wantMsg: strconv.Itoa(fakePID + 1),
@@ -687,7 +683,7 @@ func TestVerifyConnFakeProcIPv6(t *testing.T) {
 	f.writeTables("tcp", procNetHeader)
 	f.writeTables("tcp6", f.rows(fakeUID, fakeInode, 1))
 	f.write("sys/kernel/random/boot_id", fakeBootID+"\n")
-	f.addProcess(fakePID, fakeInode)
+	f.addProcess(fakePID)
 	ev, err := f.verify()
 	if err != nil {
 		t.Fatalf("VerifyConn = %v", err)

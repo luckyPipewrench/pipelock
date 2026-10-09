@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -887,6 +888,27 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// MCP scanning sections auto-enable inside ResolveRuntime above
 		// when the operator did not configure them; the effective cfg
 		// already reflects those defaults.
+		//
+		// Resolve the listener identity before binding. The resolution is
+		// pinned for the listener's life; each request re-resolves against
+		// the live config and the listener stops serving if it differs.
+		mcpTransport := listenerTransport(s.opts.MCPUpstream)
+		if err := requireNoSessionHeader(cfg, mcpTransport); err != nil {
+			return err
+		}
+		mcpResolution, resolveErr := resolveLaunchIdentity(cfg, s.opts.MCPServerName, mcpTransport, s.opts.Stderr)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		mcpBinding := mcpRunListenerBinding(s.opts.MCPUpstream)
+		if mcpResolution.BindingMode == config.MCPAckBindingModeVerifiedLocalSession {
+			sessionBinding, bindErr := identity.SessionBinding(mcpResolution, mcpTransport)
+			if bindErr != nil {
+				return bindErr
+			}
+			mcpBinding = sessionBinding
+		}
+		mcpIdentity := newRunListenerIdentity(s.opts.MCPServerName, mcpResolution, mcpBinding, mcpTransport)
 		mcpToolBaseline := tools.NewToolBaseline()
 		mcpScannerFn := func() *scanner.Scanner { return s.proxy.ScannerPtr().Load() }
 		mcpInputCfgFn := func() *mcp.InputScanConfig { return buildMCPInputCfg(s.proxy.CurrentConfig()) }
@@ -1029,18 +1051,19 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			trust := config.ResponseTrustUntrusted
 			c := s.proxy.CurrentConfig()
 			if c != nil {
-				if configuredTrust, ok := c.MCPResponseTrustForServer(s.opts.MCPServerName); ok {
+				if configuredTrust, ok := c.MCPResponseTrustForServer(mcpIdentity.armingName(c)); ok {
 					trust = configuredTrust
 				}
 			}
 			return trust
 		}
 		mcpResponseActionFn := func() string {
-			return s.proxy.CurrentConfig().MCPResponseActionForServer(s.opts.MCPServerName)
+			c := s.proxy.CurrentConfig()
+			return c.MCPResponseActionForServer(mcpIdentity.armingName(c))
 		}
 		mcpTaintTrustedFn := func() bool {
 			c := s.proxy.CurrentConfig()
-			return c != nil && c.TaintTrustsMCPServer(s.opts.MCPServerName)
+			return c != nil && c.TaintTrustsMCPServer(mcpIdentity.armingName(c))
 		}
 
 		mcpErr = make(chan error, 1)
@@ -1099,9 +1122,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				CardBaseline:             mcp.NewCardBaseline(1000),
 				A2ACardURL:               s.opts.MCPUpstream,
 				MediaPolicyFn:            mcpMediaPolicyFn,
-				ServerName:               s.opts.MCPServerName,
-				PolicyServerName:         s.opts.MCPServerName,
-				ServerBinding:            mcpRunListenerBinding(s.opts.MCPUpstream),
+				ServerName:               mcpResolution.Name,
+				PolicyServerName:         mcpResolution.ArmingName,
+				ServerBinding:            mcpBinding,
+				ServerBindingMode:        mcpResolution.BindingMode,
+				ServerRevision:           mcpResolution.Revision,
+				ServerIdentityFn:         mcpIdentity.identityFn(s.proxy.CurrentConfig),
 				SuppressFn:               mcpResponseSuppressFn,
 				ResponseTrustClassFn:     mcpResponseTrustFn,
 				ResponseActionOverrideFn: mcpResponseActionFn,
@@ -1109,7 +1135,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				FrozenToolStableKey:      s.opts.MCPUpstream,
 				ContractLoaderPtr:        s.proxy.ContractLoaderPtr(),
 				ContractAgent:            edition.ProfileDefault,
-				DialContext:              mcp.NewMetadataSafeDialContext(mcpScannerFn),
+				DialContext:              verifiedDialContext(mcp.NewMetadataSafeDialContext(mcpScannerFn), mcpResolution, s.opts.Stderr),
 			}
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {

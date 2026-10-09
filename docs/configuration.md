@@ -1165,7 +1165,7 @@ response_scanning:
 | `size_exempt_scan_max_inflight_bytes` | `268435456` | Per-proxy-instance memory reservation budget for concurrent over-cap size-exempt scans. If a scan cannot reserve its ceiling immediately, the response blocks fail-closed instead of waiting. |
 | `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The `expires` date may be no more than 90 days ahead; shorten it, or use a scanned delivery path or authenticated artifact for a permanent need. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. Every RFC 9239 JavaScript media type and alias (`text/javascript`, `application/javascript`, `application/ecmascript`, `application/x-javascript`, `application/x-ecmascript`, `text/ecmascript`, and the rest of the section-6 list) is refused as a `content_types` entry, matching what the browser shield already treats as JavaScript, so an opaque-download exception cannot admit an equivalent script response under a less common alias. |
 | `authenticated_artifacts` | `[]` | Exact official signed rules artifacts which the forward proxy and decrypted CONNECT interceptor buffer and verify before bypassing only response prompt-injection matching. Each entry requires exact `host`, canonical non-root `path`, and signed `bundle_name`; no wildcard, prefix, query, userinfo, or non-default port matches. The proxy fetches the sidecar signature without forwarding caller credentials, refuses every redirect, verifies an embedded official Ed25519 key and the bundle identity, then records an audit event and artifact-labelled allow receipt. Any mismatch, redirect, oversized body, invalid signer/signature, or wrong bundle name blocks before upstream bytes reach the client. Request DLP, authority, SSRF, budgets, Browser Shield, and media policy remain active. Upgrade binaries before adding this field: older binaries reject unknown config fields. |
-| `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. A server that is omitted, missing, or does not match an entry is treated as `untrusted` and blocks response-injection findings. A malformed entry is not a fallback: an unknown trust value, an invalid server name, or a duplicate entry fails config validation, so the configuration does not load. `reasoning` permits warn-and-forward only when `response_scanning.action` is `warn`; a stricter section action still applies. |
+| `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by the server name: the `pipelock mcp proxy --server-name` operator label, or the registered name when the launch matches an `mcp_identities` entry. The label is a name the operator chose, not proof of which server answers. A server that is omitted, missing, or does not match an entry is treated as `untrusted` and blocks response-injection findings. A malformed entry is not a fallback: an unknown trust value, an invalid server name, or a duplicate entry fails config validation, so the configuration does not load. `reasoning` permits warn-and-forward only when `response_scanning.action` is `warn`; a stricter section action still applies. |
 | `core_observe_exceptions` | `[]` | Declared, expiring per-host observe entries for ONE named core response pattern. The scan still runs and still matches; only the block is withheld, and the finding is recorded and emitted as evidence under the `core_observed` reason. Requires exact `host` (wildcards refused), a `pattern` naming one of the 13 core response pattern names (case-insensitive; the error lists them), `reason`, `owner`, and a non-expired `expires` no more than 30 days ahead. `host` must be a valid ASCII hostname; for MCP it is the server name. `reason` and `owner` are at most 200 characters with no control characters. A second entry for the same host and pattern is refused. An expired or malformed entry blocks again without waiting for a reload. Adding an entry takes effect on hot reload and is not itself refused in strict mode or under `require_receipts`, unlike adding an `exempt_domains` host. |
 | `patterns` | 34 built-in | Injection and state/control poisoning patterns |
 
@@ -1228,9 +1228,9 @@ response_scanning:
 
 `reasoning` maps to `warn`; `untrusted` maps to `block`. Pipelock applies the stricter of that mapping and `response_scanning.action`, so `block`, `ask`, and `strip` still apply to a reasoning server. Unknown trust values fail config validation, duplicate server entries fail validation, and entries are surfaced as warnings when `response_scanning.enabled` is false. The trust decision applies to MCP stdio, stdio-to-HTTP, reverse Streamable HTTP/SSE, and WebSocket surfaces because they share the MCP response scan gate. Block logs and JSON-RPC errors name the server, matched pattern, and trust class so operators can see whether a server needs an explicit trust-class review.
 
-Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose clean responses should not contaminate the session, add the same `--server-name` value under `taint.trusted_mcp_servers`. Prompt-injection findings still raise hostile taint.
+Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose clean responses should not contaminate the session, add the same `--server-name` value (or the registered `mcp_identities` name) under `taint.trusted_mcp_servers`. Prompt-injection findings still raise hostile taint.
 
-Launch MCP proxies with a stable server identity so the entry can match: use `pipelock mcp proxy --server-name analysis-server ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name analysis-server` for the long-lived MCP listener.
+Launch MCP proxies with a stable server name so the entry can match (the name is an operator label unless the upstream is registered under `mcp_identities`): use `pipelock mcp proxy --server-name analysis-server ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name analysis-server` for the long-lived MCP listener.
 
 Forward, TLS-intercepted, and reverse traffic refuses every `206` and `304` with `response_incomplete` before response-scan exemptions, Shield exemptions, media policy, or budget truncation. For forward-proxy and TLS-intercepted traffic, an exempt host's complete response streams through untouched when `response_scanning.enabled` is true and the response is not declared SVG: no buffering, response scan-cap block, media metadata strip, Browser Shield rewrite, or injection scan is applied to that trusted response. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. If a host needs full byte-preserving passthrough without MITM, prefer `tls_interception.passthrough_domains`.
 
@@ -1535,7 +1535,7 @@ Acknowledgments need a key. Each entry is tied to the server's transport, and th
 
 1. Generate a separate random key of at least 32 bytes, used for nothing else, for example `head -c 32 /dev/urandom | base64 > /etc/pipelock/ack-binding.key` followed by `chmod 600` on it. Length alone isn't enough: the key must come from a cryptographic random source. A guessable key would let a configuration reader confirm a guess against the key ID and then recompute bindings.
 2. Point `mcp_tool_scanning.acknowledgment_key` at it, as `file:/absolute/path` (a regular file, mode 0600 or stricter, not a symlink) or `${ENV_VAR}`. On Windows only `${ENV_VAR}` is accepted, because Pipelock does not check NTFS permissions and so cannot verify who can read a key file. A literal key in the configuration is refused, since it would be readable by everyone who can read the entries it protects. Any configuration with `acknowledged_findings` and no usable key is refused at load. There is no unkeyed fallback.
-3. Run the proxy with `--server-name`. When a tool raises the finding and each match sits wholly within one field, Pipelock logs a one-line JSON entry to copy after you've reviewed the tool. Add `owner`, `reason` and `expires` to it. The entry holds the keyed binding, digests and field pointers, never field text, the key or the unkeyed transport digest. No entry is offered when a match spans two fields, sits in a name, title, output schema or metadata, or when there are more than 64 matches, or when no usable key is configured, and the finding keeps enforcing.
+3. Run the proxy with `--server-name`, an operator label that names the server in the logged entry and in the policy lookups. For a local service whose port and token change on every start, register it under [`mcp_identities`](#registered-local-mcp-services-mcp_identities) and run the proxy against that upstream instead: the proxy takes the registered name, and the entry then carries `server_binding_mode: verified-local-session`. When a tool raises the finding and each match sits wholly within one field, Pipelock logs a one-line JSON entry to copy after you've reviewed the tool. Add `owner`, `reason` and `expires` to it. The entry holds the keyed binding, digests and field pointers, never field text, the key or the unkeyed transport digest. No entry is offered when a match spans two fields, sits in a name, title, output schema or metadata, or when there are more than 64 matches, or when no usable key is configured, and the finding keeps enforcing.
 
 The keyed binding has the form `hmac-sha256-v1:<key id>:<mac>`. The key ID is derived from the key and names which key an entry was written under, so a rotated key is reported as `binding_key_changed` rather than as a different server.
 
@@ -1569,7 +1569,7 @@ An entry stops applying when any of these change:
 
 - The tool definition: every member, including `_meta` and any provenance it carries, the text of a field holding a match, or the set of matches.
 - The detector's patterns. A maintainer raises `family_revision` by hand whenever the patterns change, and a test that pins the pattern sources fails until they do. Pipelock doesn't bump it automatically. After a release with a new revision, every entry for the finding goes stale. Review the tool again and add the entry Pipelock logs for the new revision.
-- The transport binding: the upstream URL (scheme, host, user info, path, the query exactly as written, fragment) or the subprocess command, the upstream headers Pipelock sends, and the child environment you set with `--env`, `--env-carrier`, `--env-file-carrier` and `--env-unset`. Rotating a credential held in one of those headers or variables changes the binding too.
+- The transport binding: the upstream URL (scheme, host, user info, path, the query exactly as written, fragment) or the subprocess command, the upstream headers Pipelock sends, and the child environment you set with `--env`, `--env-carrier`, `--env-file-carrier` and `--env-unset`. Rotating a credential held in one of those headers or variables changes the binding too. A server registered under `mcp_identities` uses the `verified-local-session` binding instead, which leaves out the port and the session credential and binds the kernel-verified service.
 - The acknowledgment key. Rotating it invalidates every entry; copy the entries Pipelock logs under the new key.
 - The expiry. `expires` is required: a UTC timestamp ending in `Z` at most 180 days ahead, or a `YYYY-MM-DD` date at most 180 days ahead that holds through the end of that UTC day. It's checked on every scan.
 
@@ -1583,6 +1583,140 @@ Limits worth knowing:
 - `pipelock mcp proxy` reads its configuration and key once per session. Revoking an entry or rotating or removing the key there takes a restart, though expiry still applies right away.
 - The HTTP listener under `pipelock run` applies a changed configuration on the next `tools/list`. Pipelock rereads the key when the configuration reloads, which happens when the configuration file changes or on `SIGHUP`; changing only the key file doesn't trigger it. If a reload fails while the key is gone, unreadable, too short, readable by others or different, the running configuration is kept for everything else, but every acknowledgment refuses until a reload succeeds with a usable key.
 - An acknowledged `tools/list` passes tool scanning with the finding present, and it's forwarded only if every later check passes too. Tool scanning logs it, captures it as warned and receipts it with an allow verdict, and it earns no adaptive-enforcement credit.
+
+### Registered local MCP services (`mcp_identities`)
+
+A loopback address names a place, not a program: any local process can bind `127.0.0.1:43111`. When an MCP server runs on the same machine and picks a fresh port and a fresh bearer token on every start, the default acknowledgment binding above changes on every launch, so a reviewed acknowledgment never survives a restart. `mcp_identities` registers such a service by what the kernel can observe about it, and Pipelock then checks that the process on the far end of each connection is that service before it sends anything.
+
+A registration is vendor-neutral. It describes a native binary, a Node, Python or JVM application, or anything else by the owning user, the executable's digest, the files the process must hold, and the control variables it may carry. Nothing in it names a product.
+
+```yaml
+# mcp-identities-example: native-binary
+mcp_identities:
+  - name: vendor-indexer
+    verified_local_service:
+      scheme: http
+      host: 127.0.0.1
+      path: /rpc/v1
+      principal_uid: 1000
+      executable_sha256: 1111111111111111111111111111111111111111111111111111111111111111
+      session_header:
+        name: Authorization
+        scheme: Bearer
+        carrier: PIPELOCK_VSCODE_INDEXER_AUTH
+```
+
+The service in the first example is a single native executable that hands each session a fresh bearer token, so the entry also declares which header carries it. Pipelock reads that header's value from the carrier variable on every launch and never logs it.
+
+An interpreter hosting an application is pinned through the files it loads. The executable digest alone would match every script that interpreter runs, so list the application entry point and any native module it loads under `mapped_files`:
+
+```yaml
+# mcp-identities-example: python-extension-module
+mcp_identities:
+  - name: vendor-analysis
+    verified_local_service:
+      scheme: ws
+      host: "::1"
+      path: /analysis
+      principal_uid: 1001
+      executable_sha256: 2222222222222222222222222222222222222222222222222222222222222222
+      mapped_files:
+        - path: /opt/vendor/analysis/server.py
+          sha256: 3333333333333333333333333333333333333333333333333333333333333333
+        - path: /opt/vendor/analysis/lib/native_ext.so
+          sha256: 4444444444444444444444444444444444444444444444444444444444444444
+      control_environment:
+        PYTHONPATH: /opt/vendor/analysis/site
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | The registered name. A launch that matches this entry takes this name for its policy lookups and its acknowledgments. Same character rules as `--server-name`; duplicate names are refused at load. |
+| `verified_local_service.scheme` | yes | `http`, `https`, `ws` or `wss`. |
+| `verified_local_service.host` | yes | The literal `127.0.0.1` or `::1`. A hostname is refused: only a loopback service can be verified. |
+| `verified_local_service.path` | yes | The exact upstream path. The port is deliberately not registered, because an ephemeral-port service picks a new one on every start. A launch that omits the port is refused instead of being matched against the scheme's default. Two entries with the same scheme, host and path are refused at load. |
+| `verified_local_service.principal_uid` | yes | The effective user the service must run as. A pointer, so leaving it out is refused instead of being read as root. |
+| `verified_local_service.executable_sha256` | yes | 64 lowercase hex characters: the digest of the executable image the process is running. Pipelock hashes the image through the process's own `exe` link, so a binary replaced on disk after launch does not mask a different running image. |
+| `verified_local_service.mapped_files` | no | Absolute, clean paths with a `sha256` each. The process must hold every one open or mapped, as the very same device and inode Pipelock just opened and hashed. Duplicate paths are refused. |
+| `verified_local_service.control_environment` | no | Loader and interpreter control variables the process is allowed to carry, each with its exact value. Any other deny-listed variable on the process refuses the connection. |
+| `verified_local_service.session_header` | no | `name` (canonical header form), `scheme` (`Bearer`) and `carrier` (an environment variable in the `PIPELOCK_VSCODE_` namespace). Refused for `ws` and `wss`, because a WebSocket handshake header cannot be separated from the bound session. |
+
+#### Matching and refusals
+
+At every launch Pipelock resolves one identity from the effective upstream and `--server-name`, in this order, and prints the result on stderr:
+
+```text
+MCP identity: server=vendor-indexer source=verified-local-service binding=verified-local-session
+```
+
+`source` is `explicit` (an operator label that matched nothing registered), `unnamed` (no label, nothing registered) or `verified-local-service`. `--server-name` is an operator label, never a proof of identity. These launches refuse to start, and the message names the field to correct:
+
+- The upstream matches more than one registration.
+- `--server-name` names a registered service but the upstream does not match that registration.
+- `--server-name` names something different from the registration the upstream matches.
+- The upstream matches a registration but has no explicit port.
+- The upstream matches a registration that declares a `session_header`, but the header is missing, is supplied more than once, comes from a header flag or file instead of the registered carrier, or is not exactly `<scheme> <token>` with one token.
+- The host is not Linux. There is no weaker fallback: the check reads the kernel's socket table, so on macOS and Windows a matched launch refuses instead of proceeding unverified.
+
+#### What each connection proves
+
+Every new connection to a matched upstream is verified, including reconnects. After Pipelock dials and before it writes a byte, it asks the kernel which process owns the server end of that exact connection (matched by the connected four-tuple and then by socket inode) and compares the owner with the registration. A successful check proves, at that moment, that the owner:
+
+- runs as `principal_uid`;
+- is running an executable whose digest is `executable_sha256`;
+- holds every `mapped_files` entry, with a matching digest;
+- carries no deny-listed control variable that `control_environment` does not name with exactly that value;
+- is the same process incarnation before and after the checks.
+
+An HTTP keep-alive connection that the transport reuses for several requests is verified when it is dialed, not again per request. A replacement that takes over the port is caught on the next new connection.
+
+The deny list is a floor, not a proof that no hook exists. It covers these variables:
+
+- glibc loader: `GLIBC_TUNABLES`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_PROFILE`
+- Node.js, Bun and Electron-as-Node: `BUN_OPTIONS`, `ELECTRON_EXTRA_LAUNCH_ARGS`, `ELECTRON_RUN_AS_NODE`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `NODE_PATH`
+- Python: `PYTHONBREAKPOINT`, `PYTHONHOME`, `PYTHONINSPECT`, `PYTHONPATH`, `PYTHONPYCACHEPREFIX`, `PYTHONSTARTUP`, `PYTHONUSERBASE`
+- JVM: `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`
+- Ruby, Perl, Lua and PHP: `LUA_CPATH`, `LUA_INIT`, `LUA_PATH`, `PERL5LIB`, `PERL5OPT`, `PERLLIB`, `PHPRC`, `PHP_INI_SCAN_DIR`, `RUBYLIB`, `RUBYOPT`
+- .NET: `CORECLR_ENABLE_PROFILING`, `CORECLR_PROFILER`, `CORECLR_PROFILER_PATH`, `DOTNET_ADDITIONAL_DEPS`, `DOTNET_SHARED_STORE`, `DOTNET_STARTUP_HOOKS`
+- POSIX shell startup: `BASH_ENV`, `ENV`
+
+A runtime that is not on the list is pinned only through its executable and bundle files.
+
+What this does not stop: code that already runs as `principal_uid` can load the same pinned files and impersonate the service, and the same user can already read that service's memory and files, so run a service whose identity matters under its own user. The environment check reads the process's initial environment; a process can change its own later, and an interpreter can load code from places the pins do not name. A pinned file the owner holds can be rewritten in place by the same user after the check, so the result describes the state at check time.
+
+#### Acknowledgments for a registered service
+
+A launch that resolves to a registered service uses the `verified-local-session` binding. An acknowledgment written for it sets `server` to the registered name and adds the mode:
+
+```text
+- server: vendor-indexer
+  server_binding_mode: verified-local-session
+  server_binding_hmac: <from the logged entry>
+  tool: ...
+```
+
+An empty or omitted `server_binding_mode` means `transport-v2`, the per-credential binding described above, and applies to every server that is not registered. `verified-local-session` is refused at load unless `server` names an `mcp_identities` entry with `verified_local_service`.
+
+One acknowledgment then covers every session of that one verified service instead of one credential. The binding includes the registered name and a revision of the whole entry, the pinned user, executable digest and every mapped file, the registered scheme, host and path, the session header's name, carrier name and authorization scheme, every other upstream header, and the child-environment overrides. It leaves out the port and the session header's value, since the port and token are new on every start and the kernel check already ties the connection to the same pins. Editing any pin changes the revision, so the acknowledgment goes stale and refuses until you review the tool again and copy the entry Pipelock logs.
+
+A registration always binds this way, even when it declares no session header. In that case the acknowledgment is tied to the service's pins alone, which means it covers every session of that service.
+
+A credential change on a server that is not registered still invalidates its acknowledgment, as before. Removing a registration makes any `verified-local-session` acknowledgment for it refuse at load.
+
+#### Operator commands and diagnostics
+
+- `pipelock mcp identity register --upstream URL --name NAME [--mapped-file PATH ...] [--session-header NAME --carrier VAR]` dials a running service you trust right now, observes its owner and prints an `mcp_identities` entry to review. It never writes a configuration file. The other files the process holds are printed as comments, operating-system libraries last, and any deny-listed variable the process carries appears as a `control_environment` key whose value you fill in after review.
+- `pipelock mcp identity inspect --config FILE --upstream URL` resolves the upstream against the registry exactly as `pipelock mcp proxy` would, then verifies the live owner.
+- `pipelock explain mcp-response --upstream URL` resolves the same way and prints the identity, source, binding and revision it would use.
+- `pipelock doctor` reports the `mcp_identities` check: how many services are registered and, on a host that is not Linux, a warning that matched launches will refuse to start.
+
+#### Reload and restart behavior
+
+`pipelock mcp proxy` resolves the identity once at launch and keeps it for the life of the process, so editing a registration there takes a restart.
+
+The MCP listener under `pipelock run` pins the resolution at startup and re-checks it on every configuration reload. An unchanged reload has no effect. If a reload changes or removes the registration that startup matched, every MCP request on the listener is refused with a JSON-RPC error until you restart `pipelock run`, and acknowledgments for the pinned identity stop matching. The listener cannot carry a `session_header` registration, because it has no per-session carrier: a registration that matches the listener's upstream and declares one refuses startup.
+
+A configuration that carries `mcp_identities` or `server_binding_mode` is rejected by binaries that predate them, which fail on unknown fields. Add the registration and its acknowledgments only to a configuration that the upgraded binary alone loads.
 
 ## MCP Tool Policy
 
@@ -3733,7 +3867,7 @@ taint:
     - "docs.anthropic.com"
     - "docs.github.com"
     - "developer.mozilla.org"
-  trusted_mcp_servers:                 # MCP --server-name values that do NOT raise session taint
+  trusted_mcp_servers:                 # MCP server names (--server-name labels or registered names) that do NOT raise session taint
     - "docs-cache"
   protected_paths:                     # tainted sessions are blocked (or escalated) on these paths
     - "*/auth/*"
@@ -3767,7 +3901,7 @@ taint:
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
 | `fail_safe_classification` | bool | `false` | When true, unknown or low-confidence read/tool classifications are treated as protected instead of passing the read-only shortcut. |
 | `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
-| `trusted_mcp_servers` | []string | empty | MCP server names whose clean responses do not raise session taint. Entries match `pipelock mcp proxy --server-name`; URLs and slashes are rejected. This does not disable MCP response scanning, and prompt-injection hits can still raise hostile taint. |
+| `trusted_mcp_servers` | []string | empty | MCP server names whose clean responses do not raise session taint. Entries match the server name, the `pipelock mcp proxy --server-name` operator label or a registered `mcp_identities` name; URLs and slashes are rejected. This does not disable MCP response scanning, and prompt-injection hits can still raise hostile taint. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
 | `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
 | `trust_overrides` | []object | empty | Narrow exemptions (see below). |
@@ -3839,7 +3973,7 @@ Task boundaries are surfaced on every emitted receipt as `session_task_id`, and 
 
 ### Classification details
 
-- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content. `taint.allowlisted_domains` applies to URL/HTTP response sources only; MCP response taint is keyed by the proxy's `--server-name` value through `taint.trusted_mcp_servers`.
+- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content. `taint.allowlisted_domains` applies to URL/HTTP response sources only; MCP response taint is keyed by the server name (the proxy's `--server-name` label, or the registered `mcp_identities` name) through `taint.trusted_mcp_servers`.
 - **Action sensitivity** is derived from the target path (or tool-argument path) against `protected_paths` and `elevated_paths`.
 - **Authority kind** records which authority tier gated the action: `external`, `policy`, `user_broad`, `user_exact`, or `operator_override`.
 

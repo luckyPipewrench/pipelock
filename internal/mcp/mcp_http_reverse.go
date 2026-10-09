@@ -540,6 +540,21 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		if opts.ServerIdentityFn != nil {
+			identity := opts.ServerIdentityFn()
+			if identity.Refusal != "" {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", identity.Refusal)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				resp, _ := json.Marshal(rpcError{
+					JSONRPC: jsonrpc.Version,
+					Error:   rpcErrorDetail{Code: -32003, Message: "pipelock: " + identity.Refusal},
+				})
+				_, _ = w.Write(resp)
+				return
+			}
+			requestBaseOpts = requestBaseOpts.withServerIdentity(identity)
+		}
 		// Per-request audit logger carrying the vetted correlation tag, so
 		// every event this HTTP request emits can be matched to the client's
 		// tag. The JSON-RPC id is client-chosen and not unique, so it cannot

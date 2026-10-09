@@ -632,6 +632,7 @@ Examples:
 	cmd.AddCommand(mcpScanCmd())
 	cmd.AddCommand(mcpProxyCmdWithAuditLoggerFactory(newAuditLogger))
 	cmd.AddCommand(mcpIntegrityCmd())
+	cmd.AddCommand(mcpIdentityCmd())
 	return cmd
 }
 
@@ -856,7 +857,12 @@ Key-free evidence capture:
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
 			hasUpstream := upstreamURL != ""
 			hasListen := listenAddr != ""
-			resolvedHeaders, err := resolveHeaderCarriers(headerCarriers)
+			if serverName != "" {
+				if err := config.ValidateMCPServerName(serverName, "--server-name"); err != nil {
+					return err
+				}
+			}
+			carrierEntries, err := resolveHeaderCarrierEntries(headerCarriers)
 			if err != nil {
 				return err
 			}
@@ -882,6 +888,7 @@ Key-free evidence capture:
 			// reused by the transport, so the server binding covers exactly
 			// what is sent.
 			var upstreamHeaders http.Header
+			var launchHeaders []identity.Header
 			var extraEnv []string
 			bindingInputs := mcpBindingInputs{}
 			if hasUpstream {
@@ -891,9 +898,15 @@ Key-free evidence capture:
 				}
 				mergedHeaders := append([]string{}, fileHeaders...)
 				mergedHeaders = append(mergedHeaders, rawHeaders...)
-				mergedHeaders = append(mergedHeaders, resolvedHeaders...)
+				for _, entry := range carrierEntries {
+					mergedHeaders = append(mergedHeaders, entry.Header+": "+entry.Value)
+				}
 				var headerErr error
 				upstreamHeaders, headerErr = parseHeaderFlags(mergedHeaders)
+				if headerErr != nil {
+					return headerErr
+				}
+				launchHeaders, headerErr = identityHeaders(fileHeaders, rawHeaders, carrierEntries)
 				if headerErr != nil {
 					return headerErr
 				}
@@ -907,7 +920,6 @@ Key-free evidence capture:
 				bindingInputs.Command = args[dashIdx:]
 				bindingInputs.ChildEnv = extraEnv
 			}
-			serverBinding := mcpServerBinding(bindingInputs)
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
@@ -1043,6 +1055,31 @@ Key-free evidence capture:
 			}
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
+			// Resolve the launch identity once, from the final config and before
+			// the acknowledgment binding is computed: a registered verified local
+			// service is bound by the session digest, everything else by the
+			// transport digest.
+			launchTransport := identity.Transport{
+				Kind:     identity.KindSubprocess,
+				Command:  bindingInputs.Command,
+				ChildEnv: bindingInputs.ChildEnv,
+			}
+			if hasUpstream {
+				launchTransport = identity.Transport{
+					Kind:        upstreamTransportKind(isWSUpstream),
+					UpstreamURL: upstreamURL,
+					Headers:     launchHeaders,
+				}
+			}
+			launchIdentity, err := resolveLaunchIdentity(cfg, serverName, launchTransport, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			serverBinding, err := launchBinding(launchIdentity, launchTransport, bindingInputs)
+			if err != nil {
+				return err
+			}
+
 			// Rebuild scanner with the (possibly modified) resolved config.
 			sc, err := scanner.New(cfg)
 			if err != nil {
@@ -1061,7 +1098,11 @@ Key-free evidence capture:
 				return fmt.Errorf("create MCP audit logger: %w", err)
 			}
 			defer auditLogger.Close()
-			upstreamDialContext := mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc })
+			upstreamDialContext := verifiedDialContext(
+				mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc }),
+				launchIdentity,
+				cmd.ErrOrStderr(),
+			)
 
 			ks := killswitch.New(cfg)
 
@@ -1554,7 +1595,7 @@ Key-free evidence capture:
 						}
 					}
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
-					applyMCPResponseSuppressOpts(&listenerOpts, cfg, identity.Legacy(serverName))
+					applyMCPResponseSuppressOpts(&listenerOpts, cfg, launchIdentity)
 					listenerOpts.ServerBinding = serverBinding
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					listenerOpts.ReceiptGroup = receiptGroup
@@ -1607,7 +1648,7 @@ Key-free evidence capture:
 					}
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
-					applyMCPResponseSuppressOpts(&wsOpts, cfg, identity.Legacy(serverName))
+					applyMCPResponseSuppressOpts(&wsOpts, cfg, launchIdentity)
 					wsOpts.ServerBinding = serverBinding
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					wsOpts.ReceiptGroup = receiptGroup
@@ -1664,7 +1705,7 @@ Key-free evidence capture:
 				}
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
-				applyMCPResponseSuppressOpts(&httpOpts, cfg, identity.Legacy(serverName))
+				applyMCPResponseSuppressOpts(&httpOpts, cfg, launchIdentity)
 				httpOpts.ServerBinding = serverBinding
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				httpOpts.ReceiptGroup = receiptGroup
@@ -1857,7 +1898,7 @@ Key-free evidence capture:
 				}
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
-				applyMCPResponseSuppressOpts(&proxyOpts, cfg, identity.Legacy(serverName))
+				applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
 				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
@@ -2015,7 +2056,7 @@ Key-free evidence capture:
 			}
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
-			applyMCPResponseSuppressOpts(&proxyOpts, cfg, identity.Legacy(serverName))
+			applyMCPResponseSuppressOpts(&proxyOpts, cfg, launchIdentity)
 			proxyOpts.ServerBinding = serverBinding
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			proxyOpts.ReceiptGroup = receiptGroup
@@ -2072,7 +2113,7 @@ Key-free evidence capture:
 	cmd.Flags().StringArrayVar(&headerCarriers, "header-carrier", nil, "map a host-resolved carrier into an upstream header (HEADER=CARRIER, repeatable)")
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
-	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'; tools/list tool-definition findings are not suppressed by it (control them with mcp_tool_scanning)")
+	cmd.Flags().StringVar(&serverName, "server-name", "", "operator label for an unregistered MCP server; enables per-server response suppression via target 'mcp://<name>/response' (tools/list tool-definition findings are not suppressed by it; control them with mcp_tool_scanning). A server registered in mcp_identities supplies its own verified name; an explicit name equal to a registered identity must match the registration this launch's upstream resolves to")
 	cmd.Flags().StringVar(&adaptiveResetFile, "adaptive-reset-file", "", "signed adaptive reset delegation control file")
 	cmd.Flags().StringVar(&adaptiveResetAuthorityPublicKeyFile, "adaptive-reset-authority-public-key-file", "", "exported mcp-reset-authority public key for --adaptive-reset-file")
 	cmd.Flags().StringVar(&adaptiveResetTarget, "adaptive-reset-target", "", "stable target identity for --adaptive-reset-file delegations")

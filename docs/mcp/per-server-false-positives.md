@@ -7,7 +7,7 @@ as a credential solicitation - you want to lift that one block for that one
 server without weakening detection for any other server or any other scanner.
 
 This page covers the surgical remediation path for that case: give the server a
-stable identity, add a response-suppression entry scoped to it, and use the
+stable name, add a response-suppression entry scoped to it, and use the
 `explain` command to get the exact entry to add. Each part below is
 copy-pasteable.
 
@@ -65,13 +65,14 @@ and verifying that the upstream did not already act on an in-flight call.
 Per-config separation is a coarse tool: it isolates servers but does not, by
 itself, lift a specific pattern for one server. Parts 2 and 3 do that.
 
-## 2. Give the server a stable identity: `--server-name`
+## 2. Give the server a stable name: `--server-name`
 
 ```sh
 pipelock mcp proxy --server-name code-assistant --config code-assistant-pipelock.yaml -- code-assistant mcp-server
 ```
 
-`--server-name <name>` assigns the wrapped server a stable identity. Pipelock
+`--server-name <name>` is an operator label: it gives the wrapped server a
+stable name that you chose. It is not proof of which server answers. Pipelock
 uses it to build a per-server suppression **target** of the form:
 
 ```text
@@ -84,6 +85,14 @@ This flag is **opt-in and inert by default.** Without `--server-name`, the
 target is empty, and a response-scoped `suppress:` entry can match nothing - so
 existing configs and existing invocations are unaffected. Per-server response
 suppression only takes effect once the server has a name to scope it to.
+
+When the upstream is a local service registered under `mcp_identities` (see
+[configuration.md](../configuration.md#registered-local-mcp-services-mcp_identities)),
+the launch takes the registered name instead, and Pipelock verifies the owner of
+each connection before it sends anything. In that case `--server-name` may be
+left off; if given, it must equal the registered name, and a different or
+conflicting value refuses to start. The suppression target is then
+`mcp://<registered name>/response`.
 
 ## 3. Per-server response suppression
 
@@ -112,7 +121,7 @@ Each `suppress:` field:
 | Field | Required | Meaning |
 |---|---|---|
 | `rule` | yes | The exact non-core response-scan pattern name that blocked. Core floor names fail validation. |
-| `path` | yes | The per-server target `mcp://<server-name>/response`. Must match the `--server-name` the proxy is launched with. |
+| `path` | yes | The per-server target `mcp://<server-name>/response`. Must match the name the proxy runs under: the `--server-name` operator label, or the registered `mcp_identities` name when the upstream matches a registration. |
 | `reason` | no | Human-readable justification (recorded, not matched). |
 
 If the `path` target does not match the running proxy's `--server-name` (or the
@@ -122,8 +131,13 @@ suppresses nothing. Part 4's `explain` output tells you when that is the case.
 ## 4. Get the exact entry: `pipelock explain mcp-response`
 
 ```sh
-pipelock explain mcp-response [--config <file>] [--server-name <name>] [--json]
+pipelock explain mcp-response [--config <file>] [--server-name <name>] [--upstream <url>] [--json]
 ```
+
+Pass `--upstream` with the same upstream URL the proxy uses when the config
+registers local services under `mcp_identities`. `explain` then resolves the
+name the same way the proxy does, prints an `Identity:` line, and prints the
+refusal reason if the proxy would refuse to start for that upstream.
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,
 scans it for response prompt injection and generic inbound credentials with the
@@ -174,7 +188,8 @@ Remediation - add to config `suppress:`
 ```
 
 Copy the printed `suppress:` entry into the config that server's proxy loads,
-then relaunch the proxy with the same `--server-name`.
+then relaunch the proxy with the same `--server-name` (or the same upstream, when
+the name comes from a registration).
 
 If you omit `--server-name`, `explain` still names the blocking pattern but
 prints the target as the placeholder `mcp://<server-name>/response` and adds a

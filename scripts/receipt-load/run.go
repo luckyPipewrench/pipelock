@@ -169,6 +169,15 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	shutdown := proxy.stop(opt.shutdownTimeout)
 
 	perf := summarizeMeasured(plan, measured, opt.window, measured.samples)
+	if warm.interrupted {
+		perf.invalidate("warmup was interrupted")
+	}
+	for _, out := range warm.outcomes {
+		if !out.ran || out.transportErr || out.bodyReadErr || out.bodyMismatch {
+			perf.invalidate("warmup did not complete with expected responses")
+			break
+		}
+	}
 	perf.RSSStartBytes, perf.RSSEndBytes, perf.RSSPeakBytes = startSample.rss, endSample.rss, peakRSS
 	perf.EvidenceAtStart = evidenceAtStart
 	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {

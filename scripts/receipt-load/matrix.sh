@@ -58,17 +58,22 @@ run_cell() {
   if [[ -n $lock ]]; then
     lock_args=(--lock-file "$lock")
   fi
-  if ! /usr/bin/env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus" \
+  local scope_status=0
+  if /usr/bin/env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus" \
     systemd-run --user --scope -p "CPUQuota=$((cores*100))%" \
     /usr/bin/env GOMAXPROCS="$cores" "$load" \
     --binary "$pipelock" --out "$cell" --requests "$requests" --warmup "$warmup_requests" \
     --concurrency 128 --modes "$modes" --chains "$chains" \
     --rules "$rules" --seed "$seed" --window "$window" ${lock_args[@]+"${lock_args[@]}"} \
     >"$cell/scope.log" 2>&1; then
+    scope_status=0
+  else
+    scope_status=$?
     echo "cell $cell failed; see $cell/scope.log" >&2
     tail -n 20 "$cell/scope.log" >&2 || true
     failed=1
   fi
+  printf '%s\n' "$scope_status" >"$cell/scope.exit"
 }
 
 for cores in 2 4 8; do

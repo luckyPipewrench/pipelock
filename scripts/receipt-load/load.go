@@ -178,7 +178,10 @@ func windowRates(doneAtNS []int64, elapsed, window time.Duration) []windowRate {
 	if window <= 0 || elapsed <= 0 {
 		return nil
 	}
-	count := int((elapsed + window - 1) / window)
+	count := int(elapsed / window)
+	if elapsed%window != 0 {
+		count++
+	}
 	if count == 0 {
 		return nil
 	}

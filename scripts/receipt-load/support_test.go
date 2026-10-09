@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -92,6 +93,9 @@ mcp_tool_policy:
 `
 
 func fakeMain(behavior string, args []string) int {
+	if behavior == "harness" {
+		return realMain(args)
+	}
 	if len(args) == 0 {
 		return 2
 	}
@@ -145,7 +149,7 @@ func fakeRun(behavior, listen string) int {
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
-		if behavior == "badbody" {
+		if behavior == "badbody" || (behavior == "warmbadbody" && strings.Contains(r.URL.Query().Get(workloadKeyParam), "-w")) {
 			// The origin was reached, but the client's body read fails.
 			conn, buf, hijackErr := w.(http.Hijacker).Hijack()
 			if hijackErr == nil {
@@ -262,8 +266,10 @@ func v1Line(kind receiptKind, actionID, target string) string {
 	return envelope(recordTypeAction, map[string]any{"action_record": record})
 }
 
+var syntheticEventCounter atomic.Uint64
+
 func v2Line(target string) string {
-	return envelope(recordTypeEvidence, map[string]any{"event_id": "event", "payload": map[string]any{"target": target}})
+	return envelope(recordTypeEvidence, map[string]any{"event_id": fmt.Sprintf("event-%d", syntheticEventCounter.Add(1)), "payload": map[string]any{"target": target}})
 }
 
 func envelope(typ string, detail map[string]any) string {

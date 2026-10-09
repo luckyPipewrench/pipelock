@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -57,7 +58,15 @@ func summarizeCommand(args []string) (string, error) {
 	if *root == "" || *samples < 1 {
 		return "", errors.New("--root and a positive --samples are required")
 	}
-	p := summaryParams{root: *root, samples: *samples, modes: strings.Split(*modes, ","), cpus: cpuList, chains: chainList}
+	modeList := strings.Split(*modes, ",")
+	seenModes := map[string]bool{}
+	for _, mode := range modeList {
+		if (mode != modeOff && mode != modeBest && mode != modeRequired) || seenModes[mode] {
+			return "", fmt.Errorf("invalid or repeated mode %q", mode)
+		}
+		seenModes[mode] = true
+	}
+	p := summaryParams{root: *root, samples: *samples, modes: modeList, cpus: cpuList, chains: chainList}
 	return filepath.Join(p.root, "summary.csv"), writeSummary(p)
 }
 
@@ -78,6 +87,7 @@ func parseInts(list string) ([]int, error) {
 // result cannot have passed.
 func writeSummary(p summaryParams) error {
 	var rows [][]string
+	failed := false
 	for _, cores := range p.cpus {
 		for _, chains := range p.chains {
 			for _, mode := range p.modes {
@@ -89,10 +99,19 @@ func writeSummary(p summaryParams) error {
 				for sample := 1; sample <= p.samples; sample++ {
 					path := filepath.Join(p.root, fmt.Sprintf("cpu-%d", cores), fmt.Sprintf("chains-%d", chains), fmt.Sprintf("sample-%d", sample), name, "result.json")
 					if r, err := readResultFile(path); err == nil {
+						status, statusErr := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(path)), "scope.exit"))
+						if statusErr != nil || strings.TrimSpace(string(status)) != "0" {
+							r.Integrity.fail("matrix scope did not exit successfully")
+							r.Performance.invalidate("matrix scope did not exit successfully")
+						}
 						results = append(results, r)
 					}
 				}
-				rows = append(rows, summaryRow(cores, chains, mode, p.samples, results))
+				row := summaryRow(cores, chains, mode, p.samples, results)
+				if row[4] != verdictPass || row[6] != "0" {
+					failed = true
+				}
+				rows = append(rows, row)
 			}
 		}
 	}
@@ -109,7 +128,13 @@ func writeSummary(p summaryParams) error {
 		_ = out.Close()
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if failed {
+		return errors.New("matrix contains unusable samples; see summary.csv")
+	}
+	return nil
 }
 
 func readResultFile(path string) (result, error) {
@@ -135,8 +160,13 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 	windowMin := results[0].Performance.Windows.MinRPS
 	failures, perfInvalid, missing, errs, bodyErrs, verifyFail := unreadable, unreadable, 0, 0, 0, 0
 	var rulesModes, configs, binaries []string
+	compatible := true
+	baseline := sampleIdentity(results[0])
 	for _, r := range results {
 		perf, integ := r.Performance, r.Integrity
+		if r.SchemaVersion != resultSchemaVersion || r.Inputs.Harness.ContractVersion != harnessContractVersion || r.Mode != mode || r.ReceiptChains != chains || sampleIdentity(r) != baseline {
+			compatible = false
+		}
 		if integ.Verdict != verdictPass {
 			failures++
 		}
@@ -156,23 +186,53 @@ func summaryRow(cores, chains int, mode string, samples int, results []result) [
 			verifyFail++
 		}
 		rulesModes = append(rulesModes, r.Inputs.Rules.Mode)
-		configs = append(configs, short(r.Inputs.Config.CanonicalSHA256))
-		binaries = append(binaries, short(r.Inputs.Binary.SHA256))
+		configs = append(configs, r.Inputs.Config.CanonicalSHA256)
+		binaries = append(binaries, r.Inputs.Binary.SHA256)
 	}
 	verdict := verdictPass
-	if failures > 0 {
+	if failures > 0 || !compatible {
 		verdict = verdictFail
 	}
 	sorted := append([]float64(nil), rps...)
 	sort.Float64s(sorted)
-	return append(row,
+	row = append(row,
 		verdict, strconv.Itoa(failures), strconv.Itoa(perfInvalid),
 		f1(median(rps)), f1(sorted[0]), f1(sorted[len(sorted)-1]),
 		f1(windowMin), f1(median(windowMedian)),
 		f1(median(p95)), f1(median(p99)), strconv.FormatFloat(median(cpu), 'f', 2, 64),
 		strconv.Itoa(missing), strconv.Itoa(errs), strconv.Itoa(bodyErrs), strconv.Itoa(verifyFail),
-		same(rulesModes), same(configs), same(binaries),
+		same(rulesModes), short(same(configs)), short(same(binaries)),
 	)
+	if failures > 0 || perfInvalid > 0 || !compatible {
+		for i := 7; i <= 14; i++ {
+			row[i] = ""
+		}
+		if !compatible {
+			row[6] = strconv.Itoa(samples)
+		}
+	}
+	return row
+}
+
+// sampleIdentity compares the full pinned inputs before any display shortening.
+// Run paths and random run tags do not describe the measurement population.
+func sampleIdentity(r result) [32]byte {
+	inputs := r.Inputs
+	inputs.Config.Path, inputs.Config.SHA256, inputs.Config.YAML = "", "", ""
+	inputs.Env.Pinned = nil
+	inputs.Env.DroppedCount = 0
+	inputs.Rules.Source, inputs.Rules.Dir = "", ""
+	inputs.Rules.ProxyLogLines = nil
+	inputs.Workload.Tag = ""
+	// systemd gives each sample a fresh scope name; compare the quota itself.
+	if quota, _, ok := strings.Cut(inputs.Host.CgroupCPUQuota, " us ("); ok {
+		inputs.Host.CgroupCPUQuota = quota
+	}
+	data, _ := json.Marshal(struct {
+		Inputs                        inputsReport
+		Requests, Warmup, Concurrency int
+	}{inputs, r.Requests, r.WarmupRequests, r.Concurrency})
+	return sha256.Sum256(data)
 }
 
 func f1(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }

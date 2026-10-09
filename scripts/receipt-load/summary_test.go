@@ -12,7 +12,8 @@ import (
 )
 
 func fakeResult(rps, windowMin, windowMedian float64, integrity, performance string) result {
-	r := result{Mode: modeRequired}
+	r := result{SchemaVersion: resultSchemaVersion, Mode: modeRequired, ReceiptChains: 1}
+	r.Inputs.Harness.ContractVersion = harnessContractVersion
 	r.Performance = performanceReport{
 		Verdict: performance, RequestsPerSecond: rps, CPUCores: 2,
 		Latency: latencyReport{P95MS: 10, P99MS: 20},
@@ -35,6 +36,10 @@ func putResult(t *testing.T, root string, cores, chains, sample int, mode string
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "scope.exit"), []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.Mode, r.ReceiptChains = mode, chains
 	if err := writeResult(dir, &r); err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +81,8 @@ func TestSummaryAggregatesVerdictsAndWindows(t *testing.T) {
 	putResult(t, root, 2, 2, 2, modeRequired, fakeResult(60, 50, 55, verdictPass, perfMeasured))
 
 	err := writeSummary(summaryParams{root: root, samples: 3, modes: []string{modeRequired}, cpus: []int{2}, chains: []int{1, 2}})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("failed matrix returned success")
 	}
 	rows := readSummary(t, root)
 
@@ -97,9 +102,9 @@ func TestSummaryAggregatesVerdictsAndWindows(t *testing.T) {
 	// One failed sample and one sample whose result.json is absent.
 	chained := rows["2/2/required"]
 	want = map[string]string{
-		"integrity": "fail", "integrity_failures": "2", "performance_invalid": "2",
+		"integrity": "fail", "integrity_failures": "2", "performance_invalid": "3",
 		"missing": "7", "body_read_errors": "2", "verify_failures": "1", "config_canonical_sha256": "mixed",
-		"window_min_req_s": "40.0",
+		"window_min_req_s": "",
 	}
 	for col, v := range want {
 		if chained[col] != v {
@@ -110,8 +115,8 @@ func TestSummaryAggregatesVerdictsAndWindows(t *testing.T) {
 
 func TestSummaryMissingCellFails(t *testing.T) {
 	root := t.TempDir()
-	if err := writeSummary(summaryParams{root: root, samples: 2, modes: []string{modeBest}, cpus: []int{4}, chains: []int{8}}); err != nil {
-		t.Fatal(err)
+	if err := writeSummary(summaryParams{root: root, samples: 2, modes: []string{modeBest}, cpus: []int{4}, chains: []int{8}}); err == nil {
+		t.Fatal("missing matrix returned success")
 	}
 	row := readSummary(t, root)["4/8/best"]
 	if row["integrity"] != "missing" || row["integrity_failures"] != "2" || row["performance_invalid"] != "2" {
@@ -131,6 +136,8 @@ func TestSummarizeCommandValidatesInput(t *testing.T) {
 		{"--root", root, "--samples", "0"},
 		{"--root", root, "--cpus", "two"},
 		{"--root", root, "--chains", "0"},
+		{"--root", root, "--modes", "unknown"},
+		{"--root", root, "--modes", "off,off"},
 	} {
 		if _, err := summarizeCommand(bad); err == nil {
 			t.Fatalf("summarizeCommand(%v) accepted bad input", bad)

@@ -1658,6 +1658,8 @@ MCP identity: server=vendor-indexer source=verified-local-service binding=verifi
 - The upstream matches a registration that declares a `session_header`, but the header is missing, is supplied more than once, comes from a header flag or file instead of the registered carrier, or is not exactly `<scheme> <token>` with one token.
 - The host is not Linux. There is no weaker fallback: the check reads the kernel's socket table, so on macOS and Windows a matched launch refuses instead of proceeding unverified.
 
+Matching compares the URL as written: the registered scheme, the literal host (`127.0.0.1` and `::1` are distinct, and `localhost`, other spellings of the same address, or a trailing dot do not match), and the exact escaped path, with no user info, query or fragment. An upstream that reaches the same service through any other spelling matches nothing and runs as an ordinary unregistered launch: unnamed, or under its `--server-name` label if that label is not a registered name, with no owner check, no registered name and no `verified-local-session` acknowledgments, exactly as before the registry existed.
+
 #### What each connection proves
 
 Every new connection to a matched upstream is verified, including reconnects. After Pipelock dials and before it writes a byte, it asks the kernel which process owns the server end of that exact connection (matched by the connected four-tuple and then by socket inode) and compares the owner with the registration. A successful check proves, at that moment, that the owner:

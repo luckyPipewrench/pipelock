@@ -21,8 +21,8 @@ func TestFlightRecorderReceiptChainsLoad(t *testing.T) {
 		{name: "null", value: "null", want: 1},
 		{name: "zero", value: "0"},
 		{name: "one", value: "1", want: 1},
-		{name: "two-inert-without-recorder", value: "2", invalid: true},
-		{name: "thirty-two-inert-without-recorder", value: "32", invalid: true},
+		{name: "two-inert-without-recorder", value: "2", want: 2},
+		{name: "thirty-two-inert-without-recorder", value: "32", want: 32},
 		{name: "negative", value: "-1", invalid: true},
 		{name: "thirty-three", value: "33", invalid: true},
 	} {
@@ -54,7 +54,7 @@ func TestFlightRecorderReceiptChainsLoad(t *testing.T) {
 	}
 }
 
-func TestActiveMultiChainRemainsUnavailable(t *testing.T) {
+func TestActiveMultiChainValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.FlightRecorder.Dir = t.TempDir()
 	cfg.FlightRecorder.ReceiptChains = 2
@@ -63,8 +63,8 @@ func TestActiveMultiChainRemainsUnavailable(t *testing.T) {
 		t.Fatalf("multi-chain recorder accepted: %v", err)
 	}
 	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "receipt.key")
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "flight_recorder.receipt_chains") {
-		t.Fatalf("signed multi-chain recorder accepted: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("signed multi-chain recorder rejected: %v", err)
 	}
 	cfg.FlightRecorder.Anchor.LocalLog = filepath.Join(t.TempDir(), "anchor.log")
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "flight_recorder.receipt_chains") {

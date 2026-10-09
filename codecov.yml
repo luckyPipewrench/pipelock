@@ -1,10 +1,10 @@
 codecov:
   require_ci_to_pass: true
   notify:
-    # CI uploads nineteen coverage reports on a successful run: nine Go 1.26
-    # OSS shards and nine enterprise shards (proxy-0, proxy-1, scanner-0,
-    # scanner-1, mcp-0, mcp-1, rest-0, rest-1, rest-2), plus the merged sandbox
-    # subprocess profile. Both build variants are needed because enterprise profiles
+    # CI uploads thirty-five coverage reports on a successful run: seventeen Go
+    # 1.26 OSS shards and seventeen enterprise shards (proxy-0..3, scanner-0..2,
+    # mcp-0..3, runtime-0..1, rest-0..3), plus the merged sandbox subprocess
+    # profile. Both build variants are needed because enterprise profiles
     # exclude Apache-only stubs.
     # Codecov posts its verdict once this
     # many uploads arrive and does not wait for the rest, so this must equal
@@ -16,7 +16,7 @@ codecov:
     # the check failed before flipping to pass minutes later. That is
     # indistinguishable from a real regression while you are looking at it.
     # scripts/check-codecov-upload-count.sh now fails if the two disagree.
-    after_n_builds: 19
+    after_n_builds: 35
     wait_for_ci: true
 
 parsers:

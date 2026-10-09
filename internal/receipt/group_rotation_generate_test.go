@@ -7,22 +7,27 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-// Regenerate with UPDATE_ROTATION_MATRIX=1 go test ./internal/receipt -run '^TestGenerateReceiptGroupRotationMatrix$'.
+// Regenerate with UPDATE_ROTATION_MATRIX=1 go test ./internal/receipt -run '^TestGenerateReceiptGroupRotationMatrix$',
+// then python3 sdk/verifiers/compact_group_matrix.py to copy the same bounded
+// archive into all three verifier suites.
 // MaxEntriesPerFile drives the production recorder's rotation path with small
 // files; the evidence is never split or renamed by this generator.
 func TestRecoveryObserverRejectsTornNonFinalSegment(t *testing.T) {
@@ -169,6 +174,9 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 			!strings.HasPrefix(item.Name, "shard__unsafe-number-line__") &&
 			item.Name != "shard__torn-receipt__absent" &&
 			item.Name != "non-shard-legacy__torn-receipt__absent" &&
+			item.Name != "predecessor__signed-close-head-disagrees" &&
+			item.Name != "shard__torn-gate-missing-open" &&
+			item.Name != "opening__untrusted-signer" &&
 			item.Name != "shard__evidence-directory__present" {
 			baseCases = append(baseCases, item)
 		}
@@ -237,7 +245,7 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 	}
 	for _, scope := range []string{"shard", "legacy", "predecessor"} {
 		for _, mode := range []string{"close-later", "span-rotation"} {
-			base, groupID, signer, run, _ := writeRotationSource(t, scope, mode)
+			base, groupID, signer, run, _, _ := writeRotationSource(t, scope, mode)
 			for _, flipped := range []bool{false, true} {
 				for _, present := range []bool{false, true} {
 					name := fmt.Sprintf("rotation__%s__%s__%s__%s", scope, mode, map[bool]string{false: "intact", true: "flipped"}[flipped], map[bool]string{false: "absent", true: "present"}[present])
@@ -291,7 +299,7 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 		}
 	}
 	for _, scope := range []string{"shard", "legacy", "predecessor"} {
-		base, groupID, signer, _, session := writeRotationSource(t, scope, "span-rotation")
+		base, groupID, signer, _, session, _ := writeRotationSource(t, scope, "span-rotation")
 		for _, present := range []bool{false, true} {
 			for _, damage := range []string{"torn-early", "torn-early-forged", "bad-middle-json"} {
 				name := fmt.Sprintf("rotation__%s__%s__%s", scope, damage, map[bool]string{false: "absent", true: "present"}[present])
@@ -368,7 +376,7 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 		}
 	}
 	for _, damage := range []string{"broken-link", "missing-segment"} {
-		base, groupID, signer, _, _ := writeRotationSource(t, "shard", "span-rotation")
+		base, groupID, signer, _, _, _ := writeRotationSource(t, "shard", "span-rotation")
 		name := "rotation__shard__" + damage
 		caseDir := filepath.Join(t.TempDir(), name)
 		copyRotationTree(t, base, caseDir)
@@ -432,7 +440,7 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 		}
 	}
 	for _, variant := range []string{"suffix-intact", "suffix-flipped", "duplicate-seq", "prefix-collision", "deleted-intact", "deleted-flipped", "deleted-partial-ael", "deleted-bad-complete-ael", "deleted-no-newline-ael"} {
-		base, groupID, signer, run, session := writeRotationSource(t, "legacy", "span-rotation")
+		base, groupID, signer, run, session, _ := writeRotationSource(t, "legacy", "span-rotation")
 		name := "rotation__legacy__" + variant
 		caseDir := filepath.Join(t.TempDir(), name)
 		copyRotationTree(t, base, caseDir)
@@ -551,6 +559,108 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 			if strings.HasPrefix(path, prefix) {
 				files["cases/"+name+"/"+strings.TrimPrefix(path, prefix)] = bytes.Clone(data)
 			}
+		}
+	}
+	cloneCase("shard__intact__absent", "shard__torn-gate-missing-open", GroupInvalid)
+	{
+		prefix := "cases/shard__torn-gate-missing-open/"
+		for name, data := range files {
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			if strings.HasSuffix(name, "-open.json") {
+				delete(files, name)
+			} else if strings.HasPrefix(strings.TrimPrefix(name, prefix), "evidence-") && strings.HasSuffix(name, "-0.jsonl") {
+				files[name] = append(data, []byte(`{"torn":`)...)
+			}
+		}
+	}
+	cloneCase("shard__intact__present", "opening__untrusted-signer", GroupInvalid)
+	cases[len(cases)-1].TrustedKeys = []string{strings.Repeat("0", 64)}
+	// A signed predecessor close can lie about a shard head while a signed
+	// transition still names the real head. The two signed claims must agree.
+	{
+		base, groupID, signer, _, _, key := writeRotationSource(t, "predecessor", "span-rotation")
+		name := "predecessor__signed-close-head-disagrees"
+		caseDir := filepath.Join(t.TempDir(), name)
+		copyRotationTree(t, base, caseDir)
+		readOpen := func(id string) (ReceiptGroupOpen, string) {
+			t.Helper()
+			file, _ := ReceiptGroupFileName(id, "open")
+			raw, readErr := os.ReadFile(filepath.Join(caseDir, file)) // #nosec G304 -- writer-produced fixture.
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			opening, decodeErr := UnmarshalReceiptGroupOpen(raw, []string{signer})
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			sum := sha256.Sum256(raw)
+			return opening, hex.EncodeToString(sum[:])
+		}
+		successor, successorHash := readOpen(groupID)
+		predecessor, predecessorHash := readOpen(successor.PreviousGroupID)
+		closeName, _ := ReceiptGroupFileName(predecessor.GroupID, "close")
+		closePath := filepath.Join(caseDir, closeName)
+		closeBytes, readErr := os.ReadFile(closePath) // #nosec G304 -- writer-produced fixture.
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		closed, decodeErr := UnmarshalReceiptGroupClose(closeBytes, predecessor, predecessorHash, []string{signer})
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		closed.Shards[0].FinalChainHash = strings.Repeat("0", 64)
+		closed, signErr := SignReceiptGroupClose(closed, predecessor, predecessorHash, key)
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		closeBytes, err = json.Marshal(closed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(closePath, closeBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		closeSum := sha256.Sum256(closeBytes)
+		transitionName, _ := ReceiptGroupFileName(successor.GroupID, "transition")
+		transitionPath := filepath.Join(caseDir, transitionName)
+		transitionBytes, readErr := os.ReadFile(transitionPath) // #nosec G304 -- writer-produced fixture.
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var transition ReceiptGroupTransition
+		if err := json.Unmarshal(transitionBytes, &transition); err != nil {
+			t.Fatal(err)
+		}
+		transition.PreviousCloseManifestSHA256 = hex.EncodeToString(closeSum[:])
+		transition, signErr = SignReceiptGroupTransition(transition, successor, predecessor, successorHash, predecessorHash, transition.PreviousCloseManifestSHA256, key)
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		transitionBytes, err = json.Marshal(transition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(transitionPath, transitionBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := VerifyReceiptGroup(caseDir, groupID, []string{signer}); got.Verdict != GroupInvalid || !strings.Contains(got.Error, "signed close") {
+			t.Fatalf("signed-close mismatch vector = %+v", got)
+		}
+		cases = append(cases, matrixCase{name, groupID, []string{signer}, GroupInvalid})
+		if err := filepath.WalkDir(caseDir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() {
+				return walkErr
+			}
+			rel, relErr := filepath.Rel(caseDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			files[filepath.ToSlash(filepath.Join("cases", name, rel))], relErr = os.ReadFile(path) // #nosec G304 G122 -- private fixture tree.
+			return relErr
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 	for _, variant := range []struct {
@@ -694,16 +804,19 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		h := &zip.FileHeader{Name: name, Method: zip.Deflate}
+		data := files[name]
+		h := &zip.FileHeader{Name: name, Method: zip.Store}
 		if strings.HasSuffix(name, "/") {
 			h.SetMode(os.ModeDir | 0o750)
 		}
-		h.Modified = time.Unix(0, 0).UTC()
-		w, err := zw.CreateHeader(h)
+		h.CRC32 = crc32.ChecksumIEEE(data)
+		h.UncompressedSize64 = uint64(len(data))
+		h.CompressedSize64 = uint64(len(data))
+		w, err := zw.CreateRaw(h)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := w.Write(files[name]); err != nil {
+		if _, err := w.Write(data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -711,7 +824,10 @@ func TestGenerateReceiptGroupRotationMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	var compressed bytes.Buffer
-	gw := gzip.NewWriter(&compressed)
+	gw, err := gzip.NewWriterLevel(&compressed, gzip.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := gw.Write(zipped.Bytes()); err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +939,7 @@ func writeRotatedRecoverySource(t *testing.T) (string, string, string, string) {
 	return dir, open.GroupID, firstOpen.SignerKey, predecessor
 }
 
-func writeRotationSource(t *testing.T, scope, mode string) (string, string, string, string, string) {
+func writeRotationSource(t *testing.T, scope, mode string) (string, string, string, string, string, ed25519.PrivateKey) {
 	t.Helper()
 	dir := t.TempDir()
 	_, key := generateTestKey(t)
@@ -921,5 +1037,5 @@ func writeRotationSource(t *testing.T, scope, mode string) (string, string, stri
 	if err != nil || len(paths) < 2 {
 		t.Fatalf("writer did not rotate %s: %v %v", scope, paths, err)
 	}
-	return dir, groupID, firstOpen.SignerKey, health.RunNonce, target.Session()
+	return dir, groupID, firstOpen.SignerKey, health.RunNonce, target.Session(), key
 }

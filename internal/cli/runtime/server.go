@@ -96,8 +96,26 @@ type ServerOpts struct {
 // loop and blocks until ctx is cancelled. Reload drives a single
 // hot-reload cycle against newCfg. Shutdown cancels the internal context
 // so Start unblocks.
+// liveCredentialAckSet pairs an acknowledgment set with the configuration it
+// was built from.
+type liveCredentialAckSet struct {
+	cfg *config.Config
+	set *tools.CredentialAckSet
+}
+
 type Server struct {
 	opts ServerOpts
+
+	// ackKeyRevokedFor is the running configuration whose acknowledgment key
+	// was found unavailable or changed after a failed reload. Its
+	// acknowledgments refuse; a successfully reloaded configuration is a
+	// different value and is unaffected.
+	ackKeyRevokedFor atomic.Pointer[config.Config]
+	// liveAckSet is the acknowledgment set the MCP listener built for its
+	// current configuration. Every tool configuration copy shares it, including
+	// one an in-flight response already holds, so revoking it reaches them all
+	// at once.
+	liveAckSet atomic.Pointer[liveCredentialAckSet]
 
 	runtimeMode        config.RuntimeMode
 	hasMCPListen       bool

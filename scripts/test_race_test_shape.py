@@ -10,6 +10,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from scripts.ci_test_packages import TEST_SPLITS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run-race-test.sh"
@@ -202,7 +204,9 @@ class TestRaceTestShape(unittest.TestCase):
         )
 
     def test_oss_proxy_shape_limits_package_fanout(self) -> None:
-        for shard, flag in (("proxy-0", "-run="), ("proxy-1", "-skip=")):
+        last = TEST_SPLITS["proxy"] - 1
+        cases = [(f"proxy-{index}", "-run=") for index in range(last)] + [(f"proxy-{last}", "-skip=")]
+        for shard, flag in cases:
             with self.subTest(shard=shard):
                 command = printed_command("--shard", shard)
 

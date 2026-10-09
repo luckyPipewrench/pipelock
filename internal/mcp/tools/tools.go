@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -102,6 +104,17 @@ type ToolScanMatch struct {
 	PreviousHash string   `json:"previous_hash,omitempty"`
 	CurrentHash  string   `json:"current_hash,omitempty"`
 	DriftDetail  string   `json:"drift_detail,omitempty"`
+	// CredentialAck is the outcome of a configured acknowledgment for this
+	// tool's Credential Request Directive finding. Any value other than
+	// "acknowledged" refuses the response under every action.
+	CredentialAck string `json:"credential_ack,omitempty"`
+	// CredentialAckCandidate is the entry an operator could add, after
+	// reviewing the tool, to acknowledge its current occurrences. Set only
+	// when every occurrence is attributable and the server is configured.
+	CredentialAckCandidate *CredentialAckCandidate `json:"credential_ack_candidate,omitempty"`
+	// CredentialAckUnsupported says why no candidate can be offered for a
+	// fully attributable tool, such as more occurrences than an entry holds.
+	CredentialAckUnsupported string `json:"credential_ack_unsupported,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -182,6 +195,55 @@ type ToolScanConfig struct {
 
 	// ExtraPoison holds tool-poison patterns from community rule bundles.
 	ExtraPoison []*ExtraPoisonPattern
+
+	// CredentialAcks are the operator's acknowledgments of Credential
+	// Request Directive findings and the key their bindings are checked
+	// with. They apply only to the configured server named by ServerName
+	// whose exact transport digest, ServerBindingSHA256, keys to the
+	// entry's server_binding_hmac. The digest itself is never exported.
+	CredentialAcks      *CredentialAckSet
+	ServerName          string
+	ServerBindingSHA256 string
+	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.
+	Now func() time.Time
+	// schemaOrder supplies schema map iteration order in tests. Nil keeps
+	// Go's own map order.
+	schemaOrder schemaKeyOrder
+}
+
+func (c *ToolScanConfig) textOrder() schemaKeyOrder {
+	if c == nil {
+		return nil
+	}
+	return c.schemaOrder
+}
+
+// toolPrescan is one traversal of a tool's scanner text and the detector's
+// findings on it. Schema maps iterate in random order, and a match can span
+// two fields in one order and not another, so the acknowledgment decision
+// and the findings it lifts must come from the same traversal.
+type toolPrescan struct {
+	text   string
+	spans  []toolTextSpan
+	norm   string
+	poison []string
+}
+
+func prescanTool(cfg *ToolScanConfig, tool ToolDef) toolPrescan {
+	text, spans := toolScanTextOrdered(tool, cfg.textOrder())
+	pre := toolPrescan{text: text, spans: spans}
+	if text != "" {
+		pre.norm = normalize.ForToolText(text)
+		pre.poison = checkToolPoison(pre.norm)
+	}
+	return pre
+}
+
+func (c *ToolScanConfig) now() time.Time {
+	if c != nil && c.Now != nil {
+		return c.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
@@ -1123,18 +1185,79 @@ const handoverRequestFinding = "Credential Request Directive"
 // ("provides", "supplies") are deliberately absent: they describe what a
 // service does, not what the agent is told to do. send/read/include stay with
 // the File Exfiltration Directive patterns.
-const handoverRequestVerb = `\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+`
+//
+// "request" and "ask for" are accepted only in imperative position: at the
+// start of the text or of a clause (after sentence punctuation, a comma, an
+// opening quote, a list marker such as "-" or "1)", a Markdown heading "#",
+// blockquote ">" or table cell "|"), optionally after please, kindly, must, you
+// must, you should and similar. "The client can request your API key" and
+// "The server will ask for your API key" describe what a service does, so a
+// modal or third-person subject keeps them out. Emphasis and code markers
+// ("**", "_", a backtick) may open the clause but are not a boundary
+// themselves, so "The server will **request your API key**" keeps its modal
+// subject. The lead-in is part of the match, so a match for these two verbs
+// begins at the clause boundary.
+const handoverImperativeLead = `(?:^|[.;:!?,\n"'’“‘()\[#>|-])\s*[*_\x60]*\s*(?:(?:please|kindly|always|first|then|now|next|just|simply|immediately|also|and|never|do\s+not|don['’]?t|you\s+must|you\s+should|must|should)\s+[*_\x60]*\s*)*`
+
+const handoverRequestVerb = `(?:\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over)\s+|` + handoverImperativeLead + `(?:request|ask\s+for)\s+|` + handoverEmphasisLead + `)`
+
+// handoverEmphasisLead covers an emphasized or code-formatted imperative that
+// does not follow a clause boundary. After a symbol such as an emoji or a dash
+// ("🔑 **Request your API key**") the marker run opens the clause. After a word
+// it counts only after "Step" and a short step token or a label from a
+// closed list ("Step 1 **request your API key**", "Note **ask for your
+// password**"), in any case. The step token is matched loosely because
+// normalization turns digits into letters ("Step 1" arrives as "Step i"). Modal and other words are not on the list, so "The server will
+// **request your API key**" stays descriptive however it is capitalized.
+const handoverEmphasisLead = `(?:[^\w\s*_\x60]|\b(?:step\s+\w{1,4}|note|notes|important|action|todo|tip|warning|required|setup))\s*[*_\x60]+\s*(?:request|ask\s+for)\s+`
 
 // handoverRequestEnd keeps the credential noun from being the first word of a
 // longer noun phrase ("provide credentials rotation status"): the match must
-// finish at punctuation, the end of the text, or a connective that continues
-// the instruction.
-const handoverRequestEnd = `(?:$|[.,;:!?)\]"'’]|\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
+// finish at punctuation, the end of the text, a table cell "|", or a
+// connective that continues the instruction, after any closing emphasis or
+// code markers. A closing marker alone does not end the noun: "Share your
+// **API key** rotation status" is the same noun phrase as the plain text.
+const handoverRequestEnd = `[*_\x60]*(?:$|[.,;:!?)\]"'’|]|\s+\||\s+(?:so|to|for|when|before|and|or|in|into|via|on|as|then|that|which|if|with|from|unless|except|but|only|besides|here|there|now|first|next|below|again|directly|immediately|please)\b)`
 
-// handoverRequestEndSuffix strips handoverRequestEnd back off a match, so
-// the negation check judges the request itself and not the sentence boundary
-// the pattern had to consume to know the noun phrase was over.
-var handoverRequestEndSuffix = regexp.MustCompile(`(?i)` + handoverRequestEnd + `$`)
+// markupTolerant lets emphasis and code markers sit on either side of every
+// word gap in a credential-request pattern, and inside the joiner of a
+// compound noun such as API key, so "*Request* your **API** key" matches like
+// the plain sentence. Markers never add a boundary or end a noun phrase, so
+// marked text is judged exactly as the same plain text.
+func markupTolerant(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, `\s+`, `[*_\x60]*\s+[*_\x60]*`)
+	return strings.ReplaceAll(pattern, `[\s_-]{0,3}`, `[*_\x60]*[\s_-]{0,3}[*_\x60]*`)
+}
+
+// handoverPossessivePattern is the possessive form: "supply your API key",
+// "share the user's password". The possessive binds the secret to the agent or
+// its user, which is what separates a request from documentation of a service
+// that holds credentials. Modifiers come from a closed list so "share your
+// thoughts on the secret" cannot reach the noun.
+var handoverPossessivePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
+	`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+[*_\x60]*` +
+	`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
+	`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
+	handoverRequestEnd))
+
+// handoverBarePattern is the bare form: "provide credentials", "enter a valid
+// password". The noun set is narrower than the possessive form because a bare
+// "token" or "secret" is too common as an ordinary noun.
+var handoverBarePattern = regexp.MustCompile(markupTolerant(`(?i)` + handoverRequestVerb +
+	`[*_\x60]*(?:(?:the|a|an|any|all)\s+)?[*_\x60]*(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
+	`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
+	handoverRequestEnd))
+
+// handoverPathPattern is the path form: "provide the full contents of
+// ~/.aws/credentials". include and pass join the verb list here only, because
+// a sensitive path is a precise enough target that "include your API key in
+// the Authorization header" style documentation stays out of scope.
+var handoverPathPattern = regexp.MustCompile(markupTolerant(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
+	`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
+	// A path is often quoted, fenced or emphasized in a description
+	// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
+	`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
+	`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`))
 
 // toolPoisonPatterns detect structural indicators of tool description poisoning.
 // These are checked ONLY in tool descriptions to avoid false positives on
@@ -1241,42 +1364,9 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// benign transfers.
 		re: regexp.MustCompile(`(?i)\b(?:collect|gather)\s+(?:(?:all|any|other|another|every|unrelated|additional|remaining|extra|cached|nearby|arbitrary|miscellaneous|misc|further|recent)\s+(?:of\s+)?(?:the\s+)?){0,3}(?:(?:workspace|project|local)\s+(?:notes|data|files|context)|(?:notes|data|files|context)\s+from\s+(?:the\s+)?(?:workspace|project|local))\b(?s:.{0,120})\b(?:submit|send|upload|forward|post)\s+(?:them|it|(?:the\s+)?(?:workspace|project|local)\s+(?:notes|data|files|context))?\s*(?:to|via)\s+https?://`),
 	},
-	{
-		name: handoverRequestFinding,
-		// Possessive form: "supply your API key", "share the user's
-		// password". The possessive binds the secret to the agent or its
-		// user, which is what separates a request from documentation of a
-		// service that holds credentials. Modifiers come from a closed list
-		// so "share your thoughts on the secret" cannot reach the noun.
-		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
-			`(?:(?:me|us)\s+)?(?:your|my|the\s+user(?:['’]s|s['’])?|user['’]s|their|the\s+agent['’]s|the\s+caller['’]s)\s+` +
-			`(?:(?:full|entire|complete|raw|valid|current|stored|saved|local|real|actual|aws|cloud|github|access|auth\w*|bearer|session|refresh|login|account|service|database|db|master|root|admin)\s+(?:and\s+)?){0,3}` +
-			`(?:credentials?|(?:api|ssh|private|secret|signing)[\s_-]{0,3}keys?|tokens?|secrets?|passwords?|passphrases?)` +
-			handoverRequestEnd),
-	},
-	{
-		name: handoverRequestFinding,
-		// Bare form: "provide credentials", "enter a valid password". The
-		// noun set is narrower than the possessive form because a bare
-		// "token" or "secret" is too common as an ordinary noun.
-		re: regexp.MustCompile(`(?i)` + handoverRequestVerb +
-			`(?:(?:the|a|an|any|all)\s+)?(?:(?:valid|full|real|actual|plaintext|stored|saved|current|login|account|aws|cloud|service|database|admin|root)\s+){0,2}` +
-			`(?:credentials|api[\s_-]{0,3}keys?|passwords?|passphrases?|(?:access|auth\w*|bearer|session)\s+tokens?|(?:secret|private)\s+keys?)` +
-			handoverRequestEnd),
-	},
-	{
-		name: handoverRequestFinding,
-		// Path form: "provide the full contents of ~/.aws/credentials".
-		// include and pass join the verb list here only, because a sensitive
-		// path is a precise enough target that "include your API key in the
-		// Authorization header" style documentation stays out of scope.
-		re: regexp.MustCompile(`(?i)\b(?:provide|supply|submit|share|paste|enter|give|hand\s+over|include|pass)\s+` +
-			`(?:(?:the|your|my|a|an|full|entire|complete|raw|contents?|of|file)\s+){0,6}` +
-			// A path is often quoted, fenced or emphasized in a description
-			// ("`~/.aws/credentials`", "**~/.ssh/id_rsa**", curly quotes).
-			`[\x60"'(<\[*_\x{201C}\x{2018}]*` +
-			`[\w~./\\-]*(?:\.ssh[/\\]|\.aws[/\\]|\.env\b|\.npmrc\b|\.netrc\b|\.pypirc\b|id_rsa\b|id_ed25519\b|/etc/(?:passwd|shadow)\b)`),
-	},
+	{name: handoverRequestFinding, re: handoverPossessivePattern},
+	{name: handoverRequestFinding, re: handoverBarePattern},
+	{name: handoverRequestFinding, re: handoverPathPattern},
 }
 
 // exfilParamPattern detects parameter names that encode exfiltration intent.
@@ -1324,7 +1414,14 @@ var directiveParamPattern = regexp.MustCompile(
 // match the HiddenLayer-published shapes plus immediate semantic siblings
 // (assistant_response, user_messages, etc.) that carry equivalent risk.
 //
-// Operators can suppress for known-good tools via mcp_tool_scanning config.
+// There is no per-tool or per-finding suppression for this pattern: the tool
+// scan path reads neither the top-level suppress list nor response-scanning
+// server trust. The only operator controls are mcp_tool_scanning.action (warn
+// instead of block) and mcp_tool_scanning.enabled, and the latter turns off
+// every tool-poison check. Warn is not a stable remedy while adaptive
+// enforcement is on: each warned finding records a near-miss, and enough of
+// them escalate the session until the same list is blocked. The one built-in
+// exception is isOrdinaryContextLeakIdentifier.
 var contextLeakParamPattern = regexp.MustCompile(
 	`(?i)\b(` +
 		`system\s+prompt|` +
@@ -1505,6 +1602,13 @@ func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
 // scanned in their original form; they are not expanded into space-separated
 // words, because that is how an identifier becomes jailbreak prose.
 func extractToolGeneralText(t ToolDef) string {
+	return extractToolGeneralTextOrdered(t, nil)
+}
+
+// extractToolGeneralTextOrdered is extractToolGeneralText with the schema map
+// iteration order supplied by order; nil keeps Go's own map order. Only the
+// controlled-order equivalence tests pass a non-nil order.
+func extractToolGeneralTextOrdered(t ToolDef, order schemaKeyOrder) string {
 	var parts []string
 	// Dropping a truncated key set is only safe because
 	// uninspectableToolDefinition has already refused the definition
@@ -1537,7 +1641,7 @@ func extractToolGeneralText(t ToolDef) string {
 		appendJSONKeys(t.InputSchema)
 	}
 	if len(t.OutputSchema) > 0 {
-		parts = append(parts, ExtractSchemaDescriptions(t.OutputSchema)...)
+		parts = append(parts, schemaDescriptionsOrdered(t.OutputSchema, order)...)
 		appendJSONKeys(t.OutputSchema)
 	}
 	// Metadata is extensible and agent-visible. Its readable strings use the
@@ -1833,41 +1937,17 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 // plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
 func ExtractSchemaDescriptions(schema json.RawMessage) []string {
+	return schemaDescriptionsOrdered(schema, nil)
+}
+
+func schemaDescriptionsOrdered(schema json.RawMessage, order schemaKeyOrder) []string {
 	var parsed interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		return nil
 	}
-	var result []string
-	collectSchemaValueText(parsed, &result, 0)
-	return result
-}
-
-// collectSchemaValueText extracts agent-visible text from a schema value of any
-// JSON shape, not only an object.
-//
-// A well-formed MCP schema is an object, but nothing forces an upstream server
-// to send one and the agent reads whatever arrives. Parsing straight into a map
-// dropped every other shape: a top-level array carried its instructions past
-// the scanner entirely, leaving only the key names behind, and ScanTools then
-// marked the tools/list clean so the proxy skipped general response scanning
-// and forwarded it. Dispatch on the actual shape instead, so an unexpected one
-// is scanned rather than silently unread.
-func collectSchemaValueText(value interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch v := value.(type) {
-	case map[string]interface{}:
-		collectAllSchemaText(v, result, depth)
-	case []interface{}:
-		for _, item := range v {
-			collectSchemaValueText(item, result, depth+1)
-		}
-	case string:
-		if v != "" {
-			*result = append(*result, v)
-		}
-	}
+	sink := toolTextSink{order: order}
+	sink.schemaValue(parsed, "", 0)
+	return sink.texts
 }
 
 // schemaTextExtractionTruncated reports whether schema text lies beyond the
@@ -1930,88 +2010,6 @@ var schemaTextFields = [...]string{
 	"description", "title", "default", "const", "pattern", "$comment",
 }
 
-// collectAllSchemaText walks a JSON Schema tree collecting all text values
-// that an LLM might ingest. Extracts string values from metadata fields
-// (description, title, default, const, pattern, $comment, x-* extensions),
-// string members from enum/examples arrays, then recurses into all nested
-// objects and arrays to catch text hidden in composition keywords
-// (allOf, anyOf, oneOf, if/then/else, $defs, items, etc.).
-func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-
-	for key, v := range obj {
-		handledSubtree := false
-
-		// Extract values from known metadata fields.
-		// default and const can hold objects/arrays with nested strings,
-		// so use collectStringLeaves for full subtree extraction.
-		for _, field := range schemaTextFields {
-			if key == field {
-				if key == "default" || key == "const" {
-					collectStringLeaves(v, result, depth+1)
-					handledSubtree = true
-				} else if s, ok := v.(string); ok && s != "" {
-					*result = append(*result, s)
-					// Consumed here. Without this the value is appended
-					// again by the string case in the walk below, which
-					// doubles the scanner input for every modelled field.
-					handledSubtree = true
-				}
-				break
-			}
-		}
-
-		// Extract all string leaves from vendor extension fields (x-*).
-		// Extensions can hold objects, arrays, or strings.
-		if strings.HasPrefix(key, "x-") || strings.HasPrefix(key, "X-") {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		// Extract all string leaves from enum and examples.
-		// These can hold objects (e.g., examples: [{"prompt":"..."}]),
-		// not just flat strings.
-		if key == "enum" || key == "examples" {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		if handledSubtree {
-			continue
-		}
-
-		// Recurse into nested objects and arrays for schema composition
-		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.),
-		// and take string values under keys this walk does not model.
-		//
-		// Only the modelled field names were being read here, so a string
-		// under any other key was dropped: a schema carrying
-		// "instructions":"Ignore all previous instructions" reached the agent
-		// having never been scanned, because the tools/list response is
-		// excluded from general response scanning once ScanTools calls it
-		// clean. The agent reads whatever the schema contains, so the walk
-		// takes every string it contains rather than only the ones named in
-		// the specification.
-		switch val := v.(type) {
-		case map[string]interface{}:
-			collectAllSchemaText(val, result, depth+1)
-		case []interface{}:
-			// Every element, not only the objects. A bare string sitting
-			// directly in a composition array is agent-visible text and was
-			// being dropped by an object-only walk.
-			for _, item := range val {
-				collectSchemaValueText(item, result, depth+1)
-			}
-		case string:
-			if isAgentReadableSchemaText(val) {
-				*result = append(*result, val)
-			}
-		}
-	}
-}
-
 // schemaTypeKeywords are the JSON Schema type names. A string equal to one of
 // them is structure rather than anything an agent acts on.
 var schemaTypeKeywords = map[string]bool{
@@ -2037,23 +2035,9 @@ func isAgentReadableSchemaText(value string) bool {
 // like default, const, enum, examples, and x-* extensions that can hold
 // nested structures containing poisoned text.
 func collectStringLeaves(v interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch val := v.(type) {
-	case string:
-		if val != "" {
-			*result = append(*result, val)
-		}
-	case map[string]interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	case []interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	}
+	sink := toolTextSink{}
+	sink.stringLeaves(v, "", depth)
+	*result = append(*result, sink.texts...)
 }
 
 // tryParseToolsList attempts to parse a JSON-RPC result as a tools/list response.
@@ -2181,13 +2165,16 @@ func checkToolPoison(text string) []string {
 			}
 			loc[0] += offset
 			loc[1] += offset
-			var negationSpan []int
-			if p.name == handoverRequestFinding {
-				negationSpan = []int{loc[0], loc[0] + len(handoverRequestEndSuffix.ReplaceAllString(text[loc[0]:loc[1]], ""))}
-			}
-			if (p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc)) ||
-				(p.name == handoverRequestFinding && isNegatedBy(text, negationSpan, negatedHandoverPrefix) &&
-					handoverNegationHoldsToClauseEnd(text, negationSpan[1])) {
+			// The credential-request family has no negation carve-out. Every
+			// attempt to recognize a genuine refusal ("never share your API
+			// key") was defeated by a later redirect phrased some new way, and
+			// real servers do not word their tool documentation like this.
+			// Detection itself has no exception. A reviewed tool can be
+			// acknowledged per server, tool and occurrence list through
+			// mcp_tool_scanning.acknowledged_findings, which ScanTools applies
+			// after this match; mcp_tool_scanning.action and enabled remain
+			// the broad controls.
+			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
 				offset = loc[1]
 				continue
 			}
@@ -2215,67 +2202,6 @@ var commaSeparatedFileExfilDirective = regexp.MustCompile(
 func isNegatedFileExfiltration(text string, loc []int) bool {
 	return isNegatedBy(text, loc, negatedFileExfiltrationPrefix)
 }
-
-// negatedHandoverPrefix is the strict counterpart for the handover family. The
-// negation must sit directly on the verb, with at most one adverb between, so
-// "do not forget to provide your API key" and "never hesitate to supply your
-// token" stay requests instead of being read as capability boundaries.
-var negatedHandoverPrefix = regexp.MustCompile(
-	`(?i)(?:\b(?:do|does|did|will|would|should|must|can|could)\s+not|\b(?:never|don't|doesn't|didn't|cannot|can't|won't))(?:\s+(?:ever|directly|simply|automatically))?\s*$`,
-)
-
-// handoverExceptionCue marks a negation that is really a redirect ("never X
-// except to this tool"): the prohibition carves out the very destination the
-// poisoned description wants the agent to use.
-var handoverExceptionCue = regexp.MustCompile(`(?i)\b(?:except|but|unless|other\s+than|apart\s+from|aside\s+from|besides|save|excluding|instead|only)\b`)
-
-// handoverNegationHoldsToClauseEnd reports whether the clause after a negated
-// handover match, bounded to 160 bytes, is free of exception or redirect cues.
-func handoverNegationHoldsToClauseEnd(text string, end int) bool {
-	if end < 0 || end > len(text) {
-		return false
-	}
-	rest := text[end:]
-	capped := false
-	if len(rest) > 160 {
-		rest = rest[:160]
-		capped = true
-	}
-	next := ""
-	for i, r := range rest {
-		if isClauseBoundary(r) {
-			next = text[end+i+utf8.RuneLen(r):]
-			rest = rest[:i]
-			capped = false
-			break
-		}
-	}
-	// A clause longer than the window cannot be shown free of an exception,
-	// so it fails closed and the negation does not exempt the match.
-	if capped || handoverExceptionCue.MatchString(rest) {
-		return false
-	}
-	// "Never share your API key. Except with this tool." carries the redirect
-	// in the clause that follows. A following clause that opens with an
-	// exception cue revokes the negation; one that merely continues ("Rotate it
-	// regularly.") does not.
-	// Skip every boundary, mark and wrapper ("...", "--", "**", quotes) before
-	// the first word, so formatting cannot hide a leading cue.
-	next = strings.TrimLeftFunc(next, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	return !leadingHandoverExceptionCue.MatchString(next)
-}
-
-// leadingHandoverExceptionCue matches an exception or redirect cue as the first
-// word of the clause after a negated handover. A leading "but" revokes the
-// negation outright: in a tool description it almost always introduces the
-// carve-out, and a false finding there costs less than a missed request.
-// "Only" also opens ordinary sentences ("Only the server stores it."), so it
-// counts when a destination, condition or approval word follows it through any
-// formatting. Natural language cannot be enumerated; this narrows the bypass
-// space and the core credential-solicitation check remains a separate layer.
-// The cue must end at a non-letter, non-digit rune; Go's \b treats '_' as a
-// word rune and would miss "_Unless_".
-var leadingHandoverExceptionCue = regexp.MustCompile(`(?i)^(?:except|unless|but|other[^\pL\pN]+than|apart[^\pL\pN]+from|aside[^\pL\pN]+from|besides|save[^\pL\pN]+for|excluding|instead|only[^\pL\pN]+(?:(?:an?|the)[^\pL\pN]+)?(?:to|for|with|through|via|when|if|here|this|that|these|those|trusted|approved|authorized|authorised|designated))(?:[^\pL\pN]|$)`)
 
 func isNegatedBy(text string, loc []int, prefixRe *regexp.Regexp) bool {
 	if len(loc) != 2 || loc[0] < 0 || loc[1] > len(text) {
@@ -2729,7 +2655,23 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		defer resp.End()
 	}
 
-	for _, tool := range tools {
+	// Acknowledgment outcomes are decided before any tool is scanned. A
+	// refused entry refuses the whole response, so its drift-baseline writes
+	// must follow block for every tool in it, siblings included, whichever
+	// order they arrive in.
+	ackNow := cfg.now()
+	ackOutcomes := make([]string, len(tools))
+	prescans := make([]toolPrescan, len(tools))
+	responseAckRefused := false
+	for i, tool := range tools {
+		prescans[i] = prescanTool(cfg, tool)
+		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
+			ackOutcomes[i] = outcome
+			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
+		}
+	}
+
+	for toolIndex, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
@@ -2746,10 +2688,18 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		directiveKeys := extractToolDirectiveKeys(tool)
 
-		descriptionText := extractToolText(tool)
-		generalText := extractToolGeneralText(tool)
-		text := strings.Trim(strings.Join([]string{descriptionText, generalText}, ". "), ". ")
+		pre := prescans[toolIndex]
+		text, spans := pre.text, pre.spans
 
+		if text == "" {
+			// A reviewed tool can shrink to no scanner text at all. Its entry
+			// is still evaluated, against no occurrences, so it refuses like
+			// any other stale entry instead of being skipped.
+			if outcome := ackOutcomes[toolIndex]; outcome != "" {
+				match.CredentialAck = outcome
+				hasFinding = true
+			}
+		}
 		if text != "" {
 			// This is the dedicated tool scanner, whose action is independent of
 			// response scanning. The response path itself never scans tool
@@ -2762,7 +2712,41 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			poison := checkToolPoison(normalize.ForToolText(text))
+			norm := pre.norm
+			poison := slices.Clone(pre.poison)
+			hasRequest := slices.Contains(poison, handoverRequestFinding)
+			// A configured entry is evaluated whether or not its finding is
+			// still present: a reviewed tool whose wording changed or was
+			// removed no longer matches the entry, and that must refuse rather
+			// than let the stale entry go unnoticed.
+			outcome := ackOutcomes[toolIndex]
+			hasEntry := outcome != ""
+			if hasRequest || hasEntry {
+				// The attribution reads the exact text, spans and normalized
+				// string checkToolPoison just matched.
+				att := attributeWithNorm(text, norm, spans)
+				switch {
+				case !hasEntry:
+					match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
+				default:
+					match.CredentialAck = outcome
+					if outcome == CredentialAckAcknowledged {
+						// Only this finding is lifted. The raw finding and its
+						// treatment stay visible as an observation for audit.
+						poison = slices.DeleteFunc(slices.Clone(poison), func(f string) bool { return f == handoverRequestFinding })
+						observations = append(observations, ToolScanMatch{
+							ToolName:      tool.Name,
+							ToolPoison:    []string{handoverRequestFinding},
+							CredentialAck: CredentialAckAcknowledged,
+						})
+					} else {
+						hasFinding = true
+						if hasRequest {
+							match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
+						}
+					}
+				}
+			}
 			if len(poison) > 0 {
 				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true
@@ -2838,8 +2822,15 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		if cfg.DetectDrift && driftBaseline != nil {
 			hash := hashTool(tool)
-			promoteNew := cfg.Action != "block" || !hasFinding
-			promoteChanged := cfg.Action != "block"
+			// A definition the agent never received must not become the
+			// baseline later scans compare against.
+			blocking := cfg.Action == "block"
+			// A stale acknowledgment refuses the whole response, so nothing
+			// in it reaches the agent. No definition in it may become a
+			// baseline, not even a scanner-clean new tool or a descriptive
+			// change that block mode would otherwise accept.
+			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
+			promoteChanged := !responseAckRefused && !blocking
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
 			// content-based promotion above: a scan-clean new tool would
@@ -2870,7 +2861,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
-				PromoteAccepted: cfg.Action != "block" || !hasFinding,
+				PromoteAccepted: !responseAckRefused && (!blocking || !hasFinding),
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},
@@ -2918,6 +2909,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			}
 		}
 
+		if match.CredentialAckCandidate != nil && credentialAckHasOtherFindings(match) {
+			// An acknowledgment lifts only the credential-request finding.
+			// With another finding still enforcing, the entry would change
+			// nothing, so it is not offered.
+			match.CredentialAckCandidate = nil
+			match.CredentialAckUnsupported = "other findings on this tool still enforce"
+		}
 		if hasFinding {
 			matches = append(matches, match)
 		}
@@ -2958,6 +2956,9 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 			reasons = append(reasons, inj.PatternName)
 		}
 		reasons = append(reasons, m.ToolPoison...)
+		if m.CredentialAck != "" && m.CredentialAck != CredentialAckAcknowledged {
+			reasons = append(reasons, "acknowledgment refused: "+m.CredentialAck)
+		}
 		if m.DriftDetected {
 			reasons = append(reasons, "definition-drift")
 			if len(m.DriftCues) > 0 {
@@ -2969,6 +2970,7 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		if m.DriftDetail != "" {
 			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
 		}
+		logCredentialAckCandidate(logW, lineNum, m)
 	}
 }
 
@@ -2978,6 +2980,14 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, o := range result.Observations {
 		switch {
+		case o.CredentialAck == CredentialAckAcknowledged:
+			// The raw finding stays visible. Whether the list is forwarded is
+			// decided later by the other findings and gates, so this line
+			// records only the treatment.
+			_, _ = fmt.Fprintf(logW,
+				"pipelock: line %d: tool %q: %s acknowledged by mcp_tool_scanning.acknowledged_findings (treatment allow)\n",
+				lineNum, o.ToolName, strings.Join(o.ToolPoison, ","))
+			continue
 		case !o.DriftAccepted:
 			continue
 		case len(o.DriftCues) > 0:

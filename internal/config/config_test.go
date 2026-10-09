@@ -5988,9 +5988,8 @@ func TestValidate_MCPToolPolicyArgSource(t *testing.T) {
 			wantErr: "arg_source without arg_pattern",
 		},
 		{
-			name:    "source with key",
-			rule:    ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgPattern: "profile", ArgKey: "^patch$", ArgSource: ToolPolicyArgSourcePatchTargets},
-			wantErr: "combines arg_source with arg_key",
+			name: "source with structured target key",
+			rule: ToolPolicyRule{Name: "patch", ToolPattern: "^apply_patch$", ArgPattern: "profile", ArgKey: "^path$", ArgSource: ToolPolicyArgSourcePatchTargets},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

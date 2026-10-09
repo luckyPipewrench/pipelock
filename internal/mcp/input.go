@@ -674,6 +674,7 @@ func ForwardScannedInput(
 			}
 		}
 		receiptEmitted := false
+		redirectReceiptActionID := ""
 		receiptDecisionPhase := ""
 		receiptDeferID := ""
 		receiptResolutionPolicy := ""
@@ -728,6 +729,10 @@ func ForwardScannedInput(
 				ResolutionSource:  receiptResolutionSource,
 				SessionID:         receiptSessionID,
 				SessionIDOriginal: receiptSessionIDOriginal,
+			}
+			if redirectReceiptActionID != "" && receiptVerdict == config.ActionBlock {
+				receiptOpts.ParentActionID = redirectReceiptActionID
+				receiptOpts.ActionID = receipt.NewActionID()
 			}
 			if len(contractGate) > 0 {
 				receiptOpts.ContractGate = &contractGate[0]
@@ -1270,6 +1275,21 @@ func ForwardScannedInput(
 			if len(policyVerdict.Rules) > 0 {
 				policyRuleName = policyVerdict.Rules[0]
 			}
+			// A redirect handler can execute the action itself. Required receipt
+			// admission must precede the handler, not just its synthetic response.
+			if opts.requireReceipts() {
+				if err := emitToolReceipt(config.ActionRedirect); err != nil {
+					blockedCh <- BlockedRequest{
+						ID: verdict.ID, IsNotification: isNotification,
+						LogMessage: "receipt emission failed", ErrorCode: -32007,
+						ErrorMessage: requiredReceiptFailureMessage(err),
+						ErrorData:    mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+					}
+					continue
+				}
+				receiptEmitted = true
+				redirectReceiptActionID = actionID
+			}
 			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
 			// Determine final outcome before audit logging so the event
 			// reflects the actual result delivered to the client.
@@ -1312,6 +1332,7 @@ func ForwardScannedInput(
 				})
 				if !finalResponseVerdict.Clean {
 					effectiveAction = config.ActionBlock
+					receiptEmitted = false
 					receiptLayerOverride = mcpReceiptLayerResponse
 					receiptPatternOverride, receiptSeverityOverride = redirectResponseAttribution(finalResponseVerdict)
 				}
@@ -1351,6 +1372,8 @@ func ForwardScannedInput(
 				}
 			} else {
 				// Redirect handler failed - fall through to block (fail-closed).
+				effectiveAction = config.ActionBlock
+				receiptEmitted = false
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect failed: %s]\n",
 					lineNum, method, reasonStr, result.Error)
 				blockedCh <- BlockedRequest{

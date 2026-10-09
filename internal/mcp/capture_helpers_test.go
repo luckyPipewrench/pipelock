@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 )
 
 const (
@@ -75,5 +76,37 @@ func TestCaptureRPCID_DropsOverlength(t *testing.T) {
 	atCap := json.RawMessage(`"` + strings.Repeat("a", capture.MaxRPCIDLen-2) + `"`)
 	if got := captureRPCID(atCap); string(got) != string(atCap) {
 		t.Fatalf("at-cap id should be retained")
+	}
+}
+
+// Capture findings for a tools/list scan record the finding, its action and
+// the acknowledgment rule, never the candidate, the keyed binding or any
+// transport digest.
+func TestToolScanCaptureOmitsAcknowledgmentBinding(t *testing.T) {
+	const binding = "hmac-sha256-v1:0123456789abcdef:" + "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"
+	digest := tools.ServerBindingDigest("upstream", "https://ops:capture-secret@vault.example/mcp")
+	candidate := &tools.CredentialAckCandidate{Server: "vault", ServerBindingHMAC: binding, Tool: "store_secret"}
+	result := tools.ToolScanResult{
+		Matches: []tools.ToolScanMatch{{
+			ToolName: "store_secret", ToolPoison: []string{"Credential Request Directive"},
+			CredentialAck: tools.CredentialAckBindingKeyChanged, CredentialAckCandidate: candidate,
+		}},
+		Observations: []tools.ToolScanMatch{{
+			ToolName: "other_tool", ToolPoison: []string{"Credential Request Directive"},
+			CredentialAck: tools.CredentialAckAcknowledged, CredentialAckCandidate: candidate,
+		}},
+	}
+	findings := toolScanResultFindings(result)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want the enforced and the acknowledged one", findings)
+	}
+	enc, err := json.Marshal(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{binding, "hmac-sha256-v1", digest, "capture-secret"} {
+		if strings.Contains(string(enc), leaked) {
+			t.Errorf("capture findings carry %q: %s", leaked, enc)
+		}
 	}
 }

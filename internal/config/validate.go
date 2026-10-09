@@ -2473,6 +2473,28 @@ func (c *Config) validateMCPInputScanning() error {
 
 func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
+	c.MCPToolScanning.AcknowledgmentKeyBytes = nil
+	if err := validateMCPAcknowledgedFindings(c.MCPToolScanning.AcknowledgedFindings, time.Now().UTC()); err != nil {
+		return err
+	}
+	// The key is resolved once here and pinned. With entries and no usable
+	// key the configuration is refused: there is no unkeyed fallback.
+	if c.MCPToolScanning.AcknowledgmentKey != "" || len(c.MCPToolScanning.AcknowledgedFindings) > 0 {
+		if c.MCPToolScanning.AcknowledgmentKey == "" {
+			return errors.New("mcp_tool_scanning.acknowledged_findings requires mcp_tool_scanning.acknowledgment_key")
+		}
+		key, err := resolveMCPAckKey(c.MCPToolScanning.AcknowledgmentKey)
+		if err != nil {
+			return err
+		}
+		c.MCPToolScanning.AcknowledgmentKeyBytes = key
+	}
+	if len(c.MCPToolScanning.AcknowledgedFindings) > 0 && !c.MCPToolScanning.Enabled && warnings != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "mcp_tool_scanning.acknowledged_findings",
+			Message: "acknowledged_findings has no effect while mcp_tool_scanning is disabled",
+		})
+	}
 	if c.NewToolActionAliasWarning != "" && warnings != nil {
 		*warnings = append(*warnings, Warning{
 			Field:   "mcp_tool_scanning.new_tool_action",
@@ -2666,9 +2688,6 @@ func validateToolPolicyArgSource(r ToolPolicyRule) error {
 	}
 	if r.ArgSource != "" && r.ArgPattern == "" {
 		return fmt.Errorf("mcp_tool_policy rule %q has arg_source without arg_pattern", r.Name)
-	}
-	if r.ArgSource != "" && r.ArgKey != "" {
-		return fmt.Errorf("mcp_tool_policy rule %q combines arg_source with arg_key", r.Name)
 	}
 	return nil
 }
@@ -5252,9 +5271,6 @@ func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 	}
 	if c.FlightRecorder.ReceiptChains < 0 || c.FlightRecorder.ReceiptChains > 32 {
 		return fmt.Errorf("flight_recorder.receipt_chains must be between 0 and 32 (0 uses one chain)")
-	}
-	if c.FlightRecorder.ReceiptChainCount() > 1 {
-		return errors.New("flight_recorder.receipt_chains greater than one is unavailable until the cross-language verifiers support receipt groups")
 	}
 	if err := c.validateFlightRecorderAnchor(warnings); err != nil {
 		return err

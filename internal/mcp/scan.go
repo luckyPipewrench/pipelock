@@ -530,6 +530,12 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 	} else {
 		verdict.Action = config.StricterAction(verdict.Action, toolCfg.Action)
 	}
+	// A configured acknowledgment that no longer matches its tool is a
+	// reviewed exception gone stale. It refuses under every action rather
+	// than quietly becoming a warning.
+	if result.CredentialAckRefused() {
+		verdict.Action = config.ActionBlock
+	}
 	return verdict
 }
 
@@ -1119,8 +1125,12 @@ func hasScannableToolsList(line []byte) bool {
 // A2AResponseOpts groups A2A-specific dependencies for response scanning.
 // All fields are nil-safe: when nil, A2A response scanning is skipped.
 type A2AResponseOpts struct {
-	Cfg      *config.A2AScanning
-	Baseline *CardBaseline
+	// ConfirmCardAcceptance confirms evidence before accepting a verified
+	// signature or a first/changed baseline. An error denies adoption and
+	// delivery. Nil preserves callers without required receipt confirmation.
+	ConfirmCardAcceptance func(AgentCardScanResult) error
+	Cfg                   *config.A2AScanning
+	Baseline              *CardBaseline
 	// OnCardDriftAdopted observes a benign descriptive Agent Card change that
 	// was accepted as the new baseline. It must not change the scan verdict:
 	// adoption remains clean, while the transport records the audit event.
@@ -1230,21 +1240,51 @@ func scanA2AResponseDispatch(line []byte, sc *scanner.Scanner, a2aOpts *A2ARespo
 // scanA2AResponseDispatchClass also reports whether the A2A scan found a
 // response-pattern injection, the class the core response floor governs.
 func scanA2AResponseDispatchClass(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts) (jsonrpc.ScanVerdict, bool) {
+	// The size bound applies to the bytes received, before any view drops the
+	// verified signature and shortens the line under the limit.
+	if len(line) > transport.MaxLineSize {
+		return oversizedResponseVerdict(line), false
+	}
 	rpcID := extractRPCID(line)
+	isCard := isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line)
+
 	// Protocol routing adds field-aware checks without replacing the joined
-	// text, media, and complete-message bounds shared by MCP responses.
-	joined := a2aFallbackScan(line, sc, a2aOpts)
+	// text, media, and complete-message bounds shared by MCP responses. For an
+	// Agent Card that joined scan reads the whole line, so it gets the same
+	// view the card scan does: without the one signature string that verified.
+	joinedLine := line
+	if isCard {
+		joinedLine = lineWithoutVerifiedCardSignature(line, a2aOpts)
+	}
+	joined := a2aFallbackScan(joinedLine, sc, a2aOpts)
 	if joined.Error != "" {
 		return joined, false
 	}
 
-	if isAgentCardMethod(a2aOpts.Method) || isAgentCardResultShape(line) {
+	if isCard {
 		return scanAgentCardRPCResponse(line, sc, a2aOpts, rpcID, joined)
 	}
 
 	// All other A2A methods: field-aware body scanning.
 	result := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
 	return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, result), joined), len(result.InjectFindings) > 0 || len(joined.Matches) > 0
+}
+
+// lineWithoutVerifiedCardSignature returns line with the verified Agent Card
+// signature string blanked, or line itself when there is nothing to exempt.
+// Only a result-bearing response is eligible: an error response is scanned
+// whole, as is any card whose signature does not verify against a trusted key
+// scoped to the card's origin.
+func lineWithoutVerifiedCardSignature(line []byte, a2aOpts *A2AResponseOpts) []byte {
+	if !CardSignatureVerificationActive(a2aOpts.Cfg) {
+		return line
+	}
+	var rpc jsonrpc.RPCResponse
+	if json.Unmarshal(line, &rpc) != nil || (len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null) {
+		return line
+	}
+	sig := VerifyAgentCardSignatures(rpc.Result, CardOriginFromURL(a2aOpts.CardKey.cardURL), a2aOpts.Cfg)
+	return cardBodyWithoutVerifiedSignature(line, []string{"result"}, sig)
 }
 
 func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanVerdict {
@@ -1278,7 +1318,7 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 	}
 	cardResult := scanAgentCard(
 		context.Background(), rpc.Result, sc,
-		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean},
+		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean, confirmAcceptance: a2aOpts.ConfirmCardAcceptance},
 	)
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
 		a2aOpts.OnCardDriftAdopted()

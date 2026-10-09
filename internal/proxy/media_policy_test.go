@@ -489,15 +489,6 @@ func TestForwardHTTP_MediaPolicyBlocksAudio(t *testing.T) {
 	}
 }
 
-// fakeMediaLogger records LogMediaExposure calls for assertion.
-type fakeMediaLogger struct {
-	calls []audit.MediaExposureInfo
-}
-
-func (f *fakeMediaLogger) LogMediaExposure(_ audit.LogContext, info audit.MediaExposureInfo) {
-	f.calls = append(f.calls, info)
-}
-
 // TestLogMediaExposureIfPresent_EmitsWithTransport verifies that a verdict
 // carrying an exposure payload produces exactly one LogMediaExposure call
 // and the transport tag is passed through unchanged. Also checks that nil
@@ -512,29 +503,30 @@ func TestLogMediaExposureIfPresent_EmitsWithTransport(t *testing.T) {
 			Format:      "jpeg",
 		},
 	}
-	logger := &fakeMediaLogger{}
+	logger, sink := newCorrelationAuditLogger(t)
 	actx, err := audit.NewHTTPLogContext(http.MethodGet, "https://example.com/x.jpg", "127.0.0.1", "req-media-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	logMediaExposureIfPresent(logger, actx, v, "reverse")
-	if len(logger.calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(logger.calls))
+	events := sink.eventsSnapshot()
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
 	}
-	if logger.calls[0].Transport != "reverse" {
-		t.Errorf("Transport = %q, want reverse", logger.calls[0].Transport)
+	if got := events[0].Fields["transport"]; got != "reverse" {
+		t.Errorf("transport = %v, want reverse", got)
 	}
-	if logger.calls[0].Format != "jpeg" {
-		t.Errorf("Format = %q, want jpeg", logger.calls[0].Format)
+	if got := events[0].Fields["format"]; got != "jpeg" {
+		t.Errorf("format = %v, want jpeg", got)
 	}
 }
 
 func TestLogMediaExposureIfPresent_NoExposureNoCall(t *testing.T) {
 	t.Parallel()
-	logger := &fakeMediaLogger{}
+	logger, sink := newCorrelationAuditLogger(t)
 	logMediaExposureIfPresent(logger, audit.LogContext{}, MediaPolicyVerdict{MediaType: "text/html"}, "forward")
-	if len(logger.calls) != 0 {
-		t.Errorf("nil exposure produced %d calls, want 0", len(logger.calls))
+	if events := sink.eventsSnapshot(); len(events) != 0 {
+		t.Errorf("nil exposure produced %d events, want 0", len(events))
 	}
 }
 

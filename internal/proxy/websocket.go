@@ -58,25 +58,26 @@ func getWSSemaphore(capacity int) *tunnelSemaphore {
 
 // wsRelay holds per-connection state for a proxied WebSocket connection.
 type wsRelay struct {
-	clientConn   net.Conn
-	upstreamConn net.Conn
-	scanner      *scanner.Scanner
-	proxy        *Proxy
-	receiptShard receipt.EmitOpts
-	cfg          *config.Config
-	redaction    *redactionRuntime
-	agent        string
-	metricAgent  string
-	actorAuth    envelope.ActorAuth  // provenance of agent identity; gates CEE session-key namespacing
-	correlation  audit.CorrelationID // vetted emit.correlation_header tag from the upgrade request
-	clientIP     string
-	requestID    string
-	targetURL    string
-	hostname     string
-	path         string
-	maxMsg       int
-	scanText     bool
-	allowBinary  bool
+	clientConn      net.Conn
+	upstreamConn    net.Conn
+	scanner         *scanner.Scanner
+	proxy           *Proxy
+	receiptShard    receipt.EmitOpts
+	requestActionID string
+	cfg             *config.Config
+	redaction       *redactionRuntime
+	agent           string
+	metricAgent     string
+	actorAuth       envelope.ActorAuth  // provenance of agent identity; gates CEE session-key namespacing
+	correlation     audit.CorrelationID // vetted emit.correlation_header tag from the upgrade request
+	clientIP        string
+	requestID       string
+	targetURL       string
+	hostname        string
+	path            string
+	maxMsg          int
+	scanText        bool
+	allowBinary     bool
 
 	upstreamIncomplete bool // written only by upstreamToClient, read after it returns
 	// upstreamCancelled records that the upstream direction ended because the
@@ -1173,6 +1174,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		scanner:         sc,
 		proxy:           p,
 		receiptShard:    selectedReceiptShard,
+		requestActionID: actionID,
 		cfg:             cfg,
 		redaction:       p.currentRedactionRuntimeFor(cfg),
 		agent:           agent,
@@ -2893,6 +2895,24 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	default:
 		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
 	}
+	// A warning or successful strip permits this response to leave an already
+	// established socket. Its handshake receipt cannot confirm this later
+	// decision, and a clean-stream summary does not describe the finding.
+	if r.cfg.FlightRecorder.RequireReceipts {
+		err := r.proxy.emitAllowPathReceipt(r.cfg, withReceiptShard(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), ParentActionID: r.requestActionID, Verdict: wsAction, Layer: responseScanLayer,
+			Pattern: strings.Join(patternNames, ", "), Transport: TransportWS,
+			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
+		}, r.receiptShard))
+		if err != nil {
+			r.proxy.recordRequiredReceiptBlock(err, TransportWS)
+			log.LogError(actx, fmt.Errorf("confirm WebSocket response receipt: %w", err))
+			payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+			return nil, true
+		}
+	}
 	return msg, false
 }
 
@@ -3227,6 +3247,16 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+				if r.cfg.FlightRecorder.RequireReceipts {
+					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, r.receiptShard))); err != nil {
+						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
+						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+						blocked = true
+						return
+					}
+				}
 				msg = mediaVerdict.Body
 			}
 		}

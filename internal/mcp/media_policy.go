@@ -350,7 +350,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 
 	exposure := &audit.MediaExposureInfo{
 		Transport:   transport,
-		ContentType: mt,
+		ContentType: audit.MediaContentType(mt),
 		SizeBytes:   len(body),
 	}
 
@@ -396,7 +396,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	}
 	if !policy.ImageTypeAllowed(mt) {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", mt)
+		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", exposure.ContentType)
 		return mcpMediaVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -420,7 +420,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	relabeled := ""
 	if sniffed, bad := media.MislabeledDisallowed(mt, body, policy.ImageTypeAllowed); bad {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mt, sniffed)
+		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", exposure.ContentType, sniffed)
 		return mcpMediaVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -431,7 +431,7 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 	if proven := media.StripType(mt, body, policy.ImageTypeAllowed); proven != mt {
 		relabeled = proven
 		mt = proven
-		exposure.ContentType = proven
+		exposure.ContentType = audit.MediaContentType(proven)
 	}
 	if policy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)

@@ -562,6 +562,7 @@ type cardDriftOutcome struct {
 	adopted          bool
 	structuralChange bool
 	introducedCues   []string
+	receiptFailed    bool
 }
 
 // CardBaseline tracks Agent Card hashes by origin, for drift detection.
@@ -643,20 +644,20 @@ func (cb *CardBaseline) Commit(key cardCacheKey, structuralDigest, descriptiveDi
 	return applied
 }
 
-// CommitOrReevaluate decides and writes under ONE lock hold, which removes the
-// race rather than compensating for it.
-//
-// The earlier shape was Evaluate, then Commit, then re-Evaluate when Commit
-// declined. Every version of that leaks: the re-evaluation is itself a separate
-// lock hold, so a benign outcome it returns has not been written either, and
-// publishing it reports an adoption that never happened. Deciding and applying
-// together means the outcome returned here is ALWAYS the one that was applied,
-// or one that required no write at all.
-//
-// applied is true only when this call wrote the baseline. The returned outcome
-// is authoritative for the state at the moment of the write, so a caller may
-// publish it without a further check.
-func (cb *CardBaseline) CommitOrReevaluate(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string) (applied bool, outcome cardDriftOutcome) {
+type cardCommitOptions struct {
+	// confirm runs under the baseline lock, immediately before accepting the
+	// current outcome. It must not call back into this baseline.
+	confirm func(cardDriftOutcome) error
+}
+
+// CommitOrReevaluate decides, confirms, and writes under one lock hold.
+// Its outcome describes the current baseline, including changes since Evaluate.
+// A failed confirmation leaves the trusted entry unchanged.
+func (cb *CardBaseline) CommitOrReevaluate(key cardCacheKey, structuralDigest, descriptiveDigest, descriptive string, skillNames []string, options ...cardCommitOptions) (applied bool, outcome cardDriftOutcome) {
+	confirm := func(candidate cardDriftOutcome) bool {
+		return len(options) == 0 || options[0].confirm == nil || options[0].confirm(candidate) == nil
+	}
+
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
@@ -664,6 +665,9 @@ func (cb *CardBaseline) CommitOrReevaluate(key cardCacheKey, structuralDigest, d
 	if !ok {
 		if len(cb.entries) >= cb.maxSize {
 			return false, cardDriftOutcome{capacityExceeded: true}
+		}
+		if !confirm(cardDriftOutcome{firstSeen: true}) {
+			return false, cardDriftOutcome{receiptFailed: true}
 		}
 		cb.entries[key] = &cardEntry{
 			structuralDigest:  structuralDigest,
@@ -681,10 +685,16 @@ func (cb *CardBaseline) CommitOrReevaluate(key cardCacheKey, structuralDigest, d
 		return false, cardDriftOutcome{changed: true, block: true, structuralChange: true}
 	}
 	if existing.descriptiveDigest == descriptiveDigest {
+		if !confirm(cardDriftOutcome{}) {
+			return false, cardDriftOutcome{receiptFailed: true}
+		}
 		return false, cardDriftOutcome{}
 	}
 	if introduced := tools.IntroducedDescriptionCues(existing.descriptive, descriptive); len(introduced) > 0 {
 		return false, cardDriftOutcome{changed: true, block: true, introducedCues: introduced}
+	}
+	if !confirm(cardDriftOutcome{changed: true, adopted: true}) {
+		return false, cardDriftOutcome{receiptFailed: true}
 	}
 	existing.descriptiveDigest = descriptiveDigest
 	existing.descriptive = descriptive
@@ -771,9 +781,16 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	return scanAgentCard(ctx, body, sc, baseline, key, agentCardScanOptions{cfg: cfg, commitBaseline: true})
 }
 
+// ScanAgentCardWithOptions scans an HTTP card with the same pre-commit
+// confirmation hook used by MCP card responses.
+func ScanAgentCardWithOptions(ctx context.Context, body []byte, sc *scanner.Scanner, opts A2AResponseOpts) AgentCardScanResult {
+	return scanAgentCard(ctx, body, sc, opts.Baseline, opts.CardKey, agentCardScanOptions{cfg: opts.Cfg, commitBaseline: true, confirmAcceptance: opts.ConfirmCardAcceptance})
+}
+
 type agentCardScanOptions struct {
-	cfg            *config.A2AScanning
-	commitBaseline bool
+	cfg               *config.A2AScanning
+	commitBaseline    bool
+	confirmAcceptance func(AgentCardScanResult) error
 }
 
 func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, opts agentCardScanOptions) AgentCardScanResult {
@@ -782,11 +799,23 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		return AgentCardScanResult{Clean: true}
 	}
 
+	// Verify before scanning. A signature that verified against a trusted,
+	// origin-scoped key is a stamp, not content: only that one string, found by
+	// its position in the card, is left out of the text the credential rules
+	// read. With no trusted key, a wrong origin, or any verification failure
+	// nothing is left out and the card is scanned exactly as it arrived.
+	var sig CardSignatureResult
+	scanBody := body
+	if CardSignatureVerificationActive(cfg) {
+		sig = VerifyAgentCardSignatures(body, CardOriginFromURL(key.cardURL), cfg)
+		scanBody = cardBodyWithoutVerifiedSignature(body, nil, sig)
+	}
+
 	var card A2AAgentCard
 	if err := json.Unmarshal(body, &card); err != nil {
 		// Unparseable card: fail closed for card-specific checks,
 		// but still run generic field scanning.
-		findings := scanA2ABody(ctx, body, sc, cfg, nil)
+		findings := scanA2ABody(ctx, scanBody, sc, cfg, nil)
 		unparseable := AgentCardScanResult{
 			Clean:    findings.Clean,
 			Action:   findings.Action,
@@ -797,7 +826,7 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		// signed card, so require_signed_agent_cards (and any claimed-but-
 		// invalid signature) must fail closed here too, not be skipped by the
 		// early return.
-		applyCardSignatureVerification(&unparseable, body, key, cfg)
+		applyCardSignatureVerification(&unparseable, sig, cfg)
 		return unparseable
 	}
 
@@ -807,11 +836,19 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// acceptable. It runs only after the FULL verdict is known, so a card the
 	// scanner or the signature check rejects leaves the trusted baseline alone.
 	driftCommit := func(bool) {}
+	confirmed := false
+	confirmAcceptance := func(candidate AgentCardScanResult) error {
+		if opts.confirmAcceptance == nil || (!candidate.FirstSeen && !candidate.DriftAdopted && !candidate.SignatureVerified) {
+			return nil
+		}
+		confirmed = true
+		return opts.confirmAcceptance(candidate)
+	}
 	var driftOutcome cardDriftOutcome
 
 	// Card content scanning via field walker.
 	if cfg.ScanAgentCards {
-		result.Findings = scanA2ABody(ctx, body, sc, cfg, nil)
+		result.Findings = scanA2ABody(ctx, scanBody, sc, cfg, nil)
 		if !result.Findings.Clean {
 			result.Clean = false
 			result.Action = result.Findings.Action
@@ -842,7 +879,17 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 			// a further round trip. When it differs from the pre-verdict
 			// evaluation the baseline moved in between, and the response must
 			// carry the state that actually holds, including a block.
-			applied, final := baseline.CommitOrReevaluate(key, structural, descriptiveDigest, descriptive, skillNames)
+			applied, final := baseline.CommitOrReevaluate(key, structural, descriptiveDigest, descriptive, skillNames, cardCommitOptions{
+				confirm: func(fresh cardDriftOutcome) error {
+					candidate := result
+					applyFreshDriftOutcome(&candidate, fresh, cfg)
+					return confirmAcceptance(candidate)
+				},
+			})
+			if final.receiptFailed {
+				clearAgentCardAcceptance(&result)
+				return
+			}
 			// Publish the pre-verdict outcome only when the write applied AND
 			// the decision did not change underneath it.
 			if applied && final.firstSeen == outcome.firstSeen && final.adopted == outcome.adopted && !final.block && !final.capacityExceeded {
@@ -878,7 +925,7 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// Independent attestation: cryptographically verify the card's signature
 	// against the operator's trusted, origin-scoped keys. This runs in addition
 	// to (not instead of) content scanning and drift detection.
-	applyCardSignatureVerification(&result, body, key, cfg)
+	applyCardSignatureVerification(&result, sig, cfg)
 
 	// The verdict is final here. Learn the card only if nothing rejected it;
 	// otherwise the baseline keeps what it already trusted, and the result must
@@ -886,12 +933,23 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// OnCardDriftAdopted callback both read DriftAdopted).
 	if result.Clean && opts.commitBaseline {
 		driftCommit(true)
+		if result.Clean && !confirmed {
+			if err := confirmAcceptance(result); err != nil {
+				clearAgentCardAcceptance(&result)
+			}
+		}
 	} else if driftOutcome.adopted || driftOutcome.firstSeen {
 		result.DriftAdopted = false
 		result.FirstSeen = false
 	}
 
 	return result
+}
+
+func clearAgentCardAcceptance(result *AgentCardScanResult) {
+	result.Clean, result.FirstSeen, result.DriftAdopted = false, false, false
+	result.SignatureVerified, result.SignatureKeyID = false, ""
+	result.Action, result.Reason = config.ActionBlock, "receipt emission failed"
 }
 
 // applyFreshDriftOutcome rewrites a scan result from a re-evaluation performed
@@ -926,17 +984,18 @@ func applyFreshDriftOutcome(result *AgentCardScanResult, fresh cardDriftOutcome,
 	}
 }
 
-// applyCardSignatureVerification verifies the card's signature (when verification
-// is active) and updates result in place. It is fail-closed: a claimed-but-
+// applyCardSignatureVerification applies the card's signature outcome (computed
+// by the caller, which verifies before it scans) to result in place when
+// verification is active. It is fail-closed: a claimed-but-
 // invalid signature blocks; an unsigned card blocks only when
 // require_signed_agent_cards is set; a verified signature records the attesting
 // key_id. Called from both the normal and unparseable-card paths so the
 // require-signed invariant cannot be skipped by an early return.
-func applyCardSignatureVerification(result *AgentCardScanResult, body []byte, key cardCacheKey, cfg *config.A2AScanning) {
+func applyCardSignatureVerification(result *AgentCardScanResult, sig CardSignatureResult, cfg *config.A2AScanning) {
 	if !CardSignatureVerificationActive(cfg) {
 		return
 	}
-	switch sig := VerifyAgentCardSignatures(body, CardOriginFromURL(key.cardURL), cfg); sig.Outcome {
+	switch sig.Outcome {
 	case SigOutcomeVerified:
 		result.SignatureVerified = true
 		result.SignatureKeyID = sig.KeyID

@@ -417,7 +417,7 @@ func TestSVGDeliveryContract_RequiresShieldEvenWhenMediaPolicyIsDisabled(t *test
 	disabled := false
 	cfg.MediaPolicy.Enabled = &disabled
 	p := newTestProxyWithConfig(t, cfg)
-	body, _, svgShielded, shieldBlocked := p.applyShield([]byte(benignSVGFixture), "image/svg+xml", "icons.vendor.example", nil, cfg, audit.LogContext{}, "127.0.0.1", "req-svg", TransportFetch, "action-svg")
+	body, _, svgShielded, shieldBlocked := p.applyShieldResponse([]byte(benignSVGFixture), "image/svg+xml", nil, cfg, shieldResponseContext{hostname: "icons.vendor.example", actx: audit.LogContext{}, clientIP: "127.0.0.1", requestID: "req-svg", transport: TransportFetch, parentActionID: "action-svg"})
 	if shieldBlocked != nil || svgShielded {
 		t.Fatalf("disabled shield result = blocked:%v proof:%t", shieldBlocked, svgShielded)
 	}
@@ -437,7 +437,7 @@ func TestSVGDeliveryContract_EmptyBodyValidatedWhenShieldActive(t *testing.T) {
 	cfg := config.Defaults()
 	enableSVGDeliveryContract(cfg)
 	p := newTestProxyWithConfig(t, cfg)
-	body, _, svgShielded, blocked := p.applyShield(nil, "image/svg+xml", "icons.vendor.example", http.Header{"Content-Type": {"image/svg+xml"}}, cfg, audit.LogContext{}, "127.0.0.1", "req", TransportForward, "action")
+	body, _, svgShielded, blocked := p.applyShieldResponse(nil, "image/svg+xml", http.Header{"Content-Type": {"image/svg+xml"}}, cfg, shieldResponseContext{hostname: "icons.vendor.example", actx: audit.LogContext{}, clientIP: "127.0.0.1", requestID: "req", transport: TransportForward, parentActionID: "action"})
 	if blocked != nil || !svgShielded || len(body) != 0 {
 		t.Fatalf("empty SVG: blocked=%+v proof=%t body=%q", blocked, svgShielded, body)
 	}

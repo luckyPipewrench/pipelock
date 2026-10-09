@@ -362,16 +362,30 @@ func requireJSONEOF(decoder *json.Decoder) error {
 }
 
 type dashboardJWKSCache struct {
-	mu         sync.Mutex
-	uri        string
-	client     *http.Client
-	now        func() time.Time
-	ttl        time.Duration
-	keys       map[string]*rsa.PublicKey
-	expiresAt  time.Time
-	lastMiss   time.Time
-	refreshCh  chan struct{}
-	refreshErr error
+	mu        sync.Mutex
+	uri       string
+	client    *http.Client
+	now       func() time.Time
+	ttl       time.Duration
+	keys      map[string]*rsa.PublicKey
+	expiresAt time.Time
+	lastMiss  time.Time
+	inflight  *dashboardJWKSRefresh
+	// generation counts successful refreshes. A caller records it when it
+	// decides to refresh, so a refresh that completed after that decision
+	// satisfies the caller instead of admitting another fetch.
+	generation uint64
+	// joinedHook, when set by a test, runs after a caller commits to waiting
+	// on an in-flight refresh. It is nil in production.
+	joinedHook func()
+}
+
+// dashboardJWKSRefresh carries one fetch's outcome to every caller that joined
+// it. Keeping the error on the refresh, not on the cache, stops a later
+// refresh from overwriting the result before an earlier waiter reads it.
+type dashboardJWKSRefresh struct {
+	done chan struct{}
+	err  error
 }
 
 type dashboardJWKS struct {
@@ -403,15 +417,20 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 		c.mu.Unlock()
 		return nil, dashboardOIDCSigningKeyNotFound(keyID)
 	}
+	observed := c.generation
 	if cacheExpired {
 		c.mu.Unlock()
-		if err := c.refresh(ctx); err != nil {
+		if err := c.refreshSince(ctx, observed); err != nil {
 			if keyUnknown {
 				c.recordMiss()
 			}
 			return nil, err
 		}
 		c.mu.Lock()
+		if !c.freshLocked() {
+			c.mu.Unlock()
+			return nil, errDashboardOIDCKeysExpired
+		}
 		if key := c.keys[keyID]; key != nil {
 			c.mu.Unlock()
 			return key, nil
@@ -431,17 +450,31 @@ func (c *dashboardJWKSCache) key(ctx context.Context, keyID string) (*rsa.Public
 	// path that would learn a legitimate rotated key.
 	c.lastMiss = now
 	c.mu.Unlock()
-	if err := c.refresh(ctx); err != nil {
+	if err := c.refreshSince(ctx, observed); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
+	fresh := c.freshLocked()
 	key := c.keys[keyID]
 	c.mu.Unlock()
+	if !fresh {
+		return nil, errDashboardOIDCKeysExpired
+	}
 	if key == nil {
 		return nil, dashboardOIDCSigningKeyNotFound(keyID)
 	}
 	return key, nil
 }
+
+// freshLocked reports whether the cached keys are still within their
+// lifetime. Callers hold c.mu. A caller that resumes after the refresh it
+// waited on has already expired must not use those keys; it fails closed and
+// the next request refreshes.
+func (c *dashboardJWKSCache) freshLocked() bool {
+	return c.keys != nil && c.now().Before(c.expiresAt)
+}
+
+var errDashboardOIDCKeysExpired = errors.New("OIDC signing keys expired before they could be used")
 
 func (c *dashboardJWKSCache) recordMiss() {
 	c.mu.Lock()
@@ -455,31 +488,57 @@ func dashboardOIDCSigningKeyNotFound(keyID string) error {
 
 var errDashboardOIDCSigningKeyNotFound = errors.New("OIDC signing key not found")
 
+// refresh fetches the JWKS unconditionally, joining a fetch already in flight.
 func (c *dashboardJWKSCache) refresh(ctx context.Context) error {
+	return c.admitRefresh(ctx, 0, false)
+}
+
+// refreshSince fetches the JWKS unless a refresh has succeeded since the
+// caller observed generation, or joins one already in flight. Admission is
+// decided under the same lock that records completion, so a caller delayed
+// between deciding to refresh and getting here cannot start a duplicate fetch.
+// A failed refresh does not advance the generation: the caller then fetches
+// itself rather than proceeding on keys that are still expired.
+func (c *dashboardJWKSCache) refreshSince(ctx context.Context, observed uint64) error {
+	return c.admitRefresh(ctx, observed, true)
+}
+
+// admitRefresh joins an in-flight fetch or starts one. A conditional caller is
+// satisfied without fetching only when a refresh succeeded after it observed
+// the cache and that refresh's keys have not expired since; a caller delayed
+// past that lifetime fetches again rather than reuse expired keys.
+func (c *dashboardJWKSCache) admitRefresh(ctx context.Context, observed uint64, conditional bool) error {
 	c.mu.Lock()
-	if c.refreshCh != nil {
-		refreshCh := c.refreshCh
+	if r := c.inflight; r != nil {
+		joined := c.joinedHook
 		c.mu.Unlock()
+		if joined != nil {
+			joined()
+		}
 		select {
-		case <-refreshCh:
-			c.mu.Lock()
-			err := c.refreshErr
-			c.mu.Unlock()
-			return err
+		case <-r.done:
+			return r.err
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-	refreshCh := make(chan struct{})
-	c.refreshCh = refreshCh
+	if conditional && c.generation != observed && c.now().Before(c.expiresAt) {
+		c.mu.Unlock()
+		return nil
+	}
+	r := &dashboardJWKSRefresh{done: make(chan struct{})}
+	c.inflight = r
 	c.mu.Unlock()
 
 	err := c.fetchAndStore(ctx)
 
 	c.mu.Lock()
-	c.refreshErr = err
-	close(refreshCh)
-	c.refreshCh = nil
+	r.err = err
+	if err == nil {
+		c.generation++
+	}
+	c.inflight = nil
+	close(r.done)
 	c.mu.Unlock()
 	return err
 }

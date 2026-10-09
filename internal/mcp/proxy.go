@@ -447,6 +447,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			emitTrackedOutcome("error", "media_policy", resp)
 			continue
 		}
+
+		if mediaResult.Changed {
+			if emitErr := confirmMCPResponseEffect(logW, opts, trackedOutcome.Receipt, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}); emitErr != nil {
+				resp := blockResponseReason(frame.ID, "receipt emission failed")
+				if err := writer.WriteMessage(resp); err != nil {
+					return foundInjection, fmt.Errorf("writing media receipt-failure block: %w", err)
+				}
+				emitTrackedOutcome("error", "receipt_emission_failed", resp)
+				continue
+			}
+		}
 		line = mediaResult.Line
 
 		// Reject ambiguous/malformed JSON before any provenance, tool-baseline,
@@ -522,8 +533,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// tool-poison near-miss signal must not also apply RecordClean: the
 		// same message cannot both raise and decay the session threat score.
 		toolPoisonDetected := false
+		// toolAcknowledged marks a tools/list whose Credential Request
+		// Directive finding a configured acknowledgment lifted. It is not
+		// evidence of clean behavior, so it earns no clean credit either.
+		toolAcknowledged := false
 		if toolCfg != nil {
-			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg, trackedMethod)
+			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg.WithServer(opts.ServerName, opts.ServerBinding), trackedMethod)
 			if err := opts.warnContext().Err(); err != nil {
 				if writeErr := blockScanError("response scan failed: " + err.Error()); writeErr != nil {
 					return foundInjection, writeErr
@@ -531,6 +546,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 			isToolsList = toolResult.IsToolsList
+			toolAcknowledged = toolResult.IsToolsList && toolResult.CredentialAckApplied()
 			// Provenance: verify tool signatures BEFORE updating session binding
 			// baseline. A blocked tools/list must not seed known tools.
 			if toolResult.IsToolsList && provenanceCfg != nil && provenanceCfg.Enabled {
@@ -567,17 +583,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 			// Capture: record tools/list scan verdict.
-			if toolResult.IsToolsList {
-				toolCaptureAction := config.ActionAllow
-				if !toolResult.Clean {
-					if toolResult.ResourceLimit != "" {
-						toolCaptureAction = config.ActionBlock
-					} else if toolCfg.Action != "" {
-						toolCaptureAction = toolCfg.Action
-					} else {
-						toolCaptureAction = config.ActionBlock
-					}
-				}
+			captureToolScan := func(toolCaptureAction string) {
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
 					Subsurface:        "mcp_tools_list",
 					Transport:         opts.Transport,
@@ -587,10 +593,27 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureMCPActionClass("", "tools/list"),
 					Request:           capture.CaptureRequest{RPCID: captureRPCID(toolResult.RPCID)},
-					RawFindings:       toolScanMatchesToFindings(toolResult.Matches),
+					RawFindings:       toolScanResultFindings(toolResult),
 					EffectiveAction:   toolCaptureAction,
-					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
+					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean && !toolAcknowledged),
 				})
+			}
+			// An acknowledged list is captured after its receipt decision below,
+			// so the tool-scan record reflects that receipt decision.
+			// Later gates record their own refusals.
+			if toolResult.IsToolsList && (!toolAcknowledged || !toolResult.Clean) {
+				toolCaptureAction := config.ActionAllow
+				if !toolResult.Clean {
+					if toolResult.ResourceLimit != "" || toolResult.CredentialAckRefused() {
+						// Both refuse under every action, so record the block.
+						toolCaptureAction = config.ActionBlock
+					} else if toolCfg.Action != "" {
+						toolCaptureAction = toolCfg.Action
+					} else {
+						toolCaptureAction = config.ActionBlock
+					}
+				}
+				captureToolScan(toolCaptureAction)
 			}
 			// Accepted definition drift is not a finding and does not affect the
 			// verdict, so it is reported here rather than on the block path. An
@@ -615,6 +638,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					// uninspectable definition, so this outcome is always a block.
 					toolAction = config.ActionBlock
 				}
+				if toolResult.CredentialAckRefused() {
+					// A configured acknowledgment that no longer matches its
+					// tool is a reviewed exception gone stale. It refuses under
+					// every action rather than quietly becoming a warning.
+					toolAction = config.ActionBlock
+				}
 				// Escalation upgrade for tool poison detection.
 				if rec != nil {
 					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
@@ -629,13 +658,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 
 				if toolAction == config.ActionBlock {
-					_ = emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionBlock)
+					_ = emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionBlock, trackedOutcome.Receipt)
 					blockReason := "tool poisoning detected in tools/list"
 					if toolResult.ResourceLimit != "" {
 						blockReason = "tools/list cannot be safely inspected: " + toolResult.ResourceLimit
 						if m != nil {
 							m.RecordBlocked("mcp", toolResult.ResourceLimit, 0, "")
 						}
+					} else if toolResult.CredentialAckRefused() {
+						blockReason = "tools/list refused: a credential-request acknowledgment no longer matches its tool"
 					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}
@@ -666,11 +697,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
-				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn); emitErr != nil && opts.requireReceipts() {
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
 					}
+					emitTrackedOutcome("error", "receipt_emission_failed", resp)
 					continue
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
@@ -687,17 +719,59 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					})
 				}
 			}
+			if toolAcknowledged && toolResult.Clean {
+				// The tool scanner allowed this list under a reviewed
+				// acknowledgment. The receipt and capture record that scanner
+				// decision with an allow verdict; it is not a near miss and not
+				// a clean event. Later gates (general response scanning,
+				// inventory reservation) can still refuse delivery, and record
+				// that themselves.
+				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
+					captureToolScan(config.ActionBlock)
+					resolveToolInventory(config.ActionBlock)
+					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
+					}
+					emitTrackedOutcome("error", "receipt_emission_failed", resp)
+					continue
+				}
+				// The tool scanner passed it with a finding present: warned,
+				// never clean.
+				captureToolScan(config.ActionWarn)
+			}
 		}
 
 		// For tools/list responses, skip general scanning of the result field
 		// (tool descriptions contain instructional text that triggers FPs).
 		// Still scan the error field: injection could hide in non-tool fields.
 		var verdict jsonrpc.ScanVerdict
+		var baselineReceiptErr error
 		if isToolsList {
 			verdict = scanToolsListNonToolFieldsContext(opts.warnContext(), line, sc, respScanOpts)
 		} else {
 			a2aOpts := opts.a2aResponseOpts(respScanOpts)
 			a2aOpts.Method = trackedMethod
+			if opts.requireReceipts() {
+				a2aOpts.ConfirmCardAcceptance = func(candidate AgentCardScanResult) error {
+					selected := trackedOutcome.Receipt
+					if !selected.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+						selected = opts.ReceiptGroup.Shards.Admit(selected)
+					}
+					if candidate.SignatureVerified {
+						baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_signature", Pattern: "verified key_id=" + candidate.SignatureKeyID, Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+						if baselineReceiptErr != nil {
+							return baselineReceiptErr
+						}
+					}
+					if !candidate.FirstSeen && !candidate.DriftAdopted {
+						return nil
+					}
+					baselineReceiptErr = confirmMCPResponseEffect(logW, opts, selected, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Layer: "a2a_card_drift", Pattern: "Agent Card baseline accepted", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)})
+					return baselineReceiptErr
+				}
+			}
+
 			a2aOpts.OnCardDriftAdopted = func() {
 				const detail = "a2a: Agent Card descriptive drift adopted"
 				_, _ = fmt.Fprintf(logW, "pipelock: a2a response: %s\n", detail)
@@ -717,6 +791,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			verdict = ScanResponseA2A(line, sc, a2aOpts)
 		}
 
+		if baselineReceiptErr != nil {
+			resp := blockResponseReason(frame.ID, "receipt emission failed")
+			if err := writer.WriteMessage(resp); err != nil {
+				return foundInjection, fmt.Errorf("writing card receipt-failure block: %w", err)
+			}
+			emitTrackedOutcome("error", "receipt_emission_failed", resp)
+			continue
+		}
+
 		// The transport context owns cancellation even for legacy scanners that
 		// do not accept it. Never forward a result after its request was canceled.
 		if err := opts.warnContext().Err(); err != nil {
@@ -733,7 +816,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Clean message: decay threat score. Skip decay when tool-poisoning
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
-			if !toolPoisonDetected {
+			if !toolPoisonDetected && !toolAcknowledged {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 					sessionKey: firstNonEmpty(opts.ServerName, "default"),
 					reason:     adaptiveRecoveryClean,
@@ -756,7 +839,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
-			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
+			observeMCPResponseTaint(taintOpts, toolPoisonDetected || toolAcknowledged)
 			continue
 		}
 
@@ -913,7 +996,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			Pattern:   pattern,
 			Severity:  config.SeverityHigh,
 		})
-		if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+		originalReceiptOpts = withMCPResponseShard(trackedOutcome.Receipt, originalReceiptOpts)
+		if !originalReceiptOpts.ShardSelected && opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 			originalReceiptOpts = opts.ReceiptGroup.Shards.Admit(originalReceiptOpts)
 		}
 		_, emitErr := opts.emitReceiptDecision(MCPDecision{
@@ -1032,6 +1116,7 @@ func emitMCPToolScanReceipt(
 	opts MCPProxyOpts,
 	result tools.ToolScanResult,
 	verdict string,
+	selected receipt.EmitOpts,
 ) error {
 	serverName := strings.TrimSpace(opts.ServerName)
 	if serverName == "" {
@@ -1042,6 +1127,11 @@ func emitMCPToolScanReceipt(
 	if result.ResourceLimit != "" {
 		pattern = result.ResourceLimit
 	} else {
+		for _, o := range result.Observations {
+			if o.CredentialAck == tools.CredentialAckAcknowledged && len(o.ToolPoison) > 0 {
+				pattern = o.ToolPoison[0]
+			}
+		}
 		for _, match := range result.Matches {
 			if len(match.ToolPoison) > 0 {
 				pattern = match.ToolPoison[0]
@@ -1058,7 +1148,7 @@ func emitMCPToolScanReceipt(
 		}
 	}
 	_, err := opts.emitReceiptDecision(MCPDecision{
-		Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
+		Receipt: opts.withReceiptPolicyHash(withMCPResponseShard(selected, receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   verdict,
 			Transport: opts.Transport,
@@ -1068,7 +1158,7 @@ func emitMCPToolScanReceipt(
 			Layer:     "mcp_tool_scan",
 			Pattern:   pattern,
 			Severity:  config.SeverityHigh,
-		}),
+		})),
 		RequireReceipt: opts.requireReceipts() && verdict != config.ActionBlock,
 	})
 	if err != nil {
@@ -1826,6 +1916,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			BindingUnknownAction:    toolCfg.BindingUnknownAction,
 			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
 			ExtraPoison:             toolCfg.ExtraPoison,
+			CredentialAcks:          toolCfg.CredentialAcks,
+			Now:                     toolCfg.Now,
 		}
 	}
 
@@ -2185,6 +2277,40 @@ func mergeChildEnvForOS(base, overrides []string, goos string) []string {
 		result = append(result, values[key])
 	}
 	return result
+}
+
+// ChildEnvOverrideIdentity is the effective result of applying overrides to a
+// child environment, independent of what the child inherits: for each
+// variable, in mergeChildEnv's last-wins order and key rules, either
+// "set:KEY=VALUE" or "unset:KEY". It is what a server's transport binding
+// covers; inherited variables the operator did not name are not included.
+func ChildEnvOverrideIdentity(overrides []string) []string {
+	return childEnvOverrideIdentityForOS(overrides, runtime.GOOS)
+}
+
+func childEnvOverrideIdentityForOS(overrides []string, goos string) []string {
+	final := make(map[string]string, len(overrides))
+	for _, entry := range overrides {
+		key, value, ok := splitChildEnvEntry(entry, goos)
+		if !ok {
+			key = entry
+		}
+		identity := key
+		if goos == windowsOS {
+			identity = strings.ToUpper(key)
+		}
+		if ok {
+			final[identity] = "set:" + identity + "=" + value
+		} else {
+			final[identity] = "unset:" + identity
+		}
+	}
+	out := make([]string, 0, len(final))
+	for _, v := range final {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func splitChildEnvEntry(entry, goos string) (string, string, bool) {

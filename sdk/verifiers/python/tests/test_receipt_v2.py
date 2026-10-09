@@ -285,9 +285,7 @@ def test_spanned_v2_receipt_does_not_expose_oracle_key() -> None:
 
 def test_receipt_cli_json(capsys, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     path = _write_canonical_v2_receipt(VALID_SPANNED_V2, tmp_path, "cli")
-    code = main(
-        ["receipt", str(path), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"]
-    )
+    code = main(["receipt", str(path), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"])
     captured = capsys.readouterr()
     assert code == 0
     body = json.loads(captured.out)
@@ -775,7 +773,7 @@ def test_go_raw_message_bytes_compacts_and_html_escapes() -> None:
 
     line_sep = chr(0x2028)
     esc_a = "\\" + "u0041"
-    raw = '{ "10" : [ 1.0 , 1E+2 ] ,\t"a" : "<&> ' + esc_a + '\\/ ' + line_sep + '" }'
+    raw = '{ "10" : [ 1.0 , 1E+2 ] ,\t"a" : "<&> ' + esc_a + "\\/ " + line_sep + '" }'
     assert go_raw_message_bytes(raw) == (
         '{"10":[1.0,1E+2],"a":"\\u003c\\u0026\\u003e ' + esc_a + '\\/ \\u2028"}'
     )

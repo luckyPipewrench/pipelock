@@ -51,15 +51,15 @@ test-wasm-verifier:
 test-runtime-critical:
 	scripts/run-race-test.sh --packages "./internal/config ./internal/cli ./internal/mcp ./internal/proxy"
 
-# Test shards mirror CI (scripts/ci_test_packages.py): the three heavy package
-# trees (proxy, scanner and mcp, each split by test name into two sub-shards)
-# plus three balanced rest shards. Their union is the same test set as
+# Test shards mirror CI (scripts/ci_test_packages.py): the four heavy package
+# trees (proxy, scanner, mcp and cli/runtime, each split by measured test time
+# into sub-shards) plus three balanced rest shards. Their union is the same test set as
 # `make test`. The proxy sub-shards run their two packages sequentially to match
 # CI's peak-memory cap. Use these to reproduce one CI shard locally, or
 # to run the full suite in scoped chunks instead of the single monolithic
 # `go test ./...` invocation that becomes a long pole if reused in one CI step.
 # `make test` stays the canonical full local run.
-TEST_SHARDS := proxy-0 proxy-1 scanner-0 scanner-1 mcp-0 mcp-1 rest-0 rest-1 rest-2
+TEST_SHARDS := proxy-0 proxy-1 proxy-2 proxy-3 scanner-0 scanner-1 scanner-2 mcp-0 mcp-1 mcp-2 mcp-3 runtime-0 runtime-1 rest-0 rest-1 rest-2 rest-3
 .PHONY: FORCE
 FORCE:
 

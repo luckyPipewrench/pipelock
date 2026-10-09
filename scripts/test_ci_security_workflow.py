@@ -156,9 +156,12 @@ exit "$DEFAULT_STATUS"
                 "test-go126",
                 "test-go127",
                 "lint",
+                "lint-policy",
                 "test-cross-target",
                 "helm",
                 "build-binaries",
+                "pr-review-tests",
+                "pr-review-source",
             },
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )
@@ -168,9 +171,12 @@ exit "$DEFAULT_STATUS"
             "TEST_GO126_RESULT",
             "TEST_GO127_RESULT",
             "LINT_RESULT",
+            "LINT_POLICY_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
+            "REVIEW_TESTS_RESULT",
+            "REVIEW_SOURCE_RESULT",
         ):
             self.assertIn(f'"${result}"', self.build)
 
@@ -181,13 +187,16 @@ exit "$DEFAULT_STATUS"
             "TEST_GO126_RESULT",
             "TEST_GO127_RESULT",
             "LINT_RESULT",
+            "LINT_POLICY_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
+            "REVIEW_TESTS_RESULT",
+            "REVIEW_SOURCE_RESULT",
         )
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in result_names})
-        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request"})
+        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request", "REPOSITORY": "luckyPipewrench/pipelock"})
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             check=False,
@@ -196,6 +205,19 @@ exit "$DEFAULT_STATUS"
             capture_output=True,
         )
         self.assertEqual(0, success.returncode, success.stderr)
+
+        for evidence in ("success", "skipped", "failure", "cancelled", ""):
+            with self.subTest(repository="fork", evidence=evidence):
+                fork_env = dict(base_env, REPOSITORY="contributor/pipelock", REVIEW_SOURCE_RESULT=evidence)
+                fork = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", script], check=False,
+                    env=fork_env, text=True, capture_output=True,
+                )
+                if evidence in {"success", "skipped"}:
+                    self.assertEqual(0, fork.returncode, fork.stderr)
+                else:
+                    self.assertNotEqual(0, fork.returncode)
+                    self.assertIn("review source identity was not verified", fork.stderr)
 
         for name in result_names:
             for evidence in ("failure", "cancelled", "skipped", ""):
@@ -220,14 +242,14 @@ exit "$DEFAULT_STATUS"
         base_env.update({
             name: "success"
             for name in (
-                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT",
-                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT",
+                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT", "LINT_POLICY_RESULT",
+                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT", "REVIEW_TESTS_RESULT", "REVIEW_SOURCE_RESULT",
             )
         })
 
         def run(event: str, classifier: str) -> int:
             env = base_env.copy()
-            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier})
+            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "REPOSITORY": "luckyPipewrench/pipelock"})
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
@@ -241,12 +263,15 @@ exit "$DEFAULT_STATUS"
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)
+        # One job per published target other than the runner's linux/amd64;
+        # each one vets both build variants for its target.
         self.assertIn(
-            "linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64",
+            "target: ['linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']",
             self.cross_target,
         )
-        self.assertIn('go vet ./...', self.cross_target)
-        self.assertIn('go vet -tags enterprise ./...', self.cross_target)
+        self.assertIn("fail-fast: false", self.cross_target)
+        self.assertIn('GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" go vet ./...', self.cross_target)
+        self.assertIn('GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" go vet -tags enterprise ./...', self.cross_target)
         self.assertNotIn("Test code compiles for every published target", job_block(self.workflow, "lint"))
 
     def test_helm_transitive_gate_contract_rejects_removed_dependency(self) -> None:

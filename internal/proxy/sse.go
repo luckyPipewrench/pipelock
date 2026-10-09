@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -57,6 +59,25 @@ type SSEDispatchOptions struct {
 	A2A        *config.A2AScanning
 	GenericSSE *config.GenericSSEScanning
 	Generic    mcp.GenericSSEScanOptions
+}
+
+// sseFindingReceiptConfirmer admits warned events before their wire write.
+// Errors are receipt failures, not content findings: a warn-mode caller must
+// terminate on them rather than treating a failed confirmation as visibility.
+func sseFindingReceiptConfirmer(cfg *config.Config, opts receipt.EmitOpts, emit func(*config.Config, receipt.EmitOpts) error) func(error) error {
+	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
+		return nil
+	}
+	return func(finding error) error {
+		opts.ActionID = receipt.NewActionID()
+		opts.Verdict = config.ActionWarn
+		opts.Layer = LayerSSEStream
+		opts.Pattern = finding.Error()
+		if err := emit(cfg, opts); err != nil {
+			return fmt.Errorf("%w: confirm SSE response receipt: %w", mcp.ErrReceiptRequired, err)
+		}
+		return nil
+	}
 }
 
 // DispatchSSEScan picks the appropriate streaming scanner and runs it.

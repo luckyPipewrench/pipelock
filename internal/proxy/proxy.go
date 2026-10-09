@@ -3945,10 +3945,21 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 	return shieldUninspectableBlock(shieldPartialResponseBlockReason)
 }
 
-// applyShield runs Browser Shield rewriting on a response body when enabled
-// and the hostname is not exempt. A nonnil block result prevents delivery and
-// supplies the transport's status, reason, and receipt classification.
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
+type shieldResponseContext struct {
+	hostname                                       string
+	actx                                           audit.LogContext
+	clientIP, requestID, transport, parentActionID string
+	shard                                          receipt.EmitOpts
+}
+
+// applyShieldResponse runs Browser Shield rewriting on a response body when
+// enabled and the hostname is not exempt. A nonnil block result prevents
+// delivery and supplies the transport's status, reason, and receipt
+// classification.
+func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders http.Header, cfg *config.Config, response shieldResponseContext) ([]byte, *receipt.ShieldSummary, bool, *shieldBlockResult) {
+	hostname, actx := response.hostname, response.actx
+	clientIP, requestID, transport := response.clientIP, response.requestID, response.transport
+
 	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
 		return body, nil, false, nil
 	}
@@ -3994,16 +4005,23 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
 			head, summary := p.runShieldPipelineResult(body[:shieldMaxBytes], contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+			if summary == nil {
+				summary = partialShieldSummary(nil, body[:shieldMaxBytes], contentType, len(body), shieldMaxBytes)
+			}
 			if summary != nil {
 				summary.BodyBytes = len(body)
 				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
-				if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-					return nil, summary, false, shieldCapacityBlock()
+				if blocked := p.confirmShieldIntervention(summary, cfg, response); blocked != nil {
+					return nil, summary, false, blocked
 				}
 			}
 			return append(head, body[shieldMaxBytes:]...), summary, false, nil
 		case config.ShieldOversizeWarn:
+			reason := shieldOversizeBlockReason(hostname, len(body), shieldMaxBytes)
+			if err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: response.parentActionID, Verdict: config.ActionAllow, Layer: "shield_oversize", Pattern: reason, Shield: partialShieldSummary(nil, body, contentType, len(body), 0), Transport: transport, Method: actx.Method(), Target: shieldReceiptTarget(firstNonEmptyString(actx.URL(), actx.Target(), hostname)), RequestID: requestID, Agent: actx.Agent()}, response.shard)); err != nil {
+				return nil, nil, false, p.shieldReceiptBlock(err, transport)
+			}
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds shield ceiling %d", len(body), shieldMaxBytes), 0)
 			return body, nil, false, nil
 		default: // block: fail-closed, return 403
@@ -4034,8 +4052,8 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	if summary != nil {
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
-		if !p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID) {
-			return nil, summary, false, shieldCapacityBlock()
+		if blocked := p.confirmShieldIntervention(summary, cfg, response); blocked != nil {
+			return nil, summary, false, blocked
 		}
 	}
 	return rewritten, summary, result.svgValidated, nil
@@ -4265,8 +4283,20 @@ func shieldPipelineLabel(pipeline shield.PipelineType) string {
 // recordShieldIntervention refuses delivery when enabled adaptive recording
 // cannot obtain a session. A disabled or absent store does not require one.
 func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *config.Config, hostname string, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) bool {
+	return p.confirmShieldIntervention(summary, cfg, shieldResponseContext{hostname: hostname, actx: actx, clientIP: clientIP, requestID: requestID, transport: transport, parentActionID: parentActionID}) == nil
+}
+
+func (p *Proxy) shieldReceiptBlock(err error, transport string) *shieldBlockResult {
+	p.recordRequiredReceiptBlock(err, transport)
+	return &shieldBlockResult{info: blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), status: http.StatusForbidden, reason: receiptEmissionBlockReason}
+}
+
+func (p *Proxy) confirmShieldIntervention(summary *receipt.ShieldSummary, cfg *config.Config, response shieldResponseContext) *shieldBlockResult {
+	hostname, actx := response.hostname, response.actx
+	clientIP, requestID, transport, parentActionID := response.clientIP, response.requestID, response.transport, response.parentActionID
+
 	if summary == nil {
-		return true
+		return nil
 	}
 	signals := 0
 	if cfg != nil && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
@@ -4287,7 +4317,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 				summary.AdaptiveSignalsRecorded = 0
 				summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
 				p.logger.LogBlocked(actx, sessionCapacityLayer, session.ErrCapacity.Error())
-				return false
+				return shieldCapacityBlock()
 			}
 		}
 		if sess == nil {
@@ -4305,7 +4335,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 		target = hostname
 	}
 	target = shieldReceiptTarget(target)
-	_ = p.emitReceipt(receipt.EmitOpts{
+	err := p.confirmResponseDecision(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID:       receipt.NewActionID(),
 		ParentActionID: parentActionID,
 		Verdict:        config.ActionAllow,
@@ -4318,10 +4348,13 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 		Target:         target,
 		RequestID:      requestID,
 		Agent:          actx.Agent(),
-	})
+	}, response.shard))
+	if err != nil {
+		return p.shieldReceiptBlock(err, transport)
+	}
 
 	if signals == 0 {
-		return true
+		return nil
 	}
 	for i := 0; i < signals; i++ {
 		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
@@ -4333,7 +4366,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 			RequestID: requestID,
 		})
 	}
-	return true
+	return nil
 }
 
 func shieldReceiptTarget(target string) string {
@@ -6414,7 +6447,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, svgShielded, shieldBlocked = p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -6482,6 +6515,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		outcomeReason = "media_policy"
 		return
 	}
+	if mediaVerdict.Relabeled != "" || (mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed()) {
+		if cfg.FlightRecorder.RequireReceipts {
+			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
+				p.recordRequiredReceiptBlock(err, TransportFetch)
+				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
+				outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+				return
+			}
+		}
+	}
 	applyRelabeledContentType(resp.Header, mediaVerdict)
 	if mediaVerdict.Relabeled != "" && !mediaVerdict.Blocked {
 		// The fetch contract publishes contentType in its JSON, not the header.
@@ -6526,8 +6569,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			recordObservedCoreResponseMatches(p.metrics, log, actx, rawResult.ObservedCoreMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
+			blocked, _, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 				requestContext: r.Context(),
+				shard:          selectedReceiptShard,
 				writer:         w,
 				result:         rawResult,
 				content:        content,
@@ -6547,9 +6591,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if blocked {
 				outcomeLayer := responseScanLayer
 				outcomeCode := http.StatusForbidden
-				if scanFailed {
-					outcomeLayer = "response_scan_error"
-					outcomeCode = http.StatusServiceUnavailable
+				if scanFailureLayer != "" {
+					outcomeLayer = scanFailureLayer
+					if scanFailureLayer == "response_scan_error" {
+						outcomeCode = http.StatusServiceUnavailable
+					}
 				}
 				p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
 				outcomeStatus = strconv.Itoa(outcomeCode)
@@ -6674,8 +6720,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found, scanFailed := p.filterAndActOnResponseScan(responseScanContext{
+		blocked, newContent, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 			requestContext: r.Context(),
+			shard:          selectedReceiptShard,
 			writer:         w,
 			result:         scanResult,
 			content:        content,
@@ -6698,9 +6745,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if blocked {
 			outcomeLayer := responseScanLayer
 			outcomeCode := http.StatusForbidden
-			if scanFailed {
-				outcomeLayer = "response_scan_error"
-				outcomeCode = http.StatusServiceUnavailable
+			if scanFailureLayer != "" {
+				outcomeLayer = scanFailureLayer
+				if scanFailureLayer == "response_scan_error" {
+					outcomeCode = http.StatusServiceUnavailable
+				}
 			}
 			p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
 			outcomeStatus = strconv.Itoa(outcomeCode)
@@ -6811,6 +6860,7 @@ func recordObservedCoreResponseMatches(m *metrics.Metrics, log *audit.Logger, ac
 // Keep both keyed literals complete: omitted fields compile as zero values, and some
 // zero values are valid runtime state.
 type responseScanContext struct {
+	shard          receipt.EmitOpts
 	requestContext context.Context
 	writer         http.ResponseWriter
 	result         scanner.ResponseScanResult
@@ -6833,11 +6883,12 @@ type responseScanContext struct {
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
 // (possibly stripped), and found=true if unsuppressed findings remain.
+// failureLayer distinguishes incomplete scanning from required receipt failure.
 // sessionLevel is the current adaptive escalation level from recordSessionActivity.
 // exempt indicates the domain was in exempt_domains: findings are logged as
 // warn but adaptive scoring is skipped and UpgradeAction is not applied.
 // This preserves operator visibility without triggering escalation death spirals.
-func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found, scanFailed bool) {
+func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool, out string, found bool, failureLayer string) {
 	reqCtx := in.requestContext
 	w := in.writer
 	result := in.result
@@ -6862,7 +6913,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	}
 
 	if result.Clean {
-		return false, out, false, false
+		return false, out, false, ""
 	}
 	if result.Failed() {
 		reason := "response scan failed: " + result.ScanError
@@ -6875,7 +6926,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			blockInfoFor(blockreason.ParseError, "response_scan_error"),
 			http.StatusServiceUnavailable,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", false, true
+		return true, "", false, "response_scan_error"
 	}
 
 	patternNames := make([]string, len(result.Matches))
@@ -6949,7 +7000,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-		return true, "", true, false
+		return true, "", true, ""
 	case config.ActionAsk:
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
@@ -6970,7 +7021,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true, false
+			return true, "", true, ""
 		}
 		preview := content
 		if len(preview) > 200 {
@@ -6985,6 +7036,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		})
 		switch d {
 		case hitl.DecisionAllow:
+			action = config.ActionAllow
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			if result.TransformedContent == "" {
@@ -6999,9 +7051,10 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 					blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 					http.StatusForbidden,
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-				return true, "", true, false
+				return true, "", true, ""
 			}
 			out = result.TransformedContent
+			action = config.ActionStrip
 			log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
@@ -7022,7 +7075,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
-			return true, "", true, false
+			return true, "", true, ""
 		}
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
@@ -7035,7 +7088,21 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		recordResponseSignal(session.SignalNearMiss)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
-	return false, out, true, false
+	if cfg.FlightRecorder.RequireReceipts {
+		err := p.emitAllowPathReceipt(cfg, withReceiptShard(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: action,
+			Layer: responseScanLayer, Pattern: strings.Join(patternNames, ", "),
+			Transport: TransportFetch, Method: http.MethodGet, Target: displayURL,
+			RequestID: requestID, Agent: agent,
+		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))))
+		if err != nil {
+			p.recordRequiredReceiptBlock(err, TransportFetch)
+			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden,
+				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
+			return true, "", true, receiptEmissionFailedLayer
+		}
+	}
+	return false, out, true, ""
 }
 
 // stripFetchControlChars removes C0 control characters (0x00-0x1F) and DEL

@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -1077,6 +1078,7 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 				Message: "admission downgraded from withhold to admit",
 			})
 		}
+		appendMCPAckReloadWarnings(warnings, old.MCPToolScanning.AcknowledgedFindings, updated.MCPToolScanning.AcknowledgedFindings)
 	}
 	if old.MCPToolPolicy.Enabled && updated.MCPToolPolicy.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_tool_policy.action", old.MCPToolPolicy.Action, updated.MCPToolPolicy.Action)
@@ -1736,4 +1738,43 @@ func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []str
 	return removedOrWeakenedPatterns(old, updated,
 		func(p ResponseScanPattern) string { return p.Name },
 		func(p ResponseScanPattern) string { return p.Regex })
+}
+
+func mcpAckReloadKey(e MCPAcknowledgedFinding) string {
+	return fmt.Sprintf("server %q tool %q", e.Server, e.Tool)
+}
+
+// appendMCPAckReloadWarnings reports acknowledgment changes. A new or edited
+// entry lifts a finding, so it warns like any other relaxation. A removed
+// entry only makes the tool's finding follow mcp_tool_scanning.action again,
+// which may be warn rather than block, so it is advisory and says exactly that.
+func appendMCPAckReloadWarnings(warnings *[]ReloadWarning, old, updated []MCPAcknowledgedFinding) {
+	oldByKey := make(map[string]MCPAcknowledgedFinding, len(old))
+	for _, e := range old {
+		oldByKey[mcpAckReloadKey(e)] = e
+	}
+	updatedKeys := make(map[string]bool, len(updated))
+	for _, e := range updated {
+		key := mcpAckReloadKey(e)
+		updatedKeys[key] = true
+		prior, existed := oldByKey[key]
+		switch {
+		case !existed:
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   "mcp_tool_scanning.acknowledged_findings",
+				Message: "acknowledgment added for " + key + ": its Credential Request Directive finding is lifted while every occurrence still matches",
+			})
+		case !reflect.DeepEqual(prior, e):
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   "mcp_tool_scanning.acknowledged_findings",
+				Message: "acknowledgment changed for " + key + ": the new entry applies only if it matches the tool exactly; otherwise the tools/list is refused",
+			})
+		}
+	}
+	for _, e := range old {
+		if key := mcpAckReloadKey(e); !updatedKeys[key] {
+			*warnings = append(*warnings, advisoryReloadWarning("mcp_tool_scanning.acknowledged_findings",
+				"acknowledgment removed for "+key+": its Credential Request Directive finding follows mcp_tool_scanning.action again"))
+		}
+	}
 }

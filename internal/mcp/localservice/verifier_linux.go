@@ -222,7 +222,18 @@ func (v *Verifier) verifyOnce(conn net.Conn, pin Pin) (Evidence, error) {
 	if v.beforeRecheck != nil {
 		v.beforeRecheck()
 	}
-	if err = v.confirmOwner(own, first); err != nil {
+	// exec preserves PID/starttime and descriptors without CLOEXEC. Recheck
+	// all pins before the final image, incarnation and sole-owner check.
+	if _, err = v.checkPrincipal(own.pid, srv.uid, pin); err != nil {
+		return Evidence{}, err
+	}
+	if err = v.checkMappedFiles(own.pid, pin, &Evidence{}); err != nil {
+		return Evidence{}, err
+	}
+	if err = v.checkEnvironment(own.pid, pin); err != nil {
+		return Evidence{}, err
+	}
+	if err = v.confirmOwner(own, first, srv.inode, ev); err != nil {
 		return Evidence{}, err
 	}
 	return ev, nil
@@ -725,10 +736,10 @@ func (v *Verifier) checkEnvironment(pid int, pin Pin) error {
 		fieldControlEnv, strings.Join(offending, ", "), pid, ErrControlEnvironment)
 }
 
-// confirmOwner re-reads the incarnation and the descriptor link after the
-// checks. Any difference means the process the checks described may not be the
-// one holding the socket.
-func (v *Verifier) confirmOwner(own owner, first incarnation) error {
+// confirmOwner rechecks the executable image, sole socket ownership,
+// incarnation and descriptor after the pins are measured. PID/starttime alone
+// cannot detect exec, and one unchanged descriptor cannot detect fd passing.
+func (v *Verifier) confirmOwner(own owner, first incarnation, inode uint64, image Evidence) error {
 	second, err := v.readIncarnation(own.pid)
 	if err != nil {
 		return err
@@ -737,6 +748,31 @@ func (v *Verifier) confirmOwner(own owner, first incarnation) error {
 		return fmt.Errorf("pid %d start time or boot id changed during verification: %w", own.pid, ErrOwnerChanged)
 	}
 	link, err := os.Readlink(v.pidPath(own.pid, "fd", own.fdName))
+	if err != nil || link != own.link {
+		return fmt.Errorf("pid %d no longer holds %s on descriptor %s: %w", own.pid, own.link, own.fdName, ErrOwnerChanged)
+	}
+	dev, ino, sum, err := v.executableDigest(own.pid)
+	if err != nil {
+		return err
+	}
+	if dev != image.ExecutableDev || ino != image.ExecutableIno || sum != image.ExecutableSHA256 {
+		return fmt.Errorf("pid %d executable changed during verification; check %s: %w", own.pid, fieldExecutable, ErrOwnerChanged)
+	}
+	current, err := v.findOwner(inode)
+	if err != nil {
+		return err
+	}
+	if current.pid != own.pid {
+		return fmt.Errorf("socket owner changed from pid %d to pid %d during verification: %w", own.pid, current.pid, ErrOwnerChanged)
+	}
+	second, err = v.readIncarnation(own.pid)
+	if err != nil {
+		return err
+	}
+	if second != first {
+		return fmt.Errorf("pid %d start time or boot id changed during verification: %w", own.pid, ErrOwnerChanged)
+	}
+	link, err = os.Readlink(v.pidPath(own.pid, "fd", own.fdName))
 	if err != nil || link != own.link {
 		return fmt.Errorf("pid %d no longer holds %s on descriptor %s: %w", own.pid, own.link, own.fdName, ErrOwnerChanged)
 	}

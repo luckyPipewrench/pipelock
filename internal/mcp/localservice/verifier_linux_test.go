@@ -34,6 +34,7 @@ const (
 
 	modeServe   = "serve"
 	modeForward = "forward"
+	modeExec    = "exec"
 	// modeLateAccept listens, then accepts only after the test writes
 	// helperAcceptCmd to its stdin; modeNoAccept never accepts.
 	modeLateAccept = "lateaccept"
@@ -42,6 +43,7 @@ const (
 	helperReady     = "ready "
 	helperAccepted  = "accepted"
 	helperAcceptCmd = "accept"
+	helperExecCmd   = "exec"
 
 	loopbackAny   = "127.0.0.1:0"
 	pinnedContent = "pinned bundle contents"
@@ -67,12 +69,16 @@ func helperf(format string, args ...any) {
 func runHelper(mode string) int {
 	ctx := context.Background()
 	acceptNow := make(chan struct{})
+	execNow := make(chan struct{})
 	go func() {
 		var once sync.Once
 		sc := bufio.NewScanner(os.Stdin)
 		for sc.Scan() {
 			if sc.Text() == helperAcceptCmd {
 				once.Do(func() { close(acceptNow) })
+			}
+			if sc.Text() == helperExecCmd {
+				once.Do(func() { close(execNow) })
 			}
 		}
 		os.Exit(0)
@@ -112,6 +118,24 @@ func runHelper(mode string) int {
 		go func() { _, _ = io.Copy(conn, up) }()
 	}
 	helperf("%s", helperAccepted)
+	if mode == modeExec {
+		<-execNow
+		raw, rawErr := conn.(*net.TCPConn).SyscallConn()
+		if rawErr != nil {
+			return 1
+		}
+		var fdErr error
+		if rawErr = raw.Control(func(fd uintptr) {
+			_, fdErr = unix.FcntlInt(fd, unix.F_SETFD, 0)
+		}); rawErr != nil || fdErr != nil {
+			return 1
+		}
+		// Keep the accepted socket across a real exec with the same PID and
+		// start time. cat waits on stdin until the test closes the helper.
+		if execErr := unix.Exec("/bin/cat", []string{"cat"}, []string{"PATH=/usr/bin:/bin"}); execErr != nil {
+			return 1
+		}
+	}
 	select {}
 }
 

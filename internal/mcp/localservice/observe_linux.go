@@ -64,9 +64,11 @@ func (v *Verifier) observeOnce(conn net.Conn) (Observation, error) {
 	if obs.UID, err = v.effectiveUID(own.pid); err != nil {
 		return Observation{}, err
 	}
-	if _, _, obs.ExecutableSHA256, err = v.executableDigest(own.pid); err != nil {
+	var image Evidence
+	if image.ExecutableDev, image.ExecutableIno, obs.ExecutableSHA256, err = v.executableDigest(own.pid); err != nil {
 		return Observation{}, err
 	}
+	image.ExecutableSHA256 = obs.ExecutableSHA256
 	held, err := v.heldFiles(own.pid)
 	if err != nil {
 		return Observation{}, err
@@ -79,7 +81,7 @@ func (v *Verifier) observeOnce(conn net.Conn) (Observation, error) {
 	if v.beforeRecheck != nil {
 		v.beforeRecheck()
 	}
-	if err = v.confirmOwner(own, first); err != nil {
+	if err = v.confirmOwner(own, first, srv.inode, image); err != nil {
 		return Observation{}, err
 	}
 	return obs, nil

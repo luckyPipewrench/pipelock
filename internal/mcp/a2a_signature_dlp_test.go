@@ -564,12 +564,15 @@ func TestVerifiedSignatureEscapedSpellings(t *testing.T) {
 	variants := map[string][]byte{
 		"one escaped character":   []byte(strings.Replace(string(body), stamp, fmt.Sprintf(`\u%04x`, stamp[0])+stamp[1:], 1)),
 		"every character escaped": []byte(strings.Replace(string(body), stamp, escapeJSONString(stamp), 1)),
-		"escaped signature key":   []byte(strings.Replace(string(body), `"signature":`, `"signature":`, 1)),
-		"escaped signatures key":  []byte(strings.Replace(string(body), `"signatures":`, `"signatures":`, 1)),
+		"escaped signature key":   []byte(strings.Replace(string(body), `"signature":`, `"\u0073ignature":`, 1)),
+		"escaped signatures key":  []byte(strings.Replace(string(body), `"signatures":`, `"\u0073ignatures":`, 1)),
 		"indented":                pretty.Bytes(),
 	}
 	for name, b := range variants {
 		t.Run(name, func(t *testing.T) {
+			if bytes.Equal(b, body) {
+				t.Fatal("fixture: variant is byte-identical to the signed card")
+			}
 			cfg := cardScanCfg(pub)
 			sig := VerifyAgentCardSignatures(b, testCardOrigin, cfg)
 			if sig.Outcome != SigOutcomeVerified {

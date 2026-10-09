@@ -63,7 +63,7 @@ type issuerQueryStore struct {
 	// origin in this list, so a header the agent wrote cannot name one.
 	documents map[string][][32]byte
 	used      map[string]time.Time
-	disabled bool
+	disabled  bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -76,7 +76,7 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		redirects: make(map[string][][32]byte),
 		paths:     make(map[string][][32]byte),
 		documents: make(map[string][][32]byte),
-		used:     make(map[string]time.Time),
+		used:      make(map[string]time.Time),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true

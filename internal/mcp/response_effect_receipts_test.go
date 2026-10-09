@@ -244,3 +244,126 @@ func (w *responseEffectWriter) WriteMessage(message []byte) error {
 	w.syncsAtDelivery = w.syncs.Load()
 	return w.MessageWriter.WriteMessage(message)
 }
+
+func TestAgentCardConfirmationSerializesConcurrentRequests(t *testing.T) {
+	for _, phase := range []string{"first", "adopt"} {
+		t.Run(phase, func(t *testing.T) {
+			sc, cfg := newMCPScannerWithMediaPolicy(t)
+			cfg.A2AScanning.Enabled = true
+			baseline := NewCardBaseline(8)
+			key := CardCacheKeyFromRequest("https://api.vendor.example/.well-known/agent-card.json", "")
+			body := []byte(receiptCardBody)
+			if phase == "adopt" {
+				ScanAgentCard(t.Context(), body, sc, baseline, key, &cfg.A2AScanning)
+				body = bytes.Replace(body, []byte("Reads documents"), []byte("Reads local documents"), 1)
+			}
+			started, done := make(chan struct{}), make(chan struct{})
+			calls := 0
+			res := ScanAgentCardWithOptions(t.Context(), body, sc, A2AResponseOpts{Cfg: &cfg.A2AScanning, Baseline: baseline, CardKey: key, ConfirmCardAcceptance: func(candidate AgentCardScanResult) error {
+				calls++
+				if baseline.mu.TryLock() {
+					baseline.mu.Unlock()
+					t.Error("confirmation must hold the baseline lock")
+				}
+				go func() {
+					close(started)
+					ScanAgentCard(t.Context(), []byte(receiptCardBody), sc, baseline, key, &cfg.A2AScanning)
+					close(done)
+				}()
+				<-started
+				select {
+				case <-done:
+					t.Error("concurrent request changed baseline during confirmation")
+				default:
+				}
+				return errors.New("confirmation unavailable")
+			}})
+			<-done
+			if calls != 1 || res.Clean || res.FirstSeen || res.DriftAdopted || res.Reason != "receipt emission failed" {
+				t.Fatalf("failed adoption: confirmations=%d result=%+v", calls, res)
+			}
+			check := ScanAgentCard(t.Context(), []byte(receiptCardBody), sc, baseline, key, &cfg.A2AScanning)
+			if !check.Clean || check.DriftDetected {
+				t.Fatalf("failed confirmation changed baseline: %+v", check)
+			}
+		})
+	}
+}
+
+func TestAgentCardFailedConfirmationClearsSignature(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: testKeyID, PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
+	body := signCard(t, map[string]any{"name": "Document helper", "description": "Reads documents"}, priv, edHeader())
+	key := CardCacheKeyFromRequest("https://api.vendor.example/.well-known/agent-card.json", "")
+	control := ScanAgentCard(t.Context(), body, sc, nil, key, &cfg.A2AScanning)
+	if !control.Clean || !control.SignatureVerified || control.SignatureKeyID == "" {
+		t.Fatalf("invalid signature control: %+v", control)
+	}
+	res := ScanAgentCardWithOptions(t.Context(), body, sc, A2AResponseOpts{Cfg: &cfg.A2AScanning, CardKey: key, ConfirmCardAcceptance: func(AgentCardScanResult) error { return errors.New("confirmation unavailable") }})
+	if res.Clean || res.SignatureVerified || res.SignatureKeyID != "" || res.Reason != "receipt emission failed" {
+		t.Fatalf("blocked signature attestation: %+v", res)
+	}
+}
+
+func TestAgentCardReevaluationConfirmsCurrentAdoption(t *testing.T) {
+	for _, phase := range []string{"first to adopt", "unchanged to adopt"} {
+		for _, failure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/failure=%t", phase, failure), func(t *testing.T) {
+				sc, cfg := newMCPScannerWithMediaPolicy(t)
+				cfg.A2AScanning.Enabled = true
+				baseline := NewCardBaseline(8)
+				key := CardCacheKeyFromRequest("https://api.vendor.example/.well-known/agent-card.json", "")
+				body := []byte(receiptCardBody)
+				var card A2AAgentCard
+				if err := json.Unmarshal(body, &card); err != nil {
+					t.Fatal(err)
+				}
+				structural, digest, text := cardStructuralDigest(card), cardDescriptiveDigest(card), cardDescriptiveText(card)
+				if phase == "unchanged to adopt" {
+					ScanAgentCard(t.Context(), body, sc, baseline, key, &cfg.A2AScanning)
+				}
+				before := baseline.Evaluate(key, structural, digest, text, nil)
+				if before.adopted {
+					t.Fatal("invalid pre-reevaluation control")
+				}
+				changed := bytes.Replace(body, []byte("Reads documents"), []byte("Reads local documents"), 1)
+				done := make(chan AgentCardScanResult, 1)
+				go func() { done <- ScanAgentCard(t.Context(), changed, sc, baseline, key, &cfg.A2AScanning) }()
+				if result := <-done; !result.Clean {
+					t.Fatalf("concurrent card rejected: %+v", result)
+				}
+				calls := 0
+				applied, outcome := baseline.CommitOrReevaluate(key, structural, digest, text, nil, cardCommitOptions{confirm: func(fresh cardDriftOutcome) error {
+					calls++
+					if !fresh.adopted || !fresh.changed || fresh.firstSeen {
+						t.Errorf("confirmed stale outcome: %+v", fresh)
+					}
+					if baseline.mu.TryLock() {
+						baseline.mu.Unlock()
+						t.Error("confirmation outside lock")
+					}
+					if failure {
+						return errors.New("confirmation unavailable")
+					}
+					return nil
+				}})
+				if calls != 1 || applied == failure || outcome.receiptFailed != failure {
+					t.Fatalf("confirmation result: calls=%d applied=%t outcome=%+v", calls, applied, outcome)
+				}
+				check := body
+				if failure {
+					check = changed
+				}
+				next := ScanAgentCard(t.Context(), check, sc, baseline, key, &cfg.A2AScanning)
+				if !next.Clean || next.DriftDetected {
+					t.Fatalf("wrong committed baseline: %+v", next)
+				}
+			})
+		}
+	}
+}

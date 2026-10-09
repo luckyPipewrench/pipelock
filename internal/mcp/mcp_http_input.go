@@ -215,6 +215,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			SessionID:         receiptSessionID,
 			SessionIDOriginal: receiptSessionIDOriginal,
 		}
+		if redirectReceiptEmitted && receiptVerdict == config.ActionBlock {
+			receiptOpts.ParentActionID = actionID
+			receiptOpts.ActionID = receipt.NewActionID()
+		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
 			result.Deferred = nil
 			result.Blocked = &BlockedRequest{

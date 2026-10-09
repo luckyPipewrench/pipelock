@@ -2485,15 +2485,16 @@ func newInterceptHandler(
 					reason := unscannablePassthroughReason(ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
 					passthroughReceipt := withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionAllow,
-						Layer:     "unscannable_passthrough",
-						Pattern:   reason,
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
+						ActionID:       receipt.NewActionID(),
+						ParentActionID: actionID,
+						Verdict:        config.ActionAllow,
+						Layer:          "unscannable_passthrough",
+						Pattern:        reason,
+						Transport:      "intercept",
+						Method:         r.Method,
+						Target:         targetURL,
+						RequestID:      ic.RequestID,
+						Agent:          ic.Agent,
 					})
 					if interceptConfirmResponseOrBlock(ic, w, passthroughReceipt) {
 						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
@@ -2732,15 +2733,16 @@ func newInterceptHandler(
 					pattern := "verified key_id=" + cardResult.SignatureKeyID
 					ic.Logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
 					signatureReceipt := withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionAllow,
-						Layer:     scannerLabelA2ACardSignature,
-						Pattern:   pattern,
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
+						ActionID:       receipt.NewActionID(),
+						ParentActionID: actionID,
+						Verdict:        config.ActionAllow,
+						Layer:          scannerLabelA2ACardSignature,
+						Pattern:        pattern,
+						Transport:      "intercept",
+						Method:         r.Method,
+						Target:         targetURL,
+						RequestID:      ic.RequestID,
+						Agent:          ic.Agent,
 					})
 					if !a2aResponseDecisionBlocks(ic.Config, a2aRespResult, true) && interceptConfirmResponseOrBlock(ic, w, signatureReceipt) {
 						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)

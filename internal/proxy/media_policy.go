@@ -319,7 +319,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	}
 	// Build the baseline exposure payload so all branches can share it.
 	exposure := &MediaExposureFields{
-		ContentType: mt,
+		ContentType: mediaExposureContentType(mt),
 		SizeBytes:   len(body),
 	}
 
@@ -371,7 +371,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 
 	if mt != svgMediaType && !cfg.MediaPolicy.ImageTypeAllowed(mt) {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", mt)
+		exposure.BlockReason = fmt.Sprintf("media_policy: image type %q not in allowed list", exposure.ContentType)
 		return MediaPolicyVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -416,7 +416,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	relabeled := ""
 	if sniffed, bad := media.MislabeledDisallowed(mt, body, cfg.MediaPolicy.ImageTypeAllowed); bad {
 		exposure.Blocked = true
-		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", mt, sniffed)
+		exposure.BlockReason = fmt.Sprintf("media_policy: declared image type %q does not match response bytes (bytes look like %s)", exposure.ContentType, sniffed)
 		return MediaPolicyVerdict{
 			Blocked:     true,
 			BlockReason: exposure.BlockReason,
@@ -427,7 +427,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	if proven := media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed); proven != mt {
 		relabeled = proven
 		mt = proven
-		exposure.ContentType = proven
+		exposure.ContentType = mediaExposureContentType(proven)
 	}
 	if cfg.MediaPolicy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)
@@ -502,6 +502,49 @@ func exposureOrNil(cfg *config.Config, fields *MediaExposureFields) *MediaExposu
 		return nil
 	}
 	return fields
+}
+
+// mediaExposureContentType keeps arbitrary response header text out of exposure
+// records. Unknown subtypes retain their media family without retaining bytes
+// supplied by the upstream. Policy classification still uses the original type.
+func mediaExposureContentType(mt string) string {
+	switch mt {
+	case "image/jpeg":
+		return "image/jpeg"
+	case "image/png":
+		return "image/png"
+	case "image/gif":
+		return "image/gif"
+	case "image/webp":
+		return "image/webp"
+	case "image/bmp":
+		return "image/bmp"
+	case "image/x-icon":
+		return "image/x-icon"
+	case svgMediaType:
+		return svgMediaType
+	case "audio/mpeg":
+		return "audio/mpeg"
+	case "audio/wav":
+		return "audio/wav"
+	case "audio/ogg":
+		return "audio/ogg"
+	case "video/mp4":
+		return "video/mp4"
+	case "video/webm":
+		return "video/webm"
+	default:
+		switch {
+		case strings.HasPrefix(mt, "image/"):
+			return "image/unknown"
+		case strings.HasPrefix(mt, "audio/"):
+			return "audio/unknown"
+		case strings.HasPrefix(mt, "video/"):
+			return "video/unknown"
+		default:
+			return "unknown"
+		}
+	}
 }
 
 // canonicalContentType parses a Content-Type header and returns the

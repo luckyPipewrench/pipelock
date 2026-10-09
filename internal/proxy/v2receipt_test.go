@@ -44,6 +44,12 @@ func (r *failAfterProxyV2Recorder) Record(recorder.Entry) error {
 	return nil
 }
 
+// RecordDurable lets required paths, which wait for durable v2 storage, share
+// the same allowed-write budget as best-effort ones.
+func (r *failAfterProxyV2Recorder) RecordDurable(e recorder.Entry) error {
+	return r.Record(e)
+}
+
 func requireReceiptEmissionFailedLayer(t *testing.T, receipts []receipt.Receipt) receipt.Receipt {
 	t.Helper()
 	for _, rcpt := range receipts {
@@ -801,5 +807,60 @@ func TestDualEmit_V1FailureSkipsV2(t *testing.T) {
 		if e.Type == "evidence_receipt" && e.EventKind == string(contractreceipt.PayloadProxyDecision) {
 			t.Error("v2 proxy_decision emitted after v1 failed; v1 must stay authoritative")
 		}
+	}
+}
+
+// The required helper must not answer before the v2 proxy_decision is durable.
+// A plain Emit returns as soon as the line is buffered, so a sync failure would
+// leave the request forwarded with a v2 receipt that never reached the disk.
+func TestEmitRequiredV2Receipt_SyncFailureFailsClosed(t *testing.T) {
+	f := newDualEmitFixture(t, false)
+	var syncs atomic.Int64
+	f.rec.SetSyncForTest(func(*os.File) error {
+		syncs.Add(1)
+		return errors.New("injected v2 sync failure")
+	})
+	opts := receipt.EmitOpts{
+		ActionID:   receipt.NewActionID(),
+		Target:     "https://api.vendor.example/data",
+		Transport:  TransportForward,
+		Method:     http.MethodGet,
+		Verdict:    config.ActionAllow,
+		PolicyHash: f.p.CurrentConfig().CanonicalPolicyHash(),
+	}
+	err := f.p.emitRequiredV2Receipt(opts)
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("emitRequiredV2Receipt error = %v, want recorder.ErrDurability", err)
+	}
+	if !errors.Is(err, errV2ReceiptEmit) {
+		t.Fatalf("emitRequiredV2Receipt error = %v, want errV2ReceiptEmit", err)
+	}
+	if syncs.Load() == 0 {
+		t.Fatal("required v2 emission returned without syncing the recorder")
+	}
+}
+
+// The best-effort helper keeps its non-durable behavior: it is not on a
+// required path and must not add a sync per request.
+func TestEmitV2Receipt_BestEffortDoesNotSync(t *testing.T) {
+	f := newDualEmitFixture(t, false)
+	var syncs atomic.Int64
+	f.rec.SetSyncForTest(func(*os.File) error {
+		syncs.Add(1)
+		return nil
+	})
+	opts := receipt.EmitOpts{
+		ActionID:   receipt.NewActionID(),
+		Target:     "https://api.vendor.example/data",
+		Transport:  TransportForward,
+		Method:     http.MethodGet,
+		Verdict:    config.ActionAllow,
+		PolicyHash: f.p.CurrentConfig().CanonicalPolicyHash(),
+	}
+	if err := f.p.emitV2Receipt(opts); err != nil {
+		t.Fatalf("emitV2Receipt: %v", err)
+	}
+	if got := syncs.Load(); got != 0 {
+		t.Fatalf("best-effort v2 emission synced %d times, want 0", got)
 	}
 }

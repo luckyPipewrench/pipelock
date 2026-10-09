@@ -152,7 +152,8 @@ func emitV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, l
 
 // emitRequiredV2 is the fail-closed variant for RequireReceipts paths. Once a
 // v1 sibling has been durably recorded, a configured v2 emitter must either
-// record the proxy_decision or surface why it could not.
+// durably record the proxy_decision or surface why it could not. A buffered
+// Emit would let the request proceed before the v2 line reached the disk.
 func emitRequiredV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, logErr func(error)) error {
 	if ptr == nil {
 		return nil
@@ -170,7 +171,7 @@ func emitRequiredV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.Emi
 		}
 		return err
 	}
-	if err := e.Emit(d); err != nil {
+	if err := e.EmitDurable(d); err != nil {
 		if logErr != nil {
 			logErr(err)
 		}

@@ -226,7 +226,16 @@ func emitMCPDecision(
 	// v2 success never stands in for a required outcome's v1 receipt, or the
 	// caller would report an outcome the chain can't pair.
 	v2Covers := v2Emitted && d.Receipt.DecisionPhase != receipt.DecisionPhaseOutcome
-	if receiptRequired && !strictPair && (v1Emitted || v2Covers) && (!durableReceipt || v2Emitter == nil || v2Emitted) {
+	// Before bytes egress, every configured receipt family must record the
+	// decision; one family never stands in for another's failure. A v2 record
+	// carries no action ID or phase and has no native AEL activity, so it
+	// cannot represent a missing v1 intent, and a v1 record cannot represent a
+	// missing v2 one. An unconfigured (nil) family is not required. Decisions
+	// that do not egress keep best-effort receipts: the action is already
+	// denied, so one recorded family is enough.
+	v1Satisfied := receiptEmitter == nil || v1Emitted
+	v2Satisfied := v2Emitter == nil || v2Emitted
+	if receiptRequired && !strictPair && (v1Emitted || v2Covers) && (!durableReceipt || (v1Satisfied && v2Satisfied)) {
 		err = nil
 	}
 	if strictPair && receiptRequired && (!v1Emitted || !v2Emitted) && err == nil {

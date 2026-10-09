@@ -561,11 +561,15 @@ func TestEmitMCPDecision_RequiredV2SyncFailureBlocksAfterV1Success(t *testing.T)
 	}
 }
 
-func TestEmitMCPDecision_RequiredV2SuccessSatisfiesV1EmitError(t *testing.T) {
+// A required decision is not satisfied by the v2 family alone when v1 is
+// configured and failed: v2 carries no action ID, phase or native AEL activity,
+// so the intent would be forwarded with no v1 record to pair it with.
+func TestEmitMCPDecision_RequiredV1FailureNotSatisfiedByV2(t *testing.T) {
 	h := newMCPDecisionReceiptHarness(t)
 	h.v1.MarkUnhealthy(errors.New("v1 unavailable"))
+	inbound := []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
 
-	_, err := EmitMCPDecision(h.v1, h.v2, nil, MCPDecision{
+	out, err := EmitMCPDecision(h.v1, h.v2, nil, MCPDecision{
 		Receipt: receipt.EmitOpts{
 			ActionID:   "mcp-v1-required-error",
 			Verdict:    config.ActionAllow,
@@ -575,13 +579,68 @@ func TestEmitMCPDecision_RequiredV2SuccessSatisfiesV1EmitError(t *testing.T) {
 			ToolName:   "fetch",
 			PolicyHash: mcpTestPolicyHash,
 		},
+		InboundMsg:     inbound,
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("EmitMCPDecision error = %v, want ErrReceiptRequired", err)
+	}
+	if !bytes.Equal(out, inbound) {
+		t.Fatalf("outbound mutated despite failed v1 receipt: %s", out)
+	}
+	if receipts := decisionReceiptLogFor(t, h.dir); len(receipts) != 0 {
+		t.Fatalf("v1 receipts = %d, want 0 from the unhealthy emitter", len(receipts))
+	}
+}
+
+// Block-path receipts stay best-effort under required mode (the action is
+// already denied, see docs/configuration.md require_receipts): one recorded
+// family is enough, so a failed v2 record on a block does not raise an error.
+func TestEmitMCPDecision_RequiredBlockPathStaysBestEffort(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	if _, _, err := h.v2.Retire(); err != nil {
+		t.Fatalf("Retire v2: %v", err)
+	}
+
+	_, err := EmitMCPDecision(h.v1, h.v2, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   "mcp-v2-required-block-error",
+			Verdict:    config.ActionBlock,
+			Transport:  transportMCPStdio,
+			Target:     "response:3",
+			PolicyHash: mcpTestPolicyHash,
+		},
 		RequireReceipt: true,
 	})
 	if err != nil {
-		t.Fatalf("EmitMCPDecision error = %v, want nil because v2 emitted", err)
+		t.Fatalf("EmitMCPDecision error = %v, want nil for a best-effort block receipt", err)
 	}
-	if receipts := mcpV2Receipts(t, h); len(receipts) != 1 {
-		t.Fatalf("v2 receipts = %d, want 1", len(receipts))
+	if receipts := decisionReceiptLogFor(t, h.dir); len(receipts) != 1 {
+		t.Fatalf("v1 receipts = %d, want 1", len(receipts))
+	}
+}
+
+// Configured required mode reaches the same rule through MCPProxyOpts.
+func TestMCPProxyOpts_RequiredModeDoesNotForwardWithoutV1Receipt(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	h.v1.MarkUnhealthy(errors.New("v1 unavailable"))
+	opts := MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: true}
+	_, err := opts.emitReceiptDecision(MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   receipt.NewActionID(),
+			Verdict:    config.ActionAllow,
+			Transport:  transportMCPStdio,
+			Target:     "fetch",
+			MCPMethod:  methodToolsCall,
+			ToolName:   "fetch",
+			PolicyHash: mcpTestPolicyHash,
+		},
+		InboundMsg:     []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call"}`),
+		RequireReceipt: true,
+		RequiredMode:   true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("emitReceiptDecision error = %v, want ErrReceiptRequired", err)
 	}
 }
 

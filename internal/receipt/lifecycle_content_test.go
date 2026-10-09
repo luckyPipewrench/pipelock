@@ -48,6 +48,17 @@ func TestSessionCloseRefusalReportsNoSeal(t *testing.T) {
 	}
 }
 
+func TestReceiptOuterDerivationsRefuseMalformedDetail(t *testing.T) {
+	for name, derive := range map[string]func([]byte) (receiptcontent.Outer, error){
+		"action receipt":  actionReceiptOuter,
+		"transcript root": transcriptRootOuter,
+	} {
+		if _, err := derive([]byte(`[`)); err == nil {
+			t.Errorf("%s: malformed detail derived a mirror", name)
+		}
+	}
+}
+
 // A group gate is validate-or-fail: its generated members never reach the
 // detector, so the wedged head and the signer key the bundle pattern matched
 // are accepted, while a chosen shard session is refused, never redacted.

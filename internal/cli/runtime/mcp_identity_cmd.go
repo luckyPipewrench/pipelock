@@ -336,7 +336,13 @@ func registerSessionHeader(f *identityRegisterFlags, isWS bool) (*config.MCPIden
 	if problem := config.MCPCarrierNameProblem(f.carrier); problem != "" {
 		return nil, fmt.Errorf("--carrier %q: %s", f.carrier, problem)
 	}
-	return &config.MCPIdentitySessionHeader{Name: f.sessionHeader, Scheme: config.MCPIdentitySessionScheme, Carrier: f.carrier}, nil
+	sh := &config.MCPIdentitySessionHeader{Name: f.sessionHeader, Scheme: config.MCPIdentitySessionScheme, Carrier: f.carrier}
+	// The loader's own rules, so a printed entry is never one it would refuse
+	// (for example a name that is not an HTTP header token).
+	if err := config.ValidateMCPIdentitySessionHeader(config.MCPIdentitySchemeHTTP, sh, "--session-header"); err != nil {
+		return nil, err
+	}
+	return sh, nil
 }
 
 // registerEntryShape builds the matcher half of the entry from the upstream URL.
@@ -373,7 +379,18 @@ func writeRegistration(out io.Writer, entry config.MCPIdentity, obs localservice
 		return err
 	}
 	v := entry.VerifiedLocalService
-	w := func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) }
+	// The first write error is kept and returned, so a broken pipe or a full
+	// destination fails the command instead of leaving a truncated entry that
+	// looks complete.
+	var writeErr error
+	w := func(format string, args ...any) {
+		if writeErr != nil {
+			return
+		}
+		if _, err := fmt.Fprintf(out, format, args...); err != nil {
+			writeErr = fmt.Errorf("write registration: %w", err)
+		}
+	}
 
 	w("# Review before use. Observed process: pid=%d effective uid=%d.\n", obs.PID, obs.UID)
 	w("# Add this entry to mcp_identities in a config loaded only by a binary that supports it.\n")
@@ -418,7 +435,7 @@ func writeRegistration(out io.Writer, entry config.MCPIdentity, obs localservice
 		w("        scheme: %s\n", yamlScalar(sh.Scheme))
 		w("        carrier: %s\n", yamlScalar(sh.Carrier))
 	}
-	return nil
+	return writeErr
 }
 
 // splitObservedFiles separates the files the operator chose to pin from the
@@ -470,7 +487,10 @@ func heldPaths(files []localservice.ObservedFile) string {
 	}
 	paths := make([]string, len(files))
 	for i, f := range files {
-		paths[i] = f.Path
+		// The service names its own files; quote any path with a control or
+		// non-printable character so it cannot write terminal escapes or
+		// forge lines in this error.
+		paths[i] = commentPath(f.Path)
 	}
 	return strings.Join(paths, ", ")
 }

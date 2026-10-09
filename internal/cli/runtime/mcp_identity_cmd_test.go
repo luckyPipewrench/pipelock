@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -471,6 +473,76 @@ func TestMCPIdentityRegister_ObservedPathCannotInjectYAML(t *testing.T) {
 	v := cfg.MCPIdentities[0].VerifiedLocalService
 	if v == nil || len(v.MappedFiles) != 1 || v.MappedFiles[0].Path != pinnedPath {
 		t.Fatalf("pinned path did not round-trip: %+v", v)
+	}
+}
+
+// failAfterWriter accepts n bytes, then fails every write.
+type failAfterWriter struct{ n int }
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.n <= 0 {
+		return 0, errors.New("broken pipe")
+	}
+	if len(p) > w.n {
+		k := w.n
+		w.n = 0
+		return k, errors.New("broken pipe")
+	}
+	w.n -= len(p)
+	return len(p), nil
+}
+
+func TestWriteRegistration_ReturnsWriteErrors(t *testing.T) {
+	t.Parallel()
+	u, err := url.Parse(testIdentityUpstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := registerEntryShape(testIdentityName, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := localservice.Observation{PID: 1, UID: 1000, ExecutableSHA256: testIdentityDigest}
+	for _, n := range []int{0, 40} {
+		if err := writeRegistration(&failAfterWriter{n: n}, entry, obs, nil); err == nil {
+			t.Fatalf("writer failing after %d bytes: writeRegistration returned nil, want the write error", n)
+		}
+	}
+	var ok strings.Builder
+	if err := writeRegistration(&ok, entry, obs, nil); err != nil || !strings.Contains(ok.String(), "mcp_identities:") {
+		t.Fatalf("healthy writer: err=%v out=%q", err, ok.String())
+	}
+}
+
+func TestMCPIdentityRegister_HeldPathsInErrorsAreQuoted(t *testing.T) {
+	t.Parallel()
+	hostile := "/opt/vendor/\x1b[2Jfake\nline.so"
+	obs := localservice.Observation{
+		PID: 1, UID: 1000, ExecutableSHA256: testIdentityDigest,
+		Files: []localservice.ObservedFile{{Path: hostile, SHA256: testIdentityOtherHash}},
+	}
+	probe, _ := fakeIdentityProbe(t, obs, nil, nil)
+	_, err := runIdentityCmd(t, probe, "register", "--upstream", testIdentityUpstream, "--name", testIdentityName,
+		"--mapped-file", "/opt/vendor/not-held.so")
+	if err == nil {
+		t.Fatal("an unheld --mapped-file must be refused")
+	}
+	if strings.ContainsAny(err.Error(), "\x1b\n") {
+		t.Fatalf("error carries a raw control character from a service-chosen path: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), strconv.Quote(hostile)) {
+		t.Fatalf("error does not show the quoted path: %q", err.Error())
+	}
+}
+
+func TestMCPIdentityRegister_SessionHeaderMustBeAHeaderToken(t *testing.T) {
+	t.Parallel()
+	obs := localservice.Observation{PID: 1, UID: 1000, ExecutableSHA256: testIdentityDigest}
+	probe, _ := fakeIdentityProbe(t, obs, nil, nil)
+	_, err := runIdentityCmd(t, probe, "register", "--upstream", testIdentityUpstream, "--name", testIdentityName,
+		"--session-header", "Bad Header", "--carrier", testIdentityCarrier)
+	if err == nil || !strings.Contains(err.Error(), "must be an HTTP header name") {
+		t.Fatalf("register with an invalid session header name = %v, want an HTTP header name refusal", err)
 	}
 }
 

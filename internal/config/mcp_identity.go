@@ -391,6 +391,14 @@ func validateMCPIdentityFiles(files []MCPIdentityFilePin, label string) error {
 	return nil
 }
 
+// ValidateMCPIdentitySessionHeader applies the load-time session_header rules
+// to a header built elsewhere, such as by pipelock mcp identity register, so a
+// printed registration is refused for the same reasons the loader would
+// refuse it.
+func ValidateMCPIdentitySessionHeader(scheme string, sh *MCPIdentitySessionHeader, label string) error {
+	return validateMCPIdentitySessionHeader(scheme, sh, label)
+}
+
 func validateMCPIdentitySessionHeader(scheme string, sh *MCPIdentitySessionHeader, label string) error {
 	if scheme == MCPIdentitySchemeWS || scheme == MCPIdentitySchemeWSS {
 		return fmt.Errorf("%s is not supported with scheme %s: a WebSocket handshake header cannot be separated from the bound session", label, scheme)

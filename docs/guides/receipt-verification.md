@@ -631,8 +631,10 @@ evidence receipts, session controls, transcript roots, receipt group gates and
 signed decision records) classifies every field. Chain hashes, signatures,
 signer keys, nonces, timestamps and IDs that Pipelock generated are never
 scanned, so a signature or chain head that happens to resemble a rule-bundle
-pattern cannot refuse receipts. An ID or hash a caller supplied is scanned like
-any other content.
+pattern cannot refuse receipts. The same holds for the random suffix of a run
+session (`<base>.run.<suffix>`) and for a policy hash Pipelock computed from its
+configuration. An ID, hash or session suffix a caller supplied is scanned like
+any other content, even when it has the same shape as a generated one.
 
 Content is scanned alone, as a joined value list, as reassembled fragments
 split across up to four fields, and as structured JSON. Before signing:
@@ -647,10 +649,21 @@ split across up to four fields, and as structured JSON. Before signing:
   are never redacted. A match refuses them, and no seal or success is reported.
 
 The recorder entry's `type`, `event_kind`, `transport` and `summary` are
-derived from the signed receipt and checked at write time. Content that every
-receipt carries (principal, actor, policy hash and session base) is checked at
-startup and reload; a match refuses the configuration with
-`configuration content trips the receipt detector`.
+derived from the signed receipt and checked at write time. Its `session_id`
+must be a session the recorder acquired. The session's operator base is
+scanned once, when the recorder acquires it, and a match refuses the
+acquisition with `receipt content rejected`.
+
+Content that every receipt carries (principal, actor, a policy hash Pipelock did
+not compute, and the session base) is checked at startup, at reload and when a
+receipt group or a Guard run activates. A match refuses the configuration with
+`configuration content trips the receipt detector`. Guard refuses the run even
+when `require_receipts` is off. A refused reload keeps the previous
+configuration.
+
+Each recorder keeps the detector it was started with for its whole life. A
+reload replaces the request scanner but not the receipt detector, so retained
+content is always checked against the detector that will scan the receipts.
 
 ## Resume and rotation integrity
 

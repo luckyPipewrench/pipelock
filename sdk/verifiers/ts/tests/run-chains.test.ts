@@ -382,6 +382,13 @@ test("malformed link files are findings, not skipped", async () => {
   assert.equal(control.chains.filter((c) => c.link !== undefined).length, 1);
 });
 
+// Changed evidence reaches no verdict, so it exits as a runtime error (2),
+// never with the invalid-evidence code (1).
+const noVerdict = (err: unknown): boolean =>
+  err instanceof Error &&
+  /no verdict reached/u.test(err.message) &&
+  (err as { code?: number }).code === 2;
+
 test("base inventory changes cannot produce a healthy result", async () => {
   for (const change of [
     "add shard",
@@ -407,7 +414,7 @@ test("base inventory changes cannot produce a healthy result", async () => {
       if (change === "remove shard") rmSync(target);
       if (change === "unrelated") writeFileSync(join(dir, "unrelated.txt"), "other");
       if (change !== "unrelated" && change !== "stable malformed") {
-        await assert.rejects(pending, /no verdict reached/u, change);
+        await assert.rejects(pending, noVerdict, change);
         continue;
       }
       const report = await pending;
@@ -437,7 +444,7 @@ test("report snapshot binds a verified base to later session reads and error exi
           if (failure) throw new Error("consumer failure");
           return report;
         }),
-        /no verdict reached/u,
+        noVerdict,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

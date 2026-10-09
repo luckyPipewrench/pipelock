@@ -15,7 +15,9 @@ use crate::recorder::{
     extract_typed_from_lines, read_entry_lines_prefix, read_entry_lines_text, RecorderLine,
 };
 use crate::recorder_chain::verify_recorder_chain;
-use crate::util::{metadata_identity, reject_duplicate_keys, same_directory_identity, sha256_hex};
+use crate::util::{
+    metadata_identity, reject_duplicate_keys, same_directory_identity, sha256_hex, VerifierError,
+};
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -596,7 +598,10 @@ fn read_group_session(
     let mut lines = Vec::new();
     let mut torn = false;
     for (file_index, path) in files.iter().enumerate() {
-        let (part, segment_torn) = read_entry_lines_prefix(path).map_err(|e| e.to_string())?;
+        let (part, segment_torn) = read_entry_lines_prefix(path).map_err(|e| match e {
+            VerifierError::Unavailable(detail) => format!("evidence read unavailable: {detail}"),
+            other => other.to_string(),
+        })?;
         if segment_torn && (!allow_torn || file_index + 1 != files.len()) {
             return Err("receipt group session has a torn segment".into());
         }

@@ -408,6 +408,38 @@ test("unreadable group manifests are incomplete rather than invalid", async (t) 
   }
 });
 
+test("unreadable native AEL files are incomplete rather than invalid", async (t) => {
+  const base = join(fixtures, "group-valid"),
+    id = groupID(base),
+    trusted = keys(base);
+  for (const artifact of ["manifest", "key", "recorder"]) {
+    const dir = mkdtempSync(join(tmpdir(), "ts-group-ael-unavailable-"));
+    try {
+      cpSync(base, dir, { recursive: true });
+      assert.equal((await verifyReceiptGroup(dir, id, trusted)).verdict, "GROUP_VALID");
+      const run = join(dir, "ael", readdirSync(join(dir, "ael"))[0]);
+      const file =
+        artifact === "manifest"
+          ? join(run, "manifest.json")
+          : artifact === "key"
+            ? join(run, "keys", readdirSync(join(run, "keys"))[0])
+            : join(run, "recorders", "pipelock.jsonl");
+      chmodSync(file, 0);
+      try {
+        readFileSync(file);
+        t.skip("cannot reproduce unreadable file");
+        return;
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, "EACCES");
+      }
+      const report = await verifyReceiptGroup(dir, id, trusted);
+      assert.equal(report.verdict, "GROUP_INCOMPLETE", `${artifact}: ${JSON.stringify(report)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("group inventory mutation during malformed artifact read is incomplete", async () => {
   const base = join(fixtures, "group-valid"),
     id = groupID(base),

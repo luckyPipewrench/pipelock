@@ -330,7 +330,7 @@ func runEvidenceDoctorSnapshot(dir string, afterScan func()) (evidenceDoctorRepo
 	}
 	afterRoot, rootErr := os.Stat(cleanDir)
 	after, inventoryErr := doctorCorpusInventory(afterLocations)
-	if discoverErr != nil || rootErr != nil || !os.SameFile(info, afterRoot) || inventoryErr != nil || before != after {
+	if discoverErr != nil || rootErr != nil || !os.SameFile(info, afterRoot) || inventoryErr != nil || !before.stableWith(after) {
 		return inconclusiveDoctorReport(cleanDir, recorder.ErrEvidenceChanged), nil
 	}
 	return report, scanErr
@@ -382,7 +382,7 @@ func (d *evidenceDoctor) scan() {
 
 func (d *evidenceDoctor) scanSnapshot(scan func()) {
 	beforeRoot, err := os.Stat(d.dir)
-	var before [32]byte
+	var before doctorInventory
 	if err == nil {
 		before, err = doctorCorpusInventory([]recorder.EvidenceLocation{d.location})
 	}
@@ -390,7 +390,7 @@ func (d *evidenceDoctor) scanSnapshot(scan func()) {
 		scan()
 		after, inventoryErr := doctorCorpusInventory([]recorder.EvidenceLocation{d.location})
 		afterRoot, rootErr := os.Stat(d.dir)
-		if inventoryErr != nil || rootErr != nil || !os.SameFile(beforeRoot, afterRoot) || before != after {
+		if inventoryErr != nil || rootErr != nil || !os.SameFile(beforeRoot, afterRoot) || !before.stableWith(after) {
 			err = recorder.ErrEvidenceChanged
 		}
 	}

@@ -36,7 +36,7 @@ import {
   type RotationEndorsement,
 } from "./rotation.js";
 import type { ChainResult, Receipt } from "./types.js";
-import { InvalidError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
+import { InvalidError, RuntimeError, decodeUTF8, readVerifierBytes, sha256Hex } from "./util.js";
 import { blankAfterGoTrim } from "./line-space.js";
 export { blankAfterGoTrim } from "./line-space.js";
 
@@ -560,7 +560,7 @@ export function readSessionEvidence(
     read = readSessionLines(indexRecorderFiles(dir), session, tail);
   } finally {
     if (baseInventory(dir, session, false) !== before) {
-      throw new InvalidError("evidence changed during verification; no verdict reached");
+      throw new RuntimeError("evidence changed during verification; no verdict reached");
     }
   }
   return {
@@ -1152,7 +1152,7 @@ export async function withBaseHistorySnapshot<T>(
     } catch {
       // Unavailable final inventory cannot support either verdict.
     }
-    if (changed) throw new InvalidError("evidence changed during verification; no verdict reached");
+    if (changed) throw new RuntimeError("evidence changed during verification; no verdict reached");
   }
 }
 

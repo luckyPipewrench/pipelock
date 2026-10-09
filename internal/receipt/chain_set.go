@@ -713,11 +713,10 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 func fingerprintBaseShards(ix evidenceIndex, sessions []string) ([sha256.Size]byte, error) {
 	h := sha256.New()
 	for _, session := range sessions {
-		files, err := ix.files(session)
-		if err != nil {
-			return [sha256.Size]byte{}, err
-		}
-		for _, path := range files {
+		// Inventory only. A duplicate sequence start is a verdict the chain
+		// read reports as corrupt_chain; refusing it here would turn that
+		// finding into a listing failure.
+		for _, path := range ix[session] {
 			info, err := os.Lstat(path)
 			if err != nil {
 				return [sha256.Size]byte{}, err

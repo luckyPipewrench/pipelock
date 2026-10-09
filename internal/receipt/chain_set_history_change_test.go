@@ -6,6 +6,7 @@ package receipt
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,29 @@ func TestVerifyBaseFutureParseFailureIsUnavailable(t *testing.T) {
 	})
 	if !fired || report.Healthy() || !report.EvidenceChangedDuringVerification() {
 		t.Fatalf("changed future input became corruption: %+v", report)
+	}
+}
+
+// A duplicate sequence start is a corrupt_chain finding, as it was before the
+// inventory fingerprint existed; the fingerprint must not turn it into a
+// listing failure that hides which session is ambiguous.
+func TestVerifyBaseDuplicateSeqStartIsFinding(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"evidence-proxy-0.jsonl", "evidence-proxy-00.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := VerifyBase(dir, "proxy", BaseVerifyOptions{})
+	if err != nil {
+		t.Fatalf("VerifyBase returned %v, want a corrupt_chain finding", err)
+	}
+	found := false
+	for _, f := range report.Findings {
+		found = found || (f.Kind == FindingCorruptChain && strings.Contains(f.Detail, "sequence"))
+	}
+	if !found || report.Healthy() {
+		t.Fatalf("findings=%+v, want a corrupt_chain naming the ambiguous sequence", report.Findings)
 	}
 }

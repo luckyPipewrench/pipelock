@@ -70,7 +70,7 @@ fn read_entry_lines_prefix_using(
     let file = open_verifier_file(path)?;
     let before = file
         .metadata()
-        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
+        .map_err(|err| VerifierError::Unavailable(format!("stat {}: {err}", path.display())))?;
     let mut reader = BufReader::new(file).take(before.len());
     let parsed = (|| {
         let mut entries = Vec::new();
@@ -82,7 +82,7 @@ fn read_entry_lines_prefix_using(
                 .by_ref()
                 .take((MAX_RECORDER_LINE_BYTES + 3) as u64)
                 .read_until(b'\n', &mut raw)
-                .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+                .map_err(|err| crate::util::io_read_error(path, err))?;
             if read == 0 {
                 break;
             }
@@ -114,7 +114,7 @@ fn read_entry_lines_prefix_using(
         .get_ref()
         .get_ref()
         .metadata()
-        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
+        .map_err(|err| VerifierError::Unavailable(format!("stat {}: {err}", path.display())))?;
     finish_entry_snapshot(path, reader.get_ref().get_ref(), &before, &after)?;
     parsed
 }

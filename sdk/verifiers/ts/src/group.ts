@@ -1200,7 +1200,19 @@ async function verifyAELInventory(
     try {
       await verifyAELRun(ent.name, claim.signer, claim.completed);
     } catch (cause) {
-      throw new Error(`native AEL run ${JSON.stringify(ent.name)} invalid: ${String(cause)}`);
+      // Keep an I/O failure's code and errno so the caller reports an
+      // unreadable run as incomplete, not as invalid evidence.
+      const io = cause as NodeJS.ErrnoException;
+      const unavailable = typeof io?.code === "string" && typeof io?.errno === "number";
+      const wrapped: NodeJS.ErrnoException = new Error(
+        `native AEL run ${JSON.stringify(ent.name)} ${unavailable ? "unavailable" : "invalid"}: ${String(cause)}`,
+        { cause },
+      );
+      if (unavailable) {
+        wrapped.code = io.code;
+        wrapped.errno = io.errno;
+      }
+      throw wrapped;
     }
     if (!claim.completed) {
       if (claim.groupID === open.group_id) openTail = true;

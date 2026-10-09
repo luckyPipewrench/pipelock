@@ -19,6 +19,49 @@ const ATTACK_FIXTURE_PARTS: [&[u8]; 7] = [
 const MATRIX_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-matrix.zip.gz");
 const V2_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-v2.zip");
 
+/// Reports whether mode 0 actually blocks reads. A process running as root or
+/// with CAP_DAC_OVERRIDE can still read the file, so the caller skips instead
+/// of testing a state it could not create.
+#[cfg(unix)]
+fn unreadable(path: &std::path::Path) -> bool {
+    match fs::read(path) {
+        Ok(_) => {
+            eprintln!("skip: this process can read mode-0 files");
+            false
+        }
+        Err(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            true
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_group_shard_is_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fixture("group-valid");
+    let (group, keys) = trust(&dir);
+    assert_eq!(
+        verify_receipt_group(&dir, &group, &keys).verdict,
+        "GROUP_VALID"
+    );
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            name.starts_with("evidence-") && name.ends_with(".jsonl")
+        })
+        .expect("fixture has a group shard");
+    fs::set_permissions(&shard, fs::Permissions::from_mode(0o000)).unwrap();
+    if !unreadable(&shard) {
+        return;
+    }
+    let report = verify_receipt_group(&dir, &group, &keys);
+    assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{report:?}");
+}
+
 #[cfg(unix)]
 #[test]
 fn unreadable_manifests_are_incomplete() {
@@ -32,8 +75,9 @@ fn unreadable_manifests_are_incomplete() {
         );
         let path = dir.join(format!("receipt-group-{group}-{phase}.json"));
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        let error = fs::read(&path).expect_err("must reproduce an unreadable manifest");
-        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        if !unreadable(&path) {
+            return;
+        }
         let report = verify_receipt_group(&dir, &group, &keys);
         assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{phase}: {report:?}");
     }
@@ -86,10 +130,9 @@ fn unreadable_native_ael_files_are_incomplete() {
             _ => run.join("recorders/pipelock.jsonl"),
         };
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        assert_eq!(
-            fs::read(&path).unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
+        if !unreadable(&path) {
+            return;
+        }
         let report = verify_receipt_group(&dir, &group, &keys);
         assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{artifact}: {report:?}");
     }

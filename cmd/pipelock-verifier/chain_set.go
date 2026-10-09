@@ -84,6 +84,14 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 	// A snapshot that failed before its consumer ran is a listing failure,
 	// classified as the consumer classifies its own.
 	if errors.Is(err, recorder.ErrEvidenceChanged) || (err != nil && !consumed) {
+		// The buffered report is void, but a JSON consumer still needs a
+		// document. Text mode says incomplete, never broken: no verdict
+		// was reached.
+		if opts.jsonOutput {
+			writeJSON(stdout, chainReport{Path: location.Dir, Error: err.Error()})
+		} else {
+			_, _ = fmt.Fprintf(stderr, "VERIFICATION INCOMPLETE: %s\n  error:      %s\n", location.Dir, err)
+		}
 		return true, evidenceContentError(err)
 	}
 	if _, writeErr := io.Copy(stdout, &output); writeErr != nil {

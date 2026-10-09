@@ -239,3 +239,90 @@ func TestDoctorIncludesRootLinksBesideNestedEvidence(t *testing.T) {
 		t.Fatalf("root continuity artifact ignored: %+v", report)
 	}
 }
+
+// A live recorder appends to its active shard while the doctor runs. That
+// growth must not void the audit; any other change still must.
+func TestDoctorInventoryAcceptsOnlyActiveShardGrowth(t *testing.T) {
+	appendTo := func(t *testing.T, path string) {
+		t.Helper()
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("{}\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+		stable bool
+	}{
+		{"active shard grows", func(t *testing.T, dir string) { appendTo(t, filepath.Join(dir, "evidence-proxy-5.jsonl")) }, true},
+		{"older shard grows", func(t *testing.T, dir string) { appendTo(t, filepath.Join(dir, "evidence-proxy-0.jsonl")) }, false},
+		{"active shard truncated", func(t *testing.T, dir string) {
+			if err := os.Truncate(filepath.Join(dir, "evidence-proxy-5.jsonl"), 1); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"active shard replaced", func(t *testing.T, dir string) {
+			path := filepath.Join(dir, "evidence-proxy-5.jsonl")
+			if err := os.WriteFile(path+".tmp", []byte("{}\n{}\n{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path+".tmp", path); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"new shard", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-9.jsonl"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range []string{"evidence-proxy-0.jsonl", "evidence-proxy-5.jsonl"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			locations := []recorder.EvidenceLocation{{Root: dir, Dir: dir}}
+			before, err := doctorCorpusInventory(locations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.change(t, dir)
+			after, err := doctorCorpusInventory(locations)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := before.stableWith(after); got != tc.stable {
+				t.Fatalf("stableWith=%t, want %t", got, tc.stable)
+			}
+		})
+	}
+}
+
+func TestDoctorLiveRecorderGrowthStaysConclusive(t *testing.T) {
+	dir := t.TempDir()
+	writeActualDoctorReceipt(t, dir)
+	report, err := runEvidenceDoctorSnapshot(dir, func() {
+		f, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "evidence-proxy-0.jsonl")), os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil || !report.Conclusive() || report.Damaged() || report.ReadIncomplete {
+		t.Fatalf("active-shard growth voided the audit: %+v, %v", report, err)
+	}
+}

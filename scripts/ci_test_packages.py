@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -59,12 +60,31 @@ HEAVY_TREES = {
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 3,
-    "scanner": 4,
-    "mcp": 3,
+    "proxy": 4,
+    "scanner": 3,
+    "mcp": 4,
     "runtime": 2,
 }
-REST_SHARDS = ("rest-0", "rest-1", "rest-2")
+REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
+
+# Trees whose coverage is collected by a separate non-race pass instead of the
+# race run. -race forces atomic coverage counters, which made the scanner's
+# tight matching loops two to three times slower; the same tests without -race
+# and with set-mode coverage take a fraction of the race run.
+SEPARATE_COVERAGE_TREES = frozenset({"scanner"})
+
+# Predicted-load budget per shard, in seconds. A shard's test step should finish
+# in about ten minutes so the whole run, security scan and aggregates included,
+# stays under fifteen.
+SHARD_BUDGET_SECONDS = 600
+# Rest shards run their packages two at a time (-p=2), so summed package time
+# overstates wall time by about that factor.
+REST_PACKAGE_PARALLELISM = 2
+# The non-race coverage pass of a separate-coverage tree, as a fraction of its
+# race pass: scanner-1 took 72-83s without -race against about 370s with it.
+COVERAGE_PASS_FRACTION = 0.25
+# Least cost charged to a test with no measurement.
+MIN_UNMEASURED_SECONDS = 1.0
 
 # Measured race-test seconds per top-level test, used to balance sub-shards by
 # time instead of by name count. Regenerate it from CI shard timings with
@@ -242,7 +262,7 @@ def _seconds_map(path: Path, label: str, values: object) -> dict[str, float]:
         raise ValueError(f"{path.name}: {label!r} must map names to seconds")
     clean: dict[str, float] = {}
     for name, seconds in values.items():
-        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0:
             raise ValueError(f"{path.name}: {label}.{name} must be non-negative seconds")
         clean[name] = float(seconds)
     return clean
@@ -386,6 +406,86 @@ def check_partition(tags: str, only_tree: str | None = None) -> int:
     return status
 
 
+def coverage_mode(shard: str) -> str:
+    """Return "separate" when a shard's coverage comes from a non-race pass."""
+    located = shard_tree(shard)
+    if located is None:
+        if shard in REST_SHARDS:
+            return "race"
+        raise ValueError(f"unknown shard {shard!r}")
+    return "separate" if located[0] in SEPARATE_COVERAGE_TREES else "race"
+
+
+def predicted_loads(tags: str) -> dict[str, float]:
+    """Predict each shard's test seconds from the checked-in measurements.
+
+    A sub-shard's load is the summed time of its top-level tests; a name with
+    no measurement is charged its tree's median. A rest shard's load is its
+    summed package time divided by the packages it runs at once, bounded
+    below by the longest indivisible package.
+    """
+    durations = load_durations()
+    loads: dict[str, float] = {}
+    for tree, count in TEST_SPLITS.items():
+        names = tree_test_names(ROOT / HEAVY_TREES[tree])
+        weights = durations.get(tree, {})
+        known = sorted(weights[name] for name in set(names) if name in weights)
+        # Most tests round to 0.0s, so the median can be zero; an unmeasured
+        # test must still cost something or a new slow test predicts free.
+        default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
+        # A separate-coverage tree reruns its tests without -race after the
+        # race pass, in the same job.
+        extra = 1.0 + (COVERAGE_PASS_FRACTION if tree in SEPARATE_COVERAGE_TREES else 0.0)
+        for index, bucket in enumerate(partition_names(names, count, weights or None)):
+            loads[f"{tree}-{index}"] = extra * sum(weights.get(name, default) for name in bucket)
+    package_weights = load_package_durations()
+    packages = list_packages(tags)
+    known = sorted(package_weights.values())
+    default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
+    for shard in REST_SHARDS:
+        selected = select_packages(packages, shard, package_weights)
+        seconds = [package_weights.get(pkg, default) for pkg in selected]
+        loads[shard] = package_makespan(seconds, REST_PACKAGE_PARALLELISM)
+    return loads
+
+
+def package_makespan(seconds: list[float], slots: int) -> float:
+    """Worst-case finish time of whole packages run on a fixed number of slots.
+
+    go test -p starts packages in build-graph order, not longest first, so any
+    estimate that assumes a good order can come in under the real shard time.
+    For any order in which a free slot never sits idle while a package waits,
+    the finish time is at most total/slots + (1 - 1/slots) * longest. That
+    bound is what the budget is checked against. Three 350s packages on two
+    slots therefore predict 700s, and a single package can never be divided.
+    """
+    if not seconds:
+        return 0.0
+    slots = max(slots, 1)
+    return sum(seconds) / slots + (1 - 1 / slots) * max(seconds)
+
+
+def check_budget(tags: str, budget: float) -> int:
+    # NaN compares false with everything, so it would pass every shard.
+    if not math.isfinite(budget) or budget <= 0:
+        print(f"ci_test_packages.py: budget must be a positive finite number of seconds, got {budget}", file=sys.stderr)
+        return 2
+    loads = predicted_loads(tags)
+    over = {shard: load for shard, load in loads.items() if load > budget}
+    for shard in SHARDS:
+        mark = "  OVER" if shard in over else ""
+        print(f"{shard:12s} {loads[shard]:7.0f}s{mark}")
+    if over:
+        print(
+            f"ci_test_packages.py: {len(over)} shard(s) predicted over the {budget:.0f}s budget "
+            f"(tags={tags or 'none'}); raise TEST_SPLITS for the tree, split slow tests, "
+            "or refresh scripts/ci_test_durations.json if the measurements are stale",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select CI package shard")
     parser.add_argument("--shard", choices=SHARDS, help="shard to print")
@@ -400,9 +500,32 @@ def main() -> int:
         action="store_true",
         help="verify sub-shard selectors against go test -list (scoped to --shard's tree if given)",
     )
+    parser.add_argument(
+        "--coverage-mode",
+        action="store_true",
+        help="print race or separate: where the shard's coverage profile comes from",
+    )
+    parser.add_argument(
+        "--check-budget",
+        action="store_true",
+        help="fail when the checked-in measurements predict any shard over the budget",
+    )
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=SHARD_BUDGET_SECONDS,
+        help=f"predicted-load budget per shard (default {SHARD_BUDGET_SECONDS})",
+    )
     args = parser.parse_args()
 
     try:
+        if args.check_budget:
+            return check_budget(args.tags, args.budget_seconds)
+        if args.coverage_mode:
+            if not args.shard:
+                parser.error("--coverage-mode needs --shard")
+            print(coverage_mode(args.shard))
+            return 0
         if args.check_partition:
             tree = None
             if args.shard:

@@ -771,9 +771,16 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	return scanAgentCard(ctx, body, sc, baseline, key, agentCardScanOptions{cfg: cfg, commitBaseline: true})
 }
 
+// ScanAgentCardWithOptions scans an HTTP card with the same pre-commit
+// confirmation hook used by MCP card responses.
+func ScanAgentCardWithOptions(ctx context.Context, body []byte, sc *scanner.Scanner, opts A2AResponseOpts) AgentCardScanResult {
+	return scanAgentCard(ctx, body, sc, opts.Baseline, opts.CardKey, agentCardScanOptions{cfg: opts.Cfg, commitBaseline: true, confirmAcceptance: opts.ConfirmCardAcceptance})
+}
+
 type agentCardScanOptions struct {
-	cfg            *config.A2AScanning
-	commitBaseline bool
+	cfg               *config.A2AScanning
+	commitBaseline    bool
+	confirmAcceptance func(AgentCardScanResult) error
 }
 
 func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, opts agentCardScanOptions) AgentCardScanResult {
@@ -897,6 +904,13 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 	// not claim an adoption that never happened (the audit event and the
 	// OnCardDriftAdopted callback both read DriftAdopted).
 	if result.Clean && opts.commitBaseline {
+		if opts.confirmAcceptance != nil && (result.FirstSeen || result.DriftAdopted || result.SignatureVerified) {
+			if err := opts.confirmAcceptance(result); err != nil {
+				result.Clean, result.FirstSeen, result.DriftAdopted = false, false, false
+				result.Action, result.Reason = config.ActionBlock, "receipt emission failed"
+				return result
+			}
+		}
 		driftCommit(true)
 	} else if driftOutcome.adopted || driftOutcome.firstSeen {
 		result.DriftAdopted = false

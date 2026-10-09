@@ -3245,6 +3245,16 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+				if r.cfg.FlightRecorder.RequireReceipts {
+					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, r.receiptShard))); err != nil {
+						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
+						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
+						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+						blocked = true
+						return
+					}
+				}
 				msg = mediaVerdict.Body
 			}
 		}

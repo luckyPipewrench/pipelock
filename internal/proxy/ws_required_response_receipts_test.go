@@ -39,12 +39,12 @@ func (c *receiptFrameConn) Write(p []byte) (int, error) {
 func TestWSRequiredResponseDecision(t *testing.T) {
 	for _, action := range []string{config.ActionWarn, config.ActionStrip} {
 		for _, grouped := range []bool{false, true} {
-			for _, opcode := range []ws.OpCode{ws.OpText, ws.OpPing, ws.OpPong} {
-				if action == config.ActionStrip && opcode != ws.OpText {
+			for _, opcode := range []ws.OpCode{ws.OpText, ws.OpPing, ws.OpPong, ws.OpBinary} {
+				if action == config.ActionStrip && opcode != ws.OpText && opcode != ws.OpBinary {
 					continue
 				}
 				for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
-					t.Run(action+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+map[ws.OpCode]string{ws.OpText: "text", ws.OpPing: "ping", ws.OpPong: "pong"}[opcode]+"/"+failure, func(t *testing.T) {
+					t.Run(action+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+map[ws.OpCode]string{ws.OpText: "text", ws.OpPing: "ping", ws.OpPong: "pong", ws.OpBinary: "media"}[opcode]+"/"+failure, func(t *testing.T) {
 						f := newDualEmitFixture(t, false)
 						p, rec := f.p, f.rec
 						var shard receipt.EmitOpts
@@ -94,6 +94,9 @@ func TestWSRequiredResponseDecision(t *testing.T) {
 						}
 						var wire bytes.Buffer
 						payload := []byte("ordinary text POLICY_MARKER rest")
+						if opcode == ws.OpBinary {
+							payload = buildValidPNG([]byte("Description\x00metadata-marker"))
+						}
 						err := wsutil.WriteServerMessage(&wire, opcode, payload)
 						if err != nil {
 							t.Fatal(err)
@@ -118,6 +121,9 @@ func TestWSRequiredResponseDecision(t *testing.T) {
 							}
 							if frame.Header.OpCode == opcode {
 								delivered = true
+								if opcode == ws.OpBinary && bytes.Contains(frame.Payload, []byte("metadata-marker")) {
+									t.Fatal("metadata unchanged")
+								}
 								if action == config.ActionStrip && bytes.Contains(frame.Payload, []byte("POLICY_MARKER")) {
 									t.Fatal("strip delivered the finding unchanged")
 								}

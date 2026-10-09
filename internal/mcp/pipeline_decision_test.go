@@ -982,13 +982,14 @@ func TestMCPV2DecisionFromReceipt_ProvenanceBranches(t *testing.T) {
 }
 
 // The durable pre-egress guarantee must cover every forwardable verdict, not
-// just allow: warn, forward, and strip all egress upstream, so their required
+// just allow: warn/forward send upstream, strip returns bytes, and redirect
+// executes a handler, so their required
 // decision receipt must be fsync-confirmed before the bytes leave. Only the
 // durable (RecordDurable) path calls File.Sync, so an injected Sync failure
 // makes a required forwardable verdict fail closed with recorder.ErrDurability
 // while a non-forwardable verdict (no Sync call) is unaffected.
 func TestEmitMCPDecision_ForwardableVerdictsEmitDurable(t *testing.T) {
-	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip} {
+	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip, config.ActionRedirect} {
 		t.Run(verdict, func(t *testing.T) {
 			recEmitter, rec, _, _ := newReceiptTestHarness(t)
 			syncErr := errors.New("injected durable sync failure")
@@ -1042,10 +1043,10 @@ func TestEmitMCPDecision_NonForwardableVerdictStaysNonDurable(t *testing.T) {
 }
 
 // Only allow carries DecisionPhaseIntent (paired with a downstream outcome);
-// warn/forward/strip must stay single-phase so the completeness verifier counts
+// warn/forward/strip/redirect must stay single-phase so the completeness verifier counts
 // them as neither an intent nor an outcome (no unmatched-intent).
 func TestEmitMCPDecision_ForwardableVerdictsStaySinglePhase(t *testing.T) {
-	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip} {
+	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip, config.ActionRedirect} {
 		t.Run(verdict, func(t *testing.T) {
 			recEmitter, _, dir, _ := newReceiptTestHarness(t)
 			_, err := EmitMCPDecision(recEmitter, nil, nil, MCPDecision{

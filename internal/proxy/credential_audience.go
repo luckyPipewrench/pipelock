@@ -157,15 +157,25 @@ func (p *Proxy) emitCredentialAudienceReceipt(cfg *config.Config, opts receipt.E
 			emitV1 = group.shards.Emit
 		}
 	}
-	return emitCredentialAudienceReceiptWithFallback(
+	err := emitCredentialAudienceReceiptWithFallback(
 		opts,
 		emitV1,
-		p.emitV2Receipt,
+		func(v2Opts receipt.EmitOpts) error {
+			if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+				return p.emitRequiredV2Receipt(v2Opts)
+			}
+			_ = p.emitV2Receipt(v2Opts)
+			return nil
+		},
 		p.logReceiptEmissionFailure,
 		func(fallback receipt.EmitOpts) {
 			logCredentialAudienceReceiptExtensionDropped(p.logger, fallback)
 		},
 	)
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		failRequiredAllowReceiptGroup(p.receiptGroupPtr.Load(), opts, err)
+	}
+	return err
 }
 
 // recordCredentialAudienceAllows records every distinct allow and, when
@@ -246,23 +256,52 @@ func (rp *ReverseProxyHandler) emitCredentialAudienceReceipt(cfg *config.Config,
 			emitV1 = group.shards.Emit
 		}
 	}
-	return emitCredentialAudienceReceiptWithFallback(
+	err := emitCredentialAudienceReceiptWithFallback(
 		opts,
 		emitV1,
 		func(v2Opts receipt.EmitOpts) error {
+			required := cfg != nil && cfg.FlightRecorder.RequireReceipts
 			if group := rp.receiptGroup(); group != nil {
-				return rp.owner.emitGroupV2Receipt(group, v2Opts, false)
+				err := rp.owner.emitGroupV2Receipt(group, v2Opts, required)
+				if required {
+					return err
+				}
+				return nil
 			}
-			return emitV2(rp.v2EmitterPtr, v2Opts, func(err error) {
+			logFailure := func(err error) {
 				recordV2ReceiptEmitFailure(rp.metrics)
 				logV2EmitFailure(rp.logger, v2Opts, err)
-			})
+			}
+			if required {
+				return emitRequiredV2(rp.v2EmitterPtr, v2Opts, logFailure)
+			}
+			_ = emitV2(rp.v2EmitterPtr, v2Opts, logFailure)
+			return nil
 		},
 		rp.logReceiptEmissionFailure,
 		func(fallback receipt.EmitOpts) {
 			logCredentialAudienceReceiptExtensionDropped(rp.logger, fallback)
 		},
 	)
+	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
+		failRequiredAllowReceiptGroup(rp.receiptGroup(), opts, err)
+	}
+	return err
+}
+
+// A sticky writer failure invalidates the whole required group, including
+// admissions on surviving shards. Pre-advance input rejections stay local.
+func failRequiredAllowReceiptGroup(group *receiptGroupRuntime, opts receipt.EmitOpts, err error) {
+	if group == nil || err == nil {
+		return
+	}
+	v1, v1Err := group.shards.SelectedEmitter(opts)
+	v2, v2Err := group.v2Emitter(opts)
+	if errors.Is(err, receipt.ErrReceiptPostAdvance) ||
+		(v1Err == nil && v1.HealthError() != nil) ||
+		(v2Err == nil && v2.HealthError() != nil) {
+		group.failRequired(err)
+	}
 }
 
 // credentialAudienceEmitV1 picks the v1 write for an allow receipt. A required
@@ -278,10 +317,9 @@ func credentialAudienceEmitV1(e *receipt.Emitter, cfg *config.Config) func(recei
 }
 
 // emitCredentialAudienceReceiptWithFallback emits the signed receipt with the
-// advisory extension and returns the error only when the signed receipt
-// itself could not be recorded (extension-merge failures fall back to an
-// unextended receipt and return nil, matching the historical best-effort
-// behavior for that narrow case).
+// advisory extension. An extension-merge failure retries without the extension;
+// both receipt families must still succeed. The supplied emitters select durable
+// writes and propagate required failures, or suppress optional v2 failures.
 func emitCredentialAudienceReceiptWithFallback(
 	opts receipt.EmitOpts,
 	emitV1 func(receipt.EmitOpts) error,
@@ -290,8 +328,7 @@ func emitCredentialAudienceReceiptWithFallback(
 	logDropped func(receipt.EmitOpts),
 ) error {
 	if err := emitV1(opts); err == nil {
-		_ = emitV2(opts)
-		return nil
+		return emitV2(opts)
 	} else if !errors.Is(err, receipt.ErrExtensionMerge) {
 		logFailure(opts, err)
 		return err
@@ -304,8 +341,7 @@ func emitCredentialAudienceReceiptWithFallback(
 		return err
 	}
 	logDropped(fallback)
-	_ = emitV2(fallback)
-	return nil
+	return emitV2(fallback)
 }
 
 func logCredentialAudienceReceiptExtensionDropped(logger *audit.Logger, opts receipt.EmitOpts) {

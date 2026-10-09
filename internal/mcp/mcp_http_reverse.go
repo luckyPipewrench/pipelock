@@ -958,6 +958,32 @@ func RunHTTPListenerProxy(
 			}
 		}
 
+		admitLegacyMethod := func() bool {
+			if !requestBaseOpts.requireReceipts() {
+				return true
+			}
+			admission := requestBaseOpts.withReceiptPolicyHash(receipt.EmitOpts{
+				ActionID: receipt.NewActionID(), Verdict: config.ActionForward,
+				Transport: requestBaseOpts.Transport, Method: r.Method, Target: upstreamURL,
+				Layer: "mcp_transport_admission",
+			})
+			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
+				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
+				emitListenerBlockDecision(mcpListenerBlockDecision{
+					reason: blockreason.ReceiptEmissionFailed, headerSeverity: blockreason.SeverityCritical,
+					retry: blockreason.RetryTransient, layer: "receipt_emission_failed",
+					pattern: "legacy MCP transport admission", target: upstreamURL,
+					receiptSeverity: config.SeverityHigh,
+				})
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
+				return false
+			}
+			blockreason.SetRecordedReceipt(w.Header(), admission.ActionID)
+			return true
+		}
+
 		if r.Method == http.MethodGet {
 			if !acceptAllowsSSE(r.Header.Values("Accept")) {
 				methodNotAllowed()
@@ -1021,6 +1047,9 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, true)
 			responseencoding.RequestIdentity(upReq.Header)
 
+			if !admitLegacyMethod() {
+				return
+			}
 			upResp, err := upstreamStreamClient.Do(upReq)
 			if err != nil {
 				if handleMetadataDialError(err, nil) {
@@ -1171,6 +1200,9 @@ func RunHTTPListenerProxy(
 			forwardListenerUpstreamHeaders(upReq, r, false)
 			responseencoding.RequestIdentity(upReq.Header)
 
+			if !admitLegacyMethod() {
+				return
+			}
 			upResp, err := upstreamClient.Do(upReq)
 			if err != nil {
 				if handleMetadataDialError(err, nil) {

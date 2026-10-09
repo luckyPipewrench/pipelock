@@ -113,6 +113,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	receiptSessionID := ""
 	receiptSessionIDOriginal := ""
 	var receiptContractGate *mcpContractGateOutput
+	redirectReceiptEmitted := false
 	requireReceipts := opts.requireReceipts()
 	var receiptShard receipt.EmitOpts
 
@@ -124,6 +125,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	frame := ParseMCPFrame(msg)
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
+		if redirectReceiptEmitted && receiptVerdict == config.ActionRedirect {
+			return
+		}
 		// A2A methods are not tools/call, so actionID stays empty on the
 		// tools/call path above. Mint an actionID lazily only when an A2A request
 		// needs a receipt: always for blocks, and for clean allows only when
@@ -1033,6 +1037,30 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		policyRuleName := ""
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
+		}
+		if requireReceipts {
+			if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
+				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
+			}
+			if err := emitMCPToolReceipt(mcpToolReceiptOpts{
+				Emitter: receiptEmitter, V2Emitter: v2ReceiptEmitter, Group: opts.ReceiptGroup,
+				Shard: receiptShard, PolicyHash: opts.receiptPolicyHash(), Log: logW,
+				Transport: opts.Transport, ActionID: actionID, MCPMethod: mcpMethod,
+				ToolName: toolName, Verdict: config.ActionRedirect,
+				Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
+				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
+				RequireReceipt: true, RequireReceipts: true,
+			}); err != nil {
+				receiptVerdict = config.ActionBlock
+				result.Blocked = &BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: "receipt emission failed", ErrorCode: -32007,
+					ErrorMessage: requiredReceiptFailureMessage(err),
+					ErrorData:    mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+				}
+				return result
+			}
+			redirectReceiptEmitted = true
 		}
 		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
 		// Determine final outcome before audit logging so the event

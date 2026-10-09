@@ -413,8 +413,8 @@ func TestWalkSessionHistoryInterruptedReads(t *testing.T) {
 			removed = true
 			return os.Remove(filepath.Join(dir, second))
 		})
-		if err == nil || !strings.Contains(err.Error(), second) {
-			t.Fatalf("error = %v, want the vanished shard named", err)
+		if err == nil || !strings.Contains(err.Error(), "inventory changed during read") {
+			t.Fatalf("error = %v, want a changed-inventory refusal", err)
 		}
 	})
 }

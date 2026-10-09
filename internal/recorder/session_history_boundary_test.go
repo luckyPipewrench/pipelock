@@ -56,6 +56,7 @@ var displayBudgetNames = map[string]bool{
 // authoritativeRoots are the recorder readers that lifecycle code relies on
 // to read complete history. Nothing they reach may name a display budget.
 var authoritativeRoots = []string{
+	"WalkHistorySessions",
 	"WalkSessionHistory",
 	"WalkSessionHistoryResolved",
 	"WalkSessionHistoryFiles",
@@ -185,27 +186,23 @@ type displayBudgetCaller struct {
 // size contract, or the writer's rotation size.
 var allowedDisplayBudgetCallers = map[displayBudgetCaller]string{
 	// Dashboard and operator displays: a bounded page, refusing past the budget.
-	{"enterprise/cli/dashboard_coveragecert.go", "loadCoverageCertSessionReceipts", "receipt.ExtractReceiptsFromSessionDirBounded"}: "dashboard coverage certificate; refuses a partial read",
-	{"enterprise/cli/dashboard_coveragecert.go", "runCoverageCertGenerate", "recorder.ListSessions"}:                                "dashboard session list",
-	{"enterprise/dashboard/readmodel.go", "ReceiptDetail", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                       "dashboard read model",
-	{"enterprise/dashboard/readmodel.go", "Session", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                             "dashboard read model",
-	{"enterprise/dashboard/readmodel.go", "Sessions", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                            "dashboard read model",
-	{"enterprise/dashboard/readmodel.go", "Sessions", "recorder.ListSessionsBounded"}:                                               "dashboard read model",
-	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.MaxEvidenceReadFileBytes"}:                                 "dashboard index rebuild",
-	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.ReadEntriesFromReader"}:                                    "dashboard index rebuild",
-	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.ReadEvidenceFileBounded"}:                                  "dashboard index rebuild",
-	{"enterprise/dashboard/trustkeys.go", "TrustKeys", "receipt.ExtractReceiptsFromSessionDirBounded"}:                              "dashboard trust-key view",
-	{"enterprise/dashboard/trustkeys.go", "TrustKeys", "recorder.ListSessions"}:                                                     "dashboard trust-key view",
-	{"internal/capture/loader.go", "LoadAndReplayWithOptions", "recorder.ListSessions"}:                                             "capture replay query by entry type",
-	{"internal/capture/loader.go", "LoadAndReplayWithOptions", "recorder.QuerySession"}:                                             "capture replay query by entry type",
-	{"internal/cli/evidence/evidence.go", "renderSessionHTML", "receipt.ExtractReceiptsFromResolvedSessionDirBounded"}:              "evidence view page",
-	{"internal/cli/evidence/evidence.go", "resolveServeSessionResolved", "recorder.ListSessionsBoundedResultResolved"}:              "evidence serve session list",
-	{"internal/cli/evidence/evidence.go", "resolveSession", "recorder.ListSessionsBoundedResultResolved"}:                           "evidence view session list",
-	{"internal/cli/evidence/doctor.go", "<package scope>", "recorder.MaxEvidenceReadDirectoryEntries"}:                              "evidence doctor diagnostic with its own documented budget",
-	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.MaxEvidenceReadFileBytes"}:                                           "evidence doctor diagnostic with its own documented budget",
-	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEntriesFromReader"}:                                              "evidence doctor diagnostic with its own documented budget",
-	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEvidenceLocationFileBounded"}:                                    "evidence doctor diagnostic with its own documented budget",
-	{"internal/cli/runtime/evidence_health.go", "fileStats", "recorder.MaxEvidenceReadDirectoryEntries"}:                            "health warning threshold for display readability; refuses nothing",
+	{"enterprise/dashboard/readmodel.go", "ReceiptDetail", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:          "dashboard read model",
+	{"enterprise/dashboard/readmodel.go", "Session", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                "dashboard read model",
+	{"enterprise/dashboard/readmodel.go", "Sessions", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:               "dashboard read model",
+	{"enterprise/dashboard/readmodel.go", "Sessions", "recorder.ListSessionsBounded"}:                                  "dashboard read model",
+	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.MaxEvidenceReadFileBytes"}:                    "dashboard index rebuild",
+	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.ReadEntriesFromReader"}:                       "dashboard index rebuild",
+	{"enterprise/dashboard/rebuild.go", "buildReadModelIndex", "recorder.ReadEvidenceFileBounded"}:                     "dashboard index rebuild",
+	{"enterprise/dashboard/trustkeys.go", "TrustKeys", "receipt.ExtractReceiptsFromSessionDirBounded"}:                 "dashboard trust-key view",
+	{"enterprise/dashboard/trustkeys.go", "TrustKeys", "recorder.ListSessions"}:                                        "dashboard trust-key view",
+	{"internal/cli/evidence/evidence.go", "renderSessionHTML", "receipt.ExtractReceiptsFromResolvedSessionDirBounded"}: "evidence view page",
+	{"internal/cli/evidence/evidence.go", "resolveServeSessionResolved", "recorder.ListSessionsBoundedResultResolved"}: "evidence serve session list",
+	{"internal/cli/evidence/evidence.go", "resolveSession", "recorder.ListSessionsBoundedResultResolved"}:              "evidence view session list",
+	{"internal/cli/evidence/doctor.go", "<package scope>", "recorder.MaxEvidenceReadDirectoryEntries"}:                 "evidence doctor diagnostic with its own documented budget",
+	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.MaxEvidenceReadFileBytes"}:                              "evidence doctor diagnostic with its own documented budget",
+	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEntriesFromReader"}:                                 "evidence doctor diagnostic with its own documented budget",
+	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEvidenceLocationFileBounded"}:                       "evidence doctor diagnostic with its own documented budget",
+	{"internal/cli/runtime/evidence_health.go", "fileStats", "recorder.MaxEvidenceReadDirectoryEntries"}:               "health warning threshold for display readability; refuses nothing",
 
 	// Stopped, operator-invoked offline compaction: separate input and output
 	// limits so its output stays readable by the display readers.

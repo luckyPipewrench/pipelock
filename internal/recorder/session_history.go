@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"container/heap"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -76,6 +77,41 @@ func WalkSessionHistory(dir, sessionID string, consume func(Entry) error) error 
 		return fmt.Errorf("resolve evidence location: %w", err)
 	}
 	return WalkSessionHistoryResolved(location, sessionID, consume)
+}
+
+// WalkHistorySessions visits every session in an evidence directory in name
+// order without a display budget or an unbounded filename slice. Errors
+// invalidate the walk, including a changed evidence inventory.
+func WalkHistorySessions(dir string, consume func(string) error) error {
+	if consume == nil {
+		return errors.New("session consumer is required")
+	}
+	location, err := ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	c := historyCursor{location: location}
+	for {
+		keys, more, inventory, err := scanHistoryWindow(location, "", c.after, sessionHistoryWindow)
+		if err != nil {
+			return err
+		}
+		if err := c.acceptInventory(inventory); err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if err := consume(key.name); err != nil {
+				return err
+			}
+		}
+		if len(keys) > 0 {
+			last := keys[len(keys)-1]
+			c.after = &last
+		}
+		if !more {
+			return c.checkInventory()
+		}
+	}
 }
 
 // WalkSessionHistoryResolved delivers every entry of sessionID, in chain order
@@ -236,12 +272,11 @@ func WalkHistoryEntriesFromReader(r io.Reader, consume func(Entry) error) error 
 // budget, for callers that need the whole file at once. Memory is the
 // caller's to bound: prefer WalkHistoryEntriesFromReader or WalkEvidenceFile.
 func ReadHistoryEntries(path string) ([]Entry, error) {
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("opening evidence file: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	entries, err := ReadHistoryEntriesFromReader(f)
+	var entries []Entry
+	_, err := WalkEvidenceFile(path, nil, func(e Entry) error {
+		entries = append(entries, e)
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("reading evidence file: %w", err)
 	}
@@ -270,7 +305,10 @@ func ReadHistoryEntriesFromReader(r io.Reader) ([]Entry, error) {
 // to the exact bytes this one verified. It returns the file identity observed
 // at open.
 func WalkEvidenceFile(path string, raw io.Writer, consume func(Entry) error) (os.FileInfo, error) {
-	file, info, err := openRegularEvidenceFile(path, validateEvidenceFileAccess())
+	if info, err := os.Lstat(filepath.Clean(path)); err == nil && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: evidence file is symlinked or non-regular", ErrEvidenceRefused)
+	}
+	file, info, err := OpenEvidenceFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening evidence file: %w", err)
 	}
@@ -326,7 +364,9 @@ func walkSessionHistoryShards(location EvidenceLocation, sessionID string, windo
 			return err
 		}
 		if !ok {
-			return nil
+			// The final callback may change membership after the last listing.
+			// Recheck even a one-window walk before reporting completion.
+			return c.checkInventory()
 		}
 		if err := visit(shard); err != nil {
 			return err
@@ -354,10 +394,11 @@ type historyCursor struct {
 	sessionID string
 	window    int
 
-	queue   []historyKey
-	more    bool
-	after   *historyKey // greatest key fetched so far
-	started bool
+	queue     []historyKey
+	more      bool
+	after     *historyKey // greatest key fetched so far
+	started   bool
+	inventory *historyInventory
 }
 
 func (c *historyCursor) next() (SessionHistoryShard, bool, error) {
@@ -387,9 +428,12 @@ func (c *historyCursor) next() (SessionHistoryShard, bool, error) {
 // the new window is delivered, including a duplicate of the previous window's
 // last shard.
 func (c *historyCursor) fill() error {
-	keys, more, err := scanHistoryWindow(c.location, c.sessionID, c.after, c.window)
+	keys, more, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, c.window)
 	if err != nil {
 		return fmt.Errorf("reading evidence directory: %w", err)
+	}
+	if err := c.acceptInventory(inventory); err != nil {
+		return err
 	}
 	names := make([]string, 0, len(keys)+1)
 	if c.after != nil {
@@ -410,35 +454,95 @@ func (c *historyCursor) fill() error {
 	return nil
 }
 
+// historyInventory binds successive ordering passes to the same directory
+// and selected shard set without retaining every filename. The digest is an
+// order-independent sum of SHA-256 hashes of names and file metadata. Only
+// the selected session contributes; unrelated files cannot change it.
+type historyInventory struct {
+	directory os.FileInfo
+	digest    [sha256.Size]byte
+	count     uint64
+}
+
+func (s *historyInventory) add(name string, info os.FileInfo) {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", name, info.Size(), info.Mode(), info.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z"))))
+	carry := uint16(0)
+	for i := len(h) - 1; i >= 0; i-- {
+		n := uint16(s.digest[i]) + uint16(h[i]) + carry
+		s.digest[i] = byte(n & 0xff)
+		carry = n >> 8
+	}
+	s.count++
+}
+
+func (c *historyCursor) acceptInventory(inventory historyInventory) error {
+	if c.inventory == nil {
+		c.inventory = &inventory
+		return nil
+	}
+	if !os.SameFile(c.inventory.directory, inventory.directory) || c.inventory.count != inventory.count || c.inventory.digest != inventory.digest {
+		return errors.New("evidence session inventory changed during read")
+	}
+	return nil
+}
+
+func (c *historyCursor) checkInventory() error {
+	_, _, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, 1)
+	if err != nil {
+		return fmt.Errorf("rechecking evidence directory: %w", err)
+	}
+	return c.acceptInventory(inventory)
+}
+
 // scanHistoryWindow returns, in order, the window smallest shard keys of
 // sessionID strictly greater than after, and whether more such shards exist.
 // Entries of other sessions, sidecars and unrelated files are skipped as they
 // are read and never retained.
-func scanHistoryWindow(location EvidenceLocation, sessionID string, after *historyKey, window int) ([]historyKey, bool, error) {
+func scanHistoryWindow(location EvidenceLocation, sessionID string, after *historyKey, window int) ([]historyKey, bool, historyInventory, error) {
+	var inventory historyInventory
 	directory, err := openEvidenceLocationDirectory(location)
 	if err != nil {
-		return nil, false, err
+		return nil, false, inventory, err
 	}
 	defer func() { _ = directory.Close() }()
+	inventory.directory, err = directory.Stat()
+	if err != nil {
+		return nil, false, inventory, err
+	}
 	h := make(historyMaxHeap, 0, min(window, sessionHistoryDirBatch))
+	retained := make(map[string]bool)
 	more := false
 	for {
 		batch, readErr := directory.ReadDir(sessionHistoryDirBatch)
 		for _, de := range batch {
 			name := de.Name()
 			parsed, seq, ok := evidencename.Parse(name)
-			if !ok || parsed != sessionID || name != filepath.Base(name) {
+			if !ok || (sessionID != "" && parsed != sessionID) || name != filepath.Base(name) {
 				continue
 			}
+			info, err := de.Info()
+			if err != nil {
+				return nil, false, inventory, err
+			}
+			inventory.add(name, info)
 			k := historyKey{name: name, seq: seq}
+			if sessionID == "" {
+				k = historyKey{name: parsed}
+				if retained[k.name] {
+					continue
+				}
+			}
 			if after != nil && !after.less(k) {
 				continue
 			}
 			switch {
 			case len(h) < window:
 				heap.Push(&h, k)
+				retained[k.name] = true
 			case k.less(h[0]):
+				delete(retained, h[0].name)
 				h[0] = k
+				retained[k.name] = true
 				heap.Fix(&h, 0)
 				more = true
 			default:
@@ -449,7 +553,7 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 			break
 		}
 		if readErr != nil {
-			return nil, false, readErr
+			return nil, false, inventory, readErr
 		}
 	}
 	keys := []historyKey(h)
@@ -463,7 +567,7 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 			return 0
 		}
 	})
-	return keys, more, nil
+	return keys, more, inventory, nil
 }
 
 // historyMaxHeap keeps the greatest retained key at the root, so a smaller

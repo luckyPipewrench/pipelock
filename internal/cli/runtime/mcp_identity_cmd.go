@@ -484,12 +484,14 @@ func isSystemLibrary(path string) bool {
 	return false
 }
 
-// hasControl reports whether s holds a control character or invalid UTF-8.
-// The observed service chooses its file names, and such a character in a path
-// could end a YAML comment or an indented scalar and add live YAML to an entry
-// the operator copies into a config.
+// hasControl reports whether s holds anything but printable characters and
+// the ASCII space, or invalid UTF-8. The observed service chooses its file
+// names, and a control character or a Unicode line or paragraph separator
+// (U+2028, U+2029, which YAML parsers treat as line breaks although they are
+// not control characters) could end a YAML comment or an indented scalar and add
+// live YAML to an entry the operator copies into a config.
 func hasControl(s string) bool {
-	return !utf8.ValidString(s) || strings.IndexFunc(s, unicode.IsControl) >= 0
+	return !utf8.ValidString(s) || strings.IndexFunc(s, func(r rune) bool { return r != ' ' && !unicode.IsPrint(r) }) >= 0
 }
 
 // commentPath renders an observed path for a YAML comment line, quoting it

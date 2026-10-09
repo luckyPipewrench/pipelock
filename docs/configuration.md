@@ -1672,7 +1672,7 @@ An HTTP keep-alive connection that the transport reuses for several requests is 
 
 The deny list is a floor, not a proof that no hook exists. It covers these variables:
 
-- glibc loader: `GLIBC_TUNABLES`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_PROFILE`
+- glibc loader: `GCONV_PATH`, `GLIBC_TUNABLES`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_PRELOAD`, `LD_PROFILE`
 - Node.js, Bun and Electron-as-Node: `BUN_OPTIONS`, `ELECTRON_EXTRA_LAUNCH_ARGS`, `ELECTRON_RUN_AS_NODE`, `NODE_EXTRA_CA_CERTS`, `NODE_OPTIONS`, `NODE_PATH`
 - Python: `PYTHONBREAKPOINT`, `PYTHONHOME`, `PYTHONINSPECT`, `PYTHONPATH`, `PYTHONPYCACHEPREFIX`, `PYTHONSTARTUP`, `PYTHONUSERBASE`
 - JVM: `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`

@@ -436,11 +436,15 @@ func TestMCPIdentityRegister_OutputLoads(t *testing.T) {
 func TestMCPIdentityRegister_ObservedPathCannotInjectYAML(t *testing.T) {
 	t.Parallel()
 	injected := "/opt/vendor/x.so\n  - name: injected-identity\n    verified_local_service: {}"
+	// U+2028 and U+2029 are not control characters, but YAML parsers break
+	// lines on them.
+	separatorInjected := "/opt/vendor/y.so   - name: injected-separator     verified_local_service: {}"
 	pinnedPath := "/opt/vendor/odd\nname.so"
 	obs := localservice.Observation{
 		PID: 1, UID: 1000, ExecutableSHA256: testIdentityDigest,
 		Files: []localservice.ObservedFile{
 			{Path: injected, SHA256: testIdentityOtherHash},
+			{Path: separatorInjected, SHA256: testIdentityOtherHash},
 			{Path: pinnedPath, SHA256: testIdentityModDigest},
 		},
 	}
@@ -450,7 +454,7 @@ func TestMCPIdentityRegister_ObservedPathCannotInjectYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "\n  - name: injected-identity") {
+	if strings.Contains(out, "\n  - name: injected-identity") || strings.ContainsAny(out, "  ") {
 		t.Fatalf("an observed path added live YAML:\n%s", out)
 	}
 	path := filepath.Join(t.TempDir(), "pipelock.yaml")

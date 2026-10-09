@@ -155,8 +155,10 @@ type Observation struct {
 // controlEnvironmentDenyList names variables that make a loader or an
 // interpreter load code or change behavior outside the pinned files.
 var controlEnvironmentDenyList = []string{
-	// glibc dynamic loader.
-	"GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_PROFILE",
+	// glibc dynamic loader and runtime module loading. LD_ORIGIN_PATH redirects
+	// $ORIGIN library lookup; GCONV_PATH makes iconv load charset modules from a
+	// chosen directory.
+	"GCONV_PATH", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_PRELOAD", "LD_PROFILE",
 	// Node.js, Bun and Electron-as-Node.
 	"BUN_OPTIONS", "ELECTRON_EXTRA_LAUNCH_ARGS", "ELECTRON_RUN_AS_NODE",
 	"NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",

@@ -152,14 +152,27 @@ func (v *Verifier) retryPending(ctx context.Context, attempt func() error) error
 		limit = verifyRetryCap
 	}
 	var poll, deadline *time.Timer
+	var pending error
 	for {
+		if err := ctx.Err(); err != nil {
+			if pending != nil {
+				return pending
+			}
+			return err
+		}
 		if v.onAttempt != nil {
 			v.onAttempt()
 		}
 		err := attempt()
-		if err == nil || !errors.Is(err, errServerPending) {
+		if err == nil {
+			// Cancellation can arrive while reading or hashing process state.
+			// A completed check must not admit that canceled connection.
+			return ctx.Err()
+		}
+		if !errors.Is(err, errServerPending) {
 			return err
 		}
+		pending = err
 		if poll == nil {
 			poll = time.NewTimer(verifyRetryInterval)
 			deadline = time.NewTimer(limit)

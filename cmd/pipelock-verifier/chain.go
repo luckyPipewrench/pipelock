@@ -429,23 +429,6 @@ func resolveChainTrust(opts chainOptions) (chainTrust, error) {
 	return trust, nil
 }
 
-// checkRecorderFileBytes applies the rules one evidence file must meet on its
-// own, as verify-receipt does: its entries belong to the session its name
-// claims, and its recorder entry hash chain holds from genesis. Bytes that
-// are not recorder output are left to the extractors. With endorsements, the
-// file must be the session the endorsements are bound to.
-func checkRecorderFileBytes(name string, data []byte, trust chainTrust) error {
-	entries, err := recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
-	if err != nil {
-		return nil
-	}
-	if len(trust.endorsements) > 0 && len(entries) > 0 && entries[0].SessionID != trust.session {
-		return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", trust.session, entries[0].SessionID)
-	}
-	_, _, _, err = actionreceipt.RecorderFileChains(name, entries)
-	return err
-}
-
 // evidenceLocationError classifies a failure to resolve an evidence
 // directory: a refused symlink is a verification failure (exit 1), any other
 // failure, such as a missing directory, a configuration error (exit 2).
@@ -664,17 +647,6 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label strin
 		}
 		return actionreceipt.ExtractReceiptsBytes(data)
 	})
-}
-
-func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.EvidenceLocation, label string, trust chainTrust, opts chainOptions) (bool, error) {
-	actions, evidence, err := readChainSessionInput(location, opts.sessionID)
-	if err != nil {
-		return true, evidenceContentError(err)
-	}
-	if len(evidence) == 0 {
-		return false, nil
-	}
-	return true, verifyEvidenceChain(stdout, stderr, label, evidence, actions, trust, opts)
 }
 
 func readChainSessionInput(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {

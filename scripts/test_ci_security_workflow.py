@@ -156,6 +156,7 @@ exit "$DEFAULT_STATUS"
                 "test-go126",
                 "test-go127",
                 "lint",
+                "lint-policy",
                 "test-cross-target",
                 "helm",
                 "build-binaries",
@@ -170,6 +171,7 @@ exit "$DEFAULT_STATUS"
             "TEST_GO126_RESULT",
             "TEST_GO127_RESULT",
             "LINT_RESULT",
+            "LINT_POLICY_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
@@ -185,6 +187,7 @@ exit "$DEFAULT_STATUS"
             "TEST_GO126_RESULT",
             "TEST_GO127_RESULT",
             "LINT_RESULT",
+            "LINT_POLICY_RESULT",
             "CROSS_TARGET_RESULT",
             "HELM_RESULT",
             "BUILD_BINARIES_RESULT",
@@ -239,7 +242,7 @@ exit "$DEFAULT_STATUS"
         base_env.update({
             name: "success"
             for name in (
-                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT",
+                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT", "LINT_POLICY_RESULT",
                 "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT", "REVIEW_TESTS_RESULT", "REVIEW_SOURCE_RESULT",
             )
         })
@@ -260,12 +263,15 @@ exit "$DEFAULT_STATUS"
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)
+        # One job per published target other than the runner's linux/amd64;
+        # each one vets both build variants for its target.
         self.assertIn(
-            "linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64",
+            "target: ['linux/arm64', 'darwin/amd64', 'darwin/arm64', 'windows/amd64', 'windows/arm64']",
             self.cross_target,
         )
-        self.assertIn('go vet ./...', self.cross_target)
-        self.assertIn('go vet -tags enterprise ./...', self.cross_target)
+        self.assertIn("fail-fast: false", self.cross_target)
+        self.assertIn('GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" go vet ./...', self.cross_target)
+        self.assertIn('GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" go vet -tags enterprise ./...', self.cross_target)
         self.assertNotIn("Test code compiles for every published target", job_block(self.workflow, "lint"))
 
     def test_helm_transitive_gate_contract_rejects_removed_dependency(self) -> None:

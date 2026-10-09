@@ -30,6 +30,7 @@ from ci_test_packages import (  # noqa: E402
     DURATIONS_FILE,
     HEAVY_TREES,
     ROOT,
+    SHARDS,
     TEST_SPLITS,
     load_durations,
     load_package_durations,
@@ -115,14 +116,38 @@ def merge(
     return {"trees": trees}
 
 
+def ci_artifact_inputs(directory: Path) -> list[Path]:
+    """Require every Go 1.26 producer before treating a refresh as CI evidence."""
+    inputs: list[Path] = []
+    for lane in ("oss", "enterprise"):
+        for shard in SHARDS:
+            profile = directory / f"go-test-json-{lane}-go126-{shard}" / f"go-test-{lane}.json"
+            if not profile.is_file() or profile.stat().st_size == 0:
+                raise ValueError(f"missing or empty CI timing artifact: {profile}")
+            if not collect([profile]) and not collect_packages([profile]):
+                raise ValueError(f"CI timing artifact has no measured results: {profile}")
+            inputs.append(profile)
+    return inputs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("inputs", nargs="+", type=Path, help="go test -json output files")
+    parser.add_argument("inputs", nargs="*", type=Path, help="go test -json output files")
     parser.add_argument("--write", action="store_true", help=f"update {DURATIONS_FILE.name}")
+    parser.add_argument("--ci-artifacts", type=Path, help="require the complete Go 1.26 CI artifact directory")
     args = parser.parse_args()
+    if args.ci_artifacts and args.inputs:
+        parser.error("use either --ci-artifacts or input files")
+    try:
+        inputs = ci_artifact_inputs(args.ci_artifacts) if args.ci_artifacts else args.inputs
+    except ValueError as error:
+        print(f"ci_test_durations.py: {error}", file=sys.stderr)
+        return 1
+    if not inputs:
+        parser.error("provide input files or --ci-artifacts")
 
-    measured = collect(args.inputs)
-    packages = collect_packages(args.inputs)
+    measured = collect(inputs)
+    packages = collect_packages(inputs)
     if not measured and not packages:
         print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1

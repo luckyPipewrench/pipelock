@@ -24,9 +24,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {
-    "proxy-0", "proxy-1", "proxy-2", "scanner-0", "scanner-1", "scanner-2", "scanner-3",
-    "mcp-0", "mcp-1", "mcp-2",
-    "runtime-0", "runtime-1", "rest-0", "rest-1", "rest-2",
+    "proxy-0", "proxy-1", "proxy-2", "proxy-3", "scanner-0", "scanner-1", "scanner-2",
+    "mcp-0", "mcp-1", "mcp-2", "mcp-3",
+    "runtime-0", "runtime-1", "rest-0", "rest-1", "rest-2", "rest-3",
 }
 MINORS = ("126", "127")
 POLICY_OUTPUT = "${{ needs.changed-files.outputs.ci_policy }}"

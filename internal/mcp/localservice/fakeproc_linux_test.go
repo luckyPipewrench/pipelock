@@ -87,6 +87,28 @@ func fileIdent(t *testing.T, path string) (dev, ino uint64) {
 	return dev, ino
 }
 
+// mapsIdent returns the device and inode a real maps line reports for path,
+// taken from this process's own mapping of it. On btrfs and overlayfs that
+// device differs from the stat device, so fake maps lines built from stat would
+// test a mismatch instead of the intended case. A file that cannot be mapped
+// falls back to its stat identity.
+func mapsIdent(t *testing.T, path string) (dev, ino uint64) {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := mapsIdentityOf(f, fi.Size()); ok {
+		return id.dev, id.ino
+	}
+	return fileIdent(t, path)
+}
+
 func mapsLine(dev, ino uint64, path string) string {
 	return fmt.Sprintf("7f0000000000-7f0000001000 r--p 00000000 %02x:%02x %d %s\n",
 		unix.Major(dev), unix.Minor(dev), ino, path)
@@ -551,7 +573,7 @@ func TestVerifyConnFakeProcMappedFiles(t *testing.T) {
 	contentHash := sha256Hex([]byte(content))
 
 	heldByMaps := func(f *fakeProc, path string) {
-		dev, ino := fileIdent(f.t, path)
+		dev, ino := mapsIdent(f.t, path)
 		f.write(strconv.Itoa(fakePID)+"/maps", "00400000-00401000 r-xp 00000000 00:00 0\n"+mapsLine(dev, ino, path))
 	}
 	tests := []struct {
@@ -593,7 +615,7 @@ func TestVerifyConnFakeProcMappedFiles(t *testing.T) {
 			name:    "held under a different inode at the same path",
 			pinHash: contentHash,
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.write(strconv.Itoa(fakePID)+"/maps", mapsLine(dev, ino+1, path+deletedSuffix))
 			},
 			wantErr: ErrApplicationMismatch,

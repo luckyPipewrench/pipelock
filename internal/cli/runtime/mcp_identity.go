@@ -86,6 +86,9 @@ func listenerIdentityHeadersFn(res identity.Resolution, t identity.Transport, cu
 		requestTransport := t
 		requestTransport.Headers = nil
 		for name, values := range headers {
+			if listenerTransportManagedHeader(name) {
+				continue
+			}
 			for _, value := range values {
 				requestTransport.Headers = append(requestTransport.Headers, identity.Header{Name: name, Value: value})
 			}
@@ -97,6 +100,28 @@ func listenerIdentityHeadersFn(res identity.Resolution, t identity.Transport, cu
 		id.Binding = binding
 		return id
 	}
+}
+
+// listenerMCPParamHeaderPrefix starts the per-call parameter routing headers.
+const listenerMCPParamHeaderPrefix = "Mcp-Param-"
+
+// listenerTransportManagedHeader reports whether a listener request header is
+// managed by the MCP transport rather than chosen as a credential or service
+// policy: framing, session correlation, stream resumption, the negotiated
+// protocol version and per-call routing. These change between sessions or
+// calls, so binding them would stop a valid acknowledgment from matching; none
+// of them can select a different server or principal, which the connection
+// owner check already proves.
+func listenerTransportManagedHeader(name string) bool {
+	canonical := http.CanonicalHeaderKey(name)
+	if _, reserved := reservedTransportHeaders[canonical]; reserved {
+		return true
+	}
+	switch canonical {
+	case http.CanonicalHeaderKey("Mcp-Protocol-Version"), http.CanonicalHeaderKey("Last-Event-ID"):
+		return true
+	}
+	return strings.HasPrefix(canonical, listenerMCPParamHeaderPrefix)
 }
 
 // resolveLaunchIdentity resolves the identity of a launch and prints the

@@ -13,8 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestMappedFilePathWhitespace(t *testing.T) {
@@ -162,5 +165,32 @@ func TestVerifyConnMappedFileWhenMapsDeviceDiffers(t *testing.T) {
 				t.Fatalf("VerifyConn = %v, want %v naming mapped_files[0]", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestVerifyConnPinnedFIFORefusesPromptly: a FIFO left at a pinned path must be
+// refused, not opened in blocking mode, which would wait for a writer forever on
+// the dial path.
+func TestVerifyConnPinnedFIFORefusesPromptly(t *testing.T) {
+	t.Parallel()
+	f := newFakeProc(t)
+	fifo := filepath.Join(t.TempDir(), "pinned.fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	f.pin.MappedFiles = []FilePin{{Path: fifo, SHA256: sha256Hex([]byte("x"))}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.verify()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrApplicationMismatch) || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("VerifyConn = %v, want a not-a-regular-file mismatch", err)
+		}
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("verification blocked opening a FIFO at a pinned path")
 	}
 }

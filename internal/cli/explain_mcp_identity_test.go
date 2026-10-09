@@ -73,6 +73,11 @@ func TestExplainMCPResponse_IdentityResolution(t *testing.T) {
 			wantOut: []string{"Server:  docs"},
 		},
 		{
+			name:    "no upstream with a label the proxy would refuse is refused",
+			args:    []string{"--server-name", "bad/name"},
+			wantErr: "--server-name",
+		},
+		{
 			name:    "registered name without an upstream is refused with a hint",
 			args:    []string{"--server-name", explainIdentityName},
 			wantErr: "pass --upstream",

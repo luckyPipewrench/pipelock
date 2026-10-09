@@ -100,8 +100,9 @@ With the server named, add a top-level `suppress:` entry scoped to that server's
 response target. The `rule` must be the exact blocking pattern name (use
 `explain mcp-response`, part 4, to get it). Core response floor names cannot be
 suppressed. Instead, declare a `response_scanning.core_observe_exceptions`
-entry for that server and pattern; the host for an MCP server is its
-`--server-name` value. See "Observing one core pattern on one host" in
+entry for that server and pattern; the host for an MCP server is the name it
+runs under: its `--server-name` value, or its registered `mcp_identities` name
+when the upstream matches a registration. See "Observing one core pattern on one host" in
 [configuration.md](../configuration.md):
 
 ```yaml
@@ -124,9 +125,9 @@ Each `suppress:` field:
 | `path` | yes | The per-server target `mcp://<server-name>/response`. Must match the name the proxy runs under: the `--server-name` operator label, or the registered `mcp_identities` name when the upstream matches a registration. |
 | `reason` | no | Human-readable justification (recorded, not matched). |
 
-If the `path` target does not match the running proxy's `--server-name` (or the
-proxy was launched without `--server-name` at all), the entry is inert - it
-suppresses nothing. Part 4's `explain` output tells you when that is the case.
+If the `path` target does not match the name the running proxy uses (its
+`--server-name`, or its registered `mcp_identities` name), or the proxy runs
+unnamed because it has neither, the entry is inert - it suppresses nothing. Part 4's `explain` output tells you when that is the case.
 
 ## 4. Get the exact entry: `pipelock explain mcp-response`
 

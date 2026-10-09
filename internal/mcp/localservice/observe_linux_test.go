@@ -60,7 +60,7 @@ func TestObserveFakeProcFiles(t *testing.T) {
 		{
 			name: "held as a mapping",
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.setMaps(mapsLine(dev, ino, path))
 			},
 			want: func(path string) []ObservedFile { return []ObservedFile{{Path: path, SHA256: contentHash}} },
@@ -68,7 +68,7 @@ func TestObserveFakeProcFiles(t *testing.T) {
 		{
 			name: "descriptor and mapping of one inode are one entry",
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
 				f.setMaps(mapsLine(dev, ino, path), mapsLine(dev, ino, path))
 			},
@@ -77,7 +77,7 @@ func TestObserveFakeProcFiles(t *testing.T) {
 		{
 			name: "same path held under another inode is reported without a digest",
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.setMaps(mapsLine(dev, ino+1, path+deletedSuffix))
 			},
 			want: func(path string) []ObservedFile { return []ObservedFile{{Path: path}} },
@@ -85,7 +85,7 @@ func TestObserveFakeProcFiles(t *testing.T) {
 		{
 			name: "held path that no longer exists is reported without a digest",
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.setMaps(mapsLine(dev, ino, path+".gone"))
 			},
 			want: func(path string) []ObservedFile { return []ObservedFile{{Path: path + ".gone"}} },
@@ -107,7 +107,7 @@ func TestObserveFakeProcFiles(t *testing.T) {
 		{
 			name: "kernel and anonymous object paths are not files",
 			setup: func(f *fakeProc, path string) {
-				dev, ino := fileIdent(f.t, path)
+				dev, ino := mapsIdent(f.t, path)
 				f.setMaps(
 					mapsLine(dev, ino, "/dev/shm/segment"),
 					mapsLine(dev, ino+1, "/proc/self/exe"),

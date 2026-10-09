@@ -68,6 +68,13 @@ const explainSessionPlaceholder = "Bearer explain-placeholder"
 // verified local service is refused because only its upstream proves it.
 func resolveExplainIdentity(cfg *config.Config, serverName, upstream string) (*mcpExplainIdentity, string, error) {
 	if upstream == "" {
+		if serverName != "" {
+			// The same rule identity.Resolve applies, so explain never reports a
+			// suppress target for a label no proxy launch would accept.
+			if err := config.ValidateMCPServerName(serverName, "--server-name"); err != nil {
+				return nil, "", err
+			}
+		}
 		if _, _, registered := config.FindMCPIdentity(cfg.MCPIdentities, serverName); registered && serverName != "" {
 			return nil, "", fmt.Errorf("server name %q is registered as a verified local service; pass --upstream with the URL the proxy is launched against so explain resolves it as the proxy would", serverName)
 		}

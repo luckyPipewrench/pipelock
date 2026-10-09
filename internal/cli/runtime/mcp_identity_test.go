@@ -428,6 +428,21 @@ func TestListenerIdentityHeadersBinding(t *testing.T) {
 		if changed.Binding == first.Binding {
 			t.Fatal("unrelated forwarded header was not bound")
 		}
+		// Transport-managed headers vary per session or call and must not move
+		// the binding of an otherwise identical request.
+		callA := fn(http.Header{
+			"Authorization": {"Bearer first"}, "Mcp-Session-Id": {"session-a"}, "Mcp-Method": {"tools/list"},
+			"Mcp-Name": {"alpha"}, "Mcp-Param-Query": {"one"}, "Mcp-Protocol-Version": {"2025-06-18"},
+			"Last-Event-Id": {"7"}, "Accept": {"application/json"}, "Content-Type": {"application/json"},
+		})
+		callB := fn(http.Header{
+			"Authorization": {"Bearer first"}, "Mcp-Session-Id": {"session-b"}, "Mcp-Method": {"tools/call"},
+			"Mcp-Name": {"beta"}, "Mcp-Param-Other": {"two"}, "Mcp-Protocol-Version": {"2025-11-25"},
+			"Accept": {"application/json, text/event-stream"},
+		})
+		if callA.Binding != first.Binding || callB.Binding != first.Binding {
+			t.Fatalf("session header=%v: transport-managed headers moved the binding: first=%s a=%s b=%s", sessionHeader, first.Binding, callA.Binding, callB.Binding)
+		}
 		current.Refusal = "registration changed"
 		if got := fn(nil); got.Refusal != current.Refusal {
 			t.Fatalf("request binding erased reload refusal: %+v", got)

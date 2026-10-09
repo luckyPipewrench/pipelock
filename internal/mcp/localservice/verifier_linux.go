@@ -728,7 +728,10 @@ func (v *Verifier) checkMappedFiles(pid int, pin Pin, ev *Evidence) error {
 func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (string, error) {
 	field := fmt.Sprintf("%s[%d]", fieldMappedFiles, i)
 	clean := filepath.Clean(pf.Path)
-	f, err := os.Open(clean)
+	// O_NONBLOCK: this runs on the dial path with the thread locked, and a
+	// blocking open of a FIFO left at a pinned path would wait for a writer
+	// forever. The regular-file check below still refuses such a path.
+	f, err := os.OpenFile(clean, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("%s.path %s cannot be opened: %w: %w", field, clean, ErrApplicationMismatch, err)
 	}

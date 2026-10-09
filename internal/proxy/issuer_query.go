@@ -592,9 +592,18 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
 		store.rememberDocument(session, response.Request.URL, time.Now())
-		links, baseHref := htmlLinksAndBase(body, remaining)
-		base = sameOriginBase(response.Request.URL, baseHref)
+		links, baseHref, baseKnown := htmlLinksAndBase(body, remaining)
+		docBase, usable := sameOriginBase(response.Request.URL, baseHref)
 		for _, link := range links {
+			if !baseKnown || !usable {
+				// The browser resolves this document's relative links
+				// against a base Pipelock cannot honor, or cannot see, so
+				// only an absolute link names the URL it will request.
+				if ref, err := url.Parse(link); err != nil || !ref.IsAbs() {
+					continue
+				}
+			}
+			base = docBase
 			observe(link, false, true)
 		}
 		return
@@ -653,18 +662,18 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 }
 
 // sameOriginBase returns the URL an HTML document's relative references
-// resolve against: its <base href> resolved against the response URL, but only
-// when that is the same scheme, host and port as the response. A base on
-// another origin would turn a relative link into a path on that origin, so it
-// is ignored and the response URL stays the base; a cross-origin base can
-// therefore never grant issuance to either host.
-func sameOriginBase(responseURL *url.URL, href string) *url.URL {
+// resolve against: its <base href> resolved against the response URL. usable
+// is false when the base is unparseable or names another origin. The browser
+// then resolves relative links against that other base, so falling back to
+// the response URL would credit this origin with paths it never linked; the
+// caller must skip relative links instead.
+func sameOriginBase(responseURL *url.URL, href string) (*url.URL, bool) {
 	if href == "" {
-		return responseURL
+		return responseURL, true
 	}
 	ref, err := url.Parse(href)
 	if err != nil {
-		return responseURL
+		return nil, false
 	}
 	resolved := responseURL.ResolveReference(ref)
 	host, port, ok := issuerCookieOrigin(resolved)
@@ -672,9 +681,9 @@ func sameOriginBase(responseURL *url.URL, href string) *url.URL {
 	// issuerCookieOrigin admits only https, so a matching host and port is a
 	// matching origin.
 	if !ok || !responseOK || host != responseHost || port != responsePort {
-		return responseURL
+		return nil, false
 	}
-	return resolved
+	return resolved, true
 }
 
 // recordIssuerQueryAllow records an issuer-query allow. cfg is the request's

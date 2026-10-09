@@ -40,57 +40,72 @@ var htmlSrcsetAttrs = map[string]bool{
 // what is an attribute, so a URL in text, a comment, a script or a style
 // block is not a link.
 func htmlLinkValues(body []byte, limit int) []string {
-	links, _ := htmlLinksAndBase(body, limit)
+	links, _, _ := htmlLinksAndBase(body, limit)
 	return links
 }
 
 // htmlLinksAndBase is htmlLinkValues plus the href of the document's first
 // <base> element that carries one, which is the base every relative reference
-// resolves against. A <base> is not itself a link.
-func htmlLinksAndBase(body []byte, limit int) (links []string, base string) {
+// resolves against. A <base> is not itself a link, and one inside <template>
+// content is inert. The whole inspected document is read for the base even
+// after the link limit is reached, because a base after the last kept link
+// still moves every relative link before it. baseKnown is false when the
+// document was cut at the inspection limit without a base in the inspected
+// part: a base past the cut cannot be ruled out, so the caller must not
+// resolve relative links against the response URL.
+func htmlLinksAndBase(body []byte, limit int) (links []string, base string, baseKnown bool) {
 	if limit <= 0 || len(body) == 0 {
-		return nil, ""
+		return nil, "", true
 	}
-	if len(body) > issuerQueryMaxHTMLBytes {
+	truncated := len(body) > issuerQueryMaxHTMLBytes
+	if truncated {
 		body = body[:issuerQueryMaxHTMLBytes]
 	}
 	var out []string
 	baseSeen := false
+	templateDepth := 0
 	z := html.NewTokenizer(bytes.NewReader(body))
-	for len(out) < limit {
-		switch z.Next() {
+	for {
+		tt := z.Next()
+		switch tt {
 		case html.ErrorToken:
-			return out, base
+			return out, base, baseSeen || !truncated
+		case html.EndTagToken:
+			if tag, _ := z.TagName(); string(tag) == "template" && templateDepth > 0 {
+				templateDepth--
+			}
 		case html.StartTagToken, html.SelfClosingTagToken:
-			tag, _ := z.TagName()
-			isBase := string(tag) == "base"
-			for {
+			tag, hasAttr := z.TagName()
+			name := string(tag)
+			if name == "template" && tt == html.StartTagToken {
+				templateDepth++
+			}
+			isBase := name == "base" && templateDepth == 0
+			for hasAttr {
 				key, val, more := z.TagAttr()
-				name := strings.ToLower(string(key))
+				hasAttr = more
+				attr := strings.ToLower(string(key))
 				switch {
-				case isBase:
-					if name == "href" && !baseSeen {
+				case name == "base":
+					if isBase && attr == "href" && !baseSeen {
 						baseSeen = true
 						base = strings.TrimSpace(string(val))
 					}
-				case htmlLinkAttrs[name]:
-					if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
+				case len(out) >= limit:
+				case htmlLinkAttrs[attr]:
+					if v := strings.TrimSpace(string(val)); v != "" {
 						out = append(out, v)
 					}
-				case htmlSrcsetAttrs[name]:
+				case htmlSrcsetAttrs[attr]:
 					for _, candidate := range srcsetURLs(string(val)) {
 						if len(out) < limit {
 							out = append(out, candidate)
 						}
 					}
 				}
-				if !more {
-					break
-				}
 			}
 		}
 	}
-	return out, base
 }
 
 // srcsetURLs returns the candidate URLs of a srcset attribute value, following

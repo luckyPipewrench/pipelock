@@ -20,22 +20,47 @@ func TestHTMLLinksAndBase(t *testing.T) {
 		body      string
 		wantBase  string
 		wantLinks string
+		limit     int
 	}{
-		{"no base", `<img src="a.png">`, "", "a.png"},
-		{"base is not a link", `<base href="/assets/"><img src="a.png">`, "/assets/", "a.png"},
-		{"first base wins", `<base href="/a/"><base href="/b/"><img src="a.png">`, "/a/", "a.png"},
-		{"base without href does not count", `<base target="_blank"><base href="/b/">`, "/b/", ""},
-		{"base after the link still applies", `<img src="a.png"><base href="/late/">`, "/late/", "a.png"},
-		{"upper case tag and attribute", `<BASE HREF=" /x/ "><img src=a.png>`, "/x/", "a.png"},
-		{"base inside a comment is ignored", `<!-- <base href="/c/"> --><img src="a.png">`, "", "a.png"},
+		{"no base", `<img src="a.png">`, "", "a.png", 0},
+		{"base is not a link", `<base href="/assets/"><img src="a.png">`, "/assets/", "a.png", 0},
+		{"first base wins", `<base href="/a/"><base href="/b/"><img src="a.png">`, "/a/", "a.png", 0},
+		{"base without href does not count", `<base target="_blank"><base href="/b/">`, "/b/", "", 0},
+		{"base after the link still applies", `<img src="a.png"><base href="/late/">`, "/late/", "a.png", 0},
+		{"upper case tag and attribute", `<BASE HREF=" /x/ "><img src=a.png>`, "/x/", "a.png", 0},
+		{"base inside a comment is ignored", `<!-- <base href="/c/"> --><img src="a.png">`, "", "a.png", 0},
+		{"base inside template content is inert", `<template><base href="/t/"></template><img src="a.png">`, "", "a.png", 0},
+		{"nested template", `<template><template></template><base href="/t/"></template><base href="/real/">`, "/real/", "", 0},
+		{"base after the link limit still counts", `<img src="a.png"><img src="b.png"><base href="/late/">`, "/late/", "a.png", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			links, base := htmlLinksAndBase([]byte(tt.body), 16)
+			limit := tt.limit
+			if limit == 0 {
+				limit = 16
+			}
+			links, base, known := htmlLinksAndBase([]byte(tt.body), limit)
+			if !known {
+				t.Fatal("base unknown for an untruncated document")
+			}
 			if base != tt.wantBase || strings.Join(links, "|") != tt.wantLinks {
 				t.Fatalf("base=%q links=%q, want base=%q links=%q", base, links, tt.wantBase, tt.wantLinks)
 			}
 		})
+	}
+}
+
+// A document cut at the inspection limit with no base in the inspected part
+// may have one later, so relative links cannot be trusted to resolve against
+// the response URL.
+func TestHTMLLinksAndBaseTruncated(t *testing.T) {
+	big := []byte(`<img src="a.png">` + strings.Repeat(" ", issuerQueryMaxHTMLBytes))
+	if _, _, known := htmlLinksAndBase(big, 4); known {
+		t.Fatal("truncated document without a base reported its base as known")
+	}
+	withBase := []byte(`<base href="/b/"><img src="a.png">` + strings.Repeat(" ", issuerQueryMaxHTMLBytes))
+	if _, base, known := htmlLinksAndBase(withBase, 4); !known || base != "/b/" {
+		t.Fatalf("truncated document with an early base: base=%q known=%v", base, known)
 	}
 }
 
@@ -52,18 +77,19 @@ func TestSameOriginBase(t *testing.T) {
 		{"absolute same origin", "https://app.vendor.example/assets/", "https://app.vendor.example/assets/"},
 		{"explicit default port", "https://app.vendor.example:443/assets/", "https://app.vendor.example:443/assets/"},
 		{"mixed case host", "https://APP.vendor.example/assets/", "https://APP.vendor.example/assets/"},
-		{"other host", "https://evil.vendor.example/assets/", "https://app.vendor.example/dir/page"},
-		{"protocol relative other host", "//evil.vendor.example/assets/", "https://app.vendor.example/dir/page"},
-		{"other port", "https://app.vendor.example:8443/assets/", "https://app.vendor.example/dir/page"},
-		{"other scheme", "http://app.vendor.example/assets/", "https://app.vendor.example/dir/page"},
-		{"userinfo", "https://user@app.vendor.example/assets/", "https://app.vendor.example/dir/page"},
-		{"non http scheme", "data:text/html,x", "https://app.vendor.example/dir/page"},
-		{"unparsable", "https://app.vendor.example/%zz", "https://app.vendor.example/dir/page"},
+		{"other host", "https://evil.vendor.example/assets/", ""},
+		{"protocol relative other host", "//evil.vendor.example/assets/", ""},
+		{"other port", "https://app.vendor.example:8443/assets/", ""},
+		{"other scheme", "http://app.vendor.example/assets/", ""},
+		{"userinfo", "https://user@app.vendor.example/assets/", ""},
+		{"non http scheme", "data:text/html,x", ""},
+		{"unparsable", "https://app.vendor.example/%zz", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sameOriginBase(response, tt.href).String(); got != tt.want {
-				t.Fatalf("sameOriginBase(%q) = %q, want %q", tt.href, got, tt.want)
+			got, usable := sameOriginBase(response, tt.href)
+			if usable != (tt.want != "") || (usable && got.String() != tt.want) {
+				t.Fatalf("sameOriginBase(%q) = %v, %v; want %q", tt.href, got, usable, tt.want)
 			}
 		})
 	}
@@ -87,7 +113,11 @@ func TestInterceptBaseHref(t *testing.T) {
 		base := r.URL.Query().Get("base")
 		base = strings.ReplaceAll(base, "SITE", siteURL)
 		base = strings.ReplaceAll(base, "OTHER", other.URL)
-		_, _ = io.WriteString(w, `<base href="`+base+`"><img src="`+baseHrefAsset+`">`)
+		page := `<base href="` + base + `"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
+		if base == "TEMPLATE" {
+			page = `<template><base href="/assets/"></template><img src="` + baseHrefAsset + `">`
+		}
+		_, _ = io.WriteString(w, page)
 	}))
 	defer site.Close()
 	siteURL = site.URL
@@ -105,12 +135,15 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"absolute same origin base", "SITE/assets/", site, "/assets/" + baseHrefAsset, http.StatusOK},
 		{"absolute same origin base other directory", "SITE/assets/", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"no base resolves against the response", "", site, "/dir/" + baseHrefAsset, http.StatusOK},
-		{"cross origin base falls back to the response directory", "OTHER/assets/", site, "/dir/" + baseHrefAsset, http.StatusOK},
+		{"cross origin base issues no relative link on the page host", "OTHER/assets/", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"cross origin base issues nothing on the page host", "OTHER/assets/", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"cross origin base issues nothing on its own host", "OTHER/assets/", other, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"cross origin base issues nothing on its host at the response path", "OTHER/assets/", other, "/dir/" + baseHrefAsset, http.StatusForbidden},
+		{"absolute link still issues under a cross origin base", "OTHER/assets/", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"template base is inert", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusOK},
+		{"template base issues nothing under it", "TEMPLATE", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"other scheme base is ignored", siteHTTP + "/assets/", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
-		{"other scheme base falls back to the response directory", siteHTTP + "/assets/", site, "/dir/" + baseHrefAsset, http.StatusOK},
+		{"other scheme base issues no relative link", siteHTTP + "/assets/", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newWebPlatformHarness(t)

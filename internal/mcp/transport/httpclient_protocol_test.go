@@ -362,6 +362,20 @@ func (r *protocolPausedReader) Close() error {
 	return r.reader.Close()
 }
 
+func awaitProtocolTestValue[T any](t *testing.T, values <-chan T, phase string) T {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case value := <-values:
+		return value
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s", phase)
+		var zero T
+		return zero
+	}
+}
+
 func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 	for _, sse := range []bool{false, true} {
 		for _, mode := range []string{"complete", "abort", "timeout", "replacement"} {
@@ -388,7 +402,7 @@ func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				<-seen
+				awaitProtocolTestValue(t, seen, "initial request")
 				negotiation := reader.(*initializeResponseReader)
 				paused := &protocolPausedReader{reader: negotiation.reader, ready: make(chan struct{}), release: make(chan struct{})}
 				t.Cleanup(func() {
@@ -409,9 +423,9 @@ func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 					msg, readErr := reader.ReadMessage()
 					result <- ReadResult{Msg: msg, Err: readErr}
 				}()
-				<-paused.ready
+				awaitProtocolTestValue(t, paused.ready, "completed inner read")
 				if mode == "timeout" {
-					if got := <-result; !errors.Is(got.Err, ErrResponseTimeout) {
+					if got := awaitProtocolTestValue(t, result, "timeout result"); !errors.Is(got.Err, ErrResponseTimeout) {
 						t.Fatalf("read error = %v, want timeout", got.Err)
 					}
 				}
@@ -421,7 +435,7 @@ func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 						t.Fatal(err)
 					}
 					drain(t, replacement)
-					<-seen
+					awaitProtocolTestValue(t, seen, "replacement request")
 				}
 				if mode != "complete" {
 					if err := reader.(io.Closer).Close(); err != nil {
@@ -433,7 +447,7 @@ func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 				if timeoutReader != nil {
 					completed = timeoutReader.inflight
 				}
-				got := <-completed
+				got := awaitProtocolTestValue(t, completed, "released read result")
 				if got.Err != nil || string(got.Msg) != response {
 					t.Fatalf("response = %s, error = %v", got.Msg, got.Err)
 				}
@@ -452,7 +466,7 @@ func TestHTTPClientProtocolClosePendingResponse(t *testing.T) {
 				case "replacement":
 					want = "2025-03-26"
 				}
-				if header := <-seen; header != want {
+				if header := awaitProtocolTestValue(t, seen, "subsequent request"); header != want {
 					t.Fatalf("protocol header after Close = %q, want %q", header, want)
 				}
 			})

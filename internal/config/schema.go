@@ -732,6 +732,19 @@ type MCPToolScanning struct {
 	// ListenerDriftResetTarget is the stable listener identity a delegation
 	// must bind before it may re-baseline this upstream inventory.
 	ListenerDriftResetTarget string `yaml:"listener_drift_reset_target" json:"-"`
+	// AcknowledgedFindings are reviewed, expiring operator acknowledgments of
+	// every occurrence of one finding in one exact tool definition from one
+	// configured server. Omitted or empty acknowledges nothing.
+	AcknowledgedFindings []MCPAcknowledgedFinding `yaml:"acknowledged_findings" json:"AcknowledgedFindings,omitempty"`
+	// AcknowledgmentKey names the deployment-held secret that keys every
+	// acknowledgment's server_binding_hmac: "${ENV_VAR}" or
+	// "file:/absolute/path" (mode 0600 or stricter, no symlinks). A literal
+	// value is refused because it would sit beside the entries it protects.
+	// Required when acknowledged_findings is not empty.
+	AcknowledgmentKey string `yaml:"acknowledgment_key" json:"-"`
+	// AcknowledgmentKeyBytes is the key resolved and pinned during
+	// validation. Runtime builders must not resolve the source again.
+	AcknowledgmentKeyBytes []byte `yaml:"-" json:"-"`
 }
 
 // MCPDataClassLabels reserves the config surface for DLP-derived MCP receipt

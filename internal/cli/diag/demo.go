@@ -523,6 +523,7 @@ func buildScenarios(extraPoison []*tools.ExtraPoisonPattern) []scenario {
 				if err != nil {
 					return false, fmt.Sprintf("marshal error: %v", err), nil
 				}
+				// ack-exempt: fixed diagnostic configuration with no configured server identity.
 				toolCfg := &tools.ToolScanConfig{
 					Baseline:    tools.NewToolBaseline(),
 					Action:      config.ActionBlock,

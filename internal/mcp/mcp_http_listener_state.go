@@ -570,6 +570,8 @@ func (s *mcpListenerClientStates) toolConfig(state *mcpListenerClientState, cfg 
 		BindingUnknownAction:    cfg.BindingUnknownAction,
 		BindingNoBaselineAction: cfg.BindingNoBaselineAction,
 		ExtraPoison:             cfg.ExtraPoison,
+		CredentialAcks:          cfg.CredentialAcks,
+		Now:                     cfg.Now,
 	}
 }
 

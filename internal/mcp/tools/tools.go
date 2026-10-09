@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -102,6 +104,17 @@ type ToolScanMatch struct {
 	PreviousHash string   `json:"previous_hash,omitempty"`
 	CurrentHash  string   `json:"current_hash,omitempty"`
 	DriftDetail  string   `json:"drift_detail,omitempty"`
+	// CredentialAck is the outcome of a configured acknowledgment for this
+	// tool's Credential Request Directive finding. Any value other than
+	// "acknowledged" refuses the response under every action.
+	CredentialAck string `json:"credential_ack,omitempty"`
+	// CredentialAckCandidate is the entry an operator could add, after
+	// reviewing the tool, to acknowledge its current occurrences. Set only
+	// when every occurrence is attributable and the server is configured.
+	CredentialAckCandidate *CredentialAckCandidate `json:"credential_ack_candidate,omitempty"`
+	// CredentialAckUnsupported says why no candidate can be offered for a
+	// fully attributable tool, such as more occurrences than an entry holds.
+	CredentialAckUnsupported string `json:"credential_ack_unsupported,omitempty"`
 }
 
 // ToolScanResult describes the outcome of scanning a tools/list response.
@@ -182,6 +195,55 @@ type ToolScanConfig struct {
 
 	// ExtraPoison holds tool-poison patterns from community rule bundles.
 	ExtraPoison []*ExtraPoisonPattern
+
+	// CredentialAcks are the operator's acknowledgments of Credential
+	// Request Directive findings and the key their bindings are checked
+	// with. They apply only to the configured server named by ServerName
+	// whose exact transport digest, ServerBindingSHA256, keys to the
+	// entry's server_binding_hmac. The digest itself is never exported.
+	CredentialAcks      *CredentialAckSet
+	ServerName          string
+	ServerBindingSHA256 string
+	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.
+	Now func() time.Time
+	// schemaOrder supplies schema map iteration order in tests. Nil keeps
+	// Go's own map order.
+	schemaOrder schemaKeyOrder
+}
+
+func (c *ToolScanConfig) textOrder() schemaKeyOrder {
+	if c == nil {
+		return nil
+	}
+	return c.schemaOrder
+}
+
+// toolPrescan is one traversal of a tool's scanner text and the detector's
+// findings on it. Schema maps iterate in random order, and a match can span
+// two fields in one order and not another, so the acknowledgment decision
+// and the findings it lifts must come from the same traversal.
+type toolPrescan struct {
+	text   string
+	spans  []toolTextSpan
+	norm   string
+	poison []string
+}
+
+func prescanTool(cfg *ToolScanConfig, tool ToolDef) toolPrescan {
+	text, spans := toolScanTextOrdered(tool, cfg.textOrder())
+	pre := toolPrescan{text: text, spans: spans}
+	if text != "" {
+		pre.norm = normalize.ForToolText(text)
+		pre.poison = checkToolPoison(pre.norm)
+	}
+	return pre
+}
+
+func (c *ToolScanConfig) now() time.Time {
+	if c != nil && c.Now != nil {
+		return c.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
@@ -1540,6 +1602,13 @@ func collectHyperSchemaDescriptions(value any, result *[]string, depth int) {
 // scanned in their original form; they are not expanded into space-separated
 // words, because that is how an identifier becomes jailbreak prose.
 func extractToolGeneralText(t ToolDef) string {
+	return extractToolGeneralTextOrdered(t, nil)
+}
+
+// extractToolGeneralTextOrdered is extractToolGeneralText with the schema map
+// iteration order supplied by order; nil keeps Go's own map order. Only the
+// controlled-order equivalence tests pass a non-nil order.
+func extractToolGeneralTextOrdered(t ToolDef, order schemaKeyOrder) string {
 	var parts []string
 	// Dropping a truncated key set is only safe because
 	// uninspectableToolDefinition has already refused the definition
@@ -1572,7 +1641,7 @@ func extractToolGeneralText(t ToolDef) string {
 		appendJSONKeys(t.InputSchema)
 	}
 	if len(t.OutputSchema) > 0 {
-		parts = append(parts, ExtractSchemaDescriptions(t.OutputSchema)...)
+		parts = append(parts, schemaDescriptionsOrdered(t.OutputSchema, order)...)
 		appendJSONKeys(t.OutputSchema)
 	}
 	// Metadata is extensible and agent-visible. Its readable strings use the
@@ -1868,41 +1937,17 @@ func collectParamNames(obj map[string]interface{}, seen map[string]bool, depth i
 // plus string members of enum and examples arrays.
 // Falls back to extracting string schemas (non-object JSON values).
 func ExtractSchemaDescriptions(schema json.RawMessage) []string {
+	return schemaDescriptionsOrdered(schema, nil)
+}
+
+func schemaDescriptionsOrdered(schema json.RawMessage, order schemaKeyOrder) []string {
 	var parsed interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		return nil
 	}
-	var result []string
-	collectSchemaValueText(parsed, &result, 0)
-	return result
-}
-
-// collectSchemaValueText extracts agent-visible text from a schema value of any
-// JSON shape, not only an object.
-//
-// A well-formed MCP schema is an object, but nothing forces an upstream server
-// to send one and the agent reads whatever arrives. Parsing straight into a map
-// dropped every other shape: a top-level array carried its instructions past
-// the scanner entirely, leaving only the key names behind, and ScanTools then
-// marked the tools/list clean so the proxy skipped general response scanning
-// and forwarded it. Dispatch on the actual shape instead, so an unexpected one
-// is scanned rather than silently unread.
-func collectSchemaValueText(value interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch v := value.(type) {
-	case map[string]interface{}:
-		collectAllSchemaText(v, result, depth)
-	case []interface{}:
-		for _, item := range v {
-			collectSchemaValueText(item, result, depth+1)
-		}
-	case string:
-		if v != "" {
-			*result = append(*result, v)
-		}
-	}
+	sink := toolTextSink{order: order}
+	sink.schemaValue(parsed, "", 0)
+	return sink.texts
 }
 
 // schemaTextExtractionTruncated reports whether schema text lies beyond the
@@ -1965,88 +2010,6 @@ var schemaTextFields = [...]string{
 	"description", "title", "default", "const", "pattern", "$comment",
 }
 
-// collectAllSchemaText walks a JSON Schema tree collecting all text values
-// that an LLM might ingest. Extracts string values from metadata fields
-// (description, title, default, const, pattern, $comment, x-* extensions),
-// string members from enum/examples arrays, then recurses into all nested
-// objects and arrays to catch text hidden in composition keywords
-// (allOf, anyOf, oneOf, if/then/else, $defs, items, etc.).
-func collectAllSchemaText(obj map[string]interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-
-	for key, v := range obj {
-		handledSubtree := false
-
-		// Extract values from known metadata fields.
-		// default and const can hold objects/arrays with nested strings,
-		// so use collectStringLeaves for full subtree extraction.
-		for _, field := range schemaTextFields {
-			if key == field {
-				if key == "default" || key == "const" {
-					collectStringLeaves(v, result, depth+1)
-					handledSubtree = true
-				} else if s, ok := v.(string); ok && s != "" {
-					*result = append(*result, s)
-					// Consumed here. Without this the value is appended
-					// again by the string case in the walk below, which
-					// doubles the scanner input for every modelled field.
-					handledSubtree = true
-				}
-				break
-			}
-		}
-
-		// Extract all string leaves from vendor extension fields (x-*).
-		// Extensions can hold objects, arrays, or strings.
-		if strings.HasPrefix(key, "x-") || strings.HasPrefix(key, "X-") {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		// Extract all string leaves from enum and examples.
-		// These can hold objects (e.g., examples: [{"prompt":"..."}]),
-		// not just flat strings.
-		if key == "enum" || key == "examples" {
-			collectStringLeaves(v, result, depth+1)
-			handledSubtree = true
-		}
-
-		if handledSubtree {
-			continue
-		}
-
-		// Recurse into nested objects and arrays for schema composition
-		// keywords (allOf, anyOf, oneOf, if/then/else, items, $defs, etc.),
-		// and take string values under keys this walk does not model.
-		//
-		// Only the modelled field names were being read here, so a string
-		// under any other key was dropped: a schema carrying
-		// "instructions":"Ignore all previous instructions" reached the agent
-		// having never been scanned, because the tools/list response is
-		// excluded from general response scanning once ScanTools calls it
-		// clean. The agent reads whatever the schema contains, so the walk
-		// takes every string it contains rather than only the ones named in
-		// the specification.
-		switch val := v.(type) {
-		case map[string]interface{}:
-			collectAllSchemaText(val, result, depth+1)
-		case []interface{}:
-			// Every element, not only the objects. A bare string sitting
-			// directly in a composition array is agent-visible text and was
-			// being dropped by an object-only walk.
-			for _, item := range val {
-				collectSchemaValueText(item, result, depth+1)
-			}
-		case string:
-			if isAgentReadableSchemaText(val) {
-				*result = append(*result, val)
-			}
-		}
-	}
-}
-
 // schemaTypeKeywords are the JSON Schema type names. A string equal to one of
 // them is structure rather than anything an agent acts on.
 var schemaTypeKeywords = map[string]bool{
@@ -2072,23 +2035,9 @@ func isAgentReadableSchemaText(value string) bool {
 // like default, const, enum, examples, and x-* extensions that can hold
 // nested structures containing poisoned text.
 func collectStringLeaves(v interface{}, result *[]string, depth int) {
-	if depth > maxSchemaDepth {
-		return
-	}
-	switch val := v.(type) {
-	case string:
-		if val != "" {
-			*result = append(*result, val)
-		}
-	case map[string]interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	case []interface{}:
-		for _, child := range val {
-			collectStringLeaves(child, result, depth+1)
-		}
-	}
+	sink := toolTextSink{}
+	sink.stringLeaves(v, "", depth)
+	*result = append(*result, sink.texts...)
 }
 
 // tryParseToolsList attempts to parse a JSON-RPC result as a tools/list response.
@@ -2220,10 +2169,11 @@ func checkToolPoison(text string) []string {
 			// attempt to recognize a genuine refusal ("never share your API
 			// key") was defeated by a later redirect phrased some new way, and
 			// real servers do not word their tool documentation like this.
-			// There is no per-tool or per-finding acknowledgment for these
-			// findings; the operator controls are mcp_tool_scanning.action
-			// and mcp_tool_scanning.enabled, as described above
-			// contextLeakParamPattern.
+			// Detection itself has no exception. A reviewed tool can be
+			// acknowledged per server, tool and occurrence list through
+			// mcp_tool_scanning.acknowledged_findings, which ScanTools applies
+			// after this match; mcp_tool_scanning.action and enabled remain
+			// the broad controls.
 			if p.name == "File Exfiltration Directive" && isNegatedFileExfiltration(text, loc) {
 				offset = loc[1]
 				continue
@@ -2705,7 +2655,23 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		defer resp.End()
 	}
 
-	for _, tool := range tools {
+	// Acknowledgment outcomes are decided before any tool is scanned. A
+	// refused entry refuses the whole response, so its drift-baseline writes
+	// must follow block for every tool in it, siblings included, whichever
+	// order they arrive in.
+	ackNow := cfg.now()
+	ackOutcomes := make([]string, len(tools))
+	prescans := make([]toolPrescan, len(tools))
+	responseAckRefused := false
+	for i, tool := range tools {
+		prescans[i] = prescanTool(cfg, tool)
+		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
+			ackOutcomes[i] = outcome
+			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
+		}
+	}
+
+	for toolIndex, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
@@ -2722,10 +2688,18 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		directiveKeys := extractToolDirectiveKeys(tool)
 
-		descriptionText := extractToolText(tool)
-		generalText := extractToolGeneralText(tool)
-		text := strings.Trim(strings.Join([]string{descriptionText, generalText}, ". "), ". ")
+		pre := prescans[toolIndex]
+		text, spans := pre.text, pre.spans
 
+		if text == "" {
+			// A reviewed tool can shrink to no scanner text at all. Its entry
+			// is still evaluated, against no occurrences, so it refuses like
+			// any other stale entry instead of being skipped.
+			if outcome := ackOutcomes[toolIndex]; outcome != "" {
+				match.CredentialAck = outcome
+				hasFinding = true
+			}
+		}
 		if text != "" {
 			// This is the dedicated tool scanner, whose action is independent of
 			// response scanning. The response path itself never scans tool
@@ -2738,7 +2712,41 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			poison := checkToolPoison(normalize.ForToolText(text))
+			norm := pre.norm
+			poison := slices.Clone(pre.poison)
+			hasRequest := slices.Contains(poison, handoverRequestFinding)
+			// A configured entry is evaluated whether or not its finding is
+			// still present: a reviewed tool whose wording changed or was
+			// removed no longer matches the entry, and that must refuse rather
+			// than let the stale entry go unnoticed.
+			outcome := ackOutcomes[toolIndex]
+			hasEntry := outcome != ""
+			if hasRequest || hasEntry {
+				// The attribution reads the exact text, spans and normalized
+				// string checkToolPoison just matched.
+				att := attributeWithNorm(text, norm, spans)
+				switch {
+				case !hasEntry:
+					match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
+				default:
+					match.CredentialAck = outcome
+					if outcome == CredentialAckAcknowledged {
+						// Only this finding is lifted. The raw finding and its
+						// treatment stay visible as an observation for audit.
+						poison = slices.DeleteFunc(slices.Clone(poison), func(f string) bool { return f == handoverRequestFinding })
+						observations = append(observations, ToolScanMatch{
+							ToolName:      tool.Name,
+							ToolPoison:    []string{handoverRequestFinding},
+							CredentialAck: CredentialAckAcknowledged,
+						})
+					} else {
+						hasFinding = true
+						if hasRequest {
+							match.CredentialAckCandidate, match.CredentialAckUnsupported = credentialAckCandidate(cfg, tool, att)
+						}
+					}
+				}
+			}
 			if len(poison) > 0 {
 				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true
@@ -2814,8 +2822,15 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		}
 		if cfg.DetectDrift && driftBaseline != nil {
 			hash := hashTool(tool)
-			promoteNew := cfg.Action != "block" || !hasFinding
-			promoteChanged := cfg.Action != "block"
+			// A definition the agent never received must not become the
+			// baseline later scans compare against.
+			blocking := cfg.Action == "block"
+			// A stale acknowledgment refuses the whole response, so nothing
+			// in it reaches the agent. No definition in it may become a
+			// baseline, not even a scanner-clean new tool or a descriptive
+			// change that block mode would otherwise accept.
+			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
+			promoteChanged := !responseAckRefused && !blocking
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
 			// content-based promotion above: a scan-clean new tool would
@@ -2846,7 +2861,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
-				PromoteAccepted: cfg.Action != "block" || !hasFinding,
+				PromoteAccepted: !responseAckRefused && (!blocking || !hasFinding),
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},
@@ -2894,6 +2909,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			}
 		}
 
+		if match.CredentialAckCandidate != nil && credentialAckHasOtherFindings(match) {
+			// An acknowledgment lifts only the credential-request finding.
+			// With another finding still enforcing, the entry would change
+			// nothing, so it is not offered.
+			match.CredentialAckCandidate = nil
+			match.CredentialAckUnsupported = "other findings on this tool still enforce"
+		}
 		if hasFinding {
 			matches = append(matches, match)
 		}
@@ -2934,6 +2956,9 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 			reasons = append(reasons, inj.PatternName)
 		}
 		reasons = append(reasons, m.ToolPoison...)
+		if m.CredentialAck != "" && m.CredentialAck != CredentialAckAcknowledged {
+			reasons = append(reasons, "acknowledgment refused: "+m.CredentialAck)
+		}
 		if m.DriftDetected {
 			reasons = append(reasons, "definition-drift")
 			if len(m.DriftCues) > 0 {
@@ -2945,6 +2970,7 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 		if m.DriftDetail != "" {
 			_, _ = fmt.Fprintf(logW, "  %s\n", m.DriftDetail)
 		}
+		logCredentialAckCandidate(logW, lineNum, m)
 	}
 }
 
@@ -2954,6 +2980,14 @@ func LogToolFindings(logW io.Writer, lineNum int, result ToolScanResult) {
 func LogToolObservations(logW io.Writer, lineNum int, result ToolScanResult) {
 	for _, o := range result.Observations {
 		switch {
+		case o.CredentialAck == CredentialAckAcknowledged:
+			// The raw finding stays visible. Whether the list is forwarded is
+			// decided later by the other findings and gates, so this line
+			// records only the treatment.
+			_, _ = fmt.Fprintf(logW,
+				"pipelock: line %d: tool %q: %s acknowledged by mcp_tool_scanning.acknowledged_findings (treatment allow)\n",
+				lineNum, o.ToolName, strings.Join(o.ToolPoison, ","))
+			continue
 		case !o.DriftAccepted:
 			continue
 		case len(o.DriftCues) > 0:

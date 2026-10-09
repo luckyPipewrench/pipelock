@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
@@ -34,6 +35,25 @@ type WSClient struct {
 	closed    atomic.Bool
 }
 
+// redactDialURL drops the parts of an upstream URL that can carry a
+// credential (user info, query, fragment, or an opaque part) before it
+// reaches an error.
+func redactDialURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid>"
+	}
+	if u.Opaque != "" {
+		// An opaque URL ("ws:user:pass@host") keeps everything after the
+		// scheme in Opaque, credentials included, so none of it is shown.
+		return u.Scheme + ":<redacted>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 // NewWSClient establishes a WebSocket connection to the given URL and returns
 // a WSClient. The connection is established using gobwas/ws.Dial with the
 // provided context for timeout/cancellation.
@@ -48,7 +68,18 @@ func NewWSClientWithDialer(ctx context.Context, rawURL string, dialContext func(
 	dialer := ws.Dialer{NetDial: dialContext}
 	conn, br, _, err := dialer.Dial(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("ws dial %s: %w", rawURL, err)
+		// A *url.Error's text repeats its URL exactly as given, user info
+		// and query included. A parse failure has nothing else worth
+		// keeping; any other keeps its cause, so errors.Is still sees a
+		// cancellation or a dialer's sentinel, without the URL text.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			if urlErr.Op == "parse" {
+				return nil, fmt.Errorf("ws dial %s: invalid upstream URL", redactDialURL(rawURL))
+			}
+			return nil, fmt.Errorf("ws dial %s: %s: %w", redactDialURL(rawURL), urlErr.Op, urlErr.Err)
+		}
+		return nil, fmt.Errorf("ws dial %s: %w", redactDialURL(rawURL), err)
 	}
 	var reader io.Reader = conn
 	if br != nil {

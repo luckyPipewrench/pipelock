@@ -315,6 +315,8 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
 		ruleRawTokens, ruleRawJoined := rawTokens, rawJoined
 		patchInspection := patchTargetsOrdinary
+		patchFallbackArgs := argStrings
+		credentialDestinations := argStrings
 		if rule.ArgKey != nil && len(rawArgs) == 0 {
 			if rule.hasStructuralValidators() {
 				return uninspectableStructuralArgsVerdict(rule.Name)
@@ -327,6 +329,8 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 				return uninspectableJSONDepthVerdict()
 			}
 			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings)
+			patchFallbackArgs = scopedStrings
+			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
@@ -339,7 +343,8 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if inspection != patchTargetsOrdinary {
 				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets))
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
-				matchStrings := patchTargetMatchStrings(argStrings, expandedTargets)
+				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
+				credentialDestinations = matchStrings
 				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
 				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
 				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
@@ -358,6 +363,11 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		// for calls with more than one string value.
 		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
 			argPatternMatched = matched
+		}
+		if patchInspection != patchTargetsUninspectable {
+			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations); handled {
+				argPatternMatched = matched
+			}
 		}
 		if !argPatternMatched {
 			continue
@@ -1492,7 +1502,7 @@ func expandBraces(s string) string {
 // covering common dangerous operations that agents might attempt.
 const (
 	fileReadToolPattern     = `read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read`
-	fileWriteToolPattern    = `write_file|file_write|edit_file|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked`
+	fileWriteToolPattern    = `write_file|file_write|edit_file|edit_block|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked`
 	filePatchToolPattern    = `apply_patch`
 	fileMoveToolPattern     = `move_file|file_move|rename_file|move-file`
 	fileCopyToolPattern     = `copy_file|file_copy`
@@ -1538,6 +1548,11 @@ const (
 	// `.pub` exception is spelled out one character at a time.
 	sshKeyNamePattern        = `(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)`
 	sensitiveFilePathPattern = `\.ssh[\\/]?` + sshKeyNamePattern + `|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow`
+	// Credential control files can affect later authentication or command
+	// execution. Dotenv files remain writable for ordinary application setup.
+	credentialWritePathPattern = `(?:^|[\\/])\.ssh[\\/]` + sshKeyNamePattern + `|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:])`
+	fileTargetKeyPattern       = `(?i)^(path|file_?path|file|filename|target_?file)$`
+	fileDestinationKeyPattern  = `(?i)^(destination|destination_?path|dest|new_?path|target|target_?path)$`
 )
 
 func DefaultToolPolicyRules() []config.ToolPolicyRule {
@@ -1561,6 +1576,28 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			Name:        "Credential File Access",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|` + fileReadToolPattern + `|` + fileLinkToolPattern + `|` + fileMoveToolPattern + `|` + fileCopyToolPattern + `)$`,
 			ArgPattern:  `(?i)(` + sensitiveFilePathPattern + `)`,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Credential File Write",
+			ToolPattern: `(?i)^(` + fileWriteToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + credentialWritePathPattern + `)`,
+			ArgKey:      fileTargetKeyPattern,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Credential File Write",
+			ToolPattern: `(?i)^(` + fileMoveToolPattern + `|` + fileCopyToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + credentialWritePathPattern + `)`,
+			ArgKey:      fileDestinationKeyPattern,
+			Action:      config.ActionBlock,
+		},
+		{
+			Name:        "Credential File Write",
+			ToolPattern: `(?i)^(` + filePatchToolPattern + `)$`,
+			ArgPattern:  `(?i)(` + credentialWritePathPattern + `)`,
+			ArgKey:      fileTargetKeyPattern,
+			ArgSource:   config.ToolPolicyArgSourcePatchTargets,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1597,7 +1634,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// for later reads or writes outside the visible protected namespace.
 			Name:        "Protected Path Link Creation",
 			ToolPattern: `(?i)^(` + fileLinkToolPattern + `)$`,
-			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `)`,
+			ArgPattern:  `(?i)(` + persistencePathPattern + `|` + shellProfilePathPattern + `|` + credentialWritePathPattern + `)`,
 			Action:      config.ActionBlock,
 		},
 		{

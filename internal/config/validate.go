@@ -2689,9 +2689,6 @@ func validateToolPolicyArgSource(r ToolPolicyRule) error {
 	if r.ArgSource != "" && r.ArgPattern == "" {
 		return fmt.Errorf("mcp_tool_policy rule %q has arg_source without arg_pattern", r.Name)
 	}
-	if r.ArgSource != "" && r.ArgKey != "" {
-		return fmt.Errorf("mcp_tool_policy rule %q combines arg_source with arg_key", r.Name)
-	}
 	return nil
 }
 

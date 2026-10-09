@@ -424,7 +424,7 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-24.04", candidate_job)
         self.assertNotIn("ubuntu-latest", candidate_job)
         setup = step_block(self.workflow, "Set up Go")
-        self.assertIn('go-version: "1.26.8"', setup)
+        self.assertIn('go-version: "1.26.9"', setup)
         self.assertNotIn('go-version: "1.26"', setup)
 
     def test_each_run_attempt_keeps_its_own_evidence_identity(self):

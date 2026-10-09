@@ -74,13 +74,16 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 		base = b
 	}
 	var output, diagnostics bytes.Buffer
-	var handled bool
+	var handled, consumed bool
 	err := actionreceipt.WithBaseHistorySnapshot(location.Dir, base, func() error {
+		consumed = true
 		var consumeErr error
 		handled, consumeErr = runChainSetIfRunsInner(&output, &diagnostics, location, trust, opts)
 		return consumeErr
 	})
-	if errors.Is(err, recorder.ErrEvidenceChanged) {
+	// A snapshot that failed before its consumer ran is a listing failure,
+	// classified as the consumer classifies its own.
+	if errors.Is(err, recorder.ErrEvidenceChanged) || (err != nil && !consumed) {
 		return true, evidenceContentError(err)
 	}
 	if _, writeErr := io.Copy(stdout, &output); writeErr != nil {

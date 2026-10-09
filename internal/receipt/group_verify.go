@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -377,6 +378,9 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error) {
 	root, err := os.Lstat(filepath.Clean(dir))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("receipt group evidence path is not a real directory: %w", err)
+		}
 		return nil, nil, fmt.Errorf("inspect receipt group evidence path: %w", err)
 	}
 	if !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
@@ -384,6 +388,9 @@ func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error)
 	}
 	ael, err := os.Lstat(filepath.Join(filepath.Clean(dir), "ael"))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("receipt group AEL path is not a real directory: %w", err)
+		}
 		return nil, nil, fmt.Errorf("inspect receipt group AEL path: %w", err)
 	}
 	if !ael.IsDir() || ael.Mode()&os.ModeSymlink != 0 {

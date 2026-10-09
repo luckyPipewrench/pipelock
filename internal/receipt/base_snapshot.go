@@ -20,13 +20,15 @@ func WithBaseHistorySnapshot(dir, base string, consume func() error) error {
 	if consume == nil {
 		return errors.New("base snapshot consumer is required")
 	}
+	// Setup failures are listing failures: nothing was enumerated, so the
+	// caller reports them the way it reports its own listing error.
 	root, err := os.Lstat(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("listing receipt chains: %w", err)
 	}
 	before, err := baseHistoryInventory(dir, base)
 	if err != nil {
-		return err
+		return fmt.Errorf("listing receipt chains: %w", err)
 	}
 	result := consume()
 	after, inventoryErr := baseHistoryInventory(dir, base)

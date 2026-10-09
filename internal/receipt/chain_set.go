@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -477,10 +478,27 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, re
 			endRoot, rootErr := os.Lstat(dir)
 			if scanErr != nil || checkErr != nil || after != before || rootErr != nil || !os.SameFile(root, endRoot) {
 				detail := "evidence changed during verification; no verdict reached"
-				report.Findings = []BaseFinding{{Kind: FindingCorruptChain, Session: base, Detail: detail, EvidenceChanged: true}}
+				// Conclusions drawn from the changed inventory are void, but a
+				// per-read change finding already names what changed, and a
+				// refused read (a swapped-in symlink) is a fact about the
+				// directory, not a conclusion from its contents. Keep those and
+				// fall back to the whole-inventory detail only when this final
+				// check is the sole observer.
+				var changed []BaseFinding
+				for _, f := range report.Findings {
+					if f.EvidenceChanged || strings.Contains(f.Detail, recorder.ErrEvidenceRefused.Error()) {
+						changed = append(changed, f)
+					}
+				}
+				if len(changed) == 0 {
+					changed = []BaseFinding{{Kind: FindingCorruptChain, Session: base, Detail: detail, EvidenceChanged: true}}
+				}
+				report.Findings = changed
 				for i := range report.Chains {
 					report.Chains[i].Valid = false
-					report.Chains[i].Error = detail
+					if report.Chains[i].Error == "" {
+						report.Chains[i].Error = detail
+					}
 				}
 				// A typed finding is the existing unavailable-result surface.
 				retErr = nil

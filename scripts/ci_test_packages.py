@@ -441,12 +441,27 @@ def predicted_loads(tags: str) -> dict[str, float]:
     package_weights = load_package_durations()
     packages = list_packages(tags)
     known = sorted(package_weights.values())
-    default = known[len(known) // 2] if known else 1.0
+    default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
     for shard in REST_SHARDS:
         selected = select_packages(packages, shard, package_weights)
         seconds = [package_weights.get(pkg, default) for pkg in selected]
-        loads[shard] = max(sum(seconds) / REST_PACKAGE_PARALLELISM, max(seconds, default=0.0))
+        loads[shard] = package_makespan(seconds, REST_PACKAGE_PARALLELISM)
     return loads
+
+
+def package_makespan(seconds: list[float], slots: int) -> float:
+    """Finish time of whole packages run on a fixed number of slots.
+
+    A package cannot be split, so three 350s packages on two slots take 700s,
+    not the 525s that dividing the total would claim. Packages are placed
+    longest first on the slot that frees soonest, which is how a pool of go
+    test workers drains a queue once the long ones are at its head.
+    """
+    finish = [0.0] * max(slots, 1)
+    for duration in sorted(seconds, reverse=True):
+        slot = min(range(len(finish)), key=lambda index: (finish[index], index))
+        finish[slot] += duration
+    return max(finish)
 
 
 def check_budget(tags: str, budget: float) -> int:

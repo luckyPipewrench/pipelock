@@ -342,6 +342,32 @@ class TestPackageSharding(unittest.TestCase):
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
 
+    def test_rest_budget_counts_every_wave_of_whole_packages(self) -> None:
+        self.assertEqual(ci_test_packages.package_makespan([350.0, 350.0, 350.0], 2), 700.0)
+        self.assertEqual(ci_test_packages.package_makespan([100.0, 100.0, 100.0], 2), 200.0)
+        self.assertEqual(ci_test_packages.package_makespan([700.0], 2), 700.0)
+        self.assertEqual(ci_test_packages.package_makespan([], 2), 0.0)
+        packages = [f"example.test/p{index}" for index in range(3)]
+        with patch.object(ci_test_packages, "list_packages", return_value=packages), \
+             patch.object(ci_test_packages, "load_durations", return_value={}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value=dict.fromkeys(packages, 350.0)), \
+             patch.object(ci_test_packages, "select_packages", return_value=packages), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
+            # Three 350s packages fit the budget by total/2 (525s) but not in two waves.
+            self.assertEqual(predicted_loads("")["rest-0"], 700.0)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
+
+    def test_unmeasured_rest_packages_are_never_free(self) -> None:
+        measured = {"example.test/a": 0.0, "example.test/b": 0.0}
+        packages = [*measured, "example.test/new"]
+        with patch.object(ci_test_packages, "list_packages", return_value=packages), \
+             patch.object(ci_test_packages, "load_durations", return_value={}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value=measured), \
+             patch.object(ci_test_packages, "select_packages", return_value=packages), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
+            self.assertGreater(predicted_loads("")["rest-0"], 0.0)
+
     def test_checked_in_measurements_cover_every_split_tree(self) -> None:
         durations = load_durations()
         for tree in TEST_SPLITS:

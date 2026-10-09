@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -599,7 +600,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			// this base, so its base is not known.
 			baseKnown = false
 		}
-		if _, encodingName, _ := charset.DetermineEncoding(body, response.Header.Get("Content-Type")); encodingName != "utf-8" && encodingName != "windows-1252" {
+		if !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
 			// The base was read from the raw bytes as UTF-8. Under an
 			// encoding that does not keep ASCII markup as-is (UTF-16, or one
 			// with shift states such as ISO-2022-JP), the browser may see a
@@ -672,6 +673,31 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			valueDone()
 		}
 	}
+}
+
+// lateMetaCharset matches a <meta> charset declaration, which a browser can
+// act on after its 1024-byte prescan by re-decoding the document.
+var lateMetaCharset = regexp.MustCompile(`(?i)<meta[^>]*charset`)
+
+// asciiTransparentDocument reports whether a browser decodes this HTML so that
+// its ASCII markup reads the same as the raw bytes: UTF-8 or windows-1252,
+// the WHATWG fallback. A declared encoding (BOM or Content-Type) is taken at
+// its word. A guessed one is trusted only when nothing in the body lets a
+// browser decide differently: an escape byte (ISO-2022-JP detection), a NUL
+// byte (UTF-16 without a BOM), or a charset declaration past the prescan.
+func asciiTransparentDocument(body []byte, contentType string) bool {
+	_, name, certain := charset.DetermineEncoding(body, contentType)
+	if name != "utf-8" && name != "windows-1252" {
+		return false
+	}
+	if certain {
+		return true
+	}
+	if bytes.IndexByte(body, 0x1b) >= 0 || bytes.IndexByte(body, 0) >= 0 {
+		return false
+	}
+	const prescan = 1024
+	return len(body) <= prescan || !lateMetaCharset.Match(body[prescan:])
 }
 
 // sameOriginBase returns the URL an HTML document's relative references

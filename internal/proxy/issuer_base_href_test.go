@@ -107,6 +107,33 @@ func TestDocumentBaseFollowsTreeConstruction(t *testing.T) {
 	}
 }
 
+func TestASCIITransparentDocument(t *testing.T) {
+	pad := strings.Repeat(" ", 1100)
+	for _, tt := range []struct {
+		name, ct, body string
+		want           bool
+	}{
+		{"declared utf-8", "text/html; charset=utf-8", "<p>x", true},
+		{"declared utf-8 wins over escape bytes", "text/html; charset=utf-8", "<p>\x1b$B", true},
+		{"undeclared plain ascii", "text/html", "<p>x", true},
+		{"early meta utf-8", "text/html", `<meta charset="utf-8"><p>x`, true},
+		{"declared shift encoding", "text/html; charset=iso-2022-jp", "<p>x", false},
+		{"declared utf-16", "text/html; charset=utf-16le", "<p>x", false},
+		{"utf-16 bom", "text/html", "\xff\xfe<\x00p\x00", false},
+		{"undeclared escape byte", "text/html", "<p>\x1b$B", false},
+		{"undeclared nul byte", "text/html", "<\x00p\x00", false},
+		{"late meta charset", "text/html", "<p>" + pad + `<meta charset="iso-2022-jp">`, false},
+		{"long undeclared page without a late declaration", "text/html", "<p>" + pad + "<p>y", true},
+		{"late meta on a declared page", "text/html; charset=utf-8", "<p>" + pad + `<meta charset="iso-2022-jp">`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := asciiTransparentDocument([]byte(tt.body), tt.ct); got != tt.want {
+				t.Fatalf("asciiTransparentDocument = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSameOriginBase(t *testing.T) {
 	response := mustIssuerQueryURL(t, "https://app.vendor.example/dir/page")
 	tests := []struct {

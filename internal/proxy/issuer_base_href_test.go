@@ -160,6 +160,14 @@ func TestInterceptBaseHref(t *testing.T) {
 		if base == "SVGDECOY" {
 			page = `<svg><base href="/phantom/"></svg><base href="` + other.URL + `/real/"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
 		}
+		if base == "ISO2022JP" || base == "UTF8" {
+			cs := map[string]string{"ISO2022JP": "iso-2022-jp", "UTF8": "utf-8"}[base]
+			w.Header().Set("Content-Type", "text/html; charset="+cs)
+			page = `<img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
+		}
+		if base == "METAJIS" {
+			page = `<meta charset="iso-2022-jp"><img src="` + baseHrefAsset + `">`
+		}
 		if base == "XHTML" {
 			w.Header().Set("Content-Type", "application/xhtml+xml")
 			page = `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="` + baseHrefAsset + `"/><img src="` + siteURL + `/abs/` + baseHrefAsset + `"/></body></html>`
@@ -191,6 +199,10 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"cross origin base issues nothing on its host at the response path", "OTHER/assets/", other, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"absolute link still issues under a cross origin base", "OTHER/assets/", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"absolute link still issues under an ambiguous base", "SVGDECOY", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"iso-2022-jp relative link is untrusted", "ISO2022JP", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
+		{"iso-2022-jp absolute link issues", "ISO2022JP", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"meta charset shift encoding relative link is untrusted", "METAJIS", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
+		{"utf-8 declared relative link issues", "UTF8", site, "/dir/" + baseHrefAsset, http.StatusOK},
 		{"xhtml relative link is untrusted", "XHTML", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"xhtml absolute link issues", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"svg decoy base issues nothing", "SVGDECOY", site, "/phantom/" + baseHrefAsset, http.StatusForbidden},

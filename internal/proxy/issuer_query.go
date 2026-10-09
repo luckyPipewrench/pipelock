@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"golang.org/x/net/html/charset"
 )
 
 const issuerQueryReceiptExtensionKey = "entropy_issuer_query_allow"
@@ -596,6 +597,13 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		if mediaType == "application/xhtml+xml" {
 			// XHTML is parsed as XML, not by the HTML algorithm that found
 			// this base, so its base is not known.
+			baseKnown = false
+		}
+		if _, encodingName, _ := charset.DetermineEncoding(body, response.Header.Get("Content-Type")); encodingName != "utf-8" && encodingName != "windows-1252" {
+			// The base was read from the raw bytes as UTF-8. Under an
+			// encoding that does not keep ASCII markup as-is (UTF-16, or one
+			// with shift states such as ISO-2022-JP), the browser may see a
+			// different <base>, so it is not known.
 			baseKnown = false
 		}
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)

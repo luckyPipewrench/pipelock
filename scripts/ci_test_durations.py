@@ -32,6 +32,7 @@ from ci_test_packages import (  # noqa: E402
     ROOT,
     TEST_SPLITS,
     load_durations,
+    load_package_durations,
     package_in_tree,
     tree_test_names,
 )
@@ -42,6 +43,30 @@ def tree_for_package(package: str) -> str | None:
         if package_in_tree(package, HEAVY_TREES[tree]):
             return tree
     return None
+
+
+def collect_packages(paths: list[Path]) -> dict[str, float]:
+    """Record whole-package elapsed time for packages outside the split trees.
+
+    These weights balance the rest shards, which run whole packages.
+    """
+    measured: dict[str, float] = {}
+    for path in paths:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict) or event.get("Action") not in ("pass", "fail"):
+                    continue
+                if event.get("Test") is not None or not isinstance(event.get("Elapsed"), (int, float)):
+                    continue
+                package = event.get("Package")
+                if not isinstance(package, str) or tree_for_package(package) is not None:
+                    continue
+                measured[package] = max(measured.get(package, 0.0), round(float(event["Elapsed"]), 1))
+    return measured
 
 
 def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
@@ -97,13 +122,19 @@ def main() -> int:
     args = parser.parse_args()
 
     measured = collect(args.inputs)
-    if not measured:
-        print("ci_test_durations.py: no top-level results for a split tree in the inputs", file=sys.stderr)
+    packages = collect_packages(args.inputs)
+    if not measured and not packages:
+        print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1
     inventory = {tree: set(tree_test_names(ROOT / HEAVY_TREES[tree])) for tree in TEST_SPLITS}
     result = merge(load_durations(), measured, inventory)
+    merged_packages = dict(load_package_durations())
+    merged_packages.update(packages)
+    if merged_packages:
+        result["packages"] = dict(sorted(merged_packages.items()))
     for tree, tests in result["trees"].items():
         print(f"{tree}: {len(tests)} tests, {sum(tests.values()):.0f}s measured", file=sys.stderr)
+    print(f"rest packages: {len(merged_packages)}", file=sys.stderr)
     text = json.dumps(result, indent=1, sort_keys=False) + "\n"
     if args.write:
         DURATIONS_FILE.write_text(text, encoding="utf-8")

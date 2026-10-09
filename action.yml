@@ -150,12 +150,22 @@ runs:
             # Bind the certificate to the exact release whose assets were
             # downloaded. Accepting any valid-looking release tag here would
             # prove the signer ran for some release, not necessarily this one.
-            if ! cosign verify-blob \
-              --certificate "$COSIGN_PEM" \
-              --signature "$COSIGN_SIG" \
-              --certificate-identity "https://github.com/luckyPipewrench/pipelock/.github/workflows/release.yaml@refs/tags/v${VERSION}" \
-              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-              "${INSTALL_DIR}/checksums.txt"; then
+            # Two exact identities are accepted: the current repository and its
+            # pipelab-org home after the move. A certificate names the repository
+            # that signed it and does not follow GitHub's redirects.
+            verified=false
+            for owner in luckyPipewrench pipelab-org; do
+              if cosign verify-blob \
+                --certificate "$COSIGN_PEM" \
+                --signature "$COSIGN_SIG" \
+                --certificate-identity "https://github.com/${owner}/pipelock/.github/workflows/release.yaml@refs/tags/v${VERSION}" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                "${INSTALL_DIR}/checksums.txt"; then
+                verified=true
+                break
+              fi
+            done
+            if [ "$verified" != true ]; then
               echo "::error::Cosign signature verification failed for checksums.txt"
               exit 1
             fi

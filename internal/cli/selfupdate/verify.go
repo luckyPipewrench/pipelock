@@ -39,20 +39,40 @@ func parseChecksums(data []byte) map[string]string {
 // signature. This is an optional secondary ecosystem check; native release.json
 // verification is the mandatory publisher-authentication path. If cosign is
 // present and rejects the signature, the updater still fails closed.
+//
+// The certificate must name one of the release workflow's exact identities for
+// this tag: the current repository or its organization home after the move.
+// Each is tried as an exact match; the signature is accepted only if one of
+// them verifies, and the error reports every rejection.
 func (o *Options) verifyPublisherSignature(ctx context.Context, dir, tagName string) error {
-	// #nosec G204 -- all args are fixed consts or paths we constructed in our temp dir.
-	out, runErr := o.RunCommand(ctx, cosignBinary,
-		"verify-blob",
-		"--certificate", filepath.Join(dir, checksumsPEM),
-		"--signature", filepath.Join(dir, checksumsSig),
-		"--certificate-identity", fmt.Sprintf(releaseWorkflowIdentity, tagName),
-		"--certificate-oidc-issuer", oidcIssuer,
-		filepath.Join(dir, checksumsFile),
-	)
-	if runErr != nil {
-		return fmt.Errorf("%w: cosign verify-blob: %s: %s", ErrSignatureVerify, runErr.Error(), strings.TrimSpace(string(out)))
+	var rejections []string
+	for _, identity := range releaseWorkflowIdentities(tagName) {
+		// #nosec G204 -- all args are fixed consts or paths we constructed in our temp dir.
+		out, runErr := o.RunCommand(ctx, cosignBinary,
+			"verify-blob",
+			"--certificate", filepath.Join(dir, checksumsPEM),
+			"--signature", filepath.Join(dir, checksumsSig),
+			"--certificate-identity", identity,
+			"--certificate-oidc-issuer", oidcIssuer,
+			filepath.Join(dir, checksumsFile),
+		)
+		if runErr == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: cosign verify-blob: %w", ErrSignatureVerify, ctx.Err())
+		}
+		rejections = append(rejections, fmt.Sprintf("%s: %s: %s", identity, runErr.Error(), strings.TrimSpace(string(out))))
 	}
-	return nil
+	return fmt.Errorf("%w: cosign verify-blob rejected every release identity: %s", ErrSignatureVerify, strings.Join(rejections, "; "))
+}
+
+// releaseWorkflowIdentities lists the exact signer identities accepted for tag.
+func releaseWorkflowIdentities(tagName string) []string {
+	return []string{
+		fmt.Sprintf(releaseWorkflowIdentity, tagName),
+		fmt.Sprintf(orgReleaseWorkflowIdentity, tagName),
+	}
 }
 
 // sha256Hex returns the lowercase hex SHA256 of data.

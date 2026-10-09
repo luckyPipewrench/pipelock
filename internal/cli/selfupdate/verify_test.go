@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,6 +87,114 @@ func TestRun_CosignPresentAndPasses(t *testing.T) {
 	if !containsArgPair(cosignArgs, "--certificate-identity", fmt.Sprintf(releaseWorkflowIdentity, testLatest)) {
 		t.Fatalf("cosign args did not pin release workflow identity: %v", cosignArgs)
 	}
+}
+
+// After the repository moves to pipelab-org, releases are signed by the
+// organization's workflow. An installed binary must accept that exact identity
+// once the original one is rejected.
+func TestRun_CosignAcceptsOrganizationIdentityAfterTheMove(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "OLD")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return true }
+	var identities []string
+	opts.RunCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != cosignBinary {
+			return nil, fmt.Errorf("unexpected command execution: %s %v", name, args)
+		}
+		identity := argValue(args, "--certificate-identity")
+		identities = append(identities, identity)
+		if identity == fmt.Sprintf(orgReleaseWorkflowIdentity, testLatest) {
+			return []byte("Verified OK"), nil
+		}
+		return []byte("error: none of the expected identities matched"), errors.New("exit status 1")
+	}
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied || !st.SignatureVerified {
+		t.Fatalf("expected applied + verified, got %+v", st)
+	}
+	want := []string{
+		fmt.Sprintf(releaseWorkflowIdentity, testLatest),
+		fmt.Sprintf(orgReleaseWorkflowIdentity, testLatest),
+	}
+	if !slices.Equal(identities, want) {
+		t.Fatalf("cosign identities = %q, want %q", identities, want)
+	}
+}
+
+// Only the two exact identities are ever offered to cosign. A certificate
+// from any other repository, such as a fork's release workflow, is rejected
+// even when cosign would accept that identity.
+func TestRun_CosignNeverAcceptsAnotherRepositoryIdentity(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "ORIGINAL")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return true }
+	forkIdentity := "https://github.com/someone-else/pipelock/.github/workflows/release.yaml@refs/tags/" + testLatest
+	var identities []string
+	opts.RunCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != cosignBinary {
+			return nil, nil
+		}
+		identity := argValue(args, "--certificate-identity")
+		identities = append(identities, identity)
+		if identity == forkIdentity {
+			return []byte("Verified OK"), nil
+		}
+		return []byte("error: identity mismatch"), errors.New("exit status 1")
+	}
+
+	_, err := opts.Run(context.Background())
+	if !errors.Is(err, ErrSignatureVerify) {
+		t.Fatalf("expected ErrSignatureVerify, got %v", err)
+	}
+	if slices.Contains(identities, forkIdentity) {
+		t.Fatalf("updater offered a foreign identity to cosign: %q", identities)
+	}
+	if len(identities) != 2 {
+		t.Fatalf("expected both exact identities to be tried, got %q", identities)
+	}
+	for _, identity := range identities {
+		if !strings.Contains(err.Error(), identity) {
+			t.Fatalf("error does not report rejection of %s: %v", identity, err)
+		}
+	}
+	if string(readT(target)) != "ORIGINAL" {
+		t.Fatalf("target mutated on signature failure: %q", readT(target))
+	}
+}
+
+// A cancelled update stops after the first rejection instead of retrying.
+func TestVerifyPublisherSignature_StopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	opts := &Options{RunCommand: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		calls++
+		cancel()
+		return nil, errors.New("signal: killed")
+	}}
+	err := opts.verifyPublisherSignature(ctx, t.TempDir(), testLatest)
+	if !errors.Is(err, ErrSignatureVerify) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancelled signature error, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("cosign ran %d times after cancellation, want 1", calls)
+	}
+}
+
+func argValue(args []string, key string) string {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == key {
+			return args[index+1]
+		}
+	}
+	return ""
 }
 
 func TestRun_CosignPresentAndFailsAborts(t *testing.T) {

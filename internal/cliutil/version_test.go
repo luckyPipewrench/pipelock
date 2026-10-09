@@ -444,9 +444,18 @@ func TestProductReleaseTag_ParityWithReleaseSurfaces(t *testing.T) {
 			t.Fatalf("reading action.yml: %v", err)
 		}
 		content := string(data)
-		const want = `--certificate-identity "https://github.com/luckyPipewrench/pipelock/.github/workflows/release.yaml@refs/tags/v${VERSION}" \`
+		// Exactly two exact identities: the current repository and its
+		// pipelab-org home after the move, each bound to the downloaded tag.
+		const want = `--certificate-identity "https://github.com/${owner}/pipelock/.github/workflows/release.yaml@refs/tags/v${VERSION}" \`
 		if got := findLines(content, `--certificate-identity `); len(got) != 1 || got[0] != want {
 			t.Fatalf("action.yml exact cosign identity diverges: got %q, want [%q]", got, want)
+		}
+		const owners = `for owner in luckyPipewrench pipelab-org; do`
+		if got := findLines(content, `for owner in `); len(got) != 1 || got[0] != owners {
+			t.Fatalf("action.yml cosign signer owners diverge: got %q, want [%q]", got, owners)
+		}
+		if got := findLines(content, `if [ "$verified" != true ]; then`); len(got) != 1 {
+			t.Fatalf("action.yml must fail closed when no identity verifies: got %q", got)
 		}
 		if strings.Contains(content, "--certificate-identity-regexp") {
 			t.Fatal("action.yml still uses a broad cosign certificate identity regexp")

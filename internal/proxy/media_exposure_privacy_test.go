@@ -18,12 +18,12 @@ func TestMediaExposureContentTypeRecognizedTypes(t *testing.T) {
 	t.Parallel()
 	for _, mt := range []string{"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/x-icon", svgMediaType, "audio/mpeg", "audio/wav", "audio/ogg", "video/mp4", "video/webm"} {
 		t.Run(mt, func(t *testing.T) {
-			if got := mediaExposureContentType(mt); got != mt {
+			if got := audit.MediaContentType(mt); got != mt {
 				t.Fatalf("content type=%q, want %q", got, mt)
 			}
 		})
 	}
-	if got := mediaExposureContentType("application/custom"); got != "unknown" {
+	if got := audit.MediaContentType("application/custom"); got != "unknown" {
 		t.Fatalf("non-media content type=%q, want unknown", got)
 	}
 }

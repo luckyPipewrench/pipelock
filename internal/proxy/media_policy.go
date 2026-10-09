@@ -319,7 +319,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	}
 	// Build the baseline exposure payload so all branches can share it.
 	exposure := &MediaExposureFields{
-		ContentType: mediaExposureContentType(mt),
+		ContentType: audit.MediaContentType(mt),
 		SizeBytes:   len(body),
 	}
 
@@ -427,7 +427,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte, optio
 	if proven := media.StripType(mt, body, cfg.MediaPolicy.ImageTypeAllowed); proven != mt {
 		relabeled = proven
 		mt = proven
-		exposure.ContentType = mediaExposureContentType(proven)
+		exposure.ContentType = audit.MediaContentType(proven)
 	}
 	if cfg.MediaPolicy.ShouldStripImageMetadata() {
 		sr, err := media.StripMetadata(mt, body)
@@ -504,29 +504,6 @@ func exposureOrNil(cfg *config.Config, fields *MediaExposureFields) *MediaExposu
 	return fields
 }
 
-// mediaExposureContentType keeps arbitrary response header text out of exposure
-// records. Unknown subtypes retain their media family without retaining bytes
-// supplied by the upstream. Policy classification still uses the original type.
-func mediaExposureContentType(mt string) string {
-	switch mt {
-	case "image/jpeg", "image/jpg", "image/pjpeg", "image/png", "image/gif", "image/webp",
-		"image/bmp", "image/x-icon", svgMediaType,
-		"audio/mpeg", "audio/wav", "audio/wave", "audio/ogg", "audio/aiff", "audio/midi", "audio/basic",
-		"video/mp4", "video/webm", "video/avi":
-		return mt
-	}
-	switch {
-	case strings.HasPrefix(mt, "image/"):
-		return "image/unknown"
-	case strings.HasPrefix(mt, "audio/"):
-		return "audio/unknown"
-	case strings.HasPrefix(mt, "video/"):
-		return "video/unknown"
-	default:
-		return "unknown"
-	}
-}
-
 // canonicalContentType parses a Content-Type header and returns the
 // lowercase media type with parameters stripped. Returns "" on parse error
 // or empty input.
@@ -577,7 +554,7 @@ func sniffMediaType(body []byte) string {
 // on top before dispatching the event.
 func (m *MediaExposureFields) ToEventFields() map[string]any {
 	f := map[string]any{
-		"content_type": mediaExposureContentType(m.ContentType),
+		"content_type": audit.MediaContentType(m.ContentType),
 		"size_bytes":   m.SizeBytes,
 		"blocked":      m.Blocked,
 	}
@@ -602,7 +579,7 @@ func (m *MediaExposureFields) ToEventFields() map[string]any {
 func (m *MediaExposureFields) ToAuditInfo(transport string) audit.MediaExposureInfo {
 	return audit.MediaExposureInfo{
 		Transport:       transport,
-		ContentType:     mediaExposureContentType(m.ContentType),
+		ContentType:     audit.MediaContentType(m.ContentType),
 		Format:          m.Format,
 		SizeBytes:       m.SizeBytes,
 		MetadataRemoved: m.MetadataRemoved,

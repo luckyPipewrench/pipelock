@@ -714,7 +714,7 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
 		str("transport", info.Transport).
-		str("content_type", info.ContentType).
+		str("content_type", MediaContentType(info.ContentType)).
 		optStr("format", info.Format).
 		intField("size_bytes", info.SizeBytes)
 	if info.MetadataRemoved > 0 {

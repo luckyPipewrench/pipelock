@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // issuerQueryPageOrigin names the rule that admitted a value that is only the
@@ -44,15 +45,12 @@ func htmlLinkValues(body []byte, limit int) []string {
 	return links
 }
 
-// htmlLinksAndBase is htmlLinkValues plus the href of the document's first
-// <base> element that carries one, which is the base every relative reference
-// resolves against. A <base> is not itself a link, and one inside <template>
-// content is inert. The whole inspected document is read for the base even
-// after the link limit is reached, because a base after the last kept link
-// still moves every relative link before it. baseKnown is false when the
-// document was cut at the inspection limit without a base in the inspected
-// part: a base past the cut cannot be ruled out, so the caller must not
-// resolve relative links against the response URL.
+// htmlLinksAndBase is htmlLinkValues plus the href of the document's
+// effective <base>, which is the base every relative reference resolves
+// against. A <base> is not itself a link. baseKnown is false when the document
+// was cut at the inspection limit without a base in the inspected part: a
+// base past the cut cannot be ruled out, so the caller must not resolve
+// relative links against the response URL.
 func htmlLinksAndBase(body []byte, limit int) (links []string, base string, baseKnown bool) {
 	if limit <= 0 || len(body) == 0 {
 		return nil, "", true
@@ -61,39 +59,26 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	if truncated {
 		body = body[:issuerQueryMaxHTMLBytes]
 	}
+	base, baseSeen := documentBase(body)
 	var out []string
-	baseSeen := false
-	templateDepth := 0
 	z := html.NewTokenizer(bytes.NewReader(body))
-	for {
-		tt := z.Next()
-		switch tt {
+	for len(out) < limit {
+		switch z.Next() {
 		case html.ErrorToken:
 			return out, base, baseSeen || !truncated
-		case html.EndTagToken:
-			if tag, _ := z.TagName(); string(tag) == "template" && templateDepth > 0 {
-				templateDepth--
-			}
 		case html.StartTagToken, html.SelfClosingTagToken:
 			tag, hasAttr := z.TagName()
-			name := string(tag)
-			if name == "template" && tt == html.StartTagToken {
-				templateDepth++
+			if string(tag) == "base" {
+				// A <base> is not a link; documentBase reads it.
+				continue
 			}
-			isBase := name == "base" && templateDepth == 0
 			for hasAttr {
 				key, val, more := z.TagAttr()
 				hasAttr = more
 				attr := strings.ToLower(string(key))
 				switch {
-				case name == "base":
-					if isBase && attr == "href" && !baseSeen {
-						baseSeen = true
-						base = strings.TrimSpace(string(val))
-					}
-				case len(out) >= limit:
 				case htmlLinkAttrs[attr]:
-					if v := strings.TrimSpace(string(val)); v != "" {
+					if v := strings.TrimSpace(string(val)); v != "" && len(out) < limit {
 						out = append(out, v)
 					}
 				case htmlSrcsetAttrs[attr]:
@@ -106,6 +91,44 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 			}
 		}
 	}
+	return out, base, baseSeen || !truncated
+}
+
+// documentBase returns the href of the first <base> element with an href in
+// the document tree, the one a browser resolves relative links against. It
+// runs the WHATWG tree-construction algorithm rather than scanning tags,
+// because where a <base> sits decides whether it counts: one inside an SVG or
+// MathML subtree is a foreign element, one inside <template> or <noscript>
+// content is inert, and a self-closing flag does not close a <template>.
+// Only those structural rules separate the base a browser uses from a tag
+// that merely looks like one.
+func documentBase(body []byte) (string, bool) {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return "", false
+	}
+	var find func(*html.Node) (string, bool)
+	find = func(n *html.Node) (string, bool) {
+		if n.Type == html.ElementNode {
+			if n.Namespace != "" || n.DataAtom == atom.Template {
+				return "", false
+			}
+			if n.DataAtom == atom.Base {
+				for _, a := range n.Attr {
+					if a.Namespace == "" && a.Key == "href" {
+						return strings.TrimSpace(a.Val), true
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if href, ok := find(c); ok {
+				return href, true
+			}
+		}
+		return "", false
+	}
+	return find(doc)
 }
 
 // srcsetURLs returns the candidate URLs of a srcset attribute value, following

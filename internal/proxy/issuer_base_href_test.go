@@ -58,9 +58,44 @@ func TestHTMLLinksAndBaseTruncated(t *testing.T) {
 	if _, _, known := htmlLinksAndBase(big, 4); known {
 		t.Fatal("truncated document without a base reported its base as known")
 	}
+	// The same holds when the link limit is reached before the end of the
+	// inspected part.
+	manyLinks := []byte(`<img src="a.png"><img src="b.png">` + strings.Repeat(" ", issuerQueryMaxHTMLBytes))
+	if _, _, known := htmlLinksAndBase(manyLinks, 1); known {
+		t.Fatal("truncated document at the link limit reported its base as known")
+	}
 	withBase := []byte(`<base href="/b/"><img src="a.png">` + strings.Repeat(" ", issuerQueryMaxHTMLBytes))
 	if _, base, known := htmlLinksAndBase(withBase, 4); !known || base != "/b/" {
 		t.Fatalf("truncated document with an early base: base=%q known=%v", base, known)
+	}
+}
+
+// The base a browser uses is decided by the document tree, not by the first
+// tag spelled <base>: one in SVG or MathML is a foreign element, template and
+// noscript content is inert, and a self-closing flag does not close a
+// <template>. Each case pairs a decoy base with the real one a browser uses.
+func TestDocumentBaseFollowsTreeConstruction(t *testing.T) {
+	const realBase = "https://other.vendor.example/real/"
+	for _, tt := range []struct{ name, body, want string }{
+		{"svg base is foreign", `<svg><base href="/phantom/"></svg><base href="` + realBase + `">`, realBase},
+		{"mathml base is foreign", `<math><base href="/phantom/"></math><base href="` + realBase + `">`, realBase},
+		{"self closing template still opens", `<template/><base href="/phantom/"></template><base href="` + realBase + `">`, realBase},
+		{"template in svg is foreign", `<svg><template></svg><base href="` + realBase + `">`, realBase},
+		{"template in mathml is foreign", `<math><template></math><base href="` + realBase + `">`, realBase},
+		{"noscript content is inert", `<noscript><base href="/phantom/"></noscript><base href="` + realBase + `">`, realBase},
+		{"stray template end", `</template><base href="` + realBase + `">`, realBase},
+		{"head template", `<head><template><base href="/phantom/"></template></head><base href="` + realBase + `">`, realBase},
+		{"base in body", `<body><div><base href="` + realBase + `"></div>`, realBase},
+		{"malformed template", `<template><div></template></template><base href="` + realBase + `">`, realBase},
+		{"base without href is skipped", `<base target="x"><base href="/b/">`, "/b/"},
+		{"no base", `<img src="a.png">`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := documentBase([]byte(tt.body))
+			if got != tt.want {
+				t.Fatalf("documentBase = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -114,6 +149,9 @@ func TestInterceptBaseHref(t *testing.T) {
 		base = strings.ReplaceAll(base, "SITE", siteURL)
 		base = strings.ReplaceAll(base, "OTHER", other.URL)
 		page := `<base href="` + base + `"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
+		if base == "SVGDECOY" {
+			page = `<svg><base href="/phantom/"></svg><base href="` + other.URL + `/real/"><img src="` + baseHrefAsset + `">`
+		}
 		if base == "TEMPLATE" {
 			page = `<template><base href="/assets/"></template><img src="` + baseHrefAsset + `">`
 		}
@@ -140,6 +178,8 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"cross origin base issues nothing on its own host", "OTHER/assets/", other, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"cross origin base issues nothing on its host at the response path", "OTHER/assets/", other, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"absolute link still issues under a cross origin base", "OTHER/assets/", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"svg decoy base issues nothing", "SVGDECOY", site, "/phantom/" + baseHrefAsset, http.StatusForbidden},
+		{"svg decoy base issues nothing in the response directory", "SVGDECOY", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"template base is inert", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusOK},
 		{"template base issues nothing under it", "TEMPLATE", site, "/assets/" + baseHrefAsset, http.StatusForbidden},
 		{"other scheme base is ignored", siteHTTP + "/assets/", site, "/assets/" + baseHrefAsset, http.StatusForbidden},

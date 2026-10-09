@@ -1100,6 +1100,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				A2ACardURL:               s.opts.MCPUpstream,
 				MediaPolicyFn:            mcpMediaPolicyFn,
 				ServerName:               s.opts.MCPServerName,
+				PolicyServerName:         s.opts.MCPServerName,
 				ServerBinding:            mcpRunListenerBinding(s.opts.MCPUpstream),
 				SuppressFn:               mcpResponseSuppressFn,
 				ResponseTrustClassFn:     mcpResponseTrustFn,

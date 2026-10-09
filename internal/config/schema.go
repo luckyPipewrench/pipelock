@@ -430,6 +430,7 @@ type Config struct {
 	ResponseScanning         ResponseScanning        `yaml:"response_scanning"`
 	MCPInputScanning         MCPInputScanning        `yaml:"mcp_input_scanning"`
 	MCPToolScanning          MCPToolScanning         `yaml:"mcp_tool_scanning"`
+	MCPIdentities            []MCPIdentity           `yaml:"mcp_identities" json:"MCPIdentities,omitempty"`
 	MCPDataClassLabels       MCPDataClassLabels      `yaml:"mcp_data_class_labels" json:"-"`
 	MCPToolPolicy            MCPToolPolicy           `yaml:"mcp_tool_policy"`
 	Defer                    DeferConfig             `yaml:"defer"`

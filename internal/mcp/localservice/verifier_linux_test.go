@@ -34,9 +34,14 @@ const (
 
 	modeServe   = "serve"
 	modeForward = "forward"
+	// modeLateAccept listens, then accepts only after the test writes
+	// helperAcceptCmd to its stdin; modeNoAccept never accepts.
+	modeLateAccept = "lateaccept"
+	modeNoAccept   = "noaccept"
 
-	helperReady    = "ready "
-	helperAccepted = "accepted"
+	helperReady     = "ready "
+	helperAccepted  = "accepted"
+	helperAcceptCmd = "accept"
 
 	loopbackAny   = "127.0.0.1:0"
 	pinnedContent = "pinned bundle contents"
@@ -61,8 +66,15 @@ func helperf(format string, args ...any) {
 
 func runHelper(mode string) int {
 	ctx := context.Background()
+	acceptNow := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(io.Discard, os.Stdin)
+		var once sync.Once
+		sc := bufio.NewScanner(os.Stdin)
+		for sc.Scan() {
+			if sc.Text() == helperAcceptCmd {
+				once.Do(func() { close(acceptNow) })
+			}
+		}
 		os.Exit(0)
 	}()
 	if hold := os.Getenv(envHold); hold != "" {
@@ -79,6 +91,12 @@ func runHelper(mode string) int {
 		return 1
 	}
 	helperf("%s%s", helperReady, ln.Addr())
+	switch mode {
+	case modeNoAccept:
+		select {}
+	case modeLateAccept:
+		<-acceptNow
+	}
 	conn, err := ln.Accept()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "accept:", err)
@@ -122,8 +140,30 @@ func holdFile(path string, mapped bool) (func(), error) {
 
 type helper struct {
 	cmd   *exec.Cmd
+	stdin io.Writer
 	lines chan string
 	addr  string
+}
+
+// acceptNow tells a modeLateAccept helper to call accept.
+func (h *helper) acceptNow(t *testing.T) {
+	t.Helper()
+	if _, err := io.WriteString(h.stdin, helperAcceptCmd+"\n"); err != nil {
+		t.Fatalf("tell helper to accept: %v", err)
+	}
+}
+
+// dialUnaccepted connects without waiting for the helper to accept.
+func dialUnaccepted(t *testing.T, h *helper) net.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(30*time.Second))
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", h.addr)
+	if err != nil {
+		t.Fatalf("dial %s: %v", h.addr, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }
 
 // startHelper re-executes this test binary with a minimal environment, so no
@@ -148,7 +188,7 @@ func startHelper(t *testing.T, mode string, env ...string) *helper {
 		cancel()
 		t.Fatalf("start helper: %v", err)
 	}
-	h := &helper{cmd: cmd, lines: make(chan string, 16)}
+	h := &helper{cmd: cmd, stdin: stdin, lines: make(chan string, 16)}
 	done := make(chan struct{})
 	go func() {
 		sc := bufio.NewScanner(stdout)
@@ -466,10 +506,10 @@ func TestVerifyingDialContextWithVerifier(t *testing.T) {
 				tt.pin(&pin)
 			}
 			var dialed net.Conn
-			dial := VerifyingDialContext((&net.Dialer{}).DialContext, func(c net.Conn) error {
+			dial := VerifyingDialContext((&net.Dialer{}).DialContext, func(ctx context.Context, c net.Conn) error {
 				dialed = c
 				h.expect(t, helperAccepted)
-				_, err := NewVerifier().VerifyConn(c, pin)
+				_, err := NewVerifier().VerifyConnContext(ctx, c, pin)
 				return err
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(30*time.Second))

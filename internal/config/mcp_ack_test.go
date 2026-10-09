@@ -36,10 +36,10 @@ func validAck() MCPAcknowledgedFinding {
 }
 
 func TestValidateMCPAcknowledgedFindingsAcceptsValidEntry(t *testing.T) {
-	if err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{validAck()}, ackTestNow); err != nil {
+	if err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{validAck()}, nil, ackTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateMCPAcknowledgedFindings(nil, ackTestNow); err != nil {
+	if err := validateMCPAcknowledgedFindings(nil, nil, ackTestNow); err != nil {
 		t.Fatalf("empty list: %v", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			e := validAck()
 			tt.mutate(&e)
-			err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, ackTestNow)
+			err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, nil, ackTestNow)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, tt.want)
 			}
@@ -115,7 +115,7 @@ func TestValidateMCPAcknowledgedFindingsRejects(t *testing.T) {
 }
 
 func TestValidateMCPAcknowledgedFindingsRejectsDuplicateEntries(t *testing.T) {
-	err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{validAck(), validAck()}, ackTestNow)
+	err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{validAck(), validAck()}, nil, ackTestNow)
 	if err == nil || !strings.Contains(err.Error(), "duplicates") {
 		t.Fatalf("err = %v", err)
 	}
@@ -139,7 +139,7 @@ func TestMCPAckExpiryHorizonIsExact(t *testing.T) {
 	} {
 		e := validAck()
 		e.Expires = tt.expires
-		err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, ackTestNow)
+		err := validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, nil, ackTestNow)
 		if (err == nil) != tt.ok {
 			t.Errorf("expires %s: err = %v, want ok=%v", tt.expires, err, tt.ok)
 		}

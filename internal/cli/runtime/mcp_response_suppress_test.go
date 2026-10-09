@@ -9,6 +9,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 )
 
 const (
@@ -55,7 +56,7 @@ func TestApplyMCPResponseSuppressOpts(t *testing.T) {
 	}
 	opts := mcp.MCPProxyOpts{}
 
-	applyMCPResponseSuppressOpts(&opts, cfg, testMCPServerName)
+	applyMCPResponseSuppressOpts(&opts, cfg, identity.Legacy(testMCPServerName))
 
 	if opts.ServerName != testMCPServerName {
 		t.Fatalf("ServerName = %q, want %s", opts.ServerName, testMCPServerName)
@@ -82,7 +83,7 @@ func TestApplyMCPResponseSuppressOpts_ReasoningTrustWarnsMatchingServer(t *testi
 	}
 	opts := mcp.MCPProxyOpts{}
 
-	applyMCPResponseSuppressOpts(&opts, cfg, testMCPServerName)
+	applyMCPResponseSuppressOpts(&opts, cfg, identity.Legacy(testMCPServerName))
 
 	if opts.ResponseTrustClass != config.ResponseTrustReasoning {
 		t.Fatalf("ResponseTrustClass = %q, want %q", opts.ResponseTrustClass, config.ResponseTrustReasoning)
@@ -97,7 +98,7 @@ func TestApplyMCPResponseSuppressOpts_TaintTrustedMatchingServer(t *testing.T) {
 	cfg.Taint.TrustedMCPServers = []string{testMCPServerName}
 	opts := mcp.MCPProxyOpts{}
 
-	applyMCPResponseSuppressOpts(&opts, cfg, testMCPServerName)
+	applyMCPResponseSuppressOpts(&opts, cfg, identity.Legacy(testMCPServerName))
 
 	if !opts.TaintTrustedSource {
 		t.Fatal("expected matching server to be taint-trusted")
@@ -111,7 +112,7 @@ func TestApplyMCPResponseSuppressOpts_MissingServerFailsClosed(t *testing.T) {
 	}
 	opts := mcp.MCPProxyOpts{}
 
-	applyMCPResponseSuppressOpts(&opts, cfg, "web-fetch")
+	applyMCPResponseSuppressOpts(&opts, cfg, identity.Legacy("web-fetch"))
 
 	if opts.ResponseTrustClass != config.ResponseTrustUntrusted || opts.ResponseActionOverride != config.ActionBlock {
 		t.Fatalf("missing server trust/action = %q/%q, want untrusted/block", opts.ResponseTrustClass, opts.ResponseActionOverride)
@@ -141,7 +142,7 @@ func TestApplyMCPResponseSuppressOpts_NilConfigKeepsExistingRules(t *testing.T) 
 		Suppress: []config.SuppressEntry{{Rule: "stale", Path: "mcp://stale/response"}},
 	}
 
-	applyMCPResponseSuppressOpts(&opts, nil, testMCPServerName)
+	applyMCPResponseSuppressOpts(&opts, nil, identity.Legacy(testMCPServerName))
 
 	if opts.ServerName != testMCPServerName {
 		t.Fatalf("ServerName = %q, want %s", opts.ServerName, testMCPServerName)

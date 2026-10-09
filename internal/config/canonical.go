@@ -279,6 +279,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.AuthenticatedArtifacts = canonicalAuthenticatedArtifacts(view.ResponseScanning.AuthenticatedArtifacts)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
+	view.MCPIdentities = canonicalMCPIdentities(view.MCPIdentities)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.FetchProxy.Monitoring.PathEntropyExclusions = canonicalPathEntropyExclusions(view.FetchProxy.Monitoring.PathEntropyExclusions)
 	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)

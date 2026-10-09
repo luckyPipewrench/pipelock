@@ -7,6 +7,7 @@ package localservice
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -42,7 +44,16 @@ const (
 	deletedSuffix   = " (deleted)"
 	shortHashLen    = 12
 	nsecPerSec      = int64(1_000_000_000)
+
+	// verifyRetryInterval is the poll period while a server has not accepted.
+	verifyRetryInterval = 3 * time.Millisecond
+	// verifyRetryCap bounds that wait when the caller's context has no deadline.
+	verifyRetryCap = 2 * time.Second
 )
+
+// errServerPending marks the only retryable state: the connection is
+// established but its server end has no accepted socket yet.
+var errServerPending = errors.New("server has not accepted the connection")
 
 // Verifier checks the owner of the server end of loopback connections. It is
 // safe for concurrent use.
@@ -51,6 +62,10 @@ type Verifier struct {
 	// beforeRecheck runs between the checks and the final incarnation re-read.
 	// Tests use it to change the process state in that window.
 	beforeRecheck func()
+	// onAttempt runs before each verification attempt; tests count attempts.
+	onAttempt func()
+	// retryCap overrides verifyRetryCap when positive.
+	retryCap time.Duration
 
 	mu       sync.Mutex
 	exeSums  map[exeKey]string
@@ -100,11 +115,55 @@ func shortHash(h string) string {
 	return h
 }
 
-// VerifyConn proves which process owns the server end of conn and compares it
-// with pin. It must be called on the connection right after the dial, on the
-// goroutine that dialed it. On success the connection's server is the process
-// described by the returned Evidence at the moment of the check.
+// VerifyConn is VerifyConnContext with a background context; the retry for a
+// server that has not accepted yet is still bounded by the package cap.
 func (v *Verifier) VerifyConn(conn net.Conn, pin Pin) (Evidence, error) {
+	return v.VerifyConnContext(context.Background(), conn, pin)
+}
+
+// VerifyConnContext proves which process owns the server end of conn and
+// compares it with pin. It must be called on the connection right after the
+// dial. On success the connection's server is the process described by the
+// returned Evidence at the moment of the check.
+//
+// A dial completes in the kernel before the server calls accept, and until
+// then the server's socket has no inode. Only that state (the server row
+// absent or present without an inode) is retried, polling until ctx is done or
+// the package cap elapses, then the last error is returned. Every other error
+// returns at once: a wrong owner is not a timing problem and is never retried.
+func (v *Verifier) VerifyConnContext(ctx context.Context, conn net.Conn, pin Pin) (Evidence, error) {
+	limit := v.retryCap
+	if limit <= 0 {
+		limit = verifyRetryCap
+	}
+	var poll, deadline *time.Timer
+	for {
+		if v.onAttempt != nil {
+			v.onAttempt()
+		}
+		ev, err := v.verifyOnce(conn, pin)
+		if err == nil || !errors.Is(err, errServerPending) {
+			return ev, err
+		}
+		if poll == nil {
+			poll = time.NewTimer(verifyRetryInterval)
+			deadline = time.NewTimer(limit)
+			defer poll.Stop()
+			defer deadline.Stop()
+		} else {
+			poll.Reset(verifyRetryInterval)
+		}
+		select {
+		case <-ctx.Done():
+			return Evidence{}, err
+		case <-deadline.C:
+			return Evidence{}, err
+		case <-poll.C:
+		}
+	}
+}
+
+func (v *Verifier) verifyOnce(conn net.Conn, pin Pin) (Evidence, error) {
 	if err := pin.validate(); err != nil {
 		return Evidence{}, err
 	}
@@ -231,10 +290,10 @@ func (v *Verifier) findServerRow(local, remote netip.AddrPort) (sockRow, error) 
 		return sockRow{}, fmt.Errorf("client end %s -> %s is not established in this network namespace: %w", local, remote, ErrSocketNotFound)
 	}
 	if !serverSeen {
-		return sockRow{}, fmt.Errorf("server end %s -> %s is not established in this network namespace: %w", remote, local, ErrSocketNotFound)
+		return sockRow{}, fmt.Errorf("server end %s -> %s is not established in this network namespace: %w: %w", remote, local, ErrSocketNotFound, errServerPending)
 	}
 	if server.inode == 0 {
-		return sockRow{}, fmt.Errorf("server end %s has no socket inode: %w", remote, ErrSocketNotFound)
+		return sockRow{}, fmt.Errorf("server end %s has no socket inode (the server has not accepted the connection yet): %w: %w", remote, ErrSocketNotFound, errServerPending)
 	}
 	return server, nil
 }

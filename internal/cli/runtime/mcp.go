@@ -42,6 +42,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -271,19 +272,27 @@ func applyMCPA2AOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, baseline *mcp.C
 	}
 }
 
-func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, serverName string) {
-	opts.ServerName = serverName
+// applyMCPResponseSuppressOpts applies a resolved identity to the proxy
+// options. Audit, receipts, adaptive state and acknowledgment lookup use the
+// resolution's Name; the suppress target, core-observe target and the trust,
+// taint and action lookups use only its ArmingName, so a name that was never
+// proven arms nothing.
+func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, res identity.Resolution) {
+	opts.ServerName = res.Name
+	opts.PolicyServerName = res.ArmingName
+	opts.ServerBindingMode = res.BindingMode
+	opts.ServerRevision = res.Revision
 	trust := config.ResponseTrustUntrusted
 	taintTrusted := false
 	if cfg != nil {
 		opts.Suppress = cfg.Suppress
-		if configuredTrust, ok := cfg.MCPResponseTrustForServer(serverName); ok {
+		if configuredTrust, ok := cfg.MCPResponseTrustForServer(res.ArmingName); ok {
 			trust = configuredTrust
 		}
-		taintTrusted = cfg.TaintTrustsMCPServer(serverName)
+		taintTrusted = cfg.TaintTrustsMCPServer(res.ArmingName)
 	}
 	opts.ResponseTrustClass = trust
-	opts.ResponseActionOverride = cfg.MCPResponseActionForServer(serverName)
+	opts.ResponseActionOverride = cfg.MCPResponseActionForServer(res.ArmingName)
 	opts.TaintTrustedSource = taintTrusted
 }
 
@@ -1545,7 +1554,7 @@ Key-free evidence capture:
 						}
 					}
 					applyMCPA2AOpts(&listenerOpts, cfg, a2aCardBaseline, upstreamURL)
-					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
+					applyMCPResponseSuppressOpts(&listenerOpts, cfg, identity.Legacy(serverName))
 					listenerOpts.ServerBinding = serverBinding
 					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					listenerOpts.ReceiptGroup = receiptGroup
@@ -1598,7 +1607,7 @@ Key-free evidence capture:
 					}
 					applyMCPDoWOpts(&wsOpts, dowWiring, false)
 					applyMCPA2AOpts(&wsOpts, cfg, a2aCardBaseline, upstreamURL)
-					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
+					applyMCPResponseSuppressOpts(&wsOpts, cfg, identity.Legacy(serverName))
 					wsOpts.ServerBinding = serverBinding
 					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					wsOpts.ReceiptGroup = receiptGroup
@@ -1655,7 +1664,7 @@ Key-free evidence capture:
 				}
 				applyMCPDoWOpts(&httpOpts, dowWiring, false)
 				applyMCPA2AOpts(&httpOpts, cfg, a2aCardBaseline, upstreamURL)
-				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
+				applyMCPResponseSuppressOpts(&httpOpts, cfg, identity.Legacy(serverName))
 				httpOpts.ServerBinding = serverBinding
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				httpOpts.ReceiptGroup = receiptGroup
@@ -1848,7 +1857,7 @@ Key-free evidence capture:
 				}
 				applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 				applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
-				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+				applyMCPResponseSuppressOpts(&proxyOpts, cfg, identity.Legacy(serverName))
 				proxyOpts.ServerBinding = serverBinding
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				proxyOpts.ReceiptGroup = receiptGroup
@@ -2006,7 +2015,7 @@ Key-free evidence capture:
 			}
 			applyMCPDoWOpts(&proxyOpts, dowWiring, false)
 			applyMCPA2AOpts(&proxyOpts, cfg, a2aCardBaseline, "")
-			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+			applyMCPResponseSuppressOpts(&proxyOpts, cfg, identity.Legacy(serverName))
 			proxyOpts.ServerBinding = serverBinding
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			proxyOpts.ReceiptGroup = receiptGroup

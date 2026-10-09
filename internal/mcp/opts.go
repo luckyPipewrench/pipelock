@@ -321,11 +321,23 @@ type MCPProxyOpts struct {
 	// match against. Empty disables target-scoped response suppression. Set
 	// from `pipelock mcp proxy --server-name`.
 	ServerName string
-	// ServerBinding is the transport binding digest of the configured server
+	// PolicyServerName is the name that arms name-keyed trust and suppression:
+	// the suppress target "mcp://<name>/response" and core-observe. It is set
+	// only for a legacy explicit name or a verified registered identity, so a
+	// ServerName that is merely a label never arms any of them. Empty keeps the
+	// unnamed behavior.
+	PolicyServerName string
+	// ServerBinding is the binding digest of the configured server
 	// (tools.ServerBindingDigest). Credential-request acknowledgments must
 	// name it, so a server name reused for another destination cannot carry
 	// an acknowledgment over.
 	ServerBinding string
+	// ServerBindingMode is the acknowledgment binding mode ServerBinding was
+	// built for: empty or transport-v2, or verified-local-session.
+	ServerBindingMode string
+	// ServerRevision is the registered identity revision of a verified local
+	// service, empty for a legacy launch. It versions the adaptive session key.
+	ServerRevision string
 
 	// ResponseTrustClass is the effective trust class for this server's MCP
 	// responses. Empty is treated as "untrusted" and fails closed. Set from
@@ -449,10 +461,35 @@ type MCPProxyOpts struct {
 // responses ("mcp://<ServerName>/response"), or "" when no stable server
 // name is set (which disables target-scoped response suppression).
 func (o MCPProxyOpts) responseTarget() string {
+	if o.PolicyServerName == "" {
+		return ""
+	}
+	return "mcp://" + o.PolicyServerName + "/response"
+}
+
+// auditTarget returns the audit resource and receipt target for the server's
+// responses. It follows ServerName, which labels the stream whether or not the
+// name arms any policy.
+func (o MCPProxyOpts) auditTarget() string {
 	if o.ServerName == "" {
 		return ""
 	}
 	return "mcp://" + o.ServerName + "/response"
+}
+
+// adaptiveSessionKey is the per-server adaptive-enforcement session key.
+// A registered identity is keyed by name and revision, so a changed policy
+// never inherits another revision's score; a legacy name is used unchanged.
+func (o MCPProxyOpts) adaptiveSessionKey() string {
+	name := firstNonEmpty(o.ServerName, "default")
+	if o.ServerRevision == "" {
+		return name
+	}
+	rev := o.ServerRevision
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	return name + "@" + rev
 }
 
 // responseScanOptions builds the per-server suppression context passed into
@@ -462,7 +499,7 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 	// configured (the HTTP listener path), so building the context never logs
 	// a spurious "resource required" error and the record still names a
 	// surface an operator can search for.
-	auditResource := o.responseTarget()
+	auditResource := o.auditTarget()
 	if auditResource == "" {
 		auditResource = "mcp://response"
 	}

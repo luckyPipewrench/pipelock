@@ -136,7 +136,7 @@ func TestVerifyingDialContext(t *testing.T) {
 		conn := &stubConn{}
 		dial := VerifyingDialContext(
 			func(context.Context, string, string) (net.Conn, error) { return conn, nil },
-			func(net.Conn) error { return errVerify },
+			func(context.Context, net.Conn) error { return errVerify },
 		)
 		got, err := dial(ctx, "tcp", "127.0.0.1:1")
 		if !errors.Is(err, errVerify) {
@@ -155,7 +155,7 @@ func TestVerifyingDialContext(t *testing.T) {
 		var verified atomic.Bool
 		dial := VerifyingDialContext(
 			func(context.Context, string, string) (net.Conn, error) { return nil, errDial },
-			func(net.Conn) error { verified.Store(true); return nil },
+			func(context.Context, net.Conn) error { verified.Store(true); return nil },
 		)
 		got, err := dial(ctx, "tcp", "127.0.0.1:1")
 		if !errors.Is(err, errDial) {
@@ -173,9 +173,10 @@ func TestVerifyingDialContext(t *testing.T) {
 		t.Parallel()
 		conn := &stubConn{}
 		var seen net.Conn
+		var seenCtx context.Context
 		dial := VerifyingDialContext(
 			func(context.Context, string, string) (net.Conn, error) { return conn, nil },
-			func(c net.Conn) error { seen = c; return nil },
+			func(c context.Context, nc net.Conn) error { seenCtx, seen = c, nc; return nil },
 		)
 		got, err := dial(ctx, "tcp", "127.0.0.1:1")
 		if err != nil {
@@ -183,6 +184,9 @@ func TestVerifyingDialContext(t *testing.T) {
 		}
 		if got != net.Conn(conn) || seen != net.Conn(conn) {
 			t.Fatal("verify and caller must see the dialed connection")
+		}
+		if seenCtx != ctx {
+			t.Fatal("verify must receive the dial context")
 		}
 		if conn.closed.Load() {
 			t.Fatal("verified connection was closed")
@@ -192,7 +196,7 @@ func TestVerifyingDialContext(t *testing.T) {
 	t.Run("missing hooks refuse", func(t *testing.T) {
 		t.Parallel()
 		okDial := func(context.Context, string, string) (net.Conn, error) { return &stubConn{}, nil }
-		okVerify := func(net.Conn) error { return nil }
+		okVerify := func(context.Context, net.Conn) error { return nil }
 		for name, dial := range map[string]DialContextFunc{
 			"nil inner":  VerifyingDialContext(nil, okVerify),
 			"nil verify": VerifyingDialContext(okDial, nil),
@@ -213,5 +217,9 @@ func TestVerifyConnUnsupportedPlatform(t *testing.T) {
 	_, err := NewVerifier().VerifyConn(&stubConn{}, Pin{ExecutableSHA256: testHashA})
 	if !errors.Is(err, ErrUnsupportedPlatform) {
 		t.Fatalf("VerifyConn = %v, want ErrUnsupportedPlatform", err)
+	}
+	_, err = NewVerifier().VerifyConnContext(context.Background(), &stubConn{}, Pin{ExecutableSHA256: testHashA})
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatalf("VerifyConnContext = %v, want ErrUnsupportedPlatform", err)
 	}
 }

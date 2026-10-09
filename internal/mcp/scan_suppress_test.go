@@ -116,9 +116,10 @@ func TestMCPStdioSuppressedResponseRecordsDroppedDLP(t *testing.T) {
 	}
 	m := metrics.New()
 	opts := MCPProxyOpts{
-		ServerName:  "code-assistant",
-		AuditLogger: logger,
-		Metrics:     m,
+		ServerName:       "code-assistant",
+		PolicyServerName: "code-assistant",
+		AuditLogger:      logger,
+		Metrics:          m,
 		Suppress: []config.SuppressEntry{{
 			Rule: base.Matches[0].PatternName,
 			Path: "mcp://code-assistant/response",
@@ -265,6 +266,7 @@ func TestForwardScanned_PerServerSuppressionForwardsMatchingServer(t *testing.T)
 	}
 	opts := buildTestOpts(sc)
 	opts.ServerName = "code-assistant"
+	opts.PolicyServerName = "code-assistant"
 	opts.Suppress = []config.SuppressEntry{
 		{Rule: base.Matches[0].PatternName, Path: "mcp://code-assistant/response"},
 	}
@@ -363,7 +365,7 @@ func TestForwardScanned_MCPResponseTrustDefaultUntrustedBlocksSamePayload(t *tes
 // TestMCPProxyOpts_ResponseScanOptions covers the server-identity to target
 // derivation for both the named and empty cases.
 func TestMCPProxyOpts_ResponseScanOptions(t *testing.T) {
-	named := MCPProxyOpts{ServerName: "code-assistant"}.responseScanOptions()
+	named := MCPProxyOpts{ServerName: "code-assistant", PolicyServerName: "code-assistant"}.responseScanOptions()
 	if named.Target != "mcp://code-assistant/response" {
 		t.Fatalf("named target = %q", named.Target)
 	}
@@ -381,7 +383,8 @@ func TestMCPProxyOpts_ResponseScanOptions(t *testing.T) {
 
 func TestMCPProxyOpts_ResponseScanOptionsHotReloadFunctions(t *testing.T) {
 	opts := MCPProxyOpts{
-		ServerName: "codex",
+		ServerName:       "codex",
+		PolicyServerName: "codex",
 		SuppressFn: func() []config.SuppressEntry {
 			return []config.SuppressEntry{{Rule: "New Instructions", Path: "mcp://codex/response"}}
 		},

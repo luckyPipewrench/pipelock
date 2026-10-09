@@ -213,8 +213,9 @@ var errNilDialHook = errors.New("verifying dialer needs both a dial function and
 // VerifyingDialContext wraps inner so that every connection it returns has
 // passed verify. A connection that fails verification is closed and its error
 // returned; an unverified connection is never returned. An error from inner
-// passes through unchanged.
-func VerifyingDialContext(inner DialContextFunc, verify func(net.Conn) error) DialContextFunc {
+// passes through unchanged. verify receives the dial's context, so a bounded
+// retry inside it ends when the caller's deadline does.
+func VerifyingDialContext(inner DialContextFunc, verify func(context.Context, net.Conn) error) DialContextFunc {
 	if inner == nil || verify == nil {
 		return func(context.Context, string, string) (net.Conn, error) {
 			return nil, errNilDialHook
@@ -225,7 +226,7 @@ func VerifyingDialContext(inner DialContextFunc, verify func(net.Conn) error) Di
 		if err != nil {
 			return nil, err
 		}
-		if err := verify(conn); err != nil {
+		if err := verify(ctx, conn); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}

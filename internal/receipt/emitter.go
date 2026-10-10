@@ -1005,6 +1005,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		recordErr = e.recorder.RecordWithReceiptScanPreAdvance(entry, &scan, advance)
 	}
 	if ticket != nil {
+		// The append succeeded, so the receipt is in the file; its sync is
+		// confirmed after the lock is released.
+		e.persistedSeq, e.persistedHash = ar.ChainSeq, receiptHash
 		if !e.linked {
 			e.linked = true
 			e.linkPredecessor()

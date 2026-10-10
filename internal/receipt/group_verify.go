@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -46,10 +45,7 @@ type ReceiptGroupResult struct {
 // setReadError keeps unavailable evidence distinct from a stable invalid group.
 func (r *ReceiptGroupResult) setReadError(err error) {
 	r.Error = err.Error()
-	var pathErr *os.PathError
-	var systemErr syscall.Errno
-	if errors.Is(err, recorder.ErrEvidenceChanged) || errors.Is(err, os.ErrPermission) ||
-		((errors.As(err, &pathErr) || errors.As(err, &systemErr)) && !errors.Is(err, os.ErrNotExist)) {
+	if recorder.IsEvidenceUnavailable(err) {
 		r.Verdict = GroupIncomplete
 		r.readIncomplete = true
 	}

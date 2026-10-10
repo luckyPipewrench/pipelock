@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
@@ -58,6 +59,23 @@ const sessionHistoryWindow = 1024
 // ErrEvidenceChanged means a read could not establish a stable snapshot.
 // It is unavailable evidence, not proof of corruption or a recoverable torn tail.
 var ErrEvidenceChanged = errors.New("evidence changed during read; no verdict reached")
+
+// IsEvidenceUnavailable reports whether err means evidence could not be read
+// as it stood (it changed during the read, access was refused, or an I/O
+// error occurred) rather than that it was read and found invalid. Such a
+// result reaches no verdict. A missing file is not unavailable: absence of
+// evidence the history names is itself a finding.
+func IsEvidenceUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrEvidenceChanged) || errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	var pathErr *os.PathError
+	var errno syscall.Errno
+	return (errors.As(err, &pathErr) || errors.As(err, &errno)) && !errors.Is(err, os.ErrNotExist)
+}
 
 // WithSessionHistorySnapshot binds multiple authoritative reads of one session
 // to the same inventory. The consumer must defer verdicts and durable side

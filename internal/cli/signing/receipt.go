@@ -238,7 +238,7 @@ Examples:
 				}
 				if groupErr != nil {
 					verdict := receipt.GroupInvalid
-					if errors.Is(groupErr, recorder.ErrEvidenceChanged) {
+					if recorder.IsEvidenceUnavailable(groupErr) {
 						verdict = receipt.GroupIncomplete
 					}
 					_, _ = fmt.Fprintf(out, "%s inventory: %v\n", verdict, groupErr)
@@ -1272,7 +1272,7 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 		if isRecorder {
 			return verifyTypedChainDetailed(out, path, actions, evidenceReceipts, trustedKeys, opts)
 		}
-	} else if errors.Is(readErr, recorder.ErrEvidenceChanged) {
+	} else if recorder.IsEvidenceUnavailable(readErr) {
 		return readErr
 	}
 	var (
@@ -1313,7 +1313,7 @@ func withDirectoryReportSnapshot(out io.Writer, location recorder.EvidenceLocati
 	}
 	var buffer bytes.Buffer
 	err := receipt.WithBaseHistorySnapshot(location.Dir, base, func() error { return consume(&buffer) })
-	if errors.Is(err, recorder.ErrEvidenceChanged) {
+	if recorder.IsEvidenceUnavailable(err) {
 		_, _ = fmt.Fprintf(out, "VERIFICATION INCOMPLETE: %s\n", err)
 		return err
 	}
@@ -1465,7 +1465,7 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 	})
 	if err != nil {
 		verdict := "CHAIN BROKEN"
-		if errors.Is(err, recorder.ErrEvidenceChanged) {
+		if recorder.IsEvidenceUnavailable(err) {
 			verdict = "CHAIN UNAVAILABLE"
 		}
 		_, _ = fmt.Fprintf(out, "%s: %s\n  Error:    %v\n", verdict, label, err)
@@ -1484,7 +1484,7 @@ func extractFileChains(name, path string) ([]receipt.Receipt, []contractreceipt.
 		if err != nil || isRecorder {
 			return actions, evidenceReceipts, err
 		}
-	} else if errors.Is(readErr, recorder.ErrEvidenceChanged) {
+	} else if recorder.IsEvidenceUnavailable(readErr) {
 		return nil, nil, readErr
 	}
 	actions, err := receipt.ExtractReceipts(path)

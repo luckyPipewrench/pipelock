@@ -176,10 +176,21 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # Every git read lands in a file first, so a failed command fails
+          # this step (and the required gates that need it) instead of
+          # feeding a short list to the loop below. No rename detection: a
+          # Go file renamed to Markdown must be seen as a removed Go file.
+          work="$(mktemp -d)"
+          git diff -z --no-renames --name-only "${BASE_SHA}...${HEAD_SHA}" > "$work/changed"
+          git ls-tree -r --name-only "$HEAD_SHA" > "$work/tree"
           declare -A go_dirs=()
-          while IFS= read -r go_file; do
-            go_dirs["${go_file%/*}"]=1
-          done < <(git ls-tree -r --name-only "$HEAD_SHA" | grep '/.*\.go$' || true)
+          root_go=false
+          while IFS= read -r tracked; do
+            case "$tracked" in
+              */*.go) go_dirs["${tracked%/*}"]=1 ;;
+              *.go) root_go=true ;;
+            esac
+          done < "$work/tree"
           docs_only=true
           count=0
           while IFS= read -r -d '' path; do
@@ -200,21 +211,26 @@ jobs:
                 fi
               done
             fi
-            if [ -z "$reason" ] && git ls-tree --name-only "$HEAD_SHA" | grep -q '\.go$'; then
+            if [ -z "$reason" ] && [ "$root_go" = true ]; then
               reason="the repository root is a Go package"
             fi
             if [ -z "$reason" ]; then
-              base="${path##*/}"
-              if git grep -q -F -e "$path" -e "$base" "$HEAD_SHA" -- '*.go'; then
-                reason="named by Go code"
-              fi
+              # git grep exits 1 for no match; anything else is a failure,
+              # which must not read as "no Go code names this file".
+              status=0
+              git grep -q -F -e "$path" -e "${path##*/}" "$HEAD_SHA" -- '*.go' || status=$?
+              case "$status" in
+                0) reason="named by Go code" ;;
+                1) ;;
+                *) reason="git grep failed with status $status" ;;
+              esac
             fi
             if [ -n "$reason" ]; then
               echo "full CI: $path ($reason)"
               docs_only=false
               break
             fi
-          done < <(git diff -z --name-only "${BASE_SHA}...${HEAD_SHA}")
+          done < "$work/changed"
           if [ "$count" -eq 0 ]; then
             echo "full CI: empty diff"
             docs_only=false
@@ -224,9 +240,9 @@ jobs:
 
   # Race lane. The race detector multiplies test time by five to eleven, so the
   # full race suite costs about six runner-hours per run. Pull requests get the
-  # fast no-race suite below instead; this lane runs on main, in the merge queue,
-  # nightly, and on demand. GitHub keeps at most one pending main run per ref, so
-  # a burst of merges is proven by one race run against the newest commit.
+  # fast no-race suite below instead; this lane runs on every push to main.
+  # GitHub keeps at most one pending main run per ref, so a burst of merges is
+  # proven by one race run against the newest commit.
   # max-parallel leaves most of the account's concurrent-job limit to pull
   # requests, which are waiting on their results; main is not.
   test-oss-go126:
@@ -364,6 +380,9 @@ jobs:
           TEST_CEILING_SECONDS: '120'
         run: |
           set -o pipefail
+          # GitHub runs this under bash -e; the summary below must still run
+          # after a failing go test, because it is what names the failure.
+          set +e
           tags=()
           if [ "$VARIANT" = enterprise ]; then
             tags=(-tags enterprise)

@@ -200,7 +200,7 @@ func TestInterceptServerIssuedIDs(t *testing.T) {
 
 	t.Run("a value escaped in the request body is still recorded as sent", func(t *testing.T) {
 		h := newWebPlatformHarness(t)
-		api, _ := newMailAPI(t)
+		api, hits := newMailAPI(t)
 		escaped := string([]byte{0x5c}) + "u004b" + agentBlob[1:] // "K" written as a JSON escape
 		if got := h.send(api, http.MethodPost, "/filters", agent, "application/json", `{"criteria":{"query":"`+escaped+`"}}`); got != http.StatusOK {
 			t.Fatalf("create = %d", got)
@@ -208,6 +208,9 @@ func TestInterceptServerIssuedIDs(t *testing.T) {
 		_ = h.send(api, http.MethodGet, "/filters", agent, "", "")
 		if got := h.send(api, http.MethodDelete, "/filters/"+agentBlob, agent, "", ""); got != http.StatusForbidden {
 			t.Fatalf("escaped reflection as id = %d, want 403", got)
+		}
+		if hits("DELETE /filters/"+agentBlob) != 0 {
+			t.Fatal("an escaped reflection reached upstream as an id")
 		}
 	})
 

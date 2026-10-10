@@ -147,11 +147,27 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	if s == nil || s.disabled || session == "" || target == nil {
 		return
 	}
-	if _, _, ok := issuerCookieOrigin(target); !ok {
+	// issuerCookieOrigin rejects userinfo so a user:pass@host URL cannot
+	// impersonate another origin. The client still sends that userinfo, as
+	// Basic auth, to the host. Record against the host with the userinfo
+	// removed, and record the user and password as sent text.
+	originTarget := target
+	if target.User != nil {
+		stripped := *target
+		stripped.User = nil
+		originTarget = &stripped
+	}
+	if _, _, ok := issuerCookieOrigin(originTarget); !ok {
 		return
 	}
 	var texts []string
 	texts = append(texts, target.EscapedPath(), target.Path)
+	if user := target.User; user != nil {
+		texts = appendFormLike(texts, user.Username())
+		if password, ok := user.Password(); ok {
+			texts = appendFormLike(texts, password)
+		}
+	}
 	texts = appendFormLike(texts, target.RawQuery)
 	for name, values := range header {
 		texts = append(texts, name)
@@ -161,7 +177,6 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	}
 	if len(body) > 0 {
 		texts = appendFormLike(texts, string(body))
-		texts = appendJSONStrings(texts, body)
 	}
 
 	var digests [][32]byte
@@ -172,7 +187,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 				overflow = true
 				return false
 			}
-			if digest, ok := s.originDigest("sent", target, token); ok {
+			if digest, ok := s.originDigest("sent", originTarget, token); ok {
 				digests = append(digests, digest)
 			}
 			return true
@@ -252,14 +267,35 @@ func unhex(c byte) byte {
 // "&"/";"-separated form pairs, decoded the same way. Any of those forms may
 // be the one an origin stores and returns.
 func appendFormLike(texts []string, text string) []string {
-	texts = append(texts, text, lenientUnescape(text, false), lenientUnescape(text, true))
+	staged := []string{text, lenientUnescape(text, false), lenientUnescape(text, true)}
 	for _, pair := range strings.FieldsFunc(text, func(r rune) bool { return r == '&' || r == ';' }) {
 		key, value, _ := strings.Cut(pair, "=")
 		for _, part := range []string{key, value} {
-			texts = append(texts, lenientUnescape(part, false), lenientUnescape(part, true))
+			staged = append(staged, lenientUnescape(part, false), lenientUnescape(part, true))
 		}
 	}
+	// Identical copies (a body with no escapes) are one text. Walking each
+	// copy would count the same tokens against the per-request cap.
+	seen := make(map[string]struct{}, len(staged))
+	for _, form := range staged {
+		if _, ok := seen[form]; ok {
+			continue
+		}
+		seen[form] = struct{}{}
+		texts = append(texts, form)
+		texts = appendJSONStringsIfValid(texts, form)
+	}
 	return texts
+}
+
+// appendJSONStringsIfValid walks text when it is a JSON value. A form field,
+// query value or header often carries a JSON object whose strings are escaped;
+// the raw token scan cannot see through those escapes.
+func appendJSONStringsIfValid(texts []string, text string) []string {
+	if text == "" || !json.Valid([]byte(text)) {
+		return texts
+	}
+	return appendJSONStrings(texts, []byte(text))
 }
 
 // appendJSONStrings adds every string key and value of a JSON body, decoded,
@@ -348,11 +384,38 @@ func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte)
 	}
 	store := ic.issuerQueryStore()
 	if store == nil {
+		// A tunnel pinned to the pre-reload runtime still forwards. The live
+		// store is the one later requests mint from, so the send is recorded
+		// there instead of looking like the session never made it.
+		store = ic.issuerQueryStoreIgnoringSnapshot()
+	}
+	if store == nil {
 		return
 	}
 	bodyKnown := body != nil || r.Body == nil || r.Body == http.NoBody
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 	store.recordSent(session, r.URL, r.Header, body, bodyKnown, time.Now())
+}
+
+// issuerQueryStoreIgnoringSnapshot returns the live query store when this
+// request's pinned runtime no longer matches it. Other reasons the pinned
+// lookup fails (feature off, untrusted actor, no proxy) still return nil.
+func (ic *InterceptContext) issuerQueryStoreIgnoringSnapshot() *issuerQueryStore {
+	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
+		return nil
+	}
+	runtime := ic.Proxy.issuerCookieRuntime.Load()
+	if runtime == nil || runtime.query == nil || runtime.query.disabled {
+		return nil
+	}
+	skewed := ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime
+	if ic.IssuerRuntime == nil && runtime.cfg != ic.Config {
+		skewed = true
+	}
+	if !skewed {
+		return nil
+	}
+	return runtime.query
 }
 
 // issuerStoreForUnmediatedSend returns the live issuer store whatever

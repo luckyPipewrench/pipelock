@@ -81,8 +81,9 @@ media_policy:
 An HTTP response can declare its type more than once, in repeated
 `Content-Type` headers or a comma-separated list. Pipelock reads them with the
 Fetch standard's rule that browsers use: entries that don't parse and `*/*` are
-skipped, and the last valid entry decides the type that media policy enforces.
-Where Pipelock would otherwise skip text scanning for a binary media body, it
+skipped, and the last valid entry becomes the declared type that media policy
+starts from. The body bytes can still change that type, as described under
+[Exposure events](#exposure-events). Where Pipelock would otherwise skip text scanning for a binary media body, it
 does so only when every valid entry names the same type. A response whose
 entries disagree stays on the scanned path.
 
@@ -179,8 +180,13 @@ The event's `content_type` is one of a fixed set of labels, so an upstream
 server can't write arbitrary text into the audit log. Common image, audio, and
 video types keep their own names. Any other type is recorded as
 `image/unknown`, `audio/unknown`, `video/unknown`, or `unknown`. The label only
-describes the event: enforcement still classifies the response's original type,
-and an `unknown` label doesn't mean the media was allowed.
+describes the event: enforcement uses the full effective type, not the label.
+That type is the declared one unless the body bytes prove a media format the
+declaration doesn't name. For example, JPEG bytes served as `text/html` are
+handled as `image/jpeg`, and a body declared as JPEG or PNG that is really
+another allowed image format is handled as that format. The label comes from
+the same effective type, and an `unknown` label doesn't mean the media was
+allowed.
 
 ## Validation rules
 

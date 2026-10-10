@@ -244,7 +244,7 @@ func ensureEvidenceFileUnchanged(file *os.File, before os.FileInfo) error {
 		return err
 	}
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) || after.Size() != before.Size() || after.ModTime() != before.ModTime() {
-		return errors.New("evidence file changed during read")
+		return fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
 	}
 	return nil
 }

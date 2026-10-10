@@ -89,12 +89,13 @@ func openEvidenceLocationFile(location EvidenceLocation, name string) (*os.File,
 		return nil, nil, fmt.Errorf("open evidence file %q: %w", name, err)
 	}
 	after, err := file.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+	if err != nil {
 		_ = file.Close()
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, nil, errors.New("evidence file changed or is non-regular")
+		return nil, nil, err
+	}
+	if err := checkOpenedEvidenceFile(before, after); err != nil {
+		_ = file.Close()
+		return nil, nil, err
 	}
 	return file, after, nil
 }

@@ -24,6 +24,11 @@ func TestIsEvidenceUnavailable(t *testing.T) {
 		{"I/O error", &fs.PathError{Op: "read", Path: "evidence-a-0.jsonl", Err: syscall.EIO}, true},
 		{"bare errno", fmt.Errorf("sync: %w", syscall.EIO), true},
 		{"missing file is a finding", &fs.PathError{Op: "open", Path: "evidence-a-0.jsonl", Err: os.ErrNotExist}, false},
+		{"symlink refused by no-follow open is a finding", &fs.PathError{Op: "open", Path: "evidence-a-0.jsonl", Err: syscall.ELOOP}, false},
+		{"path component not a directory is a finding", &fs.PathError{Op: "open", Path: "evidence-a-0.jsonl", Err: syscall.ENOTDIR}, false},
+		{"directory where a file belongs is a finding", &fs.PathError{Op: "read", Path: "evidence-a-0.jsonl", Err: syscall.EISDIR}, false},
+		{"refused evidence is a finding", fmt.Errorf("%w: evidence file is symlinked", ErrEvidenceRefused), false},
+		{"refused evidence wrapping permission stays a finding", fmt.Errorf("%w: %w", ErrEvidenceRefused, os.ErrPermission), false},
 		{"malformed content is a finding", errors.New("entry 3: invalid character"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

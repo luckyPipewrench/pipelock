@@ -61,20 +61,28 @@ const sessionHistoryWindow = 1024
 var ErrEvidenceChanged = errors.New("evidence changed during read; no verdict reached")
 
 // IsEvidenceUnavailable reports whether err means evidence could not be read
-// as it stood (it changed during the read, access was refused, or an I/O
-// error occurred) rather than that it was read and found invalid. Such a
-// result reaches no verdict. A missing file is not unavailable: absence of
-// evidence the history names is itself a finding.
+// as it stood, for an environmental reason: it changed during the read,
+// access was denied, or the read failed with a transient I/O error. Such a
+// result reaches no verdict. Everything else is a finding, including a
+// refused file (a symlink or non-regular file where evidence belongs, which
+// no-follow opens report as ELOOP or ENOTDIR) and a missing file, so a
+// tampered directory is never downgraded to "no verdict".
 func IsEvidenceUnavailable(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, ErrEvidenceRefused) {
 		return false
 	}
 	if errors.Is(err, ErrEvidenceChanged) || errors.Is(err, os.ErrPermission) {
 		return true
 	}
-	var pathErr *os.PathError
 	var errno syscall.Errno
-	return (errors.As(err, &pathErr) || errors.As(err, &errno)) && !errors.Is(err, os.ErrNotExist)
+	if !errors.As(err, &errno) {
+		return false
+	}
+	switch errno {
+	case syscall.EIO, syscall.EINTR, syscall.EAGAIN, syscall.ESTALE:
+		return true
+	}
+	return false
 }
 
 // WithSessionHistorySnapshot binds multiple authoritative reads of one session

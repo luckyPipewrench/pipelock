@@ -1450,6 +1450,10 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 	_, _ = fmt.Fprintln(out, "  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.")
 }
 
+// afterSessionEvidenceRead is a test seam inside the session snapshot, after
+// its evidence is read. Production leaves it a no-op.
+var afterSessionEvidenceRead = func() {}
+
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
 	var receipts []receipt.Receipt
@@ -1461,6 +1465,7 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 			return fmt.Errorf("extracting session receipts: %w", readErr)
 		}
 		evidenceReceipts, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
+		afterSessionEvidenceRead()
 		return readErr
 	})
 	if err != nil {

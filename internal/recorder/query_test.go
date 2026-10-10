@@ -188,6 +188,11 @@ func TestWalkSessionHistoryFailsClosed(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "evidence file changed during read") {
 			t.Fatalf("WalkSessionHistory error = %v, want evidence file changed during read", err)
 		}
+		// Matching the text is not enough: callers retry or report "no
+		// verdict" only when the error carries the sentinel.
+		if !errors.Is(err, recorder.ErrEvidenceChanged) || !recorder.IsEvidenceUnavailable(err) {
+			t.Fatalf("WalkSessionHistory error = %v, want ErrEvidenceChanged classified as unavailable evidence", err)
+		}
 	})
 }
 

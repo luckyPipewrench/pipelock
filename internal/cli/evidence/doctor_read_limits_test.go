@@ -277,6 +277,20 @@ func TestDoctorInventoryAcceptsOnlyActiveShardGrowth(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, false},
+		{"active shard rewritten in place then grown", func(t *testing.T, dir string) {
+			path := filepath.Join(dir, "evidence-proxy-5.jsonl")
+			f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.WriteAt([]byte("["), 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			appendTo(t, path)
+		}, false},
 		{"new shard", func(t *testing.T, dir string) {
 			if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-9.jsonl"), nil, 0o600); err != nil {
 				t.Fatal(err)

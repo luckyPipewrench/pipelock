@@ -100,13 +100,7 @@ func (r *Recorder) appendDurableLegacy(e Entry, scan *ReceiptScan, advance func(
 // appendDurableLocked writes and reserves one entry on the active stream. For
 // a group the caller holds groupMu with state loaded.
 func (r *Recorder) appendDurableLocked(e Entry, scan *ReceiptScan, advance func(), state *SessionState) (*DurableTicket, error) {
-	r.mu.Lock()
-	if r.durableFailure != nil {
-		failure := r.durableFailure
-		r.mu.Unlock()
-		return nil, fmt.Errorf("%w: %w", ErrDurabilityInherited, failure)
-	}
-	r.mu.Unlock()
+	// prepareDurableWrite refuses a stream whose sync already failed.
 	pending, err := r.prepareDurableWrite(e, scan, advance)
 	if err != nil {
 		return nil, err

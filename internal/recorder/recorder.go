@@ -642,6 +642,12 @@ func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify 
 	if r.closed {
 		return Entry{}, fmt.Errorf("recorder is closed")
 	}
+	// Every write path, durable or not, refuses a stream whose sync failed:
+	// an entry chained onto an unconfirmed prefix could later be covered by
+	// a signed checkpoint.
+	if r.durableFailure != nil {
+		return Entry{}, fmt.Errorf("%w: %w", ErrDurabilityInherited, r.durableFailure)
+	}
 
 	// Session ID validation: require non-empty, reject path separators
 	// (defense against path traversal in filenames), and reject mismatches.
@@ -1063,6 +1069,10 @@ func (r *Recorder) close() (retErr error) {
 
 // checkpointLocked writes a signed checkpoint entry. Must be called with mu held.
 func (r *Recorder) checkpointLocked() error {
+	if r.durableFailure != nil {
+		// A signed checkpoint would attest entries whose sync failed.
+		return fmt.Errorf("checkpoint refused: %w: %w", ErrDurabilityInherited, r.durableFailure)
+	}
 	cpDetail := CheckpointDetail{
 		EntryCount: r.sinceCheckpoint,
 		FirstSeq:   r.firstSeqInSpan,
@@ -1668,6 +1678,9 @@ func (r *Recorder) closeFile() error {
 
 // rotateFile closes the current file so the next write opens a new one.
 func (r *Recorder) rotateFile() error {
+	if r.durableFailure != nil {
+		return fmt.Errorf("rotation refused: %w: %w", ErrDurabilityInherited, r.durableFailure)
+	}
 	return r.closeFile()
 }
 

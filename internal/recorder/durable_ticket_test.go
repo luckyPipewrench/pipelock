@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -254,4 +255,54 @@ func TestGroupShardSyncFailureIsShardLocalAndBlocksFinalize(t *testing.T) {
 	if err := r.FinalizeGroupSessions(); !errors.Is(err, ErrDurabilityInherited) {
 		t.Fatalf("FinalizeGroupSessions = %v, want refusal for the failed shard", err)
 	}
+}
+
+// A failed stream refuses non-durable writes too, and no path signs a
+// checkpoint over it: neither the maintenance a later write would trigger nor
+// a non-finalizing group close.
+func TestFailedStreamRefusesEveryWriteAndCheckpoint(t *testing.T) {
+	t.Run("single session", func(t *testing.T) {
+		dir := t.TempDir()
+		rec := newDurableTestRecorder(t, Config{Dir: dir, CheckpointInterval: 2})
+		rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+		if err := rec.RecordDurable(Entry{SessionID: "durable-session", Type: "request", Summary: "fails"}); !errors.Is(err, ErrDurability) {
+			t.Fatalf("RecordDurable = %v, want ErrDurability", err)
+		}
+		if err := rec.Record(Entry{SessionID: "durable-session", Type: "request", Summary: "best effort"}); !errors.Is(err, ErrDurabilityInherited) {
+			t.Fatalf("non-durable Record on a failed stream = %v, want ErrDurabilityInherited", err)
+		}
+		_ = rec.Close()
+		for _, e := range readEntriesForSession(t, dir, "durable-session") {
+			if e.Type == checkpointType {
+				t.Fatalf("a checkpoint was signed over a failed sync: %+v", e)
+			}
+			if e.Summary == "best effort" {
+				t.Fatal("a non-durable entry was appended to a failed stream")
+			}
+		}
+	})
+	t.Run("group close", func(t *testing.T) {
+		r, _, _ := newGroupRecorder(t)
+		sessions := groupSessionIDs(t, 2)
+		if err := r.AcquireGroupSessions(sessions); err != nil {
+			t.Fatal(err)
+		}
+		r.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+		if err := r.RecordDurable(Entry{SessionID: sessions[1], Type: "test", Summary: "fails"}); !errors.Is(err, ErrDurability) {
+			t.Fatalf("shard sync = %v, want ErrDurability", err)
+		}
+		r.SetSyncForTest(nil)
+		if err := r.Close(); !errors.Is(err, ErrDurabilityInherited) {
+			t.Fatalf("group Close = %v, want the failed shard's checkpoint refused", err)
+		}
+		entries, err := ReadEntries(filepath.Join(r.cfg.Dir, fmt.Sprintf("evidence-%s-0.jsonl", sessions[1])))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Type == checkpointType {
+				t.Fatalf("group close signed a checkpoint over the failed shard: %+v", e)
+			}
+		}
+	})
 }

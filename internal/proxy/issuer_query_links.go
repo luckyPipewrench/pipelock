@@ -64,7 +64,16 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	if truncated {
 		body = body[:issuerQueryMaxHTMLBytes]
 	}
-	base, baseSeen := documentBase(body)
+	// Count base tags in the raw bytes, not the token stream: the tokenizer
+	// reads <noscript> as text, yet a browser with scripting off honors a
+	// <base> inside it. A spelling in a comment or script also counts, which
+	// can only make the answer more cautious. The full tree parse runs only
+	// when exactly one spelling exists; otherwise the base is unknown anyway.
+	tags := len(baseTagSpelling.FindAllIndex(body, 2))
+	var baseSeen bool
+	if tags == 1 {
+		base, baseSeen = documentBase(body)
+	}
 	var out []string
 	z := html.NewTokenizer(bytes.NewReader(body))
 	for {
@@ -107,11 +116,7 @@ func htmlLinksAndBase(body []byte, limit int) (links []string, base string, base
 	// exactly one base tag that the tree selected is trusted; anything else
 	// is treated as unknown, so only absolute links are issued.
 	known := !truncated || baseSeen
-	// Count base tags in the raw bytes, not the token stream: the tokenizer
-	// reads <noscript> as text, yet a browser with scripting off honors a
-	// <base> inside it. A spelling in a comment or script also counts, which
-	// can only make the answer more cautious.
-	switch tags := len(baseTagSpelling.FindAllIndex(body, 2)); {
+	switch {
 	case tags == 0:
 	case tags == 1 && baseSeen:
 	default:

@@ -516,6 +516,10 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		store.declareRedirect(session, response.Request.URL, redirect, time.Now())
 	}
 	remaining := issuerCookieMaxSetCookies
+	// Path evidence has its own budget so a listing with many same-origin
+	// paths cannot exhaust the one that records query values (a paging token
+	// that follows them).
+	pathRemaining := issuerCookieMaxSetCookies
 	// base is what a relative reference resolves against: the response URL,
 	// or an HTML document's own <base href> when it names the same origin.
 	base := response.Request.URL
@@ -558,11 +562,11 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			}
 			kind = issuerQueryOAuthRedirect
 			allowed = names
-		} else if pathIssued && remaining > 0 {
+		} else if pathIssued && pathRemaining > 0 {
 			// Only the origin's own link counts: a cross-host redirect above
 			// returned before this point and issues no path.
 			store.rememberPath(session, candidate, time.Now())
-			remaining--
+			pathRemaining--
 		}
 		for name, values := range candidate.Query() {
 			if allowed != nil && !allowed[name] {
@@ -594,17 +598,17 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
 		store.rememberDocument(session, response.Request.URL, time.Now())
+		if !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
+			// Links and base are read from the raw bytes as UTF-8. Under an
+			// encoding that does not keep ASCII markup as-is (UTF-16, or one
+			// with shift states such as ISO-2022-JP), a browser may decode
+			// different URLs, so the document issues no link at all.
+			return
+		}
 		links, baseHref, baseKnown := htmlLinksAndBase(body, remaining)
 		if mediaType == "application/xhtml+xml" {
 			// XHTML is parsed as XML, not by the HTML algorithm that found
 			// this base, so its base is not known.
-			baseKnown = false
-		}
-		if !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
-			// The base was read from the raw bytes as UTF-8. Under an
-			// encoding that does not keep ASCII markup as-is (UTF-16, or one
-			// with shift states such as ISO-2022-JP), the browser may see a
-			// different <base>, so it is not known.
 			baseKnown = false
 		}
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)

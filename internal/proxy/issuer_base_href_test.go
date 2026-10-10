@@ -193,7 +193,7 @@ func TestInterceptBaseHref(t *testing.T) {
 			page = `<img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
 		}
 		if base == "METAJIS" {
-			page = `<meta charset="iso-2022-jp"><img src="` + baseHrefAsset + `">`
+			page = `<meta charset="iso-2022-jp"><img src="` + baseHrefAsset + `"><img src="` + siteURL + `/abs/` + baseHrefAsset + `">`
 		}
 		if base == "XHTML" {
 			w.Header().Set("Content-Type", "application/xhtml+xml")
@@ -227,8 +227,10 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"absolute link still issues under a cross origin base", "OTHER/assets/", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"absolute link still issues under an ambiguous base", "SVGDECOY", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"iso-2022-jp relative link is untrusted", "ISO2022JP", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
-		{"iso-2022-jp absolute link issues", "ISO2022JP", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"iso-2022-jp absolute link issues nothing", "ISO2022JP", site, "/abs/" + baseHrefAsset, http.StatusForbidden},
 		{"meta charset shift encoding relative link is untrusted", "METAJIS", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
+		{"meta charset shift encoding absolute link issues nothing", "METAJIS", site, "/abs/" + baseHrefAsset, http.StatusForbidden},
+		{"utf-8 declared absolute link issues", "UTF8", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"utf-8 declared relative link issues", "UTF8", site, "/dir/" + baseHrefAsset, http.StatusOK},
 		{"xhtml relative link is untrusted", "XHTML", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"xhtml absolute link issues", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusOK},

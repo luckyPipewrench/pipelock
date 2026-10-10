@@ -2228,8 +2228,9 @@ func IsSafeEnvKey(key string) bool {
 
 // IsDangerousEnvKey reports whether the given environment variable name is
 // blocked from passthrough because it can inject code or redirect traffic.
-// Proxy-related vars are checked case-insensitively since different runtimes
-// (Go, Node.js, Python, curl) honor different casings.
+// Every name is matched case-insensitively: Windows environment names ignore
+// case, so a child started with pythonpath=... reads it as PYTHONPATH, and
+// different runtimes (Go, Node.js, Python, curl) honor different proxy casings.
 func IsDangerousEnvKey(key string) bool {
 	upper := strings.ToUpper(key)
 	if dangerousEnvKeys[upper] || envcontrol.IsCodeLoading(upper) {

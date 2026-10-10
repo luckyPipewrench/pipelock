@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -159,8 +160,8 @@ type Observation struct {
 // code-loading variable, plus the ones that change what the pinned code does
 // without choosing other code (glibc tunables, loader profiling, and extra
 // Node trust anchors).
-var controlEnvironmentDenyList = append(envcontrol.CodeLoadingNames(),
-	"GLIBC_TUNABLES", "LD_PROFILE", "NODE_EXTRA_CA_CERTS",
+var controlEnvironmentDenyList = slices.Concat(envcontrol.CodeLoadingNames(),
+	[]string{"GLIBC_TUNABLES", "LD_PROFILE", "NODE_EXTRA_CA_CERTS"},
 )
 
 var controlEnvironmentSet = func() map[string]struct{} {

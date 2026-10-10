@@ -25,19 +25,19 @@ func TestHTMLLinksAndBase(t *testing.T) {
 	}{
 		{"no base", `<img src="a.png">`, "", "a.png", 0, false},
 		{"base is not a link", `<base href="/assets/"><img src="a.png">`, "/assets/", "a.png", 0, false},
-		{"two base tags are ambiguous even if one has no href", `<base target="_blank"><base href="/b/">`, "/b/", "", 0, true},
+		{"two base tags are ambiguous even if one has no href", `<base target="_blank"><base href="/b/">`, "", "", 0, true},
 		{"base target only, no href", `<base target="_blank"><img src="a.png">`, "", "a.png", 0, true},
 		{"base after the link still applies", `<img src="a.png"><base href="/late/">`, "/late/", "a.png", 0, false},
 		{"upper case tag and attribute", `<BASE HREF=" /x/ "><img src=a.png>`, "/x/", "a.png", 0, false},
 		{"base spelled in a comment is treated as ambiguous", `<!-- <base href="/c/"> --><img src="a.png">`, "", "a.png", 0, true},
 		{"base after the link limit still counts", `<img src="a.png"><img src="b.png"><base href="/late/">`, "/late/", "a.png", 1, false},
 		// Ambiguous documents: the browser's choice depends on parse state
-		// Pipelock does not share, so the base is unknown.
-		{"two bases are ambiguous", `<base href="/a/"><base href="/b/"><img src="a.png">`, "/a/", "a.png", 0, true},
+		// Pipelock does not share, so the base is unknown and not reported.
+		{"two bases are ambiguous", `<base href="/a/"><base href="/b/"><img src="a.png">`, "", "a.png", 0, true},
 		{"inert template base is ambiguous", `<template><base href="/t/"></template><img src="a.png">`, "", "a.png", 0, true},
-		{"nested template", `<template><template></template><base href="/t/"></template><base href="/real/">`, "/real/", "", 0, true},
+		{"nested template", `<template><template></template><base href="/t/"></template><base href="/real/">`, "", "", 0, true},
 		{"noscript base depends on scripting", `<noscript><base href="/n/"></noscript><img src="a.png">`, "", "a.png", 0, true},
-		{"svg decoy base", `<svg><base href="/p/"></svg><base href="/real/">`, "/real/", "", 0, true},
+		{"svg decoy base", `<svg><base href="/p/"></svg><base href="/real/">`, "", "", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

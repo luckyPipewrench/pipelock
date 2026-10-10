@@ -281,6 +281,12 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 		h.recordTailDivergence(obs, fmt.Errorf("receipt seq %d was assigned but its write was not confirmed; newest confirmed receipt hash is %q", view.ChainSeq-1, view.PersistedHash))
 		return
 	}
+	if view.Unconfirmed {
+		// The receipt reached the file, but its durable sync failed, so the
+		// bytes on disk are not known to survive a crash.
+		h.recordTailDivergence(obs, fmt.Errorf("receipt seq %d was written but its sync was not confirmed", view.UnconfirmedSeq))
+		return
+	}
 	if !view.WriteKnown {
 		h.setTail(obs, metrics.EvidenceSelfAuditPending, "recorder has no open evidence file for this chain")
 		return

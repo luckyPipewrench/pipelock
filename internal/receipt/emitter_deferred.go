@@ -92,6 +92,7 @@ func (e *Emitter) confirmDeferred(d deferredDurableEmission) error {
 			e.recordFailure(FailReasonRecord)
 		}
 		recordErr = fmt.Errorf("%w: recording receipt: %w", ErrReceiptPostAdvance, recordErr)
+		e.markUnconfirmed(d.rcpt.ActionRecord.ChainSeq)
 	}
 	aelErr := d.aelErr
 	if aelErr == nil && d.waitAEL != nil {
@@ -104,4 +105,14 @@ func (e *Emitter) confirmDeferred(d deferredDurableEmission) error {
 		}
 	}
 	return e.finishCompletion(d.completion, d.rcpt, errors.Join(recordErr, aelErr))
+}
+
+// markUnconfirmed records the first receipt whose write reached the file but
+// whose confirmation failed, for the evidence health audit.
+func (e *Emitter) markUnconfirmed(seq uint64) {
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	if !e.unconfirmed {
+		e.unconfirmed, e.unconfirmedSeq = true, seq
+	}
 }

@@ -163,15 +163,20 @@ type Emitter struct {
 	// receipt's position was assigned and its write failed.
 	persistedSeq  uint64
 	persistedHash string
-	chainStart    time.Time // timestamp of first receipt
-	chainEnd      time.Time // timestamp of most recent receipt
-	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
-	closeEmitted  bool      // true after session_close; prevents duplicate closes
-	closeErr      error     // sticky error for a written session_close whose durability confirmation failed
-	openErr       error     // sticky error for a written session_open whose durability confirmation failed
-	openNonce     string
-	heartbeatBeat uint64
-	lastHeartbeat time.Time
+	// unconfirmedSeq names the first receipt whose write reached the file
+	// but whose durable sync then failed. It is sticky like the stream
+	// failure behind it: the chain can no longer be shown intact.
+	unconfirmedSeq uint64
+	unconfirmed    bool
+	chainStart     time.Time // timestamp of first receipt
+	chainEnd       time.Time // timestamp of most recent receipt
+	rootEmitted    bool      // true after EmitTranscriptRoot; prevents duplicate roots
+	closeEmitted   bool      // true after session_close; prevents duplicate closes
+	closeErr       error     // sticky error for a written session_close whose durability confirmation failed
+	openErr        error     // sticky error for a written session_open whose durability confirmation failed
+	openNonce      string
+	heartbeatBeat  uint64
+	lastHeartbeat  time.Time
 
 	// heartbeatSeconds is the configured heartbeat cadence (seconds) recorded
 	// in the session_open record's Open.HeartbeatSeconds so a witness reading
@@ -487,9 +492,13 @@ type TailObservation struct {
 	Session       string
 	PersistedSeq  uint64
 	PersistedHash string
-	WriteFile     string
-	WriteEnd      int64
-	WriteKnown    bool
+	// Unconfirmed reports a receipt that was written but whose durable sync
+	// failed; UnconfirmedSeq is its position.
+	Unconfirmed    bool
+	UnconfirmedSeq uint64
+	WriteFile      string
+	WriteEnd       int64
+	WriteKnown     bool
 }
 
 // TailObservation returns the chain head and the recorder's write position
@@ -511,9 +520,11 @@ func (e *Emitter) TailObservation() (TailObservation, error) {
 			RootEmitted:       e.rootEmitted,
 			RunNonce:          e.runNonce,
 		},
-		Session:       e.session,
-		PersistedSeq:  e.persistedSeq,
-		PersistedHash: e.persistedHash,
+		Session:        e.session,
+		PersistedSeq:   e.persistedSeq,
+		PersistedHash:  e.persistedHash,
+		Unconfirmed:    e.unconfirmed,
+		UnconfirmedSeq: e.unconfirmedSeq,
 	}
 	name, end, ok, err := e.recorder.SessionWriteEnd(e.session)
 	if err != nil {

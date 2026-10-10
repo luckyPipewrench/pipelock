@@ -333,3 +333,21 @@ func TestRequiredReceiptBlockKeyRoundTrip(t *testing.T) {
 			reason, transport)
 	}
 }
+
+// An inherited durability denial keeps its own label on both counters, and is
+// not folded into "durability", whose count must stay one per gated fsync
+// failure (see EvidenceCountersSnapshot).
+func TestDurabilityInheritedLabelIsDistinct(t *testing.T) {
+	m := New()
+	m.RecordEmitFailure("durability_inherited")
+	m.RecordRequiredReceiptBlock("durability_inherited", "fetch")
+	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("durability_inherited")); got != 1 {
+		t.Fatalf("emit failures durability_inherited = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("unknown")); got != 0 {
+		t.Fatalf("emit failures unknown = %v, want 0", got)
+	}
+	if _, blocks := m.EvidenceCountersSnapshot(); blocks != 0 {
+		t.Fatalf("durability blocks = %d, want 0 for an inherited denial", blocks)
+	}
+}

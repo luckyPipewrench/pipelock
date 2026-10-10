@@ -147,8 +147,22 @@ func NewRunSessionID(base string) (string, error) {
 	return base + evidencename.RunInfix + hex.EncodeToString(buf[:]), nil
 }
 
+// DurabilityFailed reports whether the bound stream's sync has failed. Such a
+// stream refuses every write until the process binds a fresh run.
+func (r *Recorder) DurabilityFailed() bool {
+	if r == nil || r.nop {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.durableFailure != nil
+}
+
 // RecoverTornRunSession abandons a damaged run without flushing or modifying its
 // evidence and binds a fresh run. Writes naming the old session are refused.
+// A run is damaged when its newest shard has a torn tail or its stream's sync
+// failed; in both cases nothing after the damage can be confirmed, so the
+// recorder continues in a new run rather than on the old stream.
 func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	if r.IsNop() {
 		return "", errors.New("recorder: recovery requires an active recorder")
@@ -161,6 +175,12 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	defer r.mu.Unlock()
 	if r.closed {
 		return "", errors.New("recorder is closed")
+	}
+	if r.groupSessions != nil {
+		// A group's membership is signed at opening; a standalone run is not
+		// a member and cannot be written. Groups recover through the group
+		// successor ceremony on restart.
+		return "", errors.New("recorder: single-run recovery is not available for a receipt group; restart to open a successor group")
 	}
 	candidates, err := r.sessionResumeCandidates(r.sessionID)
 	if err != nil {
@@ -180,8 +200,8 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 			return "", err
 		}
 	}
-	if !torn {
-		return "", errors.New("recorder: recovery requires a torn current run")
+	if !torn && r.durableFailure == nil {
+		return "", errors.New("recorder: recovery requires a torn or failed current run")
 	}
 	predecessor := r.sessionID
 	if r.file != nil {

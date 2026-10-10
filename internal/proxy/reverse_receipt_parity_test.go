@@ -1114,8 +1114,10 @@ func TestReverseProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 		t.Fatalf("upstream hits = %d, want 0 (durable intent sync failure must block before egress)", got)
 	}
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="durability",transport="reverse"} 1`)
-	if err := rec.Close(); err != nil {
-		t.Fatalf("recorder close: %v", err)
+	// The injected sync failure leaves the stream failed, so close
+	// refuses to sign a final checkpoint over it.
+	if err := rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("recorder close after a failed sync = %v, want the final checkpoint refused", err)
 	}
 }
 

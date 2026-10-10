@@ -37,6 +37,8 @@ type SessionState struct {
 	durablePending      map[uint64]int
 	lastFileName        string
 	lastFileSize        int64
+	durableFailure      error
+	lastDurableTicket   *DurableTicket
 }
 
 // GroupGateEntryType marks the first entry of each grouped run session.
@@ -61,6 +63,8 @@ func (r *Recorder) saveSessionStateLocked(state *SessionState) {
 	state.durablePending = r.durablePending
 	state.lastFileName = r.lastFileName
 	state.lastFileSize = r.lastFileSize
+	state.durableFailure = r.durableFailure
+	state.lastDurableTicket = r.lastDurableTicket
 }
 
 func (r *Recorder) loadSessionStateLocked(state *SessionState) {
@@ -83,6 +87,8 @@ func (r *Recorder) loadSessionStateLocked(state *SessionState) {
 	r.durablePending = state.durablePending
 	r.lastFileName = state.lastFileName
 	r.lastFileSize = state.lastFileSize
+	r.durableFailure = state.durableFailure
+	r.lastDurableTicket = state.lastDurableTicket
 }
 
 func (r *Recorder) clearSessionStateLocked() {
@@ -105,6 +111,8 @@ func (r *Recorder) clearSessionStateLocked() {
 	r.durablePending = make(map[uint64]int)
 	r.lastFileName = ""
 	r.lastFileSize = 0
+	r.durableFailure = nil
+	r.lastDurableTicket = nil
 }
 
 func validGroupRunSession(session string) bool {
@@ -302,6 +310,10 @@ func (r *Recorder) FinalizeGroupSessions() error {
 	for _, session := range r.groupOrder {
 		state := r.groupSessions[session]
 		r.loadSessionStateLocked(state)
+		if r.durableFailure != nil {
+			r.saveSessionStateLocked(state)
+			return fmt.Errorf("finalize group shard %q: %w: %w", session, ErrDurabilityInherited, r.durableFailure)
+		}
 		if r.file != nil {
 			if err := r.fileSync(r.file); err != nil {
 				r.saveSessionStateLocked(state)

@@ -1068,7 +1068,10 @@ func TestForwardScanned_ResponseV2ReceiptFailureBlocksWhenV1Emits(t *testing.T) 
 	}
 }
 
-func TestForwardScanned_ResponseReceiptFailureOmitsParentWhenOriginalNotDurable(t *testing.T) {
+// After the original receipt's sync fails, the stream stays failed: the
+// request fails closed and nothing further, including the best-effort
+// replacement block receipt, is written over the unconfirmed prefix.
+func TestForwardScanned_ResponseReceiptSyncFailureWritesNothingFurther(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	var out, log bytes.Buffer
 	emitter, rec, dir, _ := newReceiptTestHarness(t)
@@ -1104,23 +1107,19 @@ func TestForwardScanned_ResponseReceiptFailureOmitsParentWhenOriginalNotDurable(
 	if !strings.Contains(out.String(), "receipt emission failed") {
 		t.Fatalf("expected fail-closed receipt error response, got: %s", out.String())
 	}
-	if err := rec.Close(); err != nil {
-		t.Fatalf("recorder.Close: %v", err)
+	// The injected sync failure leaves the stream failed, so close
+	// refuses to sign a final checkpoint over it.
+	if err := rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("recorder close after a failed sync = %v, want the final checkpoint refused", err)
 	}
 	receipts := readActionReceipts(t, dir)
-	var replacement receipt.Receipt
 	for _, rcpt := range receipts {
-		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
-			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
-			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
-			replacement = rcpt
+		if rcpt.ActionRecord.Verdict == config.ActionBlock && rcpt.ActionRecord.Layer == "receipt_emission_failed" {
+			t.Fatalf("replacement block receipt was written to a failed stream: %+v", rcpt.ActionRecord)
 		}
 	}
-	if replacement.ActionRecord.ActionID == "" {
-		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
-	}
-	if replacement.ActionRecord.ParentActionID != "" {
-		t.Fatalf("replacement parent_action_id = %q, want empty after original durable failure", replacement.ActionRecord.ParentActionID)
+	if len(receipts) != 1 {
+		t.Fatalf("receipts = %d, want only the original whose sync failed", len(receipts))
 	}
 }
 

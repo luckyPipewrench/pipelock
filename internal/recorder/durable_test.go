@@ -159,7 +159,12 @@ func TestRecordDurable_WaitsForSyncBeforeSuccessAndObserver(t *testing.T) {
 	}
 }
 
-func TestRecordDurable_SyncFailureDoesNotRollBackChainState(t *testing.T) {
+// TestRecordDurable_SyncFailureIsStickyAndDoesNotRollBack: a failed sync
+// keeps its chain position (no rollback, so no reused sequence) and fails the
+// stream. After a failed File.Sync a later sync can succeed even though the
+// earlier pages were dropped, so a later append is refused rather than
+// confirmed on top of an unconfirmed prefix.
+func TestRecordDurable_SyncFailureIsStickyAndDoesNotRollBack(t *testing.T) {
 	dir := t.TempDir()
 	rec := newDurableTestRecorder(t, Config{Dir: dir})
 	defer func() { _ = rec.Close() }()
@@ -185,23 +190,24 @@ func TestRecordDurable_SyncFailureDoesNotRollBackChainState(t *testing.T) {
 	if !errors.Is(err, syncErr) {
 		t.Fatalf("RecordDurable first error = %v, want injected sync error", err)
 	}
-	if err := rec.RecordDurable(Entry{
+	err = rec.RecordDurable(Entry{
 		SessionID: "durable-session",
 		Type:      "request",
-		Summary:   "second succeeds",
-	}); err != nil {
-		t.Fatalf("RecordDurable second: %v", err)
+		Summary:   "second is refused",
+	})
+	if !errors.Is(err, ErrDurabilityInherited) || errors.Is(err, ErrDurability) {
+		t.Fatalf("RecordDurable after failure = %v, want ErrDurabilityInherited and not ErrDurability", err)
+	}
+	if calls != 1 {
+		t.Fatalf("sync calls = %d, want 1; the refused append must not sync", calls)
 	}
 
 	entries := readEntriesForSession(t, dir, "durable-session")
-	if len(entries) < 2 {
-		t.Fatalf("entries = %d, want at least 2", len(entries))
+	if len(entries) != 1 || entries[0].Sequence != 0 || entries[0].Summary != "first fails sync" {
+		t.Fatalf("entries after sticky failure = %+v, want only the failed seq 0 entry", entries)
 	}
-	if entries[0].Sequence != 0 || entries[1].Sequence != 1 {
-		t.Fatalf("sequences after sync failure = %d,%d; rollback would have duplicated seq 0", entries[0].Sequence, entries[1].Sequence)
-	}
-	if entries[1].PrevHash != entries[0].Hash {
-		t.Fatalf("second PrevHash = %q, want first hash %q", entries[1].PrevHash, entries[0].Hash)
+	if got := rec.FsyncErrorsGated(); got != 1 {
+		t.Fatalf("FsyncErrorsGated = %d, want 1; refusals are not storage failures", got)
 	}
 }
 
@@ -316,28 +322,26 @@ func TestRecordDurable_BatchSyncFailurePropagatesToFollowersAndKeepsGap(t *testi
 		})
 	}
 
-	if err := rec.RecordDurable(Entry{
+	err := rec.RecordDurable(Entry{
 		SessionID: "durable-session",
 		Type:      "request",
-		Summary:   "later succeeds",
-	}); err != nil {
-		t.Fatalf("later RecordDurable: %v", err)
+		Summary:   "later is refused",
+	})
+	if !errors.Is(err, ErrDurabilityInherited) || errors.Is(err, ErrDurability) {
+		t.Fatalf("later RecordDurable = %v, want ErrDurabilityInherited and not ErrDurability", err)
 	}
 
 	entries := readEntriesForSession(t, dir, "durable-session")
-	if len(entries) < 3 {
-		t.Fatalf("entries = %d, want at least 3", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want the 2 failed batch entries and no later append", len(entries))
 	}
-	for i := range 3 {
+	for i := range 2 {
 		if entries[i].Sequence != uint64(i) {
 			t.Fatalf("entry %d sequence = %d, want %d", i, entries[i].Sequence, i)
 		}
 	}
-	if entries[2].PrevHash != entries[1].Hash {
-		t.Fatalf("later PrevHash = %q, want failed follower hash %q", entries[2].PrevHash, entries[1].Hash)
-	}
 	if got := rec.FsyncErrorsGated(); got != 1 {
-		t.Fatalf("FsyncErrorsGated after later success = %d, want 1", got)
+		t.Fatalf("FsyncErrorsGated after a refused append = %d, want 1", got)
 	}
 }
 
@@ -357,7 +361,9 @@ func TestRecorder_FsyncErrorsGatedNilAndNop(t *testing.T) {
 	}
 }
 
-func TestRecordDurable_SyncPanicReturnsDurabilityErrorAndDoesNotPoisonRecorder(t *testing.T) {
+// A panicking sync is a failed sync: it reports ErrDurability and fails the
+// stream like any other sync failure.
+func TestRecordDurable_SyncPanicReturnsDurabilityErrorAndFailsStream(t *testing.T) {
 	rec := newDurableTestRecorder(t, Config{})
 	defer func() { _ = rec.Close() }()
 
@@ -382,12 +388,13 @@ func TestRecordDurable_SyncPanicReturnsDurabilityErrorAndDoesNotPoisonRecorder(t
 	}
 
 	rec.SetSyncForTest(nil)
-	if err := rec.RecordDurable(Entry{
+	err = rec.RecordDurable(Entry{
 		SessionID: "durable-session",
 		Type:      "request",
-		Summary:   "recorder still usable",
-	}); err != nil {
-		t.Fatalf("RecordDurable after panic: %v", err)
+		Summary:   "stream stays failed",
+	})
+	if !errors.Is(err, ErrDurabilityInherited) {
+		t.Fatalf("RecordDurable after panic = %v, want ErrDurabilityInherited", err)
 	}
 }
 
@@ -523,7 +530,7 @@ func TestRecordDurable_RotationWaitsForPendingSync(t *testing.T) {
 	}
 }
 
-func readEntriesForSession(t *testing.T, dir, sessionID string) []Entry {
+func readEntriesForSession(t *testing.T, dir, sessionID string) []Entry { //nolint:unparam // the session names the file being read
 	t.Helper()
 	path := filepath.Join(filepath.Clean(dir), fmt.Sprintf("evidence-%s-0.jsonl", sessionID))
 	entries, err := ReadEntries(path)

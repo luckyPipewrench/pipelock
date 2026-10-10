@@ -39,6 +39,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -294,8 +295,10 @@ func TestInterceptEmitReceiptOrBlockRequireReceiptsSyncFailureBlocks(t *testing.
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="durability",transport="connect"} 1`)
-	if err := rph.rec.Close(); err != nil {
-		t.Fatalf("recorder close: %v", err)
+	// The injected sync failure leaves the stream failed, so close
+	// refuses to sign a final checkpoint over it.
+	if err := rph.rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("recorder close after a failed sync = %v, want the final checkpoint refused", err)
 	}
 }
 
@@ -3800,8 +3803,10 @@ func TestInterceptTunnel_RequireReceiptsDurabilityFailureBlocksBeforeRoundTrip(t
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="intercept"} 1`)
-	if err := rph.rec.Close(); err != nil {
-		t.Fatalf("recorder close: %v", err)
+	// The injected sync failure leaves the stream failed, so close
+	// refuses to sign a final checkpoint over it.
+	if err := rph.rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("recorder close after a failed sync = %v, want the final checkpoint refused", err)
 	}
 }
 

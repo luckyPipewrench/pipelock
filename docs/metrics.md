@@ -327,7 +327,7 @@ integrations. Disabled by default; set `scan_api.listen` to enable.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_receipt_emit_failures_total` | counter | `reason` | Signed action-receipt emission failures. A non-zero rate means receipts are not being recorded; check the flight-recorder signing key and chain state. `reason` values are `chain_init`, `sign`, `hash`, `marshal`, `record`, `sealed`, or `unknown`. |
+| `pipelock_receipt_emit_failures_total` | counter | `reason` | Signed action-receipt emission failures. A non-zero rate means receipts are not being recorded; check the flight-recorder signing key and chain state. `reason` values are `chain_init`, `sign`, `hash`, `marshal`, `record`, `ael`, `sync`, `durability_inherited`, `sealed`, `unavailable`, or `unknown`. `durability_inherited` is a receipt refused because an earlier sync on the same chain failed. |
 
 ## Capture System Metrics
 

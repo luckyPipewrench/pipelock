@@ -162,6 +162,9 @@ func isRequest(msg []byte) bool {
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	if opts.ServerIdentityFn != nil {
+		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
+	}
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
@@ -222,6 +225,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+		if err := opts.checkServerIdentity(); err != nil {
+			return foundInjection, err
+		}
 
 		// Parse the inbound frame once per message; every gate below reads
 		// ID / Method / tool fields from this frame instead of re-parsing.
@@ -251,7 +257,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		// On-entry de-escalation for long-lived response streams.
 		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-			sessionKey: firstNonEmpty(opts.ServerName, "default"),
+			sessionKey: opts.adaptiveSessionKey(),
 			reason:     adaptiveRecoveryTimer,
 			logger:     opts.AuditLogger,
 			metrics:    m,
@@ -434,7 +440,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Logger:        opts.AuditLogger,
 					Metrics:       m,
 					ConsoleWriter: logW,
-					Session:       firstNonEmpty(opts.ServerName, "default"),
+					Session:       opts.adaptiveSessionKey(),
 					DenialScanner: "media_policy",
 					DenialReason:  mediaResult.BlockReason,
 					PolicyHash:    opts.receiptPolicyHash(),
@@ -538,7 +544,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// evidence of clean behavior, so it earns no clean credit either.
 		toolAcknowledged := false
 		if toolCfg != nil {
-			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg.WithServer(opts.ServerName, opts.ServerBinding), trackedMethod)
+			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg.WithServerMode(opts.ServerName, opts.ServerBinding, opts.ServerBindingMode, opts.ServerRevision), trackedMethod)
 			if err := opts.warnContext().Err(); err != nil {
 				if writeErr := blockScanError("response scan failed: " + err.Error()); writeErr != nil {
 					return foundInjection, writeErr
@@ -684,7 +690,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							Logger:        opts.AuditLogger,
 							Metrics:       m,
 							ConsoleWriter: logW,
-							Session:       firstNonEmpty(opts.ServerName, "default"),
+							Session:       opts.adaptiveSessionKey(),
 							DenialScanner: "tool_scanning",
 							DenialReason:  blockReason,
 							PolicyHash:    opts.receiptPolicyHash(),
@@ -712,7 +718,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						Logger:        opts.AuditLogger,
 						Metrics:       m,
 						ConsoleWriter: logW,
-						Session:       firstNonEmpty(opts.ServerName, "default"),
+						Session:       opts.adaptiveSessionKey(),
 						DenialScanner: "tool_scanning",
 						DenialReason:  "tool poisoning detected in tools/list",
 						PolicyHash:    opts.receiptPolicyHash(),
@@ -776,7 +782,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				const detail = "a2a: Agent Card descriptive drift adopted"
 				_, _ = fmt.Fprintf(logW, "pipelock: a2a response: %s\n", detail)
 				if opts.AuditLogger != nil {
-					resource := opts.responseTarget()
+					resource := opts.auditTarget()
 					if resource == "" {
 						resource = "mcp://response"
 					}
@@ -818,7 +824,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// decay on the same message would incorrectly counteract each other.
 			if !toolPoisonDetected && !toolAcknowledged {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-					sessionKey: firstNonEmpty(opts.ServerName, "default"),
+					sessionKey: opts.adaptiveSessionKey(),
 					reason:     adaptiveRecoveryClean,
 					requestID:  canonicalID(verdict.ID),
 					logger:     opts.AuditLogger,
@@ -1065,7 +1071,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				Logger:        opts.AuditLogger,
 				Metrics:       m,
 				ConsoleWriter: logW,
-				Session:       firstNonEmpty(opts.ServerName, "default"),
+				Session:       opts.adaptiveSessionKey(),
 				DenialScanner: "mcp_response_scan",
 				DenialReason:  firstNonEmpty(pattern, "mcp_response_scan"),
 				PolicyHash:    opts.receiptPolicyHash(),

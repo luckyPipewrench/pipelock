@@ -102,7 +102,81 @@ value when upgrading T3. Do not assume Pipelock automatically propagates the
 negotiated protocol version in this configuration.
 
 `--header-carrier` is intended for Pipelock's VS Code carrier namespace; it does
-not accept `T3_MCP_AUTHORIZATION` directly. Use the header file above.
+not accept `T3_MCP_AUTHORIZATION` directly. Use the header file above, or copy
+the value into a carrier variable as shown in the next section.
+
+`--server-name t3-code` is an operator label. It names the server in logs and
+selects the per-server settings that use that name, and it is not proof that the
+endpoint is T3. The next section is the way to prove that.
+
+## Acknowledge T3's session credential once (optional)
+
+T3 issues a new endpoint credential, and usually a new port, for every provider
+session. Without more, an acknowledgment of that credential does not carry from
+one session to the next. If you want to acknowledge it once, register T3's local
+MCP service so Pipelock checks, on every connection, which process owns the
+other end. The mechanism is general: the full reference, including what each
+check proves and what it does not, is in
+[Registered local MCP services](../configuration.md#registered-local-mcp-services-mcp_identities).
+This section covers only the T3 specifics.
+
+This path is Linux only. A launch whose upstream matches a registration refuses to
+start on any other host.
+
+1. With a T3 server running, find the endpoint it hands to a provider session
+   (the value of `T3_MCP_URL`) and run the register command against it. Run it
+   as the same user as the T3 server, and only while you trust the running
+   server, because what it observes becomes what is pinned:
+
+   ```sh
+   pipelock mcp identity register \
+     --upstream "$T3_MCP_URL" \
+     --name local-orchestrator \
+     --mapped-file /opt/t3/current/native/addon.node \
+     --session-header Authorization \
+     --carrier PIPELOCK_VSCODE_T3_MCP_AUTH
+   ```
+
+   The command prints an `mcp_identities` entry and writes nothing. T3's server
+   runs under a language runtime, so the executable digest pins that runtime
+   binary, and the native modules the process loads are the files that decide what
+   it does. Pin each one you rely on with `--mapped-file`, choosing paths inside
+   an immutable release directory and not a path that an update or the T3 user
+   can rewrite in place. Fill in any `control_environment` value the command
+   lists, because those variables change what code the runtime loads.
+
+2. Review the entry, then add it to a config that only the new Pipelock binary
+   loads. An older binary rejects unknown fields, so a shared config would stop
+   it starting. Add the acknowledgment for the registered name with
+   `server_binding_mode: verified-local-session`, as described in the reference.
+
+3. Pass the credential to the proxy through the carrier variable and name the
+   config, so the wrapper no longer needs the header file for it. Replace the
+   header-file lines of the wrapper with:
+
+   ```sh
+   PIPELOCK_VSCODE_T3_MCP_AUTH="$T3_MCP_AUTHORIZATION"
+   export PIPELOCK_VSCODE_T3_MCP_AUTH
+
+   pipelock mcp proxy \
+     --config "$HOME/.config/pipelock/t3-identities.yaml" \
+     --upstream "$T3_MCP_URL" \
+     --header-carrier Authorization=PIPELOCK_VSCODE_T3_MCP_AUTH \
+     --header 'MCP-Protocol-Version: 2025-06-18' <&0 &
+   ```
+
+   Drop `--server-name` here: the registered name becomes the server name, and a
+   different explicit name is refused.
+
+4. Check the result with `pipelock mcp identity inspect --config ... --upstream
+   "$T3_MCP_URL"`, then start a fresh session and look for the startup line
+   `MCP identity: server=local-orchestrator source=verified-local-service
+   binding=verified-local-session` on the wrapper's stderr.
+
+The carrier variable holds the live credential, so do not print it or write it to
+disk. A same-user process on the same host can still impersonate the same executable,
+so this narrows who can receive the credential and does not replace the
+isolation discussed under the security boundary below.
 
 ## Verify the path
 

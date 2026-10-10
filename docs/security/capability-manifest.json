@@ -314,6 +314,10 @@
         },
         {
           "kind": "config_section",
+          "value": "mcp_identities"
+        },
+        {
+          "kind": "config_section",
           "value": "mcp_input_scanning"
         },
         {

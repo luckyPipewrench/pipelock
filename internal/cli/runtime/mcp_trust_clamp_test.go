@@ -8,6 +8,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 )
 
 // TestApplyMCPResponseSuppressOpts_ClampsTrustToSectionAction pins the startup
@@ -36,7 +37,7 @@ func TestApplyMCPResponseSuppressOpts_ClampsTrustToSectionAction(t *testing.T) {
 			}
 
 			var opts mcp.MCPProxyOpts
-			applyMCPResponseSuppressOpts(&opts, cfg, "code-assistant")
+			applyMCPResponseSuppressOpts(&opts, cfg, identity.Legacy("code-assistant"))
 
 			if opts.ResponseActionOverride != tc.want {
 				t.Fatalf("override = %q, want %q", opts.ResponseActionOverride, tc.want)

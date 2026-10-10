@@ -38,6 +38,7 @@ const (
 	CredentialAckExpired            = "expired"
 	CredentialAckBindingMismatch    = "binding_mismatch"
 	CredentialAckBindingKeyChanged  = "binding_key_changed"
+	CredentialAckBindingModeChanged = "binding_mode_mismatch"
 	CredentialAckRevisionChanged    = "revision_changed"
 	CredentialAckToolChanged        = "tool_changed"
 	CredentialAckUnattributable     = "unattributable"
@@ -107,9 +108,25 @@ func (s *CredentialAckSet) Revoke() {
 }
 
 const (
-	ackBindingDomainV1    = "pipelock-mcp-ack-binding-v1"
-	ackIdentifierDomainV1 = "pipelock-mcp-ack-key-id-v1"
+	ackBindingDomainV1                     = "pipelock-mcp-ack-binding-v1"
+	ackBindingDomainVerifiedLocalSessionV1 = "pipelock-mcp-ack-binding-verified-local-session-v1"
+	ackIdentifierDomainV1                  = "pipelock-mcp-ack-key-id-v1"
 )
+
+// ackBindingDomain returns the HMAC domain for a binding mode. Each mode has
+// its own domain, so a keyed binding minted for one mode never equals the
+// keyed form of any digest under the other. An unknown mode has no domain and
+// therefore no keyed binding.
+func ackBindingDomain(mode string) string {
+	switch mode {
+	case "", config.MCPAckBindingModeTransportV2:
+		return ackBindingDomainV1
+	case config.MCPAckBindingModeVerifiedLocalSession:
+		return ackBindingDomainVerifiedLocalSessionV1
+	default:
+		return ""
+	}
+}
 
 // NewCredentialAckSet pairs entries with the pinned acknowledgment key. A
 // key shorter than config.MinMCPAckKeyBytes is dropped, so every entry
@@ -133,15 +150,20 @@ func (s *CredentialAckSet) Revoked() bool {
 	return s != nil && s.revoked.Load()
 }
 
-// keyedBinding returns the exported form of an exact transport digest:
-// hmac-sha256-v1:<key id>:<HMAC-SHA256 over the domain and the digest>. It
-// returns "" with no key or no digest, which no entry can equal.
-func (s *CredentialAckSet) keyedBinding(digest string) string {
+// keyedBinding returns the exported form of an exact binding digest for mode:
+// hmac-sha256-v1:<key id>:<HMAC-SHA256 over the mode's domain and the digest>.
+// It returns "" with no key, no digest, an unknown mode or a revoked set,
+// which no entry can equal.
+func (s *CredentialAckSet) keyedBinding(mode, digest string) string {
 	if s == nil || len(s.key) == 0 || digest == "" || s.revoked.Load() {
 		return ""
 	}
+	domain := ackBindingDomain(mode)
+	if domain == "" {
+		return ""
+	}
 	mac := hmac.New(sha256.New, s.key)
-	_, _ = mac.Write([]byte(ackBindingDomainV1))
+	_, _ = mac.Write([]byte(domain))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write([]byte(strings.ToLower(digest)))
 	return config.MCPAckBindingHMACPrefix + s.keyID + ":" + hex.EncodeToString(mac.Sum(nil))
@@ -150,8 +172,8 @@ func (s *CredentialAckSet) keyedBinding(digest string) string {
 // bindingOutcome compares an entry's keyed binding with the transport's.
 // An entry written under another key reports the rotation; any other
 // difference is a binding mismatch. Both refuse.
-func (s *CredentialAckSet) bindingOutcome(entryBinding, digest string) string {
-	want := s.keyedBinding(digest)
+func (s *CredentialAckSet) bindingOutcome(mode, entryBinding, digest string) string {
+	want := s.keyedBinding(mode, digest)
 	if want == "" {
 		return CredentialAckBindingMismatch
 	}
@@ -168,13 +190,32 @@ func (s *CredentialAckSet) bindingOutcome(entryBinding, digest string) string {
 // transport binding that acknowledgments are matched against. The name comes
 // from the operator's configuration, never from the upstream's serverInfo.
 func (c *ToolScanConfig) WithServer(name, binding string) *ToolScanConfig {
+	return c.WithServerMode(name, binding, "", "")
+}
+
+// WithServerMode is WithServer for a launch that names its binding mode and,
+// for a registered identity, its revision. An empty mode is
+// config.MCPAckBindingModeTransportV2; entries are matched only when their
+// server_binding_mode equals the launch's mode.
+func (c *ToolScanConfig) WithServerMode(name, binding, mode, revision string) *ToolScanConfig {
 	if c == nil {
 		return nil
 	}
 	cp := *c
 	cp.ServerName = name
 	cp.ServerBindingSHA256 = binding
+	cp.ServerBindingMode = mode
+	cp.ServerRevision = revision
 	return &cp
+}
+
+// launchBindingMode is the launch's effective binding mode, with the empty
+// value normalized to transport-v2.
+func (c *ToolScanConfig) launchBindingMode() string {
+	if c == nil || c.ServerBindingMode == "" {
+		return config.MCPAckBindingModeTransportV2
+	}
+	return c.ServerBindingMode
 }
 
 // completeToolDigest is the SHA-256 of the whole tool definition as received,
@@ -396,7 +437,11 @@ func evaluateCredentialAck(entry config.MCPAcknowledgedFinding, cfg *ToolScanCon
 	if !config.MCPAckActive(entry, now) {
 		return CredentialAckExpired
 	}
-	if outcome := cfg.CredentialAcks.bindingOutcome(entry.ServerBindingHMAC, cfg.ServerBindingSHA256); outcome != "" {
+	mode := cfg.launchBindingMode()
+	if config.MCPAckBindingMode(entry) != mode {
+		return CredentialAckBindingModeChanged
+	}
+	if outcome := cfg.CredentialAcks.bindingOutcome(mode, entry.ServerBindingHMAC, cfg.ServerBindingSHA256); outcome != "" {
 		return outcome
 	}
 	if entry.FamilyRevision != credentialRequestFamilyRevision {
@@ -468,12 +513,17 @@ func (r ToolScanResult) CredentialAckApplied() bool {
 // transport digest is never exported.
 type CredentialAckCandidate struct {
 	Server            string                    `json:"server"`
+	ServerBindingMode string                    `json:"server_binding_mode,omitempty"`
 	ServerBindingHMAC string                    `json:"server_binding_hmac"`
 	Tool              string                    `json:"tool"`
 	Finding           string                    `json:"finding"`
 	FamilyRevision    int                       `json:"family_revision"`
 	ToolSHA256        string                    `json:"tool_sha256"`
 	Occurrences       []CredentialAckOccurrence `json:"occurrences"`
+
+	// scope describes how widely the entry applies. It is shown to the
+	// operator and is not part of the entry.
+	scope string
 }
 
 // CredentialAckOccurrence is one occurrence in a candidate.
@@ -509,7 +559,7 @@ func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialReq
 // only an operator can supply.
 func (c *CredentialAckCandidate) entry() config.MCPAcknowledgedFinding {
 	e := config.MCPAcknowledgedFinding{
-		Server: c.Server, ServerBindingHMAC: c.ServerBindingHMAC, Tool: c.Tool, Finding: c.Finding,
+		Server: c.Server, ServerBindingMode: c.ServerBindingMode, ServerBindingHMAC: c.ServerBindingHMAC, Tool: c.Tool, Finding: c.Finding,
 		FamilyRevision: c.FamilyRevision, ToolSHA256: c.ToolSHA256,
 	}
 	for _, o := range c.Occurrences {
@@ -525,7 +575,8 @@ func buildCredentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credenti
 	if cfg == nil || cfg.ServerName == "" || !att.Attributable || len(att.Occurrences) == 0 {
 		return nil
 	}
-	binding := cfg.CredentialAcks.keyedBinding(cfg.ServerBindingSHA256)
+	mode := cfg.launchBindingMode()
+	binding := cfg.CredentialAcks.keyedBinding(mode, cfg.ServerBindingSHA256)
 	if binding == "" {
 		return nil
 	}
@@ -540,6 +591,10 @@ func buildCredentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credenti
 		Finding:           config.MCPAckFindingRequestDirective,
 		FamilyRevision:    credentialRequestFamilyRevision,
 		ToolSHA256:        digest,
+	}
+	if mode == config.MCPAckBindingModeVerifiedLocalSession {
+		c.ServerBindingMode = mode
+		c.scope = fmt.Sprintf("every session of verified local service %s (revision %s)", cfg.ServerName, shortRevision(cfg.ServerRevision))
 	}
 	for _, o := range att.Occurrences {
 		text, ok := toolFieldText(tool, o.Pointer)
@@ -571,8 +626,22 @@ func logCredentialAckCandidate(logW io.Writer, lineNum int, m ToolScanMatch) {
 	if err != nil {
 		return
 	}
-	_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: after reviewing it, this entry (plus owner, reason and expires) acknowledges its current %s occurrences under mcp_tool_scanning.acknowledged_findings: %s\n",
-		lineNum, m.ToolName, m.CredentialAckCandidate.Finding, enc)
+	scope := ""
+	if m.CredentialAckCandidate.scope != "" {
+		scope = " scope: " + m.CredentialAckCandidate.scope + "."
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q: after reviewing it, this entry (plus owner, reason and expires) acknowledges its current %s occurrences under mcp_tool_scanning.acknowledged_findings:%s %s\n",
+		lineNum, m.ToolName, m.CredentialAckCandidate.Finding, scope, enc)
+}
+
+// shortRevision is the first 12 characters of an identity revision, enough to
+// tell revisions apart in a log line.
+func shortRevision(rev string) string {
+	const n = 12
+	if len(rev) > n {
+		return rev[:n]
+	}
+	return rev
 }
 
 // credentialAckHasOtherFindings reports whether m carries any finding besides

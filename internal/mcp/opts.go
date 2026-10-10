@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -65,6 +66,45 @@ const (
 	mcpWarnMethod     = "MCP"
 	mcpServerResponse = "server_response"
 )
+
+// ServerIdentity is the per-request identity of a long-lived listener's
+// upstream. A non-empty Refusal refuses the request outright.
+type ServerIdentity struct {
+	Name        string
+	PolicyName  string
+	Binding     string
+	BindingMode string
+	Revision    string
+	Refusal     string
+}
+
+// withServerIdentity stamps a per-request identity over the static fields.
+func (o MCPProxyOpts) withServerIdentity(id ServerIdentity) MCPProxyOpts {
+	o.ServerName = id.Name
+	o.PolicyServerName = id.PolicyName
+	o.ServerBinding = id.Binding
+	o.ServerBindingMode = id.BindingMode
+	o.ServerRevision = id.Revision
+	return o
+}
+
+// checkServerIdentity refuses an in-flight response after its registration
+// changes. The response keeps its admission identity; it cannot switch to a
+// new identity midway through scanning or while awaiting operator approval.
+func (o MCPProxyOpts) checkServerIdentity() error {
+	if o.ServerIdentityFn == nil {
+		return nil
+	}
+	id := o.ServerIdentityFn()
+	if id.Refusal != "" {
+		return fmt.Errorf("MCP upstream identity refused: %s", id.Refusal)
+	}
+	if id.Name != o.ServerName || id.PolicyName != o.PolicyServerName ||
+		id.Binding != o.ServerBinding || id.BindingMode != o.ServerBindingMode || id.Revision != o.ServerRevision {
+		return fmt.Errorf("MCP upstream identity changed during response; restart the listener")
+	}
+	return nil
+}
 
 // MCPRedactionConfig snapshots the request-side redaction settings used for a
 // single MCP message or HTTP request.
@@ -321,11 +361,32 @@ type MCPProxyOpts struct {
 	// match against. Empty disables target-scoped response suppression. Set
 	// from `pipelock mcp proxy --server-name`.
 	ServerName string
-	// ServerBinding is the transport binding digest of the configured server
+	// PolicyServerName is the name that arms name-keyed trust and suppression:
+	// the suppress target "mcp://<name>/response" and core-observe. It is set
+	// only for a legacy explicit name or a verified registered identity, so a
+	// ServerName that is merely a label never arms any of them. Empty keeps the
+	// unnamed behavior.
+	PolicyServerName string
+	// ServerBinding is the binding digest of the configured server
 	// (tools.ServerBindingDigest). Credential-request acknowledgments must
 	// name it, so a server name reused for another destination cannot carry
 	// an acknowledgment over.
 	ServerBinding string
+	// ServerBindingMode is the acknowledgment binding mode ServerBinding was
+	// built for: empty or transport-v2, or verified-local-session.
+	ServerBindingMode string
+	// ServerRevision is the registered identity revision of a verified local
+	// service, empty for a legacy launch. It versions the adaptive session key.
+	ServerRevision string
+	// ServerIdentityFn re-resolves the server identity for each request of a
+	// long-lived listener, so a hot reload that changes or removes the
+	// registration is seen. Its result replaces the five static identity fields
+	// above for that request. Nil keeps the static fields.
+	ServerIdentityFn func() ServerIdentity
+	// ServerIdentityHeadersFn binds a listener request's effective upstream
+	// headers. It takes precedence over ServerIdentityFn when present, including
+	// at the in-flight response gates. Legacy listeners leave it nil.
+	ServerIdentityHeadersFn func(http.Header) ServerIdentity
 
 	// ResponseTrustClass is the effective trust class for this server's MCP
 	// responses. Empty is treated as "untrusted" and fails closed. Set from
@@ -449,10 +510,35 @@ type MCPProxyOpts struct {
 // responses ("mcp://<ServerName>/response"), or "" when no stable server
 // name is set (which disables target-scoped response suppression).
 func (o MCPProxyOpts) responseTarget() string {
+	if o.PolicyServerName == "" {
+		return ""
+	}
+	return "mcp://" + o.PolicyServerName + "/response"
+}
+
+// auditTarget returns the audit resource and receipt target for the server's
+// responses. It follows ServerName, which labels the stream whether or not the
+// name arms any policy.
+func (o MCPProxyOpts) auditTarget() string {
 	if o.ServerName == "" {
 		return ""
 	}
 	return "mcp://" + o.ServerName + "/response"
+}
+
+// adaptiveSessionKey is the per-server adaptive-enforcement session key.
+// A registered identity is keyed by name and revision, so a changed policy
+// never inherits another revision's score; a legacy name is used unchanged.
+func (o MCPProxyOpts) adaptiveSessionKey() string {
+	name := firstNonEmpty(o.ServerName, "default")
+	if o.ServerRevision == "" {
+		return name
+	}
+	rev := o.ServerRevision
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	return name + "@" + rev
 }
 
 // responseScanOptions builds the per-server suppression context passed into
@@ -462,7 +548,7 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 	// configured (the HTTP listener path), so building the context never logs
 	// a spurious "resource required" error and the record still names a
 	// surface an operator can search for.
-	auditResource := o.responseTarget()
+	auditResource := o.auditTarget()
 	if auditResource == "" {
 		auditResource = "mcp://response"
 	}

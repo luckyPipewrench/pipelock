@@ -7,7 +7,7 @@ as a credential solicitation - you want to lift that one block for that one
 server without weakening detection for any other server or any other scanner.
 
 This page covers the surgical remediation path for that case: give the server a
-stable identity, add a response-suppression entry scoped to it, and use the
+stable name, add a response-suppression entry scoped to it, and use the
 `explain` command to get the exact entry to add. Each part below is
 copy-pasteable.
 
@@ -65,13 +65,14 @@ and verifying that the upstream did not already act on an in-flight call.
 Per-config separation is a coarse tool: it isolates servers but does not, by
 itself, lift a specific pattern for one server. Parts 2 and 3 do that.
 
-## 2. Give the server a stable identity: `--server-name`
+## 2. Give the server a stable name: `--server-name`
 
 ```sh
 pipelock mcp proxy --server-name code-assistant --config code-assistant-pipelock.yaml -- code-assistant mcp-server
 ```
 
-`--server-name <name>` assigns the wrapped server a stable identity. Pipelock
+`--server-name <name>` is an operator label: it gives the wrapped server a
+stable name that you chose. It is not proof of which server answers. Pipelock
 uses it to build a per-server suppression **target** of the form:
 
 ```text
@@ -85,14 +86,23 @@ target is empty, and a response-scoped `suppress:` entry can match nothing - so
 existing configs and existing invocations are unaffected. Per-server response
 suppression only takes effect once the server has a name to scope it to.
 
+When the upstream is a local service registered under `mcp_identities` (see
+[configuration.md](../configuration.md#registered-local-mcp-services-mcp_identities)),
+the launch takes the registered name instead, and Pipelock verifies the owner of
+each connection before it sends anything. In that case `--server-name` may be
+left off; if given, it must equal the registered name, and a different or
+conflicting value refuses to start. The suppression target is then
+`mcp://<registered name>/response`.
+
 ## 3. Per-server response suppression
 
 With the server named, add a top-level `suppress:` entry scoped to that server's
 response target. The `rule` must be the exact blocking pattern name (use
 `explain mcp-response`, part 4, to get it). Core response floor names cannot be
 suppressed. Instead, declare a `response_scanning.core_observe_exceptions`
-entry for that server and pattern; the host for an MCP server is its
-`--server-name` value. See "Observing one core pattern on one host" in
+entry for that server and pattern; the host for an MCP server is the name it
+runs under: its `--server-name` value, or its registered `mcp_identities` name
+when the upstream matches a registration. See "Observing one core pattern on one host" in
 [configuration.md](../configuration.md):
 
 ```yaml
@@ -112,18 +122,28 @@ Each `suppress:` field:
 | Field | Required | Meaning |
 |---|---|---|
 | `rule` | yes | The exact non-core response-scan pattern name that blocked. Core floor names fail validation. |
-| `path` | yes | The per-server target `mcp://<server-name>/response`. Must match the `--server-name` the proxy is launched with. |
+| `path` | yes | The per-server target `mcp://<server-name>/response`. Must match the name the proxy runs under: the `--server-name` operator label, or the registered `mcp_identities` name when the upstream matches a registration. |
 | `reason` | no | Human-readable justification (recorded, not matched). |
 
-If the `path` target does not match the running proxy's `--server-name` (or the
-proxy was launched without `--server-name` at all), the entry is inert - it
-suppresses nothing. Part 4's `explain` output tells you when that is the case.
+If the `path` target does not match the name the running proxy uses (its
+`--server-name`, or its registered `mcp_identities` name), or the proxy runs
+unnamed because it has neither, the entry is inert - it suppresses nothing. Part 4's `explain` output tells you when that is the case.
 
 ## 4. Get the exact entry: `pipelock explain mcp-response`
 
 ```sh
-pipelock explain mcp-response [--config <file>] [--server-name <name>] [--json]
+pipelock explain mcp-response [--config <file>] [--server-name <name>] [--upstream <url>] [--json]
 ```
+
+Pass `--upstream` with the same upstream URL the proxy uses when the config
+registers local services under `mcp_identities`. `explain` then resolves the
+name the same way the proxy does, prints an `Identity:` line, and prints any
+refusal it can determine from the URL and name alone. It does not read launch
+credentials or check the live process, so a missing or malformed session
+header is caught when the proxy launches, and an owner that fails verification
+is caught each time the proxy opens a connection to the upstream, starting
+with the one for the first forwarded request, not at launch; use
+`pipelock mcp identity inspect` against the running service for that.
 
 `explain mcp-response` reads a single JSON-RPC 2.0 MCP response from **stdin**,
 scans it for response prompt injection and generic inbound credentials with the
@@ -174,14 +194,20 @@ Remediation - add to config `suppress:`
 ```
 
 Copy the printed `suppress:` entry into the config that server's proxy loads,
-then relaunch the proxy with the same `--server-name`.
+then relaunch the proxy with the same `--server-name` (or the same upstream, when
+the name comes from a registration).
 
-If you omit `--server-name`, `explain` still names the blocking pattern but
-prints the target as the placeholder `mcp://<server-name>/response` and adds a
-note that the suppress entry cannot match until you re-run with a `--server-name`
-matching how the proxy is launched. Run `explain` with the same `--server-name`
-you pass to `mcp proxy` so the printed `path` is the one that will actually take
-effect.
+If `explain` resolves no name, because you omit `--server-name` and either omit
+`--upstream` or pass one that matches no registration, it still names the
+blocking pattern but prints the target as the placeholder
+`mcp://<server-name>/response` and adds a note that the suppress entry cannot
+match until you re-run with the name the proxy runs under. When `--upstream`
+matches a registration, `explain` uses the registered name and needs no
+`--server-name`; that resolution needs Linux, and on any other host both
+`explain` and the proxy refuse a matched registration whatever name you pass.
+For an upstream that matches no registration, run `explain` with the same
+`--server-name` you pass to `mcp proxy` so the printed `path` is the one that
+will actually take effect.
 
 `--json` emits the same report as a structured object (`scanned`,
 `scanner`, `patterns`, and a `remediation.suppress_entries` array) for scripting.

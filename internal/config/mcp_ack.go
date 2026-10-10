@@ -56,6 +56,12 @@ type MCPAcknowledgedFinding struct {
 	// unkeyed digest of the transport would let anyone who reads the
 	// configuration test a guessed credential offline.
 	ServerBindingHMAC string `yaml:"server_binding_hmac"`
+	// ServerBindingMode names which binding ServerBindingHMAC is over. Empty
+	// means transport-v2, the binding every earlier entry carries.
+	// verified-local-session binds a registered mcp_identities entry (its
+	// pins, matcher and non-session headers) instead of the transport, and
+	// requires Server to name an entry with verified_local_service.
+	ServerBindingMode string `yaml:"server_binding_mode" json:",omitempty"`
 	// LegacyServerBindingSHA256 is the unkeyed field this replaced. It is
 	// read only so that a configuration still carrying it is refused with a
 	// pointer to the keyed form instead of being silently ignored.
@@ -242,7 +248,46 @@ func validateMCPAckOccurrences(field string, occs []MCPAckOccurrence) error {
 
 // validateMCPAcknowledgedFindings checks every acknowledgment at load. Expiry
 // is checked again whenever one would be applied (MCPAckActive).
-func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, now time.Time) error {
+func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, identities []MCPIdentity, now time.Time) error {
+	return validateMCPAckList(entries, identities, true, now)
+}
+
+// MCP acknowledgment binding modes for server_binding_mode.
+const (
+	MCPAckBindingModeTransportV2          = "transport-v2"
+	MCPAckBindingModeVerifiedLocalSession = "verified-local-session"
+)
+
+// MCPAckBindingMode returns the effective binding mode of an entry: an empty
+// server_binding_mode is transport-v2.
+func MCPAckBindingMode(e MCPAcknowledgedFinding) string {
+	if e.ServerBindingMode == "" {
+		return MCPAckBindingModeTransportV2
+	}
+	return e.ServerBindingMode
+}
+
+// validateMCPAckBindingMode checks server_binding_mode. When checkRegistry is
+// false only the value is checked, for callers that have no registry in hand.
+func validateMCPAckBindingMode(field string, e MCPAcknowledgedFinding, identities []MCPIdentity, checkRegistry bool) error {
+	switch e.ServerBindingMode {
+	case "", MCPAckBindingModeTransportV2:
+		return nil
+	case MCPAckBindingModeVerifiedLocalSession:
+		if !checkRegistry {
+			return nil
+		}
+		id, _, found := FindMCPIdentity(identities, e.Server)
+		if !found || id.VerifiedLocalService == nil {
+			return fmt.Errorf("%s.server %q must name an mcp_identities entry with verified_local_service when server_binding_mode is %s", field, e.Server, MCPAckBindingModeVerifiedLocalSession)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s.server_binding_mode %q is not supported: use %q or %q", field, e.ServerBindingMode, MCPAckBindingModeTransportV2, MCPAckBindingModeVerifiedLocalSession)
+	}
+}
+
+func validateMCPAckList(entries []MCPAcknowledgedFinding, identities []MCPIdentity, checkRegistry bool, now time.Time) error {
 	type key struct{ server, tool, finding string }
 	seen := make(map[key]int, len(entries))
 	for i, e := range entries {
@@ -252,6 +297,9 @@ func validateMCPAcknowledgedFindings(entries []MCPAcknowledgedFinding, now time.
 		}
 		if e.LegacyServerBindingSHA256 != "" {
 			return fmt.Errorf("%s.server_binding_sha256 is no longer accepted: it was an unkeyed digest of transport credentials; set mcp_tool_scanning.acknowledgment_key and copy server_binding_hmac from the candidate the proxy logs", field)
+		}
+		if err := validateMCPAckBindingMode(field, e, identities, checkRegistry); err != nil {
+			return err
 		}
 		if !ValidMCPAckBindingHMAC(e.ServerBindingHMAC) {
 			return fmt.Errorf("%s.server_binding_hmac must be %s<16 hex key id>:<64 hex>, as logged in the acknowledgment candidate", field, MCPAckBindingHMACPrefix)
@@ -360,7 +408,9 @@ func resolveMCPAckKeyOn(source string, fileKeySupported bool) ([]byte, error) {
 
 // ValidateMCPAcknowledgedFinding checks one entry exactly as configuration
 // load does. The tool scanner uses it before offering an operator a
-// candidate, so it never prints an entry the configuration would refuse.
+// candidate, so it never prints an entry the configuration would refuse. It
+// checks the entry's own shape; whether a verified-local-session entry names a
+// registered identity is a load-time check against the whole configuration.
 func ValidateMCPAcknowledgedFinding(e MCPAcknowledgedFinding, now time.Time) error {
-	return validateMCPAcknowledgedFindings([]MCPAcknowledgedFinding{e}, now)
+	return validateMCPAckList([]MCPAcknowledgedFinding{e}, nil, false, now)
 }

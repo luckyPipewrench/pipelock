@@ -36,6 +36,11 @@ type ReceiptGroupResult struct {
 	CloseManifestSHA string              `json:"close_manifest_sha256,omitempty"`
 	ShardCount       int                 `json:"shard_count"`
 	Error            string              `json:"error,omitempty"`
+	// readIncomplete marks GROUP_INCOMPLETE that came from evidence that
+	// could not be read or changed during verification, as opposed to a
+	// group that crashed before its close. Only the latter can be a
+	// successor's predecessor.
+	readIncomplete bool
 }
 
 // setReadError keeps unavailable evidence distinct from a stable invalid group.
@@ -46,6 +51,7 @@ func (r *ReceiptGroupResult) setReadError(err error) {
 	if errors.Is(err, recorder.ErrEvidenceChanged) || errors.Is(err, os.ErrPermission) ||
 		((errors.As(err, &pathErr) || errors.As(err, &systemErr)) && !errors.Is(err, os.ErrNotExist)) {
 		r.Verdict = GroupIncomplete
+		r.readIncomplete = true
 	}
 }
 
@@ -96,6 +102,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		endRoot, endAEL, identityErr := receiptGroupDirectoryIdentity(dir)
 		if checkErr != nil || after != before || identityErr != nil || !os.SameFile(rootInfo, endRoot) || !os.SameFile(aelInfo, endAEL) {
 			result.Verdict = GroupIncomplete
+			result.readIncomplete = true
 			result.Error = "receipt group evidence changed during verification; no verdict reached; stop the writer and verify again or verify an atomic snapshot"
 		}
 	}()

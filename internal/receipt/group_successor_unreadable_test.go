@@ -15,9 +15,47 @@ import (
 // Startup must stop without publishing successor artifacts, so a transient
 // read failure never turns into durable lifecycle state.
 func TestOpenSuccessorRefusesUnreadablePredecessorWithoutPublishing(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("permission denial does not apply to root")
+	cases := map[string]func(t *testing.T, shard string){
+		"permission denied": func(t *testing.T, shard string) {
+			if os.Geteuid() == 0 {
+				t.Skip("permission denial does not apply to root")
+			}
+			if err := os.Chmod(shard, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(shard, 0o600) })
+			if _, err := os.ReadFile(filepath.Clean(shard)); err == nil {
+				t.Skip("process can read mode-0 files")
+			}
+		},
+		// The cases below run for any user. They are refused as invalid
+		// evidence rather than as unreadable, and they assert the same
+		// outcome: no successor artifact is published.
+		"symlink": func(t *testing.T, shard string) {
+			moved := shard + ".moved"
+			if err := os.Rename(shard, moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(moved, shard); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"directory": func(t *testing.T, shard string) {
+			if err := os.Remove(shard); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(shard, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
 	}
+	for name, breakShard := range cases {
+		t.Run(name, func(t *testing.T) { refuseSuccessorOverBrokenPredecessor(t, breakShard) })
+	}
+}
+
+func refuseSuccessorOverBrokenPredecessor(t *testing.T, breakShard func(*testing.T, string)) {
+	t.Helper()
 	_, key := generateTestKey(t)
 	dir := t.TempDir()
 	firstRecorder, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
@@ -39,13 +77,7 @@ func TestOpenSuccessorRefusesUnreadablePredecessorWithoutPublishing(t *testing.T
 	if err != nil || len(shards) == 0 {
 		t.Fatalf("predecessor shard files: %v %v", shards, err)
 	}
-	if err := os.Chmod(shards[0], 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(shards[0], 0o600) })
-	if _, err := os.ReadFile(shards[0]); err == nil {
-		t.Skip("process can read mode-0 files")
-	}
+	breakShard(t, shards[0])
 	before, err := filepath.Glob(filepath.Join(dir, "receipt-group-*"))
 	if err != nil {
 		t.Fatal(err)

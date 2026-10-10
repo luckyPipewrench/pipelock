@@ -2050,7 +2050,9 @@ func validateEntropyPathPrefixShape(field, raw, prefix string) error {
 	// The trailing slash is trimmed first because it is load-bearing for
 	// prefix matching (it stops /document/de matching /document/d) while
 	// path.Clean treats it as non-canonical and would reject it.
-	if _, err := normalizeQueryEntropyParamPath(strings.TrimSuffix(prefix, "/")); err != nil {
+	// normalizeQueryEntropyParamPath now accepts one trailing slash itself, so
+	// trimming here as well would let a doubled slash ("/assets//") through.
+	if _, err := normalizeQueryEntropyParamPath(prefix); err != nil {
 		return fmt.Errorf("%s.path_prefix %q is not a canonical path: %w", field, raw, err)
 	}
 	return nil
@@ -2278,7 +2280,13 @@ func normalizeQueryEntropyParamPath(raw string) (string, error) {
 	if strings.ContainsAny(decoded, "?#*\\;") || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
 		return "", errors.New("decoded path must not contain query, fragment, wildcard, backslash, path-parameter, or control characters")
 	}
-	if decoded == "/" || path.Clean(decoded) != decoded {
+	// A route may end in one slash (a framework with trailing-slash routing
+	// serves /_next/image/), and the scanner matches the escaped request path
+	// exactly, slash included. Clean the path without that slash so the
+	// validator accepts the spelling the matcher can match. "//" and "/a//"
+	// still fail: a trimmed remainder of "/" or an empty one is not a route.
+	cleanable := strings.TrimSuffix(decoded, "/")
+	if decoded == "/" || cleanable == "" || cleanable == "/" || path.Clean(cleanable) != cleanable {
 		return "", errors.New("path must be canonical and must not contain traversal")
 	}
 	canonical := (&url.URL{Path: decoded}).EscapedPath()

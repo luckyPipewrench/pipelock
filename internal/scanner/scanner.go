@@ -4548,6 +4548,24 @@ func WithIssuerQueryAllowance(ctx context.Context, allows func(key, value string
 	return context.WithValue(ctx, issuerQueryAllowanceContextKey{}, allows)
 }
 
+type issuerPathAllowanceContextKey struct{}
+
+// issuerPathAllowed reports whether the request context carries an issuer
+// allowance for this exact escaped request path. Only path-segment entropy
+// consults it.
+func issuerPathAllowed(ctx context.Context, escapedPath string) bool {
+	allows, ok := ctx.Value(issuerPathAllowanceContextKey{}).(func(string) bool)
+	return ok && allows(escapedPath)
+}
+
+// WithIssuerPathAllowance scopes an observed issuer path to this scan only: a
+// path the origin itself linked to. The caller must verify that the origin
+// that served the link is the origin being scanned, and that the allowance
+// names the whole path, so a linked prefix does not admit a longer path.
+func WithIssuerPathAllowance(ctx context.Context, allows func(escapedPath string) bool) context.Context {
+	return context.WithValue(ctx, issuerPathAllowanceContextKey{}, allows)
+}
+
 // entropyQueryValues parses a raw query for the entropy heuristic. url.ParseQuery
 // silently drops any pair whose key or value carries a malformed percent
 // escape, which would let a secret skip inspection by appending "%ZZ". Pairs
@@ -4602,7 +4620,9 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
-		if entropy, blocked := s.pathEntropy(parsed.Path); blocked {
+		// Only entropy is relieved for a path the same origin issued: the rest
+		// of the pipeline already ran or still runs on this URL.
+		if entropy, blocked := s.pathEntropy(parsed.Path); blocked && !issuerPathAllowed(ctx, parsed.EscapedPath()) {
 			return Result{
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),

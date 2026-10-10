@@ -54,6 +54,11 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 			wantErr: "host is required",
 		},
 		{
+			name:    "doubled trailing slash is not a canonical prefix",
+			entry:   PathEntropyExclusion{Host: "docs.vendor.example", PathPrefix: "/assets//"},
+			wantErr: "not a canonical path",
+		},
+		{
 			name:    "missing path prefix would exempt every path on the host",
 			entry:   PathEntropyExclusion{Host: "docs.vendor.example"},
 			wantErr: "path_prefix is required",

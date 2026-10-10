@@ -249,13 +249,15 @@ codex mcp add my-server --env HTTPS_PROXY --env HTTP_PROXY \
   -- pipelock mcp proxy --config balanced.yaml -- your-server
 ```
 
-Or pass specific env vars through pipelock:
+Codex's environment options set the wrapper's environment; they don't pass every value into the MCP child. Pass ordinary credentials through Pipelock with its own `--env`:
 
 ```bash
 codex mcp add my-server \
   -- pipelock mcp proxy --config balanced.yaml --env API_KEY \
   -- my-mcp-server
 ```
+
+Pipelock refuses requests to pass code-loading and other blocked names into the child at startup. Setting them on the wrapper doesn't pass them into its filtered child environment. Proxy variables supplied to the wrapper aren't inherited by the MCP child. See [child environment restrictions](sandbox.md#child-environment-restrictions) for the shared list and supported operator choices.
 
 ### Checking what Codex MCP servers are configured
 

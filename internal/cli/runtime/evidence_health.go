@@ -61,9 +61,9 @@ type evidenceHealthMonitor struct {
 	mu      sync.Mutex
 	anchors map[string]*metrics.EvidenceAnchorStats
 	tails   map[string]shardTailState
-	// foreign counts consecutive passes in which a chain's newest receipt
-	// came from another run while that chain's own writer stayed live.
-	foreign     map[string]int
+	// foreign counts the conclusive passes in which a chain's newest receipt
+	// came from another run, for one writer. A different writer starts over.
+	foreign     map[string]foreignTail
 	selfAuditOK atomic.Bool
 	lastFsync   uint64
 	lastBlocks  uint64
@@ -94,7 +94,7 @@ func newEvidenceHealthMonitor(
 		logW:      logW,
 		anchors:   make(map[string]*metrics.EvidenceAnchorStats),
 		tails:     make(map[string]shardTailState),
-		foreign:   make(map[string]int),
+		foreign:   make(map[string]foreignTail),
 	}
 	h.selfAuditOK.Store(true)
 	return h
@@ -291,7 +291,7 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 		return
 	}
 	if tail.seq == view.PersistedSeq && tail.hash == view.PersistedHash {
-		h.setForeign(obs.session, 0)
+		h.setForeign(obs, 0)
 		h.setTail(obs, metrics.EvidenceSelfAuditVerified, "")
 		return
 	}
@@ -301,8 +301,8 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 		// before it goes live, so for one pass this is unverified, not
 		// green. A foreign writer that persists while this chain's own
 		// writer stays live is a competing writer: report it as divergence.
-		if _, current := h.stillCurrent(obs); current && h.setForeign(obs.session, 1) >= maxForeignTailPasses {
-			h.recordTailDivergence(obs, fmt.Errorf("newest receipt on disk (seq %d) has belonged to another run for %d passes while this chain's writer stayed live", tail.seq, maxForeignTailPasses))
+		if _, current := h.stillCurrent(obs); current && h.setForeign(obs, 1) >= maxForeignTailPasses {
+			h.recordTailDivergence(obs, fmt.Errorf("newest receipt on disk (seq %d) has belonged to another run on %d checks of this chain's live writer", tail.seq, maxForeignTailPasses))
 			return
 		}
 		h.setTail(obs, metrics.EvidenceSelfAuditPending, fmt.Sprintf("newest receipt on disk (seq %d) belongs to another run", tail.seq))
@@ -311,25 +311,44 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 	h.recordTailDivergence(obs, fmt.Errorf("disk tail seq %d hash %s does not match the newest written receipt seq %d hash %s", tail.seq, tail.hash, view.PersistedSeq, view.PersistedHash))
 }
 
-// maxForeignTailPasses is how many consecutive passes a chain's newest
-// receipt may come from another run before that is reported as divergence. A
-// reload replaces the writer within one pass.
+// maxForeignTailPasses is how many conclusive checks of one live writer may
+// find its chain's newest receipt written by another run before that is
+// reported as divergence. A reload's replacement writes its opening receipt
+// before it goes live, so one writer sees at most one such check from it.
 const maxForeignTailPasses = 3
 
-// setForeign adds delta to the session's consecutive foreign-tail count, or
-// resets it when delta is zero, and returns the new count.
-func (h *evidenceHealthMonitor) setForeign(session string, delta int) int {
+// foreignTail is the foreign-receipt count for one writer of a session.
+type foreignTail struct {
+	emitter *receipt.Emitter
+	count   int
+}
+
+// setForeign adds delta to the count kept for obs's writer, or clears it when
+// delta is zero, and returns the new count. A count left by a different
+// writer is discarded: each writer's passes are judged on their own.
+func (h *evidenceHealthMonitor) setForeign(obs shardObservation, delta int) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if delta == 0 {
-		delete(h.foreign, session)
+		delete(h.foreign, obs.session)
 		return 0
 	}
-	h.foreign[session] += delta
-	return h.foreign[session]
+	entry := h.foreign[obs.session]
+	if entry.emitter != obs.emitter {
+		entry = foreignTail{emitter: obs.emitter}
+	}
+	entry.count += delta
+	h.foreign[obs.session] = entry
+	return entry.count
 }
 
 func (h *evidenceHealthMonitor) recordTailDivergence(obs shardObservation, divergence error) {
+	// A divergence latches for the process lifetime, so it is only decided
+	// for the chain's live writer. A writer replaced since the observation
+	// is judged no further; its successor starts unverified.
+	if _, current := h.stillCurrent(obs); !current {
+		return
+	}
 	if h.metrics != nil {
 		h.metrics.RecordEvidenceSequenceGap("self_audit")
 	}
@@ -344,6 +363,9 @@ func (h *evidenceHealthMonitor) applyTailReadError(obs shardObservation, err err
 	case errors.Is(err, errNoReceiptTail):
 		h.setTail(obs, metrics.EvidenceSelfAuditPending, fmt.Sprintf("no action receipt on disk for chain head %d", obs.snap.ChainSeq-1))
 	case errors.Is(err, errReceiptTailCorrupt):
+		if _, current := h.stillCurrent(obs); !current {
+			return
+		}
 		h.setTail(obs, metrics.EvidenceSelfAuditFailed, err.Error())
 		h.fail("sampler_error", fmt.Errorf("chain %s: %w", obs.session, err))
 	case errors.Is(err, errReceiptTailBeyondBound):

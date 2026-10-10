@@ -720,7 +720,9 @@ func TestEvidenceHealthAuthenticReplayAtTailFails(t *testing.T) {
 
 // TestEvidenceHealthUnconfirmedWriteIsAGap: a receipt whose position was
 // assigned but whose write was not confirmed leaves the chain head ahead of
-// what was written. Later successful receipts do not hide it.
+// what was written, and the next check reports it. The check covers the
+// newest receipt only: a later successful receipt moves the comparison past
+// the gap, which offline verification of the whole chain still finds.
 func TestEvidenceHealthUnconfirmedWriteIsAGap(t *testing.T) {
 	rig := newShardedHealthRig(t, 1)
 	rig.emit(t, "https://api.vendor.example/one")
@@ -827,4 +829,71 @@ func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
 	if rig.h.anchorFor(rig.emitters[0].Session()) == nil {
 		t.Fatal("anchor not recovered after access returned")
 	}
+}
+
+// TestEvidenceHealthForeignCountIsPerWriter: each reload's replacement writes
+// its opening receipt before it goes live, so each live writer can see one
+// foreign newest receipt. Successive writers must not add their single
+// checks up into a divergence.
+func TestEvidenceHealthForeignCountIsPerWriter(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	rig.h.runPass()
+	live := rig.emitters[0]
+	for i := 0; i < 2*maxForeignTailPasses; i++ {
+		next := receipt.NewEmitter(receipt.EmitterConfig{
+			Recorder: rig.rec, PrivKey: rig.key, ConfigHash: strings.Repeat("c", 64),
+			Principal: "local", Actor: "pipelock", Metrics: rig.m, Session: live.Session(),
+		})
+		if next == nil || next.InitError() != nil {
+			t.Fatal("replacement writer failed to resume")
+		}
+		if err := next.EmitSessionOpen(); err != nil {
+			t.Fatalf("replacement %d open: %v", i, err)
+		}
+		current := live
+		rig.h.emitterFn = func() *receipt.Emitter { return current }
+		rig.h.runPass() // the old writer is live; the newest receipt is the replacement's
+		rig.assertNotLatched(t)
+		live = next
+	}
+	final := live
+	rig.h.emitterFn = func() *receipt.Emitter { return final }
+	rig.h.runPass()
+	rig.assertNotLatched(t)
+	if state := rig.stats(t).SelfAudit.State; state != metrics.EvidenceSelfAuditVerified {
+		t.Fatalf("state for the last writer = %q, want verified", state)
+	}
+}
+
+// TestEvidenceHealthReplacedWriterFailureDoesNotLatchSuccessor: a check that
+// observed a writer before it was replaced reaches no irreversible verdict
+// about the chain, even when that writer's last write was not confirmed.
+func TestEvidenceHealthReplacedWriterFailureDoesNotLatchSuccessor(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	old := rig.emitters[0]
+	rig.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	if err := old.EmitDurable(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+		Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/lost",
+	}); !errors.Is(err, receipt.ErrReceiptPostAdvance) {
+		t.Fatalf("EmitDurable = %v, want a post-advance failure", err)
+	}
+	rig.rec.SetSyncForTest(nil)
+	obs := rig.h.observeShards()[0]
+	successor := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rig.rec, PrivKey: rig.key, ConfigHash: strings.Repeat("d", 64),
+		Principal: "local", Actor: "pipelock", Metrics: rig.m, Session: old.Session(),
+	})
+	if successor == nil || successor.InitError() != nil {
+		t.Fatal("successor failed to resume")
+	}
+	rig.h.emitterFn = func() *receipt.Emitter { return successor }
+
+	rig.h.checkShardTail(obs)
+
+	rig.assertNotLatched(t)
+	rig.h.runPass()
+	rig.assertNotLatched(t)
 }

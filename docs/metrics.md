@@ -177,11 +177,14 @@ The `/stats` endpoint also includes a nullable `evidence_health` object. In the
   chain's last action receipt on disk matched that chain's in-memory head.
   `pending` means a chain could not be compared: it was never audited, failed
   to initialize, its evidence is missing or shrank during the read, a
-  read failed, or its last receipt lies beyond the self-audit's 8 MiB read
-  bound. Pending is not green and does not latch.
-  `failed` is a proven mismatch (the disk tail is behind or ahead of the head,
-  the same sequence has a different hash, a receipt written during the read is
-  not signed by the chain's key, or the tail is malformed) and
+  read failed, its last receipt lies beyond the self-audit's read bound (8 MiB
+  of a file, four files), or the newest receipt was written by another run,
+  as when a reload's replacement writer opens before it goes live. A newest
+  receipt from another run that persists for three checks of the same live
+  writer is reported failed. Pending is not green and does not latch.
+  `failed` is a proven mismatch (the newest receipt on disk is not the one the
+  chain last wrote, a receipt's position was assigned but its write was not
+  confirmed, or the tail is malformed) and
   latches `selfaudit_ok` for the process lifetime. `self_audit.shards` lists
   each chain's session, head, emitter health, tail state, and anchor coverage.
   Every field in one entry comes from that chain alone. The self-audit checks

@@ -5302,6 +5302,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /fetch reaches the origin outside TLS interception, so record its URL
+	// as sent: a value it carries must never later mint as a server-issued ID.
+	p.recordIssuerFetchSent(cfg, agent, clientIP, id.Auth, parsed)
+
 	// Fully decode the URL for display in responses and logs. The scanner
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.

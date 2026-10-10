@@ -11,6 +11,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 )
 
 // A server-issued ID is an opaque object identifier an origin returned in a
@@ -42,6 +45,9 @@ const (
 	// issuerSentMaxTokensPerRequest bounds the tokens one request records. A
 	// request over the bound marks the session unreadable.
 	issuerSentMaxTokensPerRequest = 4096
+	// issuerUnreadableMaxSessions bounds the sessions remembered as having
+	// incomplete sent history. Past it the whole store stops minting.
+	issuerUnreadableMaxSessions = 4096
 )
 
 // issuerServerIDShaped reports whether value can be one whole URL path
@@ -86,9 +92,18 @@ func issuerSentTokens(text string, emit func(string) bool) bool {
 			continue
 		}
 		if start >= 0 {
-			if run := text[start:i]; len(run) >= issuerServerIDMinLen {
-				if !emit(run) {
-					return false
+			run := text[start:i]
+			if len(run) >= issuerServerIDMinLen && !emit(run) {
+				return false
+			}
+			// "=" is an ID character (base64 padding) and also the form
+			// key/value separator, so each side of every "=" is recorded too:
+			// "payload=<value>" must record <value> on its own.
+			if strings.IndexByte(run, '=') >= 0 {
+				for _, part := range strings.Split(run, "=") {
+					if len(part) >= issuerServerIDMinLen && part != run && !emit(part) {
+						return false
+					}
 				}
 			}
 			start = -1
@@ -108,15 +123,27 @@ func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value strin
 // taintSentLocked stops minting for a session whose outgoing traffic could
 // not be fully recorded.
 func (s *issuerQueryStore) taintSentLocked(session string) {
-	s.sentUnreadable[session] = true
 	delete(s.ids, session)
+	if s.sentUnreadable[session] {
+		return
+	}
+	if len(s.sentUnreadable) >= issuerUnreadableMaxSessions {
+		s.mintDisabled = true
+		return
+	}
+	s.sentUnreadable[session] = true
+}
+
+// mintBlockedLocked reports whether the session may not mint or use IDs.
+func (s *issuerQueryStore) mintBlockedLocked(session string) bool {
+	return s.mintDisabled || s.sentUnreadable[session]
 }
 
 // recordSent records every token a request carries to its origin: path
 // segments, query keys and values, and the body, both raw and decoded. A
 // body that was sent but not buffered, or a request over the bound, marks the
 // session unreadable.
-func (s *issuerQueryStore) recordSent(session string, target *url.URL, body []byte, bodyKnown bool, now time.Time) {
+func (s *issuerQueryStore) recordSent(session string, target *url.URL, header http.Header, body []byte, bodyKnown bool, now time.Time) {
 	if s == nil || s.disabled || session == "" || target == nil {
 		return
 	}
@@ -124,20 +151,16 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, body []by
 		return
 	}
 	var texts []string
-	texts = append(texts, target.EscapedPath(), target.Path, target.RawQuery)
-	if decoded, err := url.QueryUnescape(target.RawQuery); err == nil {
-		texts = append(texts, decoded)
-	}
-	for key, values := range target.Query() {
-		texts = append(texts, key)
-		texts = append(texts, values...)
+	texts = append(texts, target.EscapedPath(), target.Path)
+	texts = appendFormLike(texts, target.RawQuery)
+	for name, values := range header {
+		texts = append(texts, name)
+		for _, value := range values {
+			texts = appendFormLike(texts, value)
+		}
 	}
 	if len(body) > 0 {
-		raw := string(body)
-		texts = append(texts, raw)
-		if decoded, err := url.QueryUnescape(raw); err == nil {
-			texts = append(texts, decoded)
-		}
+		texts = appendFormLike(texts, string(body))
 		texts = appendJSONStrings(texts, body)
 	}
 
@@ -184,6 +207,61 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, body []by
 	}
 }
 
+// lenientUnescape percent-decodes every valid %XX escape and keeps any
+// malformed one as written, so one bad escape cannot hide the rest. plus
+// selects whether "+" also decodes to a space, as in a form body.
+func lenientUnescape(text string, plus bool) string {
+	if strings.IndexByte(text, '%') < 0 && (!plus || strings.IndexByte(text, '+') < 0) {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == '%' && i+2 < len(text) && isHex(text[i+1]) && isHex(text[i+2]) {
+			b.WriteByte(unhex(text[i+1])<<4 | unhex(text[i+2]))
+			i += 2
+			continue
+		}
+		if c == '+' && plus {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
+}
+
+// appendFormLike adds text as written, leniently percent-decoded both with
+// and without "+" as a space, and each key and value of it read as
+// "&"/";"-separated form pairs, decoded the same way. Any of those forms may
+// be the one an origin stores and returns.
+func appendFormLike(texts []string, text string) []string {
+	texts = append(texts, text, lenientUnescape(text, false), lenientUnescape(text, true))
+	for _, pair := range strings.FieldsFunc(text, func(r rune) bool { return r == '&' || r == ';' }) {
+		key, value, _ := strings.Cut(pair, "=")
+		for _, part := range []string{key, value} {
+			texts = append(texts, lenientUnescape(part, false), lenientUnescape(part, true))
+		}
+	}
+	return texts
+}
+
 // appendJSONStrings adds every string key and value of a JSON body, decoded,
 // so an escape sequence in the body cannot hide a token from the raw scan.
 func appendJSONStrings(texts []string, body []byte) []string {
@@ -216,7 +294,7 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	idDigest, _ := s.originDigest("server_id", target, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sentUnreadable[session] {
+	if s.mintBlockedLocked(session) {
 		return
 	}
 	if _, reflected := s.sent[session][sentDigest]; reflected {
@@ -249,7 +327,7 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sentUnreadable[session] {
+	if s.mintBlockedLocked(session) {
 		return false
 	}
 	for _, existing := range s.ids[session] {
@@ -272,7 +350,48 @@ func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte)
 	if store == nil {
 		return
 	}
-	bodyKnown := body != nil || r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0
+	bodyKnown := body != nil || r.Body == nil || r.Body == http.NoBody
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
-	store.recordSent(session, r.URL, body, bodyKnown, time.Now())
+	store.recordSent(session, r.URL, r.Header, body, bodyKnown, time.Now())
+}
+
+// issuerStoreForUnmediatedSend returns the live issuer store whatever
+// configuration snapshot the caller holds. A send that does not pass through
+// TLS interception can still reach an origin the store holds IDs for, so it
+// must be recorded or taint the session even when the snapshots differ.
+func (p *Proxy) issuerStoreForUnmediatedSend() *issuerQueryStore {
+	if p == nil {
+		return nil
+	}
+	runtime := p.issuerCookieRuntime.Load()
+	if runtime == nil {
+		return nil
+	}
+	return runtime.query
+}
+
+// recordIssuerFetchSent records a /fetch request's URL as sent. It carries no
+// body, so its tokens are complete.
+func (p *Proxy) recordIssuerFetchSent(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, target *url.URL) {
+	store := p.issuerStoreForUnmediatedSend()
+	if store == nil || target == nil {
+		return
+	}
+	store.recordSent(sessionKeyFor(cfg, agent, clientIP, actorAuth), target, nil, nil, true, time.Now())
+}
+
+// taintIssuerSessionForStream marks a session whose traffic now includes a
+// stream Pipelock does not record token by token, such as WebSocket frames.
+func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth) {
+	store := p.issuerStoreForUnmediatedSend()
+	if store == nil || store.disabled {
+		return
+	}
+	session := sessionKeyFor(cfg, agent, clientIP, actorAuth)
+	if session == "" {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.taintSentLocked(session)
 }

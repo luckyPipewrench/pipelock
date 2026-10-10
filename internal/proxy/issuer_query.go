@@ -71,8 +71,11 @@ type issuerQueryStore struct {
 	ids            map[string][][32]byte
 	sent           map[string]map[[32]byte]struct{}
 	sentUnreadable map[string]bool
-	used           map[string]time.Time
-	disabled       bool
+	// mintDisabled stops all minting once incomplete sent history can no
+	// longer be remembered per session.
+	mintDisabled bool
+	used         map[string]time.Time
+	disabled     bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -155,9 +158,10 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
 	delete(s.documents, oldest)
-	delete(s.ids, oldest)
+	// An evicted session's sent history is lost, so if it returns it must
+	// not mint as though it had sent nothing: the tombstone outlives eviction.
 	delete(s.sent, oldest)
-	delete(s.sentUnreadable, oldest)
+	s.taintSentLocked(oldest)
 	delete(s.used, oldest)
 }
 
@@ -660,7 +664,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			levels[n-1].expectKey = true
 		}
 	}
-	for remaining > 0 {
+	for remaining > 0 || idRemaining > 0 {
 		token, err := decoder.Token()
 		if err != nil {
 			return

@@ -52,6 +52,37 @@ func (h *webPlatformHarness) send(upstream *httptest.Server, method, path, agent
 	return resp.StatusCode
 }
 
+func (h *webPlatformHarness) sendHeader(upstream *httptest.Server, method, path, agent, name, value, body string) int {
+	h.t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method, upstream.URL+path, strings.NewReader(body))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(name, value)
+	resp := interceptAndRequestWithRecorder(h.t, interceptRequestOptions{
+		Upstream: upstream, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
+		Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
+		Agent: agent, ActorAuth: envelope.ActorAuthBound,
+	})
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// api2Store makes the mail API store value out of band, standing in for an
+// origin that kept what the agent sent in a header or form field and now
+// lists it, then has the agent list the collection.
+func api2Store(t *testing.T, h *webPlatformHarness, agent string, api *httptest.Server, value string) {
+	t.Helper()
+	if got := h.send(api, http.MethodPost, "/filters", "store-"+agent, "application/json", `{"criteria":{"query":"`+value+`"}}`); got != http.StatusOK {
+		t.Fatalf("out-of-band store = %d", got)
+	}
+	if got := h.send(api, http.MethodGet, "/filters", agent, "", ""); got != http.StatusOK {
+		t.Fatalf("list = %d", got)
+	}
+}
+
 // newMailAPI serves a filter collection: list, create (which stores and later
 // lists whatever criteria the agent sent), and delete by ID. Every request
 // that reaches it is counted per path, so a test can tell forwarded from
@@ -170,13 +201,37 @@ func TestInterceptServerIssuedIDs(t *testing.T) {
 	t.Run("a value escaped in the request body is still recorded as sent", func(t *testing.T) {
 		h := newWebPlatformHarness(t)
 		api, _ := newMailAPI(t)
-		escaped := `K` + agentBlob[1:] // "K" written as a JSON escape
+		escaped := string([]byte{0x5c}) + "u004b" + agentBlob[1:] // "K" written as a JSON escape
 		if got := h.send(api, http.MethodPost, "/filters", agent, "application/json", `{"criteria":{"query":"`+escaped+`"}}`); got != http.StatusOK {
 			t.Fatalf("create = %d", got)
 		}
 		_ = h.send(api, http.MethodGet, "/filters", agent, "", "")
 		if got := h.send(api, http.MethodDelete, "/filters/"+agentBlob, agent, "", ""); got != http.StatusForbidden {
 			t.Fatalf("escaped reflection as id = %d, want 403", got)
+		}
+	})
+
+	t.Run("a value the agent sent in a header and the origin echoed is not issued", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		api, _ := newMailAPI(t)
+		if got := h.sendHeader(api, http.MethodPost, "/filters", agent, "X-Note", agentBlob, `{"criteria":{"from":"a@vendor.example"}}`); got != http.StatusOK {
+			t.Fatalf("create = %d", got)
+		}
+		api2Store(t, h, agent, api, agentBlob)
+		if got := h.send(api, http.MethodDelete, "/filters/"+agentBlob, agent, "", ""); got != http.StatusForbidden {
+			t.Fatalf("header reflection as id = %d, want 403", got)
+		}
+	})
+
+	t.Run("a value the agent sent as a form field and the origin echoed is not issued", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		api, _ := newMailAPI(t)
+		if got := h.send(api, http.MethodPost, "/filters", agent, "application/x-www-form-urlencoded", "payload="+agentBlob); got != http.StatusOK {
+			t.Fatalf("form post = %d", got)
+		}
+		api2Store(t, h, agent, api, agentBlob)
+		if got := h.send(api, http.MethodDelete, "/filters/"+agentBlob, agent, "", ""); got != http.StatusForbidden {
+			t.Fatalf("form reflection as id = %d, want 403", got)
 		}
 	})
 
@@ -259,7 +314,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("an unread request body stops minting", func(t *testing.T) {
 		s := newTestServerIDStore(t)
-		s.recordSent("a", origin, nil, false, now)
+		s.recordSent("a", origin, nil, nil, false, now)
 		s.mintServerID("a", origin, serverIDListed, now)
 		if s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("minted after an unread body")
@@ -272,7 +327,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 		if !s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")
 		}
-		s.recordSent("a", origin, nil, false, now)
+		s.recordSent("a", origin, nil, nil, false, now)
 		if s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("id survived an unread body")
 		}
@@ -287,7 +342,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 			b.WriteString(strings.Repeat("Q", 16+i%7))
 			b.WriteByte(' ')
 		}
-		s.recordSent("a", origin, []byte(b.String()), true, now)
+		s.recordSent("a", origin, nil, []byte(b.String()), true, now)
 		s.mintServerID("a", origin, serverIDListed, now)
 		if s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("minted after an over-bound request")
@@ -297,7 +352,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 	t.Run("a value sent in a query is never minted", func(t *testing.T) {
 		s := newTestServerIDStore(t)
 		withQuery, _ := url.Parse("https://api.vendor.example/search?q=" + agentBlob)
-		s.recordSent("a", withQuery, nil, true, now)
+		s.recordSent("a", withQuery, nil, nil, true, now)
 		s.mintServerID("a", origin, agentBlob, now)
 		if s.serverIDIssued("a", origin, agentBlob) {
 			t.Fatal("a query value was minted")
@@ -307,10 +362,58 @@ func TestIssuerServerIDStore(t *testing.T) {
 	t.Run("sent evidence is per origin", func(t *testing.T) {
 		s := newTestServerIDStore(t)
 		other, _ := url.Parse("https://other.vendor.example/upload")
-		s.recordSent("a", other, []byte(agentBlob), true, now)
+		s.recordSent("a", other, nil, []byte(agentBlob), true, now)
 		s.mintServerID("a", origin, agentBlob, now)
 		if !s.serverIDIssued("a", origin, agentBlob) {
 			t.Fatal("a value sent to a different origin blocked minting on this one")
+		}
+	})
+
+	t.Run("an evicted session does not mint on return", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, nil, []byte(agentBlob), true, now)
+		for i := 0; i < issuerCookieMaxSessions; i++ {
+			s.recordSent("filler-"+strings.Repeat("x", i+1), origin, nil, nil, true, now.Add(time.Duration(i+1)*time.Second))
+		}
+		if _, still := s.used["a"]; still {
+			t.Fatal("positive control: session a was not evicted")
+		}
+		s.mintServerID("a", origin, agentBlob, now)
+		if s.serverIDIssued("a", origin, agentBlob) {
+			t.Fatal("an evicted session minted a value it had sent")
+		}
+	})
+
+	t.Run("one malformed escape does not hide the rest of a form body", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, nil, []byte("bad=%ZZ&payload="+agentBlob[:10]+"%2B"+agentBlob[10:]), true, now)
+		withPlus := agentBlob[:10] + "+" + agentBlob[10:]
+		s.mintServerID("a", origin, withPlus, now)
+		if s.serverIDIssued("a", origin, withPlus) {
+			t.Fatal("a percent-decoded form value was minted")
+		}
+	})
+
+	t.Run("a header value is recorded as sent", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, http.Header{"Cookie": {"sid=" + agentBlob}}, nil, true, now)
+		s.mintServerID("a", origin, agentBlob, now)
+		if s.serverIDIssued("a", origin, agentBlob) {
+			t.Fatal("a cookie value was minted")
+		}
+	})
+
+	t.Run("a full tombstone set stops all minting", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.mu.Lock()
+		for i := 0; i < issuerUnreadableMaxSessions; i++ {
+			s.taintSentLocked("t" + strings.Repeat("y", i+1))
+		}
+		s.taintSentLocked("one-more")
+		s.mu.Unlock()
+		s.mintServerID("fresh", origin, serverIDListed, now)
+		if s.serverIDIssued("fresh", origin, serverIDListed) {
+			t.Fatal("minted after the tombstone set overflowed")
 		}
 	})
 
@@ -331,6 +434,44 @@ func TestIssuerServerIDStore(t *testing.T) {
 		s.mintServerID("a", plain, serverIDListed, now)
 		if s.serverIDIssued("a", plain, serverIDListed) {
 			t.Fatal("plain http minted an id")
+		}
+	})
+}
+
+// Sends outside TLS interception still reach origins the store holds IDs for:
+// a /fetch URL is recorded as sent, and a WebSocket handshake stops minting
+// for the session, because its frames are not recorded token by token.
+func TestIssuerServerIDUnmediatedSends(t *testing.T) {
+	origin, _ := url.Parse("https://api.vendor.example/v1/filters")
+	now := time.Now()
+	const agent = "mail-agent"
+
+	t.Run("a fetch URL is recorded as sent", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		store := h.p.issuerStoreForUnmediatedSend()
+		if store == nil {
+			t.Fatal("positive control: issuer store not running")
+		}
+		withBlob, _ := url.Parse("https://api.vendor.example/notes/" + agentBlob)
+		h.p.recordIssuerFetchSent(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound, withBlob)
+		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.mintServerID(session, origin, agentBlob, now)
+		if store.serverIDIssued(session, origin, agentBlob) {
+			t.Fatal("a value sent through /fetch was minted")
+		}
+	})
+
+	t.Run("a websocket handshake stops minting for the session", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		store := h.p.issuerStoreForUnmediatedSend()
+		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.mintServerID(session, origin, serverIDListed, now)
+		if !store.serverIDIssued(session, origin, serverIDListed) {
+			t.Fatal("positive control: id not minted")
+		}
+		h.p.taintIssuerSessionForStream(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		if store.serverIDIssued(session, origin, serverIDListed) {
+			t.Fatal("an id survived a websocket handshake")
 		}
 	})
 }

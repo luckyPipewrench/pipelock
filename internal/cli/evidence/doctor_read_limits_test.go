@@ -5,6 +5,7 @@ package evidence
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,5 +339,36 @@ func TestDoctorLiveRecorderGrowthStaysConclusive(t *testing.T) {
 	})
 	if err != nil || !report.Conclusive() || report.Damaged() || report.ReadIncomplete {
 		t.Fatalf("active-shard growth voided the audit: %+v, %v", report, err)
+	}
+}
+
+// The append proof is bounded by the doctor's per-file read limit. An active
+// shard past it gets no growth allowance, so the hash never reads unbounded.
+func TestDoctorInventoryOversizedActiveShardGetsNoGrowthAllowance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, recorder.MaxEvidenceReadFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	locations := []recorder.EvidenceLocation{{Root: dir, Dir: dir}}
+	before, err := doctorCorpusInventory(locations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[fmt.Sprintf("%q %q", "", "evidence-proxy-0.jsonl")].prefix != nil {
+		t.Fatal("oversized active shard was hashed for a growth allowance")
+	}
+	if err := os.Truncate(path, recorder.MaxEvidenceReadFileBytes+2); err != nil {
+		t.Fatal(err)
+	}
+	after, err := doctorCorpusInventory(locations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.stableWith(after) {
+		t.Fatal("growth of an oversized active shard was accepted as stable")
 	}
 }

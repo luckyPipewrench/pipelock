@@ -70,8 +70,11 @@ func doctorCorpusInventory(locations []recorder.EvidenceLocation) (doctorInvento
 	}
 	for key := range inv.activeShards() {
 		record := inv[key]
-		sum, n, err := hashEvidencePrefix(record.path, -1)
-		if err != nil {
+		// Hash at most one byte past the doctor's per-file read limit. A
+		// shard over that limit gets no growth allowance: the scan reports
+		// it as oversized, and the audit cannot vouch for bytes it skipped.
+		sum, n, err := hashEvidencePrefix(record.path, recorder.MaxEvidenceReadFileBytes+1)
+		if err != nil || n > recorder.MaxEvidenceReadFileBytes {
 			// No proof of the starting bytes means no growth allowance; the
 			// scan itself reports why the shard could not be read.
 			continue
@@ -102,21 +105,17 @@ func (inv doctorInventory) activeShards() map[string]bool {
 	return keys
 }
 
-// hashEvidencePrefix hashes the first limit bytes of an evidence file, or
-// the whole file when limit is negative, through the recorder's no-follow
-// open. It returns the digest and the number of bytes hashed.
+// hashEvidencePrefix hashes the first limit bytes of an evidence file
+// through the recorder's no-follow open. It returns the digest and the number
+// of bytes hashed.
 func hashEvidencePrefix(path string, limit int64) ([]byte, int64, error) {
 	file, _, err := recorder.OpenEvidenceFile(path)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer func() { _ = file.Close() }()
-	var reader io.Reader = file
-	if limit >= 0 {
-		reader = io.LimitReader(file, limit)
-	}
 	h := sha256.New()
-	n, err := io.Copy(h, reader)
+	n, err := io.Copy(h, io.LimitReader(file, limit))
 	if err != nil {
 		return nil, 0, err
 	}

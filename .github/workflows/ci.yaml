@@ -196,6 +196,10 @@ jobs:
           # Advisory test-step budget: warns when a shard drifts toward the
           # 15-minute end-to-end goal so its weights get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
+          # Hard ceiling for one top-level test. The planner places whole
+          # top-level tests, so one test this slow overloads its shard; the
+          # summarizer fails the shard and names the test to split.
+          TEST_CEILING_SECONDS: '300'
         run: |
           set -o pipefail
           set +e
@@ -224,7 +228,7 @@ jobs:
             go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 "${race_cover[@]}" ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
           summary_status=$?
           if [ "$summary_status" -eq 0 ] && [ "$test_status" -eq 0 ] && [ "$coverage_mode" = separate ]; then
             # Same packages and selector without -race: set-mode coverage only.
@@ -312,6 +316,10 @@ jobs:
           # Advisory test-step budget: warns when a shard drifts toward the
           # 15-minute end-to-end goal so its weights get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
+          # Hard ceiling for one top-level test. The planner places whole
+          # top-level tests, so one test this slow overloads its shard; the
+          # summarizer fails the shard and names the test to split.
+          TEST_CEILING_SECONDS: '300'
         run: |
           set -o pipefail
           set +e
@@ -326,7 +334,7 @@ jobs:
             go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
           summary_status=$?
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
@@ -381,6 +389,10 @@ jobs:
           # Advisory test-step budget: warns when a shard drifts toward the
           # 15-minute end-to-end goal so its weights get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
+          # Hard ceiling for one top-level test. The planner places whole
+          # top-level tests, so one test this slow overloads its shard; the
+          # summarizer fails the shard and names the test to split.
+          TEST_CEILING_SECONDS: '300'
         run: |
           set -o pipefail
           set +e
@@ -409,7 +421,7 @@ jobs:
             go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 "${race_cover[@]}" ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
           summary_status=$?
           if [ "$summary_status" -eq 0 ] && [ "$test_status" -eq 0 ] && [ "$coverage_mode" = separate ]; then
             # Same packages and selector without -race: set-mode coverage only.
@@ -499,6 +511,10 @@ jobs:
           # Advisory test-step budget: warns when a shard drifts toward the
           # 15-minute end-to-end goal so its weights get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
+          # Hard ceiling for one top-level test. The planner places whole
+          # top-level tests, so one test this slow overloads its shard; the
+          # summarizer fails the shard and names the test to split.
+          TEST_CEILING_SECONDS: '300'
         run: |
           set -o pipefail
           set +e
@@ -513,7 +529,7 @@ jobs:
             go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
           summary_status=$?
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."

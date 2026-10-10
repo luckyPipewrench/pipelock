@@ -136,7 +136,11 @@ func TestScanAtomViewOnlyCatchesAnchoredRule(t *testing.T) {
 
 func TestScanAtomViewCatchesCanaryInKeyAndEscapedValue(t *testing.T) {
 	det := testDetector(t)
-	escaped := `{"x":"` + strings.ReplaceAll(canaryFixture, "r3", `r3`) + `"}`
+	// \u0072 is "r": the raw bytes never contain the canary, only its decoding does.
+	escaped := `{"x":"\u0072` + canaryFixture[1:] + `"}`
+	if strings.Contains(escaped, canaryFixture) {
+		t.Fatal("escaped fixture must not carry the canary literally")
+	}
 	rep, err := scanDetail(t, det, []byte(escaped))
 	requireView(t, rep, err, ViewAtom)
 

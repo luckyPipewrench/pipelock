@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,12 @@ func sessionEntries(t *testing.T, dir, session string) int {
 	t.Helper()
 	found, err := recorder.QuerySession(dir, session, nil)
 	if err != nil {
+		// Only a session with no evidence files at all counts as nothing
+		// persisted; any other query failure is a test failure, not absence.
+		files, globErr := filepath.Glob(filepath.Join(dir, "evidence-"+session+"-*.jsonl"))
+		if globErr != nil || len(files) > 0 {
+			t.Fatalf("query session %s: %v", session, err)
+		}
 		return 0
 	}
 	return len(found.Entries)

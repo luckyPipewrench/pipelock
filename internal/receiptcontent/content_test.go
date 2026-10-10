@@ -41,9 +41,16 @@ func TestProjectClassifiesPaths(t *testing.T) {
 	if a := got["big"]; a.Text != "12345678901234567890" {
 		t.Fatalf("numbers must keep their exact text: %+v", a)
 	}
-	if a := got["ext.dyn"]; a.Kind != AtomKey || a.Text != "dyn" {
-		// the key atom and the value atom share a path; the map keeps the last
-		_ = a
+	// The key atom and the value atom share a path, so look for the key atom
+	// directly rather than through the path map, which keeps only the last.
+	foundKey := false
+	for _, a := range p.Atoms() {
+		if a.Kind == AtomKey && a.Path == "ext.dyn" && a.Text == "dyn" {
+			foundKey = true
+		}
+	}
+	if !foundKey {
+		t.Fatal("caller member name ext.dyn must project as a key atom")
 	}
 	keys := 0
 	for _, a := range p.Atoms() {

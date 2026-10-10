@@ -152,6 +152,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorMCPWrapperFeatures(cfg),
 		checkDoctorMCPBinaryIntegrity(cfg),
 		checkDoctorMCPToolProvenance(cfg),
+		checkDoctorMCPIdentities(cfg, currentDoctorGOOS()),
 		checkDoctorFileSentry(cfg),
 		checkDoctorFlightRecorder(cfg),
 		checkDoctorLicense(cfg),

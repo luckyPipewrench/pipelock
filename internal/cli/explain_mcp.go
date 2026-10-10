@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -40,7 +42,65 @@ type mcpExplainReport struct {
 	Patterns    []string               `json:"patterns,omitempty"`
 	Notes       []string               `json:"notes,omitempty"`
 	Remediation *mcpExplainRemediation `json:"remediation,omitempty"`
+	Identity    *mcpExplainIdentity    `json:"identity,omitempty"`
 	Error       string                 `json:"error,omitempty"`
+}
+
+// mcpExplainIdentity is the identity `pipelock mcp proxy` would resolve for the
+// supplied upstream. Name is the registered or operator-supplied server name;
+// Refusal is set instead when the launch would not start.
+type mcpExplainIdentity struct {
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Revision    string `json:"revision,omitempty"`
+	BindingMode string `json:"binding_mode,omitempty"`
+	Refusal     string `json:"refusal,omitempty"`
+}
+
+// explainSessionPlaceholder stands in for a registered session header's value:
+// explain never reads credentials, so it satisfies the resolver's shape check
+// without evaluating the real value.
+const explainSessionPlaceholder = "Bearer explain-placeholder"
+
+// resolveExplainIdentity resolves the identity a launch against upstream would
+// get, and returns the name that arms trust, action and suppress lookups. With
+// no upstream the name is used as supplied, except that a name registered as a
+// verified local service is refused because only its upstream proves it.
+func resolveExplainIdentity(cfg *config.Config, serverName, upstream string) (*mcpExplainIdentity, string, error) {
+	if upstream == "" {
+		if serverName != "" {
+			// The same rule identity.Resolve applies, so explain never reports a
+			// suppress target for a label no proxy launch would accept.
+			if err := config.ValidateMCPServerName(serverName, "--server-name"); err != nil {
+				return nil, "", err
+			}
+		}
+		if _, _, registered := config.FindMCPIdentity(cfg.MCPIdentities, serverName); registered && serverName != "" {
+			return nil, "", fmt.Errorf("server name %q is registered as a verified local service; pass --upstream with the URL the proxy is launched against so explain resolves it as the proxy would", serverName)
+		}
+		return nil, serverName, nil
+	}
+	u, err := url.Parse(upstream)
+	if err != nil || u.Host == "" {
+		return nil, "", fmt.Errorf("--upstream must be an absolute http, https, ws or wss URL")
+	}
+	t := identity.Transport{Kind: identity.KindHTTP, UpstreamURL: upstream}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	case "ws", "wss":
+		t.Kind = identity.KindWS
+	default:
+		return nil, "", fmt.Errorf("--upstream must be an absolute http, https, ws or wss URL")
+	}
+	if idx, ok := identity.DeclaresSessionHeader(cfg, t); ok {
+		sh := cfg.MCPIdentities[idx].VerifiedLocalService.SessionHeader
+		t.Headers = []identity.Header{{Name: sh.Name, Value: explainSessionPlaceholder, Source: identity.HeaderSourceCarrier, Carrier: sh.Carrier}}
+	}
+	res, err := identity.Resolve(cfg, serverName, t)
+	if err != nil {
+		return &mcpExplainIdentity{Refusal: err.Error()}, "", err
+	}
+	return &mcpExplainIdentity{Name: res.Name, Source: res.Source, Revision: res.Revision, BindingMode: res.BindingMode}, res.ArmingName, nil
 }
 
 // mcpExplainRemediation names the narrowest verified change for an MCP response
@@ -70,6 +130,7 @@ const explainA2AScanner = "a2a_scanning"
 func explainMCPResponseCmd() *cobra.Command {
 	var configFile string
 	var serverName string
+	var upstream string
 	var a2aMethod string
 	var a2aOrigin string
 	var jsonOutput bool
@@ -89,7 +150,10 @@ suppress entry.
 Unlike URL DLP, MCP response scanning consults the top-level suppress: list
 scoped by a per-server target ("mcp://<server-name>/response"). The remediation
 names that target, which only takes effect when the proxy is launched with
---server-name. Suppressing a response pattern lets that pattern's content
+--server-name or against an upstream that matches a registered verified local
+service (mcp_identities). Pass --upstream with the URL the proxy is launched
+against to resolve the identity exactly as "mcp proxy" would; explain never
+reads credentials and performs no verification. Suppressing a response pattern lets that pattern's content
 through for THAT server's responses only; scope it to a first-party server you
 control.
 
@@ -112,17 +176,25 @@ Examples:
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
+			resolved, armingName, err := resolveExplainIdentity(cfg, serverName, upstream)
+			if err != nil {
+				if resolved != nil {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Identity: REFUSED\nReason:   %s\n", resolved.Refusal)
+				}
+				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+			}
 			line, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read MCP response from stdin: %w", err))
 			}
-			report, err := buildMCPExplainReportWithA2AContext(cfg, cfgLabel, serverName, line, mcpExplainA2AContext{
+			report, err := buildMCPExplainReportWithA2AContext(cfg, cfgLabel, armingName, line, mcpExplainA2AContext{
 				Method: a2aMethod,
 				Origin: a2aOrigin,
 			})
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
+			report.Identity = resolved
 			if jsonOutput {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -148,7 +220,8 @@ Examples:
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
-	cmd.Flags().StringVar(&serverName, "server-name", "", "MCP server identity for the suggested suppress target (mcp://<name>/response)")
+	cmd.Flags().StringVar(&serverName, "server-name", "", "operator label for the server, used for the suggested suppress target (mcp://<name>/response); a registered verified local service is identified by --upstream, not by this label")
+	cmd.Flags().StringVar(&upstream, "upstream", "", "upstream URL the proxy is launched against; resolves the identity (registered verified local service, explicit label or unnamed) exactly as `mcp proxy` would")
 	cmd.Flags().StringVar(&a2aMethod, "a2a-method", "", "A2A request method paired with this response")
 	cmd.Flags().StringVar(&a2aOrigin, "a2a-origin", "", "A2A request URL or origin paired with this response")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
@@ -416,6 +489,17 @@ func printMCPExplainReport(w io.Writer, report mcpExplainReport) {
 	_, _ = fmt.Fprintf(w, "Mode:    %s\n", report.Mode)
 	if report.ServerName != "" {
 		_, _ = fmt.Fprintf(w, "Server:  %s\n", report.ServerName)
+	}
+	if id := report.Identity; id != nil {
+		name := id.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		_, _ = fmt.Fprintf(w, "Identity: %s (source %s, binding %s", name, id.Source, id.BindingMode)
+		if id.Revision != "" {
+			_, _ = fmt.Fprintf(w, ", revision %s", id.Revision)
+		}
+		_, _ = fmt.Fprintln(w, ")")
 	}
 	if report.Target != "" {
 		_, _ = fmt.Fprintf(w, "Target:  %s\n", report.Target)

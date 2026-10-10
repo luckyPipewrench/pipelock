@@ -956,6 +956,8 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	appendMCPIdentityReloadWarnings(&warnings, old.MCPIdentities, updated.MCPIdentities)
+
 	return warnings
 }
 
@@ -1738,6 +1740,79 @@ func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []str
 	return removedOrWeakenedPatterns(old, updated,
 		func(p ResponseScanPattern) string { return p.Name },
 		func(p ResponseScanPattern) string { return p.Regex })
+}
+
+// appendMCPIdentityReloadWarnings reports mcp_identities changes. A new or
+// edited registration changes which launches are named, pinned and bound, so it
+// warns like any other relaxation. A removed one only stops refusing launches
+// that claim its name, so it is advisory and says what then happens.
+func appendMCPIdentityReloadWarnings(warnings *[]ReloadWarning, old, updated []MCPIdentity) {
+	const field = "mcp_identities"
+	updatedNames := make(map[string]bool, len(updated))
+	for _, e := range updated {
+		updatedNames[e.Name] = true
+		prior, _, existed := FindMCPIdentity(old, e.Name)
+		if !existed {
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   field,
+				Message: fmt.Sprintf("mcp identity %q added: launches matching its matcher are now named and pinned by it", e.Name),
+			})
+			continue
+		}
+		for _, change := range mcpIdentityChanges(prior, e) {
+			*warnings = append(*warnings, ReloadWarning{
+				Field:   field,
+				Message: fmt.Sprintf("mcp identity %q %s", e.Name, change),
+			})
+		}
+	}
+	for _, e := range old {
+		if !updatedNames[e.Name] {
+			*warnings = append(*warnings, advisoryReloadWarning(field,
+				fmt.Sprintf("mcp identity %q removed: launches claiming the name are no longer refused as impersonation, and acknowledgments with server_binding_mode verified-local-session for it are refused at load", e.Name)))
+		}
+	}
+}
+
+// mcpIdentityChanges names each class of change between two registrations of
+// the same identity. It compares canonical forms, so reordering mapped files
+// or environment keys is not a change.
+func mcpIdentityChanges(prior, next MCPIdentity) []string {
+	a, b := canonicalMCPIdentities([]MCPIdentity{prior})[0], canonicalMCPIdentities([]MCPIdentity{next})[0]
+	if reflect.DeepEqual(a, b) {
+		return nil
+	}
+	av, bv := a.VerifiedLocalService, b.VerifiedLocalService
+	if av == nil || bv == nil {
+		return []string{"matcher changed: the registration kind differs"}
+	}
+	var out []string
+	if av.Scheme != bv.Scheme || av.Host != bv.Host || av.Path != bv.Path {
+		out = append(out, "matcher changed: the upstream scheme, host or path it matches differs")
+	}
+	if av.ExecutableSHA256 != bv.ExecutableSHA256 {
+		out = append(out, "pin changed: executable_sha256 differs")
+	}
+	if !reflect.DeepEqual(av.MappedFiles, bv.MappedFiles) {
+		out = append(out, "pin changed: mapped_files differ")
+	}
+	if !reflect.DeepEqual(av.ControlEnvironment, bv.ControlEnvironment) {
+		out = append(out, "pin changed: control_environment differs")
+	}
+	if !reflect.DeepEqual(av.PrincipalUID, bv.PrincipalUID) {
+		out = append(out, "pin changed: principal_uid differs")
+	}
+	if !reflect.DeepEqual(av.SessionHeader, bv.SessionHeader) {
+		switch {
+		case av.SessionHeader == nil:
+			out = append(out, "session header scope added: one header is no longer bound by acknowledgments")
+		case bv.SessionHeader == nil:
+			out = append(out, "session header scope removed: every header is bound by acknowledgments again")
+		default:
+			out = append(out, "session header scope changed: a different header is excluded from acknowledgment binding")
+		}
+	}
+	return out
 }
 
 func mcpAckReloadKey(e MCPAcknowledgedFinding) string {

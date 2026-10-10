@@ -204,6 +204,13 @@ type ToolScanConfig struct {
 	CredentialAcks      *CredentialAckSet
 	ServerName          string
 	ServerBindingSHA256 string
+	// ServerBindingMode is the binding mode of the launch: empty or
+	// config.MCPAckBindingModeTransportV2, or config.MCPAckBindingModeVerifiedLocalSession.
+	// An entry applies only when its server_binding_mode equals it.
+	ServerBindingMode string
+	// ServerRevision is the registered identity revision of a verified local
+	// session launch. It is shown in candidates; it is not part of any check.
+	ServerRevision string
 	// Now overrides the clock for acknowledgment expiry. Nil means time.Now.
 	Now func() time.Time
 	// schemaOrder supplies schema map iteration order in tests. Nil keeps

@@ -14,9 +14,11 @@ import (
 	"time"
 )
 
-func appendTestTicket(t *testing.T, rec *Recorder, session, summary string) *DurableTicket {
+const durableTestSession = "durable-session"
+
+func appendTestTicket(t *testing.T, rec *Recorder, summary string) *DurableTicket {
 	t.Helper()
-	ticket, err := rec.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: session, Type: "request", Summary: summary}, nil, nil)
+	ticket, err := rec.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: durableTestSession, Type: "request", Summary: summary}, nil, nil)
 	if err != nil {
 		t.Fatalf("append %q: %v", summary, err)
 	}
@@ -38,7 +40,7 @@ func TestAppendDurableReturnsBeforeSyncAndWaitConfirms(t *testing.T) {
 		return nil
 	})
 
-	ticket := appendTestTicket(t, rec, "durable-session", "deferred")
+	ticket := appendTestTicket(t, rec, "deferred")
 	waited := make(chan error, 1)
 	go func() { waited <- ticket.Wait() }()
 	waitForDone(t, syncEntered, "sync entry")
@@ -75,7 +77,7 @@ func TestDurableTicketsFinishInAppendOrder(t *testing.T) {
 	const n = 6
 	tickets := make([]*DurableTicket, n)
 	for i := range tickets {
-		tickets[i] = appendTestTicket(t, rec, "durable-session", fmt.Sprintf("entry-%d", i))
+		tickets[i] = appendTestTicket(t, rec, fmt.Sprintf("entry-%d", i))
 	}
 	var wg sync.WaitGroup
 	for i := n - 1; i >= 0; i-- {
@@ -120,12 +122,12 @@ func TestDurableBatchAfterFailureIsInheritedAndNotSynced(t *testing.T) {
 		return nil
 	})
 
-	first := appendTestTicket(t, rec, "durable-session", "fails")
+	first := appendTestTicket(t, rec, "fails")
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- first.Wait() }()
 	waitForDone(t, firstEntered, "first sync")
 	// The first batch is syncing, so this append opens a second batch.
-	second := appendTestTicket(t, rec, "durable-session", "behind the failure")
+	second := appendTestTicket(t, rec, "behind the failure")
 	close(releaseFirst)
 
 	if err := waitForDone(t, firstDone, "first wait"); !errors.Is(err, ErrDurability) {
@@ -166,7 +168,7 @@ func TestCloseRefusesCheckpointAfterSyncFailure(t *testing.T) {
 // and its maintenance, and that maintenance would then fail on a closed file.
 func TestCloseDrainsOutstandingTicket(t *testing.T) {
 	rec := newDurableTestRecorder(t, Config{CheckpointInterval: 1})
-	ticket := appendTestTicket(t, rec, "durable-session", "outstanding")
+	ticket := appendTestTicket(t, rec, "outstanding")
 
 	confirmed := make(chan struct{})
 	release := make(chan struct{})
@@ -314,8 +316,8 @@ func TestFailedStreamRefusesEveryWriteAndCheckpoint(t *testing.T) {
 func TestSequentialTicketWaitsCrossACheckpoint(t *testing.T) {
 	rec := newDurableTestRecorder(t, Config{CheckpointInterval: 2})
 	defer func() { _ = rec.Close() }()
-	first := appendTestTicket(t, rec, "durable-session", "first")
-	second := appendTestTicket(t, rec, "durable-session", "second")
+	first := appendTestTicket(t, rec, "first")
+	second := appendTestTicket(t, rec, "second")
 	done := make(chan error, 1)
 	go func() {
 		if err := first.Wait(); err != nil {

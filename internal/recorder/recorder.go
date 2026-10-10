@@ -525,12 +525,6 @@ type durableWrite struct {
 	reservation durableReservation
 }
 
-func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.prepareDurableWriteLocked(e, scan, advance)
-}
-
 // prepareDurableWriteLocked appends e and reserves its sync. The first
 // reservation of a batch starts that batch's sync at once, so storage confirms
 // and retires the batch whether or not any caller is waiting yet. Callers hold

@@ -17,7 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-func newDeferredTestEmitter(t *testing.T, onReceipt func(*Receipt)) (*Emitter, *recorder.Recorder, string) {
+func newDeferredTestEmitter(t *testing.T, onReceipt func(*Receipt)) (*Emitter, *recorder.Recorder) {
 	t.Helper()
 	dir := t.TempDir()
 	_, priv := generateTestKey(t)
@@ -30,7 +30,7 @@ func newDeferredTestEmitter(t *testing.T, onReceipt func(*Receipt)) (*Emitter, *
 	if e == nil {
 		t.Fatal("NewEmitter returned nil")
 	}
-	return e, rec, dir
+	return e, rec
 }
 
 // gateSync blocks every recorder sync until released. Cleanup releases it
@@ -68,7 +68,7 @@ func waitSignal(t *testing.T, ch <-chan struct{}, label string) {
 // A durable receipt's sync wait happens outside the chain lock: while one
 // receipt's sync is blocked, another receipt can still be appended.
 func TestEmitDurableConfirmsOutsideChainLock(t *testing.T) {
-	e, rec, _ := newDeferredTestEmitter(t, nil)
+	e, rec := newDeferredTestEmitter(t, nil)
 	entered := make(chan struct{})
 	var once sync.Once
 	releaseFn := gateSync(t, rec, func() { once.Do(func() { close(entered) }) })
@@ -112,7 +112,7 @@ func TestEmitDurableConfirmsOutsideChainLock(t *testing.T) {
 func TestEmitDurableObserverOrderAndDurability(t *testing.T) {
 	var mu sync.Mutex
 	var seen []uint64
-	e, rec, _ := newDeferredTestEmitter(t, func(r *Receipt) {
+	e, rec := newDeferredTestEmitter(t, func(r *Receipt) {
 		mu.Lock()
 		seen = append(seen, r.ActionRecord.ChainSeq)
 		mu.Unlock()
@@ -164,7 +164,7 @@ func TestEmitDurableObserverOrderAndDurability(t *testing.T) {
 func TestEmitBehindUnconfirmedDurableKeepsChainOrder(t *testing.T) {
 	var mu sync.Mutex
 	var seen []uint64
-	e, rec, _ := newDeferredTestEmitter(t, func(r *Receipt) {
+	e, rec := newDeferredTestEmitter(t, func(r *Receipt) {
 		mu.Lock()
 		seen = append(seen, r.ActionRecord.ChainSeq)
 		mu.Unlock()
@@ -217,7 +217,7 @@ func TestEmitBehindUnconfirmedDurableKeepsChainOrder(t *testing.T) {
 // A lifecycle record (transcript root) waits for every outstanding durable
 // confirmation instead of sealing a chain with unconfirmed receipts.
 func TestTranscriptRootDrainsOutstandingConfirmations(t *testing.T) {
-	e, rec, _ := newDeferredTestEmitter(t, nil)
+	e, rec := newDeferredTestEmitter(t, nil)
 	entered := make(chan struct{})
 	var once sync.Once
 	releaseFn := gateSync(t, rec, func() { once.Do(func() { close(entered) }) })
@@ -245,7 +245,7 @@ func TestTranscriptRootDrainsOutstandingConfirmations(t *testing.T) {
 // is reported as success, and the stream stays failed.
 func TestEmitDurableSyncFailureFailsBatchAndLaterReceipts(t *testing.T) {
 	var observed atomic.Int32
-	e, rec, _ := newDeferredTestEmitter(t, func(*Receipt) { observed.Add(1) })
+	e, rec := newDeferredTestEmitter(t, func(*Receipt) { observed.Add(1) })
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once, releaseOnce sync.Once
@@ -306,7 +306,7 @@ func TestEmitDurableSyncFailureFailsBatchAndLaterReceipts(t *testing.T) {
 // The paired native AEL sync failing fails the request and quarantines the
 // emitter, even though the receipt itself confirmed.
 func TestEmitDurableAELSyncFailureFailsRequest(t *testing.T) {
-	e, _, _ := newDeferredTestEmitter(t, nil)
+	e, _ := newDeferredTestEmitter(t, nil)
 	emitSessionOpenForTest(t, e)
 	if e.nativeAEL == nil || !e.nativeAEL.Opened() {
 		t.Skip("native AEL not opened for this emitter")
@@ -327,7 +327,7 @@ func TestEmitDurableAELSyncFailureFailsRequest(t *testing.T) {
 // Backpressure: no more than maxInflightDurableEmits receipts wait for
 // confirmation at once; the rest wait before taking the chain lock.
 func TestEmitDurableInflightIsBounded(t *testing.T) {
-	e, rec, _ := newDeferredTestEmitter(t, nil)
+	e, rec := newDeferredTestEmitter(t, nil)
 	releaseFn := gateSync(t, rec, nil)
 	n := maxInflightDurableEmits + 32
 	errs := make(chan error, n)
@@ -367,7 +367,7 @@ func TestEmitBehindFailedDurableFails(t *testing.T) {
 	for _, failAEL := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ael=%v", failAEL), func(t *testing.T) {
 			var observed atomic.Int32
-			e, rec, _ := newDeferredTestEmitter(t, func(*Receipt) { observed.Add(1) })
+			e, rec := newDeferredTestEmitter(t, func(*Receipt) { observed.Add(1) })
 			emitSessionOpenForTest(t, e)
 			entered := make(chan struct{})
 			release := make(chan struct{})

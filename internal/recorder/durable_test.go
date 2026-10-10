@@ -530,7 +530,7 @@ func TestRecordDurable_RotationWaitsForPendingSync(t *testing.T) {
 	}
 }
 
-func readEntriesForSession(t *testing.T, dir, sessionID string) []Entry {
+func readEntriesForSession(t *testing.T, dir, sessionID string) []Entry { //nolint:unparam // the session names the file being read
 	t.Helper()
 	path := filepath.Join(filepath.Clean(dir), fmt.Sprintf("evidence-%s-0.jsonl", sessionID))
 	entries, err := ReadEntries(path)

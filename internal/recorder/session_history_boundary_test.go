@@ -203,6 +203,7 @@ var allowedDisplayBudgetCallers = map[displayBudgetCaller]string{
 	{"internal/cli/evidence/doctor.go", "<package scope>", "recorder.MaxEvidenceReadDirectoryEntries"}:                 "evidence doctor diagnostic with its own documented budget",
 	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.MaxEvidenceReadFileBytes"}:                              "evidence doctor diagnostic with its own documented budget",
 	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEntriesFromReader"}:                                 "evidence doctor diagnostic with its own documented budget",
+	{"internal/cli/evidence/doctor_snapshot.go", "doctorCorpusInventory", "recorder.MaxEvidenceReadFileBytes"}:         "evidence doctor append proof bounded by its scan budget",
 	{"internal/cli/evidence/doctor.go", "scanJSONL", "recorder.ReadEvidenceLocationFileBounded"}:                       "evidence doctor diagnostic with its own documented budget",
 	{"internal/cli/runtime/evidence_health.go", "fileStats", "recorder.MaxEvidenceReadDirectoryEntries"}:               "health warning threshold for display readability; refuses nothing",
 

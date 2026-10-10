@@ -394,7 +394,9 @@ func TestIssuerQueryAllowReceiptKind(t *testing.T) {
 	}{
 		{issuerQueryObserved, string(issuerQueryObserved)},
 		{issuerQueryOAuthRedirect, string(issuerQueryOAuthRedirect)},
+		{issuerQueryPageOrigin, string(issuerQueryPageOrigin)},
 		{"", string(issuerQueryObserved)},
+		{"unrecognized_rule", string(issuerQueryObserved)},
 	} {
 		t.Run(tc.want+"/"+string(tc.kind), func(t *testing.T) {
 			cfg := config.Defaults()

@@ -19,25 +19,57 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const receiptCardBody = `{"name":"Document helper","description":"Reads documents","skills":[{"id":"read","name":"Read documents","description":"Read a document"}]}`
 
-func TestMCPRequiredResponseEffects(t *testing.T) {
-	for _, tr := range []string{transportMCPStdio, transportMCPHTTP, "mcp_http_listener", "mcp_ws"} {
+// The required-receipt matrix builds a receipt harness and scanner for every
+// combination, which made one test run for nearly five minutes under the race
+// detector. Each transport is its own top-level test so the CI shard planner
+// can spread them, and the combinations within a transport run in parallel;
+// every combination is still exercised.
+func TestMCPRequiredResponseEffectsStdio(t *testing.T) {
+	runMCPRequiredResponseEffects(t, transportMCPStdio)
+}
+
+func TestMCPRequiredResponseEffectsHTTP(t *testing.T) {
+	runMCPRequiredResponseEffects(t, transportMCPHTTP)
+}
+
+func TestMCPRequiredResponseEffectsHTTPListener(t *testing.T) {
+	runMCPRequiredResponseEffects(t, "mcp_http_listener")
+}
+
+func TestMCPRequiredResponseEffectsWS(t *testing.T) {
+	runMCPRequiredResponseEffects(t, "mcp_ws")
+}
+
+// runMCPRequiredResponseEffects runs every shape, grouping and failure mode for
+// one transport. Each combination builds its own harness, recorder and scanner,
+// so the subtests share no mutable state and run in parallel.
+func runMCPRequiredResponseEffects(t *testing.T, tr string) {
+	{
 		for _, shape := range []string{"media", "card", "card signature", "response warn", "a2a warn", "tool warn"} {
 			for _, grouped := range []bool{false, true} {
 				for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
 					t.Run(tr+"/"+shape+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
-						h := newMCPDecisionReceiptHarness(t)
-						opts := MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: failure != "optional", PolicyHash: mcpTestPolicyHash, Transport: tr}
-						rec := h.rec
+						t.Parallel()
+						// A grouped run replaces the options and recorder with the
+						// failure group, so the single-recorder harness is built only
+						// for the runs that use it.
+						var opts MCPProxyOpts
+						var rec *recorder.Recorder
 						if grouped {
 							opts, rec, _, _ = newMCPTransportReceiptGroup(t)
 							opts.Transport = tr
 							opts.RequireReceipts = failure != "optional"
+						} else {
+							h := newMCPDecisionReceiptHarness(t)
+							opts = MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: failure != "optional", PolicyHash: mcpTestPolicyHash, Transport: tr}
+							rec = h.rec
 						}
 						selected := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: tr, Target: "tools/call", PolicyHash: mcpTestPolicyHash}
 						if grouped {

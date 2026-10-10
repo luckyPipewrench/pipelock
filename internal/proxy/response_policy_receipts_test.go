@@ -25,13 +25,40 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-func TestRequiredResponsePolicyReceipts(t *testing.T) {
+// The required-receipt matrix builds a full proxy and scanner for every
+// combination, which made one test run for about ten minutes under the race
+// detector and overloaded a single CI shard. Each surface is its own top-level
+// test so the shard planner can spread them, and the combinations within a
+// surface run in parallel; every combination is still exercised.
+func TestRequiredResponsePolicyReceiptsFetch(t *testing.T) {
+	runRequiredResponsePolicyReceipts(t, "fetch")
+}
+
+func TestRequiredResponsePolicyReceiptsForward(t *testing.T) {
+	runRequiredResponsePolicyReceipts(t, "forward")
+}
+
+func TestRequiredResponsePolicyReceiptsIntercept(t *testing.T) {
+	runRequiredResponsePolicyReceipts(t, "intercept")
+}
+
+func TestRequiredResponsePolicyReceiptsReverse(t *testing.T) {
+	runRequiredResponsePolicyReceipts(t, "reverse")
+}
+
+// runRequiredResponsePolicyReceipts runs every shape, grouping and failure mode
+// for one surface. The parent stays sequential with other top-level tests
+// because installArtifactOfficialKey swaps package keyring globals; its
+// parallel subtests only read them, and the parent's cleanup restores them
+// after every subtest has finished.
+func runRequiredResponsePolicyReceipts(t *testing.T, surface string) {
 	artifactKey := installArtifactOfficialKey(t)
-	for _, surface := range []string{"fetch", "forward", "intercept", "reverse"} {
+	{
 		for _, shape := range []string{"media", "media relabel", "shield", "shield head", "shield warn", "a2a", "card first", "card adopt", "card signature", "scan warn", "scan strip", "scan hidden", "sse warn", "approve", "approve strip", "artifact", "passthrough"} {
 			if (shape == "artifact" && surface != "forward" && surface != "intercept") || (shape == "passthrough" && surface == "fetch") {
 				continue
@@ -49,11 +76,20 @@ func TestRequiredResponsePolicyReceipts(t *testing.T) {
 			for _, grouped := range []bool{false, true} {
 				for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
 					t.Run(surface+"/"+shape+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
-						f := newDualEmitFixture(t, false)
-						source, rec := f.p, f.rec
+						t.Parallel()
+						// A grouped run replaces the recorder and source with the
+						// failure group, so the dual-emit fixture (a whole proxy and
+						// scanner) is built only for the single-recorder runs that
+						// use it.
+						var f *dualEmitFixture
+						var source *Proxy
+						var rec *recorder.Recorder
 						if grouped {
 							rec, _, source, _ = newReceiptFailureGroup(t)
 							_ = source.admitReceiptShard()
+						} else {
+							f = newDualEmitFixture(t, false)
+							source, rec = f.p, f.rec
 						}
 						cfg := config.Defaults()
 						cfg.Internal = nil

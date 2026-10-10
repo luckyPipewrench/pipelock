@@ -262,7 +262,9 @@ func TestExtractResponseKeywords_PropertyOnRealPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new scanner: %v", err)
 	}
-	defer s.Close()
+	// Cleanup, not defer: the group subtests below run in parallel after this
+	// function returns, and the scanner must outlive them.
+	t.Cleanup(s.Close)
 
 	groups := []struct {
 		name     string
@@ -276,9 +278,15 @@ func TestExtractResponseKeywords_PropertyOnRealPatterns(t *testing.T) {
 		{name: "core optional-space", patterns: s.core.responseOptSpacePatterns, filter: s.core.responseOptSpacePreFilter},
 		{name: "core vowel-fold", patterns: s.core.responseVowelFoldPatterns, filter: s.core.responseVowelFoldPreFilter},
 	}
-	rnd := rand.New(rand.NewSource(int64(0x2f2d6131b60f19))) // #nosec G404 -- repeatable test generation.
-	for _, group := range groups {
-		assertResponsePreFilterSelectsGeneratedMatches(t, group.name, group.patterns, group.filter, rnd)
+	// Each group generates from its own fixed seed, so the groups are
+	// independent and repeatable and run in parallel; one shared generator made
+	// this a single serial test of several minutes under the race detector.
+	for i, group := range groups {
+		t.Run(group.name, func(t *testing.T) {
+			t.Parallel()
+			rnd := rand.New(rand.NewSource(int64(0x2f2d6131b60f19) + int64(i))) // #nosec G404 -- repeatable test generation.
+			assertResponsePreFilterSelectsGeneratedMatches(t, group.name, group.patterns, group.filter, rnd)
+		})
 	}
 }
 

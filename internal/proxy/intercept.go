@@ -873,18 +873,38 @@ func newInterceptHandler(
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
-			strings.HasPrefix(urlResult.Reason, "high entropy query param ") {
+			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
+				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
 			if store := ic.issuerQueryStore(); store != nil {
 				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
 				// a cross-host OAuth callback outranks a same-host issue.
 				allowKind := issuerQueryObserved
-				allowCtx := scanner.WithIssuerQueryAllowance(interceptScanCtx, func(key, value string) bool {
+				allowCtx := scanner.WithIssuerPathAllowance(interceptScanCtx, func(escapedPath string) bool {
+					// Whole path, same origin: a link the origin itself served.
+					if escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
+						return false
+					}
+					allowed = true
+					return true
+				})
+				allowCtx = scanner.WithIssuerQueryAllowance(allowCtx, func(key, value string) bool {
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
 					kind, ok := store.match(session, r.URL, key, value)
 					if !ok {
+						// A value that is only this request's own Referer or
+						// Origin origin adds nothing the destination lacks, but
+						// only for an origin that served this session a document:
+						// those headers are written by the agent.
+						if origin, echoed := pageOriginEchoed(r.Header, value); echoed && store.documentServed(session, origin) {
+							if allowKind == issuerQueryObserved {
+								allowKind = issuerQueryPageOrigin
+							}
+							allowed = true
+							return true
+						}
 						return false
 					}
 					if kind == issuerQueryOAuthRedirect {

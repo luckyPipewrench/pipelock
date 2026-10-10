@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -31,6 +32,11 @@ type issuerAllowRequireCase struct {
 	emitFails    bool
 	wantStatus   int
 	wantUpstream int32 // hits on the allowed request only (issuance step excluded)
+	// entropyThreshold lowers the URL entropy threshold when above zero, for a
+	// value that scores below the default.
+	entropyThreshold float64
+	// wantKind, when set, must appear in the allow receipt's extension.
+	wantKind issuerQueryKind
 }
 
 var issuerAllowRequireCases = []issuerAllowRequireCase{
@@ -60,6 +66,9 @@ func runIssuerAllowIntercept(t *testing.T, tc issuerAllowRequireCase, issuePath 
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	issuerCookieTestConfig(t, cfg)
 	cfg.FlightRecorder.RequireReceipts = tc.require
+	if tc.entropyThreshold > 0 {
+		cfg.FetchProxy.Monitoring.EntropyThreshold = tc.entropyThreshold
+	}
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
 	p, err := New(cfg, logger, sc, m)
@@ -125,6 +134,9 @@ func runIssuerAllowIntercept(t *testing.T, tc issuerAllowRequireCase, issuePath 
 		if got, want := r.ActionRecord.PolicyHash, cfg.CanonicalPolicyHash(); got != want {
 			t.Fatalf("receipt policy_hash = %q, want request snapshot %q (live %q)", got, want, live.CanonicalPolicyHash())
 		}
+		if tc.wantKind != "" && !strings.Contains(string(r.Ext), `"`+string(tc.wantKind)+`"`) {
+			t.Fatalf("receipt extension = %s, want kind %s", r.Ext, tc.wantKind)
+		}
 	}
 }
 
@@ -163,6 +175,31 @@ func TestInterceptIssuerQueryAllow_RequireReceipts(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					return req
+				}, "/page")
+		})
+	}
+}
+
+// A page-origin allow is recorded like the other issuer allows: under
+// require_receipts the receipt must be durably emitted before the request is
+// forwarded, and its extension names the rule.
+func TestInterceptPageOriginAllow_RequireReceipts(t *testing.T) {
+	for _, tc := range issuerAllowRequireCases {
+		tc.entropyThreshold = 3.0
+		tc.wantKind = issuerQueryPageOrigin
+		t.Run(tc.name, func(t *testing.T) {
+			runIssuerAllowIntercept(t, tc, "/doc",
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/html")
+					_, _ = io.WriteString(w, "<!doctype html><html><body>login</body></html>")
+				},
+				func(base string) *http.Request {
+					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/page?co="+captchaOriginValue(base), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("Referer", base+"/doc")
 					return req
 				}, "/page")
 		})

@@ -125,10 +125,17 @@ func hashEvidencePrefix(path string, limit int64) ([]byte, int64, error) {
 // stableWith reports whether after describes the same evidence as inv. The
 // one change it accepts is a live recorder appending to its active shard: the
 // highest-sequence JSONL shard of each session may grow in place: same file,
-// same mode, and the bytes it held at inventory time still at its front. Anything else, including a new shard, a rotated or
-// rewritten one, or a change to links, sidecars or group artifacts, is a
-// change. Facts the scan drew from the shard's earlier bytes still hold
-// after an append, so the audit stays conclusive while a proxy runs.
+// same mode, and the bytes it held at inventory time still at its front.
+// Anything else, including a new shard, a rotated or rewritten one, or a
+// change to links, sidecars or group artifacts, is a change. Facts the scan
+// drew from the shard's earlier bytes still hold after an append, so the
+// audit stays conclusive while a proxy runs. Bytes appended after the scan
+// were not examined; the next run covers them.
+//
+// This compares two inventories, not an atomic snapshot: a writer that
+// rewrites a shard during the scan and restores it, metadata included, before
+// the final inventory is not detected. When a result must be stable, stop the
+// writer or audit a copied snapshot.
 func (inv doctorInventory) stableWith(after doctorInventory) bool {
 	if len(inv) != len(after) {
 		return false

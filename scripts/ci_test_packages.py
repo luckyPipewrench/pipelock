@@ -66,6 +66,16 @@ TEST_SPLITS = {
     "runtime": 2,
 }
 REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
+# Sub-shards per heavy tree in the no-race lane pull requests wait on. Without
+# -race most trees run several times faster, so they need fewer splits than the
+# race lane above; the race-measured weights still balance the buckets, since
+# relative test cost survives dropping the race detector well enough to pack.
+UNIT_SPLITS = {
+    "proxy": 2,
+    "scanner": 1,
+    "mcp": 3,
+    "runtime": 1,
+}
 
 # Trees whose coverage is collected by a separate non-race pass instead of the
 # race run. -race forces atomic coverage counters, which made the scanner's
@@ -314,6 +324,18 @@ def shard_selector(
             raise ValueError(f"unknown shard {shard!r}")
         return ""
     tree, index, count = located
+    return tree_selector(tree, index, count, names, weights, "TEST_SPLITS")
+
+
+def tree_selector(
+    tree: str,
+    index: int,
+    count: int,
+    names: list[str] | None = None,
+    weights: dict[str, float] | None = None,
+    splits_name: str = "TEST_SPLITS",
+) -> str:
+    """Return sub-shard index's selector when tree's tests split count ways."""
     if names is None:
         names = tree_test_names(ROOT / HEAVY_TREES[tree])
         if weights is None:
@@ -329,18 +351,62 @@ def shard_selector(
         selector = "-skip=" + exact_names_regex(earlier)
     if len(selector.encode("utf-8")) > MAX_SELECTOR_BYTES:
         if index < count - 1:
-            remedy = f"raise TEST_SPLITS[{tree!r}]"
+            remedy = f"raise {splits_name}[{tree!r}]"
         else:
             # The final sub-shard skips every earlier bucket, so more splits
             # make its selector longer, not shorter.
             remedy = (
-                f"the final sub-shard skips every earlier bucket; lower TEST_SPLITS[{tree!r}] "
+                f"the final sub-shard skips every earlier bucket; lower {splits_name}[{tree!r}] "
                 "or split the tree's packages into separate heavy trees"
             )
         raise ValueError(
-            f"selector for {shard} is {len(selector)} bytes, over {MAX_SELECTOR_BYTES}; {remedy}"
+            f"selector for {tree}-{index} is {len(selector)} bytes, over {MAX_SELECTOR_BYTES}; {remedy}"
         )
     return selector
+
+
+def unit_shard_names() -> tuple[str, ...]:
+    """Shard names of the no-race lane, heavy trees first, then rest shards."""
+    names: list[str] = []
+    for tree in HEAVY_TREES:
+        count = UNIT_SPLITS.get(tree, 1)
+        names.extend([tree] if count == 1 else [f"{tree}-{index}" for index in range(count)])
+    return (*names, *REST_SHARDS)
+
+
+def unit_shard_tree(shard: str) -> tuple[str, int, int] | None:
+    """Return (tree, index, count) for a no-race heavy shard, or None for rest."""
+    if shard in REST_SHARDS:
+        return None
+    if shard in HEAVY_TREES and UNIT_SPLITS.get(shard, 1) == 1:
+        return shard, 0, 1
+    tree, sep, index = shard.rpartition("-")
+    count = UNIT_SPLITS.get(tree, 1)
+    if sep and tree in HEAVY_TREES and count > 1 and index.isdigit() and shard == f"{tree}-{int(index)}":
+        if int(index) < count:
+            return tree, int(index), count
+    raise ValueError(f"unknown no-race shard {shard!r}")
+
+
+def unit_shard_packages(packages: list[str], shard: str) -> list[str]:
+    """Packages a no-race shard runs; rest shards share the race lane's packing."""
+    located = unit_shard_tree(shard)
+    if located is None:
+        return select_packages(packages, shard, load_package_durations())
+    wanted = HEAVY_TREES[located[0]]
+    selected = [pkg for pkg in packages if package_in_tree(pkg, wanted)]
+    if not selected:
+        raise ValueError(f"no packages matched no-race shard {shard!r}")
+    return selected
+
+
+def unit_shard_selector(shard: str, names: list[str] | None = None) -> str:
+    """The no-race shard's -run/-skip flag, or "" when it runs every test."""
+    located = unit_shard_tree(shard)
+    if located is None or located[2] == 1:
+        return ""
+    tree, index, count = located
+    return tree_selector(tree, index, count, names, None, "UNIT_SPLITS")
 
 
 def selector_selects(selector: str, name: str) -> bool:
@@ -489,6 +555,16 @@ def check_budget(tags: str, budget: float) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Select CI package shard")
     parser.add_argument("--shard", choices=SHARDS, help="shard to print")
+    parser.add_argument(
+        "--unit-shard",
+        choices=unit_shard_names(),
+        help="no-race lane shard to print (packages, or its selector with --selector)",
+    )
+    parser.add_argument(
+        "--list-unit-shards",
+        action="store_true",
+        help="print the no-race lane's shard names as a JSON list",
+    )
     parser.add_argument("--tags", default="", help="go build tags for go list")
     parser.add_argument(
         "--selector",
@@ -519,6 +595,15 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.list_unit_shards:
+            print(json.dumps(list(unit_shard_names())))
+            return 0
+        if args.unit_shard:
+            if args.selector:
+                print(unit_shard_selector(args.unit_shard))
+            else:
+                print(" ".join(unit_shard_packages(list_packages(args.tags), args.unit_shard)))
+            return 0
         if args.check_budget:
             return check_budget(args.tags, args.budget_seconds)
         if args.coverage_mode:

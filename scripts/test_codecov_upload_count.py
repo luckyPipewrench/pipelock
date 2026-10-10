@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import yaml
 
-from check_codecov_upload_count import MatrixBudget, TopologyError, cells, check, main, upload_count
+from check_codecov_upload_count import DOCS_ONLY_SKIP, MatrixBudget, TopologyError, cells, check, main, upload_count
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +50,23 @@ class UploadCountTest(unittest.TestCase):
         self.workflow["jobs"]["first"]["if"] = False
         self.workflow["jobs"]["single"]["steps"][0]["if"] = False
         self.assertEqual(upload_count(self.workflow), 3)
+
+    def test_documentation_only_skip_counts_as_a_full_run(self) -> None:
+        self.workflow["jobs"]["first"]["if"] = DOCS_ONLY_SKIP
+        self.assertEqual(upload_count(self.workflow), 6)
+        # The classifier runs only on pull requests; the docs condition's
+        # !cancelled() runs past it on a push, so it must not gate the count.
+        self.workflow["jobs"]["changed-files"] = {
+            "if": "${{ github.event_name == 'pull_request' }}",
+            "steps": [{"run": "true"}],
+        }
+        self.workflow["jobs"]["first"]["needs"] = ["changed-files"]
+        self.assertEqual(upload_count(self.workflow), 6)
+        # Any other dynamic condition, including a broadened docs skip, is
+        # refused rather than guessed at.
+        self.workflow["jobs"]["first"]["if"] = DOCS_ONLY_SKIP.replace("}}", "&& github.actor != 'x' }}")
+        with self.assertRaisesRegex(TopologyError, "unsupported condition"):
+            upload_count(self.workflow)
 
     def test_boolean_numeric_matching_is_explicitly_unsupported(self) -> None:
         for operation in ("include", "exclude"):
@@ -319,30 +336,33 @@ class UploadCountTest(unittest.TestCase):
         expected, actual = check(ROOT / ".github/workflows/ci.yaml", ROOT / "codecov.yml")
         self.assertEqual(expected, actual)
 
-    def test_go126_variants_upload_their_own_profiles(self) -> None:
+    def test_go126_coverage_comes_from_the_no_race_lane(self) -> None:
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))["jobs"]
-        for variant, profile in (("oss", "coverage-oss-"), ("enterprise", "coverage-")):
-            with self.subTest(variant=variant):
-                steps = jobs[f"test-{variant}-go126"]["steps"]
-                uploads = [step for step in steps if str(step.get("uses", "")).startswith("codecov/codecov-action@")]
-                self.assertEqual(len(uploads), 1)
-                self.assertEqual(uploads[0]["with"]["files"], f"./{profile}${{{{ matrix.shard }}}}.out")
-                run = "\n".join(step.get("run", "") for step in steps)
-                commands = [line.strip() for line in run.splitlines() if line.strip().startswith("go test ")]
-                # The race run plus the non-race coverage pass for separate-coverage trees.
-                self.assertEqual(len(commands), 2)
-                race, cover = commands
-                self.assertIn("-race", race)
-                self.assertIn('"${race_cover[@]}"', race)
-                self.assertNotIn("-race", cover)
-                self.assertIn('-covermode=set -coverprofile="$coverprofile"', cover)
-                self.assertIn(f'coverprofile="{profile}${{TEST_SHARD}}.out"', run)
-                self.assertIn('race_cover=(-coverprofile="$coverprofile")', run)
-                # Both coverage sources write the one profile the upload names.
-                verify = [step for step in steps if step.get("name") == "Verify coverage profile"]
-                self.assertEqual(len(verify), 1)
-                self.assertEqual(verify[0]["run"], f"bash scripts/check-coverage-profile.sh {profile}${{{{ matrix.shard }}}}.out")
-                self.assertLess(steps.index(verify[0]), steps.index(uploads[0]))
+        unit = jobs["test-unit-go126"]
+        # Both build variants upload: enterprise profiles exclude Apache-only stubs.
+        self.assertEqual(unit["strategy"]["matrix"]["variant"], ["oss", "enterprise"])
+        steps = unit["steps"]
+        uploads = [step for step in steps if str(step.get("uses", "")).startswith("codecov/codecov-action@")]
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0]["with"]["files"], "./coverage.out")
+        run = "\n".join(step.get("run", "") for step in steps)
+        commands = [line.strip() for line in run.splitlines() if line.strip().startswith("go test ")]
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("-race", commands[0])
+        self.assertIn("-covermode=set -coverprofile=coverage.out", commands[0])
+        verify = [step for step in steps if step.get("name") == "Verify coverage profile"]
+        self.assertEqual(len(verify), 1)
+        self.assertEqual(verify[0]["run"], "bash scripts/check-coverage-profile.sh coverage.out")
+        self.assertLess(steps.index(verify[0]), steps.index(uploads[0]))
+        # The race lane runs on main only; an upload there would make Codecov's
+        # expected count differ between pull requests and main.
+        for race in ("test-oss-go126", "test-enterprise-go126"):
+            with self.subTest(race=race):
+                race_uploads = [
+                    step for step in jobs[race]["steps"]
+                    if str(step.get("uses", "")).startswith("codecov/codecov-action@")
+                ]
+                self.assertEqual(race_uploads, [])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ failure in one matrix cell is reported as a failure in both required checks.
 from __future__ import annotations
 
 import copy
+import json
 import re
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ SHARDS = {
 }
 MINORS = ("126", "127")
 POLICY_OUTPUT = "${{ needs.changed-files.outputs.ci_policy }}"
+DOCS_OUTPUT = "${{ needs.changed-files.outputs.docs_only }}"
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
 NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
@@ -52,6 +54,28 @@ SKIP_CARVEOUT_CONDITION = (
     "&& github.event_name == 'pull_request' "
     "&& needs.changed-files.outputs.ci_policy == 'true' }}"
 )
+# Go 1.26 race lane: main pushes and other non-pull-request events only.
+RACE_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
+RACE_AGGREGATE = "race-go126"
+RACE_LANE_CONDITION = "${{ github.event_name != 'pull_request' }}"
+RACE_AGGREGATE_CONDITION = "${{ always() && github.event_name != 'pull_request' }}"
+RACE_MAX_PARALLEL = 8
+# The no-race lane every pull request waits on. Heavy trees run whole; the rest
+# shards are the planner's rest buckets.
+UNIT_PRODUCER = "test-unit-go126"
+# A documentation-only pull request skips these Go producers; test (1.26)
+# accepts the skip only with a successful classifier that said docs_only.
+DOCS_CARVEOUT_AGGREGATE = "test-go126"
+DOCS_CARVEOUT_PRODUCERS = {UNIT_PRODUCER, "test-subprocess-coverage", "guard-conformance"}
+DOCS_SKIP_CONDITION = (
+    "${{ !cancelled() && needs.security-scan.result == 'success' "
+    "&& needs.changed-files.outputs.docs_only != 'true' }}"
+)
+# The planner owns the shard list; the workflow matrix must match it exactly.
+UNIT_SHARDS = set(json.loads(subprocess.run(
+    ["python3", str(ROOT / "scripts" / "ci_test_packages.py"), "--list-unit-shards"],
+    check=True, capture_output=True, text=True,
+).stdout))
 REQUIRED_PRODUCERS = {
     "security-scan",
     "test-go126",
@@ -116,7 +140,9 @@ def gate_script_is_safe(run: str) -> bool:
     # the file, because an absolute path needs no PATH lookup. The empty PATH in
     # execute_gate is therefore not the backstop it appears to be, and the
     # docstring above was claiming a property the grammar did not hold.
-    neutralized = NEEDS_RESULT_RE.sub("success", run.replace(POLICY_OUTPUT, "false"))
+    neutralized = NEEDS_RESULT_RE.sub(
+        "success", run.replace(POLICY_OUTPUT, "false").replace(DOCS_OUTPUT, "false")
+    )
     # Then refuse the backslash. `echo "x\"` satisfies the `echo\ "[^"]*"`
     # alternative below -- the escaped quote is just another `[^"]` byte -- while
     # bash reads it as an OPEN string, so the next line is string content rather
@@ -143,13 +169,18 @@ def gate_script_is_safe(run: str) -> bool:
     )
 
 
-def execute_gate(run: str, results: dict[str, str], event_name: str, ci_policy: str = "false") -> int:
+def execute_gate(
+    run: str, results: dict[str, str], event_name: str, ci_policy: str = "false", docs_only: str = "false"
+) -> int:
     """Run a safe aggregate gate as GitHub's bash shell would run it."""
     if not gate_script_is_safe(run):
         raise ValueError("aggregate gate contains shell outside the safe execution subset")
     with tempfile.TemporaryDirectory(prefix="pipelock-ci-gate-") as temp_dir:
         completed = subprocess.run(
-            ["/usr/bin/bash", "-eo", "pipefail", "-c", substitute_needs_results(run.replace(POLICY_OUTPUT, ci_policy), results)],
+            [
+                "/usr/bin/bash", "-eo", "pipefail", "-c",
+                substitute_needs_results(run.replace(POLICY_OUTPUT, ci_policy).replace(DOCS_OUTPUT, docs_only), results),
+            ],
             cwd=temp_dir,
             env={
                 "EVENT_NAME": event_name,
@@ -209,9 +240,29 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
                           skipped | {"changed-files": result}, "pull_request", "false", 1))
         cases.append(("intentional push skips", skipped | {"changed-files": "skipped"},
                       "push", "", 0))
-    for description, values, event_name, policy, expected in cases:
+    docs_cases = []
+    if aggregate == DOCS_CARVEOUT_AGGREGATE:
+        skipped = successful | dict.fromkeys(DOCS_CARVEOUT_PRODUCERS, "skipped")
+        docs_cases.append(("documentation-only skips", skipped, "pull_request", "true", 0))
+        for docs in ("false", "", "TRUE", "unknown"):
+            docs_cases.append((f"skipped Go producers, docs_only={docs!r}", skipped, "pull_request", docs, 1))
+        docs_cases.append(("documentation-only skips on push", skipped, "push", "true", 1))
+        for result in ("failure", "cancelled", "", "unknown", "skipped"):
+            docs_cases.append((f"documentation-only skips, changed-files={result!r}",
+                               skipped | {"changed-files": result}, "pull_request", "true", 1))
+        for producer in sorted(DOCS_CARVEOUT_PRODUCERS):
+            for result in ("failure", "cancelled", "", "unknown"):
+                docs_cases.append((f"{producer}={result or 'empty'} on a documentation-only change",
+                                   skipped | {producer: result}, "pull_request", "true", 1))
+        for producer in sorted(dependencies - DOCS_CARVEOUT_PRODUCERS - {"changed-files"}):
+            docs_cases.append((f"{producer}=skipped on a documentation-only change",
+                               skipped | {producer: "skipped"}, "pull_request", "true", 1))
+    # Ordinary cases run with docs_only false; docs cases with CI policy false.
+    all_cases = [(d, v, e, p, x, "false") for d, v, e, p, x in cases]
+    all_cases += [(d, v, e, "false", x, docs) for d, v, e, docs, x in docs_cases]
+    for description, values, event_name, policy, expected, docs in all_cases:
         try:
-            actual = execute_gate(run, values, event_name, policy)
+            actual = execute_gate(run, values, event_name, policy, docs)
         except (subprocess.TimeoutExpired, ValueError) as error:
             errors.append(f"{aggregate} gate cannot safely execute: {error}")
             break
@@ -242,6 +293,80 @@ def skip_carveout_errors(jobs: dict) -> list[str]:
                 f"so the {SKIP_CARVEOUT_AGGREGATE} gate's skipped "
                 f"carve-out is unjustified"
             )
+    return errors
+
+
+def race_lane_errors(jobs: dict) -> list[str]:
+    """Pin the Go 1.26 race lane to main-side events and a bounded footprint.
+
+    The race producers are skipped on every pull request by design, so they
+    must not feed a required check; they roll up into race (1.26), which itself
+    does not run on pull requests and fails closed on any non-success result.
+    """
+    errors = []
+    for producer in sorted(RACE_PRODUCERS):
+        job = jobs.get(producer, {})
+        if job.get("if") != RACE_LANE_CONDITION:
+            errors.append(f"{producer} must run on every non-pull-request event and only those")
+        max_parallel = job.get("strategy", {}).get("max-parallel")
+        if not isinstance(max_parallel, int) or not 1 <= max_parallel <= RACE_MAX_PARALLEL:
+            errors.append(
+                f"{producer} must cap max-parallel at {RACE_MAX_PARALLEL} so main cannot "
+                f"take the runners pull requests are waiting on"
+            )
+    for aggregate, job in jobs.items():
+        if aggregate != RACE_AGGREGATE and RACE_PRODUCERS & set(job.get("needs", []) or []):
+            errors.append(f"{aggregate} consumes race-lane evidence that pull requests never produce")
+    race = jobs.get(RACE_AGGREGATE)
+    if race is None:
+        errors.append(f"missing {RACE_AGGREGATE}")
+        return errors
+    if race.get("name") != "race (1.26)":
+        errors.append(f"{RACE_AGGREGATE} changed its display name")
+    if race.get("if") != RACE_AGGREGATE_CONDITION:
+        errors.append(f"{RACE_AGGREGATE} must run after failed producers and never on pull requests")
+    dependencies = set(race.get("needs", []) or [])
+    if dependencies != {"security-scan", *RACE_PRODUCERS}:
+        errors.append(f"{RACE_AGGREGATE} needs {sorted(dependencies)}")
+    steps = race.get("steps", [])
+    if len(steps) != 1 or not step_runs_unconditionally(steps[0]):
+        errors.append(f"{RACE_AGGREGATE} gate can skip and green after failed evidence")
+        return errors
+    successful = dict.fromkeys(dependencies, "success")
+    try:
+        if execute_gate(steps[0].get("run", ""), successful, "push") != 0:
+            errors.append(f"{RACE_AGGREGATE} gate fails when every producer succeeds")
+        for dependency in sorted(dependencies):
+            for result in ("failure", "cancelled", "", "unknown", "skipped"):
+                if execute_gate(steps[0].get("run", ""), successful | {dependency: result}, "push") == 0:
+                    errors.append(f"{RACE_AGGREGATE} gate passes with {dependency}={result or 'empty'}")
+    except (subprocess.TimeoutExpired, ValueError) as error:
+        errors.append(f"{RACE_AGGREGATE} gate cannot safely execute: {error}")
+    return errors
+
+
+def unit_lane_errors(jobs: dict) -> list[str]:
+    """The no-race lane is what pull requests wait on: it must run everywhere."""
+    errors = []
+    unit = jobs.get(UNIT_PRODUCER)
+    if unit is None:
+        return [f"missing {UNIT_PRODUCER}"]
+    condition = unit.get("if")
+    if not isinstance(condition, str) or " ".join(condition.split()) != " ".join(DOCS_SKIP_CONDITION.split()):
+        errors.append(f"{UNIT_PRODUCER} must run on every event except a documentation-only pull request")
+    if set(unit.get("needs", []) or []) != {"security-scan", "changed-files"}:
+        errors.append(f"{UNIT_PRODUCER} can execute PR code before a successful security scan")
+    matrix = unit.get("strategy", {}).get("matrix", {})
+    if matrix.get("variant") != ["oss", "enterprise"]:
+        errors.append(f"{UNIT_PRODUCER} must test both build variants")
+    if set(matrix.get("shard", [])) != UNIT_SHARDS:
+        errors.append(f"{UNIT_PRODUCER} does not cover every package shard")
+    run = "\n".join(step.get("run", "") for step in unit.get("steps", []))
+    go_tests = [line for line in run.splitlines() if line.strip().startswith("go test ")]
+    if not go_tests:
+        errors.append(f"{UNIT_PRODUCER} runs no go test command")
+    if any(re.search(r"(?:^|\s)-race(?:\s|$)", line) for line in go_tests):
+        errors.append(f"{UNIT_PRODUCER} runs the race detector; that belongs to the race lane")
     return errors
 
 
@@ -285,11 +410,15 @@ def topology_errors(jobs: dict) -> list[str]:
             errors.append(f"{enterprise} does not preserve the shard set")
 
         aggregate_needs = set(jobs[aggregate].get("needs", []))
-        expected = {"security-scan", oss, enterprise, replay}
         if minor == "126":
-            expected.add("test-subprocess-coverage")
+            # Pull requests wait on the no-race lane; the race producers prove
+            # the same tests on main and roll up into race (1.26) instead.
+            expected = {
+                "security-scan", "changed-files", UNIT_PRODUCER,
+                "test-subprocess-coverage", "guard-conformance", replay,
+            }
         else:
-            expected.add("changed-files")
+            expected = {"security-scan", oss, enterprise, replay, "changed-files"}
         if aggregate_needs != expected:
             errors.append(f"{aggregate} needs {sorted(aggregate_needs)}, expected {sorted(expected)}")
         opposite = "127" if minor == "126" else "126"
@@ -332,6 +461,8 @@ def topology_errors(jobs: dict) -> list[str]:
                 errors.append(f"{producer} runs replay inside every shard")
 
     errors.extend(skip_carveout_errors(jobs))
+    errors.extend(race_lane_errors(jobs))
+    errors.extend(unit_lane_errors(jobs))
 
     missing_required = REQUIRED_PRODUCERS - jobs.keys()
     if missing_required:
@@ -493,6 +624,65 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         errors = skip_carveout_errors(broken)
         self.assertEqual(len(errors), 1)
         self.assertIn("test-oss-go127", errors[0])
+
+    def test_race_lane_on_pull_requests_fails_the_contract(self):
+        self.assertEqual(race_lane_errors(self.jobs), [])
+        broken = copy.deepcopy(self.jobs)
+        broken["test-oss-go126"].pop("if")
+        errors = race_lane_errors(broken)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("test-oss-go126 must run on every non-pull-request event", errors[0])
+
+    def test_uncapped_race_lane_fails_the_contract(self):
+        broken = copy.deepcopy(self.jobs)
+        broken["test-enterprise-go126"]["strategy"].pop("max-parallel")
+        errors = race_lane_errors(broken)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("test-enterprise-go126 must cap max-parallel", errors[0])
+
+    def test_required_check_consuming_race_evidence_fails_the_contract(self):
+        # A pull request never produces race evidence, so a required aggregate
+        # that needs it would either stall or learn to accept skips.
+        broken = copy.deepcopy(self.jobs)
+        broken["test-go126"]["needs"].append("test-oss-go126")
+        self.assertIn(
+            "test-go126 consumes race-lane evidence that pull requests never produce",
+            race_lane_errors(broken),
+        )
+
+    def test_race_rollup_that_accepts_skips_fails_the_contract(self):
+        broken = copy.deepcopy(self.jobs)
+        broken["race-go126"]["steps"][0]["run"] = 'set -u\ntest "${{ needs.security-scan.result }}" = "success"\n'
+        errors = race_lane_errors(broken)
+        self.assertIn("race-go126 gate passes with test-oss-go126=failure", errors)
+
+    def test_unit_lane_shape_drift_fails_the_contract(self):
+        self.assertEqual(unit_lane_errors(self.jobs), [])
+        broken = copy.deepcopy(self.jobs)
+        broken["test-unit-go126"]["strategy"]["matrix"]["variant"] = ["oss"]
+        broken["test-unit-go126"]["strategy"]["matrix"]["shard"].remove("rest-3")
+        broken["test-unit-go126"]["if"] = "${{ github.event_name == 'push' }}"
+        errors = unit_lane_errors(broken)
+        self.assertIn("test-unit-go126 must test both build variants", errors)
+        self.assertIn("test-unit-go126 does not cover every package shard", errors)
+        self.assertIn("test-unit-go126 must run on every event except a documentation-only pull request", errors)
+
+    def test_docs_only_skip_requires_classifier_proof(self):
+        gate = next(
+            step["run"] for step in self.jobs["test-go126"]["steps"]
+            if step.get("name") == "Required check compatibility gate"
+        )
+        dependencies = set(self.jobs["test-go126"]["needs"])
+        self.assertEqual(gate_execution_errors("test-go126", gate, dependencies), [])
+        # A gate that accepts a skipped fast lane without checking docs_only
+        # would green a pull request whose Go tests never ran.
+        lax = gate.replace('test "${{ needs.changed-files.outputs.docs_only }}" = "true"', 'echo "docs"')
+        self.assertNotEqual(lax, gate, "mutation did not change the fixture")
+        errors = gate_execution_errors("test-go126", lax, dependencies)
+        self.assertTrue(
+            any("docs_only='false'" in error for error in errors),
+            f"a skip without the docs-only proof went unreported: {errors}",
+        )
 
     def test_go127_failure_cannot_red_go126_aggregate(self):
         aggregate_needs = set(self.jobs["test-go126"]["needs"])

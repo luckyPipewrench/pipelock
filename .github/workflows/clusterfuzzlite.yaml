@@ -18,12 +18,13 @@ permissions:
 jobs:
   PR:
     runs-on: ubuntu-latest
-    # Healthy runs take 15-16 minutes (pull, about three minutes of fuzzer
-    # build, then a 600s fuzz budget that runs 12-13 minutes with startup and
-    # merging). A 20-minute limit left four minutes of room, and slower fuzz runs
-    # (16 minutes) were killed and reported as cancelled. The fuzz budget is
-    # unchanged; only the job limit has room now.
-    timeout-minutes: 30
+    # A 600s fuzz budget made healthy runs take 15-16 minutes and slow ones hit
+    # the 30-minute limit, which GitHub shows as a red cancelled check on the
+    # pull request. Code-change mode fuzzes only the targets the diff reaches,
+    # and most of its findings land in the first minutes, so the budget is now
+    # 300s: about three minutes of build plus five of fuzzing, under a limit
+    # with room for a slow pull.
+    timeout-minutes: 20
     concurrency:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -42,5 +43,5 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           language: go
-          fuzz-seconds: 600
+          fuzz-seconds: 300
           mode: 'code-change'

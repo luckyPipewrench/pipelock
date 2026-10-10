@@ -22,6 +22,7 @@ CI_RACE_PRODUCERS = (
     "test-enterprise-go127",
 )
 LEGACY_CI_RACE_PRODUCERS = ("test-oss", "test-enterprise")
+ATTEMPT_MARGIN_SECONDS = 300
 SHELL_ASSIGNMENT = r"[A-Za-z_][A-Za-z0-9_]*=(?:[^\s\"']*|\"[^\"]*\"|'[^']*')"
 COMMAND_PREFIX = rf"(?:env\s+)?(?:{SHELL_ASSIGNMENT}\s+)*"
 RUNNER_COMMAND = re.compile(
@@ -108,7 +109,7 @@ def ci_race_shape_errors(ci: str) -> list[str]:
         if (
             direct_count
             and '-p="$package_parallelism" -parallel=2' in job
-            and "-timeout=20m -count=1" in job
+            and "-timeout=15m -count=1" in job
             and 'ci_test_packages.py --shard "$TEST_SHARD" --selector' in job
             and '${test_selector:+"$test_selector"}' in job
         ):
@@ -148,8 +149,15 @@ def ci_retry_budget_errors(ci: str) -> list[str]:
             errors.append(f"{name}: missing whole-command attempt deadline")
             continue
         seconds = int(attempt_timeout[1])
-        if seconds <= int(test_timeout[1]) * 60:
-            errors.append(f"{name}: attempt deadline must leave room beyond a package timeout")
+        # Only go test's own timeout panic names the test that hung. Compile
+        # time and package waves run before a test binary's timer starts, so a
+        # one-minute margin let the attempt deadline win and the shard died
+        # silently; five minutes keeps go test's panic first.
+        if seconds - int(test_timeout[1]) * 60 < ATTEMPT_MARGIN_SECONDS:
+            errors.append(
+                f"{name}: attempt deadline must exceed the package timeout by "
+                f"{ATTEMPT_MARGIN_SECONDS} seconds so go test names a hung test"
+            )
         # Capture allows the command's ten-second KILL grace, plus ten seconds
         # to stop a stuck reader. Both readers run concurrently. The existing
         # buffer covers group cleanup, setup and upload; round up to minutes.
@@ -190,6 +198,18 @@ class TestRaceTestShape(unittest.TestCase):
         self.assertIn(
             f"{name}: missing whole-command attempt deadline",
             ci_retry_budget_errors(drifted),
+        )
+
+    def test_package_timeout_too_close_to_attempt_deadline_is_detected(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")
+        name = "test-oss-go126"
+        original = job_block(ci, name)
+        # The pre-fix shape: a 20m package timeout inside a 1260s attempt.
+        crowded, count = re.subn(r"-timeout=15m\b", "-timeout=20m", original)
+        self.assertEqual(count, 1)
+        self.assertIn(
+            f"{name}: attempt deadline must exceed the package timeout by 300 seconds so go test names a hung test",
+            ci_retry_budget_errors(ci.replace(original, crowded, 1)),
         )
 
     def test_attempt_deadline_changes_recompute_the_job_budget(self) -> None:

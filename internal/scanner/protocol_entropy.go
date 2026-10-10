@@ -214,9 +214,18 @@ func releaseFilenameEntropySubject(tag, segment string) string {
 // are still scored in full. The original score is checked first: deleting text
 // can raise Shannon entropy and must never introduce a new block.
 func (s *Scanner) pathEntropy(path string) (float64, bool) {
+	return s.pathEntropySkipping(path, nil)
+}
+
+// pathEntropySkipping scores path like pathEntropy but leaves out each
+// segment skip accepts. Only a segment that would block is offered to skip.
+func (s *Scanner) pathEntropySkipping(path string, skip func(segment string) bool) (float64, bool) {
 	segments := strings.Split(path, "/")
 	for i, segment := range segments {
 		entropy, blocked := s.pathSegmentEntropy(segment)
+		if blocked && skip != nil && skip(segment) {
+			continue
+		}
 		if !blocked {
 			continue
 		}

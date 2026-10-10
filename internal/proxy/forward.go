@@ -2140,6 +2140,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, ctxKeyEntropyWarnRoute, forwardEntropyWarnRoute)
 	}
 	ctx = withAllowedSSRFDialScanSnapshot(ctx, sc, r.URL.Hostname(), effectiveURLPort(r.URL), result)
+	// A plain-HTTP send reaches the host just as an intercepted one does, so
+	// record it before forwarding: no value it carries may later mint as an
+	// ID that host issued.
+	p.recordIssuerForwardSent(cfg, agent, clientIP, id.Auth, r, forwardBodyBytes)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
 	// The URL authority is the value policy admitted. Never propagate a

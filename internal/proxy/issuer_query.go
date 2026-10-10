@@ -64,8 +64,21 @@ type issuerQueryStore struct {
 	// HTML document. A request's page-origin value is accepted only for an
 	// origin in this list, so a header the agent wrote cannot name one.
 	documents map[string][][32]byte
-	used      map[string]time.Time
-	disabled  bool
+	// ids holds keyed digests of object IDs an origin introduced in a JSON
+	// response; sent holds digests of every token the session sent to an
+	// origin, so a reflected value is never minted as an ID; sentUnreadable
+	// marks a session whose outgoing traffic could not be fully recorded.
+	ids            map[string][][32]byte
+	sent           map[string]map[[32]byte]struct{}
+	sentUnreadable map[string]bool
+	// sentAll holds sent digests across every session, so one agent's value
+	// cannot mint as an ID for another.
+	sentAll map[[32]byte]struct{}
+	// mintDisabled stops all minting once incomplete sent history can no
+	// longer be remembered per session.
+	mintDisabled bool
+	used         map[string]time.Time
+	disabled     bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -78,7 +91,12 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		redirects: make(map[string][][32]byte),
 		paths:     make(map[string][][32]byte),
 		documents: make(map[string][][32]byte),
+		ids:       make(map[string][][32]byte),
+		sent:      make(map[string]map[[32]byte]struct{}),
 		used:      make(map[string]time.Time),
+
+		sentUnreadable: make(map[string]bool),
+		sentAll:        make(map[[32]byte]struct{}),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true
@@ -144,6 +162,10 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
 	delete(s.documents, oldest)
+	// An evicted session's sent history is lost, so if it returns it must
+	// not mint as though it had sent nothing: the tombstone outlives eviction.
+	delete(s.sent, oldest)
+	s.taintSentLocked(oldest)
 	delete(s.used, oldest)
 }
 
@@ -520,6 +542,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// paths cannot exhaust the one that records query values (a paging token
 	// that follows them).
 	pathRemaining := issuerCookieMaxSetCookies
+	idRemaining := issuerServerIDMaxPerResponse
 	// base is what a relative reference resolves against: the response URL,
 	// or an HTML document's own <base href> when it names the same origin.
 	base := response.Request.URL
@@ -645,7 +668,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			levels[n-1].expectKey = true
 		}
 	}
-	for remaining > 0 {
+	for remaining > 0 || idRemaining > 0 {
 		token, err := decoder.Token()
 		if err != nil {
 			return
@@ -668,6 +691,10 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				continue
 			}
 			observe(t, false, false)
+			if idRemaining > 0 && issuerServerIDShaped(t) {
+				store.mintServerID(session, response.Request.URL, t, time.Now())
+				idRemaining--
+			}
 			valueDone()
 		default:
 			valueDone()
@@ -747,7 +774,7 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
 	}
-	if kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin {
+	if kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID {
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()

@@ -18,7 +18,12 @@ permissions:
 jobs:
   PR:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Healthy runs take 15-16 minutes (pull, about three minutes of fuzzer
+    # build, then a 600s fuzz budget that runs 12-13 minutes with startup and
+    # merging). A 20-minute limit left four minutes of room, and slower fuzz runs
+    # (16 minutes) were killed and reported as cancelled. The fuzz budget is
+    # unchanged; only the job limit has room now.
+    timeout-minutes: 30
     concurrency:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true

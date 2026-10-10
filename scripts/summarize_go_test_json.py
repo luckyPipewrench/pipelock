@@ -301,6 +301,47 @@ def has_failed_packages(results: dict[str, PackageResult]) -> bool:
     return any(result.action == "fail" for result in results.values())
 
 
+# Exit status when a top-level test ran past --max-test-seconds. It differs from
+# the failed-package status so the shard log says which rule tripped.
+OVER_CEILING_STATUS = 3
+
+
+def tests_over_ceiling(
+    results: dict[str, PackageResult], limit: float
+) -> list[tuple[str, str, float]]:
+    """Return (package, test, elapsed) for top-level tests that ran past limit.
+
+    Only top-level tests count: the shard planner places whole top-level tests,
+    so one slow top-level test is what overloads a shard, and a subtest's time is
+    already part of its parent's.
+    """
+    over = []
+    for package, result in results.items():
+        for test, test_result in result.tests.items():
+            if "/" in test or test_result.action not in {"pass", "fail"}:
+                continue
+            if test_result.elapsed > limit:
+                over.append((package, test, test_result.elapsed))
+    over.sort(key=lambda item: item[2], reverse=True)
+    return over
+
+
+def report_tests_over_ceiling(
+    over: list[tuple[str, str, float]], limit: float, out: object | None = None
+) -> None:
+    if out is None:
+        out = sys.stdout
+    for package, test, elapsed in over:
+        print(
+            f"::error title=Test over its time ceiling::{escape_terminal_text(package)} "
+            f"{escape_terminal_text(test)} took {format_duration(elapsed)}, over the "
+            f"{format_duration(limit)} ceiling for one top-level test. Split it into "
+            "smaller top-level tests or make it faster: the shard planner places whole "
+            "top-level tests, and one this slow can push a shard past its deadline.",
+            file=out,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Summarize package timings from go test -json output."
@@ -325,12 +366,20 @@ def main() -> int:
         action="store_true",
         help="escape captured input without parsing it",
     )
+    parser.add_argument(
+        "--max-test-seconds",
+        type=float,
+        default=0.0,
+        help="fail when any top-level test ran longer than this many seconds (0 disables)",
+    )
     args = parser.parse_args()
 
     if args.top < 1:
         parser.error("--top must be at least 1")
     if args.top_tests < 1:
         parser.error("--top-tests must be at least 1")
+    if args.max_test_seconds < 0 or not math.isfinite(args.max_test_seconds):
+        parser.error("--max-test-seconds must be a finite number of seconds, 0 or more")
 
     if args.sanitize_raw:
         for line in sys.stdin:
@@ -344,6 +393,11 @@ def main() -> int:
         print_summary(results, label=args.label, top=args.top, top_tests=args.top_tests)
     if has_failed_packages(results) and not args.allow_failed_packages:
         return 1
+    if args.max_test_seconds > 0:
+        over = tests_over_ceiling(results, args.max_test_seconds)
+        if over:
+            report_tests_over_ceiling(over, args.max_test_seconds)
+            return OVER_CEILING_STATUS
     return 0
 
 

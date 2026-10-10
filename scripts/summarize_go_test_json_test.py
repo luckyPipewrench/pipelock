@@ -499,6 +499,54 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
 
         self.assertEqual(status, 1)
 
+    def _ceiling_stream(self, top_elapsed, sub_elapsed=1.0, package_action="pass"):
+        events = [
+            {"Action": "run", "Package": "example.com/pkg", "Test": "TestSlow"},
+            {"Action": "pass", "Package": "example.com/pkg", "Test": "TestSlow/case", "Elapsed": sub_elapsed},
+            {"Action": "pass", "Package": "example.com/pkg", "Test": "TestSlow", "Elapsed": top_elapsed},
+            {"Action": "pass", "Package": "example.com/pkg", "Test": "TestFast", "Elapsed": 0.5},
+            {"Action": package_action, "Package": "example.com/pkg", "Elapsed": top_elapsed + 1},
+        ]
+        return "\n".join(json.dumps(e) for e in events) + "\n"
+
+    def _run_main(self, argv, stream):
+        out = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", ["summarize_go_test_json.py", *argv]),
+            mock.patch.object(sys, "stdin", io.StringIO(stream)),
+            mock.patch.object(sys, "stdout", out),
+        ):
+            status = summarize_go_test_json.main()
+        return status, out.getvalue()
+
+    def test_max_test_seconds_fails_a_slow_top_level_test(self):
+        status, out = self._run_main(["--max-test-seconds", "240"], self._ceiling_stream(583.5))
+        self.assertEqual(status, summarize_go_test_json.OVER_CEILING_STATUS)
+        self.assertIn("::error title=Test over its time ceiling::example.com/pkg TestSlow took 9m43.5s", out)
+        self.assertNotIn("TestFast took", out)
+
+    def test_max_test_seconds_ignores_subtests_and_tests_at_the_limit(self):
+        # A slow subtest alone does not trip the ceiling; its time is part of
+        # the parent, and a parent exactly at the limit passes.
+        status, out = self._run_main(["--max-test-seconds", "240"], self._ceiling_stream(240.0, sub_elapsed=900.0))
+        self.assertEqual(status, 0)
+        self.assertNotIn("time ceiling", out)
+
+    def test_max_test_seconds_is_off_by_default(self):
+        status, out = self._run_main([], self._ceiling_stream(583.5))
+        self.assertEqual(status, 0)
+        self.assertNotIn("time ceiling", out)
+
+    def test_failed_packages_keep_their_own_status_over_the_ceiling(self):
+        status, _ = self._run_main(["--max-test-seconds", "240"], self._ceiling_stream(583.5, package_action="fail"))
+        self.assertEqual(status, 1)
+
+    def test_max_test_seconds_rejects_negative_and_non_finite_values(self):
+        for bad in ("-1", "nan", "inf"):
+            with self.subTest(value=bad), self.assertRaises(SystemExit):
+                with mock.patch.object(sys, "stderr", io.StringIO()):
+                    self._run_main(["--max-test-seconds", bad], self._ceiling_stream(1.0))
+
     def test_main_allows_failed_packages_when_requested(self):
         lines = json.dumps(
             {"Action": "fail", "Package": "example.com/pkg", "Elapsed": 1}

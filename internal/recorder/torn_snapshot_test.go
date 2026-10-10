@@ -112,6 +112,9 @@ func TestCaptureTornEvidenceRejectsMutationDuringValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "changed during read") {
 		t.Fatalf("CaptureTornEvidence error = %v, want changed-during-read failure", err)
 	}
+	if !errors.Is(err, ErrEvidenceChanged) || !IsEvidenceUnavailable(err) {
+		t.Fatalf("CaptureTornEvidence error = %v, want ErrEvidenceChanged classified as unavailable evidence", err)
+	}
 	if snapshot != (TornSnapshot{}) {
 		t.Fatalf("changed evidence returned a healthy snapshot: %+v", snapshot)
 	}

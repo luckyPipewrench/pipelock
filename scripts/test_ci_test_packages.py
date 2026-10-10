@@ -493,6 +493,42 @@ class TestTestNameSplit(unittest.TestCase):
                 self.assertEqual(sum(counts), len(self.NAMES))
                 self.assertTrue(all(counts), counts)
 
+    def test_no_race_lane_partition_is_disjoint_and_complete(self) -> None:
+        for tree in HEAVY_TREES:
+            count = ci_test_packages.UNIT_SPLITS.get(tree, 1)
+            shards = [tree] if count == 1 else [f"{tree}-{index}" for index in range(count)]
+            with self.subTest(tree=tree):
+                selectors = {shard: ci_test_packages.unit_shard_selector(shard, self.NAMES) for shard in shards}
+                self.assertEqual(partition_errors(self.NAMES, selectors), [])
+                for unseen in ("TestAddedLater", "FuzzNew"):
+                    self.assertEqual(len(_selected_by(selectors, unseen)), 1)
+
+    def test_no_race_lane_covers_every_package_once(self) -> None:
+        packages = [
+            "example.test/pipelock/internal/proxy",
+            "example.test/pipelock/internal/proxy/baseline",
+            "example.test/pipelock/internal/scanner",
+            "example.test/pipelock/internal/mcp",
+            "example.test/pipelock/internal/mcp/jsonrpc",
+            "example.test/pipelock/internal/cli/runtime",
+            "example.test/pipelock/internal/config",
+            "example.test/pipelock/internal/receipt",
+            "example.test/pipelock/cmd/pipelock",
+        ]
+        seen: dict[str, set[str]] = {}
+        for shard in ci_test_packages.unit_shard_names():
+            for pkg in ci_test_packages.unit_shard_packages(packages, shard):
+                tree = ci_test_packages.unit_shard_tree(shard)
+                # Sub-shards of one tree share its packages and split its tests.
+                seen.setdefault(pkg, set()).add(tree[0] if tree else shard)
+        self.assertEqual(set(seen), set(packages))
+        self.assertTrue(all(len(owners) == 1 for owners in seen.values()), seen)
+
+    def test_unknown_no_race_shard_is_refused(self) -> None:
+        for shard in ("proxy-9", "scanner-0", "mcp", "rest-9", "nope"):
+            with self.subTest(shard=shard), self.assertRaises(ValueError):
+                ci_test_packages.unit_shard_tree(shard)
+
     def test_new_name_lands_in_exactly_one_sub_shard(self) -> None:
         # A test added after the inventory was taken, or one the inventory
         # cannot see, must still run exactly once.

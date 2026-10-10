@@ -135,6 +135,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       ci_policy: ${{ steps.check.outputs.ci_policy }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -161,16 +162,101 @@ jobs:
             echo "ci_policy=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Keep each Go minor in a separate producer. A matrix-level aggregate cannot
-  # distinguish which minor failed: its single result is red for either one.
+      # A pull request that changes only prose skips the Go build, test, lint
+      # and platform jobs; docs-check and the config-example job, which read
+      # docs/*.md, still run, and main runs everything after merge. A Markdown
+      # file is not prose when Go can reach it: a test or embed that names it
+      # by path, or a Go package at or above it, since //go:embed globs and
+      # directories reach every file below their package without naming it.
+      # Anything this classifier cannot prove is prose runs the full suite.
+      - name: Detect documentation-only changes
+        id: docs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Every git read lands in a file first, so a failed command fails
+          # this step (and the required gates that need it) instead of
+          # feeding a short list to the loop below. No rename detection: a
+          # Go file renamed to Markdown must be seen as a removed Go file.
+          work="$(mktemp -d)"
+          git diff -z --no-renames --name-only "${BASE_SHA}...${HEAD_SHA}" > "$work/changed"
+          # NUL-delimited, like the diff: without -z git quotes non-ASCII names
+          # and a quoted "...\303\251.go" no longer ends in .go.
+          git ls-tree -rz --name-only "$HEAD_SHA" > "$work/tree"
+          declare -A go_dirs=()
+          root_go=false
+          while IFS= read -r -d '' tracked; do
+            case "$tracked" in
+              */*.go) go_dirs["${tracked%/*}"]=1 ;;
+              *.go) root_go=true ;;
+            esac
+          done < "$work/tree"
+          docs_only=true
+          count=0
+          while IFS= read -r -d '' path; do
+            count=$((count + 1))
+            reason=""
+            case "$path" in
+              testdata/*|*/testdata/*|.github/*|sdk/*) reason="fixture or tooling path" ;;
+              *.md) ;;
+              *) reason="not Markdown" ;;
+            esac
+            if [ -z "$reason" ]; then
+              dir="$path"
+              while [[ "$dir" == */* ]]; do
+                dir="${dir%/*}"
+                if [ -n "${go_dirs[$dir]:-}" ]; then
+                  reason="inside Go package $dir"
+                  break
+                fi
+              done
+            fi
+            if [ -z "$reason" ] && [ "$root_go" = true ]; then
+              reason="the repository root is a Go package"
+            fi
+            if [ -z "$reason" ]; then
+              # git grep exits 1 for no match; anything else is a failure,
+              # which must not read as "no Go code names this file".
+              status=0
+              git grep -q -F -e "$path" -e "${path##*/}" "$HEAD_SHA" -- '*.go' || status=$?
+              case "$status" in
+                0) reason="named by Go code" ;;
+                1) ;;
+                *) reason="git grep failed with status $status" ;;
+              esac
+            fi
+            if [ -n "$reason" ]; then
+              echo "full CI: $path ($reason)"
+              docs_only=false
+              break
+            fi
+          done < "$work/changed"
+          if [ "$count" -eq 0 ]; then
+            echo "full CI: empty diff"
+            docs_only=false
+          fi
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+  # Race lane. The race detector multiplies test time by five to eleven, so the
+  # full race suite costs about six runner-hours per run. Pull requests get the
+  # fast no-race suite below instead; this lane runs on every push to main.
+  # GitHub keeps at most one pending main run per ref, so a burst of merges is
+  # proven by one race run against the newest commit.
+  # max-parallel leaves most of the account's concurrent-job limit to pull
+  # requests, which are waiting on their results; main is not.
   test-oss-go126:
     needs: [security-scan]
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    name: test-oss (1.26, ${{ matrix.shard }})
+    name: race-oss (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
@@ -189,12 +275,12 @@ jobs:
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
 
-      - name: Run tests (OSS)
+      - name: Run tests (OSS race)
         env:
-          TEST_LABEL: OSS Go 1.26 ${{ matrix.shard }}
+          TEST_LABEL: OSS race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
-          # Advisory test-step budget: warns when a shard drifts toward the
-          # 15-minute end-to-end goal so its weights get refreshed. Never fails.
+          # Advisory test-step budget: warns when a shard drifts so its weights
+          # get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
           # Hard ceiling for one top-level test. The planner places whole
           # top-level tests, so one test this slow overloads its shard; the
@@ -206,14 +292,6 @@ jobs:
           packages="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD")" || exit $?
           # proxy-N and scanner-N run disjoint halves of one package tree's tests.
           test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
-          coverprofile="coverage-oss-${TEST_SHARD}.out"
-          coverage_mode="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --coverage-mode)" || exit $?
-          race_cover=(-coverprofile="$coverprofile")
-          if [ "$coverage_mode" = separate ]; then
-            # This tree collects coverage in the non-race pass below; atomic
-            # counters under -race made it two to three times slower.
-            race_cover=()
-          fi
           package_parallelism=2
           if [[ "$TEST_SHARD" == proxy-* ]]; then
             # The proxy shard has two race-instrumented packages. Running them
@@ -224,32 +302,16 @@ jobs:
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
+          # go test's own -timeout must fire well inside the whole-command
+          # attempt deadline: only go test's timeout panic names the test that
+          # hung. With a 20m timeout and a 21m attempt, compile time let the
+          # attempt deadline win and the shard died without naming anything.
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 "${race_cover[@]}" ${test_selector:+"$test_selector"} -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
           summary_status=$?
-          if [ "$summary_status" -eq 0 ] && [ "$test_status" -eq 0 ] && [ "$coverage_mode" = separate ]; then
-            # Same packages and selector without -race: set-mode coverage only.
-            # A failure here is a test failure and fails the shard.
-            # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages -json \
-              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL coverage" --json-out /tmp/coverage-pass.json
-            test_status=$?
-            # The race pass already enforced the per-test ceiling on these tests,
-            # but check this pass too so no shard step runs a test past it.
-            if [ "$test_status" -eq 0 ]; then
-              python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL coverage" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/coverage-pass.json
-              test_status=$?
-            fi
-            # Package init code bumps coverage counters on its own, so the
-            # profile cannot prove a test ran; go test says when none did.
-            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.json; then
-              echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
-              test_status=1
-            fi
-          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi
@@ -270,18 +332,107 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Fast suite: every test package, no race detector, under both build variants.
+  # This is what pull requests wait on. Without -race the same tests run five to
+  # eleven times faster (the scanner tree: about 40s against 7m50s), so whole
+  # package trees fit one shard and a pull request needs a handful of runners
+  # instead of thirty-eight. The race lane above proves the same tests under
+  # -race after merge. Coverage comes from this lane: set-mode counters cost
+  # little without -race, and every pull request and main push reports it.
+  #
+  # No retry wrapper here. A timeout is either a hang or a slow test, and both
+  # should fail fast with the test named: go test's own timeout panic lists the
+  # running tests, and the job limit leaves room for it to fire first.
+  test-unit-go126:
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    name: test-${{ matrix.variant }} (1.26, ${{ matrix.shard }})
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ['oss', 'enterprise']
+        # Must equal scripts/ci_test_packages.py --list-unit-shards (UNIT_SPLITS).
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'scanner', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Verify dependencies
+        run: bash scripts/ci-retry.sh go mod verify
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Run tests (no race)
+        env:
+          TEST_LABEL: ${{ matrix.variant }} Go 1.26 ${{ matrix.shard }}
+          TEST_SHARD: ${{ matrix.shard }}
+          VARIANT: ${{ matrix.variant }}
+          # One top-level test slower than this, without -race, is a test to
+          # split or speed up; the summarizer fails the shard and names it.
+          TEST_CEILING_SECONDS: '120'
+        run: |
+          set -o pipefail
+          # GitHub runs this under bash -e; the summary below must still run
+          # after a failing go test, because it is what names the failure.
+          set +e
+          tags=()
+          if [ "$VARIANT" = enterprise ]; then
+            tags=(-tags enterprise)
+          fi
+          # The planner's no-race plan: whole heavy trees or UNIT_SPLITS
+          # sub-shards of them, complete and disjoint by construction, and the
+          # race lane's rest packing.
+          if [ "$VARIANT" = enterprise ]; then
+            packages="$(python3 scripts/ci_test_packages.py --tags enterprise --unit-shard "$TEST_SHARD")" || exit $?
+          else
+            packages="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD")" || exit $?
+          fi
+          test_selector="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD" --selector)" || exit $?
+          # shellcheck disable=SC2086 # packages is a space-separated list
+          go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile=coverage.out ${test_selector:+"$test_selector"} $packages -json \
+            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test.json
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
+
+      - name: Upload test timing
+        # Not named go-test-json-*: the shard drift job reads those as race
+        # timings, and no-race seconds would underweight every race shard.
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-test-json-${{ matrix.variant }}-go126-${{ matrix.shard }}
+          path: /tmp/go-test.json
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Verify coverage profile
         # Uploading is best-effort telemetry; producing a real profile is not.
-        run: bash scripts/check-coverage-profile.sh coverage-oss-${{ matrix.shard }}.out
+        run: bash scripts/check-coverage-profile.sh coverage.out
 
       - name: Upload coverage
-        # Enterprise profiles exclude Apache-only runtime stubs. Upload the
-        # existing OSS tests too so those exercised paths reach the same report.
-        # Upload failures remain telemetry failures; codecov/* gates coverage.
+        # Enterprise profiles exclude Apache-only runtime stubs, so both variants
+        # upload. Uploader failures are telemetry failures; codecov/* gates
+        # coverage, and the Codecov CLI's own key fetch fails intermittently.
         continue-on-error: true
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
-          files: ./coverage-oss-${{ matrix.shard }}.out
+          files: ./coverage.out
           fail_ci_if_error: false
 
   test-oss-go127:
@@ -293,11 +444,15 @@ jobs:
     # largest share of runner queue time for every overlapping run.
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && github.event_name == 'pull_request' && needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
-    name: test-oss (1.27, ${{ matrix.shard }})
+    name: race-oss (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
       fail-fast: false
+      # Same cap as the main race lane: these run only on CI-policy pull
+      # requests, and at full width they took every runner the same pull
+      # request's no-race lane and every other open pull request needed.
+      max-parallel: 4
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
@@ -338,7 +493,7 @@ jobs:
             package_parallelism=1
           fi
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
+            go test -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-oss.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-oss.json
@@ -365,12 +520,14 @@ jobs:
 
   test-enterprise-go126:
     needs: [security-scan]
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    name: test-enterprise (1.26, ${{ matrix.shard }})
+    name: race-enterprise (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
@@ -389,12 +546,12 @@ jobs:
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
 
-      - name: Run tests (enterprise with coverage)
+      - name: Run tests (enterprise race)
         env:
-          TEST_LABEL: enterprise Go 1.26 ${{ matrix.shard }}
+          TEST_LABEL: enterprise race Go 1.26 ${{ matrix.shard }}
           TEST_SHARD: ${{ matrix.shard }}
-          # Advisory test-step budget: warns when a shard drifts toward the
-          # 15-minute end-to-end goal so its weights get refreshed. Never fails.
+          # Advisory test-step budget: warns when a shard drifts so its weights
+          # get refreshed. Never fails.
           SHARD_BUDGET_SECONDS: '600'
           # Hard ceiling for one top-level test. The planner places whole
           # top-level tests, so one test this slow overloads its shard; the
@@ -406,14 +563,6 @@ jobs:
           packages="$(python3 scripts/ci_test_packages.py --tags enterprise --shard "$TEST_SHARD")" || exit $?
           # proxy-N and scanner-N run disjoint halves of one package tree's tests.
           test_selector="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --selector)" || exit $?
-          coverprofile="coverage-${TEST_SHARD}.out"
-          coverage_mode="$(python3 scripts/ci_test_packages.py --shard "$TEST_SHARD" --coverage-mode)" || exit $?
-          race_cover=(-coverprofile="$coverprofile")
-          if [ "$coverage_mode" = separate ]; then
-            # This tree collects coverage in the non-race pass below; atomic
-            # counters under -race made it two to three times slower.
-            race_cover=()
-          fi
           package_parallelism=2
           if [[ "$TEST_SHARD" == proxy-* ]]; then
             # The proxy shard has two race-instrumented packages. Running them
@@ -424,32 +573,16 @@ jobs:
           # Public runners are 4 vCPU, and -race multiplies scheduler pressure.
           # Keep package and intra-package test fan-out below CPU count so
           # deadline/timer tests are not starved by the shard matrix.
+          # go test's own -timeout must fire well inside the whole-command
+          # attempt deadline: only go test's timeout panic names the test that
+          # hung. With a 20m timeout and a 21m attempt, compile time let the
+          # attempt deadline win and the shard died without naming anything.
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 "${race_cover[@]}" ${test_selector:+"$test_selector"} -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
           summary_status=$?
-          if [ "$summary_status" -eq 0 ] && [ "$test_status" -eq 0 ] && [ "$coverage_mode" = separate ]; then
-            # Same packages and selector without -race: set-mode coverage only.
-            # A failure here is a test failure and fails the shard.
-            # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -tags enterprise -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages -json \
-              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL coverage" --json-out /tmp/coverage-pass.json
-            test_status=$?
-            # The race pass already enforced the per-test ceiling on these tests,
-            # but check this pass too so no shard step runs a test past it.
-            if [ "$test_status" -eq 0 ]; then
-              python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL coverage" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/coverage-pass.json
-              test_status=$?
-            fi
-            # Package init code bumps coverage counters on its own, so the
-            # profile cannot prove a test ran; go test says when none did.
-            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.json; then
-              echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
-              test_status=1
-            fi
-          fi
           if [ "$SECONDS" -gt "$SHARD_BUDGET_SECONDS" ]; then
             echo "::warning title=CI shard over time budget::${TEST_LABEL} took ${SECONDS}s, over the ${SHARD_BUDGET_SECONDS}s budget. Refresh scripts/ci_test_durations.json from the go-test-json artifacts or raise TEST_SPLITS for the tree."
           fi
@@ -470,22 +603,6 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      - name: Verify coverage profile
-        # Uploading is best-effort telemetry; producing a real profile is not.
-        run: bash scripts/check-coverage-profile.sh coverage-${{ matrix.shard }}.out
-
-      - name: Upload coverage
-        # Coverage upload is best-effort telemetry: the Codecov uploader's own
-        # CLI-integrity GPG check intermittently fails to fetch Codecov's public
-        # key ("no valid OpenPGP data found"), which exits non-zero regardless of
-        # fail_ci_if_error. Coverage is gated by the separate codecov/* status
-        # checks, so a transient uploader hiccup must never red a green test job.
-        continue-on-error: true
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
-        with:
-          files: ./coverage-${{ matrix.shard }}.out
-          fail_ci_if_error: false
-
   test-enterprise-go127:
     needs: [security-scan, changed-files]
     # Runs only on pull requests that touch CI policy / Go pins (see the
@@ -495,11 +612,15 @@ jobs:
     # largest share of runner queue time for every overlapping run.
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && github.event_name == 'pull_request' && needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
-    name: test-enterprise (1.27, ${{ matrix.shard }})
+    name: race-enterprise (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
     timeout-minutes: 48
     strategy:
       fail-fast: false
+      # Same cap as the main race lane: these run only on CI-policy pull
+      # requests, and at full width they took every runner the same pull
+      # request's no-race lane and every other open pull request needed.
+      max-parallel: 4
       matrix:
         shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
@@ -540,7 +661,7 @@ jobs:
             package_parallelism=1
           fi
           bash scripts/ci-test-with-retry.sh --packages "$packages" --attempt-timeout-seconds 1260 -- \
-            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=20m -count=1 ${test_selector:+"$test_selector"} -json \
+            go test -tags enterprise -race -p="$package_parallelism" -parallel=2 -timeout=15m -count=1 ${test_selector:+"$test_selector"} -json \
             | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-enterprise.json
           test_status=$?
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test-enterprise.json
@@ -566,11 +687,11 @@ jobs:
           if-no-files-found: ignore
 
   test-subprocess-coverage:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
-    # Includes subprocess coverage plus four race-enabled Guard conformance
-    # invocations, each with its own five-minute timeout.
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -590,9 +711,6 @@ jobs:
       - name: Collect sandbox subprocess coverage
         run: bash scripts/coverage-with-subprocess.sh coverage-subprocess.out
 
-      - name: Run Guard hostile-input conformance gate
-        run: bash scripts/check-guard-conformance.sh
-
       - name: Verify coverage profile
         # Uploading is best-effort telemetry; producing a real profile is not.
         run: bash scripts/check-coverage-profile.sh coverage-subprocess.out
@@ -606,6 +724,31 @@ jobs:
         with:
           files: ./coverage-subprocess.out
           fail_ci_if_error: false
+
+  # Four race-enabled Guard conformance invocations, each with its own
+  # five-minute timeout. Split from subprocess coverage so neither job waits on
+  # the other.
+  guard-conformance:
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Download dependencies
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Run Guard hostile-input conformance gate
+        run: bash scripts/check-guard-conformance.sh
 
   test-replay-go126:
     needs: [security-scan]
@@ -646,24 +789,66 @@ jobs:
         run: make test-replay-harness
 
   test-go126:
-    needs: [security-scan, test-oss-go126, test-enterprise-go126, test-subprocess-coverage, test-replay-go126]
+    needs: [security-scan, changed-files, test-unit-go126, test-subprocess-coverage, guard-conformance, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (1.26)
     timeout-minutes: 5
     steps:
       - name: Required check compatibility gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -u
+          # On a pull request, a skipped Go producer is evidence only when the
+          # classifier succeeded and said the change is documentation-only.
+          # Every other non-success result reds this required check.
+          test "${{ needs.security-scan.result }}" = "success"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test "${{ needs.changed-files.result }}" = "success"
+          fi
+          echo "test-unit-go126 result: ${{ needs.test-unit-go126.result }}"
+          if ! test "${{ needs.test-unit-go126.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-unit-go126.result }}" != "skipped" ]; then
+              exit 1
+            fi
+            test "${{ needs.changed-files.outputs.docs_only }}" = "true"
+          fi
+          echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
+          if ! test "${{ needs.test-subprocess-coverage.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-subprocess-coverage.result }}" != "skipped" ]; then
+              exit 1
+            fi
+            test "${{ needs.changed-files.outputs.docs_only }}" = "true"
+          fi
+          echo "guard-conformance result: ${{ needs.guard-conformance.result }}"
+          if ! test "${{ needs.guard-conformance.result }}" = "success"; then
+            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.guard-conformance.result }}" != "skipped" ]; then
+              exit 1
+            fi
+            test "${{ needs.changed-files.outputs.docs_only }}" = "true"
+          fi
+          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
+          test "${{ needs.test-replay-go126.result }}" = "success"
+
+  # Race lane rollup for main. It does not run on pull requests, where the race
+  # producers are skipped by design, so a skipped "race (1.26)" on a pull request
+  # means "not this lane's event", never "proven".
+  race-go126:
+    needs: [security-scan, test-oss-go126, test-enterprise-go126]
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    name: race (1.26)
+    timeout-minutes: 5
+    steps:
+      - name: Race lane gate
         run: |
           echo "security-scan result: ${{ needs.security-scan.result }}"
           echo "test-oss-go126 result: ${{ needs.test-oss-go126.result }}"
           echo "test-enterprise-go126 result: ${{ needs.test-enterprise-go126.result }}"
-          echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
-          echo "test-replay-go126 result: ${{ needs.test-replay-go126.result }}"
           test "${{ needs.security-scan.result }}" = "success"
           test "${{ needs.test-oss-go126.result }}" = "success"
           test "${{ needs.test-enterprise-go126.result }}" = "success"
-          test "${{ needs.test-subprocess-coverage.result }}" = "success"
-          test "${{ needs.test-replay-go126.result }}" = "success"
 
   test-go127:
     needs: [security-scan, changed-files, test-oss-go127, test-enterprise-go127, test-replay-go127]
@@ -725,7 +910,9 @@ jobs:
           test "${{ needs.test-replay-go127.result }}" = "success"
 
   test-macos:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -754,7 +941,9 @@ jobs:
         run: go build ./...
 
   test-macos-intel:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: macos-15-intel
     timeout-minutes: 10
     steps:
@@ -796,7 +985,9 @@ jobs:
   # builds _test.go files. The scoped run below compiles that package so the
   # break cannot return silently.
   test-windows:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -847,7 +1038,9 @@ jobs:
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
   test-windows-arm64:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: windows-11-arm
     timeout-minutes: 15
     steps:
@@ -913,7 +1106,9 @@ jobs:
   # TARGETED, like the macOS and Windows lanes above, not full parity. The amd64
   # matrix remains the exhaustive lane.
   test-linux-arm64:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
@@ -973,7 +1168,9 @@ jobs:
   # then compile the same contracts for WASI and AIX so build-tag gaps cannot
   # silently remove their implementations.
   test-unsupported-filesystems:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1015,7 +1212,9 @@ jobs:
   # permissions and authorization gate, and the adoption stub that other
   # repositories copy.
   pr-review-tests:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1037,7 +1236,9 @@ jobs:
         run: python -m unittest scripts.pr_review_test
 
   lint:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1057,8 +1258,32 @@ jobs:
           version: v2.13.2
           skip-cache: true
 
+
+  # Same linter, enterprise build graph. A separate job so the two passes run
+  # side by side instead of back to back.
+  lint-enterprise:
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
       - name: golangci-lint (enterprise)
-        run: golangci-lint run --build-tags enterprise ./...
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.13.2
+          skip-cache: true
+          args: --build-tags enterprise
 
   # Repository policy checks that used to run after golangci-lint in the lint
   # job. They need no lint result, so running them beside lint keeps both
@@ -1106,16 +1331,6 @@ jobs:
       - name: Release workflow proves every Go minor main proves
         run: bash scripts/check-go-matrix.sh
 
-      - name: Config example startability policy
-        run: bash scripts/check-config-examples.sh
-
-      # Released binaries are built with the enterprise tag, so the shipped
-      # examples must also check and boot against that build shape.
-      - name: Config example startability policy (enterprise build)
-        run: |
-          go build -tags enterprise -o "$RUNNER_TEMP/pipelock-enterprise" ./cmd/pipelock
-          bash scripts/check-config-examples.sh "$RUNNER_TEMP/pipelock-enterprise"
-
       - name: Clock-dependent literal policy
         run: bash scripts/check-clock-literals.sh
 
@@ -1131,14 +1346,42 @@ jobs:
       - name: Source file headers
         run: make source-header-check
 
-      - name: Reproducible OSS build
-        run: make reproducible-build-check
-
       - name: Shard load budget (OSS)
         run: python3 scripts/ci_test_packages.py --check-budget
 
       - name: Shard load budget (enterprise)
         run: python3 scripts/ci_test_packages.py --tags enterprise --check-budget
+
+  # Builds and boots every shipped example, then rebuilds the binary twice to
+  # prove the OSS build is reproducible. All of it compiles; none of it needs
+  # the lint-policy checks, so it runs beside them.
+  config-examples:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Config example startability policy
+        run: bash scripts/check-config-examples.sh
+
+      # Released binaries are built with the enterprise tag, so the shipped
+      # examples must also check and boot against that build shape.
+      - name: Config example startability policy (enterprise build)
+        run: |
+          go build -tags enterprise -o "$RUNNER_TEMP/pipelock-enterprise" ./cmd/pipelock
+          bash scripts/check-config-examples.sh "$RUNNER_TEMP/pipelock-enterprise"
+
+      - name: Reproducible OSS build
+        run: make reproducible-build-check
 
   # Test files are compiled by `go test`, never by `go build`, so a test file
   # that references a symbol guarded to one architecture makes an entire test
@@ -1155,7 +1398,9 @@ jobs:
   # cross-target pass separate from lint so neither job consumes the other's
   # timeout budget.
   test-cross-target:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     name: test-cross-target (${{ matrix.target }})
     timeout-minutes: 15
@@ -1183,7 +1428,9 @@ jobs:
           GOOS="${TARGET%%/*}" GOARCH="${TARGET##*/}" go vet -tags enterprise ./...
 
   helm:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1200,7 +1447,9 @@ jobs:
         run: bash scripts/check-helm-chart.sh
 
   govulncheck:
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1283,7 +1532,9 @@ jobs:
   build-binaries:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [security-scan]
+    needs: [security-scan, changed-files]
+    # Skipped only on a documentation-only pull request; see changed-files.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1328,7 +1579,7 @@ jobs:
   # The parallel binary and cross-target producers also flow through this gate,
   # so a compilation failure cannot present as a successful required build check.
   build:
-    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-policy, test-cross-target, helm, build-binaries, pr-review-tests, pr-review-source]
+    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-enterprise, lint-policy, config-examples, test-cross-target, helm, build-binaries, pr-review-tests, pr-review-source]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1340,6 +1591,8 @@ jobs:
           TEST_GO127_RESULT: ${{ needs.test-go127.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           LINT_POLICY_RESULT: ${{ needs.lint-policy.result }}
+          LINT_ENTERPRISE_RESULT: ${{ needs.lint-enterprise.result }}
+          CONFIG_EXAMPLES_RESULT: ${{ needs.config-examples.result }}
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
@@ -1347,6 +1600,7 @@ jobs:
           REVIEW_SOURCE_RESULT: ${{ needs.pr-review-source.result }}
           REPOSITORY: ${{ github.repository }}
           CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
+          DOCS_ONLY: ${{ needs.changed-files.outputs.docs_only }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -1366,16 +1620,33 @@ jobs:
               exit 1
             fi
           fi
+          # A documentation-only pull request skips these producers on purpose.
+          # The skip is evidence only with a successful classifier that said so.
+          docs_skip_ok=false
+          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
+            docs_skip_ok=true
+          fi
           for result in \
             "$SECURITY_SCAN_RESULT" \
             "$TEST_GO126_RESULT" \
             "$TEST_GO127_RESULT" \
-            "$LINT_RESULT" \
             "$LINT_POLICY_RESULT" \
+            "$CONFIG_EXAMPLES_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "required build evidence is incomplete or failed" >&2
+              exit 1
+            fi
+          done
+          for result in \
+            "$LINT_RESULT" \
+            "$LINT_ENTERPRISE_RESULT" \
             "$CROSS_TARGET_RESULT" \
             "$HELM_RESULT" \
             "$REVIEW_TESTS_RESULT" \
             "$BUILD_BINARIES_RESULT"; do
+            if [ "$result" = skipped ] && [ "$docs_skip_ok" = true ]; then
+              continue
+            fi
             if [ "$result" != success ]; then
               echo "required build evidence is incomplete or failed" >&2
               exit 1
@@ -1385,7 +1656,7 @@ jobs:
   # Operator-facing rollup only. Branch protection continues to evaluate the
   # required producer checks independently.
   pipelock-ci-summary:
-    needs: [security-scan, test-go126, test-go127, test-macos, lint, build, govulncheck]
+    needs: [security-scan, changed-files, test-go126, test-go127, test-macos, lint, build, govulncheck]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: Pipelock CI Summary
@@ -1400,6 +1671,9 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           GOVULNCHECK_RESULT: ${{ needs.govulncheck.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
+          DOCS_ONLY: ${{ needs.changed-files.outputs.docs_only }}
         run: |
           set -euo pipefail
           failed=0
@@ -1408,9 +1682,21 @@ jobs:
           printf '%s\n\n' '| Required check | Evidence |' >> "$summary"
           printf '%s\n' '| --- | --- |' >> "$summary"
 
+          docs_skip_ok=false
+          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
+            docs_skip_ok=true
+          fi
+
+          # A third argument marks a producer a documentation-only pull request
+          # skips on purpose.
           record_result() {
             local name="$1"
             local result="$2"
+            local docs_skippable="${3:-}"
+            if [ "$result" = skipped ] && [ -n "$docs_skippable" ] && [ "$docs_skip_ok" = true ]; then
+              printf '| %s | skipped (documentation only) |\n' "$name" >> "$summary"
+              return
+            fi
             printf '| %s | %s |\n' "$name" "$result" >> "$summary"
             case "$result" in
               success) ;;
@@ -1421,10 +1707,10 @@ jobs:
           record_result 'security-scan' "$SECURITY_SCAN_RESULT"
           record_result 'test (1.26)' "$TEST_GO126_RESULT"
           record_result 'test (1.27)' "$TEST_GO127_RESULT"
-          record_result 'test-macos' "$MACOS_RESULT"
-          record_result 'lint' "$LINT_RESULT"
+          record_result 'test-macos' "$MACOS_RESULT" docs
+          record_result 'lint' "$LINT_RESULT" docs
           record_result 'build' "$BUILD_RESULT"
-          record_result 'govulncheck' "$GOVULNCHECK_RESULT"
+          record_result 'govulncheck' "$GOVULNCHECK_RESULT" docs
 
           printf '\nCodeQL is separately required and runs in its own workflow; it is intentionally outside this summary.\n' >> "$summary"
 

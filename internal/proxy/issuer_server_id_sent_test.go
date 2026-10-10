@@ -203,6 +203,40 @@ func TestIssuerSentStaleTunnel(t *testing.T) {
 	}
 }
 
+// A tunnel admitted while the feature was off keeps forwarding after a reload
+// turns it on. Its sends must reach the live store, or a value it carried
+// could later mint as an ID.
+func TestIssuerSentTunnelOpenedWhileDisabled(t *testing.T) {
+	p, cfg := newSentIssuerProxy(t)
+	off := *cfg
+	off.RequestBodyScanning.IssuerBoundSessionCookies = false
+	if issuerCookieEnabled(&off) {
+		t.Fatal("positive control: disabling the setting did not disable the feature")
+	}
+	ic := &InterceptContext{
+		Proxy:     p,
+		Config:    &off,
+		Agent:     "mail-agent",
+		ClientIP:  "127.0.0.1",
+		ActorAuth: envelope.ActorAuthBound,
+	}
+	if ic.issuerQueryStore() != nil {
+		t.Fatal("positive control: a tunnel with the feature off saw the store")
+	}
+	origin, err := url.Parse("https://api.vendor.example/v1/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, origin.String(), strings.NewReader(agentBlob))
+	recordIssuerRequestSent(ic, req, []byte(agentBlob))
+	session := sessionKeyFor(cfg, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	live := p.issuerCookieRuntime.Load().query
+	live.mintServerID(session, origin, agentBlob, time.Now())
+	if live.serverIDIssued(session, origin, agentBlob) {
+		t.Fatal("a value sent on a tunnel opened while the feature was off was minted")
+	}
+}
+
 func TestIssuerSentMultipartAndChunkedBody(t *testing.T) {
 	origin, err := url.Parse("https://api.vendor.example/v1/filters")
 	if err != nil {

@@ -398,14 +398,17 @@ func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte)
 }
 
 // issuerQueryStoreIgnoringSnapshot returns the live query store when this
-// request's pinned runtime no longer matches it. Other reasons the pinned
-// lookup fails (feature off, untrusted actor, no proxy) still return nil.
+// request's pinned runtime no longer matches it. The feature check reads the
+// live configuration, not the request's: a tunnel opened while the feature
+// was off can still forward after a reload turns it on, and its sends must be
+// recorded where later requests mint. An untrusted actor or a missing proxy
+// still returns nil. The result is only ever used to record sends.
 func (ic *InterceptContext) issuerQueryStoreIgnoringSnapshot() *issuerQueryStore {
-	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
+	if ic == nil || ic.Proxy == nil || !ic.stateTrusted() {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
-	if runtime == nil || runtime.query == nil || runtime.query.disabled {
+	if runtime == nil || runtime.query == nil || runtime.query.disabled || !issuerCookieEnabled(runtime.cfg) {
 		return nil
 	}
 	skewed := ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime

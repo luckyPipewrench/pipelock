@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -106,6 +107,29 @@ func TestWalkEvidenceLocationReportsSentinelWhenShardChanges(t *testing.T) {
 	if !rewritten {
 		t.Fatal("walk delivered no entries")
 	}
+	if !errors.Is(err, ErrEvidenceChanged) || !IsEvidenceUnavailable(err) {
+		t.Fatalf("rewritten shard: err = %v, want ErrEvidenceChanged classified as unavailable evidence", err)
+	}
+}
+
+// TestOfflineCompactionStreamReportsSentinelWhenShardChanges covers the
+// offline-compaction read: a source shard rewritten while it streams must fail
+// with ErrEvidenceChanged, so a caller can tell a race from a damaged shard.
+func TestOfflineCompactionStreamReportsSentinelWhenShardChanges(t *testing.T) {
+	dir := t.TempDir()
+	const name = "evidence-proxy-0.jsonl"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	location := EvidenceLocation{Root: dir, Dir: dir}
+
+	if err := StreamEvidenceLocationFileForOfflineCompaction(location, name, func(io.Reader, os.FileInfo) error { return nil }); err != nil {
+		t.Fatalf("unchanged shard: %v", err)
+	}
+	err := StreamEvidenceLocationFileForOfflineCompaction(location, name, func(io.Reader, os.FileInfo) error {
+		return os.WriteFile(path, []byte("{}\n{}\n"), 0o600)
+	})
 	if !errors.Is(err, ErrEvidenceChanged) || !IsEvidenceUnavailable(err) {
 		t.Fatalf("rewritten shard: err = %v, want ErrEvidenceChanged classified as unavailable evidence", err)
 	}

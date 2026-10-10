@@ -195,7 +195,7 @@ func StreamEvidenceLocationFileForOfflineCompaction(location EvidenceLocation, n
 		return err
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() || before.Mode() != after.Mode() {
-		return errors.New("evidence file changed during offline compaction read")
+		return fmt.Errorf("%w: evidence file changed during offline compaction read", ErrEvidenceChanged)
 	}
 	return nil
 }

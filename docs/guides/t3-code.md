@@ -96,10 +96,24 @@ child does not terminate. A forced kill or host crash can leave the temporary
 file behind; treat the temporary directory as credential-bearing storage.
 Do not enable shell tracing or copy these values into logs.
 
-The explicit protocol header matters. The tested T3 endpoint negotiates
-`2025-06-18` and rejects subsequent requests without that header. Recheck this
-value when upgrading T3. Do not assume Pipelock automatically propagates the
-negotiated protocol version in this configuration.
+The explicit protocol header is the starting value. The tested T3 endpoint
+negotiated `2025-06-18` and rejected later requests without that header. The
+tested development binary predates negotiated-version propagation, so it sent
+this value on every request. Recheck it when upgrading T3.
+
+Builds that include
+[#1846](https://github.com/luckyPipewrench/pipelock/pull/1846) send the explicit
+header on the initialize request and on anything sent before negotiation
+finishes. Once the upstream answers that request with a successful, well-formed
+initialize result carrying a date-shaped `protocolVersion`, Pipelock replaces
+the explicit header with that negotiated value on later POST requests, the GET
+event stream, and the session DELETE. An error response, or a result without a
+valid `protocolVersion`, negotiates nothing: later requests keep the explicit
+header, or carry no protocol header if none is configured. The end of the
+session clears the negotiated value, and so does a new initialize request that
+is well-formed JSON-RPC 2.0 with a string or number `id` and no duplicate keys.
+A malformed initialize-shaped request doesn't clear it and is sent with the
+negotiated value.
 
 `--header-carrier` is intended for Pipelock's VS Code carrier namespace; it does
 not accept `T3_MCP_AUTHORIZATION` directly. Use the header file above, or copy
@@ -226,7 +240,7 @@ to fix a tool discovery failure. See [false-positive tuning](false-positive-tuni
 |---|---|
 | T3 refuses startup | The wrapper path must be absolute, executable, and correctly quoted. |
 | Provider reports a closed MCP connection | Run the wrapper with synthetic endpoint/authorization values and inspect stderr; keep stdout reserved for MCP messages. |
-| Upstream HTTP 400 after initialization | Check the explicit `MCP-Protocol-Version` header against T3's negotiated version. |
+| Upstream HTTP 400 after initialization | Check that initialization succeeded. Pipelock switches to the negotiated `MCP-Protocol-Version` only after a successful initialize result; before that, and on builds without #1846, requests carry the explicit header, so check it against T3's negotiated version. |
 | Warning about `request_secret` tool text | Inspect the reported rule and configured action; the tested default tool-definition action warns. A warning is not proof that the tool was blocked. |
 | Pi refuses the session | The tested Pi adapter does not support this stdio path. |
 | External OpenCode refuses the session | A remote OpenCode server cannot launch the wrapper on the T3 server's machine. Use a supported local provider. |

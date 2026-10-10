@@ -233,7 +233,7 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"utf-8 declared absolute link issues", "UTF8", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"utf-8 declared relative link issues", "UTF8", site, "/dir/" + baseHrefAsset, http.StatusOK},
 		{"xhtml relative link is untrusted", "XHTML", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
-		{"xhtml absolute link issues", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"xhtml absolute link issues nothing", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusForbidden},
 		{"svg decoy base issues nothing", "SVGDECOY", site, "/phantom/" + baseHrefAsset, http.StatusForbidden},
 		{"svg decoy base issues nothing in the response directory", "SVGDECOY", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"inert template base makes relative links untrusted", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
@@ -250,5 +250,34 @@ func TestInterceptBaseHref(t *testing.T) {
 				t.Fatalf("status=%d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// A Referer or Origin the request names in Connection is hop-by-hop: the proxy
+// strips it, so it cannot vouch for an echoed origin.
+func TestHeaderOriginsIgnoresHopByHop(t *testing.T) {
+	h := http.Header{}
+	h.Set("Referer", "https://app.vendor.example/page")
+	h.Set("Origin", "https://app.vendor.example")
+	if got := headerOrigins(h); len(got) == 0 {
+		t.Fatal("control: plain headers produced no origin")
+	}
+	for _, conn := range []string{"Referer", "origin", "keep-alive, Referer, Origin"} {
+		hh := h.Clone()
+		hh.Set("Connection", conn)
+		got := headerOrigins(hh)
+		for _, o := range got {
+			_ = o
+		}
+		named := map[string]bool{}
+		for _, tok := range strings.Split(conn, ",") {
+			named[http.CanonicalHeaderKey(strings.TrimSpace(tok))] = true
+		}
+		if named["Referer"] && named["Origin"] && len(got) != 0 {
+			t.Fatalf("Connection %q: got %v, want none", conn, got)
+		}
+		if len(got) >= len(headerOrigins(h)) {
+			t.Fatalf("Connection %q did not remove its header: %v", conn, got)
+		}
 	}
 }

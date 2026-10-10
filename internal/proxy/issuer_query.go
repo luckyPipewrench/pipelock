@@ -598,19 +598,15 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
 		store.rememberDocument(session, response.Request.URL, time.Now())
-		if !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
-			// Links and base are read from the raw bytes as UTF-8. Under an
+		if mediaType == "application/xhtml+xml" || !asciiTransparentDocument(body, response.Header.Get("Content-Type")) {
+			// Links and base are read with the HTML tokenizer from the raw
+			// bytes as UTF-8. A browser parses XHTML as XML, and under an
 			// encoding that does not keep ASCII markup as-is (UTF-16, or one
-			// with shift states such as ISO-2022-JP), a browser may decode
-			// different URLs, so the document issues no link at all.
+			// with shift states such as ISO-2022-JP) it may decode different
+			// URLs, so such a document issues no link at all.
 			return
 		}
 		links, baseHref, baseKnown := htmlLinksAndBase(body, remaining)
-		if mediaType == "application/xhtml+xml" {
-			// XHTML is parsed as XML, not by the HTML algorithm that found
-			// this base, so its base is not known.
-			baseKnown = false
-		}
 		docBase, usable := sameOriginBase(response.Request.URL, baseHref)
 		for _, link := range links {
 			if !baseKnown || !usable {

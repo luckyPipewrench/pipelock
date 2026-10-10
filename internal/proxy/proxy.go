@@ -1631,6 +1631,11 @@ func requiredReceiptBlockMetricReason(err error) string {
 	if errors.Is(err, recorder.ErrDurability) {
 		return "durability"
 	}
+	// Kept apart from "durability" so the durability blocks counted against
+	// gated fsync failures stay one per storage failure.
+	if errors.Is(err, recorder.ErrDurabilityInherited) {
+		return receipt.FailReasonDurabilityInherited
+	}
 	return "emit_error"
 }
 

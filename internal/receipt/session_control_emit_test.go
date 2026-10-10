@@ -139,9 +139,7 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	if err := e.EmitHeartbeat(); err != nil {
 		t.Fatalf("EmitHeartbeat #2: %v", err)
 	}
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	closeAfterInjectedSyncFailure(t, rec)
 
 	receipts := readAllReceiptsFromDir(t, dir, pub)
 	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
@@ -242,9 +240,7 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 	if err := e.EmitHeartbeat(); err != nil {
 		t.Fatalf("EmitHeartbeat after gated open: %v", err)
 	}
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	closeAfterInjectedSyncFailure(t, rec)
 	receipts := readAllReceiptsFromDir(t, dir, pub)
 	if len(receipts) == 0 || !isSessionOpenControl(receipts[0].ActionRecord.SessionControl) {
 		t.Fatalf("first receipt is not session_open: %#v", receipts)
@@ -291,9 +287,7 @@ func TestEmitter_EmitSessionCloseIsDurableAndGatesOnFsync(t *testing.T) {
 	}
 	rec.SetSyncForTest(nil)
 
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	closeAfterInjectedSyncFailure(t, rec)
 	receipts := readAllReceiptsFromDir(t, dir, pub)
 	if len(receipts) == 0 || !isSessionCloseControl(receipts[len(receipts)-1].ActionRecord.SessionControl) {
 		t.Fatalf("last receipt is not session_close: %#v", receipts)
@@ -340,9 +334,7 @@ func TestEmitter_EmitSessionCloseDurabilityFailureRetrySurfacesError(t *testing.
 		t.Fatalf("retry EmitSessionClose error = %v, want original sync error", retryErr)
 	}
 
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	closeAfterInjectedSyncFailure(t, rec)
 	receipts := readAllReceiptsFromDir(t, dir, pub)
 	closeCount := 0
 	for _, r := range receipts {
@@ -1040,4 +1032,14 @@ func readTranscriptRootFromDir(t *testing.T, dir string) TranscriptRoot {
 	}
 	t.Fatal("transcript root not found")
 	return TranscriptRoot{}
+}
+
+// closeAfterInjectedSyncFailure closes a recorder whose stream saw an injected
+// sync failure. The stream stays failed, so Close must refuse to sign a final
+// checkpoint over it while still releasing the file.
+func closeAfterInjectedSyncFailure(t *testing.T, rec *recorder.Recorder) {
+	t.Helper()
+	if err := rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("Close after an injected sync failure = %v, want the final checkpoint refused", err)
+	}
 }

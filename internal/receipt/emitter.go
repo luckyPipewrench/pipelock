@@ -88,6 +88,9 @@ const (
 	// remain silent when receipts are disabled; this reason is for fail-closed
 	// require_receipts decisions only.
 	FailReasonUnavailable = "unavailable"
+	// FailReasonDurabilityInherited is a durable receipt refused or left
+	// unconfirmed because an earlier sync on the same evidence stream failed.
+	FailReasonDurabilityInherited = "durability_inherited"
 )
 
 // ErrExtensionMerge identifies a malformed or conflicting advisory extension.
@@ -140,6 +143,15 @@ type Emitter struct {
 	linked bool
 	// notices receives operator-facing lines about cross-run linking.
 	notices io.Writer
+
+	// emissionGate lets ordinary durable receipts confirm outside chainMu
+	// (read side, held until confirmed) while lifecycle records, transcript
+	// roots, chain links and native AEL transitions (write side) wait until
+	// every outstanding confirmation has finished. Always taken before chainMu.
+	emissionGate   sync.RWMutex
+	completionTail *emitCompletion
+	inflightOnce   sync.Once
+	inflight       chan struct{}
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -395,6 +407,8 @@ func (e *Emitter) ChainLink() *ChainLink {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.chainLink == nil {
@@ -724,13 +738,37 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.beforeChainLockForTest()
 	}
 
-	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
-	// The mutex must span from timestamp through persist so concurrent Emit
+	// Lifecycle records see a chain with no unconfirmed receipts: they take
+	// the gate exclusively, which waits for every ordinary emission still
+	// confirming. Ordinary emissions share it until they are confirmed.
+	lifecycle := buildControl != nil || opts.SessionControl != nil
+	if lifecycle {
+		e.emissionGate.Lock()
+		defer e.emissionGate.Unlock()
+	} else {
+		e.emissionGate.RLock()
+		defer e.emissionGate.RUnlock()
+	}
+	deferred := durable && !lifecycle
+	if deferred {
+		release := e.acquireInflight()
+		defer release()
+	}
+
+	// Chain integrity: lock covers stamp → sign → hash → append → advance.
+	// The mutex must span from timestamp through append so concurrent Emit
 	// calls produce monotonic timestamps in chain order. State advances before
 	// recorder persistence so a failed Record leaves a detectable gap instead
-	// of reusing the same prev_hash/seq and forking the chain.
+	// of reusing the same prev_hash/seq and forking the chain. An ordinary
+	// durable receipt confirms its durability after the lock is released; only
+	// the append, never the confirmation wait, happens under it.
 	e.chainMu.Lock()
-	defer e.chainMu.Unlock()
+	chainLocked := true
+	defer func() {
+		if chainLocked {
+			e.chainMu.Unlock()
+		}
+	}()
 	// Retirement can happen after the optimistic check above while this emit
 	// waits for chainMu. Re-check under the chain lock so a call admitted before
 	// signer rotation cannot append after the old native AEL run is closed.
@@ -906,14 +944,47 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.pendingTransition = nil
 	}
 	var recordErr error
-	if durable {
+	var ticket *recorder.DurableTicket
+	switch {
+	case deferred:
+		ticket, recordErr = e.recorder.AppendDurableWithReceiptScanPreAdvance(entry, &scan, advance)
+	case durable:
 		recordErr = e.recorder.RecordDurableWithReceiptScanPreAdvance(entry, &scan, advance)
-	} else {
+	default:
 		recordErr = e.recorder.RecordWithReceiptScanPreAdvance(entry, &scan, advance)
+	}
+	if ticket != nil {
+		if !e.linked {
+			e.linked = true
+			e.linkPredecessor()
+		}
+		pending := deferredDurableEmission{rcpt: rcpt, ticket: ticket}
+		// The AEL record is appended in the same order as its receipt; its
+		// sync is reserved here and confirmed with the receipt's.
+		if aelErr := e.emitNativeAEL(ar, nil, false); aelErr != nil {
+			pending.aelErr = fmt.Errorf("emitting native AEL record: %w", aelErr)
+		} else if e.nativeAEL != nil && e.sessionOpenEmitted {
+			pending.waitAEL, aelErr = e.nativeAEL.ReserveDurability()
+			if aelErr != nil {
+				pending.aelErr = fmt.Errorf("emitting native AEL record: %w", aelErr)
+			}
+		}
+		if pending.aelErr != nil {
+			e.recordFailure(FailReasonAEL)
+			e.MarkUnhealthy(pending.aelErr)
+		}
+		pending.completion = e.nextCompletionLocked()
+		chainLocked = false
+		e.chainMu.Unlock()
+		return e.confirmDeferred(pending)
 	}
 	if recordErr != nil {
 		if !advanced {
-			e.recordFailure(FailReasonRecord)
+			if errors.Is(recordErr, recorder.ErrDurabilityInherited) {
+				e.recordFailure(FailReasonDurabilityInherited)
+			} else {
+				e.recordFailure(FailReasonRecord)
+			}
 			return fmt.Errorf("recording receipt before chain advance: %w", recordErr)
 		}
 		// A failed first write may leave no successor chain at all. Never
@@ -976,11 +1047,20 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.lastHeartbeat = ar.Timestamp
 	}
 
-	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
-	// streamed decision can never appear before it exists on disk. The call is
-	// under the chain mutex, preserving chain order for observers. A copy is
+	// Notify the observer (if any) AFTER the receipt is recorded, so a
+	// streamed decision can never appear before it exists on disk, and in
+	// chain order. An ordinary receipt may follow durable receipts still
+	// confirming, so it takes a completion slot behind them; a lifecycle
+	// record holds the gate exclusively and has none ahead of it. A copy is
 	// passed so the observer cannot mutate emitter state, and the observer is
 	// contractually non-blocking (see EmitterConfig.OnReceipt).
+	if !lifecycle {
+		completion := e.nextCompletionLocked()
+		chainLocked = false
+		e.chainMu.Unlock()
+		e.finishCompletion(completion, rcpt, nil)
+		return nil
+	}
 	if e.onReceipt != nil {
 		rc := rcpt
 		e.onReceipt(&rc)
@@ -1120,6 +1200,8 @@ func (e *Emitter) CloseNativeAEL() error {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.nativeAEL == nil || !e.nativeAEL.Opened() {
@@ -1148,6 +1230,8 @@ func (e *Emitter) RetireNativeAEL() error {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.nativeAEL != nil && e.nativeAEL.Opened() {
@@ -1372,6 +1456,8 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 		return fmt.Errorf("resume receipt chain: %w", e.initErr)
 	}
 
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 

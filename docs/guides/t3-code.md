@@ -109,8 +109,11 @@ initialize result carrying a date-shaped `protocolVersion`, Pipelock replaces
 the explicit header with that negotiated value on later POST requests, the GET
 event stream, and the session DELETE. An error response, or a result without a
 valid `protocolVersion`, negotiates nothing: later requests keep the explicit
-header, or carry no protocol header if none is configured. A new initialize
-request or the end of the session clears the negotiated value.
+header, or carry no protocol header if none is configured. The end of the
+session clears the negotiated value, and so does a new initialize request that
+is well-formed JSON-RPC 2.0 with a string or number `id` and no duplicate keys.
+A malformed initialize-shaped request doesn't clear it and is sent with the
+negotiated value.
 
 `--header-carrier` is intended for Pipelock's VS Code carrier namespace; it does
 not accept `T3_MCP_AUTHORIZATION` directly. Use the header file above, or copy

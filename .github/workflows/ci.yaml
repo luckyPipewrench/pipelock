@@ -234,11 +234,18 @@ jobs:
             # Same packages and selector without -race: set-mode coverage only.
             # A failure here is a test failure and fails the shard.
             # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages 2>&1 | tee /tmp/coverage-pass.log
+            go test -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL coverage" --json-out /tmp/coverage-pass.json
             test_status=$?
+            # The race pass already enforced the per-test ceiling on these tests,
+            # but check this pass too so no shard step runs a test past it.
+            if [ "$test_status" -eq 0 ]; then
+              python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL coverage" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/coverage-pass.json
+              test_status=$?
+            fi
             # Package init code bumps coverage counters on its own, so the
             # profile cannot prove a test ran; go test says when none did.
-            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.log; then
+            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.json; then
               echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
               test_status=1
             fi
@@ -427,11 +434,18 @@ jobs:
             # Same packages and selector without -race: set-mode coverage only.
             # A failure here is a test failure and fails the shard.
             # shellcheck disable=SC2086 # packages is a space-separated list
-            go test -tags enterprise -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages 2>&1 | tee /tmp/coverage-pass.log
+            go test -tags enterprise -p=2 -parallel=2 -timeout=15m -count=1 -covermode=set -coverprofile="$coverprofile" ${test_selector:+"$test_selector"} $packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL coverage" --json-out /tmp/coverage-pass.json
             test_status=$?
+            # The race pass already enforced the per-test ceiling on these tests,
+            # but check this pass too so no shard step runs a test past it.
+            if [ "$test_status" -eq 0 ]; then
+              python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL coverage" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/coverage-pass.json
+              test_status=$?
+            fi
             # Package init code bumps coverage counters on its own, so the
             # profile cannot prove a test ran; go test says when none did.
-            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.log; then
+            if [ "$test_status" -eq 0 ] && grep -q "no tests to run" /tmp/coverage-pass.json; then
               echo "::error title=Coverage pass ran no tests::${TEST_LABEL} coverage selector matched no tests"
               test_status=1
             fi

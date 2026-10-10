@@ -59,7 +59,15 @@ RACE_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
 RACE_AGGREGATE = "race-go126"
 RACE_LANE_CONDITION = "${{ github.event_name != 'pull_request' }}"
 RACE_AGGREGATE_CONDITION = "${{ always() && github.event_name != 'pull_request' }}"
-RACE_MAX_PARALLEL = 8
+# Concurrent-job cap per race matrix. The main race lane gets six per build
+# variant; the Go 1.27 matrix, which runs beside a pull request's own no-race
+# lane, gets four.
+RACE_MAX_PARALLEL = {
+    "test-oss-go126": 6,
+    "test-enterprise-go126": 6,
+    "test-oss-go127": 4,
+    "test-enterprise-go127": 4,
+}
 # The no-race lane every pull request waits on. Heavy trees run whole; the rest
 # shards are the planner's rest buckets.
 UNIT_PRODUCER = "test-unit-go126"
@@ -311,10 +319,11 @@ def race_lane_errors(jobs: dict) -> list[str]:
     # shares the account's runners with pull requests that are waiting.
     for producer in sorted(RACE_PRODUCERS | SKIP_CARVEOUT_PRODUCERS):
         job = jobs.get(producer, {})
+        cap = RACE_MAX_PARALLEL[producer]
         max_parallel = job.get("strategy", {}).get("max-parallel")
-        if not isinstance(max_parallel, int) or not 1 <= max_parallel <= RACE_MAX_PARALLEL:
+        if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= cap:
             errors.append(
-                f"{producer} must cap max-parallel at {RACE_MAX_PARALLEL} so main cannot "
+                f"{producer} must cap max-parallel at {cap} so a race matrix cannot "
                 f"take the runners pull requests are waiting on"
             )
     for aggregate, job in jobs.items():
@@ -637,13 +646,23 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         self.assertIn("test-oss-go126 must run on every non-pull-request event", errors[0])
 
     def test_uncapped_race_lane_fails_the_contract(self):
-        for producer in ("test-enterprise-go126", "test-oss-go127"):
-            with self.subTest(producer=producer):
+        for producer, value in (
+            ("test-enterprise-go126", None),
+            ("test-enterprise-go126", 7),
+            ("test-oss-go127", None),
+            ("test-oss-go127", 5),
+            ("test-oss-go126", 0),
+            ("test-oss-go126", True),
+        ):
+            with self.subTest(producer=producer, value=value):
                 broken = copy.deepcopy(self.jobs)
-                broken[producer]["strategy"].pop("max-parallel")
+                if value is None:
+                    broken[producer]["strategy"].pop("max-parallel")
+                else:
+                    broken[producer]["strategy"]["max-parallel"] = value
                 errors = race_lane_errors(broken)
                 self.assertEqual(len(errors), 1)
-                self.assertIn(f"{producer} must cap max-parallel", errors[0])
+                self.assertIn(f"{producer} must cap max-parallel at {RACE_MAX_PARALLEL[producer]}", errors[0])
 
     def test_required_check_consuming_race_evidence_fails_the_contract(self):
         # A pull request never produces race evidence, so a required aggregate

@@ -258,26 +258,25 @@ func TestInterceptBaseHref(t *testing.T) {
 func TestHeaderOriginsIgnoresHopByHop(t *testing.T) {
 	h := http.Header{}
 	h.Set("Referer", "https://app.vendor.example/page")
-	h.Set("Origin", "https://app.vendor.example")
-	if got := headerOrigins(h); len(got) == 0 {
-		t.Fatal("control: plain headers produced no origin")
-	}
-	for _, conn := range []string{"Referer", "origin", "keep-alive, Referer, Origin"} {
+	h.Set("Origin", "https://api.vendor.example")
+	ref := []string{"https://app.vendor.example:443", "https://app.vendor.example"}
+	org := []string{"https://api.vendor.example:443", "https://api.vendor.example"}
+	for _, tt := range []struct {
+		conn string
+		want []string
+	}{
+		{"", append(append([]string{}, ref...), org...)},
+		{"Referer", org},
+		{"origin", ref},
+		{"keep-alive, Referer, Origin", nil},
+	} {
 		hh := h.Clone()
-		hh.Set("Connection", conn)
+		if tt.conn != "" {
+			hh.Set("Connection", tt.conn)
+		}
 		got := headerOrigins(hh)
-		for _, o := range got {
-			_ = o
-		}
-		named := map[string]bool{}
-		for _, tok := range strings.Split(conn, ",") {
-			named[http.CanonicalHeaderKey(strings.TrimSpace(tok))] = true
-		}
-		if named["Referer"] && named["Origin"] && len(got) != 0 {
-			t.Fatalf("Connection %q: got %v, want none", conn, got)
-		}
-		if len(got) >= len(headerOrigins(h)) {
-			t.Fatalf("Connection %q did not remove its header: %v", conn, got)
+		if strings.Join(got, " ") != strings.Join(tt.want, " ") {
+			t.Fatalf("Connection %q: got %v, want %v", tt.conn, got, tt.want)
 		}
 	}
 }

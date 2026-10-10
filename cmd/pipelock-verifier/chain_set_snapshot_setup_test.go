@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,5 +56,33 @@ func TestChainSetSnapshotFailureEmitsJSONReport(t *testing.T) {
 	}
 	if report.Valid || report.Path != location.Dir || !strings.Contains(report.Error, "listing receipt chains") {
 		t.Fatalf("report=%+v, want invalid with the listing reason", report)
+	}
+}
+
+// An ordinary (non-run) session whose shards share a sequence start is a
+// broken chain, and it is reported like any other outcome: a JSON document in
+// --json mode and CHAIN BROKEN in text mode, never a bare error.
+func TestChainDirOrdinarySessionReadFailureIsReported(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"evidence-proxy-0.jsonl", "evidence-proxy-00.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--allow-unpinned", "--json")
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("exit %d, want %d\n%s\n%s", code, cliutil.ExitGeneral, stdout, stderr)
+	}
+	var report chainReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("--json printed no report: %v (%q)", err, stdout)
+	}
+	if report.Valid || !strings.Contains(report.Error, "sequence") {
+		t.Fatalf("report=%+v, want invalid naming the ambiguous sequence start", report)
+	}
+	stdout, stderr, _ = runRoot(t, "chain", dir, "--dir", "--allow-unpinned")
+	if !strings.Contains(stderr, "CHAIN BROKEN") || strings.Contains(stdout, "VALID") {
+		t.Fatalf("text mode must report a broken chain: stdout=%q stderr=%q", stdout, stderr)
 	}
 }

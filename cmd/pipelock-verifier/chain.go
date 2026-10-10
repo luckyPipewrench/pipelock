@@ -366,7 +366,20 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 		receipts, evidence, extractErr := readChainSessionInput(location, opts.sessionID)
 		if extractErr != nil {
-			return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
+			err := fmt.Errorf("extract receipts: %w", extractErr)
+			// Report the failure the way every other chain outcome is
+			// reported, so --json never leaves a consumer with empty output.
+			// Changed evidence reached no verdict; anything else, such as an
+			// ambiguous sequence start, is a broken chain.
+			switch {
+			case opts.jsonOutput:
+				writeJSON(stdout, chainReport{Path: label, Error: err.Error()})
+			case errors.Is(extractErr, recorder.ErrEvidenceChanged):
+				_, _ = fmt.Fprintf(stderr, "VERIFICATION INCOMPLETE: %s\n  error:      %s\n", label, err)
+			default:
+				emitChainReport(stdout, stderr, chainReport{Path: label, Error: err.Error()}, false)
+			}
+			return evidenceContentError(err)
 		}
 		if len(evidence) > 0 {
 			return verifyEvidenceChain(stdout, stderr, label, evidence, receipts, trust, opts)

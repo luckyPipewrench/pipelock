@@ -72,6 +72,29 @@ jobs:
           command -v npx
           command -v python3
 
+      # Shared runners exhaust Docker Hub's anonymous pull limit, which failed
+      # the compose examples with toomanyrequests before any verifier ran.
+      # Route Docker Hub pulls through Google's public pull-through cache; the
+      # daemon falls back to Docker Hub for anything the cache lacks, and the
+      # shipped example files are unchanged. Without a Docker daemon this step
+      # leaves pulls alone so the verifiers still report their own skips.
+      - name: Pull Docker Hub images through a public mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! systemctl is-active --quiet docker; then
+            printf '::notice::No running Docker daemon; Docker Hub pulls are left unchanged.\n'
+            exit 0
+          fi
+          conf=/etc/docker/daemon.json
+          current='{}'
+          if sudo test -s "$conf"; then current="$(sudo cat "$conf")"; fi
+          jq '."registry-mirrors" = (((."registry-mirrors" // []) + ["https://mirror.gcr.io"]) | unique)' <<<"$current" \
+            | sudo tee "$conf" >/dev/null
+          sudo systemctl restart docker
+          timeout 60 bash -c 'until sudo docker info >/dev/null 2>&1; do sleep 1; done'
+          sudo docker info --format 'registry mirrors: {{json .RegistryConfig.Mirrors}}'
+
       - name: Run shipped verification scripts
         id: verification
         continue-on-error: true

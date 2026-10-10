@@ -214,6 +214,19 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
         self.assertNotIn("command -v docker", self.workflow)
         self.assertNotIn("docker compose version", self.workflow)
 
+    def test_docker_hub_pulls_use_a_mirror_before_the_verifiers_run(self):
+        mirror_step = self.workflow.index("name: Pull Docker Hub images through a public mirror")
+        verifiers = self.workflow.index("name: Run shipped verification scripts")
+        self.assertLess(mirror_step, verifiers)
+        step = self.workflow[mirror_step:verifiers]
+        self.assertIn("https://mirror.gcr.io", step)
+        # Existing daemon settings are merged, not replaced, and a runner
+        # without Docker keeps the verifiers' own skip reporting.
+        self.assertIn('."registry-mirrors" // []', step)
+        self.assertIn("systemctl is-active --quiet docker", step)
+        self.assertIn("exit 0", step)
+        self.assertNotIn("continue-on-error", step)
+
 
 if __name__ == "__main__":
     unittest.main()

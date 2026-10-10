@@ -445,12 +445,7 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 	}
 	if v2Err != nil {
 		markerErr := rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
-		if group := rp.receiptGroup(); group != nil {
-			selected, selectErr := group.v2Emitter(opts)
-			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
-				group.failRequired(errors.Join(v2Err, markerErr))
-			}
-		}
+		failRequiredReceiptGroup(rp.receiptGroup(), opts, errors.Join(v2Err, markerErr))
 		return errors.Join(v2Err, markerErr)
 	}
 	return nil
@@ -509,12 +504,7 @@ func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config,
 	}
 	if v2Err != nil {
 		markerErr := rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
-		if group := rp.receiptGroup(); group != nil {
-			selected, selectErr := group.v2Emitter(opts)
-			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
-				group.failRequired(errors.Join(v2Err, markerErr))
-			}
-		}
+		failRequiredReceiptGroup(rp.receiptGroup(), opts, errors.Join(v2Err, markerErr))
 	}
 }
 

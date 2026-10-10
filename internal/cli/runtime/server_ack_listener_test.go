@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -153,7 +154,8 @@ logging:
 			select {
 			case <-errCh:
 			case <-shutdownCtx.Done():
-				t.Error("listener did not stop after cancellation")
+				stack := make([]byte, 1<<20)
+				t.Errorf("listener did not stop after cancellation\n%s", stack[:goruntime.Stack(stack, true)])
 			}
 		}()
 		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {

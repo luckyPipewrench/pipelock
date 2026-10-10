@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -190,63 +189,25 @@ func TestExtensionProbeInXHTMLScriptTagIsStripped(t *testing.T) {
 // document each time, so a body carrying the placeholder prefix followed by a
 // long run of the pad character cost time quadratic in its own length.
 func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
-	cfg := config.Defaults().BrowserShield
-	e := NewEngine(nil)
-
-	// The prefix, then a long run of the pad character the old loop appended.
-	const padLen = 60000
-	const growth = 4
-	hostile := "<html><body>" + "\x00pipelock-inline-script-" + strings.Repeat("x", padLen) +
-		"<script>var a = 1;</script></body></html>"
-
-	// Measure rather than race a goroutine against a timer. Rewrite has no
-	// cancellation, so a timeout that fails the test would leave the call
-	// running against hostile input for the rest of the process. The quadratic
-	// form took time proportional to the square of the pad, so comparing a
-	// grown pad against a generous multiple of the base-pad time distinguishes
-	// linear from quadratic without an uncancellable wait.
-	// Each size is timed three times and the fastest run kept: a scheduler
-	// pause or coverage instrumentation on a loaded machine can only add time,
-	// so the minimum is the closest reading of the algorithm's own cost. A
-	// collection runs before every timed call, so neither size pays for garbage
-	// the other left behind; without it, race-instrumented CI runs of the
-	// linear form drifted past the old doubling threshold.
-	fastest := func(doc string) (Result, time.Duration) {
-		var res Result
-		best := time.Duration(0)
-		for range 3 {
-			runtime.GC()
-			start := time.Now()
-			res = e.Rewrite(doc, PipelineHTML, &cfg)
-			if d := time.Since(start); best == 0 || d < best {
-				best = d
-			}
+	const base = "\x00pipelock-inline-script-"
+	for _, size := range []int{256, 4096, 60000} {
+		doc := base + strings.Repeat("x", size) + "<script>var a = 1;</script>"
+		want := base + strings.Repeat("x", size+1)
+		if got := uniqueScriptPlaceholderPrefix(doc); got != want {
+			t.Fatalf("pad %d: prefix length %d, want %d", size, len(got), len(want))
 		}
-		return res, best
-	}
-	res, base := fastest(hostile)
-	grown := strings.Replace(hostile, strings.Repeat("x", padLen), strings.Repeat("x", padLen*growth), 1)
-	_, large := fastest(grown)
-
-	if !strings.Contains(res.Content, "var a = 1;") {
-		t.Errorf("script content was not preserved: %s", res.Content[:80])
-	}
-	// Growing the pad fourfold costs about four times for the linear form and
-	// about sixteen times for the quadratic one; the quadratic form measured
-	// near 5.8 for a doubling, so it lands well above sixteen here. A threshold
-	// of ten leaves room on both sides: scheduling noise on a loaded runner
-	// cannot push the linear form there, and a return to the quadratic form
-	// still stands out. Asserting the RATIO rather than an absolute duration
-	// keeps the test meaningful on a slower machine, where both numbers grow
-	// together.
-	if base <= 0 {
-		t.Skip("timer resolution too coarse to compare growth")
-	}
-	ratio := float64(large) / float64(base)
-	t.Logf("growing the pad %dx took %.2fx the time (base %v, grown %v)", growth, ratio, base, large)
-	if ratio > 10 {
-		t.Errorf("growing the pad %dx multiplied the time by %.2f (base %v, grown %v): the placeholder search is superlinear",
-			growth, ratio, base, large)
+		// The collision loop allocated a longer prefix on every rescan.
+		// An allocation count catches that regression without timing the scheduler.
+		if allocs := testing.AllocsPerRun(1, func() {
+			runtime.KeepAlive(uniqueScriptPlaceholderPrefix(doc))
+		}); allocs > 4 {
+			t.Fatalf("pad %d: prefix search allocated %.0f times, want at most 4", size, allocs)
+		}
+		cfg := config.Defaults().BrowserShield
+		res := NewEngine(nil).Rewrite(doc, PipelineHTML, &cfg)
+		if !strings.Contains(res.Content, "var a = 1;") {
+			t.Fatal("script content was not preserved")
+		}
 	}
 }
 

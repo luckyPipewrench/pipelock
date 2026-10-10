@@ -122,14 +122,15 @@ func TestAutoAnchorStreamingTamperedMiddle(t *testing.T) {
 func TestAutoAnchorStreamingMemoryBound(t *testing.T) {
 	// Do not parallelize: GC and heap accounting are process-wide. Measure live
 	// heap after GC at fixed intervals, not TotalAlloc (streaming still allocates
-	// transient parsing/signature buffers per receipt). 4 MiB permits parser and
-	// filesystem buffers yet is well below a retained 12,001-receipt chain. The
+	// transient parsing/signature buffers per receipt). Larger receipt payloads
+	// keep the retained chain above 4 MiB without thousands of signatures. The
 	// old extractor is a positive control for both the measurement and fixture.
-	const size = 12000
+	const size = 512
 	const liveHeapLimit = uint64(4 << 20)
 	rig := newAutoAnchorTestRig(t)
+	target := "https://api.vendor.example/" + strings.Repeat("x", 16<<10)
 	for range size {
-		emitAutoAnchorReceipt(t, rig.emitter, "https://api.vendor.example/action")
+		emitAutoAnchorReceipt(t, rig.emitter, target)
 	}
 	productionWalk := rig.monitor.walkFn
 	measure := func(walk func(string, string, func(receipt.Receipt) error) error, prefix uint64) uint64 {

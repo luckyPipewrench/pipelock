@@ -127,7 +127,7 @@ func runIssuerAllowIntercept(t *testing.T, tc issuerAllowRequireCase, issuePath 
 	}
 	if tc.require && !tc.emitFails {
 		layer := issuerCookieReceiptExtensionKey
-		if allowPath == "/page" {
+		if allowPath == "/page" || tc.wantKind != "" {
 			layer = issuerQueryReceiptExtensionKey
 		}
 		r := rph.requireReceipt(t, layer)
@@ -202,6 +202,28 @@ func TestInterceptPageOriginAllow_RequireReceipts(t *testing.T) {
 					req.Header.Set("Referer", base+"/doc")
 					return req
 				}, "/page")
+		})
+	}
+}
+
+// A server-issued ID allow is recorded like the other issuer allows, and its
+// receipt names the server_issued_id rule.
+func TestInterceptServerIDAllow_RequireReceipts(t *testing.T) {
+	for _, tc := range issuerAllowRequireCases {
+		tc.wantKind = issuerQueryServerID
+		t.Run(tc.name, func(t *testing.T) {
+			runIssuerAllowIntercept(t, tc, "/filters",
+				func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"filter":[{"id":"`+serverIDListed+`"}]}`)
+				},
+				func(base string) *http.Request {
+					req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/filters/"+serverIDListed, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return req
+				}, "/filters/"+serverIDListed)
 		})
 	}
 }

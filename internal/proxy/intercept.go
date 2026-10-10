@@ -889,6 +889,18 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
+				allowCtx = scanner.WithIssuerSegmentAllowance(allowCtx, func(segment string) bool {
+					// One whole segment, same origin: an object ID the origin
+					// introduced in a response, never one the session sent.
+					if !store.serverIDIssued(session, r.URL, segment) {
+						return false
+					}
+					if allowKind == issuerQueryObserved {
+						allowKind = issuerQueryServerID
+					}
+					allowed = true
+					return true
+				})
 				allowCtx = scanner.WithIssuerQueryAllowance(allowCtx, func(key, value string) bool {
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
@@ -2074,6 +2086,10 @@ func newInterceptHandler(
 				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionBlock, status, -1, reason)
 			}
 		}
+
+		// Record what this request sends before it leaves, so no response
+		// can mint a value the session itself supplied.
+		recordIssuerRequestSent(ic, r, interceptBodyBytes)
 
 		// Forward to upstream.
 		// The wait starts when the request is fully written, so dialing,

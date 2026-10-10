@@ -48,6 +48,9 @@ const (
 	// issuerUnreadableMaxSessions bounds the sessions remembered as having
 	// incomplete sent history. Past it the whole store stops minting.
 	issuerUnreadableMaxSessions = 4096
+	// issuerSentAllMaxEntries bounds the sent digests kept across all
+	// sessions. Past it the whole store stops minting.
+	issuerSentAllMaxEntries = 1 << 17
 )
 
 // issuerServerIDShaped reports whether value can be one whole URL path
@@ -112,6 +115,17 @@ func issuerSentTokens(text string, emit func(string) bool) bool {
 	return true
 }
 
+// sentDigest binds a sent token to the host alone. A value sent to a host over
+// any scheme or port has reached that host, so it must never mint as an ID
+// the host issued, whatever port the ID is later used on.
+func (s *issuerQueryStore) sentDigest(target *url.URL, value string) ([32]byte, bool) {
+	host := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	if host == "" {
+		return [32]byte{}, false
+	}
+	return s.digestFields("sent_host", host, value), true
+}
+
 func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value string) ([32]byte, bool) {
 	host, port, ok := issuerCookieOrigin(target)
 	if !ok {
@@ -157,7 +171,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		stripped.User = nil
 		originTarget = &stripped
 	}
-	if _, _, ok := issuerCookieOrigin(originTarget); !ok {
+	if scheme := strings.ToLower(originTarget.Scheme); (scheme != "https" && scheme != "http") || originTarget.Hostname() == "" {
 		return
 	}
 	var texts []string
@@ -187,7 +201,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 				overflow = true
 				return false
 			}
-			if digest, ok := s.originDigest("sent", originTarget, token); ok {
+			if digest, ok := s.sentDigest(originTarget, token); ok {
 				digests = append(digests, digest)
 			}
 			return true
@@ -211,6 +225,15 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 		s.sent[session] = sent
 	}
 	for _, digest := range digests {
+		// Every session's sends count: a value one agent handed a host must
+		// not mint as an ID that host issued to another agent.
+		if _, exists := s.sentAll[digest]; !exists {
+			if len(s.sentAll) >= issuerSentAllMaxEntries {
+				s.mintDisabled = true
+			} else {
+				s.sentAll[digest] = struct{}{}
+			}
+		}
 		if _, exists := sent[digest]; exists {
 			continue
 		}
@@ -323,7 +346,10 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	if s == nil || s.disabled || session == "" || !issuerServerIDShaped(value) {
 		return
 	}
-	sentDigest, ok := s.originDigest("sent", target, value)
+	if _, _, ok := issuerCookieOrigin(target); !ok {
+		return
+	}
+	sentDigest, ok := s.sentDigest(target, value)
 	if !ok {
 		return
 	}
@@ -331,6 +357,9 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mintBlockedLocked(session) {
+		return
+	}
+	if _, reflectedAny := s.sentAll[sentDigest]; reflectedAny {
 		return
 	}
 	if _, reflected := s.sent[session][sentDigest]; reflected {
@@ -434,6 +463,17 @@ func (p *Proxy) issuerStoreForUnmediatedSend() *issuerQueryStore {
 		return nil
 	}
 	return runtime.query
+}
+
+// recordIssuerForwardSent records a plain-HTTP forward-proxy request as sent.
+// A body Pipelock did not buffer stops minting for the session.
+func (p *Proxy) recordIssuerForwardSent(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, r *http.Request, body []byte) {
+	store := p.issuerStoreForUnmediatedSend()
+	if store == nil || r == nil || r.URL == nil {
+		return
+	}
+	bodyKnown := body != nil || r.Body == nil || r.Body == http.NoBody
+	store.recordSent(sessionKeyFor(cfg, agent, clientIP, actorAuth), r.URL, r.Header, body, bodyKnown, time.Now())
 }
 
 // recordIssuerFetchSent records a /fetch request's URL as sent. It carries no

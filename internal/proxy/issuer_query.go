@@ -71,6 +71,9 @@ type issuerQueryStore struct {
 	ids            map[string][][32]byte
 	sent           map[string]map[[32]byte]struct{}
 	sentUnreadable map[string]bool
+	// sentAll holds sent digests across every session, so one agent's value
+	// cannot mint as an ID for another.
+	sentAll map[[32]byte]struct{}
 	// mintDisabled stops all minting once incomplete sent history can no
 	// longer be remembered per session.
 	mintDisabled bool
@@ -93,6 +96,7 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		used:      make(map[string]time.Time),
 
 		sentUnreadable: make(map[string]bool),
+		sentAll:        make(map[[32]byte]struct{}),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true

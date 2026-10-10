@@ -75,9 +75,17 @@ func (h *webPlatformHarness) sendHeader(upstream *httptest.Server, method, path,
 // lists it, then has the agent list the collection.
 func api2Store(t *testing.T, h *webPlatformHarness, agent string, api *httptest.Server, value string) {
 	t.Helper()
-	if got := h.send(api, http.MethodPost, "/filters", "store-"+agent, "application/json", `{"criteria":{"query":"`+value+`"}}`); got != http.StatusOK {
-		t.Fatalf("out-of-band store = %d", got)
+	// Straight to the server, not through the proxy, so the only record of
+	// the value being sent is the request under test.
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, api.URL+"/filters", strings.NewReader(`{"criteria":{"query":"`+value+`"}}`))
+	if err != nil {
+		t.Fatal(err)
 	}
+	resp, err := api.Client().Do(req)
+	if err != nil {
+		t.Fatalf("out-of-band store: %v", err)
+	}
+	_ = resp.Body.Close()
 	if got := h.send(api, http.MethodGet, "/filters", agent, "", ""); got != http.StatusOK {
 		t.Fatalf("list = %d", got)
 	}
@@ -420,6 +428,43 @@ func TestIssuerServerIDStore(t *testing.T) {
 		}
 	})
 
+	t.Run("a value another session sent is not minted", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, nil, []byte(agentBlob), true, now)
+		s.mintServerID("b", origin, agentBlob, now)
+		if s.serverIDIssued("b", origin, agentBlob) {
+			t.Fatal("a value session a sent was minted for session b")
+		}
+	})
+
+	t.Run("a value sent to the host over plain http or another port is not minted", func(t *testing.T) {
+		for _, raw := range []string{"http://api.vendor.example/notes?x=" + agentBlob, "https://api.vendor.example:8443/notes?x=" + agentBlob} {
+			s := newTestServerIDStore(t)
+			sentTo, _ := url.Parse(raw)
+			s.recordSent("a", sentTo, nil, nil, true, now)
+			s.mintServerID("a", origin, agentBlob, now)
+			if s.serverIDIssued("a", origin, agentBlob) {
+				t.Fatalf("value sent via %s was minted", raw)
+			}
+		}
+	})
+
+	t.Run("a full cross-session set stops all minting", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.mu.Lock()
+		for i := 0; i < issuerSentAllMaxEntries; i++ {
+			var d [32]byte
+			d[0], d[1], d[2] = byte(i), byte(i>>8), byte(i>>16)
+			s.sentAll[d] = struct{}{}
+		}
+		s.mu.Unlock()
+		s.recordSent("a", origin, nil, []byte(serverIDOther), true, now)
+		s.mintServerID("a", origin, serverIDListed, now)
+		if s.serverIDIssued("a", origin, serverIDListed) {
+			t.Fatal("minted after the cross-session set overflowed")
+		}
+	})
+
 	t.Run("shape bounds", func(t *testing.T) {
 		for _, v := range []string{"short", strings.Repeat("a", issuerServerIDMaxLen+1), "has/slash" + serverIDListed, "has space" + serverIDListed, "pct%41" + serverIDListed} {
 			if issuerServerIDShaped(v) {
@@ -461,6 +506,30 @@ func TestIssuerServerIDUnmediatedSends(t *testing.T) {
 		store.mintServerID(session, origin, agentBlob, now)
 		if store.serverIDIssued(session, origin, agentBlob) {
 			t.Fatal("a value sent through /fetch was minted")
+		}
+	})
+
+	t.Run("a plain-http forward request is recorded as sent", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		store := h.p.issuerStoreForUnmediatedSend()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://api.vendor.example/notes/"+agentBlob, nil)
+		h.p.recordIssuerForwardSent(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound, req, nil)
+		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.mintServerID(session, origin, agentBlob, now)
+		if store.serverIDIssued(session, origin, agentBlob) {
+			t.Fatal("a value sent through the plain-http forward proxy was minted")
+		}
+	})
+
+	t.Run("an unread plain-http forward body stops minting", func(t *testing.T) {
+		h := newWebPlatformHarness(t)
+		store := h.p.issuerStoreForUnmediatedSend()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "http://api.vendor.example/notes", strings.NewReader(agentBlob))
+		h.p.recordIssuerForwardSent(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound, req, nil)
+		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.mintServerID(session, origin, serverIDListed, now)
+		if store.serverIDIssued(session, origin, serverIDListed) {
+			t.Fatal("minted after an unread forward body")
 		}
 	})
 

@@ -1937,7 +1937,14 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	activeSession := p.recordingSession()
 	keys := append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex(), fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey)))
 	tornRecovery := p.receiptEmitterPtr.Load() != nil && p.receiptEmitterPtr.Load().SessionID() != activeSession
-	if tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys); tailErr != nil {
+	tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys)
+	if tailErr == nil && p.recorder.DurabilityFailed() {
+		// The current run's sync failed. Its bytes may read back intact while
+		// earlier pages were lost, so it is recovered like a torn run: kept
+		// as is, and a fresh run takes over.
+		tailErr = fmt.Errorf("%w: %w", recorder.ErrTornTail, recorder.ErrDurabilityInherited)
+	}
+	if tailErr != nil {
 		if !errors.Is(tailErr, recorder.ErrTornTail) {
 			p.receiptEmitterPtr.Load().MarkUnhealthy(tailErr)
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", tailErr)

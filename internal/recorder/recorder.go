@@ -1325,6 +1325,10 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	r.prevHash = resumedPrevHash
 	r.sinceCheckpoint = 0
 	r.firstSeqInSpan = resumedFirstSeqInSpan
+	// The stream now continues from what is on disk, as after a restart, so
+	// an earlier sync failure no longer leaves an unconfirmed prefix behind it.
+	r.durableFailure = nil
+	r.lastDurableTicket = nil
 	return nil
 }
 

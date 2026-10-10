@@ -249,9 +249,8 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 		maxSize = size
 	}
 	if n >= 2 {
-		f, err := combineFragments(ctx, det, parts, paths, fields, maxSize)
-		if err != nil || f != nil {
-			return f, err
+		if f := combineFragments(ctx, det, parts, paths, fields, maxSize); f != nil {
+			return f, nil
 		}
 	}
 	if n == 0 || len(bridges) == 0 {
@@ -428,7 +427,7 @@ func bridgedWork(cands, bridges []fragmentPiece, maxSize int) (int64, bool) {
 // 2 and 3 fragments is tried, and both directions of 4. Projection order is
 // fixed by the schema's sorted keys, so a caller choosing which field holds
 // which fragment controls the order.
-func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) (*Finding, error) {
+func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) *Finding {
 	n := len(parts)
 	var b strings.Builder
 	// Repeated occurrences retain their combination positions, but equal
@@ -456,7 +455,7 @@ func combineFragments(ctx context.Context, det Detector, parts, paths, fields []
 						hit = append(hit, paths[idx[o]])
 						hitFields = append(hitFields, fields[idx[o]])
 					}
-					return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
+					return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}
 				}
 			}
 			if !scanner.NextSubsequence(idx, n) {
@@ -464,7 +463,7 @@ func combineFragments(ctx context.Context, det Detector, parts, paths, fields []
 			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // widestFragmentSearch returns the largest size in {3, 2} whose complete

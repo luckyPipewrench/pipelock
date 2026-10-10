@@ -81,8 +81,8 @@ func TestChainDirOrdinarySessionReadFailureIsReported(t *testing.T) {
 	if report.Valid || !strings.Contains(report.Error, "sequence") {
 		t.Fatalf("report=%+v, want invalid naming the ambiguous sequence start", report)
 	}
-	stdout, stderr, _ = runRoot(t, "chain", dir, "--dir", "--allow-unpinned")
-	if !strings.Contains(stderr, "CHAIN BROKEN") || strings.Contains(stdout, "VALID") {
-		t.Fatalf("text mode must report a broken chain: stdout=%q stderr=%q", stdout, stderr)
+	stdout, stderr, code = runRoot(t, "chain", dir, "--dir", "--allow-unpinned")
+	if code != cliutil.ExitGeneral || !strings.Contains(stderr, "CHAIN BROKEN") || strings.Contains(stdout, "VALID") {
+		t.Fatalf("text mode must report a broken chain and fail: exit %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }

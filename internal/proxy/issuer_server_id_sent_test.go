@@ -250,28 +250,39 @@ func TestIssuerSentMultipartAndChunkedBody(t *testing.T) {
 	if s.serverIDIssued("a", origin, agentBlob) {
 		t.Fatal("a multipart field was minted")
 	}
+}
 
-	var delivered string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Error(err)
-		}
-		delivered = string(body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(srv.Close)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(agentBlob))
+// A chunked request body (no Content-Length) through the intercept proxy is
+// buffered before forwarding, so the value it carries is recorded as sent and
+// never mints when the origin lists it back.
+func TestInterceptChunkedBodyRecordedAsSent(t *testing.T) {
+	h := newWebPlatformHarness(t)
+	api, hits := newMailAPI(t)
+	const agent = "mail-agent"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, api.URL+"/filters",
+		io.MultiReader(strings.NewReader(`{"criteria":{"query":"`), strings.NewReader(agentBlob), strings.NewReader(`"}}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.ContentLength = -1 // force chunked transfer
-	resp, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = -1 // chunked transfer encoding
+	resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+		Upstream: api, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
+		Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
+		Agent: agent, ActorAuth: envelope.ActorAuthBound,
+	})
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chunked create = %d", resp.StatusCode)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if delivered != agentBlob {
-		t.Fatalf("chunked body delivered as %q", delivered)
+	if got := h.send(api, http.MethodGet, "/filters", agent, "", ""); got != http.StatusOK {
+		t.Fatalf("list = %d", got)
+	}
+	if got := h.send(api, http.MethodDelete, "/filters/"+agentBlob, agent, "", ""); got != http.StatusForbidden {
+		t.Fatalf("chunked-body reflection as id = %d, want 403", got)
+	}
+	if hits("DELETE /filters/"+agentBlob) != 0 {
+		t.Fatal("a value sent in a chunked body reached upstream as an id")
 	}
 }

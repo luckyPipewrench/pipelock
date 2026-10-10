@@ -617,6 +617,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPInputScanning(); err != nil {
 		return warnings, err
 	}
+	if err := validateMCPIdentities(c.MCPIdentities); err != nil {
+		return warnings, err
+	}
 	if err := c.validateMCPToolScanning(&warnings); err != nil {
 		return warnings, err
 	}
@@ -2474,7 +2477,7 @@ func (c *Config) validateMCPInputScanning() error {
 func (c *Config) validateMCPToolScanning(warnings *[]Warning) error {
 	c.MCPToolScanning.ListenerDriftResetAuthorityPublicKey = nil
 	c.MCPToolScanning.AcknowledgmentKeyBytes = nil
-	if err := validateMCPAcknowledgedFindings(c.MCPToolScanning.AcknowledgedFindings, time.Now().UTC()); err != nil {
+	if err := validateMCPAcknowledgedFindings(c.MCPToolScanning.AcknowledgedFindings, c.MCPIdentities, time.Now().UTC()); err != nil {
 		return err
 	}
 	// The key is resolved once here and pinned. With entries and no usable
@@ -5898,6 +5901,13 @@ func validateMCPServerNameList(serverNames []string, label string) error {
 		seen[serverName] = struct{}{}
 	}
 	return nil
+}
+
+// ValidateMCPServerName applies the MCP server-name rules to a launch-supplied
+// name, so a name given on the command line is held to the same rules as one
+// written in configuration.
+func ValidateMCPServerName(serverName, field string) error {
+	return validateMCPServerName(serverName, field)
 }
 
 func validateMCPServerName(serverName, field string) error {

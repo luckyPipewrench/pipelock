@@ -12,27 +12,23 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 )
 
 const (
 	windowsOS             = "windows"
-	vscodeCarrierPrefix   = "PIPELOCK_VSCODE_"
 	maxVSCodeEnvFileBytes = 1 << 20
 )
 
 func resolveHeaderCarriers(mappings []string) ([]string, error) {
-	lines := make([]string, 0, len(mappings))
-	for _, mapping := range mappings {
-		header, carrier, err := parseCarrierMapping("--header-carrier", mapping)
-		if err != nil {
-			return nil, err
-		}
-		value, ok := os.LookupEnv(carrier)
-		if !ok {
-			return nil, fmt.Errorf("--header-carrier %q: required carrier %s is unset", mapping, carrier)
-		}
-		lines = append(lines, header+": "+value)
+	entries, err := resolveHeaderCarrierEntries(mappings)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, e.Header+": "+e.Value)
 	}
 	return lines, nil
 }
@@ -134,11 +130,8 @@ func parseCarrierMapping(flag, mapping string) (string, string, error) {
 }
 
 func validateCarrierName(flag, carrier string) error {
-	if !validEnvName(carrier) {
-		return fmt.Errorf("%s: invalid carrier name", flag)
-	}
-	if !strings.HasPrefix(carrier, vscodeCarrierPrefix) {
-		return fmt.Errorf("%s: carrier must use the %s namespace", flag, vscodeCarrierPrefix)
+	if problem := config.MCPCarrierNameProblem(carrier); problem != "" {
+		return fmt.Errorf("%s: %s", flag, problem)
 	}
 	return nil
 }
@@ -151,19 +144,6 @@ func validateChildEnvTarget(flag, key string) error {
 		return fmt.Errorf("%s %s is blocked: this variable can inject code or redirect traffic in the child process", flag, key)
 	}
 	return nil
-}
-
-func validEnvName(name string) bool {
-	if name == "" || (name[0] != '_' && (name[0] < 'A' || name[0] > 'Z') && (name[0] < 'a' || name[0] > 'z')) {
-		return false
-	}
-	for i := 1; i < len(name); i++ {
-		c := name[i]
-		if c != '_' && (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
-			return false
-		}
-	}
-	return true
 }
 
 func readVSCodeEnvFile(path string) (map[string]string, error) {

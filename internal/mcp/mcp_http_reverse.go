@@ -319,7 +319,12 @@ func RunHTTPListenerProxy(
 		MediaPolicy:               opts.mediaPolicy(),
 		MediaPolicyFn:             opts.MediaPolicyFn,
 		ServerName:                opts.ServerName,
+		PolicyServerName:          opts.PolicyServerName,
 		ServerBinding:             opts.ServerBinding,
+		ServerBindingMode:         opts.ServerBindingMode,
+		ServerRevision:            opts.ServerRevision,
+		ServerIdentityFn:          opts.ServerIdentityFn,
+		ServerIdentityHeadersFn:   opts.ServerIdentityHeadersFn,
 		Suppress:                  opts.Suppress,
 		SuppressFn:                opts.SuppressFn,
 		ResponseTrustClass:        opts.ResponseTrustClass,
@@ -537,6 +542,33 @@ func RunHTTPListenerProxy(
 		requestBaseOpts := baseOpts
 		requestBaseOpts.Scanner = reqScanner
 		requestBaseOpts.ScannerFn = nil
+		if opts.ServerIdentityHeadersFn != nil {
+			// Use the same header merger as the actual upstream request. Bind only
+			// operator/client-selected headers, not transport-generated framing.
+			upReq := &http.Request{Header: opts.UpstreamHeaders.Clone()}
+			if upReq.Header == nil {
+				upReq.Header = make(http.Header)
+			}
+			forwardListenerUpstreamHeaders(upReq, r, r.Method == http.MethodGet)
+			requestBaseOpts.ServerIdentityFn = func() ServerIdentity {
+				return opts.ServerIdentityHeadersFn(upReq.Header)
+			}
+		}
+		if requestBaseOpts.ServerIdentityFn != nil {
+			identity := requestBaseOpts.ServerIdentityFn()
+			if identity.Refusal != "" {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: %s\n", identity.Refusal)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				resp, _ := json.Marshal(rpcError{
+					JSONRPC: jsonrpc.Version,
+					Error:   rpcErrorDetail{Code: -32003, Message: "pipelock: " + identity.Refusal},
+				})
+				_, _ = w.Write(resp)
+				return
+			}
+			requestBaseOpts = requestBaseOpts.withServerIdentity(identity)
+		}
 		// Per-request audit logger carrying the vetted correlation tag, so
 		// every event this HTTP request emits can be matched to the client's
 		// tag. The JSON-RPC id is client-chosen and not unique, so it cannot
@@ -1876,6 +1908,9 @@ func RunHTTPListenerProxy(
 			return
 		}
 		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)
+		if scanErr == nil {
+			scanErr = reqOpts.checkServerIdentity()
+		}
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			w.Header().Set("Content-Type", "application/json")

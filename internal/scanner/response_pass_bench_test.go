@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,26 +17,42 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
+// responsePassFixtureCap bounds how much of the local fixture is read.
+const responsePassFixtureCap = 2108646
+
 func responsePassFixture(t testing.TB) []byte {
 	t.Helper()
 	path := os.Getenv("PIPELOCK_RESPONSE_PASS_SAMPLE")
 	if path == "" {
 		t.Skip("set PIPELOCK_RESPONSE_PASS_SAMPLE to a local response fixture")
 	}
-	// Read no more than the fixture cap, so a large file or a device that
-	// never ends cannot exhaust memory or stall the test.
-	const size = 2108646
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	body, err := io.ReadAll(io.LimitReader(f, size))
+	body, err := readResponsePassFixture(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("bytes=%d sha256=%x", len(body), sha256.Sum256(body))
 	return body
+}
+
+// readResponsePassFixture reads at most responsePassFixtureCap bytes from a
+// regular file. The file is opened without blocking and its type is checked
+// on the open descriptor, so a path swapped for a FIFO or device between a
+// check and the open cannot stall the test, and a huge file cannot exhaust
+// memory.
+func readResponsePassFixture(path string) ([]byte, error) {
+	f, err := openFixtureNonblocking(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("response fixture %q is not a regular file", path)
+	}
+	return io.ReadAll(io.LimitReader(f, responsePassFixtureCap))
 }
 
 func TestResponsePassCosts(t *testing.T) {

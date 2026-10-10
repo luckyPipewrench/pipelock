@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-package recorder_test
+package receipt_test
 
 import (
 	"crypto/ed25519"

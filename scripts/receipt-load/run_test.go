@@ -207,14 +207,16 @@ func TestRealRunHoldsIntegrity(t *testing.T) {
 				// The median over 50ms windows can be zero on a loaded runner,
 				// where requests arrive in bursts and most windows are empty;
 				// that is scheduling, not a broken report. Check what the report
-				// must hold: windows exist, the busiest one saw traffic, and
-				// together they account for every measured request.
+				// must hold: the windows, including a final partial one, together
+				// account for every measured request. MaxRPS is not checked: it
+				// skips the partial window, so a run that finishes inside one
+				// window would read zero there while every request is counted.
 				windows := got.Performance.Windows
 				counted := 0
 				for _, r := range windows.Rates {
 					counted += r.Requests
 				}
-				if len(windows.Rates) == 0 || windows.MaxRPS <= 0 || counted != opt.requests {
+				if len(windows.Rates) == 0 || counted != opt.requests {
 					t.Fatalf("window rates do not account for the run (%d of %d requests): %+v", counted, opt.requests, windows)
 				}
 				if mode == modeRequired {

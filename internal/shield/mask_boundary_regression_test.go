@@ -4,6 +4,7 @@
 package shield
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,8 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 	e := NewEngine(nil)
 
 	// The prefix, then a long run of the pad character the old loop appended.
-	const padLen = 120000
+	const padLen = 60000
+	const growth = 4
 	hostile := "<html><body>" + "\x00pipelock-inline-script-" + strings.Repeat("x", padLen) +
 		"<script>var a = 1;</script></body></html>"
 
@@ -201,15 +203,19 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 	// cancellation, so a timeout that fails the test would leave the call
 	// running against hostile input for the rest of the process. The quadratic
 	// form took time proportional to the square of the pad, so comparing a
-	// doubled pad against a generous multiple of the single-pad time
-	// distinguishes linear from quadratic without an uncancellable wait.
+	// grown pad against a generous multiple of the base-pad time distinguishes
+	// linear from quadratic without an uncancellable wait.
 	// Each size is timed three times and the fastest run kept: a scheduler
 	// pause or coverage instrumentation on a loaded machine can only add time,
-	// so the minimum is the closest reading of the algorithm's own cost.
+	// so the minimum is the closest reading of the algorithm's own cost. A
+	// collection runs before every timed call, so neither size pays for garbage
+	// the other left behind; without it, race-instrumented CI runs of the
+	// linear form drifted past the old doubling threshold.
 	fastest := func(doc string) (Result, time.Duration) {
 		var res Result
 		best := time.Duration(0)
 		for range 3 {
+			runtime.GC()
 			start := time.Now()
 			res = e.Rewrite(doc, PipelineHTML, &cfg)
 			if d := time.Since(start); best == 0 || d < best {
@@ -218,26 +224,29 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 		}
 		return res, best
 	}
-	res, single := fastest(hostile)
-	doubled := strings.Replace(hostile, strings.Repeat("x", padLen), strings.Repeat("x", padLen*2), 1)
-	_, double := fastest(doubled)
+	res, base := fastest(hostile)
+	grown := strings.Replace(hostile, strings.Repeat("x", padLen), strings.Repeat("x", padLen*growth), 1)
+	_, large := fastest(grown)
 
 	if !strings.Contains(res.Content, "var a = 1;") {
 		t.Errorf("script content was not preserved: %s", res.Content[:80])
 	}
-	// Quadratic would be about four times; allow a wide margin so ordinary
-	// scheduling noise on a loaded runner cannot fail this, while a return to
-	// the quadratic form still stands out.
-	// Measured on this tree at a 120k pad: the linear form gives a ratio near
-	// 1.7 and the quadratic form near 5.8, so three separates them with room on
-	// both sides. Asserting the RATIO rather than an absolute duration keeps the
-	// test meaningful on a slower machine, where both numbers grow together.
-	if single <= 0 {
+	// Growing the pad fourfold costs about four times for the linear form and
+	// about sixteen times for the quadratic one; the quadratic form measured
+	// near 5.8 for a doubling, so it lands well above sixteen here. A threshold
+	// of ten leaves room on both sides: scheduling noise on a loaded runner
+	// cannot push the linear form there, and a return to the quadratic form
+	// still stands out. Asserting the RATIO rather than an absolute duration
+	// keeps the test meaningful on a slower machine, where both numbers grow
+	// together.
+	if base <= 0 {
 		t.Skip("timer resolution too coarse to compare growth")
 	}
-	if ratio := float64(double) / float64(single); ratio > 3 {
-		t.Errorf("doubling the pad multiplied the time by %.2f (single %v, double %v): the placeholder search is superlinear",
-			ratio, single, double)
+	ratio := float64(large) / float64(base)
+	t.Logf("growing the pad %dx took %.2fx the time (base %v, grown %v)", growth, ratio, base, large)
+	if ratio > 10 {
+		t.Errorf("growing the pad %dx multiplied the time by %.2f (base %v, grown %v): the placeholder search is superlinear",
+			growth, ratio, base, large)
 	}
 }
 

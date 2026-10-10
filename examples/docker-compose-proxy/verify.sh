@@ -71,14 +71,20 @@ fi
 
 # -- Test 1: build and start ---------------------------------------------------
 step "Test 1: build and start docker compose"
+COMPOSE_START_LOG="$WORK/compose-start.log"
+# Chained with && because errexit does not apply inside an if condition: a
+# failed build must fail the step, not fall through to up.
 if (
-  cd "$EXAMPLE_DIR"
-  docker compose build >/dev/null
-  docker compose up -d >/dev/null
-) >/dev/null 2>&1; then
+  cd "$EXAMPLE_DIR" &&
+    docker compose build &&
+    docker compose up -d
+) >"$COMPOSE_START_LOG" 2>&1; then
   pass "compose started"
 else
   fail "compose failed to start"
+  # A failed image pull or build never reaches the container logs, so show
+  # what build and up reported before the container logs.
+  tail -n 40 "$COMPOSE_START_LOG" >&2 || true
   (cd "$EXAMPLE_DIR" && docker compose logs --no-color) >&2 || true
   summary
   exit 1

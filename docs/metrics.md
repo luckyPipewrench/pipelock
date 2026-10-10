@@ -147,20 +147,20 @@ health sampler is not measuring that fact in the current runtime.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_evidence_local_recorder_operational` | gauge | (none) | One when this process's recorder and emitter are running with no locally observed sequence gap, self-audit failure, or ungated fsync failure. This does not check for a competing writer, prove corpus-wide integrity, or award an AEL grade. |
+| `pipelock_evidence_local_recorder_operational` | gauge | (none) | One when this process's recorder and every receipt chain's emitter are running, every chain's disk tail has been verified against its in-memory head, and no sequence gap, self-audit failure, or ungated fsync failure was observed locally. This does not check for a competing writer, prove corpus-wide integrity, or award an AEL grade. |
 | `pipelock_evidence_corpus_integrity_ok` | textfile gauge | (none) | One when the most recent complete deployment-managed whole-corpus audit found no structural damage. `pipelock init` installs the producer as a user-systemd timer; Prometheus must scrape its configured textfile directory. This metric never gates proxy traffic. |
 | `pipelock_evidence_corpus_last_audit_timestamp_seconds` | textfile gauge | (none) | Unix timestamp of the most recent whole-corpus audit. The generated corpus-integrity alert treats an audit older than 30 minutes as unhealthy. |
 | `pipelock_evidence_current_ael` | gauge | (none) | **Deprecated.** Always `NaN` (not a number). A live process cannot independently grade its own in-memory state. The series remains for one compatibility window so dashboards fail visibly instead of silently changing meaning. |
 | `pipelock_evidence_ael_requirement_ok` | gauge | `requirement` | **Deprecated.** Diagnostic inputs from the former live AEL estimate. Requirement labels are `recorder_enabled`, `emitter_healthy`, `durability_gate`, `heartbeats`, `anchoring_fresh`, `cpc_active`, and `selfaudit_ok`. These values do not award an AEL grade. |
-| `pipelock_evidence_chain_head_seq` | gauge | (none) | Last emitted in-memory receipt sequence, omitted when evidence health is not measured. |
-| `pipelock_evidence_chain_head_age_seconds` | gauge | (none) | Seconds since the last durable chain entry, omitted when evidence health is not measured. |
+| `pipelock_evidence_chain_head_seq` | gauge | (none) | Last emitted in-memory receipt sequence of the process chain, omitted when evidence health is not measured. With `receipt_chains` above 1, per-chain heads are in `/stats` under `evidence_health.self_audit.shards`. |
+| `pipelock_evidence_chain_head_age_seconds` | gauge | (none) | Seconds since the newest chain entry on any receipt chain, omitted when evidence health is not measured. |
 | `pipelock_evidence_heartbeat_interval_seconds` | gauge | (none) | Configured receipt heartbeat interval in seconds; absent from JSON stats until heartbeats are enabled. |
-| `pipelock_evidence_anchor_lag_receipts` | gauge | (none) | Receipts between the live chain head and the latest accepted anchor-state marker. |
-| `pipelock_evidence_last_anchor_timestamp_seconds` | gauge | (none) | Unix timestamp of the latest accepted local anchor-state marker, or zero when never anchored. |
-| `pipelock_evidence_anchored_final_seq` | gauge | (none) | Final receipt sequence covered by the latest accepted local anchor-state marker. |
+| `pipelock_evidence_anchor_lag_receipts` | gauge | (none) | Receipts between a chain head and that chain's latest accepted anchor-state marker; the largest lag across receipt chains. |
+| `pipelock_evidence_last_anchor_timestamp_seconds` | gauge | (none) | Unix timestamp of the oldest chain's latest accepted local anchor-state marker, or zero while any chain has never been anchored. |
+| `pipelock_evidence_anchored_final_seq` | gauge | (none) | Final receipt sequence covered by that same marker, or zero while any chain has never been anchored. |
 | `pipelock_evidence_sequence_gaps_total` | counter | `source` | Observed sequence gaps by bounded source. Source labels are `resume`, `self_audit`, and `unknown`. |
 | `pipelock_evidence_fsync_errors_total` | counter | `gated` | Per-action durability confirmation failures. `gated=true` means fail-closed receipt gating was active. |
-| `pipelock_evidence_selfaudit_ok` | gauge | (none) | One while evidence self-audit checks pass; latches to zero after a failure in the process. |
+| `pipelock_evidence_selfaudit_ok` | gauge | (none) | One while evidence self-audit checks pass; latches to zero after a proven failure in the process. An unverified chain (pending) does not latch it; see `self_audit.state`. |
 | `pipelock_evidence_selfaudit_failures_total` | counter | `check` | Evidence self-audit failures by bounded check label: `durability_invariant`, `tail_divergence`, or `sampler_error`. |
 
 The `/stats` endpoint also includes a nullable `evidence_health` object. In the
@@ -173,6 +173,22 @@ The `/stats` endpoint also includes a nullable `evidence_health` object. In the
 - `requirements.heartbeats` becomes true only after this process has recorded a
   heartbeat. A fresh process is pending until its first scheduled heartbeat;
   the generated corpus alert does not consume this process-local diagnostic.
+- `self_audit.state` is the worst per-chain tail state. `verified` means each
+  chain's last action receipt on disk matched that chain's in-memory head.
+  `pending` means a chain could not be compared yet: it was never audited, its
+  evidence is missing, a read failed, or its last receipt lies beyond the
+  self-audit's 8 MiB read bound. Pending is not green and does not latch.
+  `failed` is a proven mismatch (the disk tail is behind or ahead of the head,
+  or the same sequence has a different hash, or the tail is malformed) and
+  latches `selfaudit_ok` for the process lifetime. `self_audit.shards` lists
+  each chain's session, head, emitter health, tail state, and anchor coverage.
+  Every field in one entry comes from that chain alone.
+- `requirements.emitter_healthy` and `requirements.anchoring_fresh` cover every
+  receipt chain: one unhealthy or unanchored chain makes them false. The
+  top-level `anchor` object is `null` while any chain is unanchored.
+- `auto_anchor.last_error` stays set while any chain's latest anchor attempt
+  failed; a success on another chain does not clear it. The message names the
+  chain.
 - `run_state` is `OPEN` while the recorder process is running. `run_id` is `null`
   until bounded per-run recording exists. These are lifecycle facts, not
   verification states.

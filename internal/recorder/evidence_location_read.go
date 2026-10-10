@@ -122,7 +122,7 @@ func walkBoundedEntriesAtEvidenceLocation(location EvidenceLocation, name string
 		return 0, false, bytesRead, fmt.Errorf("restat evidence file: %w", err)
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() {
-		return 0, false, bytesRead, fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
+		return 0, false, bytesRead, ErrEvidenceFileChanged
 	}
 	return count, truncated, bytesRead, nil
 }
@@ -153,7 +153,7 @@ func ReadEvidenceLocationFileBounded(location EvidenceLocation, name string, max
 		return nil, err
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() {
-		return nil, fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
+		return nil, ErrEvidenceFileChanged
 	}
 	return raw, nil
 }
@@ -222,7 +222,7 @@ func ReadEvidenceLocationFileTail(location EvidenceLocation, name string, maxByt
 		return nil, false, err
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() {
-		return nil, false, fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
+		return nil, false, ErrEvidenceFileChanged
 	}
 	return raw, start > 0, nil
 }

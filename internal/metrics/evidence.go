@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -101,6 +102,7 @@ type EvidenceHealthStats struct {
 	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
 	TornTails                  EvidenceTornTailStats      `json:"torn_tails"`
 	TornTailPresent            bool                       `json:"torn_tail_present"`
+	SelfAudit                  EvidenceSelfAuditStats     `json:"self_audit"`
 	CPC                        any                        `json:"cpc"`
 	AnchoredFinalSeq           uint64                     `json:"-"`
 	AnchorLagReceipts          uint64                     `json:"-"`
@@ -177,20 +179,56 @@ type EvidenceAutoAnchorStats struct {
 	Attempts  uint64 `json:"attempts"`
 	Successes uint64 `json:"successes"`
 	Failures  uint64 `json:"failures"`
+	// LastError is the outstanding failure of one receipt chain, or empty when
+	// every chain's most recent attempt succeeded. With several chains a
+	// success on one chain never clears another chain's failure.
 	LastError string `json:"last_error"`
+}
+
+// Self-audit tail states. A shard is verified only when its own disk tail was
+// read and matched its own in-memory head. Pending means the comparison could
+// not be made (missing evidence, a transient read error, a tail beyond the
+// read bound); it is not green and is not latched. Failed is a proven
+// mismatch and latches selfaudit_ok for the process lifetime.
+const (
+	EvidenceSelfAuditVerified = "verified"
+	EvidenceSelfAuditPending  = "pending"
+	EvidenceSelfAuditFailed   = "failed"
+)
+
+// EvidenceSelfAuditStats reports the per-chain tail comparison behind
+// selfaudit_ok. State is the worst shard state.
+type EvidenceSelfAuditStats struct {
+	State  string                `json:"state"`
+	Shards []EvidenceShardHealth `json:"shards"`
+}
+
+// EvidenceShardHealth is one receipt chain's observation. Every field comes
+// from the same shard: its own emitter, its own recorder session, and its own
+// disk tail and anchor marker.
+type EvidenceShardHealth struct {
+	ShardIndex        int     `json:"shard_index"`
+	SessionID         string  `json:"session_id"`
+	ChainHeadSeq      uint64  `json:"chain_head_seq"`
+	EmitterHealthy    bool    `json:"emitter_healthy"`
+	TailState         string  `json:"tail_state"`
+	TailDetail        string  `json:"tail_detail,omitempty"`
+	AnchoredFinalSeq  *uint64 `json:"anchored_final_seq"`
+	AnchorLagReceipts uint64  `json:"anchor_lag_receipts"`
 }
 
 type EvidenceOperationalInput struct {
 	RecorderEnabled  bool
 	EmitterHealthy   bool
 	SelfAuditOK      bool
+	SelfAuditPending bool
 	UnresolvedGaps   bool
 	UngatedFsyncFail bool
 }
 
 func EvidenceLocalRecorderOperational(in EvidenceOperationalInput) bool {
 	return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK &&
-		!in.UnresolvedGaps && !in.UngatedFsyncFail
+		!in.SelfAuditPending && !in.UnresolvedGaps && !in.UngatedFsyncFail
 }
 
 // EvidenceTornTailStats reports unsigned process-local observations of damaged shards.
@@ -433,12 +471,20 @@ func (m *Metrics) RecordEvidenceAutoAnchorAttempt() {
 }
 
 func (m *Metrics) RecordEvidenceAutoAnchorSuccess() {
+	m.RecordEvidenceAutoAnchorSuccessFor("")
+}
+
+// RecordEvidenceAutoAnchorSuccessFor clears only sessionID's outstanding
+// failure. Each receipt chain anchors independently, so one chain succeeding
+// must not hide another chain that is still failing.
+func (m *Metrics) RecordEvidenceAutoAnchorSuccessFor(sessionID string) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	m.evidenceAutoAnchorStats.Successes++
-	m.evidenceAutoAnchorStats.LastError = ""
+	delete(m.evidenceAutoAnchorErrors, sessionID)
+	m.evidenceAutoAnchorStats.LastError = m.outstandingAutoAnchorErrorLocked()
 	m.mu.Unlock()
 	if m.evidenceAutoAnchorSuccesses != nil {
 		m.evidenceAutoAnchorSuccesses.Inc()
@@ -446,21 +492,46 @@ func (m *Metrics) RecordEvidenceAutoAnchorSuccess() {
 }
 
 func (m *Metrics) RecordEvidenceAutoAnchorFailure(err string) {
+	m.RecordEvidenceAutoAnchorFailureFor("", err)
+}
+
+// RecordEvidenceAutoAnchorFailureFor records sessionID's latest failure. It
+// stays outstanding until that same session next anchors successfully.
+func (m *Metrics) RecordEvidenceAutoAnchorFailureFor(sessionID, err string) {
 	if m == nil {
 		return
 	}
 	const maxLastErrorRunes = 1024
-	trimmed := []rune(strings.ToValidUTF8(strings.TrimSpace(err), "�"))
+	trimmed := []rune(strings.ToValidUTF8(strings.TrimSpace(err), "\uFFFD"))
 	if len(trimmed) > maxLastErrorRunes {
 		trimmed = trimmed[:maxLastErrorRunes]
 	}
 	m.mu.Lock()
 	m.evidenceAutoAnchorStats.Failures++
-	m.evidenceAutoAnchorStats.LastError = string(trimmed)
+	if m.evidenceAutoAnchorErrors == nil {
+		m.evidenceAutoAnchorErrors = make(map[string]string)
+	}
+	m.evidenceAutoAnchorErrors[sessionID] = string(trimmed)
+	m.evidenceAutoAnchorStats.LastError = m.outstandingAutoAnchorErrorLocked()
 	m.mu.Unlock()
 	if m.evidenceAutoAnchorFailures != nil {
 		m.evidenceAutoAnchorFailures.Inc()
 	}
+}
+
+// outstandingAutoAnchorErrorLocked picks one outstanding failure
+// deterministically (lowest session) so the reported error does not flap
+// between chains from one scrape to the next. Callers hold m.mu.
+func (m *Metrics) outstandingAutoAnchorErrorLocked() string {
+	if len(m.evidenceAutoAnchorErrors) == 0 {
+		return ""
+	}
+	sessions := make([]string, 0, len(m.evidenceAutoAnchorErrors))
+	for session := range m.evidenceAutoAnchorErrors {
+		sessions = append(sessions, session)
+	}
+	sort.Strings(sessions)
+	return m.evidenceAutoAnchorErrors[sessions[0]]
 }
 
 func (m *Metrics) EvidenceAutoAnchorStatsSnapshot() EvidenceAutoAnchorStats {

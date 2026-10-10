@@ -1032,12 +1032,19 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 // bytes using the same accepted formats as ExtractReceipts: recorder entries
 // first, then raw receipt JSONL as the compatibility fallback.
 func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
-	entries, err := recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
+	return ExtractReceiptsFromReader(bytes.NewReader(data))
+}
+
+// ExtractReceiptsFromReader is ExtractReceipts over an already-opened input.
+// A caller holding a secured snapshot uses it so the receipts come from the
+// bytes that snapshot checks, not from a second open of the pathname.
+func ExtractReceiptsFromReader(input io.ReadSeeker) ([]Receipt, error) {
+	entries, err := recorder.ReadHistoryEntriesFromReader(input)
 	if err != nil {
 		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
-		rawReceipts, rawErr := extractRawReceiptsJSONLBytes(data)
+		rawReceipts, rawErr := extractRawReceiptsJSONLFrom(input)
 		if rawErr != nil {
 			return nil, rawErr
 		}
@@ -1050,7 +1057,14 @@ func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	if err != nil || len(receipts) > 0 {
 		return receipts, err
 	}
-	return extractRawReceiptsJSONLBytes(data)
+	return extractRawReceiptsJSONLFrom(input)
+}
+
+func extractRawReceiptsJSONLFrom(input io.ReadSeeker) ([]Receipt, error) {
+	if _, err := input.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind evidence: %w", err)
+	}
+	return extractRawReceiptsJSONLReader(input)
 }
 
 // WholeRecorderResult describes a verified recorder file or selected recorder
@@ -1295,10 +1309,6 @@ func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
 		return nil, fmt.Errorf("reading raw receipts: %w", err)
 	}
 	return receipts, nil
-}
-
-func extractRawReceiptsJSONLBytes(data []byte) ([]Receipt, error) {
-	return extractRawReceiptsJSONLReader(bytes.NewReader(data))
 }
 
 func extractRawReceiptsJSONLReader(input io.Reader) ([]Receipt, error) {

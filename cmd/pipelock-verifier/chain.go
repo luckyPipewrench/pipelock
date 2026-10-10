@@ -458,6 +458,12 @@ func evidenceContentError(err error) error {
 	return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 }
 
+// legacyChainExtraction runs the legacy fallback read. Tests replace it to
+// swap the pathname around that read and inspect what it returned.
+var legacyChainExtraction = func(extract func() ([]actionreceipt.Receipt, error)) ([]actionreceipt.Receipt, error) {
+	return extract()
+}
+
 // readChainFileInput keeps format detection and extraction inside one secured
 // file snapshot. Only per-line format limits apply, not an artifact byte budget.
 func readChainFileInput(name, path string, trust chainTrust) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
@@ -512,9 +518,15 @@ func readChainFileInput(name, path string, trust chainTrust) ([]actionreceipt.Re
 		if len(evidence) > 0 && !hasActionReceiptEntry(input) {
 			return nil
 		}
-		// The legacy extractor retains its raw-receipt compatibility. The outer
-		// snapshot check binds this read to the descriptor used for classification.
-		actions, err = actionreceipt.ExtractReceipts(path)
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		// The legacy extractor retains its raw-receipt compatibility. It reads the
+		// descriptor the outer snapshot checks; reopening the pathname would let a
+		// replacement swapped in and restored around this read go unnoticed.
+		actions, err = legacyChainExtraction(func() ([]actionreceipt.Receipt, error) {
+			return actionreceipt.ExtractReceiptsFromReader(input)
+		})
 		return err
 	})
 	if err != nil {

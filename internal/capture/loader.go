@@ -89,22 +89,31 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 	// cumulative counts in each sentinel, so the maximum value is the total.
 	totalDropped := 0
 	metaDir := filepath.Join(sessionsDir, metaSessionID)
-	if metaResult, metaErr := recorder.QuerySession(metaDir, metaSessionID, &recorder.QueryFilter{Type: EntryTypeCaptureDrop}); metaErr == nil {
-		if metaResult.Truncated {
-			return nil, 0, 0, "", fmt.Errorf("%w: capture metadata evidence exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded)
-		}
-		for _, entry := range metaResult.Entries {
-			detailJSON, marshalErr := json.Marshal(entry.Detail)
-			if marshalErr != nil {
-				continue
+	metaDirectory, metaOpenErr := recorder.OpenEvidenceDirectory(metaDir)
+	if metaOpenErr != nil && !errors.Is(metaOpenErr, os.ErrNotExist) {
+		return nil, 0, 0, "", fmt.Errorf("opening capture metadata: %w", metaOpenErr)
+	}
+	if metaOpenErr == nil {
+		_ = metaDirectory.Close()
+		metaErr := recorder.WalkSessionHistory(metaDir, metaSessionID, func(entry recorder.Entry) error {
+			if entry.Type != EntryTypeCaptureDrop {
+				return nil
+			}
+			detailJSON, err := json.Marshal(entry.Detail)
+			if err != nil {
+				return fmt.Errorf("marshal capture drop metadata: %w", err)
 			}
 			var drop CaptureDropDetail
-			if unmarshalErr := json.Unmarshal(detailJSON, &drop); unmarshalErr != nil {
-				continue
+			if err := json.Unmarshal(detailJSON, &drop); err != nil {
+				return fmt.Errorf("parse capture drop metadata: %w", err)
 			}
 			if drop.Count > totalDropped {
 				totalDropped = drop.Count
 			}
+			return nil
+		})
+		if metaErr != nil {
+			return nil, 0, 0, "", fmt.Errorf("reading capture metadata: %w", metaErr)
 		}
 	}
 
@@ -131,11 +140,6 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 	for _, sessionName := range sessionNames {
 		sessionDir := filepath.Join(sessionsDir, sessionName)
 
-		sessions, listErr := recorder.ListSessions(sessionDir)
-		if listErr != nil {
-			return nil, 0, 0, "", fmt.Errorf("listing sessions in %s: %w", sessionName, listErr)
-		}
-
 		// Fresh scanner per session to avoid rate-limiter / data-budget bleed.
 		sc, err := scanner.New(cfg)
 		if err != nil {
@@ -146,36 +150,22 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 			re = NewContractReplayEngine(cfg, sc, *opts.Contract)
 		}
 
-		for _, sessionID := range sessions {
-			result, queryErr := recorder.QuerySession(sessionDir, sessionID, &recorder.QueryFilter{
-				Type: EntryTypeCapture,
-			})
-			if queryErr != nil {
-				sc.Close()
-				return nil, 0, 0, "", fmt.Errorf("querying session %s/%s: %w", sessionName, sessionID, queryErr)
-			}
-			if result.Truncated {
-				sc.Close()
-				return nil, 0, 0, "", fmt.Errorf("%w: capture evidence for session %s/%s exceeded bounded read limits", recorder.ErrEvidenceReadLimitExceeded, sessionName, sessionID)
-			}
+		walkErr := recorder.WalkHistorySessions(sessionDir, func(sessionID string) error {
+			return recorder.WalkSessionHistory(sessionDir, sessionID, func(entry recorder.Entry) error {
+				if entry.Type != EntryTypeCapture {
+					return nil
+				}
 
-			for _, entry := range result.Entries {
 				summary, scannerInput, sidecarDecrypted, err := extractCaptureSummaryWithOptions(entry, sessionDir, escrowPriv)
 				if err != nil {
 					if errors.Is(err, ErrSidecarDecrypt) {
-						sc.Close()
-						return nil, 0, 0, "", err
+						return err
 					}
 					if errors.Is(err, ErrUnsupportedCaptureSchema) {
 						totalSkipped++
-						continue
+						return nil
 					}
-					if entry.Type == EntryTypeCapture {
-						sc.Close()
-						return nil, 0, 0, "", fmt.Errorf("parse capture evidence for session %s/%s: %w", sessionName, sessionID, err)
-					}
-					totalSkipped++
-					continue
+					return fmt.Errorf("parse capture evidence for session %s/%s: %w", sessionName, sessionID, err)
 				}
 
 				// Extract the original config hash from the first valid record.
@@ -190,10 +180,14 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 					Result:    replayed,
 					Timestamp: entry.Timestamp,
 				})
-			}
-		}
+				return nil
+			})
+		})
 
 		sc.Close()
+		if walkErr != nil {
+			return nil, 0, 0, "", fmt.Errorf("reading capture session %s: %w", sessionName, walkErr)
+		}
 	}
 
 	return allRecords, totalDropped, totalSkipped, originalHash, nil

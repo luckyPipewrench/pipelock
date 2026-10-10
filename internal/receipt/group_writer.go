@@ -137,6 +137,12 @@ func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receipt
 	if verified.Verdict != GroupValid && verified.Verdict != GroupIncomplete {
 		return nil, fmt.Errorf("receipt group predecessor is not complete: %s", verified.Error)
 	}
+	// A predecessor that could not be read, or changed while it was read, has
+	// not been shown to be a crashed group. Stop before publishing anything so
+	// a transient read failure never becomes durable successor state.
+	if verified.readIncomplete {
+		return nil, fmt.Errorf("receipt group predecessor could not be verified; fix access to the evidence directory and restart: %s", verified.Error)
+	}
 	// An incomplete successor may have crashed after its shard opens but before
 	// publishing its incoming transition. It cannot become a predecessor until
 	// that signed link exists, even though its own close is legitimately absent.

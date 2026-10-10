@@ -407,7 +407,7 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 		receipts, err = receipt.ExtractReceiptsBytes(data)
 	} else {
 		var entries []recorder.Entry
-		entries, err = recorder.ReadEntriesFromReader(bytes.NewReader(data))
+		entries, err = recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
 		if err == nil {
 			receipts, evidenceReceipts, _, err = receipt.RecorderFileChains(filepath.Base(evidencePath), entries)
 		}

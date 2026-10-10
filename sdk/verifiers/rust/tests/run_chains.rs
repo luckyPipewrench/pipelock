@@ -121,6 +121,48 @@ fn run_cli(args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
+fn signed_run_chain_streams_past_the_former_input_cap_and_rejects_long_lines() {
+    let fixtures = fixtures();
+    let source = fixtures
+        .join("valid")
+        .join("evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "pipelock-rust-streaming-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&dir).expect("create temporary directory");
+    let target = dir.join("evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl");
+    let mut expanded = fs::read(source).expect("read signed producer fixture");
+    for _ in 0..((8 << 20) / 2 + 1) {
+        expanded.extend_from_slice(b"\r\n");
+    }
+    fs::write(&target, expanded).expect("write expanded JSONL");
+    let target_arg = target.to_str().expect("utf8 path");
+    let key_arg = fixtures.join("signer-key.hex");
+    let key_arg = key_arg.to_str().expect("utf8 key path");
+    let (code, stdout, stderr) = run_cli(&["chain", target_arg, "--key", key_arg, "--json"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("json report");
+    assert_eq!(report["valid"], true);
+    assert_eq!(report["receipt_count"], 5);
+
+    fs::write(
+        &target,
+        [vec![b' '; (1 << 20) + 1], b"\r\n".to_vec()].concat(),
+    )
+    .expect("write overlong line");
+    let (code, stdout, stderr) = run_cli(&["chain", target_arg, "--key", key_arg, "--json"]);
+    assert_ne!(code, 0, "{stdout}{stderr}");
+    assert!(!stdout.contains("\"valid\":true"), "{stdout}{stderr}");
+    assert!(stderr.contains("recorder entry limit"), "{stdout}{stderr}");
+    fs::remove_dir_all(dir).expect("remove temporary directory");
+}
+
+#[test]
 fn endorsement_usage_precedes_missing_file_in_directory_mode() {
     let directory = fixtures().join("valid");
     let missing = directory.join("missing-endorsement.json");

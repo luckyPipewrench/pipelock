@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -443,8 +444,8 @@ func readClaimFile(path string) ([]byte, os.FileInfo, error) {
 //
 // A healthy report does NOT prove continuity: a deleted link file leaves its
 // successor listed in Unlinked, which is not a finding (see Unlinked).
-func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
-	report := BaseReport{Base: base}
+func VerifyBase(dir, base string, opts BaseVerifyOptions) (report BaseReport, retErr error) {
+	report = BaseReport{Base: base}
 	var ix evidenceIndex
 	var err error
 	if opts.ExcludeReceiptGroupSessions {
@@ -456,6 +457,54 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		return report, fmt.Errorf("listing sessions: %w", err)
 	}
 	sessions := baseSessions(ix, base)
+	if !opts.LinksOnly {
+		before, err := fingerprintBaseShards(ix, sessions)
+		if err != nil {
+			return report, err
+		}
+		root, err := os.Lstat(dir)
+		if err != nil {
+			return report, err
+		}
+		defer func() {
+			var final evidenceIndex
+			var scanErr error
+			if opts.ExcludeReceiptGroupSessions {
+				final, scanErr = indexRecorderFilesExcludingReceiptGroups(dir)
+			} else {
+				final, scanErr = indexRecorderFiles(dir)
+			}
+			after, checkErr := fingerprintBaseShards(final, baseSessions(final, base))
+			endRoot, rootErr := os.Lstat(dir)
+			if scanErr != nil || checkErr != nil || after != before || rootErr != nil || !os.SameFile(root, endRoot) {
+				detail := "evidence changed during verification; no verdict reached"
+				// Conclusions drawn from the changed inventory are void, but a
+				// per-read change finding already names what changed, and a
+				// refused read (a swapped-in symlink) is a fact about the
+				// directory, not a conclusion from its contents. Keep those and
+				// fall back to the whole-inventory detail only when this final
+				// check is the sole observer.
+				var changed []BaseFinding
+				for _, f := range report.Findings {
+					if f.EvidenceChanged || strings.Contains(f.Detail, recorder.ErrEvidenceRefused.Error()) {
+						changed = append(changed, f)
+					}
+				}
+				if len(changed) == 0 {
+					changed = []BaseFinding{{Kind: FindingCorruptChain, Session: base, Detail: detail, EvidenceChanged: true}}
+				}
+				report.Findings = changed
+				for i := range report.Chains {
+					report.Chains[i].Valid = false
+					if report.Chains[i].Error == "" {
+						report.Chains[i].Error = detail
+					}
+				}
+				// A typed finding is the existing unavailable-result surface.
+				retErr = nil
+			}
+		}()
+	}
 	links, err := readChainLinkFiles(dir)
 	if err != nil {
 		return report, err
@@ -657,6 +706,31 @@ func VerifyBase(dir, base string, opts BaseVerifyOptions) (BaseReport, error) {
 		report.Chains = append(report.Chains, data[s].chain)
 	}
 	return report, nil
+}
+
+// fingerprintBaseShards binds even failed reads to their starting inventory.
+// The existing index owns filenames; this adds only a fixed-size digest.
+func fingerprintBaseShards(ix evidenceIndex, sessions []string) ([sha256.Size]byte, error) {
+	h := sha256.New()
+	for _, session := range sessions {
+		// Inventory only. A duplicate sequence start is a verdict the chain
+		// read reports as corrupt_chain; refusing it here would turn that
+		// finding into a listing failure.
+		for _, path := range ix[session] {
+			info, err := os.Lstat(path)
+			if err != nil {
+				return [sha256.Size]byte{}, err
+			}
+			stamp, err := recorder.EvidenceMetadataIdentity(path, info)
+			if err != nil {
+				return [sha256.Size]byte{}, err
+			}
+			_, _ = fmt.Fprintf(h, "%d:%s:%s:%d:%d\n", len(path), path, stamp, info.Size(), info.ModTime().UnixNano())
+		}
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 // checkRunNonces reports two chains whose signed action records carry the
@@ -1256,7 +1330,7 @@ func readIndexedEntries(ix evidenceIndex, session string) ([]recorder.Entry, err
 	}
 	var entries []recorder.Entry
 	for _, f := range files {
-		es, readErr := recorder.ReadEntries(f)
+		es, readErr := recorder.ReadHistoryEntries(f)
 		if readErr != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), readErr)
 		}

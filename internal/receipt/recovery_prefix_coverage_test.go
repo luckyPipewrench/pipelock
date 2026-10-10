@@ -123,7 +123,7 @@ func TestRecoveryPrefixRejectsEmptyTrustedKey(t *testing.T) {
 	}{
 		{"prefix", func() error { return verifyRecoveryPrefix(seal.PredecessorSession, entries, []string{" "}) }},
 		{"observation", func() error {
-			_, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, []string{" "}, 0)
+			_, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, []string{" "})
 			return err
 		}},
 	} {
@@ -138,23 +138,19 @@ func TestRecoveryPrefixRejectsEmptyTrustedKey(t *testing.T) {
 func TestRecoveryObservationEarlierShardErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		limit    int64
 		edit     func(*testing.T, string, []recorder.Entry)
 		want     string
 		sentinel error
 	}{
-		{"oversize", 1, func(t *testing.T, path string, es []recorder.Entry) { writeRecoveryStreamEntries(t, path, es, nil) }, "", recorder.ErrEvidenceReadLimitExceeded},
-		{"parse", recorder.MaxEvidenceReadFileBytes, func(t *testing.T, path string, _ []recorder.Entry) {
+		{"parse", func(t *testing.T, path string, _ []recorder.Entry) {
 			if err := os.WriteFile(path, []byte("{\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, "", nil},
-		{"bounded_invalid_prefix", recorder.MaxEvidenceReadFileBytes, func(t *testing.T, path string, es []recorder.Entry) {
-			es[0].Sequence++
-			es[0].Hash = recorder.ComputeHash(es[0])
-			writeRecoveryStreamEntries(t, path, es, nil)
-		}, "genesis mismatch", nil},
-		{"stream_invalid_prefix", 0, func(t *testing.T, path string, es []recorder.Entry) {
+		{"torn_non_final", func(t *testing.T, path string, es []recorder.Entry) {
+			writeRecoveryStreamEntries(t, path, es, []byte("{"))
+		}, "", recorder.ErrTornTail},
+		{"stream_invalid_prefix", func(t *testing.T, path string, es []recorder.Entry) {
 			es[0].Sequence++
 			es[0].Hash = recorder.ComputeHash(es[0])
 			writeRecoveryStreamEntries(t, path, es, nil)
@@ -166,11 +162,11 @@ func TestRecoveryObservationEarlierShardErrors(t *testing.T) {
 			path := filepath.Join(dir, seal.Shard)
 			writeRecoveryStreamEntries(t, path, es[:2], nil)
 			writeRecoveryStreamEntries(t, filepath.Join(dir, "evidence-"+seal.PredecessorSession+"-2.jsonl"), es[2:], []byte{0})
-			if _, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil, 0); err != nil {
+			if _, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil); err != nil {
 				t.Fatalf("positive control: %v", err)
 			}
 			tc.edit(t, path, es[:2])
-			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil, tc.limit)
+			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil)
 			if err == nil || (tc.sentinel != nil && !errors.Is(err, tc.sentinel)) || (tc.want != "" && !strings.Contains(err.Error(), tc.want)) {
 				t.Fatalf("want %q/%v, got %v", tc.want, tc.sentinel, err)
 			}

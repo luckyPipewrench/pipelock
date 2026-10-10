@@ -106,8 +106,10 @@ func TestReceiptGroupVerificationDetectsManifestAndDirectoryChanges(t *testing.T
 				}
 				return os.WriteFile(path, []byte("changed"), 0o600)
 			}})
-			if result.Verdict != GroupInvalid || !strings.Contains(result.Error, tc.want) {
-				t.Fatalf("changed evidence verdict=%+v, want %q", result, tc.want)
+			// Evidence that changes mid-verification yields no verdict: it is
+			// incomplete and retryable, not proof of corruption.
+			if result.Verdict != GroupIncomplete || !strings.Contains(result.Error, "no verdict reached") {
+				t.Fatalf("changed evidence verdict=%+v, want incomplete with no verdict (%s)", result, tc.want)
 			}
 		})
 	}

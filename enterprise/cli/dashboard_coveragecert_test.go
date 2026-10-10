@@ -415,20 +415,21 @@ func TestRunCoverageCertGenerate_FiltersDeclaredWindow(t *testing.T) {
 	}
 }
 
-func TestLoadCoverageCertSessionReceipts_FailsClosedOnTruncation(t *testing.T) {
+func TestLoadCoverageCertSessionReceiptsReadsCompleteHistory(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, err := signing.GenerateKeyPair()
 	if err != nil {
-		t.Fatalf("GenerateKeyPair: %v", err)
+		t.Fatal(err)
 	}
-	writeCoverageCertEvidenceSession(t, dir, priv, "limited", "agent-a", 2)
-
-	_, err = loadCoverageCertSessionReceipts(dir, "limited", 1)
-	if err == nil {
-		t.Fatal("loadCoverageCertSessionReceipts should reject truncated reads")
+	writeCoverageCertEvidenceSession(t, dir, priv, "complete", "agent-a", 2)
+	for i := range 260 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("unrelated-%d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !strings.Contains(err.Error(), "receipt read limit 1 reached") {
-		t.Fatalf("error = %q, want read-limit rejection", err.Error())
+	receipts, err := loadCoverageCertSessionReceipts(dir, "complete")
+	if err != nil || len(receipts) != 2 {
+		t.Fatalf("receipts=%d err=%v", len(receipts), err)
 	}
 }
 

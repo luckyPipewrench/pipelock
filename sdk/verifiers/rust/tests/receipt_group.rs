@@ -19,6 +19,125 @@ const ATTACK_FIXTURE_PARTS: [&[u8]; 7] = [
 const MATRIX_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-matrix.zip.gz");
 const V2_FIXTURE: &[u8] = include_bytes!("fixtures/receipt-groups-v2.zip");
 
+/// Reports whether mode 0 actually blocks reads. A process running as root or
+/// with CAP_DAC_OVERRIDE can still read the file, so the caller skips instead
+/// of testing a state it could not create.
+#[cfg(unix)]
+fn unreadable(path: &std::path::Path) -> bool {
+    match fs::read(path) {
+        Ok(_) => {
+            eprintln!("skip: this process can read mode-0 files");
+            false
+        }
+        Err(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            true
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_group_shard_is_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = fixture("group-valid");
+    let (group, keys) = trust(&dir);
+    assert_eq!(
+        verify_receipt_group(&dir, &group, &keys).verdict,
+        "GROUP_VALID"
+    );
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            name.starts_with("evidence-") && name.ends_with(".jsonl")
+        })
+        .expect("fixture has a group shard");
+    fs::set_permissions(&shard, fs::Permissions::from_mode(0o000)).unwrap();
+    if !unreadable(&shard) {
+        return;
+    }
+    let report = verify_receipt_group(&dir, &group, &keys);
+    assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{report:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_manifests_are_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    for phase in ["open", "close"] {
+        let dir = fixture("group-valid");
+        let (group, keys) = trust(&dir);
+        assert_eq!(
+            verify_receipt_group(&dir, &group, &keys).verdict,
+            "GROUP_VALID"
+        );
+        let path = dir.join(format!("receipt-group-{group}-{phase}.json"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if !unreadable(&path) {
+            return;
+        }
+        let report = verify_receipt_group(&dir, &group, &keys);
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{phase}: {report:?}");
+    }
+}
+
+#[test]
+fn malformed_opening_field_names_do_not_change_the_invalid_verdict() {
+    let dir = fixture("group-valid");
+    let (group, keys) = trust(&dir);
+    assert_eq!(
+        verify_receipt_group(&dir, &group, &keys).verdict,
+        "GROUP_VALID"
+    );
+    let path = dir.join(format!("receipt-group-{group}-open.json"));
+    let mut opening: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    opening
+        .as_object_mut()
+        .unwrap()
+        .insert("evidence read unavailable: field".into(), Value::Bool(true));
+    fs::write(path, serde_json::to_vec(&opening).unwrap()).unwrap();
+    let report = verify_receipt_group(&dir, &group, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_native_ael_files_are_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    for artifact in ["manifest", "key", "recorder"] {
+        let dir = fixture("group-valid");
+        let (group, keys) = trust(&dir);
+        assert_eq!(
+            verify_receipt_group(&dir, &group, &keys).verdict,
+            "GROUP_VALID"
+        );
+        let run = fs::read_dir(dir.join("ael"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let path = match artifact {
+            "manifest" => run.join("manifest.json"),
+            "key" => fs::read_dir(run.join("keys"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+            _ => run.join("recorders/pipelock.jsonl"),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if !unreadable(&path) {
+            return;
+        }
+        let report = verify_receipt_group(&dir, &group, &keys);
+        assert_eq!(report.verdict, "GROUP_INCOMPLETE", "{artifact}: {report:?}");
+    }
+}
+
 fn attack_fixture() -> Vec<u8> {
     ATTACK_FIXTURE_PARTS.concat()
 }
@@ -307,6 +426,63 @@ fn go_produced_groups_verify_with_native_ael() {
     let (id, keys) = trust(&dir);
     let report = verify_receipt_group(&dir, &id, &keys);
     assert_eq!(report.verdict, "GROUP_VALID", "{report:?}");
+}
+
+#[test]
+fn ordinary_group_shard_streams_large_history_and_rejects_bad_tails() {
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    use std::io::Write;
+    file.write_all(&b"\r\n".repeat((8 << 20) / 2 + 1)).unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_VALID", "{report:?}");
+
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    file.write_all(&vec![b' '; (1 << 20) + 1]).unwrap();
+    file.write_all(b"\r\n").unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("recorder entry limit"));
+
+    let dir = fixture("group-valid");
+    let (id, keys) = trust(&dir);
+    let shard = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
+        .unwrap()
+        .path();
+    let mut file = fs::OpenOptions::new().append(true).open(&shard).unwrap();
+    file.write_all(b"torn-tail").unwrap();
+    drop(file);
+    let report = verify_receipt_group(&dir, &id, &keys);
+    assert_eq!(report.verdict, "GROUP_INVALID", "{report:?}");
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("torn segment"));
 }
 
 #[test]

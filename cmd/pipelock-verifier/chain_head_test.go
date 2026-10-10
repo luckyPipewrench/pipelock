@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -15,11 +16,18 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
 
-func TestChainV2RejectsOversizedEvidenceAtExtractor(t *testing.T) {
-	data := make([]byte, maxVerifierInputBytes+1)
-	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", chainTrust{}, chainOptions{})
-	if !handled || err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("oversized v2 evidence: handled=%t err=%v", handled, err)
+func TestChainV2HasNoAggregateEvidenceBudget(t *testing.T) {
+	fixture := newEvidenceFixture(t, 2)
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	fixture.writeEvidenceJSONL(t, path)
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, bytes.Repeat([]byte("\n"), int(maxVerifierInputBytes))...)
+	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", chainTrust{keys: []string{fixture.keyHex}}, chainOptions{})
+	if !handled || err != nil {
+		t.Fatalf("large valid evidence: handled=%v err=%v", handled, err)
 	}
 }
 

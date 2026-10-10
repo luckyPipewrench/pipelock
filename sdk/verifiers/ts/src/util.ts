@@ -32,6 +32,7 @@ export function sha256Hex(data: Buffer | string): string {
 }
 
 export const maxVerifierInputBytes = 8 << 20;
+export const maxRecorderLineBytes = 1 << 20;
 
 // Node normalizes "symlink/.." before realpathSync sees it. Walk each path
 // component so a parent traversal applies to the symlink's target, as it does
@@ -107,6 +108,129 @@ export function readVerifierBytes(
       throw new RuntimeError(`input exceeds ${maxBytes} bytes`);
     }
     return data.subarray(0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function forEachVerifierJSONLLine(
+  file: string,
+  directoryChild: boolean,
+  visit: (line: string, lineNumber: number) => void,
+  includeUnterminated = true,
+): boolean {
+  if (directoryChild && (path.basename(file) !== file || file === "." || file === "..")) {
+    throw new RuntimeError("evidence filename must be a base name");
+  }
+  const clean = directoryChild ? file : resolveOperatorFilePath(file);
+  const before = directoryChild ? lstatSync(clean, { bigint: true }) : undefined;
+  if (before?.isSymbolicLink()) throw new RuntimeError("refuse symlink in evidence directory");
+  const fd = openSync(
+    clean,
+    constants.O_RDONLY | constants.O_NONBLOCK | (directoryChild ? (constants.O_NOFOLLOW ?? 0) : 0),
+  );
+  try {
+    const initial = fstatSync(fd, { bigint: true });
+    if (!initial.isFile()) throw new RuntimeError("input must be a regular file");
+    if (
+      before !== undefined &&
+      (initial.dev !== before.dev || initial.ino !== before.ino || initial.ino === 0n)
+    ) {
+      throw new RuntimeError("evidence file changed while opening");
+    }
+    const chunk = Buffer.allocUnsafe(64 << 10);
+    let pending = Buffer.alloc(0);
+    let lineNumber = 1;
+    let torn = false;
+    let failure: unknown;
+    let remaining = initial.size;
+    const emit = (raw: Buffer, terminated: boolean): void => {
+      let payloadLength = raw.length;
+      if (terminated && payloadLength > 0 && raw[payloadLength - 1] === 0x0d) payloadLength--;
+      if (payloadLength > maxRecorderLineBytes) {
+        throw new RuntimeError(
+          `line ${lineNumber}: exceeds ${maxRecorderLineBytes}-byte recorder entry limit`,
+        );
+      }
+      if (raw.length !== 0 && !(terminated && raw.length === 1 && raw[0] === 0x0d)) {
+        visit(decodeUTF8(raw, "evidence jsonl"), lineNumber);
+      }
+      lineNumber++;
+    };
+    try {
+      while (true) {
+        if (remaining === 0n) break;
+        const n = readSync(
+          fd,
+          chunk,
+          0,
+          Number(remaining < BigInt(chunk.length) ? remaining : BigInt(chunk.length)),
+          null,
+        );
+        if (n === 0) break;
+        remaining -= BigInt(n);
+        let start = 0;
+        for (let i = 0; i < n; i++) {
+          if (chunk[i] !== 0x0a) continue;
+          const part = chunk.subarray(start, i);
+          const raw = pending.length === 0 ? part : Buffer.concat([pending, part]);
+          emit(raw, true);
+          pending = Buffer.alloc(0);
+          start = i + 1;
+        }
+        if (start < n) {
+          const tail = chunk.subarray(start, n);
+          pending = pending.length === 0 ? Buffer.from(tail) : Buffer.concat([pending, tail]);
+          if (pending.length > maxRecorderLineBytes + 1) {
+            throw new RuntimeError(
+              `line ${lineNumber}: exceeds ${maxRecorderLineBytes}-byte recorder entry limit`,
+            );
+          }
+        }
+        if (start === n) pending = Buffer.alloc(0);
+      }
+      if (pending.length > 0) {
+        if (pending.length > maxRecorderLineBytes) {
+          throw new RuntimeError(
+            `line ${lineNumber}: exceeds ${maxRecorderLineBytes}-byte recorder entry limit`,
+          );
+        }
+        if (includeUnterminated) emit(pending, false);
+        else torn = true;
+      }
+    } catch (error) {
+      // Still inspect the descriptor and pathname after parser/consumer errors.
+      failure = error;
+    }
+    const final = fstatSync(fd, { bigint: true });
+    // ctime catches a same-inode overwrite whose mtime is restored on Unix.
+    // On Windows and filesystems with coarse/change-time semantics, an
+    // unchanged size and reported timestamp cannot prove an atomic snapshot.
+    if (
+      final.dev !== initial.dev ||
+      final.ino !== initial.ino ||
+      final.size !== initial.size ||
+      final.mtimeNs !== initial.mtimeNs ||
+      final.ctimeNs !== initial.ctimeNs
+    ) {
+      throw new RuntimeError("input changed while reading");
+    }
+    const after = directoryChild
+      ? lstatSync(clean, { bigint: true })
+      : statSync(clean, { bigint: true });
+    if (
+      after.isSymbolicLink() ||
+      after.dev !== initial.dev ||
+      after.ino !== initial.ino ||
+      after.size !== initial.size ||
+      after.mtimeNs !== initial.mtimeNs ||
+      after.ctimeNs !== initial.ctimeNs ||
+      after.ino === 0n
+    ) {
+      throw new RuntimeError("evidence file changed while reading");
+    }
+    if (failure !== undefined) throw failure;
+    return torn;
   } finally {
     closeSync(fd);
   }

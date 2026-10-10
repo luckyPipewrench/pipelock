@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +69,41 @@ type chainSetFinding struct {
 // matches its link, whether the predecessor has a second successor, or
 // whether another chain replays it.
 func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocation, trust chainTrust, opts chainOptions) (bool, error) {
+	base := opts.sessionID
+	if b, ok := actionreceipt.RunSessionBase(base); ok {
+		base = b
+	}
+	var output, diagnostics bytes.Buffer
+	var handled, consumed bool
+	err := actionreceipt.WithBaseHistorySnapshot(location.Dir, base, func() error {
+		consumed = true
+		var consumeErr error
+		handled, consumeErr = runChainSetIfRunsInner(&output, &diagnostics, location, trust, opts)
+		return consumeErr
+	})
+	// A snapshot that failed before its consumer ran is a listing failure,
+	// classified as the consumer classifies its own.
+	if recorder.IsEvidenceUnavailable(err) || (err != nil && !consumed) {
+		// The buffered report is void, but a JSON consumer still needs a
+		// document. Text mode says incomplete, never broken: no verdict
+		// was reached.
+		if opts.jsonOutput {
+			writeJSON(stdout, chainReport{Path: location.Dir, Error: err.Error()})
+		} else {
+			_, _ = fmt.Fprintf(stderr, "VERIFICATION INCOMPLETE: %s\n  error:      %s\n", location.Dir, err)
+		}
+		return true, evidenceContentError(err)
+	}
+	if _, writeErr := io.Copy(stdout, &output); writeErr != nil {
+		return true, writeErr
+	}
+	if _, writeErr := io.Copy(stderr, &diagnostics); writeErr != nil {
+		return true, writeErr
+	}
+	return handled, err
+}
+
+func runChainSetIfRunsInner(stdout, stderr io.Writer, location recorder.EvidenceLocation, trust chainTrust, opts chainOptions) (bool, error) {
 	base := opts.sessionID
 	if b, ok := actionreceipt.RunSessionBase(base); ok {
 		base = b

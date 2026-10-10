@@ -22,13 +22,18 @@ pub enum VerifierError {
     Runtime(String),
     #[error("{0}")]
     Invalid(String),
+    /// The evidence exists but could not be read (permissions, device I/O).
+    /// No verdict is reached, so it exits like a runtime error, and group
+    /// verification reports it as incomplete rather than invalid.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl VerifierError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::Usage(_) => 64,
-            Self::Runtime(_) => 2,
+            Self::Runtime(_) | Self::Unavailable(_) => 2,
             Self::Invalid(_) => 1,
         }
     }
@@ -108,7 +113,7 @@ pub(crate) fn same_open_file(a: &File, b: &File) -> Result<bool> {
     }
 }
 
-pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+pub fn open_verifier_file(path: &Path) -> Result<File> {
     // Operator-supplied keys and endorsements were made absolute before the
     // directory is entered. Only relative child names belong to the pinned
     // evidence directory.
@@ -143,9 +148,7 @@ pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
-    let file = options
-        .open(path)
-        .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
+    let file = options.open(path).map_err(|err| io_read_error(path, err))?;
     let info = file
         .metadata()
         .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
@@ -159,6 +162,14 @@ pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
             "refuse symlink in evidence directory".to_string(),
         ));
     }
+    Ok(file)
+}
+
+pub fn read_verifier_bytes(path: &Path) -> Result<Vec<u8>> {
+    let file = open_verifier_file(path)?;
+    let info = file
+        .metadata()
+        .map_err(|err| VerifierError::Runtime(format!("stat {}: {err}", path.display())))?;
     if info.len() > MAX_VERIFIER_INPUT_BYTES {
         return Err(VerifierError::Runtime(format!(
             "input exceeds {MAX_VERIFIER_INPUT_BYTES} bytes"
@@ -538,6 +549,52 @@ pub fn string_vec_at(value: &Value, path: &[&str]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn same_directory_identity(
+    before: &std::fs::Metadata,
+    after: &std::fs::Metadata,
+) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        before.is_dir() && after.is_dir()
+    }
+}
+
+pub(crate) fn metadata_identity(metadata: &std::fs::Metadata) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        [
+            metadata.dev().to_be_bytes().as_slice(),
+            metadata.ino().to_be_bytes().as_slice(),
+            metadata.ctime().to_be_bytes().as_slice(),
+            metadata.ctime_nsec().to_be_bytes().as_slice(),
+        ]
+        .concat()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Vec::new()
+    }
+}
+
+/// Classifies a failed open or read. A missing file stays a runtime error,
+/// because a missing claimed artifact is a verdict; any other I/O failure
+/// means the evidence is present but unavailable.
+pub(crate) fn io_read_error(path: &Path, err: std::io::Error) -> VerifierError {
+    let message = format!("read {}: {err}", path.display());
+    if err.kind() == std::io::ErrorKind::NotFound {
+        VerifierError::Runtime(message)
+    } else {
+        VerifierError::Unavailable(message)
+    }
 }
 
 #[cfg(test)]

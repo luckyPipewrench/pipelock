@@ -40,7 +40,7 @@ func verifyGroupShardPrefix(dir string, open ReceiptGroupOpen, openHash string, 
 	}
 	v.groupBinding = &binding
 	var head groupPrefixHead
-	if err := recorder.WalkSessionEntries(dir, session, v.add); err == nil {
+	if err := recorder.WalkSessionHistory(dir, session, v.add); err == nil {
 		if err := v.finish(); err != nil {
 			return groupPrefixHead{}, err
 		}
@@ -50,7 +50,7 @@ func verifyGroupShardPrefix(dir string, open ReceiptGroupOpen, openHash string, 
 		// The observer independently replays the signed prefix and checks the same
 		// gate and opening binding. Any other walk failure remains an error.
 		observed, err := observeRecoveryWithOptions(dir, session, open.SignerKey, recoveryObservationOptions{
-			trusted: []string{open.SignerKey}, maxBytes: recorder.MaxEvidenceReadFileBytes, groupBinding: &binding,
+			trusted: []string{open.SignerKey}, groupBinding: &binding,
 		})
 		if err != nil {
 			return groupPrefixHead{}, fmt.Errorf("verify receipt group predecessor prefix: %w", err)

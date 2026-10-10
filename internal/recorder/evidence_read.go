@@ -16,16 +16,17 @@ import (
 
 const (
 	// MaxEvidenceReadFileBytes matches the bounded dashboard evidence
-	// verification ceiling: one evidence source may contribute at most 8 MiB
-	// to in-memory verifier and online UI reads. Recorder resume uses a
+	// display ceiling: one evidence source may contribute at most 8 MiB
+	// to bounded query and online UI reads. Authoritative history readers do
+	// not apply this ceiling. Recorder resume uses a
 	// separately bounded single-entry tail read so legacy shards larger than
 	// this whole-file ceiling remain upgradeable.
 	MaxEvidenceReadFileBytes int64 = 8 << 20
 
 	// MaxEvidenceReadDirectoryEntries matches the bounded dashboard evidence
-	// directory ceiling. It applies to READ paths (query, verification, the
-	// dashboard), where a truncated read would present partial evidence as
-	// complete.
+	// directory ceiling. It applies to bounded query and dashboard reads,
+	// which report truncation or refusal instead of presenting partial evidence
+	// as complete. Authoritative history readers do not apply this ceiling.
 	//
 	// It deliberately does NOT apply to recorder resume. Resume enumerates the
 	// session's shards uncapped and reads them newest first until one yields a
@@ -46,9 +47,8 @@ const (
 	// symptom worth surfacing, because retention cannot prune chain shards.
 	EvidenceFileWarningThreshold = 200
 
-	// MaxEvidenceReadEntries matches the recorder's default shard size. A
-	// healthy default shard can be resumed, while appended over-cap records fail
-	// closed instead of being silently ignored.
+	// MaxEvidenceReadEntries matches the recorder's default shard size and
+	// bounds display reads. Authoritative history streams every complete entry.
 	MaxEvidenceReadEntries = defaultMaxEntriesPerFile
 )
 

@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1129,37 +1130,24 @@ func TestVerifyReceiptCmd_WholeRecorderReportsReceiptTailAfterSealIncomplete(t *
 	}
 }
 
-func TestVerifyReceiptCmd_WholeRecorderRejectsTruncatedSession(t *testing.T) {
+// A session past the display entry budget is verified to its end: the break
+// in its final entry is found rather than hidden behind a truncated read.
+func TestVerifyReceiptCmd_WholeRecorderSessionReadsPastDisplayBudget(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
-	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	enc := json.NewEncoder(file)
-	for seq := range recorder.MaxEvidenceReadEntries + 1 {
-		entry := recorder.Entry{
-			Version: recorder.EntryVersion, Sequence: uint64(seq), Timestamp: time.Now().UTC(),
-			SessionID: "proxy", Type: "checkpoint", Transport: "fetch", Summary: "checkpoint", PrevHash: recorder.GenesisHash,
-		}
-		entry.Hash = recorder.ComputeHash(entry)
-		if err := enc.Encode(entry); err != nil {
-			_ = file.Close()
-			t.Fatalf("Encode: %v", err)
-		}
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	count := recorder.MaxEvidenceReadEntries + 2
+	writeLinkedCheckpointsWithFinalBreak(t, filepath.Join(dir, "evidence-proxy-0.jsonl"), count)
 
 	cmd := VerifyReceiptCmd()
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	cmd.SetErr(&out)
 	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir})
-	if err := cmd.Execute(); err == nil || !strings.Contains(out.String(), "INCOMPLETE: evidence session proxy exceeded bounded read limits") || strings.Contains(out.String(), "CHAIN VALID") {
-		t.Fatalf("truncated whole-recorder result err=%v output:\n%s", err, out.String())
+	err := cmd.Execute()
+	want := fmt.Sprintf("entry seq %d: chain break", count-1)
+	if err == nil || !strings.Contains(err.Error()+out.String(), want) || strings.Contains(out.String(), "bounded read limits") || strings.Contains(out.String(), "CHAIN VALID") {
+		t.Fatalf("whole-recorder past the display budget: want %q, err=%v output:\n%s", want, err, out.String())
 	}
 }
 

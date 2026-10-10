@@ -319,12 +319,16 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 			return err
 		})
 		if groupErr != nil {
+			verdict := actionreceipt.GroupInvalid
+			if recorder.IsEvidenceUnavailable(groupErr) {
+				verdict = actionreceipt.GroupIncomplete
+			}
 			if opts.jsonOutput {
-				if err := writeGroupJSONSpool(opts, actionreceipt.ReceiptGroupResult{Verdict: actionreceipt.GroupInvalid, Error: groupErr.Error()}); err != nil {
+				if err := writeGroupJSONSpool(opts, actionreceipt.ReceiptGroupResult{Verdict: verdict, Error: groupErr.Error()}); err != nil {
 					return err
 				}
 			} else {
-				_, _ = fmt.Fprintf(stdout, "GROUP_INVALID inventory: %v\n", groupErr)
+				_, _ = fmt.Fprintf(stdout, "%s inventory: %v\n", verdict, groupErr)
 			}
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("receipt group inventory failed: %w", groupErr))
 		}
@@ -360,12 +364,25 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 			return setErr
 		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
-		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, location, label, trust, opts); handled || handleErr != nil {
-			return handleErr
-		}
-		receipts, extractErr := actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, opts.sessionID)
+		receipts, evidence, extractErr := readChainSessionInput(location, opts.sessionID)
 		if extractErr != nil {
-			return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
+			err := fmt.Errorf("extract receipts: %w", extractErr)
+			// Report the failure the way every other chain outcome is
+			// reported, so --json never leaves a consumer with empty output.
+			// Unavailable evidence reached no verdict; anything else, such as an
+			// ambiguous sequence start, is a broken chain.
+			switch {
+			case opts.jsonOutput:
+				writeJSON(stdout, chainReport{Path: label, Error: err.Error()})
+			case recorder.IsEvidenceUnavailable(extractErr):
+				_, _ = fmt.Fprintf(stderr, "VERIFICATION INCOMPLETE: %s\n  error:      %s\n", label, err)
+			default:
+				emitChainReport(stdout, stderr, chainReport{Path: label, Error: err.Error()}, false)
+			}
+			return evidenceContentError(err)
+		}
+		if len(evidence) > 0 {
+			return verifyEvidenceChain(stdout, stderr, label, evidence, receipts, trust, opts)
 		}
 		return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
 	}
@@ -388,32 +405,15 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve %q: %w", target, evalErr))
 	}
 	label = target
-	isBareV1, bareData, detectErr := isBareActionReceiptJSONL(resolved)
-	if detectErr != nil {
-		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
+	actions, evidence, readErr := readChainFileInput(filepath.Base(clean), resolved, trust)
+	if readErr != nil {
+		emitChainReport(stdout, stderr, chainReport{Path: label, Error: readErr.Error()}, opts.jsonOutput)
+		return evidenceContentError(readErr)
 	}
-	if isBareV1 {
-		// Verify the exact bytes the routing decision was made on. Reopening
-		// the path here would let a file replaced between the two reads be
-		// verified under a decision taken about different evidence.
-		receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
-		if extractErr != nil {
-			return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
-		}
-		return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
+	if len(evidence) > 0 {
+		return verifyEvidenceChain(stdout, stderr, label, evidence, actions, trust, opts)
 	}
-	if fileErr := checkRecorderFileBytes(filepath.Base(clean), bareData, trust); fileErr != nil {
-		emitChainReport(stdout, stderr, chainReport{Path: label, Error: fileErr.Error()}, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fileErr)
-	}
-	if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, bareData, label, trust, opts); handled || handleErr != nil {
-		return handleErr
-	}
-	receipts, extractErr := actionreceipt.ExtractReceiptsBytes(bareData)
-	if extractErr != nil {
-		return evidenceContentError(fmt.Errorf("extract receipts: %w", extractErr))
-	}
-	return verifyActionChain(stdout, stderr, label, receipts, trust, opts)
+	return verifyActionChain(stdout, stderr, label, actions, trust, opts)
 }
 
 // resolveChainTrust resolves every --key and loads every
@@ -442,23 +442,6 @@ func resolveChainTrust(opts chainOptions) (chainTrust, error) {
 	return trust, nil
 }
 
-// checkRecorderFileBytes applies the rules one evidence file must meet on its
-// own, as verify-receipt does: its entries belong to the session its name
-// claims, and its recorder entry hash chain holds from genesis. Bytes that
-// are not recorder output are left to the extractors. With endorsements, the
-// file must be the session the endorsements are bound to.
-func checkRecorderFileBytes(name string, data []byte, trust chainTrust) error {
-	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
-	if err != nil {
-		return nil
-	}
-	if len(trust.endorsements) > 0 && len(entries) > 0 && entries[0].SessionID != trust.session {
-		return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", trust.session, entries[0].SessionID)
-	}
-	_, _, _, err = actionreceipt.RecorderFileChains(name, entries)
-	return err
-}
-
 // evidenceLocationError classifies a failure to resolve an evidence
 // directory: a refused symlink is a verification failure (exit 1), any other
 // failure, such as a missing directory, a configuration error (exit 2).
@@ -475,39 +458,113 @@ func evidenceContentError(err error) error {
 	return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 }
 
-// isBareActionReceiptJSONL identifies the legacy compatibility format without
-// treating malformed or mixed input as an action chain. Recorder-backed v1 and
-// all v2 input keep the v2-first route below, which preserves its strict
-// recorder validation before the v1 fallback.
-// It returns the bytes it classified so the caller can verify those exact bytes
-// rather than reopening the path.
+// legacyChainExtraction runs the legacy fallback read. Tests replace it to
+// swap the pathname around that read and inspect what it returned.
+var legacyChainExtraction = func(extract func() ([]actionreceipt.Receipt, error)) ([]actionreceipt.Receipt, error) {
+	return extract()
+}
+
+// readChainFileInput keeps format detection and extraction inside one secured
+// file snapshot. Only per-line format limits apply, not an artifact byte budget.
+func readChainFileInput(name, path string, trust chainTrust) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	var actions []actionreceipt.Receipt
+	var evidence []contractreceipt.EvidenceReceipt
+	err := recorder.WalkEvidenceFileReader(path, func(input io.ReadSeeker) error {
+		bare, rawReceipts, err := parseBareActionReceiptJSONL(input)
+		if err != nil {
+			return err
+		}
+		if bare {
+			actions = rawReceipts
+			return nil
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		entries, entryErr := recorder.ReadHistoryEntriesFromReader(input)
+		if entryErr == nil {
+			if len(trust.endorsements) > 0 && len(entries) > 0 && entries[0].SessionID != trust.session {
+				return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", trust.session, entries[0].SessionID)
+			}
+			var isRecorder bool
+			actions, evidence, isRecorder, err = actionreceipt.RecorderFileChains(name, entries)
+			if err != nil {
+				return err
+			}
+			if isRecorder {
+				if _, err := input.Seek(-1, io.SeekEnd); err != nil {
+					return err
+				}
+				var last [1]byte
+				if _, err := io.ReadFull(input, last[:]); err != nil {
+					return err
+				}
+				if last[0] != '\n' {
+					return fmt.Errorf("%w: recorder file has an unterminated final record", recorder.ErrTornTail)
+				}
+				return nil
+			}
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		evidence, err = contractreceipt.ExtractEvidenceReceiptsFromReader(input)
+		if err != nil {
+			return err
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if len(evidence) > 0 && !hasActionReceiptEntry(input) {
+			return nil
+		}
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		// The legacy extractor retains its raw-receipt compatibility. It reads the
+		// descriptor the outer snapshot checks; reopening the pathname would let a
+		// replacement swapped in and restored around this read go unnoticed.
+		actions, err = legacyChainExtraction(func() ([]actionreceipt.Receipt, error) {
+			return actionreceipt.ExtractReceiptsFromReader(input)
+		})
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return actions, evidence, nil
+}
+
+// isBareActionReceiptJSONL is for bounded audit-packet evidence artifacts.
+// Complete standalone history uses readChainFileInput instead.
 func isBareActionReceiptJSONL(path string) (bool, []byte, error) {
 	data, err := readVerifierFile(path)
 	if err != nil {
 		return false, nil, fmt.Errorf("read evidence file: %w", err)
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	bare, _, err := parseBareActionReceiptJSONL(bytes.NewReader(data))
+	return bare, data, err
+}
+
+func parseBareActionReceiptJSONL(input io.Reader) (bool, []actionreceipt.Receipt, error) {
+	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
-	found := false
+	var receipts []actionreceipt.Receipt
 	for scanner.Scan() {
 		raw := bytes.TrimSpace(scanner.Bytes())
 		if len(raw) == 0 {
 			continue
 		}
-		r, unmarshalErr := actionreceipt.Unmarshal(raw)
-		if unmarshalErr != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
-			return false, data, nil
+		r, err := actionreceipt.Unmarshal(raw)
+		if err != nil || r.Version != actionreceipt.ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
+			return false, nil, nil
 		}
-		found = true
+		receipts = append(receipts, r)
 	}
-	// Defensive only while readVerifierFile's total-size bound stays below this
-	// scanner's per-line bound: a single line cannot exceed the line limit when
-	// the whole file is already capped lower. It is kept so that raising the
-	// reader's cap cannot silently turn an oversized line into a parse attempt.
 	if err := scanner.Err(); err != nil {
 		return false, nil, fmt.Errorf("scan evidence file: %w", err)
 	}
-	return found, data, nil
+	return len(receipts) > 0, receipts, nil
 }
 
 func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, trust chainTrust, opts chainOptions) error {
@@ -607,39 +664,50 @@ func runEvidenceChainWith(stdout, stderr io.Writer, label string, trust chainTru
 }
 
 func runEvidenceChainFromFile(stdout, stderr io.Writer, data []byte, label string, trust chainTrust, opts chainOptions) (bool, error) {
-	if int64(len(data)) > maxVerifierInputBytes {
-		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("evidence input exceeds %d bytes", maxVerifierInputBytes))
-	}
 	return runEvidenceChainWith(stdout, stderr, label, trust, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
 		return contractreceipt.ExtractEvidenceReceiptsBytes(data)
 	}, func() ([]actionreceipt.Receipt, error) {
-		if !hasActionReceiptEntry(data) {
+		if !hasActionReceiptEntry(bytes.NewReader(data)) {
 			return nil, nil
 		}
 		return actionreceipt.ExtractReceiptsBytes(data)
 	})
 }
 
-func runEvidenceChainFromDir(stdout, stderr io.Writer, location recorder.EvidenceLocation, label string, trust chainTrust, opts chainOptions) (bool, error) {
-	return runEvidenceChainWith(stdout, stderr, label, trust, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
-		return contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, opts.sessionID)
-	}, func() ([]actionreceipt.Receipt, error) {
-		return sessionActionReceipts(location, opts.sessionID)
+func readChainSessionInput(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	var actions []actionreceipt.Receipt
+	var evidence []contractreceipt.EvidenceReceipt
+	err := recorder.WithSessionHistorySnapshot(location, session, func() error {
+		var readErr error
+		evidence, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
+		if readErr != nil {
+			return readErr
+		}
+		if len(evidence) > 0 {
+			actions, readErr = sessionActionReceipts(location, session)
+		} else {
+			actions, readErr = actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, session)
+		}
+		return readErr
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return actions, evidence, nil
 }
 
 // actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.
 const actionReceiptEntryType = "action_receipt"
 
-// hasActionReceiptEntry reports whether evidence bytes hold an action_receipt
+// hasActionReceiptEntry reports whether evidence holds an action_receipt
 // entry. It reads each line's type the way the EvidenceReceipt v2 extractor
 // does, so the two agree on what every line is. Evidence without one has no
 // ActionReceipt v1 chain whatever its format: a v2-only file written as bare
 // entry lines is not recorder output, and the v1 extractor rejects it rather
 // than returning an empty chain. A scan error answers true, so the strict
 // extractor runs and reports it.
-func hasActionReceiptEntry(data []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+func hasActionReceiptEntry(r io.Reader) bool {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
 	for scanner.Scan() {
 		var probe struct {
@@ -655,32 +723,23 @@ func hasActionReceiptEntry(data []byte) bool {
 // sessionActionReceipts returns the ActionReceipt v1 chain of one session in a
 // directory, or none when no file of that session holds an action_receipt
 // entry. Membership is the parsed session name, as the v2 extractor uses.
+//
+// The probe uses the recorder's authoritative session walk, so the session's
+// length and unrelated files in the directory cannot hide its action chain.
 func sessionActionReceipts(location recorder.EvidenceLocation, session string) ([]actionreceipt.Receipt, error) {
-	entries, err := recorder.ReadEvidenceLocationEntries(location)
-	if err != nil {
-		return nil, fmt.Errorf("read evidence directory: %w", err)
-	}
 	want := filepath.Base(session)
-	found := false
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	errFound := errors.New("action receipt found")
+	err := recorder.WalkSessionHistoryFiles(location, want, func(_ recorder.SessionHistoryShard, r io.Reader) error {
+		if hasActionReceiptEntry(r) {
+			return errFound
 		}
-		name, _, ok := recorder.ParseEvidenceFilename(e.Name())
-		if !ok || name != want {
-			continue
-		}
-		data, readErr := recorder.ReadEvidenceFileBounded(filepath.Join(location.Dir, e.Name()), recorder.MaxEvidenceReadFileBytes)
-		if readErr != nil {
-			return nil, fmt.Errorf("read %s: %w", e.Name(), readErr)
-		}
-		if hasActionReceiptEntry(data) {
-			found = true
-			break
-		}
-	}
-	if !found {
+		return nil
+	})
+	if err == nil {
 		return nil, nil
+	}
+	if !errors.Is(err, errFound) {
+		return nil, fmt.Errorf("read evidence session %s: %w", want, err)
 	}
 	return actionreceipt.ExtractReceiptsFromResolvedSessionDir(location, session)
 }

@@ -55,14 +55,14 @@ func writeRecoveryStreamEntries(t *testing.T, path string, entries []recorder.En
 }
 
 func TestRecoveryStreamMultipleShards(t *testing.T) {
-	for _, maxBytes := range []int64{0, recorder.MaxEvidenceReadFileBytes} {
-		t.Run(map[bool]string{true: "offline", false: "live"}[maxBytes > 0], func(t *testing.T) {
+	for _, name := range []string{"live", "repeat"} {
+		t.Run(name, func(t *testing.T) {
 			dir, seal, _ := recoveryFixture(t)
 			entries := recoveryStreamEntries(t, dir, seal)
 			writeRecoveryStreamEntries(t, filepath.Join(dir, seal.Shard), entries[:2], nil)
 			last := "evidence-" + seal.PredecessorSession + "-2.jsonl"
 			writeRecoveryStreamEntries(t, filepath.Join(dir, last), entries[2:], []byte{0, 0})
-			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, []string{seal.SuccessorSignerKey}, maxBytes)
+			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, []string{seal.SuccessorSignerKey})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -118,7 +118,7 @@ func TestRecoveryStreamFinalRecordWithoutNewline(t *testing.T) {
 			if err := os.WriteFile(path, raw[:len(raw)-1], 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil, 0)
+			got, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil)
 			if corrupt {
 				if err == nil || !strings.Contains(err.Error(), "signature") {
 					t.Fatalf("invalid final receipt concealed by missing LF: %v", err)
@@ -200,7 +200,7 @@ func TestRecoveryStreamRejectsCorruptPrefix(t *testing.T) {
 				entries[i].Hash = recorder.ComputeHash(entries[i])
 			}
 			writeRecoveryStreamEntries(t, filepath.Join(dir, seal.Shard), entries, []byte{0})
-			if _, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil, 0); err == nil {
+			if _, err := observeRecovery(dir, seal.PredecessorSession, seal.SuccessorSignerKey, nil); err == nil {
 				t.Fatal("corrupt complete prefix accepted")
 			}
 		})
@@ -355,7 +355,7 @@ func TestRecoveryStreamV2ProducerFixture(t *testing.T) {
 				}
 			}
 			for _, trusted := range [][]string{nil, {fixtureSignerKey(t)}} {
-				_, err := observeRecovery(dir, fixtureRun1, fixtureSignerKey(t), trusted, 0)
+				_, err := observeRecovery(dir, fixtureRun1, fixtureSignerKey(t), trusted)
 				if corrupt {
 					if err == nil || !strings.Contains(err.Error(), "signature") {
 						t.Fatalf("corrupt v2 receipt accepted: %v", err)
@@ -401,15 +401,15 @@ func TestRecoveryStreamLiveArchiveBeyondOfflineCeiling(t *testing.T) {
 	last.Hash = recorder.ComputeHash(last)
 	lastPath := filepath.Join(dir, fmt.Sprintf("evidence-%s-%d.jsonl", session, seq))
 	writeRecoveryStreamEntries(t, lastPath, []recorder.Entry{last}, []byte{0})
-	got, err := observeRecovery(dir, session, "observer", nil, 0)
+	got, err := observeRecovery(dir, session, "observer", nil)
 	if err != nil {
 		t.Fatalf("live archive of %d bytes rejected: %v", size, err)
 	}
 	if got.LastGoodHash != last.Hash || got.LastGoodSeq != seq {
 		t.Fatalf("large live archive has wrong durable head: %+v", got)
 	}
-	if _, err := observeRecovery(dir, session, "observer", nil, recorder.MaxEvidenceReadFileBytes); !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("offline per-file ceiling lost: %v", err)
+	if size <= recorder.MaxEvidenceReadFileBytes {
+		t.Fatalf("fixture shard is %d bytes, not past the %d-byte display budget", size, recorder.MaxEvidenceReadFileBytes)
 	}
 }
 

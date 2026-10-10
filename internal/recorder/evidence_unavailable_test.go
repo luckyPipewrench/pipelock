@@ -23,6 +23,7 @@ func TestIsEvidenceUnavailable(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"changed during read", fmt.Errorf("walk: %w", ErrEvidenceChanged), true},
+		{"file changed during a tail read", fmt.Errorf("tail: %w", ErrEvidenceFileChanged), true},
 		{"permission denied", &fs.PathError{Op: "open", Path: "evidence-a-0.jsonl", Err: os.ErrPermission}, true},
 		{"I/O error", &fs.PathError{Op: "read", Path: "evidence-a-0.jsonl", Err: syscall.EIO}, true},
 		{"bare errno", fmt.Errorf("sync: %w", syscall.EIO), true},

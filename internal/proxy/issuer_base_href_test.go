@@ -233,7 +233,7 @@ func TestInterceptBaseHref(t *testing.T) {
 		{"utf-8 declared absolute link issues", "UTF8", site, "/abs/" + baseHrefAsset, http.StatusOK},
 		{"utf-8 declared relative link issues", "UTF8", site, "/dir/" + baseHrefAsset, http.StatusOK},
 		{"xhtml relative link is untrusted", "XHTML", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
-		{"xhtml absolute link issues", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusOK},
+		{"xhtml absolute link issues nothing", "XHTML", site, "/abs/" + baseHrefAsset, http.StatusForbidden},
 		{"svg decoy base issues nothing", "SVGDECOY", site, "/phantom/" + baseHrefAsset, http.StatusForbidden},
 		{"svg decoy base issues nothing in the response directory", "SVGDECOY", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
 		{"inert template base makes relative links untrusted", "TEMPLATE", site, "/dir/" + baseHrefAsset, http.StatusForbidden},
@@ -250,5 +250,33 @@ func TestInterceptBaseHref(t *testing.T) {
 				t.Fatalf("status=%d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// A Referer or Origin the request names in Connection is hop-by-hop: the proxy
+// strips it, so it cannot vouch for an echoed origin.
+func TestHeaderOriginsIgnoresHopByHop(t *testing.T) {
+	h := http.Header{}
+	h.Set("Referer", "https://app.vendor.example/page")
+	h.Set("Origin", "https://api.vendor.example")
+	ref := []string{"https://app.vendor.example:443", "https://app.vendor.example"}
+	org := []string{"https://api.vendor.example:443", "https://api.vendor.example"}
+	for _, tt := range []struct {
+		conn string
+		want []string
+	}{
+		{"", append(append([]string{}, ref...), org...)},
+		{"Referer", org},
+		{"origin", ref},
+		{"keep-alive, Referer, Origin", nil},
+	} {
+		hh := h.Clone()
+		if tt.conn != "" {
+			hh.Set("Connection", tt.conn)
+		}
+		got := headerOrigins(hh)
+		if strings.Join(got, " ") != strings.Join(tt.want, " ") {
+			t.Fatalf("Connection %q: got %v, want %v", tt.conn, got, tt.want)
+		}
 	}
 }

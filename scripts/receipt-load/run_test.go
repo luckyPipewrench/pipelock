@@ -204,8 +204,18 @@ func TestRealRunHoldsIntegrity(t *testing.T) {
 				if len(got.Inputs.Config.ExternalPaths) != 0 {
 					t.Fatalf("config points outside the run directory: %v", got.Inputs.Config.ExternalPaths)
 				}
-				if len(got.Performance.Windows.Rates) == 0 || got.Performance.Windows.MedianRPS <= 0 {
-					t.Fatalf("no window rates: %+v", got.Performance.Windows)
+				// The median over 50ms windows can be zero on a loaded runner,
+				// where requests arrive in bursts and most windows are empty;
+				// that is scheduling, not a broken report. Check what the report
+				// must hold: windows exist, the busiest one saw traffic, and
+				// together they account for every measured request.
+				windows := got.Performance.Windows
+				counted := 0
+				for _, r := range windows.Rates {
+					counted += r.Requests
+				}
+				if len(windows.Rates) == 0 || windows.MaxRPS <= 0 || counted != opt.requests {
+					t.Fatalf("window rates do not account for the run (%d of %d requests): %+v", counted, opt.requests, windows)
 				}
 				if mode == modeRequired {
 					allowed := got.Performance.Allowed + res.WarmupRequests - warmupBlocked(res)

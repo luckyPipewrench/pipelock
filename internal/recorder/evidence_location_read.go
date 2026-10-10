@@ -12,6 +12,12 @@ import (
 	"path/filepath"
 )
 
+// ErrEvidenceFileChanged reports that an evidence file grew, shrank or was
+// replaced while it was being read. A live recorder appending to the file is
+// the ordinary cause; readers decide whether to retry or treat it as
+// inconclusive, never as corruption.
+var ErrEvidenceFileChanged = fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
+
 func validateEvidenceLocation(location EvidenceLocation) error {
 	root := filepath.Clean(location.Root)
 	if location.Root == "" || root == "." {

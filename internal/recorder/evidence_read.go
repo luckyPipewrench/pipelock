@@ -14,12 +14,6 @@ import (
 	"path/filepath"
 )
 
-// ErrEvidenceFileChanged reports that an evidence file grew, shrank or was
-// replaced while it was being read. A live recorder appending to the file is
-// the ordinary cause; readers decide whether to retry or treat it as
-// inconclusive, never as corruption.
-var ErrEvidenceFileChanged = fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
-
 const (
 	// MaxEvidenceReadFileBytes matches the bounded dashboard evidence
 	// display ceiling: one evidence source may contribute at most 8 MiB
@@ -143,7 +137,7 @@ func readBoundedEvidence(path string, maxBytes int64, sink io.Writer) error {
 		return err
 	}
 	if after.Size() != info.Size() || after.ModTime() != info.ModTime() {
-		return ErrEvidenceFileChanged
+		return errors.New("evidence file changed during read")
 	}
 	return nil
 }

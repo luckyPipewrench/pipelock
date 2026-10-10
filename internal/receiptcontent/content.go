@@ -101,8 +101,10 @@ type Schema struct {
 	Fields map[string]Class
 	Enums  map[string][]string
 	// FixedValues names exact producer constants or retained operator values.
-	// They remain in every content view except fragment reassembly. A changed
-	// value stays a candidate. Only declared leaves may be listed here.
+	// They remain in every content view. In fragment reassembly they may stand
+	// as one bridge piece between client fragments, but they never combine
+	// with each other and do not widen the client search. A changed value
+	// stays a client candidate. Only declared leaves may be listed here.
 	FixedValues map[string][]string
 	// Outer derives the recorder mirror fields from the exact detail bytes.
 	// It must read only Content and Enum values; generated values in a mirror
@@ -164,8 +166,8 @@ func Register(s Schema) *Producer {
 
 // WithFixedValues derives an immutable producer capability with additional
 // exact fixed values. The owner supplies constants or retained configuration,
-// never per-request text. This changes only fragment eligibility, not content
-// scanning or redaction. Existing capabilities and the supplied map are not
+// never per-request text. This changes only how the fragment search spends its
+// work, not content scanning or redaction. Existing capabilities and the supplied map are not
 // mutated; a different value at the same path remains a fragment candidate.
 func (p *Producer) WithFixedValues(values map[string][]string) *Producer {
 	fixed := make(map[string]map[string]struct{}, len(p.fixed)+len(values))
@@ -246,7 +248,8 @@ type Atom struct {
 	Path  string
 	Field string
 	Kind  AtomKind
-	// Fixed is scanned but does not participate in fragment reassembly.
+	// Fixed marks text the producer owns: it is scanned in every view and
+	// bridges client fragments, but is not itself a client fragment.
 	Fixed    bool
 	Identity bool
 	Text     string

@@ -641,38 +641,41 @@ and as structured JSON.
 
 Reassembly joins client-influenced parts: content values and member names
 Pipelock did not declare, with a repeated value counted once per occurrence.
-Exact producer constants and retained operator values remain scanned alone,
-in the joined value list and as structured JSON, but do not participate in
-fragment reassembly. For v1 action receipts this excludes the emitter's
+Exact producer constants and retained operator values stay scanned alone, in
+the joined value list and as structured JSON. In reassembly they carry no
+client fragment, so they never combine with each other and do not widen the
+client search, but each may stand as one piece between client fragments, in
+any position, because a credential can contain a fixed word (a host name
+holding the principal "local", for example). A fixed value repeated in a
+receipt counts once. For v1 action receipts the fixed values are the emitter's
 configured principal and default actor, the recorder session base in a session
 opener, the fixed session-control targets and recognized transport labels. An
 agent override that differs from the configured actor, or an unrecognized
-transport label, stays a candidate. For v2 receipts, recognized payload-kind,
-action-type, transport, verdict and decision-source labels are fixed; principal,
-actor and arbitrary payload values remain candidates. Unknown fields and
-caller-chosen member names always remain candidates.
+transport label, is a client part. For v2 receipts, recognized payload-kind,
+action-type, transport, verdict and decision-source labels are fixed;
+principal, actor and arbitrary payload values are client parts. Unknown fields
+and caller-chosen member names are always client parts.
 
-The recorder's derived mirror fields are scanned in the other views but not
-reassembled: their values duplicate detail content with fixed formatting.
-Unattested mirror fields remain candidates. Consequently a split requiring a
-fixed word, an operator value or derived mirror as one of its pieces is no
-longer reassembled. Such fields cannot carry a new client-chosen fragment;
-this boundary does not promise reassembly between fixed text and client text.
-Whole-value, joined-value and structured matches involving fixed fields are
-still detected.
+The recorder's derived mirror fields take the same role: they repeat detail
+content with fixed formatting, so each may stand as one piece but is not a
+client fragment. Unattested mirror fields are client parts. A split that
+needs two or more fixed values as separate pieces is outside the bound, as is
+a split that needs a constant the receipt does not carry as text (an enum
+value that is dropped from the scanned content, such as a reversibility label).
 
-Reassembly follows field order, skipping unrelated candidate parts. It tries every order of 2 or 3
-parts and the reverse order of 4. A receipt of at most 20 candidate parts runs that
-full search when the combinations would build at most 4 MiB of text, and is
-refused whole when they would build more. A receipt with more candidate parts is ordinary
-evidence, so width alone doesn't refuse it. Pipelock then runs every pair, in
-both orders, when that work and the number of combinations stay inside those
-same limits, and every order of 3 when those fit too. The receipt is refused
-whole when even the pairs don't fit. A secret split into five or more pieces,
-into four pieces in any order other than forward or reverse, or into three
-pieces on a receipt too wide for the 3-part search, is outside that bound and
-isn't reassembled. Joins of 4 run only on a receipt of at most 20 candidate parts. Fixed fields
-do not spend the reconstruction budget.
+Reassembly follows field order, skipping unrelated parts. It tries every order
+of 2 or 3 parts and the reverse order of 4. A receipt of at most 20 client
+parts runs that full search when the combinations would build at most 4 MiB of
+text, and is refused whole when they would build more. A receipt with more
+client parts is ordinary evidence, so width alone doesn't refuse it. Pipelock
+then runs every pair, in both orders, when that work and the number of
+combinations stay inside those same limits, and every order of 3 when those fit
+too. The combinations that hold one fixed value run at the widest of those
+sizes that fits the same limits. The receipt is refused whole when even the
+pairs don't fit. A secret split into five or more pieces, into four pieces in
+any order other than forward or reverse, or into three pieces on a receipt too
+wide for the 3-part search, is outside that bound and isn't reassembled. Joins
+of 4 run only on a receipt of at most 20 client parts.
 
 Before signing:
 

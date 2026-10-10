@@ -150,7 +150,7 @@ func TestScanAtomViewCatchesCanaryInKeyAndEscapedValue(t *testing.T) {
 	}
 }
 
-func TestScanValuesJoinOnlyCatchesManyAdjacentParts(t *testing.T) {
+func TestJoinedScanCatchesManyAdjacentParts(t *testing.T) {
 	det := testDetector(t)
 	var parts []string
 	for i := 0; i < len(canaryFixture); i += 3 {

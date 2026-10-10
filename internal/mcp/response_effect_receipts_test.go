@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -56,13 +57,19 @@ func runMCPRequiredResponseEffects(t *testing.T, tr string) {
 				for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
 					t.Run(tr+"/"+shape+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
 						t.Parallel()
-						h := newMCPDecisionReceiptHarness(t)
-						opts := MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: failure != "optional", PolicyHash: mcpTestPolicyHash, Transport: tr}
-						rec := h.rec
+						// A grouped run replaces the options and recorder with the
+						// failure group, so the single-recorder harness is built only
+						// for the runs that use it.
+						var opts MCPProxyOpts
+						var rec *recorder.Recorder
 						if grouped {
 							opts, rec, _, _ = newMCPTransportReceiptGroup(t)
 							opts.Transport = tr
 							opts.RequireReceipts = failure != "optional"
+						} else {
+							h := newMCPDecisionReceiptHarness(t)
+							opts = MCPProxyOpts{ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, RequireReceipts: failure != "optional", PolicyHash: mcpTestPolicyHash, Transport: tr}
+							rec = h.rec
 						}
 						selected := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: tr, Target: "tools/call", PolicyHash: mcpTestPolicyHash}
 						if grouped {

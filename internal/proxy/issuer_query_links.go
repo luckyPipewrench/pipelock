@@ -268,10 +268,21 @@ func pageOriginEchoed(h http.Header, value string) (*url.URL, bool) {
 // headerOrigins returns the canonical origin spellings of the request's single
 // Referer and single Origin header: with and without an explicit default port.
 // A header that appears twice, is not an absolute http(s) URL, or carries
-// userinfo contributes nothing.
+// userinfo contributes nothing, and neither does one the request names in
+// Connection: that makes it hop-by-hop, so the proxy strips it and the
+// destination never receives the origin the echo is supposed to repeat.
 func headerOrigins(h http.Header) []string {
+	hop := map[string]bool{}
+	for _, v := range h.Values("Connection") {
+		for _, token := range strings.Split(v, ",") {
+			hop[http.CanonicalHeaderKey(strings.TrimSpace(token))] = true
+		}
+	}
 	var out []string
 	for _, name := range []string{"Referer", "Origin"} {
+		if hop[name] {
+			continue
+		}
 		values := h.Values(name)
 		if len(values) != 1 {
 			continue

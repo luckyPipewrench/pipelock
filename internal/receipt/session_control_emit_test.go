@@ -115,19 +115,15 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	if err := e.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen: %v", err)
 	}
-	syncErr := errors.New("injected sync failure")
-	rec.SetSyncForTest(func(*os.File) error { return syncErr })
-	err := e.EmitDurable(EmitOpts{
+	if err := e.EmitDurable(EmitOpts{
 		ActionID:  NewActionID(),
 		Verdict:   config.ActionAllow,
 		Transport: testTransport,
 		Method:    http.MethodPost,
 		Target:    "https://api.vendor.example/durable",
-	})
-	if !errors.Is(err, recorder.ErrDurability) {
-		t.Fatalf("EmitDurable error = %v, want ErrDurability", err)
+	}); err != nil {
+		t.Fatalf("EmitDurable: %v", err)
 	}
-	rec.SetSyncForTest(nil)
 
 	receiptsBeforeHeartbeat := readAllReceiptsFromDir(t, dir, pub)
 	preHeartbeatTail := mustHash(t, receiptsBeforeHeartbeat[len(receiptsBeforeHeartbeat)-1])
@@ -139,7 +135,9 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	if err := e.EmitHeartbeat(); err != nil {
 		t.Fatalf("EmitHeartbeat #2: %v", err)
 	}
-	closeAfterInjectedSyncFailure(t, rec)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	receipts := readAllReceiptsFromDir(t, dir, pub)
 	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
@@ -160,11 +158,81 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 		t.Fatalf("heartbeat snapshot = (%s,%d), want (%s,%d)",
 			hb1.ChainHead, hb1.ChainSeqHead, preHeartbeatTail, preHeartbeatSeqHead)
 	}
-	if hb1.FsyncErrorsGated != 1 || hb1.DurabilityBlocks != 1 {
-		t.Fatalf("heartbeat counters fsync=%d blocks=%d, want 1/1", hb1.FsyncErrorsGated, hb1.DurabilityBlocks)
+	if hb1.FsyncErrorsGated != 0 || hb1.DurabilityBlocks != 0 {
+		t.Fatalf("heartbeat counters fsync=%d blocks=%d, want 0/0", hb1.FsyncErrorsGated, hb1.DurabilityBlocks)
 	}
 	if hb1.OpenNonce != open.OpenNonce || hb2.OpenNonce != open.OpenNonce {
 		t.Fatalf("heartbeat open_nonce did not bind to session_open nonce")
+	}
+}
+
+// A failed sync stops its own chain, so that chain can no longer sign a
+// heartbeat. The recorder's fsync counter is shared, so the next heartbeat on
+// another chain of the same recorder still attests the failure.
+func TestEmitter_HeartbeatAttestsAnotherChainsSyncFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	shards, err := OpenInitialReceiptShardSet(EmitterConfig{
+		Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash,
+		Principal: testPrincipal, Actor: testActor,
+	}, "proxy", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, failing := shards.Emitters()[0], shards.Emitters()[1]
+	rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	if err := failing.EmitDurable(EmitOpts{
+		ActionID: NewActionID(), Verdict: config.ActionAllow, Transport: testTransport,
+		Method: http.MethodPost, Target: "https://api.vendor.example/durable",
+	}); !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitDurable = %v, want ErrDurability", err)
+	}
+	rec.SetSyncForTest(nil)
+
+	if err := failing.EmitHeartbeat(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("heartbeat on the failed chain = %v, want ErrDurabilityInherited", err)
+	}
+	if err := healthy.EmitHeartbeat(); err != nil {
+		t.Fatalf("heartbeat on the healthy chain: %v", err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-"+healthy.Session()+"-*.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("healthy chain files: %v %v", files, err)
+	}
+	var hb *SessionHeartbeat
+	for _, path := range files {
+		entries, err := recorder.ReadEntries(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Type != recorderEntryType {
+				continue
+			}
+			r, err := Unmarshal(entry.RawDetail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyWithKey(r, hex.EncodeToString(pub)); err != nil {
+				t.Fatal(err)
+			}
+			if r.ActionRecord.SessionControl != nil && r.ActionRecord.SessionControl.Heartbeat != nil {
+				hb = r.ActionRecord.SessionControl.Heartbeat
+			}
+		}
+	}
+	if hb == nil {
+		t.Fatal("no heartbeat on the healthy chain")
+	}
+	if hb.FsyncErrorsGated != 1 {
+		t.Fatalf("healthy chain heartbeat fsync_errors_gated = %d, want 1", hb.FsyncErrorsGated)
 	}
 }
 
@@ -235,10 +303,11 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 		t.Fatalf("retry EmitSessionOpen error = %v, want original sync error", retryErr)
 	}
 
-	// The bytes still reached disk (fsync failed, not the write), so the chain
-	// opens correctly and a heartbeat can snapshot it.
-	if err := e.EmitHeartbeat(); err != nil {
-		t.Fatalf("EmitHeartbeat after gated open: %v", err)
+	// The open's bytes reached disk (fsync failed, not the write), but the
+	// stream stays failed: nothing further, a heartbeat included, is written
+	// over an unconfirmed prefix.
+	if err := e.EmitHeartbeat(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("EmitHeartbeat after gated open = %v, want ErrDurabilityInherited", err)
 	}
 	closeAfterInjectedSyncFailure(t, rec)
 	receipts := readAllReceiptsFromDir(t, dir, pub)

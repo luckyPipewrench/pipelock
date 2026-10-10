@@ -313,8 +313,21 @@ func TestBuildReceiptEmitterRejectsUncertainV2Head(t *testing.T) {
 	if err := f.p.v2EmitterPtr.Load().EmitDurable(d); !errors.Is(err, recorder.ErrDurability) {
 		t.Fatalf("durable emit = %v, want sync failure", err)
 	}
-	if _, err := f.p.buildReceiptEmitter(&cfg); err == nil {
-		t.Fatal("reload staged a new emitter from an uncertain v2 head")
+	// The failed stream is recovered like a torn run: staging moves to a
+	// fresh run whose v2 chain starts over, never continuing the uncertain
+	// head, and a full reload still fails while storage keeps failing.
+	stage, err := f.p.buildReceiptEmitter(&cfg)
+	if err != nil {
+		t.Fatalf("stage after a failed stream: %v", err)
+	}
+	if !stage.tornRecovery {
+		t.Fatal("staging continued a run whose sync failed")
+	}
+	if seq, prev := stage.v2.ChainState(); seq != 0 || prev != recorder.GenesisHash {
+		t.Fatalf("staged v2 chain continues at seq %d prev %s, want a fresh chain", seq, prev)
+	}
+	if f.p.Reload(&cfg, scanner.MustNew(&cfg)) {
+		t.Fatal("reload published while storage sync was still failing")
 	}
 }
 

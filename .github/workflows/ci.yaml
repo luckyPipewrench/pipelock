@@ -353,7 +353,7 @@ jobs:
       matrix:
         variant: ['oss', 'enterprise']
         # Must equal scripts/ci_test_packages.py --list-unit-shards (UNIT_SPLITS).
-        shard: ['proxy-0', 'proxy-1', 'scanner', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'scanner', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

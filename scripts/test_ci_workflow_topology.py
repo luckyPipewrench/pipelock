@@ -684,7 +684,7 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         self.assertEqual(unit_lane_errors(self.jobs), [])
         broken = copy.deepcopy(self.jobs)
         broken["test-unit-go126"]["strategy"]["matrix"]["variant"] = ["oss"]
-        broken["test-unit-go126"]["strategy"]["matrix"]["shard"].remove("rest-3")
+        broken["test-unit-go126"]["strategy"]["matrix"]["shard"].pop()
         broken["test-unit-go126"]["if"] = "${{ github.event_name == 'push' }}"
         errors = unit_lane_errors(broken)
         self.assertIn("test-unit-go126 must test both build variants", errors)

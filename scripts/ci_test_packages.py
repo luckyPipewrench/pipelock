@@ -70,12 +70,17 @@ REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 # -race most trees run several times faster, so they need fewer splits than the
 # race lane above; the race-measured weights still balance the buckets, since
 # relative test cost survives dropping the race detector well enough to pack.
+#
+# Measured without -race on four pinned cores: internal/mcp took 694s and
+# internal/proxy 552s alone, so each splits three ways; every rest package
+# together came to about eight minutes of four-way work, so two rest shards.
 UNIT_SPLITS = {
-    "proxy": 2,
+    "proxy": 3,
     "scanner": 1,
     "mcp": 3,
     "runtime": 1,
 }
+UNIT_REST_SHARDS = ("rest-0", "rest-1")
 
 # Trees whose coverage is collected by a separate non-race pass instead of the
 # race run. -race forces atomic coverage counters, which made the scanner's
@@ -371,12 +376,12 @@ def unit_shard_names() -> tuple[str, ...]:
     for tree in HEAVY_TREES:
         count = UNIT_SPLITS.get(tree, 1)
         names.extend([tree] if count == 1 else [f"{tree}-{index}" for index in range(count)])
-    return (*names, *REST_SHARDS)
+    return (*names, *UNIT_REST_SHARDS)
 
 
 def unit_shard_tree(shard: str) -> tuple[str, int, int] | None:
     """Return (tree, index, count) for a no-race heavy shard, or None for rest."""
-    if shard in REST_SHARDS:
+    if shard in UNIT_REST_SHARDS:
         return None
     if shard in HEAVY_TREES and UNIT_SPLITS.get(shard, 1) == 1:
         return shard, 0, 1
@@ -389,10 +394,15 @@ def unit_shard_tree(shard: str) -> tuple[str, int, int] | None:
 
 
 def unit_shard_packages(packages: list[str], shard: str) -> list[str]:
-    """Packages a no-race shard runs; rest shards share the race lane's packing."""
+    """Packages a no-race shard runs; rest packages pack into UNIT_REST_SHARDS."""
     located = unit_shard_tree(shard)
     if located is None:
-        return select_packages(packages, shard, load_package_durations())
+        heavy_roots = tuple(HEAVY_TREES.values())
+        rest_packages = sorted(
+            pkg for pkg in packages if not any(package_in_tree(pkg, root) for root in heavy_roots)
+        )
+        buckets = partition_names(rest_packages, len(UNIT_REST_SHARDS), load_package_durations())
+        return buckets[UNIT_REST_SHARDS.index(shard)]
     wanted = HEAVY_TREES[located[0]]
     selected = [pkg for pkg in packages if package_in_tree(pkg, wanted)]
     if not selected:

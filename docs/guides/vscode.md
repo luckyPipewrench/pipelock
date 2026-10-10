@@ -18,6 +18,8 @@ Stdio servers get their `command` and `args` rewritten to launch through `pipelo
 
 VS Code resolves `${input:...}` and `${env:...}` substitutions in a server's `env` block at launch, so the installer leaves that resolution to VS Code. Each `env` entry moves into the wrapped entry's own `env` block under a generated `PIPELOCK_VSCODE_ENV_<hash>` name, and the proxy's arguments map it back with `--env-carrier <KEY>=<CARRIER>`. An entry set to `null` becomes `--env-unset <KEY>`, and an `envFile` path is carried the same way with `--env-file-carrier`, so `pipelock mcp proxy` reads that file at launch. The proxy still starts the child from a stripped environment plus these carried values.
 
+The proxy refuses code-loading and other blocked target names at startup, including entries in `envFile`. Generated carriers preserve VS Code substitution but don't exempt those names. See [child environment restrictions](sandbox.md#child-environment-restrictions) for supported credential passing and startup refusal.
+
 ## Remote servers with headers
 
 An HTTP or SSE server's `headers` map is validated at install time, not at launch: an empty or non-string header value, a header name with invalid characters, or a value with invalid characters (control characters other than tab) fails the install with an error naming the header, rather than surfacing only after the agent starts. Headers that VS Code's own HTTP/SSE transport manages (`Content-Type`, `Accept`, `Mcp-Session-Id`, `Content-Length`, `Transfer-Encoding`, `Host`) are refused, because they cannot be passed through.

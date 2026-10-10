@@ -89,12 +89,7 @@ func (r *Recorder) AppendDurableWithReceiptScanPreAdvance(e Entry, scan *Receipt
 }
 
 func (r *Recorder) appendDurableLegacy(e Entry, scan *ReceiptScan, advance func()) (*DurableTicket, error) {
-	r.legacyTickets.Add(1)
-	ticket, err := r.appendDurableLocked(e, scan, advance, nil)
-	if err != nil {
-		r.legacyTickets.Done()
-	}
-	return ticket, err
+	return r.appendDurableLocked(e, scan, advance, nil)
 }
 
 // appendDurableLocked writes and reserves one entry on the active stream. For
@@ -106,8 +101,21 @@ func (r *Recorder) appendDurableLocked(e Entry, scan *ReceiptScan, advance func(
 	// a stream whose sync already failed.
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if state == nil {
+		// Close refuses new appends under r.mu before it waits for the
+		// outstanding tickets, so a ticket is registered under the same
+		// lock, and only while the recorder is open: nothing can join the
+		// drain after it started.
+		if r.closed {
+			return nil, errors.New("recorder is closed")
+		}
+		r.legacyTickets.Add(1)
+	}
 	pending, err := r.prepareDurableWriteLocked(e, scan, advance)
 	if err != nil {
+		if state == nil {
+			r.legacyTickets.Done()
+		}
 		return nil, err
 	}
 	ticket := &DurableTicket{

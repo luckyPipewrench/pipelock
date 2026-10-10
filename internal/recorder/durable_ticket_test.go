@@ -376,3 +376,27 @@ func TestTicketsFinishInAppendOrderAcrossWriters(t *testing.T) {
 		}
 	}
 }
+
+// Appends racing Close either finish before Close returns or are refused; no
+// ticket joins the drain after it started.
+func TestAppendRacingCloseIsRefusedOrDrained(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		rec := newDurableTestRecorder(t, Config{CheckpointInterval: 10_000, MaxEntriesPerFile: 10_000})
+		var wg sync.WaitGroup
+		for w := 0; w < 8; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				for j := 0; j < 20; j++ {
+					ticket, err := rec.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: durableTestSession, Type: "request", Summary: fmt.Sprintf("w%d-%d", w, j)}, nil, nil)
+					if err != nil {
+						return
+					}
+					_ = ticket.Wait()
+				}
+			}(w)
+		}
+		_ = rec.Close()
+		wg.Wait()
+	}
+}

@@ -639,19 +639,40 @@ any other content, even when it has the same shape as a generated one.
 Content is scanned alone, as a joined value list, as reassembled fragments,
 and as structured JSON.
 
-Reassembly joins scanned parts (content values and member names Pipelock did
-not declare, with a repeated value counted once per occurrence) in field
-order, skipping any unrelated part in between. It tries every order of 2 or 3
-parts and the reverse order of 4. A receipt of at most 20 parts runs that
+Reassembly joins client-influenced parts: content values and member names
+Pipelock did not declare, with a repeated value counted once per occurrence.
+Exact producer constants and retained operator values remain scanned alone,
+in the joined value list and as structured JSON, but do not participate in
+fragment reassembly. For v1 action receipts this excludes the emitter's
+configured principal and default actor, the recorder session base in a session
+opener, the fixed session-control targets and recognized transport labels. An
+agent override that differs from the configured actor, or an unrecognized
+transport label, stays a candidate. For v2 receipts, recognized payload-kind,
+action-type, transport, verdict and decision-source labels are fixed; principal,
+actor and arbitrary payload values remain candidates. Unknown fields and
+caller-chosen member names always remain candidates.
+
+The recorder's derived mirror fields are scanned in the other views but not
+reassembled: their values duplicate detail content with fixed formatting.
+Unattested mirror fields remain candidates. Consequently a split requiring a
+fixed word, an operator value or derived mirror as one of its pieces is no
+longer reassembled. Such fields cannot carry a new client-chosen fragment;
+this boundary does not promise reassembly between fixed text and client text.
+Whole-value, joined-value and structured matches involving fixed fields are
+still detected.
+
+Reassembly follows field order, skipping unrelated candidate parts. It tries every order of 2 or 3
+parts and the reverse order of 4. A receipt of at most 20 candidate parts runs that
 full search when the combinations would build at most 4 MiB of text, and is
-refused whole when they would build more. A wider receipt is ordinary
+refused whole when they would build more. A receipt with more candidate parts is ordinary
 evidence, so width alone doesn't refuse it. Pipelock then runs every pair, in
 both orders, when that work and the number of combinations stay inside those
 same limits, and every order of 3 when those fit too. The receipt is refused
 whole when even the pairs don't fit. A secret split into five or more pieces,
 into four pieces in any order other than forward or reverse, or into three
 pieces on a receipt too wide for the 3-part search, is outside that bound and
-isn't reassembled. Joins of 4 run only on a receipt of at most 20 parts.
+isn't reassembled. Joins of 4 run only on a receipt of at most 20 candidate parts. Fixed fields
+do not spend the reconstruction budget.
 
 Before signing:
 

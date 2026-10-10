@@ -37,6 +37,10 @@ const (
 var actionReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 	Kind:   ActionReceiptContentKind,
 	Fields: actionReceiptFields(),
+	FixedValues: map[string][]string{
+		"action_record.transport": {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse", sessionControlTransport},
+		"action_record.target":    {sessionOpenTarget, sessionHeartbeatTarget, sessionCloseTarget},
+	},
 	Enums: map[string][]string{
 		"action_record.action_type":       actionTypeNames(),
 		"action_record.side_effect_class": {string(SideEffectNone), string(SideEffectExternalRead), string(SideEffectExternalWrite), string(SideEffectFinancial), string(SideEffectPhysical)},
@@ -348,6 +352,16 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 	}
 }
 
+// contentProducer retains the emitter's fixed configuration without treating
+// a per-request Agent override as fixed. Exact matching makes an override
+// that differs from the configured actor a fragment candidate.
+func (e *Emitter) contentProducer() *receiptcontent.Producer {
+	if e.receiptProducer != nil {
+		return e.receiptProducer
+	}
+	return actionReceiptProducer
+}
+
 // scanActionContent scans the unsigned template with the recorder's receipt
 // detector. Redactable content values (never identities or member names) are
 // sanitized before signing and the template is scanned again; anything still
@@ -359,7 +373,7 @@ func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentSca
 		if err != nil {
 			return tmpl, nil, fmt.Errorf("marshal receipt content template: %w", err)
 		}
-		rep, cs, err := e.recorder.ScanReceiptContent(ctx, actionReceiptProducer, raw)
+		rep, cs, err := e.recorder.ScanReceiptContent(ctx, e.contentProducer(), raw)
 		if err != nil || cs != nil {
 			return tmpl, cs, err
 		}

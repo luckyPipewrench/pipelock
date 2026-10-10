@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -109,6 +110,7 @@ var ErrReceiptPostAdvance = errors.New("receipt chain advanced before persistenc
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
+	receiptProducer        *receiptcontent.Producer
 	recorder               *recorder.Recorder
 	privKey                ed25519.PrivateKey
 	configHash             atomic.Value // stores string; updated on hot reload
@@ -298,6 +300,15 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		e.initErr = err
 		return e
 	}
+	base := session
+	if b, ok := receiptcontent.SplitProvenRunSession(session); ok {
+		base = b
+	}
+	e.receiptProducer = actionReceiptProducer.WithFixedValues(map[string][]string{
+		"action_record.principal":                             {cfg.Principal},
+		"action_record.actor":                                 {cfg.Actor},
+		"action_record.session_control.open.recorder_session": {base},
+	})
 	if cfg.GroupBinding != nil {
 		binding := *cfg.GroupBinding
 		if err := validateEmitterGroupBinding(binding, session, cfg.PrivKey); err != nil {
@@ -845,7 +856,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	if lifecycle {
 		// Lifecycle controls are validate-or-fail: never redacted, and a
 		// refusal reports no success.
-		rep, cs, scanErr := e.recorder.ScanReceiptContent(context.Background(), actionReceiptProducer, receiptJSON)
+		rep, cs, scanErr := e.recorder.ScanReceiptContent(context.Background(), e.contentProducer(), receiptJSON)
 		if scanErr == nil && cs == nil {
 			scanErr = rep.Err()
 		}
@@ -855,7 +866,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		}
 		content = cs
 	}
-	scan, err := e.recorder.BindReceiptContent(content, actionReceiptProducer, receiptJSON)
+	scan, err := e.recorder.BindReceiptContent(content, e.contentProducer(), receiptJSON)
 	if err != nil {
 		e.recordFailure(FailReasonRecord)
 		return fmt.Errorf("validating signed receipt for recording: %w", err)

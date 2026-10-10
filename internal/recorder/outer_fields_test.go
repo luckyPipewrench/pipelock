@@ -69,6 +69,7 @@ func TestBoundMirrorMustEqualProducerDerivation(t *testing.T) {
 	}
 	base := Entry{SessionID: "proxy", Type: recorderTypeEvidenceReceipt, EventKind: "k", Summary: "note: ok", Detail: json.RawMessage(detail)}
 	for name, mutate := range map[string]func(*Entry){
+		"type":       func(e *Entry) { e.Type = recorderTypeReceipt },
 		"summary":    func(e *Entry) { e.Summary = "mirrorfixture" },
 		"transport":  func(e *Entry) { e.Transport = "x" },
 		"event kind": func(e *Entry) { e.EventKind = "other" },
@@ -119,6 +120,21 @@ func TestCallerRawRefIsCleared(t *testing.T) {
 	for _, e := range entries {
 		if e.RawRef != "" {
 			t.Fatalf("caller RawRef persisted: %q", e.RawRef)
+		}
+	}
+}
+
+// The unattested bound path cannot carry an arbitrary Type: recordLocked
+// dispatches it only for these exact, producer-defined evidence kinds.
+func TestBoundEntryTypeIsClosed(t *testing.T) {
+	for _, typ := range []string{recorderTypeReceipt, recorderTypeEvidenceReceipt, GroupGateEntryType, decisionEntryType, TranscriptRootEntryType} {
+		if !isBoundEntryType(typ) {
+			t.Fatalf("known bound Type %q not admitted", typ)
+		}
+	}
+	for _, typ := range []string{"", "caller-secret", recorderTypeReceipt + "suffix", "prefix" + recorderTypeEvidenceReceipt} {
+		if isBoundEntryType(typ) {
+			t.Fatalf("caller-chosen Type %q admitted to the bound path", typ)
 		}
 	}
 }

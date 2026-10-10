@@ -199,7 +199,9 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 }
 
 // scanFragments reuses the scanner's ordered-subsequence combination order.
-// A receipt of at most scanner.SubsequenceMaxParts atoms is searched at sizes
+// Only client-influenced atoms participate; fixed values and derived mirrors
+// are still scanned in the other views. A projection with at most
+// scanner.SubsequenceMaxParts candidates is searched at sizes
 // 2..scanner.SubsequenceMaxSize, the same sizes the request path combines,
 // and is refused before any candidate is built when that work exceeds
 // maxFragmentWorkBytes. A taint list plus a shield summary already has more
@@ -214,6 +216,9 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	// Equal fragments at different positions are distinct candidates. A token
 	// can need the same bytes twice, so deduplication would lose its shape.
 	for _, a := range p.atoms {
+		if a.Fixed {
+			continue
+		}
 		parts = append(parts, a.Text)
 		paths = append(paths, a.Path)
 		fields = append(fields, a.Field)
@@ -244,6 +249,9 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) (*Finding, error) {
 	n := len(parts)
 	var b strings.Builder
+	// Repeated occurrences retain their combination positions, but equal
+	// candidate texts need only one detector call in this immutable scan.
+	seen := make(map[string]struct{})
 	for size := 2; size <= maxSize && size <= n; size++ {
 		idx := make([]int, size)
 		for i := range idx {
@@ -255,7 +263,12 @@ func combineFragments(ctx context.Context, det Detector, parts, paths, fields []
 				for _, o := range order {
 					b.WriteString(parts[idx[o]])
 				}
-				if res := det(ctx, b.String()); !res.Clean {
+				text := b.String()
+				if _, ok := seen[text]; ok {
+					continue
+				}
+				seen[text] = struct{}{}
+				if res := det(ctx, text); !res.Clean {
 					hit, hitFields := make([]string, 0, size), make([]string, 0, size)
 					for _, o := range order {
 						hit = append(hit, paths[idx[o]])

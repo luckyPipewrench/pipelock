@@ -57,3 +57,47 @@ func BenchmarkScanFragmentsAtPartCap(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkScanMixedFragments measures the same total widths when all but
+// two atoms are producer-fixed values. The full controlled-width benchmark
+// above must keep its documented detection guarantee and cost ceiling.
+func BenchmarkScanMixedFragments(b *testing.B) {
+	for _, width := range []int{5, 9, scanner.SubsequenceMaxParts} {
+		b.Run(fmt.Sprintf("atoms=%d", width), func(b *testing.B) {
+			values := make([]string, width)
+			for i := range values {
+				values[i] = fmt.Sprintf("api.vendor.example/v1/items/%d?page=%d", i, i*3)
+			}
+			raw, err := json.Marshal(map[string]any{"list": values})
+			if err != nil {
+				b.Fatal(err)
+			}
+			producer := (&Producer{schema: &Schema{Kind: "bench.mixed", Fields: map[string]Class{"list": Content, "list[]": Content}}}).WithFixedValues(map[string][]string{"list[]": values[2:]})
+			p, err := producer.Project(raw)
+			if err != nil {
+				b.Fatal(err)
+			}
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			sc := scanner.MustNew(cfg)
+			b.Cleanup(sc.Close)
+			calls := 0
+			det := func(ctx context.Context, text string) scanner.TextDLPResult {
+				calls++
+				return sc.ScanTextForDLPQuiet(ctx, text)
+			}
+			if rep, err := Scan(b.Context(), det, p); err != nil || !rep.Clean() {
+				b.Fatalf("representative receipt: %+v %v", rep, err)
+			}
+			perScan := calls
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := Scan(b.Context(), det, p); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(perScan), "detector-calls/op")
+		})
+	}
+}

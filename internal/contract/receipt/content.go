@@ -26,6 +26,15 @@ var evidenceReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 	Kind:   EvidenceReceiptContentKind,
 	Fields: evidenceReceiptFields(),
 	Outer:  evidenceReceiptOuter,
+	FixedValues: map[string][]string{
+		"payload_kind":             {string(PayloadProxyDecision), string(PayloadProxyDecisionWithSpans), string(PayloadSecretEgressDecisionV1), string(PayloadContractRatified), string(PayloadContractPromoteIntent), string(PayloadContractPromoteCommitted), string(PayloadContractRollbackAuthorized), string(PayloadContractRollbackCommitted), string(PayloadContractDemoted), string(PayloadContractExpired), string(PayloadContractDrift), string(PayloadShadowDelta), string(PayloadOpportunityMissing), string(PayloadKeyRotation), string(PayloadContractRedactionRequest), string(PayloadDeferOpened), string(PayloadDeferResolved)},
+		"payload.transport":        {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse"},
+		"payload.action_type":      {"read", "write", "http_request", "mcp_tool_call", "websocket_frame"},
+		"payload.verdict":          {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
+		"payload.live_verdict":     {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
+		"payload.winning_source":   {"scanner", "kill_switch", "contract", "policy"},
+		"payload.policy_sources[]": {"scanner", "kill_switch", "contract", "policy"},
+	},
 })
 
 func evidenceReceiptFields() map[string]receiptcontent.Class {

@@ -100,6 +100,10 @@ type Schema struct {
 	Kind   string
 	Fields map[string]Class
 	Enums  map[string][]string
+	// FixedValues names exact producer constants or retained operator values.
+	// They remain in every content view except fragment reassembly. A changed
+	// value stays a candidate. Only declared leaves may be listed here.
+	FixedValues map[string][]string
 	// Outer derives the recorder mirror fields from the exact detail bytes.
 	// It must read only Content and Enum values; generated values in a mirror
 	// would reintroduce detector input that the projection excludes.
@@ -107,11 +111,13 @@ type Schema struct {
 }
 
 // Producer is the capability to project one registered kind with its
-// generated-field exclusions. Only Register creates one, and Register refuses
-// a second registration of the same kind, so only the owning package holds it.
+// generated-field exclusions. Register creates the owning capability and
+// refuses a second registration of the same kind. WithFixedValues derives
+// narrower fragment searches from that capability.
 type Producer struct {
 	schema *Schema
 	enums  map[string]map[string]struct{}
+	fixed  map[string]map[string]struct{}
 }
 
 var (
@@ -120,8 +126,9 @@ var (
 )
 
 // Register installs schema s and returns its producer capability. It panics
-// on an empty kind, a duplicate kind, or an Enum path without a value set;
-// all three are programming errors caught at package initialization.
+// on an empty kind, a duplicate kind, an Enum path without a value set, or
+// invalid fixed-value declarations. These are programming errors caught at
+// package initialization.
 func Register(s Schema) *Producer {
 	if s.Kind == "" {
 		panic("receiptcontent: schema kind is required")
@@ -145,6 +152,7 @@ func Register(s Schema) *Producer {
 		}
 		p.enums[path] = set
 	}
+	p = p.WithFixedValues(s.FixedValues)
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if _, dup := registry[s.Kind]; dup {
@@ -152,6 +160,33 @@ func Register(s Schema) *Producer {
 	}
 	registry[s.Kind] = p
 	return p
+}
+
+// WithFixedValues derives an immutable producer capability with additional
+// exact fixed values. The owner supplies constants or retained configuration,
+// never per-request text. This changes only fragment eligibility, not content
+// scanning or redaction. Existing capabilities and the supplied map are not
+// mutated; a different value at the same path remains a fragment candidate.
+func (p *Producer) WithFixedValues(values map[string][]string) *Producer {
+	fixed := make(map[string]map[string]struct{}, len(p.fixed)+len(values))
+	for path, set := range p.fixed {
+		fixed[path] = set // immutable sets may be shared
+	}
+	for path, list := range values {
+		class, declared := p.schema.Fields[path]
+		if !declared || (class != Content && class != Identity && class != RunSession) {
+			panic(fmt.Sprintf("receiptcontent: %s: fixed values require a declared content leaf %q", p.Kind(), path))
+		}
+		set := make(map[string]struct{}, len(fixed[path])+len(list))
+		for text := range fixed[path] {
+			set[text] = struct{}{}
+		}
+		for _, text := range list {
+			set[text] = struct{}{}
+		}
+		fixed[path] = set
+	}
+	return &Producer{schema: p.schema, enums: p.enums, fixed: fixed}
 }
 
 // Registered reports whether kind has a registered schema.
@@ -208,9 +243,11 @@ const (
 // member names and must never be reported. Field is the schema path ("ext.*")
 // and is safe to report. Text is the decoded value and must never be echoed.
 type Atom struct {
-	Path     string
-	Field    string
-	Kind     AtomKind
+	Path  string
+	Field string
+	Kind  AtomKind
+	// Fixed is scanned but does not participate in fragment reassembly.
+	Fixed    bool
 	Identity bool
 	Text     string
 }
@@ -233,7 +270,7 @@ func (p *Projection) Atoms() []Atom { return append([]Atom(nil), p.atoms...) }
 func (p *Projection) Structured() []byte { return append([]byte(nil), p.structured...) }
 
 // Digest binds the projection: equal digests mean equal content, keys,
-// identity classes, and mirror text.
+// identity classes, fragment eligibility, and mirror text.
 func (p *Projection) Digest() [32]byte { return p.digest }
 
 // Project builds the projection of detail under the producer's schema. When
@@ -307,7 +344,7 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 				continue
 			}
 			mirror[f.name] = f.text
-			w.atoms = append(w.atoms, Atom{Path: OuterKey + "." + f.name, Field: OuterKey + "." + f.name, Kind: AtomValue, Text: f.text})
+			w.atoms = append(w.atoms, Atom{Path: OuterKey + "." + f.name, Field: OuterKey + "." + f.name, Kind: AtomValue, Fixed: p != nil, Text: f.text})
 		}
 		if len(mirror) > 0 {
 			out[OuterKey] = mirror
@@ -327,8 +364,10 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 	_, _ = h.Write(structured)
 	for _, a := range w.atoms {
 		// Identity is part of the binding: the same text under a different
-		// class must not satisfy a prior scan's redaction decision.
-		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t", a.Path, a.Kind, a.Identity)
+		// class must not satisfy a prior scan's redaction decision. Fragment
+		// eligibility is also bound, so a scan under a narrower search cannot
+		// attest a projection with a wider search.
+		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t\x00%t", a.Path, a.Kind, a.Identity, a.Fixed)
 	}
 	proj := &Projection{kind: kind, atoms: w.atoms, structured: structured}
 	copy(proj.digest[:], h.Sum(nil))
@@ -465,6 +504,10 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 	if text == "" {
 		return v, true, nil
 	}
-	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Text: text})
+	fixed := false
+	if classified && w.p != nil {
+		_, fixed = w.p.fixed[schemaPath][text]
+	}
+	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Fixed: fixed, Text: text})
 	return v, true, nil
 }

@@ -157,3 +157,28 @@ func TestEmitterHoldsItsConfigHashOrigin(t *testing.T) {
 		t.Fatal("a chosen config hash acquired origin")
 	}
 }
+
+// A formatted per-request override has no computed origin. Normalizing it
+// must neither register an origin nor exempt it from the receipt detector.
+func TestPolicyHashOverrideDoesNotAcquireComputedOrigin(t *testing.T) {
+	chosen := strings.Repeat("d8e9", 16)
+	if digestorigin.Computed(chosen) {
+		t.Fatal("fixture unexpectedly has computed origin")
+	}
+	f := newBoundaryFixture(t, chosen)
+	if f.sc.ScanTextForDLP(t.Context(), chosen).Clean {
+		t.Fatal("positive control: chosen hash must match")
+	}
+	o := baseOpts()
+	o.PolicyHash = "sha256:" + chosen
+	if err := f.em.Emit(o); err != nil {
+		t.Fatal(err)
+	}
+	if digestorigin.Computed(chosen) {
+		t.Fatal("normalization gave the caller hash computed origin")
+	}
+	rs := f.receipts(t)
+	if len(rs) != 1 || rs[0].ActionRecord.PolicyHash != redactedTarget {
+		t.Fatal("caller-selected policy hash persisted without content redaction")
+	}
+}

@@ -268,7 +268,7 @@ field is therefore not a tamper demonstration for receipt-chain verification.
 
 ### Compacting an over-cap recorder directory
 
-Evidence readers refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Stop the recorder and isolate the selected session as described below before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
+The display readers (`evidence view`, `evidence serve`, query and the dashboard) refuse a session with more than 256 JSONL shards or an individual shard above 8 MiB. Verification doesn't: `verify-receipt`, including `--whole-recorder` and `--group`, reads a session's complete history at any length, and so do receipt group close, successor creation and automatic anchoring. Compaction only keeps the display surfaces usable. Stop the recorder and isolate the selected session as described below before running the offline compaction ceremony. The compactor has its own bounded reader for legacy oversized shards, so a normal `pipelock evidence doctor` run isn't a prerequisite.
 
 ```bash
 sudo systemctl stop pipelock.service

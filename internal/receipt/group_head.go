@@ -41,7 +41,7 @@ func VerifyGroupShardHead(dir string, open ReceiptGroupOpen, openHash string, in
 	var finalHash string
 	var lastEntryHash string
 	entryIndex := 0
-	err = recorder.WalkSessionEntries(dir, shard.SessionID, func(entry recorder.Entry) error {
+	err = recorder.WalkSessionHistory(dir, shard.SessionID, func(entry recorder.Entry) error {
 		if rooted && (entry.Type != "checkpoint" || entry.PrevHash != rootEntryHash || lastCheckpoint) {
 			return errors.New("receipt group has evidence after transcript root instead of final checkpoint")
 		}

@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 type ReceiptGroupVerdict string
@@ -33,6 +35,20 @@ type ReceiptGroupResult struct {
 	CloseManifestSHA string              `json:"close_manifest_sha256,omitempty"`
 	ShardCount       int                 `json:"shard_count"`
 	Error            string              `json:"error,omitempty"`
+	// readIncomplete marks GROUP_INCOMPLETE that came from evidence that
+	// could not be read or changed during verification, as opposed to a
+	// group that crashed before its close. Only the latter can be a
+	// successor's predecessor.
+	readIncomplete bool
+}
+
+// setReadError keeps unavailable evidence distinct from a stable invalid group.
+func (r *ReceiptGroupResult) setReadError(err error) {
+	r.Error = err.Error()
+	if recorder.IsEvidenceUnavailable(err) {
+		r.Verdict = GroupIncomplete
+		r.readIncomplete = true
+	}
 }
 
 // VerifyReceiptGroup checks the exact published manifests and every claimed
@@ -59,30 +75,41 @@ func verifyGroupAELWithIndex(dir string, open ReceiptGroupOpen, trusted []string
 	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
 }
 
-func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) ReceiptGroupResult {
-	result := ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
+func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) (result ReceiptGroupResult) {
+	result = ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
 	if len(trusted) == 0 {
 		result.Error = "receipt group verification requires a trusted signer key"
 		return result
 	}
 	rootInfo, aelInfo, err := receiptGroupDirectoryIdentity(dir)
 	if err != nil {
-		result.Error = err.Error()
+		result.setReadError(err)
 		return result
 	}
 	before, err := fingerprintGroupDirectory(dir)
 	if err != nil {
-		result.Error = fmt.Sprintf("inventory receipt group directory: %v", err)
+		result.setReadError(fmt.Errorf("inventory receipt group directory: %w", err))
 		return result
 	}
+	// Recheck on every exit: a read or signature failure may have come from
+	// evidence that changed after the initial inventory, not a stable corrupt input.
+	defer func() {
+		after, checkErr := fingerprintGroupDirectory(dir)
+		endRoot, endAEL, identityErr := receiptGroupDirectoryIdentity(dir)
+		if checkErr != nil || after != before || identityErr != nil || !os.SameFile(rootInfo, endRoot) || !os.SameFile(aelInfo, endAEL) {
+			result.Verdict = GroupIncomplete
+			result.readIncomplete = true
+			result.Error = "receipt group evidence changed during verification; no verdict reached; stop the writer and verify again or verify an atomic snapshot"
+		}
+	}()
 	openName, err := ReceiptGroupFileName(groupID, "open")
 	if err != nil {
-		result.Error = err.Error()
+		result.setReadError(err)
 		return result
 	}
 	openBytes, err := readBoundedGroupFile(dir, openName)
 	if err != nil {
-		result.Error = fmt.Sprintf("read receipt group opening: %v", err)
+		result.setReadError(fmt.Errorf("read receipt group opening: %w", err))
 		return result
 	}
 	open, err := UnmarshalReceiptGroupOpen(openBytes, trusted)
@@ -102,15 +129,15 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		// recovery seals. Otherwise a forged or deleted seal could hide behind
 		// this early verdict.
 		if err := verifyGroupSessionInventory(dir, open); err != nil {
-			result.Error = err.Error()
+			result.setReadError(err)
 			return result
 		}
 		if err := verifyGroupTransitionInventory(dir, result.OpenManifestSHA, "", trusted); err != nil {
-			result.Error = err.Error()
+			result.setReadError(err)
 			return result
 		}
 		if err := verifyGroupAELWithIndex(dir, open, trusted, true, index); err != nil && !errors.Is(err, errGroupAELOpenTail) && !errors.Is(err, errGroupAELNeighborOpenTail) {
-			result.Error = err.Error()
+			result.setReadError(err)
 			return result
 		}
 		if after, err := fingerprintGroupDirectory(dir); err != nil || after != before {
@@ -127,7 +154,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		return result
 	}
 	if err != nil {
-		result.Error = fmt.Sprintf("read receipt group close: %v", err)
+		result.setReadError(fmt.Errorf("read receipt group close: %w", err))
 		return result
 	}
 	closed, err := UnmarshalReceiptGroupClose(closeBytes, open, result.OpenManifestSHA, trusted)
@@ -140,7 +167,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	for i, claimed := range closed.Shards {
 		actual, err := VerifyGroupShardHead(dir, open, result.OpenManifestSHA, i)
 		if err != nil {
-			result.Error = fmt.Sprintf("receipt group shard %d invalid: %v", i, err)
+			result.setReadError(fmt.Errorf("receipt group shard %d: %w", i, err))
 			return result
 		}
 		if claimed != actual {
@@ -152,21 +179,21 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	// signed predecessor binding and transition must also be present.
 	if open.PreviousGroupID != "" {
 		if err := verifyReceiptGroupTransition(dir, open, result.OpenManifestSHA, trusted); err != nil {
-			result.Error = err.Error()
+			result.setReadError(err)
 			return result
 		}
 	}
 	if err := verifyGroupSessionInventory(dir, open); err != nil {
-		result.Error = err.Error()
+		result.setReadError(err)
 		return result
 	}
 	if err := verifyGroupTransitionInventory(dir, result.OpenManifestSHA, result.CloseManifestSHA, trusted); err != nil {
-		result.Error = err.Error()
+		result.setReadError(err)
 		return result
 	}
 	aelErr := verifyGroupAELWithIndex(dir, open, trusted, false, index)
 	if aelErr != nil && !errors.Is(aelErr, errGroupAELOpenTail) && !errors.Is(aelErr, errGroupAELNeighborOpenTail) {
-		result.Error = aelErr.Error()
+		result.setReadError(aelErr)
 		return result
 	}
 	for _, item := range []struct {
@@ -201,11 +228,11 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	}
 	if errors.Is(aelErr, errGroupAELOpenTail) {
 		result.Verdict = GroupIncomplete
-		result.Error = aelErr.Error()
+		result.setReadError(aelErr)
 		return result
 	}
 	if errors.Is(aelErr, errGroupAELNeighborOpenTail) {
-		result.Error = aelErr.Error()
+		result.setReadError(aelErr)
 	}
 	if predecessorIncomplete {
 		result.Error = "predecessor group is GROUP_INCOMPLETE: no signed close manifest"
@@ -241,6 +268,12 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	if err != nil {
 		return summary, fmt.Errorf("inventory receipt groups: %w", err)
 	}
+	defer func() {
+		after, checkErr := fingerprintGroupDirectory(dir)
+		if checkErr != nil || after != before {
+			retErr = fmt.Errorf("%w: receipt group directory changed during verification", recorder.ErrEvidenceChanged)
+		}
+	}()
 	// Validate every artifact name and reject close/transition records that
 	// have no opening. Do not accumulate IDs: a second pass verifies openings.
 	err = walkInventoryNames(dir, func(name string) error {
@@ -342,20 +375,28 @@ func VerifyReceiptGroups(dir string, trusted []string, visit func(ReceiptGroupRe
 	if err != nil {
 		return summary, err
 	}
-	after, err := fingerprintGroupDirectory(dir)
-	if err != nil || after != before {
-		return summary, errors.New("receipt group directory changed during verification")
-	}
 	return summary, nil
 }
 
 func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error) {
 	root, err := os.Lstat(filepath.Clean(dir))
-	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("receipt group evidence path is not a real directory: %w", err)
+		}
+		return nil, nil, fmt.Errorf("inspect receipt group evidence path: %w", err)
+	}
+	if !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
 		return nil, nil, errors.New("receipt group evidence path is not a real directory")
 	}
 	ael, err := os.Lstat(filepath.Join(filepath.Clean(dir), "ael"))
-	if err != nil || !ael.IsDir() || ael.Mode()&os.ModeSymlink != 0 {
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, fmt.Errorf("receipt group AEL path is not a real directory: %w", err)
+		}
+		return nil, nil, fmt.Errorf("inspect receipt group AEL path: %w", err)
+	}
+	if !ael.IsDir() || ael.Mode()&os.ModeSymlink != 0 {
 		return nil, nil, errors.New("receipt group AEL path is not a real directory")
 	}
 	return root, ael, nil

@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -236,7 +237,11 @@ Examples:
 					return out.err
 				}
 				if groupErr != nil {
-					_, _ = fmt.Fprintf(out, "GROUP_INVALID inventory: %v\n", groupErr)
+					verdict := receipt.GroupInvalid
+					if recorder.IsEvidenceUnavailable(groupErr) {
+						verdict = receipt.GroupIncomplete
+					}
+					_, _ = fmt.Fprintf(out, "%s inventory: %v\n", verdict, groupErr)
 					return evidenceReadError(fmt.Errorf("receipt group inventory failed: %w", groupErr))
 				}
 				if groupSummary.Incomplete > 0 || groupSummary.Invalid > 0 {
@@ -259,13 +264,22 @@ Examples:
 						return err
 					}
 				}
-				receipts, extractErr := receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-				if extractErr != nil {
-					return evidenceReadError(fmt.Errorf("extracting session receipts: %w", extractErr))
-				}
-				evidenceReceipts, evidenceErr := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-				if evidenceErr != nil {
-					return evidenceReadError(fmt.Errorf("extracting session evidence receipts: %w", evidenceErr))
+				var receipts []receipt.Receipt
+				var evidenceReceipts []contractreceipt.EvidenceReceipt
+				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
+					var extractErr error
+					receipts, extractErr = receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+					if extractErr != nil {
+						return fmt.Errorf("extracting session receipts: %w", extractErr)
+					}
+					evidenceReceipts, extractErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
+					if extractErr != nil {
+						return fmt.Errorf("extracting session evidence receipts: %w", extractErr)
+					}
+					return nil
+				})
+				if readErr != nil {
+					return evidenceReadError(readErr)
 				}
 				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
 				return outputResult(out, verifyCleanReport(out, label, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
@@ -431,6 +445,12 @@ func resolveOneReceiptSession(location recorder.EvidenceLocation, base string) (
 }
 
 func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	return withDirectoryReportSnapshot(out, location, sessionID, func(buffer io.Writer) error {
+		return verifyWholeRecorderDirInner(buffer, location, sessionID, explicit, trustedKeys, opts)
+	})
+}
+
+func verifyWholeRecorderDirInner(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
 	base := sessionID
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b
@@ -516,26 +536,26 @@ func verifyWholeRecorderDir(out io.Writer, location recorder.EvidenceLocation, s
 // is the filename the operator gave, which may differ from the base of the
 // resolved path when the operator named a symlink.
 func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys []string, opts verifyReceiptOptions) error {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return fmt.Errorf("reading recorder file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
 	scan := newWholeRecorderScan(trustedKeys, opts)
 	defer scan.close()
 	// A file named for a session holds only that session's entries. The
 	// refusal is decided after the whole file reads cleanly, as before.
 	fileSession, _, named := recorder.ParseEvidenceFilename(name)
 	var sessionErr error
-	// Stream the handle so the reader's bounded-read limits apply and the
-	// file is never held in memory.
-	if err := recorder.WalkEntriesFromReader(file, func(e recorder.Entry) error {
+	// Stream the handle so the file is never held in memory. Only the
+	// recorder's per-entry line limit applies: verification never refuses
+	// a valid file for its length.
+	if _, err := recorder.WalkEvidenceFile(path, nil, func(e recorder.Entry) error {
 		if named && sessionErr == nil && e.SessionID != fileSession {
 			sessionErr = recorder.EntrySessionError(e, fileSession)
 		}
 		scan.add(e)
 		return nil
 	}); err != nil {
+		var torn *recorder.TornTailError
+		if errors.As(err, &torn) {
+			err = torn
+		}
 		return fmt.Errorf("whole-recorder verification failed: not a recorder file or recorder integrity error: %w", err)
 	}
 	if sessionErr != nil {
@@ -551,16 +571,13 @@ func verifyWholeRecorderFromFile(out io.Writer, name, path string, trustedKeys [
 func verifyWholeRecorderFromResolvedSessionDir(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	scan := newWholeRecorderScan(trustedKeys, opts)
 	defer scan.close()
-	query, err := recorder.WalkSessionResolved(location, sessionID, func(e recorder.Entry) error {
+	// The authoritative walk reads the session's complete history: no
+	// directory, file-size or entry-count budget can truncate it.
+	if err := recorder.WalkSessionHistoryResolved(location, sessionID, func(e recorder.Entry) error {
 		scan.add(e)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("reading recorder session: %w", err)
-	}
-	if query.Truncated {
-		_, _ = fmt.Fprintf(out, "INCOMPLETE: evidence session %s exceeded bounded read limits\n", sessionID)
-		return fmt.Errorf("whole-recorder verification failed: evidence session %s exceeded bounded read limits", sessionID)
 	}
 	if err := scan.whole.Err(); err != nil {
 		return fmt.Errorf("whole-recorder verification failed: %w", err)
@@ -1242,7 +1259,7 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 	// single file must pass on its own (entries belong to the session its
 	// name claims, and the recorder entry hash chain holds). The path the
 	// operator named is read as given.
-	if entries, readErr := recorder.ReadEntries(filepath.Clean(path)); readErr == nil {
+	if entries, readErr := recorder.ReadHistoryEntries(filepath.Clean(path)); readErr == nil {
 		if len(opts.RotationEndorsements) > 0 && len(entries) > 0 && entries[0].SessionID != opts.SessionID {
 			return fmt.Errorf("endorsed receipt session %q does not match evidence session %q", opts.SessionID, entries[0].SessionID)
 		}
@@ -1255,6 +1272,8 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 		if isRecorder {
 			return verifyTypedChainDetailed(out, path, actions, evidenceReceipts, trustedKeys, opts)
 		}
+	} else if recorder.IsEvidenceUnavailable(readErr) {
+		return readErr
 	}
 	var (
 		receipts []receipt.Receipt
@@ -1282,6 +1301,29 @@ func verifyChainFromFileDetailed(out io.Writer, name, path string, trustedKeys [
 // the base's restart continuity, and fails when any chain fails or any link
 // file does not verify.
 func verifyChainDirWithContinuity(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
+	return withDirectoryReportSnapshot(out, location, sessionID, func(buffer io.Writer) error {
+		return verifyChainDirWithContinuityInner(buffer, location, sessionID, explicit, trustedKeys, opts)
+	})
+}
+
+func withDirectoryReportSnapshot(out io.Writer, location recorder.EvidenceLocation, session string, consume func(io.Writer) error) error {
+	base := session
+	if b, ok := receipt.RunSessionBase(base); ok {
+		base = b
+	}
+	var buffer bytes.Buffer
+	err := receipt.WithBaseHistorySnapshot(location.Dir, base, func() error { return consume(&buffer) })
+	if recorder.IsEvidenceUnavailable(err) {
+		_, _ = fmt.Fprintf(out, "VERIFICATION INCOMPLETE: %s\n", err)
+		return err
+	}
+	if _, writeErr := io.Copy(out, &buffer); writeErr != nil {
+		return writeErr
+	}
+	return err
+}
+
+func verifyChainDirWithContinuityInner(out io.Writer, location recorder.EvidenceLocation, sessionID string, explicit bool, trustedKeys []string, opts verifyReceiptOptions) error {
 	base := sessionID
 	if b, ok := receipt.RunSessionBase(sessionID); ok {
 		base = b
@@ -1408,16 +1450,30 @@ func printRestartContinuity(out io.Writer, report receipt.BaseReport) {
 	_, _ = fmt.Fprintln(out, "  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.")
 }
 
+// afterSessionEvidenceRead is a test seam inside the session snapshot, after
+// its evidence is read. Production leaves it a no-op.
+var afterSessionEvidenceRead = func() {}
+
 func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.EvidenceLocation, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	label := fmt.Sprintf("%s (session %s)", location.Dir, sessionID)
-	receipts, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+	var receipts []receipt.Receipt
+	var evidenceReceipts []contractreceipt.EvidenceReceipt
+	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
+		var readErr error
+		receipts, readErr = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
+		if readErr != nil {
+			return fmt.Errorf("extracting session receipts: %w", readErr)
+		}
+		evidenceReceipts, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
+		afterSessionEvidenceRead()
+		return readErr
+	})
 	if err != nil {
-		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
-		return fmt.Errorf("extracting session receipts: %w", err)
-	}
-	evidenceReceipts, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
-	if err != nil {
-		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error:    %v\n", label, err)
+		verdict := "CHAIN BROKEN"
+		if recorder.IsEvidenceUnavailable(err) {
+			verdict = "CHAIN UNAVAILABLE"
+		}
+		_, _ = fmt.Fprintf(out, "%s: %s\n  Error:    %v\n", verdict, label, err)
 		return fmt.Errorf("extracting session evidence receipts: %w", err)
 	}
 	return verifyTypedChainDetailed(out, label, receipts, evidenceReceipts, trustedKeys, opts)
@@ -1428,11 +1484,13 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 // which has no EvidenceReceipt v2 chain.
 // name is the operator's filename, which binds a recorder file to its session.
 func extractFileChains(name, path string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
-	if entries, readErr := recorder.ReadEntries(filepath.Clean(path)); readErr == nil {
+	if entries, readErr := recorder.ReadHistoryEntries(filepath.Clean(path)); readErr == nil {
 		actions, evidenceReceipts, isRecorder, err := receipt.RecorderFileChains(name, entries)
 		if err != nil || isRecorder {
 			return actions, evidenceReceipts, err
 		}
+	} else if recorder.IsEvidenceUnavailable(readErr) {
+		return nil, nil, readErr
 	}
 	actions, err := receipt.ExtractReceipts(path)
 	return actions, nil, err

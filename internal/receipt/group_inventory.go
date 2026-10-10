@@ -66,7 +66,8 @@ func (m groupAELMembership) Finish(incomplete bool) error {
 
 // fingerprintGroupDirectory streams directory entries in fixed batches. The
 // XOR accumulator is order-independent because Readdirnames has no stable
-// order; each name, mode, size, and modification time is SHA-256 separated.
+// order; each name, identity, change time, mode, size, and modification time
+// is SHA-256 separated.
 // A count distinguishes an added pair that might otherwise cancel itself.
 func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
 	var result groupInventoryFingerprint
@@ -85,7 +86,10 @@ func fingerprintGroupDirectory(dir string) (groupInventoryFingerprint, error) {
 		}
 		runDir := filepath.Join(dir, "ael", run)
 		info, err := os.Lstat(runDir)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
+			return fmt.Errorf("inspect native AEL run %q: %w", run, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("native AEL run %q is not a real directory", run)
 		}
 		h := sha256.New()
@@ -154,12 +158,16 @@ func fingerprintOpenedDirectory(dir string, f *os.File) ([32]byte, uint64, error
 			if err != nil {
 				return fingerprint, count, err
 			}
+			identity, err := recorder.EvidenceMetadataIdentity(filepath.Join(dir, name), info)
+			if err != nil {
+				return fingerprint, count, err
+			}
 			var length [8]byte
 			h := sha256.New()
 			binary.BigEndian.PutUint64(length[:], uint64(len(name)))
 			_, _ = h.Write(length[:])
 			_, _ = h.Write([]byte(name))
-			_, _ = fmt.Fprintf(h, "%v|%d|%d", info.Mode(), info.Size(), info.ModTime().UnixNano())
+			_, _ = fmt.Fprintf(h, "%s|%v|%d|%d", identity, info.Mode(), info.Size(), info.ModTime().UnixNano())
 			sum := h.Sum(nil)
 			for i := range fingerprint {
 				fingerprint[i] ^= sum[i]
@@ -225,7 +233,7 @@ func verifyGroupSessionInventory(dir string, open ReceiptGroupOpen) error {
 				// Classification uses only a terminated first entry. Recovery
 				// validates complete JSON in the final fragment but must not
 				// supply that fragment to a verifier as durable evidence.
-				_, err = recorder.CaptureTornEvidence(path, recorder.MaxEvidenceReadFileBytes, nil, captureFirst)
+				_, err = recorder.CaptureTornEvidence(path, 0, nil, captureFirst)
 			}
 			if err != nil || !seen {
 				return fmt.Errorf("unlisted receipt run %q cannot be classified: %w", session, err)
@@ -425,7 +433,7 @@ func firstGroupEvidenceEntry(path string) (recorder.Entry, bool, error) {
 	}
 	var torn *recorder.TornTailError
 	if errors.As(err, &torn) {
-		_, err = recorder.CaptureTornEvidence(path, recorder.MaxEvidenceReadFileBytes, nil, func(entry recorder.Entry) error {
+		_, err = recorder.CaptureTornEvidence(path, 0, nil, func(entry recorder.Entry) error {
 			if !seen {
 				first, seen = entry, true
 			}
@@ -457,7 +465,7 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 	groupID := ""
 	first := true
 	var err error
-	err = recorder.WalkSessionEntries(dir, session, func(entry recorder.Entry) error {
+	err = recorder.WalkSessionHistory(dir, session, func(entry recorder.Entry) error {
 		if entry.Type == transcriptRootEntryType {
 			completed = true
 		}

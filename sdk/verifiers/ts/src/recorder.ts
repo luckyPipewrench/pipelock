@@ -13,9 +13,8 @@ import type { RecorderLine } from "./recorder-chain.js";
 import {
   InvalidError,
   RuntimeError,
-  decodeUTF8,
+  forEachVerifierJSONLLine,
   parseJSON,
-  readVerifierBytes,
   rejectDuplicateKeys,
 } from "./util.js";
 
@@ -47,8 +46,11 @@ export interface ParsedRecorderLine extends RecorderLine {
 }
 
 export function readEntryLines(file: string, directoryChild = false): ParsedRecorderLine[] {
-  const text = decodeUTF8(readVerifierBytes(file, directoryChild), "evidence jsonl");
-  return parseEntryLinesText(text);
+  const entries: ParsedRecorderLine[] = [];
+  forEachVerifierJSONLLine(file, directoryChild, (line, lineNumber) => {
+    entries.push(...parseEntryLinesText(line, lineNumber));
+  });
+  return entries;
 }
 
 // EntryLinesPrefix is the LF-terminated prefix of one shard plus whether a
@@ -61,35 +63,39 @@ export interface EntryLinesPrefix {
 }
 
 export function readEntryLinesPrefix(file: string, directoryChild = false): EntryLinesPrefix {
-  const raw = readVerifierBytes(file, directoryChild);
-  const torn = raw.length > 0 && raw[raw.length - 1] !== 0x0a;
-  const end = raw.lastIndexOf(0x0a);
-  const text = decodeUTF8(raw.subarray(0, end + 1), "evidence jsonl");
-  return { lines: parseEntryLinesText(text), torn };
+  const lines: ParsedRecorderLine[] = [];
+  const torn = forEachVerifierJSONLLine(
+    file,
+    directoryChild,
+    (line, lineNumber) => lines.push(...parseEntryLinesText(line, lineNumber)),
+    false,
+  );
+  return { lines, torn };
 }
 
 // parseEntryLinesText parses an already-decoded recorder shard, including an
 // unterminated final line. Recovery verification uses it for the LF-terminated
 // prefix whose raw bytes are independently bound by a recovery seal.
-export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
+export function parseEntryLinesText(text: string, firstLine = 1): ParsedRecorderLine[] {
   const entries: ParsedRecorderLine[] = [];
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
+    const lineNumber = firstLine + i;
     const line = trimGoSpace(lines[i] ?? "");
     if (line === "") continue;
-    const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
+    const entry = parseJSON<RecorderEntry>(line, `line ${lineNumber}`);
     const version = entry === null || typeof entry !== "object" ? entry : entry.v;
     if (version !== 1 && version !== 2 && version !== 3) {
       throw new RuntimeError(
-        `line ${i + 1}: unsupported entry version ${String(version)} (accepted: 1, 2, 3)`,
+        `line ${lineNumber}: unsupported entry version ${String(version)} (accepted: 1, 2, 3)`,
       );
     }
     if (entry.v === 3) {
-      entry.seq = validateV3Sequence(line, i + 1);
+      entry.seq = validateV3Sequence(line, lineNumber);
     } else {
       rejectDuplicateKeys(line);
     }
-    validateProjectedStrings(entry, i + 1, version);
+    validateProjectedStrings(entry, lineNumber, version);
     bindRecorderLineExtSource(entry.detail, line);
     if (entry.type === evidenceReceiptType) {
       const detailSpan = objectMemberSpan(line, 0, "detail");
@@ -102,7 +108,7 @@ export function parseEntryLinesText(text: string): ParsedRecorderLine[] {
         legacyNamespaceFieldIsSet(entry.writer_instance_id))
     ) {
       throw new RuntimeError(
-        `line ${i + 1}: legacy entry cannot carry v3 recorder namespace fields`,
+        `line ${lineNumber}: legacy entry cannot carry v3 recorder namespace fields`,
       );
     }
     entries.push({ entry, line });

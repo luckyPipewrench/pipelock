@@ -226,7 +226,16 @@ func extractReceiptsFromDir(t *testing.T, dir string) []receipt.Receipt {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jsonl") {
 			continue
 		}
-		receipts, rErr := receipt.ExtractReceipts(filepath.Join(dir, de.Name()))
+		// The recorder may still be appending: a stable read refuses a file
+		// that changed underneath it. That is a retry, not a test failure; any
+		// other error fails now.
+		path := filepath.Join(dir, de.Name())
+		var receipts []receipt.Receipt
+		var rErr error
+		testwait.For(t, waitForReceiptTimeout, func() bool {
+			receipts, rErr = receipt.ExtractReceipts(path)
+			return !errors.Is(rErr, recorder.ErrEvidenceChanged)
+		}, "stable read of %s", de.Name())
 		if rErr != nil {
 			t.Fatalf("ExtractReceipts(%s): %v", de.Name(), rErr)
 		}

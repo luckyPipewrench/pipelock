@@ -843,7 +843,7 @@ func TestExtractCaptureSummaryUsesRawDetailAndFallbacksSafely(t *testing.T) {
 	}
 }
 
-func TestLoadAndReplayRejectsTruncatedCaptureEvidence(t *testing.T) {
+func TestLoadAndReplayReadsCompleteCaptureEvidence(t *testing.T) {
 	dir := t.TempDir()
 	sessionDir := filepath.Join(dir, loadReplaySessionID)
 	rec, err := recorder.New(recorder.Config{
@@ -877,13 +877,16 @@ func TestLoadAndReplayRejectsTruncatedCaptureEvidence(t *testing.T) {
 		t.Fatalf("rec.Close: %v", err)
 	}
 
-	_, _, _, _, err = LoadAndReplay(config.Defaults(), dir)
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("LoadAndReplay error = %v, want ErrEvidenceReadLimitExceeded", err)
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	records, _, skipped, _, err := LoadAndReplay(cfg, dir)
+	if err != nil || len(records) != recorder.MaxEvidenceReadEntries+1 || skipped != 0 {
+		t.Fatalf("LoadAndReplay records=%d skipped=%d error=%v", len(records), skipped, err)
 	}
 }
 
-func TestLoadAndReplayRejectsTruncatedCaptureMetadata(t *testing.T) {
+func TestLoadAndReplayReadsCompleteCaptureMetadata(t *testing.T) {
 	dir := t.TempDir()
 	metaDir := filepath.Join(dir, metaSessionID)
 	rec, err := recorder.New(recorder.Config{
@@ -908,9 +911,32 @@ func TestLoadAndReplayRejectsTruncatedCaptureMetadata(t *testing.T) {
 		t.Fatalf("rec.Close: %v", err)
 	}
 
-	_, _, _, _, err = LoadAndReplay(config.Defaults(), dir)
-	if !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
-		t.Fatalf("LoadAndReplay error = %v, want ErrEvidenceReadLimitExceeded", err)
+	_, dropped, _, _, err := LoadAndReplay(config.Defaults(), dir)
+	if err != nil || dropped != recorder.MaxEvidenceReadEntries+1 {
+		t.Fatalf("LoadAndReplay dropped=%d error=%v", dropped, err)
+	}
+}
+
+func TestLoadAndReplayRefusesMalformedCaptureMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeDropSentinels(t, dir, 1)
+	files, err := filepath.Glob(filepath.Join(dir, metaSessionID, "evidence-*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("metadata files=%v err=%v", files, err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(raw), `"count":1`, `"count":"invalid"`, 1)
+	if changed == string(raw) {
+		t.Fatal("metadata mutation did not apply")
+	}
+	if err := os.WriteFile(filepath.Clean(files[0]), []byte(changed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := LoadAndReplay(config.Defaults(), dir); err == nil || !strings.Contains(err.Error(), "parse capture drop metadata") {
+		t.Fatalf("malformed capture metadata error=%v", err)
 	}
 }
 

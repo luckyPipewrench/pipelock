@@ -240,7 +240,7 @@ Scope and limits:
 
 - **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). Directory-wide verification lists every unsealed run under `INCOMPLETE RUNS` without failing solely for a missing seal; `--require-seal` makes that condition fail. Selecting a run with `--session` or checking a single file with `--whole-recorder` fails on a missing seal. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
 - **A restart starts a new chain.** A transcript root seals one process run. The next start records a new run chain beside it (see [One chain per process run](#one-chain-per-process-run)), so a prior clean shutdown never blocks receipts.
-- **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query, verification, and dashboard paths. Those content-read paths stay bounded so a truncated scan cannot be mistaken for complete evidence. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
+- **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query and dashboard paths. Display reads stay bounded and report truncation. Native verification, group lifecycle operations and anchoring read complete session history through separate authoritative readers. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
 ### One chain per process run
 
@@ -602,7 +602,7 @@ Filter fields:
 | `MaxDirectoryEntries` | Optional evidence-directory entry ceiling. Zero uses the default ceiling. |
 | `MaxBytesRead` | Optional byte ceiling. Positive values apply across scanned evidence files. Zero uses the default per-file byte ceiling. If reached, `QueryResult.Truncated` is true. |
 
-Recorder reads are bounded. `ReadEntries` and `ReadEntriesFromReader` return an
+Display reads are bounded. `ReadEntries` and `ReadEntriesFromReader` return an
 error if the default evidence size or entry-count ceiling is exceeded. Query
 APIs that can return read metadata set `QueryResult.Truncated` instead of
 silently returning a partial session as complete.
@@ -616,6 +616,8 @@ sessions, err := recorder.ListSessions("/var/lib/pipelock/evidence")
 Session listing is also bounded by default. Use `ListSessionsBoundedResult` when
 a UI can display an explicit truncation warning; strict helpers return an error
 when the directory entry cap is exceeded.
+
+Authoritative consumers use `WalkSessionHistory` or `WalkSessionHistoryFiles` to stream complete history, and `WalkHistorySessions` to enumerate sessions without a display budget. These readers keep the recorder's 1 MiB entry limit, secure file opens, session membership checks and change detection. Capture replay and coverage-certificate generation use this path too. Callers that extract receipts into a slice still need memory proportional to the receipts they retain. Evidence doctor has separate diagnostic limits; the Rust, TypeScript and Python verifiers and browser archive ingress also have their own input limits.
 
 ## File Rotation and Retention
 
@@ -631,7 +633,7 @@ To trigger cleanup immediately, run:
 pipelock evidence expire --config pipelock.yaml
 ```
 
-`pipelock doctor` warns when any session reaches 200 shards. Receipt emission is not affected by shard count. Resume scans the session's shards to find the newest one that actually holds entries, walking past empty shards left by a crash between file creation and the first write, and reads only that tail. The candidate scan is not capped and each file read is, so emission keeps working past the 256-entry ceiling that stops the read paths. The scan does hold one filename and sequence per shard in memory while it runs, so it is bounded by available resources rather than unconditionally, and bounding that is tracked follow-up work. The 256-shard ceiling applies to the evidence read paths (`evidence view`, `evidence serve`, query, and the dashboard), which refuse rather than show a truncated view, so those surfaces degrade on a directory past it.
+`pipelock doctor` warns when any session reaches 200 shards. Receipt emission is not affected by shard count. Resume scans the session's shards to find the newest one that actually holds entries, walking past empty shards left by a crash between file creation and the first write, and reads only that tail. The candidate scan is not capped and each file read is, so emission keeps working past the 256-entry ceiling that stops the read paths. The scan does hold one filename and sequence per shard in memory while it runs, so it is bounded by available resources rather than unconditionally, and bounding that is tracked follow-up work. The 256-shard ceiling applies to the evidence read paths (`evidence view`, `evidence serve`, query, and the dashboard), which refuse rather than show a truncated view, so those surfaces degrade on a directory past it. Verification, receipt group close, successor creation and anchoring don't use those readers: they read the session's complete history and ignore unrelated files in the directory.
 
 The warning matters anyway, because nothing prunes chain shards. Retention expires raw sidecars only; `.jsonl` shards are the hash-chain spine and removing one breaks full-history verification and can strand external anchors, so a long-running session grows without bound. Treat a warning as a signal to archive and verify, not as a countdown to an outage.
 

@@ -56,7 +56,7 @@ var (
 	jsonMarshal      = json.Marshal
 	userHomeDir      = os.UserHomeDir
 	discoverConfigs  = discover.Discover
-	readRecorderFile = recorder.ReadEntries
+	readRecorderFile = recorder.ReadHistoryEntries
 )
 
 // Capsule is the signed posture artifact emitted by pipelock posture emit.

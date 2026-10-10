@@ -14,8 +14,6 @@ import (
 	"io"
 	"math"
 	"os"
-
-	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // pendingCheckpoint is a signed checkpoint whose only remaining candidate
@@ -33,16 +31,18 @@ type pendingCheckpoint struct {
 const pendingInMemory = 1024
 
 // maxPendingCheckpoints is the most signed checkpoints one receipt gap may
-// hold. A gap cannot hold more checkpoints than a session has entries, and
-// the evidence readers stop a session at this many entries, so an honest
-// recorder never reaches it, whatever its checkpoint interval.
-const maxPendingCheckpoints = recorder.MaxEvidenceReadDirectoryEntries * recorder.MaxEvidenceReadEntries
+// hold: 2,560,000, spilled to disk past pendingInMemory. Verification reads
+// a session's complete history, so this is a resource bound of its own, not
+// a consequence of a read budget. A writer reaches it only with
+// flight_recorder.checkpoint_interval set low and millions of entries
+// without a receipt between them.
+const maxPendingCheckpoints = 2_560_000
 
 // pendingSpillHeader is index, sequence, and the two field lengths.
 const pendingSpillHeader = 8 + 8 + 4 + 4
 
 var (
-	errTooManyPendingCheckpoints = fmt.Errorf("more than %d signed checkpoints wait for the next receipt's signer, more than a session within the evidence read limits holds; a writer signs that many only with flight_recorder.checkpoint_interval set low and no receipt for that long, so raise checkpoint_interval", maxPendingCheckpoints)
+	errTooManyPendingCheckpoints = fmt.Errorf("more than %d signed checkpoints wait for the next receipt's signer; a writer signs that many only with flight_recorder.checkpoint_interval set low and no receipt for that long, so raise checkpoint_interval", maxPendingCheckpoints)
 	errPendingSpillChanged       = errors.New("signed checkpoints held for the next receipt's signer were changed on disk before they were verified")
 )
 

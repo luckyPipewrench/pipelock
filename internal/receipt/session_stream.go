@@ -5,7 +5,6 @@ package receipt
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -17,17 +16,11 @@ func WalkReceiptsFromSessionDir(dir, sessionID string, consume func(Receipt) err
 	if consume == nil {
 		return errors.New("session receipt consumer is required")
 	}
-	return recorder.WalkSessionEntries(dir, sessionID, func(e recorder.Entry) error {
-		if e.Type == recorderEntryType {
-			r, err := receiptFromEntry(e)
-			if err != nil {
-				return fmt.Errorf("receipt at seq %d: %w", e.Sequence, err)
-			}
-			return consume(*r)
+	return recorder.WalkSessionHistory(dir, sessionID, func(e recorder.Entry) error {
+		r, ok, err := receiptFromChainEntry(e)
+		if err != nil || !ok {
+			return err
 		}
-		if !knownRecorderEntryType(e.Type) {
-			return fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
-		}
-		return nil
+		return consume(r)
 	})
 }

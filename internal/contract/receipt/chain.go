@@ -10,9 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
-	"sort"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -363,11 +362,30 @@ type recorderLine struct {
 // while unknown types fail closed so junk cannot ride beside a valid receipt
 // subsequence.
 func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	var receipts []EvidenceReceipt
+	err := recorder.WalkEvidenceFileReader(filepath.Clean(path), func(input io.ReadSeeker) error {
+		var parseErr error
+		receipts, parseErr = extractEvidenceReceiptsFromReader(input, path)
+		return parseErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read evidence file: %w", err)
 	}
-	return extractEvidenceReceiptsFromBytes(data, filepath.Clean(path))
+	return receipts, nil
+}
+
+// ExtractEvidenceReceiptsFromReader streams complete recorder JSONL and retains
+// only its signed evidence receipts. The caller establishes a stable snapshot.
+func ExtractEvidenceReceiptsFromReader(input io.Reader) ([]EvidenceReceipt, error) {
+	return extractEvidenceReceiptsFromReader(input, "evidence reader")
+}
+
+func extractEvidenceReceiptsFromReader(input io.Reader, source string) ([]EvidenceReceipt, error) {
+	var receipts []EvidenceReceipt
+	if err := walkEvidenceReceiptLines(input, source, func(r EvidenceReceipt) { receipts = append(receipts, r) }); err != nil {
+		return nil, err
+	}
+	return receipts, nil
 }
 
 // ExtractEvidenceReceiptsBytes parses an already-read evidence snapshot.
@@ -387,76 +405,23 @@ func ExtractEvidenceReceiptsFromSessionDir(dir, sessionID string) ([]EvidenceRec
 }
 
 // ExtractEvidenceReceiptsFromResolvedSessionDir reads one already-resolved evidence location.
+//
+// The shards come from the recorder's authoritative session walk: membership
+// is parsed session equality, never an "evidence-<session>-" prefix; order is
+// (sequence start, name); two shards starting the same sequence are refused;
+// and no directory, file-size or entry-count budget can refuse or truncate the
+// chain. Each shard streams one line at a time, so only receipts are retained.
 func ExtractEvidenceReceiptsFromResolvedSessionDir(location recorder.EvidenceLocation, sessionID string) ([]EvidenceReceipt, error) {
 	clean := filepath.Clean(location.Dir)
-	entries, err := recorder.ReadEvidenceLocationEntries(location)
-	if err != nil {
-		return nil, fmt.Errorf("read evidence directory: %w", err)
-	}
-	// Session membership is parsed equality, not an "evidence-<session>-"
-	// prefix. For session "s", the name "evidence-s-evil-999.jsonl" satisfies
-	// the prefix but belongs to session "s-evil", so prefix matching folded
-	// another session's receipts into this one's chain order.
 	wantSession := filepath.Base(sessionID)
-	// Parse once per file rather than on every comparator call. A session's
-	// shard count is unbounded over time now that resume no longer caps the
-	// directory, and the two sibling scanners in this change already
-	// precompute the same way.
-	type shard struct {
-		name     string
-		seqStart uint64
-	}
-	shards := make([]shard, 0)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		parsedSession, seqStart, ok := parseEvidenceName(name)
-		if !ok || parsedSession != wantSession {
-			continue
-		}
-		shards = append(shards, shard{
-			name:     name,
-			seqStart: seqStart,
+	out := make([]EvidenceReceipt, 0)
+	err := recorder.WalkSessionHistoryFiles(location, wantSession, func(shard recorder.SessionHistoryShard, r io.Reader) error {
+		return walkEvidenceReceiptLines(r, filepath.Join(clean, shard.Name), func(receipt EvidenceReceipt) {
+			out = append(out, receipt)
 		})
-	}
-	// Total order. sort.Slice is not stable, and a non-numeric trailing segment
-	// parses to sequence 0, so several distinct names can tie. Without a
-	// tie-break the resulting chain order would depend on directory order.
-	sort.Slice(shards, func(i, j int) bool {
-		if shards[i].seqStart != shards[j].seqStart {
-			return shards[i].seqStart < shards[j].seqStart
-		}
-		return shards[i].name < shards[j].name
 	})
-	files := make([]string, 0, len(shards))
-	for _, s := range shards {
-		files = append(files, s.name)
-	}
-
-	// Refuse an ambiguous shard set rather than concatenating receipts in an
-	// order that depended on which of two indistinguishable names sorted
-	// first. A verifier presenting that as a chain is the same hazard as a
-	// truncated read presented as complete.
-	if err := evidencename.CheckNoDuplicateSeqStart(files); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("evidence session %s in %s: %w", wantSession, clean, err)
-	}
-
-	var out []EvidenceReceipt
-	for _, file := range files {
-		data, readErr := recorder.ReadEvidenceLocationFileBounded(location, file, recorder.MaxEvidenceReadFileBytes)
-		if readErr == nil {
-			receipts, parseErr := extractEvidenceReceiptsFromBytes(data, filepath.Join(clean, file))
-			if parseErr != nil {
-				readErr = parseErr
-			} else {
-				out = append(out, receipts...)
-			}
-		}
-		if readErr != nil {
-			return nil, fmt.Errorf("read %s: %w", filepath.Base(file), readErr)
-		}
 	}
 	return out, nil
 }
@@ -513,7 +478,18 @@ func EvidenceReceiptFromEntry(index int, entry recorder.Entry) (EvidenceReceipt,
 
 func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceReceipt, error) {
 	var out []EvidenceReceipt
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	if err := walkEvidenceReceiptLines(bytes.NewReader(data), label, func(r EvidenceReceipt) {
+		out = append(out, r)
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// walkEvidenceReceiptLines parses recorder JSONL one line at a time and
+// delivers each v2 evidence receipt, so a caller retains only receipts.
+func walkEvidenceReceiptLines(input io.Reader, label string, deliver func(EvidenceReceipt)) error {
+	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64<<10), maxChainLineBytes)
 	line := 0
 	for scanner.Scan() {
@@ -523,28 +499,28 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 			continue
 		}
 		if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
-			return nil, fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
+			return fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
 		}
 		var entry recorderLine
 		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil, fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
+			return fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
 		}
 		if entry.Type != EvidenceEntryType {
 			if knownRecorderEntryType(entry.Type) {
 				continue
 			}
-			return nil, fmt.Errorf("%s line %d: unexpected recorder entry type %q", label, line, entry.Type)
+			return fmt.Errorf("%s line %d: unexpected recorder entry type %q", label, line, entry.Type)
 		}
 		r, err := decodeEvidenceReceiptDetail(entry.Detail)
 		if err != nil {
-			return nil, fmt.Errorf("%s line %d: %w", label, line, err)
+			return fmt.Errorf("%s line %d: %w", label, line, err)
 		}
-		out = append(out, r)
+		deliver(r)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan evidence file %s: %w", label, err)
+		return fmt.Errorf("scan evidence file %s: %w", label, err)
 	}
-	return out, nil
+	return nil
 }
 
 // decodeEvidenceReceiptDetail decodes the hash-bound detail value used by

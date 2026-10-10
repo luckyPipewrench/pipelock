@@ -127,17 +127,29 @@ func readBoundedGroupFile(dir, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	// Read failures keep their cause and a file that changes under the read
+	// is reported as changed evidence, so verification can tell unavailable
+	// evidence from a stable invalid artifact.
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(before, opened) {
-		return nil, errors.New("receipt group artifact changed during open")
+	if err != nil {
+		return nil, fmt.Errorf("stat receipt group artifact: %w", err)
+	}
+	if !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("%w: receipt group artifact changed during open", recorder.ErrEvidenceChanged)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxGroupFileBytes+1))
-	if err != nil || len(raw) > maxGroupFileBytes {
-		return nil, errors.New("receipt group artifact exceeds read bound")
+	if err != nil {
+		return nil, fmt.Errorf("read receipt group artifact: %w", err)
 	}
 	after, err := f.Stat()
-	if err != nil || !os.SameFile(opened, after) || opened.Size() != after.Size() || !opened.ModTime().Equal(after.ModTime()) {
-		return nil, errors.New("receipt group artifact changed during read")
+	if err != nil {
+		return nil, fmt.Errorf("stat receipt group artifact: %w", err)
+	}
+	if !os.SameFile(opened, after) || opened.Size() != after.Size() || !opened.ModTime().Equal(after.ModTime()) {
+		return nil, fmt.Errorf("%w: receipt group artifact changed during read", recorder.ErrEvidenceChanged)
+	}
+	if len(raw) > maxGroupFileBytes {
+		return nil, errors.New("receipt group artifact exceeds read bound")
 	}
 	return raw, nil
 }

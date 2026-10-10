@@ -172,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -292,7 +292,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -365,7 +365,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -487,7 +487,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

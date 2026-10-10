@@ -190,8 +190,12 @@ func TestExtensionProbeInXHTMLScriptTagIsStripped(t *testing.T) {
 // long run of the pad character cost time quadratic in its own length.
 func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 	const base = "\x00pipelock-inline-script-"
+	const script = "<script>var a = 1;</script>"
+	// The comment trap must be removed, so an unchanged document cannot pass
+	// the restoration check below by already containing the script.
+	const trap = "<!-- instruction -->"
 	for _, size := range []int{256, 4096, 60000} {
-		doc := base + strings.Repeat("x", size) + "<script>var a = 1;</script>"
+		doc := base + strings.Repeat("x", size) + script + trap
 		want := base + strings.Repeat("x", size+1)
 		if got := uniqueScriptPlaceholderPrefix(doc); got != want {
 			t.Fatalf("pad %d: prefix length %d, want %d", size, len(got), len(want))
@@ -205,8 +209,11 @@ func TestPlaceholderPrefixSearchIsLinear(t *testing.T) {
 		}
 		cfg := config.Defaults().BrowserShield
 		res := NewEngine(nil).Rewrite(doc, PipelineHTML, &cfg)
-		if !strings.Contains(res.Content, "var a = 1;") {
-			t.Fatal("script content was not preserved")
+		if res.TrapHits != 1 || strings.Contains(res.Content, trap) {
+			t.Fatalf("pad %d: rewrite did not remove the comment trap (hits=%d)", size, res.TrapHits)
+		}
+		if !strings.Contains(res.Content, script) {
+			t.Fatalf("pad %d: script element was not restored intact", size)
 		}
 	}
 }

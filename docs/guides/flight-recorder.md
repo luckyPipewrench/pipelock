@@ -194,7 +194,10 @@ Operational notes:
   `receipt_emission_failed`; the first failure is counted under the
   `durability` reason and the later refusals under `durability_inherited`.
   Graceful shutdown then refuses to sign a final checkpoint over the failed
-  chain. Fix the storage problem and restart Pipelock, which opens a new run.
+  chain. Fix the storage problem, then restart Pipelock or, with a single
+  chain, reload its configuration: either way receipts continue in a new run
+  and the failed run is kept as it was. That new run is not linked to the
+  failed one by a recovery seal, so verification lists it as unlinked.
   With several receipt chains the storage failure is local to one chain, but
   under `require_receipts` Pipelock still stops the whole group, because a
   required group cannot keep writing to its surviving chains as if complete.

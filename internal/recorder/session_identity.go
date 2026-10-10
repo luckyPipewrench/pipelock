@@ -176,6 +176,12 @@ func (r *Recorder) RecoverTornRunSession(base string) (string, error) {
 	if r.closed {
 		return "", errors.New("recorder is closed")
 	}
+	if r.groupSessions != nil {
+		// A group's membership is signed at opening; a standalone run is not
+		// a member and cannot be written. Groups recover through the group
+		// successor ceremony on restart.
+		return "", errors.New("recorder: single-run recovery is not available for a receipt group; restart to open a successor group")
+	}
 	candidates, err := r.sessionResumeCandidates(r.sessionID)
 	if err != nil {
 		return "", err

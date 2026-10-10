@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,12 +223,10 @@ func TestGroupShardSyncFailureIsShardLocalAndBlocksFinalize(t *testing.T) {
 	if err := r.AcquireGroupSessions(sessions); err != nil {
 		t.Fatal(err)
 	}
-	failing := ""
-	var mu sync.Mutex
+	// The failure target is fixed before any append: the first reservation
+	// starts its sync at once, so it can run before the append returns.
 	r.SetSyncForTest(func(f *os.File) error {
-		mu.Lock()
-		defer mu.Unlock()
-		if failing != "" && f.Name() == failing {
+		if strings.Contains(filepath.Base(f.Name()), sessions[1]) {
 			return errors.New("injected shard sync failure")
 		}
 		return f.Sync()
@@ -235,16 +234,10 @@ func TestGroupShardSyncFailureIsShardLocalAndBlocksFinalize(t *testing.T) {
 	if err := r.RecordDurable(Entry{SessionID: sessions[0], Type: "test", Summary: "shard 0 ok"}); err != nil {
 		t.Fatal(err)
 	}
-	r.mu.Lock()
-	r.loadSessionStateLocked(r.groupSessions[sessions[1]])
-	r.mu.Unlock()
 	ticket, err := r.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: sessions[1], Type: "test", Summary: "shard 1 fails"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	failing = ticket.pending.reservation.batch.file.Name()
-	mu.Unlock()
 	if err := ticket.Wait(); !errors.Is(err, ErrDurability) {
 		t.Fatalf("shard 1 = %v, want ErrDurability", err)
 	}
@@ -256,6 +249,28 @@ func TestGroupShardSyncFailureIsShardLocalAndBlocksFinalize(t *testing.T) {
 	}
 	if err := r.FinalizeGroupSessions(); !errors.Is(err, ErrDurabilityInherited) {
 		t.Fatalf("FinalizeGroupSessions = %v, want refusal for the failed shard", err)
+	}
+}
+
+// Single-run recovery refuses a receipt group before touching any of its
+// state: a standalone run would not be a member the group can write.
+func TestRecoverTornRunSessionRefusesGroups(t *testing.T) {
+	r, _, _ := newGroupRecorder(t)
+	sessions := groupSessionIDs(t, 2)
+	if err := r.AcquireGroupSessions(sessions); err != nil {
+		t.Fatal(err)
+	}
+	r.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	if err := r.RecordDurable(Entry{SessionID: sessions[0], Type: "test", Summary: "fails"}); !errors.Is(err, ErrDurability) {
+		t.Fatalf("shard sync = %v, want ErrDurability", err)
+	}
+	r.SetSyncForTest(nil)
+	before := r.SessionID()
+	if _, err := r.RecoverTornRunSession("proxy"); err == nil {
+		t.Fatal("single-run recovery accepted a receipt group")
+	}
+	if r.SessionID() != before {
+		t.Fatalf("refused recovery moved the recorder from %q to %q", before, r.SessionID())
 	}
 }
 

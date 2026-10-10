@@ -145,6 +145,12 @@ type Emitter struct {
 	chainMu       sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
+	// persistedSeq and persistedHash name the newest receipt known to be
+	// written to the recorder: the resumed tail, then each receipt whose
+	// record call succeeded. They differ from the chain head only after a
+	// receipt's position was assigned and its write failed.
+	persistedSeq  uint64
+	persistedHash string
 	chainStart    time.Time // timestamp of first receipt
 	chainEnd      time.Time // timestamp of most recent receipt
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
@@ -456,6 +462,51 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 		RootEmitted:       e.rootEmitted,
 		RunNonce:          e.runNonce,
 	}, true
+}
+
+// TailObservation is one consistent view of a chain's head and its evidence
+// file, taken under the chain lock. Receipts are written only while that lock
+// is held, so the newest receipt in the first WriteEnd bytes of WriteFile (or
+// in the session's earlier files) is exactly the persisted receipt.
+type TailObservation struct {
+	HealthSnapshot
+	Session       string
+	PersistedSeq  uint64
+	PersistedHash string
+	WriteFile     string
+	WriteEnd      int64
+	WriteKnown    bool
+}
+
+// TailObservation returns the chain head and the recorder's write position
+// for this emitter's session at the same instant. Nil-safe.
+func (e *Emitter) TailObservation() (TailObservation, error) {
+	if e == nil {
+		return TailObservation{}, errors.New("receipt emitter unavailable")
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	obs := TailObservation{
+		HealthSnapshot: HealthSnapshot{
+			InitErr:           e.initErr != nil,
+			ChainSeq:          e.chainSeq,
+			PrevHash:          e.chainPrevHash,
+			LastEmit:          e.chainEnd,
+			LastHeartbeat:     e.lastHeartbeat,
+			HeartbeatObserved: !e.lastHeartbeat.IsZero(),
+			RootEmitted:       e.rootEmitted,
+			RunNonce:          e.runNonce,
+		},
+		Session:       e.session,
+		PersistedSeq:  e.persistedSeq,
+		PersistedHash: e.persistedHash,
+	}
+	name, end, ok, err := e.recorder.SessionWriteEnd(e.session)
+	if err != nil {
+		return TailObservation{}, fmt.Errorf("observe recorder write position: %w", err)
+	}
+	obs.WriteFile, obs.WriteEnd, obs.WriteKnown = name, end, ok
+	return obs, nil
 }
 
 // Session returns the recorder session this emitter records under. Nil-safe.
@@ -952,6 +1003,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		}
 		return fmt.Errorf("%w: %w", ErrReceiptPostAdvance, emitErr)
 	}
+	e.persistedSeq, e.persistedHash = ar.ChainSeq, receiptHash
 	if !e.linked {
 		e.linked = true
 		e.linkPredecessor()
@@ -1595,6 +1647,7 @@ func (e *Emitter) resumeChain() error {
 			}
 			e.chainSeq = 0
 			e.chainPrevHash = hash
+			e.persistedSeq, e.persistedHash = lastReceipt.ActionRecord.ChainSeq, hash
 			e.hasPriorTail = true
 			e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
 			e.priorTailHash = hash
@@ -1618,6 +1671,7 @@ func (e *Emitter) resumeChain() error {
 	e.chainPrevHash = hash
 	e.chainSeq = lastReceipt.ActionRecord.ChainSeq + 1
 	e.chainEnd = lastReceipt.ActionRecord.Timestamp
+	e.persistedSeq, e.persistedHash = lastReceipt.ActionRecord.ChainSeq, hash
 	e.hasPriorTail = true
 	e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
 	e.priorTailHash = hash

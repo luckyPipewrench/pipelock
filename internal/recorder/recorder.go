@@ -203,6 +203,12 @@ type Recorder struct {
 	durableBatch   *durableBatch
 	durableSyncing bool
 	durablePending map[uint64]int
+	// lastFileName and lastFileSize describe the session's evidence file
+	// when none is open: the file closed by the last rotation, or the file a
+	// resumed session continues from. SessionWriteEnd reports them so a
+	// caller can bound a read to what was written before it looked.
+	lastFileName string
+	lastFileSize int64
 
 	fsyncErrorsGated atomic.Uint64
 }
@@ -1234,6 +1240,7 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	resumedSeq := uint64(0)
 	resumedPrevHash := GenesisHash
 	resumedFirstSeqInSpan := uint64(0)
+	resumedFile, resumedFileSize := "", int64(0)
 
 	// Matches the name ensureFile writes and sessionResumeCandidates filters on.
 	wantSession := filepath.Base(sessionID)
@@ -1298,6 +1305,10 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		resumedSeq = last.Sequence + 1
 		resumedPrevHash = last.Hash
 		resumedFirstSeqInSpan = resumedSeq
+		resumedFile = candidate.base
+		if info, statErr := os.Stat(candidate.path); statErr == nil {
+			resumedFileSize = info.Size()
+		}
 		break
 	}
 
@@ -1311,6 +1322,7 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	r.prevHash = resumedPrevHash
 	r.sinceCheckpoint = 0
 	r.firstSeqInSpan = resumedFirstSeqInSpan
+	r.lastFileName, r.lastFileSize = resumedFile, resumedFileSize
 	return nil
 }
 
@@ -1646,6 +1658,12 @@ func (r *Recorder) closeFile() error {
 		return nil
 	}
 	r.waitDurableForCurrentFileLocked()
+	defer func(name string) {
+		r.lastFileName = filepath.Base(name)
+		if info, err := os.Stat(name); err == nil {
+			r.lastFileSize = info.Size()
+		}
+	}(r.file.Name())
 	if err := r.writer.Flush(); err != nil {
 		_ = r.file.Close()
 		r.file = nil

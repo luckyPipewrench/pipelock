@@ -45,6 +45,16 @@ func newShardedHealthRig(t *testing.T, chains int) *shardedHealthRig {
 
 func newShardedHealthRigWithProcess(t *testing.T, chains, processIndex int) *shardedHealthRig {
 	t.Helper()
+	return newShardedHealthRigFull(t, chains, processIndex, 40)
+}
+
+func newShardedHealthRigWithLimit(t *testing.T, chains, maxEntries int) *shardedHealthRig {
+	t.Helper()
+	return newShardedHealthRigFull(t, chains, 0, maxEntries)
+}
+
+func newShardedHealthRigFull(t *testing.T, chains, processIndex, maxEntries int) *shardedHealthRig {
+	t.Helper()
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +63,7 @@ func newShardedHealthRigWithProcess(t *testing.T, chains, processIndex int) *sha
 	rec, err := recorder.New(recorder.Config{
 		Enabled:           true,
 		Dir:               dir,
-		MaxEntriesPerFile: 40,
+		MaxEntriesPerFile: maxEntries,
 		FileMode:          0o600,
 		SignCheckpoints:   true,
 	}, nil, key)
@@ -252,7 +262,7 @@ func TestEvidenceHealthMissingTailIsPendingNotGreen(t *testing.T) {
 	if stats.LocalRecorderOperational {
 		t.Fatal("missing evidence reported as operational")
 	}
-	if !strings.Contains(stats.SelfAudit.Shards[0].TailDetail, "no action receipt") {
+	if detail := stats.SelfAudit.Shards[0].TailDetail; !strings.Contains(detail, "no action receipt") && !strings.Contains(detail, "missing") {
 		t.Fatalf("tail detail = %q, want missing receipt explanation", stats.SelfAudit.Shards[0].TailDetail)
 	}
 }
@@ -331,8 +341,8 @@ func TestEvidenceHealthDiskBehindHeadLatches(t *testing.T) {
 
 	assertEvidenceHealthLatched(t, rig.h)
 	assertSelfAuditFailures(t, rig.m, "tail_divergence", 1)
-	if detail := rig.stats(t).SelfAudit.Shards[0].TailDetail; !strings.Contains(detail, "behind") {
-		t.Fatalf("tail detail = %q, want disk-behind explanation", detail)
+	if detail := rig.stats(t).SelfAudit.Shards[0].TailDetail; !strings.Contains(detail, "does not match the newest written receipt") {
+		t.Fatalf("tail detail = %q, want the disk/written mismatch", detail)
 	}
 }
 
@@ -466,31 +476,24 @@ func TestReadLastReceiptTailNewerFileWithoutReceipt(t *testing.T) {
 	}
 }
 
-// TestReadLastReceiptTailBeyondBoundIsPendingNotFallback: a newer file whose
-// last maxTailScanBytes hold no receipt must not fall back to an older file.
-func TestReadLastReceiptTailBeyondBoundIsPendingNotFallback(t *testing.T) {
-	rig := newShardedHealthRig(t, 1)
+// TestReadLastReceiptTailBeyondBoundIsPending: when the newest receipt lies
+// further back than the self-audit reads, the chain is unverified rather than
+// scanned without limit.
+func TestReadLastReceiptTailBeyondBoundIsPending(t *testing.T) {
+	rig := newShardedHealthRigWithLimit(t, 1, 3)
 	rig.emit(t, "https://api.vendor.example/one")
-	session := rig.emitters[0].Session()
-	newer := filepath.Join(rig.rec.Dir(), fmt.Sprintf("evidence-%s-%d.jsonl", session, 1_000_000))
-	line := []byte(`{"type":"proxy_decision","detail":{"pad":"` + strings.Repeat("p", 4096) + `"}}` + "\n")
-	var buf bytes.Buffer
-	buf.WriteString(`{"type":"proxy_decision","detail":{}}` + "\n")
-	for int64(buf.Len()) <= maxTailScanBytes {
-		buf.Write(line)
-	}
-	if err := os.WriteFile(newer, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := readLastReceiptTail(rig.rec.Dir(), session)
-	if !errors.Is(err, errReceiptTailBeyondBound) {
-		t.Fatalf("err = %v, want errReceiptTailBeyondBound", err)
+	for i := 0; i < 6*maxTailFallbackFiles; i++ {
+		if err := rig.rec.Record(recorder.Entry{SessionID: rig.emitters[0].Session(), Type: "test_padding", Summary: fmt.Sprintf("pad %d", i)}); err != nil {
+			t.Fatalf("padding entry: %v", err)
+		}
 	}
 
 	rig.h.runPass()
+
 	rig.assertNotLatched(t)
-	if state := rig.stats(t).SelfAudit.State; state != metrics.EvidenceSelfAuditPending {
-		t.Fatalf("state = %q, want pending", state)
+	stats := rig.stats(t)
+	if stats.SelfAudit.State != metrics.EvidenceSelfAuditPending || !strings.Contains(stats.SelfAudit.Shards[0].TailDetail, "read bound") {
+		t.Fatalf("self-audit = %+v, want pending beyond the read bound", stats.SelfAudit)
 	}
 }
 
@@ -684,40 +687,83 @@ func TestEvidenceHealthWriterReplacedMidPassDoesNotLatch(t *testing.T) {
 	}
 }
 
-// TestEvidenceHealthTailBetweenSnapshotsIsSignatureChecked: when the chain
-// advances between the disk read and the second snapshot, the receipt read is
-// strictly between the two heads; it is accepted only if this writer signed it.
-func TestEvidenceHealthTailBetweenSnapshotsIsSignatureChecked(t *testing.T) {
-	for _, corrupt := range []bool{false, true} {
-		t.Run(fmt.Sprintf("corrupt=%v", corrupt), func(t *testing.T) {
-			rig := newShardedHealthRig(t, 1)
-			rig.emit(t, "https://api.vendor.example/zero")
-			obs := rig.h.observeShards()[0]
-			rig.emit(t, "https://api.vendor.example/between")
-			if corrupt {
-				rewriteLastReceipt(t, rig.rec.Dir(), rig.emitters[0].Session(), func(r *receipt.Receipt) {
-					r.ActionRecord.Target = "https://api.vendor.example/altered"
-				})
-			}
-			restore := afterSelfAuditTailRead
-			afterSelfAuditTailRead = func() { rig.emit(t, "https://api.vendor.example/after-read") }
-			defer func() { afterSelfAuditTailRead = restore }()
-
-			rig.h.checkShardTail(obs)
-
-			state := rig.h.tailState(obs).state
-			if corrupt {
-				if state != metrics.EvidenceSelfAuditFailed || rig.h.selfAuditOK.Load() {
-					t.Fatalf("altered in-range tail: state=%q latched=%v, want failed and latched", state, !rig.h.selfAuditOK.Load())
-				}
-				return
-			}
-			rig.assertNotLatched(t)
-			if state != metrics.EvidenceSelfAuditVerified {
-				t.Fatalf("valid in-range tail state = %q, want verified", state)
-			}
-		})
+// TestEvidenceHealthAuthenticReplayAtTailFails: a receipt with a valid
+// signature is not the chain's head unless it is exactly the receipt the
+// chain last wrote. Replaying an earlier authentic receipt over the newest one
+// is a divergence, however it is signed.
+func TestEvidenceHealthAuthenticReplayAtTailFails(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	rig.emit(t, "https://api.vendor.example/two")
+	session := rig.emitters[0].Session()
+	path, lines, idx := lastReceiptLine(t, rig.rec.Dir(), session)
+	earlier := -1
+	for i := idx - 1; i >= 0; i-- {
+		if bytes.Contains(lines[i], []byte(`"type":"action_receipt"`)) {
+			earlier = i
+			break
+		}
 	}
+	if earlier < 0 {
+		t.Fatal("fixture: no earlier receipt to replay")
+	}
+	lines[idx] = append([]byte(nil), lines[earlier]...)
+	writeLines(t, path, lines)
+
+	rig.h.runPass()
+
+	assertEvidenceHealthLatched(t, rig.h)
+	if state := rig.stats(t).SelfAudit.State; state != metrics.EvidenceSelfAuditFailed {
+		t.Fatalf("state with a replayed authentic tail = %q, want failed", state)
+	}
+}
+
+// TestEvidenceHealthUnconfirmedWriteIsAGap: a receipt whose position was
+// assigned but whose write was not confirmed leaves the chain head ahead of
+// what was written. Later successful receipts do not hide it.
+func TestEvidenceHealthUnconfirmedWriteIsAGap(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	rig.h.runPass()
+	rig.rec.SetSyncForTest(func(*os.File) error { return errors.New("injected sync failure") })
+	if err := rig.emitters[0].EmitDurable(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+		Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/lost",
+	}); !errors.Is(err, receipt.ErrReceiptPostAdvance) {
+		t.Fatalf("EmitDurable = %v, want a post-advance failure", err)
+	}
+	rig.rec.SetSyncForTest(nil)
+
+	rig.h.runPass()
+
+	assertEvidenceHealthLatched(t, rig.h)
+	stats := rig.stats(t)
+	if stats.SelfAudit.State != metrics.EvidenceSelfAuditFailed || !strings.Contains(stats.SelfAudit.Shards[0].TailDetail, "not confirmed") {
+		t.Fatalf("self-audit = %+v, want failed for the unconfirmed receipt", stats.SelfAudit)
+	}
+}
+
+// TestEvidenceHealthAppendDuringReadStillVerifies: the comparison reads only
+// the evidence written before the observation, so a receipt appended while
+// the tail is read cannot move it.
+func TestEvidenceHealthAppendDuringReadStillVerifies(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	obs := rig.h.observeShards()[0]
+	view, err := obs.emitter.TailObservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.emit(t, "https://api.vendor.example/two")
+	tail, err := readLastReceiptTailBefore(rig.rec.Dir(), obs.session, view.WriteFile, view.WriteEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail.seq != view.PersistedSeq || tail.hash != view.PersistedHash {
+		t.Fatalf("prefix tail = %d/%s, want the observed receipt %d/%s", tail.seq, tail.hash, view.PersistedSeq, view.PersistedHash)
+	}
+	rig.h.checkShardTail(obs)
+	rig.assertNotLatched(t)
 }
 
 // TestEvidenceHealthConcurrentAnchorIsJudgedAgainstCurrentHead: the anchor
@@ -772,7 +818,7 @@ func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.h.runPass()
-	if err := os.Chmod(index, 0o700); err != nil {
+	if err := os.Chmod(index, 0o700); err != nil { //nolint:gosec // restores the directory mode the test removed
 		t.Fatal(err)
 	}
 	rig.assertNotLatched(t)

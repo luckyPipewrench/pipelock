@@ -35,6 +35,8 @@ type SessionState struct {
 	durableBatch        *durableBatch
 	durableSyncing      bool
 	durablePending      map[uint64]int
+	lastFileName        string
+	lastFileSize        int64
 }
 
 // GroupGateEntryType marks the first entry of each grouped run session.
@@ -57,6 +59,8 @@ func (r *Recorder) saveSessionStateLocked(state *SessionState) {
 	state.durableBatch = r.durableBatch
 	state.durableSyncing = r.durableSyncing
 	state.durablePending = r.durablePending
+	state.lastFileName = r.lastFileName
+	state.lastFileSize = r.lastFileSize
 }
 
 func (r *Recorder) loadSessionStateLocked(state *SessionState) {
@@ -77,6 +81,8 @@ func (r *Recorder) loadSessionStateLocked(state *SessionState) {
 	r.durableBatch = state.durableBatch
 	r.durableSyncing = state.durableSyncing
 	r.durablePending = state.durablePending
+	r.lastFileName = state.lastFileName
+	r.lastFileSize = state.lastFileSize
 }
 
 func (r *Recorder) clearSessionStateLocked() {
@@ -97,6 +103,8 @@ func (r *Recorder) clearSessionStateLocked() {
 	r.durableBatch = nil
 	r.durableSyncing = false
 	r.durablePending = make(map[uint64]int)
+	r.lastFileName = ""
+	r.lastFileSize = 0
 }
 
 func validGroupRunSession(session string) bool {

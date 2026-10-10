@@ -270,3 +270,70 @@ func ReadEvidenceLocationFileTail(location EvidenceLocation, name string, maxByt
 	}
 	return raw, start > 0, nil
 }
+
+// SessionWriteEnd reports the session's current evidence file and the byte
+// offset just past its last written entry. Every entry is flushed while the
+// recorder mutex is held, so the size observed here is exactly what has been
+// written. A caller that also holds the lock serializing the session's own
+// writers gets a position that no later write of theirs can precede. An
+// empty session means the recorder's bound session.
+func (r *Recorder) SessionWriteEnd(session string) (name string, end int64, ok bool, err error) {
+	if r == nil || r.nop {
+		return "", 0, false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	file, lastName, lastSize := r.file, r.lastFileName, r.lastFileSize
+	if session != "" && session != r.sessionID {
+		state := r.groupSessions[session]
+		if state == nil {
+			return "", 0, false, nil
+		}
+		file, lastName, lastSize = state.file, state.lastFileName, state.lastFileSize
+	}
+	if file == nil {
+		// No file is open: the next write opens a new one, which sorts
+		// after this one and so lies outside the reported bound.
+		if lastName == "" {
+			return "", 0, false, nil
+		}
+		return lastName, lastSize, true, nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return "", 0, false, err
+	}
+	return filepath.Base(file.Name()), info.Size(), true, nil
+}
+
+// ReadEvidenceLocationFilePrefixTail reads up to maxBytes ending at offset end
+// of the named file. Bytes before end were written before end was observed,
+// so appends during the read cannot change them; a file that is shorter than
+// end, or shrinks during the read, returns ErrEvidenceFileChanged.
+func ReadEvidenceLocationFilePrefixTail(location EvidenceLocation, name string, end, maxBytes int64) ([]byte, bool, error) {
+	if maxBytes <= 0 || end < 0 {
+		return nil, false, errors.New("evidence prefix tail bounds are invalid")
+	}
+	file, before, err := openEvidenceLocationFile(location, name)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	if before.Size() < end {
+		return nil, false, ErrEvidenceFileChanged
+	}
+	readLen := min(end, maxBytes)
+	start := end - readLen
+	raw := make([]byte, readLen)
+	if _, err := io.ReadFull(io.NewSectionReader(file, start, readLen), raw); err != nil {
+		return nil, false, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !os.SameFile(before, after) || after.Size() < end {
+		return nil, false, ErrEvidenceFileChanged
+	}
+	return raw, start > 0, nil
+}

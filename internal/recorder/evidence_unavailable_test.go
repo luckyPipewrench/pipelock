@@ -72,6 +72,45 @@ func TestEnsureEvidenceFileUnchangedReportsSentinel(t *testing.T) {
 	}
 }
 
+// TestCheckOpenedEvidenceFileSeparatesRaceFromRefusal covers the open-time
+// check shared by the evidence openers: a shard replaced between the stat and
+// the open is a race with the writer, while a non-regular file in its place is
+// refused evidence and stays a finding.
+func TestCheckOpenedEvidenceFileSeparatesRaceFromRefusal(t *testing.T) {
+	dir := t.TempDir()
+	stat := func(path string) os.FileInfo {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	write := func(name string) os.FileInfo {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return stat(path)
+	}
+	original := write("evidence-a-0.jsonl")
+	replacement := write("evidence-a-1.jsonl")
+	directory := stat(dir)
+
+	if err := checkOpenedEvidenceFile(original, original); err != nil {
+		t.Fatalf("same file: %v", err)
+	}
+	err := checkOpenedEvidenceFile(original, replacement)
+	if !errors.Is(err, ErrEvidenceChanged) || errors.Is(err, ErrEvidenceRefused) || !IsEvidenceUnavailable(err) {
+		t.Fatalf("replaced file: err = %v, want ErrEvidenceChanged classified as unavailable evidence", err)
+	}
+	err = checkOpenedEvidenceFile(original, directory)
+	if !errors.Is(err, ErrEvidenceRefused) || errors.Is(err, ErrEvidenceChanged) || IsEvidenceUnavailable(err) {
+		t.Fatalf("non-regular file: err = %v, want ErrEvidenceRefused reported as a finding", err)
+	}
+}
+
 // TestWalkEvidenceLocationReportsSentinelWhenShardChanges covers the location
 // walk used by session history: a shard rewritten while its entries are being
 // delivered must fail with ErrEvidenceChanged, the error callers retry on.

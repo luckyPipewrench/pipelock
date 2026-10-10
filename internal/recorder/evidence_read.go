@@ -85,11 +85,26 @@ func openRegularEvidenceFile(path string, accessErr error) (*os.File, os.FileInf
 		_ = file.Close()
 		return nil, nil, err
 	}
-	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
+	if err := checkOpenedEvidenceFile(before, info); err != nil {
 		_ = file.Close()
-		return nil, nil, errors.New("evidence file changed or is non-regular")
+		return nil, nil, err
 	}
 	return file, info, nil
+}
+
+// checkOpenedEvidenceFile compares the file a reader opened with the entry it
+// examined before opening. A non-regular file is refused evidence, as it is
+// before the open. A different regular file means the shard was replaced
+// between the two, a race with the writer that callers retry or report as no
+// verdict rather than as a finding.
+func checkOpenedEvidenceFile(before, opened os.FileInfo) error {
+	if !opened.Mode().IsRegular() {
+		return fmt.Errorf("%w: opened evidence file is non-regular", ErrEvidenceRefused)
+	}
+	if !os.SameFile(before, opened) {
+		return fmt.Errorf("%w: evidence file replaced before it was opened", ErrEvidenceChanged)
+	}
+	return nil
 }
 
 // readBoundedEvidence opens path as a regular no-follow file and copies at

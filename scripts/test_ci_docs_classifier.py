@@ -116,6 +116,16 @@ class DocsClassifierTest(unittest.TestCase):
         self.commit("embedded prose")
         self.assert_full_ci()
 
+    def test_markdown_beside_a_non_ascii_go_file_runs_everything(self) -> None:
+        # git quotes non-ASCII names unless asked for NUL-delimited output, so
+        # a package whose only source is "é.go" must still count as Go.
+        self.write("internal/accent/é.go", "package accent\n")
+        self.commit("accented package")
+        base = self.rev()
+        self.write("internal/accent/NOTES.md", "notes\n")
+        self.commit("prose in the package")
+        self.assertEqual(self.classify(base), (0, "docs_only=false"))
+
     def test_markdown_named_by_go_code_runs_everything(self) -> None:
         self.write("docs/specs/envelope.md", "spec, revised\n")
         self.commit("tested prose")

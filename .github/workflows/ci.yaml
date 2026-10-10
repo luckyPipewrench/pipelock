@@ -182,10 +182,12 @@ jobs:
           # Go file renamed to Markdown must be seen as a removed Go file.
           work="$(mktemp -d)"
           git diff -z --no-renames --name-only "${BASE_SHA}...${HEAD_SHA}" > "$work/changed"
-          git ls-tree -r --name-only "$HEAD_SHA" > "$work/tree"
+          # NUL-delimited, like the diff: without -z git quotes non-ASCII names
+          # and a quoted "...\303\251.go" no longer ends in .go.
+          git ls-tree -rz --name-only "$HEAD_SHA" > "$work/tree"
           declare -A go_dirs=()
           root_go=false
-          while IFS= read -r tracked; do
+          while IFS= read -r -d '' tracked; do
             case "$tracked" in
               */*.go) go_dirs["${tracked%/*}"]=1 ;;
               *.go) root_go=true ;;

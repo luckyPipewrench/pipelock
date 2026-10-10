@@ -76,6 +76,16 @@ media_policy:
 | `max_image_bytes` | `5242880` (5 MiB) | Reject images larger than this before any parsing. |
 | `log_media_exposure` | `true` | Emit `media_exposure` events for allowed media. |
 
+## Repeated Content-Type values
+
+An HTTP response can declare its type more than once, in repeated
+`Content-Type` headers or a comma-separated list. Pipelock reads them with the
+Fetch standard's rule that browsers use: entries that don't parse and `*/*` are
+skipped, and the last valid entry decides the type that media policy enforces.
+Where Pipelock would otherwise skip text scanning for a binary media body, it
+does so only when every valid entry names the same type. A response whose
+entries disagree stays on the scanned path.
+
 ## Image metadata stripping
 
 Pipelock performs byte-level surgery on image streams. It never decodes and
@@ -143,6 +153,10 @@ Pipelock applies the HTTP media rules when the block declares an `image/*`, `aud
 
 All three payload slots are evaluated. A malicious tool result can't stash blocked media in `blob` while keeping a benign value in `data`. Pure-media tool results (no `text` blocks) go directly to media policy and aren't fed as raw text into response-injection scanning. Pipelock checks the decoded bytes even when the server labels them as generic or non-media content. It validates the complete format header before overriding that label, so ordinary text that starts with a short media prefix isn't treated as media.
 
+For a recognized media payload, Pipelock reads runs of readable text out of the decoded bytes and scans that text in place of the base64. A payload with no readable text stays out of text scanning. This is byte-level text recovery, not OCR or speech recognition, so it doesn't find instructions drawn in pixels or spoken in audio.
+
+Text recovered from media shares one inspection budget across the whole response: 10 MiB, the MCP message size limit, counted over every field and payload together. A response that runs past it is refused as an incomplete scan, even when the configured response action is `warn`, `strip`, or `ask`. `max_image_bytes` is a separate limit on each image and doesn't change this budget. If a server hits it, return fewer or smaller media payloads per response.
+
 Blocked MCP media returns a media-policy-specific JSON-RPC error to the client (distinct from the generic prompt-injection block response) so operators can tell the two enforcement paths apart.
 
 ## Decompression bomb protection
@@ -160,6 +174,13 @@ When `log_media_exposure` is true (default), pipelock emits a
 into the taint/authority policy system as exposure signals. A downstream
 system can use them to escalate scanning when an agent has recently consumed
 rich media before attempting a sensitive action.
+
+The event's `content_type` is one of a fixed set of labels, so an upstream
+server can't write arbitrary text into the audit log. Common image, audio, and
+video types keep their own names. Any other type is recorded as
+`image/unknown`, `audio/unknown`, `video/unknown`, or `unknown`. The label only
+describes the event: enforcement still classifies the response's original type,
+and an `unknown` label doesn't mean the media was allowed.
 
 ## Validation rules
 

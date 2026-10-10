@@ -360,6 +360,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// WebSocket frames are not recorded token by token, so an agent that
+	// opens one could hand an origin a value that origin later returns as
+	// an ID. Stop server-issued ID minting for the session instead.
+	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth)
+
 	// Map ws->http, wss->https for the scanner pipeline (scanner expects HTTP schemes).
 	scanScheme := schemeHTTP
 	if parsed.Scheme == "wss" {

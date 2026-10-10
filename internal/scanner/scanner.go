@@ -4566,6 +4566,23 @@ func WithIssuerPathAllowance(ctx context.Context, allows func(escapedPath string
 	return context.WithValue(ctx, issuerPathAllowanceContextKey{}, allows)
 }
 
+type issuerSegmentAllowanceContextKey struct{}
+
+// issuerSegmentAllowed reports whether the request context carries an issuer
+// allowance for this one decoded path segment.
+func issuerSegmentAllowed(ctx context.Context, segment string) bool {
+	allows, ok := ctx.Value(issuerSegmentAllowanceContextKey{}).(func(string) bool)
+	return ok && allows(segment)
+}
+
+// WithIssuerSegmentAllowance scopes server-issued object IDs to this scan
+// only. Each allowed segment is skipped by path-segment entropy and nothing
+// else; every other segment of the same path is still scored. The caller must
+// verify the ID was issued by the origin being scanned.
+func WithIssuerSegmentAllowance(ctx context.Context, allows func(segment string) bool) context.Context {
+	return context.WithValue(ctx, issuerSegmentAllowanceContextKey{}, allows)
+}
+
 // entropyQueryValues parses a raw query for the entropy heuristic. url.ParseQuery
 // silently drops any pair whose key or value carries a malformed percent
 // escape, which would let a secret skip inspection by appending "%ZZ". Pairs
@@ -4622,7 +4639,18 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	if !excludedPath && !routeExemptPath {
 		// Only entropy is relieved for a path the same origin issued: the rest
 		// of the pipeline already ran or still runs on this URL.
-		if entropy, blocked := s.pathEntropy(parsed.Path); blocked && !issuerPathAllowed(ctx, parsed.EscapedPath()) {
+		entropy, blocked := s.pathEntropy(parsed.Path)
+		if blocked && issuerPathAllowed(ctx, parsed.EscapedPath()) {
+			blocked = false
+		}
+		if blocked {
+			// Rescore without the segments the origin issued as object IDs;
+			// any other high-entropy segment still blocks.
+			entropy, blocked = s.pathEntropySkipping(parsed.Path, func(segment string) bool {
+				return issuerSegmentAllowed(ctx, segment)
+			})
+		}
+		if blocked {
 			return Result{
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),

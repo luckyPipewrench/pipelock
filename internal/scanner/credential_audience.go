@@ -979,11 +979,24 @@ func (s *Scanner) releaseGrantResponseOverrideAllowed(parsed *url.URL, key, valu
 // urlDLPAudienceSurfaceForTarget is urlDLPAudienceSurface for a target held as
 // a string. An unparseable target keeps the bare "url" surface.
 func (s *Scanner) urlDLPAudienceSurfaceForTarget(p *compiledPattern, target string, memo *queryLessDLPMemo) string {
+	key := queryAudienceSurfaceKey{pattern: p, target: target}
+	if memo != nil {
+		if surface, ok := memo.surfaces[key]; ok {
+			return surface
+		}
+	}
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return "url"
 	}
-	return s.urlDLPAudienceSurface(p, parsed, memo)
+	surface := s.urlDLPAudienceSurface(p, parsed, memo)
+	if memo != nil {
+		if memo.surfaces == nil {
+			memo.surfaces = make(map[queryAudienceSurfaceKey]string)
+		}
+		memo.surfaces[key] = surface
+	}
+	return surface
 }
 
 // queryLessURLScansClean reports whether the URL without its query passes DLP,
@@ -1005,11 +1018,17 @@ func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo
 
 // queryLessDLPMemo holds the query-less rescan result for one outer URL scan,
 // so several URL-query audience matches in that scan share one rescan.
+type queryAudienceSurfaceKey struct {
+	pattern *compiledPattern
+	target  string
+}
+
 type queryLessDLPMemo struct {
-	now    time.Time
-	nowSet bool
-	done   bool
-	clean  bool
+	surfaces map[queryAudienceSurfaceKey]string
+	now      time.Time
+	nowSet   bool
+	done     bool
+	clean    bool
 }
 
 func (s *Scanner) queryScanTime(memo *queryLessDLPMemo) time.Time {

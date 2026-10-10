@@ -183,7 +183,9 @@ func TestProjectOuterDerivationFailureRejects(t *testing.T) {
 	if _, err := testProducer.Outer([]byte(`{"verdict":"block"}`)); err != nil {
 		t.Fatal(err)
 	}
-	bare := Register(Schema{Kind: "test.no-outer"})
+	// An unregistered producer: registering here would panic on a rerun in
+	// the same process, and this case needs no registry entry.
+	bare := &Producer{schema: &Schema{Kind: "test.no-outer"}}
 	if _, err := bare.Outer(nil); err == nil {
 		t.Fatal("missing outer derivation must error")
 	}

@@ -1330,7 +1330,10 @@ Key-free evidence capture:
 					// resumed (a corrupt, tampered, or foreign-key tail, or an
 					// evidence read error). Each run mints a new session, so a key
 					// changed between runs starts a fresh chain and never lands here.
-					if initErr := receiptEmitter.InitError(); initErr != nil {
+					if initErr := receiptEmitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {
+						// A configuration refusal, not a chain-resume fault.
+						return fmt.Errorf("flight_recorder: %w", initErr)
+					} else if initErr != nil {
 						cmd.PrintErrf("  Receipts: ERROR - chain could not be resumed: %v\n"+
 							"            Receipt emission is DISABLED until resolved. Inspect the evidence\n"+
 							"            directory and flight_recorder.signing_key_path.\n", initErr)

@@ -112,7 +112,10 @@ func TestCallerRawRefIsCleared(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("evidence files: %v (found %d)", err, len(files))
+	}
 	entries, err := ReadEntries(files[0])
 	if err != nil {
 		t.Fatal(err)

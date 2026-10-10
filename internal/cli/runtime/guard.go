@@ -432,6 +432,12 @@ func newGuardEvidence(ctx context.Context, cfg *config.Config, sc *scanner.Scann
 		HeartbeatSeconds:    cfg.FlightRecorder.HeartbeatIntervalSecondsForReceipt(),
 		Session:             runSession,
 	})
+	if initErr := emitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {
+		// A configuration refusal, not a missing emitter: refuse the run
+		// whether or not receipts are required.
+		evidence.close()
+		return nil, fmt.Errorf("guard receipts: %w", initErr)
+	}
 	if !receiptEmitterReady(emitter) {
 		if cfg.FlightRecorder.RequireReceipts {
 			evidence.close()

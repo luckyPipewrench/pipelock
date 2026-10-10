@@ -5,12 +5,15 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -474,35 +477,58 @@ func TestIssuerQueryPathReload(t *testing.T) {
 // same high-entropy shapes keep the ordinary gate there. That is the
 // fail-closed side of the boundary.
 func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
-	var origin string
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		if r.URL.Path == "/" {
-			_, _ = io.WriteString(w, `<img src="`+origin+webImagePath+`?`+webImageQuery()+`"><link href="`+origin+webMediaPath+`">`)
-			return
-		}
-		_, _ = io.WriteString(w, "ok")
-	}))
+	var origin, tlsOrigin string
+	handler := func(self *string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			if r.URL.Path == "/" {
+				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`">`)
+				return
+			}
+			_, _ = io.WriteString(w, "ok")
+		})
+	}
+	upstream := newIPv4Server(t, handler(&origin))
 	defer upstream.Close()
 	origin = upstream.URL
+	// An HTTPS origin the fetch client trusts: the only kind whose body could
+	// yield issuer evidence, so /fetch must still record none from it.
+	tlsUpstream := httptest.NewTLSServer(handler(&tlsOrigin))
+	defer tlsUpstream.Close()
+	tlsOrigin = tlsUpstream.URL
 	_, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
 		cfg.TLSInterception.Enabled = true
 	})
 	defer cleanup()
-	serve := map[string]func(*httptest.ResponseRecorder, string){
-		"forward": func(w *httptest.ResponseRecorder, target string) {
+	transport, ok := p.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("fetch client transport is %T", p.client.Transport)
+	}
+	trusting := transport.Clone()
+	trusting.TLSClientConfig = &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}
+	trusting.TLSClientConfig.RootCAs.AddCert(tlsUpstream.Certificate())
+	p.client.Transport = trusting
+	type route struct {
+		send   func(*httptest.ResponseRecorder, string)
+		server *httptest.Server
+	}
+	fetchVia := func(w *httptest.ResponseRecorder, target string) {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
+		p.handleFetch(w, req)
+	}
+	serve := map[string]route{
+		"forward": {func(w *httptest.ResponseRecorder, target string) {
 			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			p.handleForwardHTTP(w, req)
-		},
-		"fetch": func(w *httptest.ResponseRecorder, target string) {
-			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
-			p.handleFetch(w, req)
-		},
+		}, upstream},
+		"fetch":       {fetchVia, upstream},
+		"fetch-https": {fetchVia, tlsUpstream},
 	}
-	for transport, send := range serve {
+	for transport, rt := range serve {
+		send, upstream := rt.send, rt.server
 		for _, step := range []struct {
 			name, path string
 			want       int
@@ -518,7 +544,66 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 				if w.Code != step.want {
 					t.Fatalf("status=%d, want %d", w.Code, step.want)
 				}
+				// The gate above is only reachable from the intercept path,
+				// so a recording bug would not change a status. Look at the
+				// evidence itself: nothing may have been stored.
+				runtime := p.issuerCookieRuntime.Load()
+				if runtime == nil || runtime.query == nil {
+					t.Fatal("issuer evidence runtime is not configured; the test would be vacuous")
+				}
+				store := runtime.query
+				store.mu.Lock()
+				held := len(store.sessions) + len(store.paths) + len(store.documents) + len(store.redirects)
+				store.mu.Unlock()
+				if held != 0 {
+					t.Fatalf("%s recorded issuer evidence (%d buckets)", transport, held)
+				}
 			})
 		}
+	}
+}
+
+// TestInterceptIssuerPathBudgetDoesNotStarveQueryValues pins that path
+// evidence has its own per-response budget. A JSON listing that links more
+// rooted paths than the budget before its paging link must still have the
+// paging token recorded, and the path budget must still cap path records.
+func TestInterceptIssuerPathBudgetDoesNotStarveQueryValues(t *testing.T) {
+	token := issuedTestToken()
+	lateMedia := "/_next/static/media/img-headshot-HenriettaLacksSmith.Tn84kC6xM2zR.webp"
+	paths := make([]string, 0, issuerCookieMaxSetCookies+44)
+	paths = append(paths, webMediaPath)
+	for i := 1; i < issuerCookieMaxSetCookies+43; i++ {
+		paths = append(paths, "/p/"+strconv.Itoa(i))
+	}
+	paths = append(paths, lateMedia)
+	listing, err := json.Marshal(map[string]any{"items": paths, "next": "/page?%24skiptoken=" + token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/list" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(listing)
+			return
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer site.Close()
+	h := newWebPlatformHarness(t)
+	page := "/page?%24skiptoken=" + token
+	if got := h.do(site, page, "agent-one", nil); got != http.StatusForbidden {
+		t.Fatalf("paging request before the listing: status=%d, want 403", got)
+	}
+	if got := h.do(site, "/list", "agent-one", nil); got != http.StatusOK {
+		t.Fatalf("listing status=%d", got)
+	}
+	if got := h.do(site, page, "agent-one", nil); got != http.StatusOK {
+		t.Fatalf("paging token after %d paths: status=%d, want 200", len(paths), got)
+	}
+	if got := h.do(site, webMediaPath, "agent-one", nil); got != http.StatusOK {
+		t.Fatalf("path inside the budget: status=%d, want 200", got)
+	}
+	if got := h.do(site, lateMedia, "agent-one", nil); got != http.StatusForbidden {
+		t.Fatalf("path past the budget: status=%d, want 403", got)
 	}
 }

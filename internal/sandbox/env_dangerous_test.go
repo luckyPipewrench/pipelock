@@ -3,7 +3,11 @@
 
 package sandbox
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
+)
 
 func TestIsDangerousEnvKey(t *testing.T) {
 	tests := []struct {
@@ -67,5 +71,22 @@ func TestIsDangerousEnvKey_Count(t *testing.T) {
 	if len(dangerousEnvKeys) != expectedCount {
 		t.Errorf("dangerousEnvKeys has %d entries, expected %d — update tests if keys were added or removed",
 			len(dangerousEnvKeys), expectedCount)
+	}
+}
+
+// TestIsDangerousEnvKey_RefusesSharedCodeLoadingList keeps the sandbox --env
+// filter in step with the MCP proxy filter and the verified local service
+// check: all three refuse every name on the shared code-loading list.
+func TestIsDangerousEnvKey_RefusesSharedCodeLoadingList(t *testing.T) {
+	for _, key := range envcontrol.CodeLoadingNames() {
+		if !IsDangerousEnvKey(key) {
+			t.Errorf("IsDangerousEnvKey(%q) = false; the shared code-loading list must be refused", key)
+		}
+	}
+	// Variables that change behavior without choosing code stay passable.
+	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "GLIBC_TUNABLES", "LD_PROFILE"} {
+		if IsDangerousEnvKey(key) {
+			t.Errorf("IsDangerousEnvKey(%q) = true; it loads no code and must remain passable", key)
+		}
 	}
 }

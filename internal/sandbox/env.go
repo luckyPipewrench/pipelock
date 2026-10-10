@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 )
 
 const syntheticPath = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
@@ -26,18 +28,20 @@ var safePassthroughKeys = []string{
 	"TZ",
 }
 
-// dangerousEnvKeys are environment variable keys that must NOT be passed
-// into the sandbox via --env flags. These can subvert containment by
-// injecting code before the agent process starts.
-// IsDangerousEnvKey returns true if the key could subvert sandbox containment.
+// IsDangerousEnvKey returns true if the key could subvert sandbox containment:
+// every envcontrol.CodeLoadingNames entry, the dangerousEnvKeys extras, and any
+// proxy variable in any case.
 func IsDangerousEnvKey(key string) bool {
-	if dangerousEnvKeys[key] {
+	if dangerousEnvKeys[key] || envcontrol.IsCodeLoading(key) {
 		return true
 	}
 	upper := strings.ToUpper(key)
 	return strings.HasSuffix(upper, "_PROXY")
 }
 
+// dangerousEnvKeys are environment variable keys that must NOT be passed
+// into the sandbox via --env flags. These can subvert containment by
+// injecting code before the agent process starts.
 var dangerousEnvKeys = map[string]bool{
 	"LD_PRELOAD":      true, // shared library injection
 	"LD_LIBRARY_PATH": true, // library search path hijack

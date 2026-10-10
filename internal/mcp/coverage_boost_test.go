@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -561,6 +562,28 @@ func TestWriteTextVerdict_InjectionLine(t *testing.T) {
 // primary DYLD search paths were blocked but their FALLBACK_ variants were not,
 // though those are consulted when the primary search fails. GIT_ASKPASS was
 // blocked but the other variables that hand git a command line to run were not.
+// TestDangerousEnvKeys_SharedCodeLoadingList keeps the MCP proxy --env filter
+// in step with the sandbox filter and the verified local service check: all
+// three refuse every name on the shared code-loading list. The proxy compares
+// names case-insensitively, so a lowercase spelling is refused too.
+func TestDangerousEnvKeys_SharedCodeLoadingList(t *testing.T) {
+	t.Parallel()
+	for _, key := range envcontrol.CodeLoadingNames() {
+		if !IsDangerousEnvKey(key) {
+			t.Errorf("IsDangerousEnvKey(%q) = false; the shared code-loading list must be refused", key)
+		}
+		if lower := strings.ToLower(key); !IsDangerousEnvKey(lower) {
+			t.Errorf("IsDangerousEnvKey(%q) = false; proxy names are case-insensitive", lower)
+		}
+	}
+	// Variables that change behavior without choosing code stay passable.
+	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "GLIBC_TUNABLES", "LD_PROFILE"} {
+		if IsDangerousEnvKey(key) {
+			t.Errorf("IsDangerousEnvKey(%q) = true; it loads no code and must remain passable", key)
+		}
+	}
+}
+
 func TestDangerousEnvKeys_InjectionSiblings(t *testing.T) {
 	t.Parallel()
 

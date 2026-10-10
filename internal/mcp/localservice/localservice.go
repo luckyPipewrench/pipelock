@@ -55,6 +55,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 )
 
 // Field names of the operator registration, quoted in error text so a refusal
@@ -153,29 +155,13 @@ type Observation struct {
 }
 
 // controlEnvironmentDenyList names variables that make a loader or an
-// interpreter load code or change behavior outside the pinned files.
-var controlEnvironmentDenyList = []string{
-	// glibc dynamic loader and runtime module loading. LD_ORIGIN_PATH redirects
-	// $ORIGIN library lookup; GCONV_PATH makes iconv load charset modules from a
-	// chosen directory.
-	"GCONV_PATH", "GLIBC_TUNABLES", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_PRELOAD", "LD_PROFILE",
-	// Node.js, Bun and Electron-as-Node.
-	"BUN_OPTIONS", "ELECTRON_EXTRA_LAUNCH_ARGS", "ELECTRON_RUN_AS_NODE",
-	"NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
-	// Python.
-	"PYTHONBREAKPOINT", "PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH",
-	"PYTHONPYCACHEPREFIX", "PYTHONSTARTUP", "PYTHONUSERBASE",
-	// JVM.
-	"CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
-	// Ruby, Perl, Lua, PHP.
-	"LUA_CPATH", "LUA_INIT", "LUA_PATH", "PERL5LIB", "PERL5OPT", "PERLLIB",
-	"PHPRC", "PHP_INI_SCAN_DIR", "RUBYLIB", "RUBYOPT",
-	// .NET.
-	"CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER", "CORECLR_PROFILER_PATH",
-	"DOTNET_ADDITIONAL_DEPS", "DOTNET_SHARED_STORE", "DOTNET_STARTUP_HOOKS",
-	// POSIX shells started for scripts.
-	"BASH_ENV", "ENV",
-}
+// interpreter load code or change behavior outside the pinned files: every
+// code-loading variable, plus the ones that change what the pinned code does
+// without choosing other code (glibc tunables, loader profiling, and extra
+// Node trust anchors).
+var controlEnvironmentDenyList = append(envcontrol.CodeLoadingNames(),
+	"GLIBC_TUNABLES", "LD_PROFILE", "NODE_EXTRA_CA_CERTS",
+)
 
 var controlEnvironmentSet = func() map[string]struct{} {
 	set := make(map[string]struct{}, len(controlEnvironmentDenyList))

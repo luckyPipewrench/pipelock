@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -2166,6 +2167,8 @@ var safeEnvKeySet = func() map[string]bool {
 
 // dangerousEnvKeys are environment variable names that can inject code or libraries
 // into child processes. These are blocked even when explicitly requested via --env.
+// IsDangerousEnvKey also refuses every envcontrol.CodeLoadingNames entry; this
+// map adds the git, proxy and macOS loader variables that list does not hold.
 var dangerousEnvKeys = map[string]bool{
 	// Dynamic linker injection (Linux/macOS).
 	"LD_PRELOAD":            true,
@@ -2225,11 +2228,12 @@ func IsSafeEnvKey(key string) bool {
 
 // IsDangerousEnvKey reports whether the given environment variable name is
 // blocked from passthrough because it can inject code or redirect traffic.
-// Proxy-related vars are checked case-insensitively since different runtimes
-// (Go, Node.js, Python, curl) honor different casings.
+// Every name is matched case-insensitively: Windows environment names ignore
+// case, so a child started with pythonpath=... reads it as PYTHONPATH, and
+// different runtimes (Go, Node.js, Python, curl) honor different proxy casings.
 func IsDangerousEnvKey(key string) bool {
 	upper := strings.ToUpper(key)
-	if dangerousEnvKeys[upper] {
+	if dangerousEnvKeys[upper] || envcontrol.IsCodeLoading(upper) {
 		return true
 	}
 	// Case-insensitive catch-all for proxy vars. Covers mixed-case forms

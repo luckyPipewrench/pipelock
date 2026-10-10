@@ -87,29 +87,38 @@ func issuerServerIDByte(c byte) bool {
 // whatever surrounds it.
 func issuerSentTokens(text string, emit func(string) bool) bool {
 	start := -1
-	for i := 0; i <= len(text); i++ {
-		if i < len(text) && issuerServerIDByte(text[i]) {
+	for i := 0; i < len(text); i++ {
+		if issuerServerIDByte(text[i]) {
 			if start < 0 {
 				start = i
 			}
 			continue
 		}
 		if start >= 0 {
-			run := text[start:i]
-			if len(run) >= issuerServerIDMinLen && !emit(run) {
+			if !emitSentRun(text[start:i], emit) {
 				return false
 			}
-			// "=" is an ID character (base64 padding) and also the form
-			// key/value separator, so each side of every "=" is recorded too:
-			// "payload=<value>" must record <value> on its own.
-			if strings.IndexByte(run, '=') >= 0 {
-				for _, part := range strings.Split(run, "=") {
-					if len(part) >= issuerServerIDMinLen && part != run && !emit(part) {
-						return false
-					}
-				}
-			}
 			start = -1
+		}
+	}
+	if start >= 0 {
+		return emitSentRun(text[start:], emit)
+	}
+	return true
+}
+
+// emitSentRun records one maximal run, and each side of every "=" in it:
+// "=" is an ID character (base64 padding) and also the form key/value
+// separator, so "payload=<value>" must record <value> on its own.
+func emitSentRun(run string, emit func(string) bool) bool {
+	if len(run) >= issuerServerIDMinLen && !emit(run) {
+		return false
+	}
+	if strings.IndexByte(run, '=') >= 0 {
+		for _, part := range strings.Split(run, "=") {
+			if len(part) >= issuerServerIDMinLen && part != run && !emit(part) {
+				return false
+			}
 		}
 	}
 	return true

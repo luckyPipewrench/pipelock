@@ -83,7 +83,7 @@ func runChainSetIfRuns(stdout, stderr io.Writer, location recorder.EvidenceLocat
 	})
 	// A snapshot that failed before its consumer ran is a listing failure,
 	// classified as the consumer classifies its own.
-	if errors.Is(err, recorder.ErrEvidenceChanged) || (err != nil && !consumed) {
+	if recorder.IsEvidenceUnavailable(err) || (err != nil && !consumed) {
 		// The buffered report is void, but a JSON consumer still needs a
 		// document. Text mode says incomplete, never broken: no verdict
 		// was reached.

@@ -320,7 +320,7 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		})
 		if groupErr != nil {
 			verdict := actionreceipt.GroupInvalid
-			if errors.Is(groupErr, recorder.ErrEvidenceChanged) {
+			if recorder.IsEvidenceUnavailable(groupErr) {
 				verdict = actionreceipt.GroupIncomplete
 			}
 			if opts.jsonOutput {
@@ -369,12 +369,12 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 			err := fmt.Errorf("extract receipts: %w", extractErr)
 			// Report the failure the way every other chain outcome is
 			// reported, so --json never leaves a consumer with empty output.
-			// Changed evidence reached no verdict; anything else, such as an
+			// Unavailable evidence reached no verdict; anything else, such as an
 			// ambiguous sequence start, is a broken chain.
 			switch {
 			case opts.jsonOutput:
 				writeJSON(stdout, chainReport{Path: label, Error: err.Error()})
-			case errors.Is(extractErr, recorder.ErrEvidenceChanged):
+			case recorder.IsEvidenceUnavailable(extractErr):
 				_, _ = fmt.Fprintf(stderr, "VERIFICATION INCOMPLETE: %s\n  error:      %s\n", label, err)
 			default:
 				emitChainReport(stdout, stderr, chainReport{Path: label, Error: err.Error()}, false)

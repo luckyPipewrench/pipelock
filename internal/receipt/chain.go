@@ -1005,7 +1005,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 		// compatibility path: that path would return the receipts it managed
 		// to parse as though they were the whole chain. Mirrors
 		// ExtractReceiptsBytes.
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || errors.Is(err, recorder.ErrEvidenceChanged) {
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
@@ -1034,7 +1034,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	entries, err := recorder.ReadHistoryEntriesFromReader(bytes.NewReader(data))
 	if err != nil {
-		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || errors.Is(err, recorder.ErrEvidenceChanged) {
+		if errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) || recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("reading entries: %w", err)
 		}
 		rawReceipts, rawErr := extractRawReceiptsJSONLBytes(data)

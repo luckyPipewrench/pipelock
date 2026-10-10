@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -404,21 +406,6 @@ func TestEvidenceHealthAnchorFreshnessCoversEveryChain(t *testing.T) {
 	}
 }
 
-// TestAutoAnchorMonitorAnchorsItsOwnChain: the anchored session comes from the
-// monitor's emitter, never from the recorder's moving binding.
-func TestAutoAnchorMonitorAnchorsItsOwnChain(t *testing.T) {
-	rig := newShardedHealthRig(t, 2)
-	rig.emit(t, "https://api.vendor.example/one")
-	rig.emit(t, "https://api.vendor.example/two")
-	for i, e := range rig.emitters {
-		shard := e
-		monitor := newAutoAnchorMonitor(rig.rec, rig.m, func() *receipt.Emitter { return shard }, func() *config.Config { return rig.cfg }, rig.logs)
-		if monitor.sessionID != shard.Session() {
-			t.Fatalf("shard %d monitor session = %q, want %q", i, monitor.sessionID, shard.Session())
-		}
-	}
-}
-
 func TestLastReceiptInTailIgnoresFragments(t *testing.T) {
 	rig := newShardedHealthRig(t, 1)
 	rig.emit(t, "https://api.vendor.example/one")
@@ -435,13 +422,13 @@ func TestLastReceiptInTailIgnoresFragments(t *testing.T) {
 	t.Run("append in progress", func(t *testing.T) {
 		withPartial := append(append([]byte(nil), data...), []byte(`{"type":"action_receipt","detail":{"trunc`)...)
 		got, ok, err := lastReceiptInTail(withPartial, false)
-		if err != nil || !ok || got != want {
+		if err != nil || !ok || got.seq != want.seq || got.hash != want.hash {
 			t.Fatalf("partial trailing line: got=%+v ok=%v err=%v, want %+v", got, ok, err, want)
 		}
 	})
 	t.Run("read began mid-line", func(t *testing.T) {
 		got, ok, err := lastReceiptInTail(append([]byte(`ragment-of-a-line"}`+"\n"), data...), true)
-		if err != nil || !ok || got != want {
+		if err != nil || !ok || got.seq != want.seq || got.hash != want.hash {
 			t.Fatalf("leading fragment: got=%+v ok=%v err=%v, want %+v", got, ok, err, want)
 		}
 	})
@@ -474,7 +461,7 @@ func TestReadLastReceiptTailNewerFileWithoutReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := readLastReceiptTail(rig.rec.Dir(), session)
-	if err != nil || got != want {
+	if err != nil || got.seq != want.seq || got.hash != want.hash {
 		t.Fatalf("tail with decision-only newer file = %+v err=%v, want %+v", got, err, want)
 	}
 }
@@ -507,37 +494,22 @@ func TestReadLastReceiptTailBeyondBoundIsPendingNotFallback(t *testing.T) {
 	}
 }
 
-func TestReadLastReceiptTailChangedFileIsInconclusive(t *testing.T) {
-	err := fmt.Errorf("%w: x", errReceiptTailChanged)
+// TestReadLastReceiptTailChangedFileIsPending: a file that shrank or was
+// replaced during the read leaves the chain unverified rather than keeping an
+// earlier verdict, and does not latch.
+func TestReadLastReceiptTailChangedFileIsPending(t *testing.T) {
 	rig := newShardedHealthRig(t, 1)
 	rig.emit(t, "https://api.vendor.example/one")
 	rig.h.runPass()
 	obs := rig.h.observeShards()[0]
-	before := rig.h.tailState(obs)
-	// A changed-file read leaves the previous conclusive state in place.
-	rig.h.applyTailReadError(obs, err)
-	if after := rig.h.tailState(obs); after != before {
-		t.Fatalf("changed-file read moved state %+v -> %+v", before, after)
+	if before := rig.h.tailState(obs); before.state != metrics.EvidenceSelfAuditVerified {
+		t.Fatalf("baseline = %+v, want verified", before)
+	}
+	rig.h.applyTailReadError(obs, fmt.Errorf("%w: x", errReceiptTailChanged))
+	if after := rig.h.tailState(obs); after.state != metrics.EvidenceSelfAuditPending {
+		t.Fatalf("after changed-file read = %+v, want pending", after)
 	}
 	rig.assertNotLatched(t)
-}
-
-func TestEvidenceAutoAnchorErrorsArePerChain(t *testing.T) {
-	m := metrics.New()
-	m.RecordEvidenceAutoAnchorFailureFor("chain-a", "chain a failed")
-	m.RecordEvidenceAutoAnchorSuccessFor("chain-b")
-	if got := m.EvidenceAutoAnchorStatsSnapshot().LastError; got != "chain a failed" {
-		t.Fatalf("last error after another chain succeeded = %q, want chain a's failure", got)
-	}
-	m.RecordEvidenceAutoAnchorFailureFor("chain-b", "chain b failed")
-	m.RecordEvidenceAutoAnchorSuccessFor("chain-a")
-	if got := m.EvidenceAutoAnchorStatsSnapshot().LastError; got != "chain b failed" {
-		t.Fatalf("last error = %q, want chain b's outstanding failure", got)
-	}
-	m.RecordEvidenceAutoAnchorSuccessFor("chain-b")
-	if got := m.EvidenceAutoAnchorStatsSnapshot().LastError; got != "" {
-		t.Fatalf("last error after every chain succeeded = %q, want empty", got)
-	}
 }
 
 func sessionEvidenceFiles(t *testing.T, dir, session string) []string {
@@ -626,7 +598,8 @@ func dropLastReceiptLine(t *testing.T, dir, session string) {
 }
 
 // TestServerEvidenceMonitorsCoverEveryChain checks the startup wiring: the
-// self-audit observes every chain, and each chain gets its own anchor loop.
+// self-audit observes every chain, and a receipt group gets no anchor loop
+// because config validation refuses auto-anchoring with several chains.
 func TestServerEvidenceMonitorsCoverEveryChain(t *testing.T) {
 	for _, chains := range []int{1, 4} {
 		t.Run(fmt.Sprintf("chains=%d", chains), func(t *testing.T) {
@@ -634,19 +607,178 @@ func TestServerEvidenceMonitorsCoverEveryChain(t *testing.T) {
 			rig.emit(t, "https://api.vendor.example/one")
 			s := &Server{recorder: rig.rec, metrics: rig.m, cfg: rig.cfg, receiptShardSet: rig.shards, receiptEmitter: rig.h.emitter()}
 			s.opts.Stderr = rig.logs
-			health, anchors := s.evidenceMonitors(rig.cfg)
+			health, anchor := s.evidenceMonitors(rig.cfg)
 			if health == nil {
 				t.Fatal("evidence health monitor not built")
 			}
 			observed := health.observeShards()
-			if len(observed) != chains || len(anchors) != chains {
-				t.Fatalf("observed chains=%d anchor loops=%d, want %d each", len(observed), len(anchors), chains)
+			if len(observed) != chains {
+				t.Fatalf("observed chains=%d, want %d", len(observed), chains)
 			}
 			for i, obs := range observed {
-				if obs.session != rig.emitters[i].Session() || anchors[i].sessionID != rig.emitters[i].Session() {
-					t.Fatalf("chain %d: audit session %q, anchor session %q, want %q", i, obs.session, anchors[i].sessionID, rig.emitters[i].Session())
+				if obs.session != rig.emitters[i].Session() {
+					t.Fatalf("chain %d audit session %q, want %q", i, obs.session, rig.emitters[i].Session())
 				}
 			}
+			if (anchor != nil) != (chains == 1) {
+				t.Fatalf("anchor loop built=%v for %d chains, want only for one chain", anchor != nil, chains)
+			}
 		})
+	}
+}
+
+// TestServerStartEvidenceMonitorsRunsSelfAudit drives the startup entry point
+// itself: the self-audit must have run over every chain and published its
+// stats, not merely been constructed.
+func TestServerStartEvidenceMonitorsRunsSelfAudit(t *testing.T) {
+	rig := newShardedHealthRig(t, 4)
+	for i := 0; i < 8; i++ {
+		rig.emit(t, fmt.Sprintf("https://api.vendor.example/%d", i))
+	}
+	m := metrics.New()
+	s := &Server{recorder: rig.rec, metrics: m, cfg: rig.cfg, receiptShardSet: rig.shards, receiptEmitter: rig.h.emitter()}
+	s.opts.Stderr = rig.logs
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	s.startEvidenceMonitors(ctx, &wg, rig.cfg)
+	cancel()
+	wg.Wait()
+	stats, ok := m.EvidenceHealthStatsSnapshot()
+	if !ok {
+		t.Fatal("startup published no evidence health")
+	}
+	if stats.SelfAudit.State != metrics.EvidenceSelfAuditVerified || len(stats.SelfAudit.Shards) != 4 {
+		t.Fatalf("startup self-audit = %+v, want 4 verified chains", stats.SelfAudit)
+	}
+}
+
+// TestEvidenceHealthWriterReplacedMidPassDoesNotLatch: a hot reload or signer
+// rotation can replace a chain's writer between the first snapshot and the
+// disk read. The comparison spans two writers and must decide nothing.
+func TestEvidenceHealthWriterReplacedMidPassDoesNotLatch(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	obs := rig.h.observeShards()[0]
+	replacement := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rig.rec, PrivKey: rig.key, ConfigHash: strings.Repeat("b", 64),
+		Principal: "local", Actor: "pipelock", Metrics: rig.m, Session: rig.emitters[0].Session(),
+	})
+	if replacement == nil || replacement.InitError() != nil {
+		t.Fatal("replacement emitter failed to resume")
+	}
+	for i := 0; i < 3; i++ {
+		if err := replacement.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/next"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rig.h.emitterFn = func() *receipt.Emitter { return replacement }
+
+	rig.h.checkShardTail(obs)
+	rig.h.refreshShardAnchor(obs)
+
+	rig.assertNotLatched(t)
+	rig.h.runPass()
+	rig.assertNotLatched(t)
+	if state := rig.stats(t).SelfAudit.State; state != metrics.EvidenceSelfAuditVerified {
+		t.Fatalf("state after auditing the replacement = %q, want verified", state)
+	}
+}
+
+// TestEvidenceHealthTailBetweenSnapshotsIsSignatureChecked: when the chain
+// advances between the disk read and the second snapshot, the receipt read is
+// strictly between the two heads; it is accepted only if this writer signed it.
+func TestEvidenceHealthTailBetweenSnapshotsIsSignatureChecked(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("corrupt=%v", corrupt), func(t *testing.T) {
+			rig := newShardedHealthRig(t, 1)
+			rig.emit(t, "https://api.vendor.example/zero")
+			obs := rig.h.observeShards()[0]
+			rig.emit(t, "https://api.vendor.example/between")
+			if corrupt {
+				rewriteLastReceipt(t, rig.rec.Dir(), rig.emitters[0].Session(), func(r *receipt.Receipt) {
+					r.ActionRecord.Target = "https://api.vendor.example/altered"
+				})
+			}
+			restore := afterSelfAuditTailRead
+			afterSelfAuditTailRead = func() { rig.emit(t, "https://api.vendor.example/after-read") }
+			defer func() { afterSelfAuditTailRead = restore }()
+
+			rig.h.checkShardTail(obs)
+
+			state := rig.h.tailState(obs).state
+			if corrupt {
+				if state != metrics.EvidenceSelfAuditFailed || rig.h.selfAuditOK.Load() {
+					t.Fatalf("altered in-range tail: state=%q latched=%v, want failed and latched", state, !rig.h.selfAuditOK.Load())
+				}
+				return
+			}
+			rig.assertNotLatched(t)
+			if state != metrics.EvidenceSelfAuditVerified {
+				t.Fatalf("valid in-range tail state = %q, want verified", state)
+			}
+		})
+	}
+}
+
+// TestEvidenceHealthConcurrentAnchorIsJudgedAgainstCurrentHead: the anchor
+// loop can anchor receipts written after the health pass took its snapshot.
+// That marker is ahead of the old snapshot, not of the chain.
+func TestEvidenceHealthConcurrentAnchorIsJudgedAgainstCurrentHead(t *testing.T) {
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	obs := rig.h.observeShards()[0]
+	rig.emit(t, "https://api.vendor.example/two")
+	rig.emit(t, "https://api.vendor.example/three")
+	state := validEvidenceHealthAnchorState()
+	state.SessionID = obs.session
+	state.FinalSeq = 2
+	state.SignerKey = rig.emitters[0].SignerKeyHex()
+	state = writeEvidenceHealthAnchorBundle(t, rig.rec.Dir(), state)
+	writeEvidenceHealthAnchorState(t, rig.rec.Dir(), state)
+
+	rig.h.refreshShardAnchor(obs)
+
+	rig.assertNotLatched(t)
+	if anchor := rig.h.anchorFor(obs.session); anchor == nil || anchor.FinalSeq != 2 {
+		t.Fatalf("anchor = %+v, want the concurrent marker at final_seq 2", anchor)
+	}
+}
+
+// TestEvidenceHealthUnreadableAnchorStateIsRecoverable: losing read access to
+// the anchor markers is a measurement gap. It must not latch, and health
+// recovers when access returns.
+func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission denial does not apply to root")
+	}
+	rig := newShardedHealthRig(t, 1)
+	rig.emit(t, "https://api.vendor.example/one")
+	state := validEvidenceHealthAnchorState()
+	state.SessionID = rig.emitters[0].Session()
+	state.SignerKey = rig.emitters[0].SignerKeyHex()
+	state = writeEvidenceHealthAnchorBundle(t, rig.rec.Dir(), state)
+	marker := anchorStateToMarker(state)
+	marker.ReceiptCount = state.FinalSeq + 1
+	marker.SignerKey = state.SignerKey
+	if err := anchorpkg.WriteStateMarker(rig.rec.Dir(), marker); err != nil {
+		t.Fatalf("WriteStateMarker: %v", err)
+	}
+	rig.h.runPass()
+	if rig.h.anchorFor(rig.emitters[0].Session()) == nil {
+		t.Fatal("fixture: anchor not read before access was removed")
+	}
+	index := filepath.Join(rig.rec.Dir(), "anchor-state.d")
+	if err := os.Chmod(index, 0); err != nil {
+		t.Fatal(err)
+	}
+	rig.h.runPass()
+	if err := os.Chmod(index, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rig.assertNotLatched(t)
+	rig.h.runPass()
+	rig.assertNotLatched(t)
+	if rig.h.anchorFor(rig.emitters[0].Session()) == nil {
+		t.Fatal("anchor not recovered after access returned")
 	}
 }

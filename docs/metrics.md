@@ -175,20 +175,21 @@ The `/stats` endpoint also includes a nullable `evidence_health` object. In the
   the generated corpus alert does not consume this process-local diagnostic.
 - `self_audit.state` is the worst per-chain tail state. `verified` means each
   chain's last action receipt on disk matched that chain's in-memory head.
-  `pending` means a chain could not be compared yet: it was never audited, its
-  evidence is missing, a read failed, or its last receipt lies beyond the
-  self-audit's 8 MiB read bound. Pending is not green and does not latch.
+  `pending` means a chain could not be compared: it was never audited, failed
+  to initialize, its evidence is missing or shrank during the read, a
+  read failed, or its last receipt lies beyond the self-audit's 8 MiB read
+  bound. Pending is not green and does not latch.
   `failed` is a proven mismatch (the disk tail is behind or ahead of the head,
-  or the same sequence has a different hash, or the tail is malformed) and
+  the same sequence has a different hash, a receipt written during the read is
+  not signed by the chain's key, or the tail is malformed) and
   latches `selfaudit_ok` for the process lifetime. `self_audit.shards` lists
   each chain's session, head, emitter health, tail state, and anchor coverage.
-  Every field in one entry comes from that chain alone.
+  Every field in one entry comes from that chain alone. The self-audit checks
+  that the newest complete receipt on disk matches the chain head; it does not
+  verify the rest of the file. Use `pipelock evidence doctor` for that.
 - `requirements.emitter_healthy` and `requirements.anchoring_fresh` cover every
   receipt chain: one unhealthy or unanchored chain makes them false. The
   top-level `anchor` object is `null` while any chain is unanchored.
-- `auto_anchor.last_error` stays set while any chain's latest anchor attempt
-  failed; a success on another chain does not clear it. The message names the
-  chain.
 - `run_state` is `OPEN` while the recorder process is running. `run_id` is `null`
   until bounded per-run recording exists. These are lifecycle facts, not
   verification states.

@@ -5,7 +5,6 @@ package metrics
 
 import (
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -179,9 +178,6 @@ type EvidenceAutoAnchorStats struct {
 	Attempts  uint64 `json:"attempts"`
 	Successes uint64 `json:"successes"`
 	Failures  uint64 `json:"failures"`
-	// LastError is the outstanding failure of one receipt chain, or empty when
-	// every chain's most recent attempt succeeded. With several chains a
-	// success on one chain never clears another chain's failure.
 	LastError string `json:"last_error"`
 }
 
@@ -471,20 +467,12 @@ func (m *Metrics) RecordEvidenceAutoAnchorAttempt() {
 }
 
 func (m *Metrics) RecordEvidenceAutoAnchorSuccess() {
-	m.RecordEvidenceAutoAnchorSuccessFor("")
-}
-
-// RecordEvidenceAutoAnchorSuccessFor clears only sessionID's outstanding
-// failure. Each receipt chain anchors independently, so one chain succeeding
-// must not hide another chain that is still failing.
-func (m *Metrics) RecordEvidenceAutoAnchorSuccessFor(sessionID string) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	m.evidenceAutoAnchorStats.Successes++
-	delete(m.evidenceAutoAnchorErrors, sessionID)
-	m.evidenceAutoAnchorStats.LastError = m.outstandingAutoAnchorErrorLocked()
+	m.evidenceAutoAnchorStats.LastError = ""
 	m.mu.Unlock()
 	if m.evidenceAutoAnchorSuccesses != nil {
 		m.evidenceAutoAnchorSuccesses.Inc()
@@ -492,12 +480,6 @@ func (m *Metrics) RecordEvidenceAutoAnchorSuccessFor(sessionID string) {
 }
 
 func (m *Metrics) RecordEvidenceAutoAnchorFailure(err string) {
-	m.RecordEvidenceAutoAnchorFailureFor("", err)
-}
-
-// RecordEvidenceAutoAnchorFailureFor records sessionID's latest failure. It
-// stays outstanding until that same session next anchors successfully.
-func (m *Metrics) RecordEvidenceAutoAnchorFailureFor(sessionID, err string) {
 	if m == nil {
 		return
 	}
@@ -508,30 +490,11 @@ func (m *Metrics) RecordEvidenceAutoAnchorFailureFor(sessionID, err string) {
 	}
 	m.mu.Lock()
 	m.evidenceAutoAnchorStats.Failures++
-	if m.evidenceAutoAnchorErrors == nil {
-		m.evidenceAutoAnchorErrors = make(map[string]string)
-	}
-	m.evidenceAutoAnchorErrors[sessionID] = string(trimmed)
-	m.evidenceAutoAnchorStats.LastError = m.outstandingAutoAnchorErrorLocked()
+	m.evidenceAutoAnchorStats.LastError = string(trimmed)
 	m.mu.Unlock()
 	if m.evidenceAutoAnchorFailures != nil {
 		m.evidenceAutoAnchorFailures.Inc()
 	}
-}
-
-// outstandingAutoAnchorErrorLocked picks one outstanding failure
-// deterministically (lowest session) so the reported error does not flap
-// between chains from one scrape to the next. Callers hold m.mu.
-func (m *Metrics) outstandingAutoAnchorErrorLocked() string {
-	if len(m.evidenceAutoAnchorErrors) == 0 {
-		return ""
-	}
-	sessions := make([]string, 0, len(m.evidenceAutoAnchorErrors))
-	for session := range m.evidenceAutoAnchorErrors {
-		sessions = append(sessions, session)
-	}
-	sort.Strings(sessions)
-	return m.evidenceAutoAnchorErrors[sessions[0]]
 }
 
 func (m *Metrics) EvidenceAutoAnchorStatsSnapshot() EvidenceAutoAnchorStats {

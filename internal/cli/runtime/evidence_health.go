@@ -111,16 +111,37 @@ type shardObservation struct {
 	healthErr error
 }
 
+func (h *evidenceHealthMonitor) liveEmitters() []*receipt.Emitter {
+	if h.shardsFn != nil {
+		return h.shardsFn()
+	}
+	if e := h.emitter(); e != nil {
+		return []*receipt.Emitter{e}
+	}
+	return nil
+}
+
+// stillCurrent reports whether obs's emitter is still the live writer of its
+// chain. A hot reload or signer rotation can replace the writer while a pass
+// is reading disk; a comparison that spans that replacement is about two
+// writers and decides nothing.
+func (h *evidenceHealthMonitor) stillCurrent(obs shardObservation) (receipt.HealthSnapshot, bool) {
+	live := h.liveEmitters()
+	if obs.index >= len(live) || live[obs.index] != obs.emitter {
+		return receipt.HealthSnapshot{}, false
+	}
+	snap, ok := obs.emitter.HealthSnapshot()
+	if !ok || snap.InitErr || snap.RunNonce != obs.snap.RunNonce || snap.ChainSeq < obs.snap.ChainSeq {
+		return receipt.HealthSnapshot{}, false
+	}
+	return snap, true
+}
+
 func (h *evidenceHealthMonitor) observeShards() []shardObservation {
 	if h == nil {
 		return nil
 	}
-	var emitters []*receipt.Emitter
-	if h.shardsFn != nil {
-		emitters = h.shardsFn()
-	} else if e := h.emitter(); e != nil {
-		emitters = []*receipt.Emitter{e}
-	}
+	emitters := h.liveEmitters()
 	out := make([]shardObservation, 0, len(emitters))
 	for i, e := range emitters {
 		snap, ok := e.HealthSnapshot()
@@ -219,18 +240,29 @@ func (h *evidenceHealthMonitor) checkTail() {
 	}
 }
 
+// afterSelfAuditTailRead is a test seam between the disk read and the second
+// snapshot in checkShardTail. Production leaves it a no-op.
+var afterSelfAuditTailRead = func() {}
+
 // checkShardTail compares one chain's disk tail with that chain's in-memory
 // head. Receipts are written and flushed while the emitter holds its chain
 // lock, and HealthSnapshot takes the same lock, so at a snapshot the session's
-// last action receipt on disk is exactly ChainSeq-1. Reading the disk between
-// two snapshots therefore gives a conclusive answer whenever the disk tail
-// equals either snapshot's head, and a proven fault whenever it lies outside
-// them. Anything else is inconclusive and leaves the previous state alone.
+// last action receipt on disk is exactly ChainSeq-1. The disk is read between
+// two snapshots of the same live writer, so its last receipt must have a
+// sequence between the two heads. At either end its hash must equal that
+// head; strictly between them it must carry this writer's valid signature.
+// Anything outside that is a proven fault. A pass that cannot make the
+// comparison (writer replaced, file replaced) leaves the chain pending rather
+// than keeping an earlier verdict.
 func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 	first := obs.snap
-	if first.InitErr || first.ChainSeq == 0 {
-		// Nothing is claimed yet (or a key transition opened an empty
-		// segment), so there is nothing to compare.
+	if first.InitErr {
+		h.setTail(obs, metrics.EvidenceSelfAuditPending, "receipt chain failed to initialize")
+		return
+	}
+	if first.ChainSeq == 0 {
+		// Nothing is claimed in this segment yet, so there is nothing to
+		// compare.
 		h.setTail(obs, metrics.EvidenceSelfAuditVerified, "")
 		return
 	}
@@ -239,10 +271,10 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 		h.applyTailReadError(obs, err)
 		return
 	}
-	second, ok := obs.emitter.HealthSnapshot()
-	if !ok || second.InitErr || second.ChainSeq < first.ChainSeq || second.RunNonce != first.RunNonce {
-		// The writer was replaced or started a new segment between the two
-		// reads; the comparison is not about one chain.
+	afterSelfAuditTailRead()
+	second, current := h.stillCurrent(obs)
+	if !current {
+		// Keyed by emitter: the replacement starts unverified on its own.
 		return
 	}
 	low, high := first.ChainSeq-1, second.ChainSeq-1
@@ -257,7 +289,9 @@ func (h *evidenceHealthMonitor) checkShardTail(obs shardObservation) {
 	case tail.seq == high && tail.hash != second.PrevHash:
 		divergence = fmt.Errorf("disk seq/hash=%d/%s memory seq/hash=%d/%s", tail.seq, tail.hash, high, second.PrevHash)
 	case tail.seq != low && tail.seq != high:
-		return
+		if err := receipt.VerifyWithKey(tail.receipt, obs.emitter.SignerKeyHex()); err != nil {
+			divergence = fmt.Errorf("disk tail seq %d does not verify against this chain's signer: %w", tail.seq, err)
+		}
 	}
 	if divergence != nil {
 		if h.metrics != nil {
@@ -282,8 +316,9 @@ func (h *evidenceHealthMonitor) applyTailReadError(obs shardObservation, err err
 	case errors.Is(err, errReceiptTailBeyondBound):
 		h.setTail(obs, metrics.EvidenceSelfAuditPending, err.Error())
 	case errors.Is(err, errReceiptTailChanged):
-		// A concurrent append to the shared session file. Not a finding and
-		// not a measurement failure; the next pass decides.
+		// The file shrank during the read (appends are tolerated). Not
+		// proof of corruption, but the chain is unverified.
+		h.setTail(obs, metrics.EvidenceSelfAuditPending, err.Error())
 	default:
 		h.setTail(obs, metrics.EvidenceSelfAuditPending, err.Error())
 		h.recordSamplerDegraded(fmt.Errorf("chain %s: %w", obs.session, err))
@@ -341,11 +376,27 @@ func (h *evidenceHealthMonitor) refreshShardAnchor(obs shardObservation) {
 	}
 	if err != nil {
 		h.setAnchor(session, nil)
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			// Reading the markers failed (permissions, a transient I/O
+			// error). That is a measurement gap, not evidence of a forged
+			// or conflicting anchor, so it must not latch.
+			h.recordSamplerDegraded(fmt.Errorf("chain %s anchor state: %w", session, err))
+			return
+		}
 		h.fail("sampler_error", err)
 		return
 	}
 	if !found {
 		h.setAnchor(session, nil)
+		return
+	}
+	// The anchor loop runs independently and may have anchored receipts
+	// written after obs was taken. Judge the marker against the current head
+	// of the same writer.
+	if fresh, current := h.stillCurrent(obs); current {
+		snap = fresh
+	} else {
 		return
 	}
 	if state.Schema != "pipelock.anchorstate.v1" {
@@ -722,8 +773,9 @@ func (h *evidenceHealthMonitor) emitViolation(check string) {
 }
 
 type receiptTail struct {
-	seq  uint64
-	hash string
+	seq     uint64
+	hash    string
+	receipt receipt.Receipt
 }
 
 var (
@@ -811,7 +863,7 @@ func readLastReceiptTail(dir, sessionID string) (receiptTail, error) {
 func readLastReceiptTailFromFile(location recorder.EvidenceLocation, name string) (receiptTail, error) {
 	for window := int64(maxTailReadBytes); ; window *= 2 {
 		window = min(window, maxTailScanBytes)
-		data, truncated, err := recorder.ReadEvidenceLocationFileTail(location, name, window)
+		data, truncated, err := recorder.ReadEvidenceLocationAppendTail(location, name, window)
 		if err != nil {
 			if errors.Is(err, recorder.ErrEvidenceFileChanged) {
 				return receiptTail{}, fmt.Errorf("%w: %s", errReceiptTailChanged, name)
@@ -890,7 +942,7 @@ func parseReceiptTailLine(line []byte) (receiptTail, bool, error) {
 	if err != nil {
 		return receiptTail{}, false, err
 	}
-	return receiptTail{seq: rcpt.ActionRecord.ChainSeq, hash: hash}, true, nil
+	return receiptTail{seq: rcpt.ActionRecord.ChainSeq, hash: hash, receipt: rcpt}, true, nil
 }
 
 // evidenceFileStartSeq delegates to the shared parser. Membership is decided

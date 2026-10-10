@@ -176,7 +176,6 @@ type Metrics struct {
 	evidenceFsyncErrorCounts    map[string]int64
 	evidenceSelfAuditFailCounts map[string]int64
 	evidenceAutoAnchorStats     EvidenceAutoAnchorStats
-	evidenceAutoAnchorErrors    map[string]string
 	evidenceRequirementValues   map[string]bool
 	evidenceHealthFunc          func() (EvidenceHealthStats, bool)
 	evidenceCollector           *evidenceCollector

@@ -76,15 +76,6 @@ func newAutoAnchorMonitor(
 	configFn func() *config.Config,
 	logW io.Writer,
 ) *autoAnchorMonitor {
-	// The anchored session is the one this monitor's emitter writes. With
-	// several receipt chains the recorder's own binding moves between shards
-	// as they write, so it cannot name the chain being anchored.
-	sessionID := recorderSessionOf(rec)
-	if emitterFn != nil {
-		if session := emitterFn().Session(); session != "" {
-			sessionID = session
-		}
-	}
 	return &autoAnchorMonitor{
 		recorder:  rec,
 		metrics:   m,
@@ -94,7 +85,7 @@ func newAutoAnchorMonitor(
 		nowFn:     func() time.Time { return time.Now().UTC() },
 		backendFn: autoAnchorBackend,
 		walkFn:    receipt.WalkReceiptsFromSessionDir,
-		sessionID: sessionID,
+		sessionID: recorderSessionOf(rec),
 	}
 }
 
@@ -369,7 +360,7 @@ func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitte
 	m.lastAnchoredAt = anchoredAt
 	m.mu.Unlock()
 	if m.metrics != nil {
-		m.metrics.RecordEvidenceAutoAnchorSuccessFor(m.sessionID)
+		m.metrics.RecordEvidenceAutoAnchorSuccess()
 	}
 	return nil
 }
@@ -542,10 +533,10 @@ func (m *autoAnchorMonitor) fail(err error) {
 		return
 	}
 	if m != nil && m.metrics != nil {
-		m.metrics.RecordEvidenceAutoAnchorFailureFor(m.sessionID, fmt.Sprintf("chain %s: %v", m.sessionID, err))
+		m.metrics.RecordEvidenceAutoAnchorFailure(err.Error())
 	}
 	if m != nil && m.logW != nil {
-		_, _ = fmt.Fprintf(m.logW, "CRITICAL: evidence auto-anchor failed for chain %s: %v\n", m.sessionID, err)
+		_, _ = fmt.Fprintf(m.logW, "CRITICAL: evidence auto-anchor failed: %v\n", err)
 	}
 }
 

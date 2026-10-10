@@ -466,13 +466,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if s.recorder != nil {
 		startFlightRecorderRetention(ctx, &lifecycleWG, s.recorder, s.opts.Stderr, defaultFlightRecorderRetentionInterval, s.opts.expiry())
 	}
-	health, anchors := s.evidenceMonitors(cfg)
-	if health != nil {
-		health.start(ctx, &lifecycleWG)
-	}
-	for _, monitor := range anchors {
-		monitor.start(ctx, &lifecycleWG)
-	}
+	s.startEvidenceMonitors(ctx, &lifecycleWG, cfg)
 	s.startDashboardRuntimeSnapshot(ctx, &lifecycleWG, cfg)
 	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
 	if fsErr != nil {
@@ -1509,14 +1503,15 @@ func (s *Server) consumeReloads(ctx context.Context, events <-chan config.Reload
 	}
 }
 
-// evidenceMonitors builds the evidence self-audit and the auto-anchor loops.
-// With a receipt group every chain is audited and anchored against its own
-// session; the group's membership is fixed at opening, so the shard list
-// never changes. The anchor loop is cheap and inactive without a configured
-// anchor point, and is built whenever the recorder and emitters exist so that
-// adding an anchor point on hot reload takes effect without rebuilding
-// recorder state.
-func (s *Server) evidenceMonitors(cfg *config.Config) (*evidenceHealthMonitor, []*autoAnchorMonitor) {
+// evidenceMonitors builds the evidence self-audit and the auto-anchor loop.
+// With a receipt group every chain is audited against its own session; the
+// group's membership is fixed at opening, so the shard list never changes.
+// A group gets no anchor loop: config validation refuses auto-anchoring with
+// more than one receipt chain. The single-chain anchor loop is cheap and
+// inactive without a configured anchor point, and is built whenever the
+// recorder and emitter exist so that adding an anchor point on hot reload
+// takes effect without rebuilding recorder state.
+func (s *Server) evidenceMonitors(cfg *config.Config) (*evidenceHealthMonitor, *autoAnchorMonitor) {
 	if s.recorder == nil || s.metrics == nil {
 		return nil, nil
 	}
@@ -1527,16 +1522,20 @@ func (s *Server) evidenceMonitors(cfg *config.Config) (*evidenceHealthMonitor, [
 			health.withShards(s.receiptShardSet.Emitters)
 		}
 	}
-	var anchors []*autoAnchorMonitor
-	if s.receiptShardSet != nil {
-		for _, shard := range s.receiptShardSet.Emitters() {
-			e := shard
-			if receiptEmitterReady(e) {
-				anchors = append(anchors, newAutoAnchorMonitor(s.recorder, s.metrics, func() *receipt.Emitter { return e }, s.currentConfig, s.opts.Stderr))
-			}
-		}
-	} else if receiptEmitterReady(s.liveReceiptEmitter()) {
-		anchors = append(anchors, newAutoAnchorMonitor(s.recorder, s.metrics, s.liveReceiptEmitter, s.currentConfig, s.opts.Stderr))
+	var anchor *autoAnchorMonitor
+	if s.receiptShardSet == nil && receiptEmitterReady(s.liveReceiptEmitter()) {
+		anchor = newAutoAnchorMonitor(s.recorder, s.metrics, s.liveReceiptEmitter, s.currentConfig, s.opts.Stderr)
 	}
-	return health, anchors
+	return health, anchor
+}
+
+// startEvidenceMonitors starts the loops evidenceMonitors builds.
+func (s *Server) startEvidenceMonitors(ctx context.Context, wg *sync.WaitGroup, cfg *config.Config) {
+	health, anchor := s.evidenceMonitors(cfg)
+	if health != nil {
+		health.start(ctx, wg)
+	}
+	if anchor != nil {
+		anchor.start(ctx, wg)
+	}
 }

@@ -206,6 +206,44 @@ func StreamEvidenceLocationFileForOfflineCompaction(location EvidenceLocation, n
 	return nil
 }
 
+// afterAppendTailRead is a test seam between the read and the restat in
+// ReadEvidenceLocationAppendTail. Production leaves it a no-op.
+var afterAppendTailRead = func(string) {}
+
+// ReadEvidenceLocationAppendTail reads up to maxBytes ending at the file's
+// size when it was opened. It tolerates appends made during the read: the
+// bytes it returns lie in a prefix that an append does not change. A file
+// that shrank during the read returns ErrEvidenceFileChanged. The read stays
+// on the file that was opened: a rename over its path during the read is seen
+// by the next read, not this one.
+// Use it for a live recorder's own files; use ReadEvidenceLocationFileTail
+// where the whole file must be stable.
+func ReadEvidenceLocationAppendTail(location EvidenceLocation, name string, maxBytes int64) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		return nil, false, errors.New("evidence tail limit must be positive")
+	}
+	file, before, err := openEvidenceLocationFile(location, name)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	readLen := min(before.Size(), maxBytes)
+	start := before.Size() - readLen
+	raw := make([]byte, readLen)
+	if _, err := io.ReadFull(io.NewSectionReader(file, start, readLen), raw); err != nil {
+		return nil, false, err
+	}
+	afterAppendTailRead(name)
+	after, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !os.SameFile(before, after) || after.Size() < before.Size() {
+		return nil, false, ErrEvidenceFileChanged
+	}
+	return raw, start > 0, nil
+}
+
 // ReadEvidenceLocationFileTail reads at most maxBytes from the end of one
 // regular evidence file. The boolean reports that older bytes were omitted.
 func ReadEvidenceLocationFileTail(location EvidenceLocation, name string, maxBytes int64) ([]byte, bool, error) {

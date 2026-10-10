@@ -372,3 +372,33 @@ func TestDoctorInventoryOversizedActiveShardGetsNoGrowthAllowance(t *testing.T) 
 		t.Fatal("growth of an oversized active shard was accepted as stable")
 	}
 }
+
+// A shard truncated after the inventory sized it but before the append proof
+// hashed it must get no growth allowance, so a later shrink is a change.
+func TestDoctorInventoryTruncationBeforeHashGetsNoGrowthAllowance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n{}\n{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 3); err != nil {
+		t.Fatal(err)
+	}
+	sum, n, err := hashEvidencePrefix(path, recorder.MaxEvidenceReadFileBytes+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%q %q", "", "evidence-proxy-0.jsonl")
+	before := doctorInventory{key: {info: info, identity: "x", mode: info.Mode(), size: info.Size(), mtime: 1, session: "proxy", jsonl: true, path: path, prefix: sum, prefixLen: n}}
+	after, err := doctorCorpusInventory([]recorder.EvidenceLocation{{Root: dir, Dir: dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.stableWith(after) {
+		t.Fatal("a shard truncated before its prefix was hashed was accepted as stable")
+	}
+}

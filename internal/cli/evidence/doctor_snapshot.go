@@ -74,7 +74,10 @@ func doctorCorpusInventory(locations []recorder.EvidenceLocation) (doctorInvento
 		// shard over that limit gets no growth allowance: the scan reports
 		// it as oversized, and the audit cannot vouch for bytes it skipped.
 		sum, n, err := hashEvidencePrefix(record.path, recorder.MaxEvidenceReadFileBytes+1)
-		if err != nil || n > recorder.MaxEvidenceReadFileBytes {
+		// The hash must cover exactly the bytes the inventory sized: a shard
+		// truncated between the stat and the hash would otherwise record a
+		// shorter prefix and let a shrink pass as growth.
+		if err != nil || n > recorder.MaxEvidenceReadFileBytes || n != record.size {
 			// No proof of the starting bytes means no growth allowance; the
 			// scan itself reports why the shard could not be read.
 			continue
@@ -149,7 +152,7 @@ func (inv doctorInventory) stableWith(after doctorInventory) bool {
 		if a.identity == b.identity && a.mode == b.mode && a.size == b.size && a.mtime == b.mtime {
 			continue
 		}
-		if growable[key] && b.prefix != nil && os.SameFile(b.info, a.info) && a.mode == b.mode && a.size >= b.prefixLen {
+		if growable[key] && b.prefix != nil && os.SameFile(b.info, a.info) && a.mode == b.mode && a.size >= b.size && b.prefixLen == b.size {
 			// Same file and not shorter is not yet an append: the bytes the
 			// scan read must still be the bytes at the front of the file.
 			sum, n, err := hashEvidencePrefix(b.path, b.prefixLen)

@@ -527,9 +527,17 @@ type durableWrite struct {
 
 func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.prepareDurableWriteLocked(e, scan, advance)
+}
+
+// prepareDurableWriteLocked appends e and reserves its sync. The first
+// reservation of a batch starts that batch's sync at once, so storage confirms
+// and retires the batch whether or not any caller is waiting yet. Callers hold
+// r.mu.
+func (r *Recorder) prepareDurableWriteLocked(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
 	written, err := r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, false, scan, advance)
 	if err != nil {
-		r.mu.Unlock()
 		return durableWrite{}, err
 	}
 
@@ -540,18 +548,14 @@ func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func(
 
 	generation := r.fileGeneration
 	reservation := r.enqueueDurabilityLocked(generation, written.Sequence, r.lastEntryOffsetLocked(written))
-	r.mu.Unlock()
+	if reservation.leader {
+		go r.runDurabilitySync(reservation.batch)
+	}
 	return durableWrite{written: written, generation: generation, reservation: reservation}, nil
 }
 
 func (r *Recorder) confirmDurableWrite(pending durableWrite) error {
-	if pending.reservation.leader {
-		r.runDurabilitySync(pending.reservation.batch)
-	}
-	if err := r.waitDurability(pending.reservation.batch, pending.generation, pending.written.Sequence); err != nil {
-		return err
-	}
-	return nil
+	return r.waitDurability(pending.reservation.batch, pending.generation, pending.written.Sequence)
 }
 
 func (r *Recorder) finishDurableWrite(written Entry) error {
@@ -905,6 +909,17 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 		} else if r.durableBatch == batch {
 			r.durableBatch = nil
 		}
+		// The batch is settled for every entry in it, so its pending count is
+		// retired here rather than as each caller waits: maintenance and
+		// close must not depend on callers having started to wait.
+		pending := r.durablePending
+		if batch.owner != nil && r.activeGroupState != batch.owner {
+			pending = batch.owner.durablePending
+		}
+		pending[batch.generation] -= len(batch.entries)
+		if pending[batch.generation] <= 0 {
+			delete(pending, batch.generation)
+		}
 		close(batch.done)
 		r.durableCond.Broadcast()
 		r.mu.Unlock()
@@ -959,18 +974,6 @@ func (r *Recorder) setDurableFailureLocked(owner *SessionState, err error) {
 
 func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) error {
 	<-batch.done
-
-	r.mu.Lock()
-	pending := r.durablePending
-	if batch.owner != nil {
-		pending = batch.owner.durablePending
-	}
-	pending[generation]--
-	if pending[generation] <= 0 {
-		delete(pending, generation)
-	}
-	r.durableCond.Broadcast()
-	r.mu.Unlock()
 
 	if batch.err != nil {
 		if batch.inherited {

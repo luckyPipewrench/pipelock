@@ -10,9 +10,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-// maxInflightDurableEmits bounds durable receipts appended but not yet
-// confirmed on one chain. A caller over the bound waits before taking the
-// chain lock, so pressure never turns into a confirmation wait under it.
+// maxInflightDurableEmits bounds the durable receipts on one chain that are
+// appended but not yet confirmed. A caller over the bound waits before taking
+// the chain lock, so pressure never turns into a confirmation wait under it.
+// It counts durable emits only: ordinary receipts queued behind them and
+// direct recorder writers are not counted, and it bounds calls, not bytes.
 const maxInflightDurableEmits = 1024
 
 // emitCompletion orders the post-confirmation step (observer callback and the
@@ -21,6 +23,10 @@ const maxInflightDurableEmits = 1024
 type emitCompletion struct {
 	prev *emitCompletion
 	done chan struct{}
+	// err is this receipt's outcome, readable once done is closed. A receipt
+	// whose predecessor failed fails too: it was chained onto a position
+	// that was never confirmed.
+	err error
 }
 
 // nextCompletionLocked reserves the next completion slot. Callers hold chainMu.
@@ -33,17 +39,25 @@ func (e *Emitter) nextCompletionLocked() *emitCompletion {
 // finishCompletion runs after chainMu is released. It waits for every earlier
 // completion, then notifies the observer only on success. It always closes
 // the slot, so a failure never holds back later receipts.
-func (e *Emitter) finishCompletion(c *emitCompletion, rcpt Receipt, err error) {
+func (e *Emitter) finishCompletion(c *emitCompletion, rcpt Receipt, err error) error {
 	if c.prev != nil {
 		<-c.prev.done
+		if prevErr := c.prev.err; prevErr != nil && err == nil {
+			// Inherited, never ErrDurability itself: the storage failure is
+			// counted once, on the receipt whose sync failed.
+			err = fmt.Errorf("%w: an earlier receipt on this chain was not confirmed: %s", recorder.ErrDurabilityInherited, prevErr.Error())
+			e.recordFailure(FailReasonDurabilityInherited)
+		}
 		c.prev = nil
 	}
+	c.err = err
 	defer close(c.done)
 	if err == nil && e.onReceipt != nil {
 		// Observers are contractually non-blocking (EmitterConfig.OnReceipt).
 		rc := rcpt
 		e.onReceipt(&rc)
 	}
+	return err
 }
 
 func (e *Emitter) acquireInflight() func() {
@@ -89,7 +103,5 @@ func (e *Emitter) confirmDeferred(d deferredDurableEmission) error {
 			e.MarkUnhealthy(aelErr)
 		}
 	}
-	err := errors.Join(recordErr, aelErr)
-	e.finishCompletion(d.completion, d.rcpt, err)
-	return err
+	return e.finishCompletion(d.completion, d.rcpt, errors.Join(recordErr, aelErr))
 }

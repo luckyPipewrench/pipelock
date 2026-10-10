@@ -306,3 +306,56 @@ func TestFailedStreamRefusesEveryWriteAndCheckpoint(t *testing.T) {
 		}
 	})
 }
+
+// Waiting for tickets one at a time, in append order, completes even when the
+// first ticket's maintenance runs a checkpoint: storage retires each settled
+// batch itself, so maintenance never waits for a caller that has not started
+// waiting yet.
+func TestSequentialTicketWaitsCrossACheckpoint(t *testing.T) {
+	rec := newDurableTestRecorder(t, Config{CheckpointInterval: 2})
+	defer func() { _ = rec.Close() }()
+	first := appendTestTicket(t, rec, "durable-session", "first")
+	second := appendTestTicket(t, rec, "durable-session", "second")
+	done := make(chan error, 1)
+	go func() {
+		if err := first.Wait(); err != nil {
+			done <- err
+			return
+		}
+		done <- second.Wait()
+	}()
+	if err := waitForDone(t, done, "sequential ticket waits"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Concurrent writers that share no outer lock still get tickets that finish,
+// and notify observers, in the order their entries were appended.
+func TestTicketsFinishInAppendOrderAcrossWriters(t *testing.T) {
+	rec := newDurableTestRecorder(t, Config{CheckpointInterval: 10_000, MaxEntriesPerFile: 10_000})
+	defer func() { _ = rec.Close() }()
+	observer := &durableTestObserver{seen: make(chan Entry, 256)}
+	rec.SetObserver(observer)
+	const writers = 64
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := rec.RecordDurable(Entry{SessionID: "durable-session", Type: "request", Summary: fmt.Sprintf("w%d", i)}); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if len(observer.entries) != writers {
+		t.Fatalf("observed %d entries, want %d", len(observer.entries), writers)
+	}
+	for i, e := range observer.entries {
+		if e.Sequence != uint64(i) {
+			t.Fatalf("observer sequence order broken at %d: got seq %d", i, e.Sequence)
+		}
+	}
+}

@@ -359,3 +359,62 @@ func TestEmitDurableInflightIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// A receipt queued behind a durable receipt whose confirmation fails is not
+// reported as success and is not observed, whether the recorder sync or the
+// paired native AEL sync failed.
+func TestEmitBehindFailedDurableFails(t *testing.T) {
+	for _, failAEL := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ael=%v", failAEL), func(t *testing.T) {
+			var observed atomic.Int32
+			e, rec, _ := newDeferredTestEmitter(t, func(*Receipt) { observed.Add(1) })
+			emitSessionOpenForTest(t, e)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var once, releaseOnce sync.Once
+			releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(releaseFn)
+			hold := func(*os.File) error {
+				once.Do(func() { close(entered) })
+				<-release
+				return errors.New("injected sync failure")
+			}
+			if failAEL {
+				if e.nativeAEL == nil {
+					t.Skip("native AEL not configured")
+				}
+				e.nativeAEL.SetSyncForTest(hold)
+			} else {
+				rec.SetSyncForTest(hold)
+			}
+			durable := make(chan error, 1)
+			go func() { durable <- e.EmitDurable(deferredTestOpts("https://api.vendor.example/durable")) }()
+			waitSignal(t, entered, "durable sync")
+			before := observed.Load()
+			plain := make(chan error, 1)
+			go func() { plain <- e.Emit(deferredTestOpts("https://api.vendor.example/plain")) }()
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				snap, _ := e.HealthSnapshot()
+				if snap.ChainSeq >= 3 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("plain receipt was not appended")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			releaseFn()
+			if err := <-durable; err == nil {
+				t.Fatal("durable receipt succeeded despite the injected sync failure")
+			}
+			err := <-plain
+			if !errors.Is(err, recorder.ErrDurabilityInherited) || errors.Is(err, recorder.ErrDurability) {
+				t.Fatalf("plain receipt behind a failed durable receipt = %v, want ErrDurabilityInherited only", err)
+			}
+			if got := observed.Load(); got != before {
+				t.Fatalf("observer saw %d receipts after the failure, want none", got-before)
+			}
+		})
+	}
+}

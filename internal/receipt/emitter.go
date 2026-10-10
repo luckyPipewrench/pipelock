@@ -1058,8 +1058,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		completion := e.nextCompletionLocked()
 		chainLocked = false
 		e.chainMu.Unlock()
-		e.finishCompletion(completion, rcpt, nil)
-		return nil
+		return e.finishCompletion(completion, rcpt, nil)
 	}
 	if e.onReceipt != nil {
 		rc := rcpt

@@ -195,8 +195,10 @@ Operational notes:
   `durability` reason and the later refusals under `durability_inherited`.
   Graceful shutdown then refuses to sign a final checkpoint over the failed
   chain. Fix the storage problem and restart Pipelock, which opens a new run.
-  With several receipt chains only the affected chain stops, and closing the
-  group reports it incomplete.
+  With several receipt chains the storage failure is local to one chain, but
+  under `require_receipts` Pipelock still stops the whole group, because a
+  required group cannot keep writing to its surviving chains as if complete.
+  Closing the group reports it incomplete.
 - **An allowed request that is later blocked carries two receipts.** The
   pre-egress allow receipt attests the egress *decision*; if response scanning
   then blocks the reply, a block receipt is emitted under the **same

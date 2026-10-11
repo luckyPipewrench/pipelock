@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -809,5 +811,22 @@ func TestHTTPListener_EmptyAcknowledgmentDependsOnTheMessage(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s log=%s", resp.StatusCode, tt.want, body, logBuf.String())
 			}
 		})
+	}
+}
+
+// The transport answers an unrelayable refusal with its own sanitized error.
+// It must read exactly like the bridge's error for any other failed upstream
+// request, or a client sees two wordings for one condition.
+func TestUpstreamRequestFailedMessageParity(t *testing.T) {
+	var reply struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(upstreamErrorResponse(json.RawMessage("1"), fmt.Errorf("upstream HTTP request failed")), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Error.Message != transport.UpstreamRequestFailedMessage {
+		t.Fatalf("bridge message %q differs from transport.UpstreamRequestFailedMessage %q", reply.Error.Message, transport.UpstreamRequestFailedMessage)
 	}
 }

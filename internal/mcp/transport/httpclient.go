@@ -262,14 +262,15 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	// reply, not a transport failure, so it goes back to the caller as the
 	// response and through the same scanning as any other.
 	if resp.StatusCode >= 400 {
-		var reply []byte
 		if IsClientError(resp.StatusCode) {
-			reply = clientErrorReply(resp, msg)
+			if requestID, ok := clientErrorCandidate(resp, msg); ok {
+				// The body is read on the first ReadMessage, not here, so the
+				// caller's per-response timeout bounds a refusal that sends
+				// headers and then stalls, exactly as it bounds a 200 body.
+				return &clientErrorReader{resp: resp, requestID: requestID}, nil
+			}
 		}
 		_ = resp.Body.Close()
-		if reply != nil {
-			return &SingleMessageReader{Body: io.NopCloser(bytes.NewReader(reply))}, nil
-		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
@@ -348,35 +349,72 @@ func httpRPCID(raw json.RawMessage) any {
 	}
 }
 
-// clientErrorReply returns the body of a 4xx reply when it is a JSON-RPC error
-// answering the request in msg, and nil otherwise. The ID must match exactly:
-// a refusal for some other request, or one with a null ID, would leave the
-// client waiting on an answer that never comes, so it falls back to the
-// transport error that names this request.
-func clientErrorReply(resp *http.Response, msg []byte) []byte {
+// clientErrorCandidate reports whether a 4xx reply may carry the JSON-RPC
+// error answering the request in msg: the request has a method and an ID, and
+// the reply declares exactly one application/json type. It returns the
+// request's raw ID. The body is not read here.
+func clientErrorCandidate(resp *http.Response, msg []byte) (json.RawMessage, bool) {
 	var request map[string]json.RawMessage
-	if json.Unmarshal(msg, &request) != nil || request["method"] == nil {
-		return nil
-	}
-	requestID := httpRPCID(request["id"])
-	if requestID == nil {
-		return nil
+	if json.Unmarshal(msg, &request) != nil || request["method"] == nil || httpRPCID(request["id"]) == nil {
+		return nil, false
 	}
 	contentTypes := resp.Header.Values("Content-Type")
 	if len(contentTypes) != 1 {
-		return nil
+		return nil, false
 	}
 	if mediaType, _, err := mime.ParseMediaType(contentTypes[0]); err != nil || mediaType != "application/json" {
-		return nil
+		return nil, false
 	}
-	body, err := ReadClientErrorBody(resp)
-	if err != nil {
-		return nil
+	return request["id"], true
+}
+
+// UpstreamRequestFailedMessage is the error message a caller sees when an
+// upstream refusal cannot be relayed. It matches the message the MCP bridges
+// write for any other failed upstream request, so the two read the same.
+const UpstreamRequestFailedMessage = "pipelock: upstream error: upstream HTTP request failed"
+
+// clientErrorReader yields a 4xx reply as one message. A body that is the
+// JSON-RPC error for this request is returned as-is, for the caller to scan.
+// Anything else becomes a sanitized error carrying the request's ID, so the
+// caller is answered without any upstream bytes. A notification never gets
+// here: it has no ID to answer.
+type clientErrorReader struct {
+	resp      *http.Response
+	requestID json.RawMessage
+	done      bool
+}
+
+func (r *clientErrorReader) ReadMessage() ([]byte, error) {
+	if r.done {
+		return nil, io.EOF
 	}
-	if !IsClientErrorReply(body, request["id"]) {
-		return nil
+	r.done = true
+	body, err := ReadClientErrorBody(r.resp)
+	_ = r.resp.Body.Close()
+	if err == nil && IsClientErrorReply(body, r.requestID) {
+		return body, nil
 	}
-	return body
+	return sanitizedClientErrorReply(r.requestID), nil
+}
+
+// Close releases the body so a caller can abort a read that stalls.
+func (r *clientErrorReader) Close() error {
+	return r.resp.Body.Close()
+}
+
+func sanitizedClientErrorReply(id json.RawMessage) []byte {
+	reply, _ := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{JSONRPC: "2.0", ID: id, Error: struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}{Code: -32003, Message: UpstreamRequestFailedMessage}})
+	return reply
 }
 
 // IsClientErrorReply reports whether body is a JSON-RPC error answering id.

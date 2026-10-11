@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsClientErrorReplyRequiresRequestID(t *testing.T) {
@@ -217,7 +219,12 @@ func TestHTTPClient_SendMessage_ClientErrorReply(t *testing.T) {
 			if c.SessionID() != "" {
 				t.Fatalf("a refusal established session %q", c.SessionID())
 			}
-			if !tt.wantReply {
+			// A JSON-typed refusal to a request is answered: with its own body
+			// when that is the error for this request, otherwise with the
+			// sanitized error carrying the request's ID. Anything else is a
+			// transport error naming only the status.
+			candidate := isRequestWithID(tt.request) && len(tt.contentType) == 1 && jsonMediaType(tt.contentType[0])
+			if !candidate {
 				if err == nil {
 					t.Fatalf("SendMessage returned a reader for HTTP %d; want error", tt.status)
 				}
@@ -233,8 +240,12 @@ func TestHTTPClient_SendMessage_ClientErrorReply(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("ReadMessage: %v", readErr)
 			}
-			if string(msg) != tt.body {
-				t.Fatalf("reply = %q, want %q", msg, tt.body)
+			want := tt.body
+			if !tt.wantReply {
+				want = string(sanitizedClientErrorReply(json.RawMessage(requestIDOf(tt.request))))
+			}
+			if string(msg) != want {
+				t.Fatalf("reply = %q, want %q", msg, want)
 			}
 			if _, readErr := reader.ReadMessage(); !errors.Is(readErr, io.EOF) {
 				t.Fatalf("second ReadMessage err = %v, want EOF", readErr)
@@ -312,4 +323,55 @@ func TestHTTPClient_SendMessage_RequestKeepsLegacyAccepted(t *testing.T) {
 	if msg, readErr := reader.ReadMessage(); !errors.Is(readErr, io.EOF) || msg != nil {
 		t.Fatalf("ReadMessage = (%q, %v), want immediate EOF", msg, readErr)
 	}
+}
+
+func isRequestWithID(msg string) bool {
+	var request map[string]json.RawMessage
+	return json.Unmarshal([]byte(msg), &request) == nil && request["method"] != nil && httpRPCID(request["id"]) != nil
+}
+
+func requestIDOf(msg string) string {
+	var request map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(msg), &request)
+	return string(request["id"])
+}
+
+func jsonMediaType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "application/json"
+}
+
+// A refusal that sends its headers and then stalls must not block SendMessage:
+// the body is read on ReadMessage, where the caller's response timeout applies.
+func TestHTTPClient_SendMessage_StalledRefusalIsBoundedByTheReader(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	sent := make(chan error, 1)
+	var reader MessageReader
+	go func() {
+		var err error
+		reader, err = NewHTTPClient(srv.URL, nil).SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		sent <- err
+	}()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("SendMessage blocked on a stalled refusal body")
+	}
+	_, err := NewTimeoutReader(reader, 50*time.Millisecond).ReadMessage()
+	if !errors.Is(err, ErrResponseTimeout) {
+		t.Fatalf("ReadMessage err = %v, want ErrResponseTimeout", err)
+	}
+	_ = reader.(interface{ Close() error }).Close()
 }

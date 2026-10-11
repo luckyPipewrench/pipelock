@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -38,5 +39,21 @@ func TestEmitChainReportActionTailWarning(t *testing.T) {
 	emitChainReport(&out, &errOut, chainReport{Valid: true, Path: "evidence.jsonl"}, false)
 	if !strings.Contains(out.String(), "CHAIN VALID") || !strings.Contains(out.String(), "WARNING: chain end is unanchored") {
 		t.Fatalf("output: %s", out.String())
+	}
+}
+
+func TestEmitChainReportJSONTailWarning(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	emitChainReport(&out, &errOut, chainReport{Valid: true, Path: "evidence.jsonl"}, true)
+	var report struct {
+		Valid    bool     `json:"valid"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid || len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "chain end is unanchored") {
+		t.Fatalf("missing tail warning: %s", out.String())
 	}
 }

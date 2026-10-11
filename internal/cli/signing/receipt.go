@@ -1546,6 +1546,7 @@ func verifyEvidenceChainResultDetailed(out io.Writer, label string, res contract
 	_, _ = fmt.Fprintf(out, "  Final seq: %d\n", res.FinalSeq)
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", res.RootHash)
 	_, _ = fmt.Fprintf(out, "  Signer:    %s\n", res.SignerKeyID)
+	_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
 	if unpinned {
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
 		if !opts.AllowUnpinned {

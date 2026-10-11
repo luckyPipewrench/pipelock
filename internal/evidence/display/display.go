@@ -55,6 +55,10 @@ type runeSpan struct {
 }
 
 func Sanitize(s string) Result {
+	return sanitize(s, true)
+}
+
+func sanitize(s string, annotate bool) Result {
 	res := Result{Raw: s}
 	spans := runeSpans(s)
 	var safe strings.Builder
@@ -97,10 +101,13 @@ func Sanitize(s string) Result {
 	}
 
 	res.Safe = safe.String()
+	if !annotate {
+		return res
+	}
 	mixed := mixedScriptAnnotations(spans)
 	res.Annotations = append(res.Annotations, mixed...)
 	if skeleton := normalize.ConfusableToASCII(s); skeleton != s {
-		res.Safe += " ‹confusable: " + skeleton + "›"
+		res.Safe += " ‹confusable: " + sanitize(skeleton, false).Safe + "›"
 	}
 	for _, ann := range mixed {
 		res.Safe += " ‹mixed: " + ann.Detail + "›"

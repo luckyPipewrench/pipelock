@@ -402,8 +402,9 @@ func IsUncorrelatedErrorReply(body []byte) bool {
 }
 
 // jsonRPCErrorReplyID returns the raw ID of body when body is exactly a
-// JSON-RPC 2.0 error: no result, method or params, a non-null error member,
-// and no duplicate or case-folded envelope keys a client might read instead.
+// JSON-RPC 2.0 error: no result, method or params, an error object with an
+// integer code and a string message, and no duplicate or case-folded envelope
+// keys a client might read instead.
 func jsonRPCErrorReplyID(body []byte) (json.RawMessage, bool) {
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil ||
@@ -413,10 +414,31 @@ func jsonRPCErrorReplyID(body []byte) (json.RawMessage, bool) {
 	var version string
 	if json.Unmarshal(reply["jsonrpc"], &version) != nil || version != "2.0" ||
 		reply["method"] != nil || reply["result"] != nil || reply["params"] != nil ||
-		len(reply["error"]) == 0 || string(reply["error"]) == "null" {
+		!validJSONRPCErrorObject(reply["error"]) {
 		return nil, false
 	}
 	return reply["id"], true
+}
+
+// validJSONRPCErrorObject reports whether raw is an object whose code is an
+// integer and whose message is a string, the two members the JSON-RPC 2.0
+// specification requires of every error.
+func validJSONRPCErrorObject(raw json.RawMessage) bool {
+	var errObj struct {
+		Code    json.RawMessage `json:"code"`
+		Message *string         `json:"message"`
+	}
+	if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &errObj) != nil ||
+		errObj.Message == nil || len(errObj.Code) == 0 {
+		return false
+	}
+	// Decode the raw token so a quoted code such as "-32001", which
+	// json.Number would accept, is refused.
+	if c := errObj.Code[0]; c != '-' && (c < '0' || c > '9') {
+		return false
+	}
+	_, err := json.Number(errObj.Code).Int64()
+	return err == nil
 }
 
 func httpInitializeRequestID(msg []byte) any {

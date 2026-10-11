@@ -12,7 +12,7 @@ export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
 export const EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST =
   "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
 export const EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST =
-  "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c";
+  "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af";
 type ProfileVersion = "v1" | "v2" | "v3" | "v4";
 
 const MAX_INPUT_BYTES = 2 << 20;
@@ -327,8 +327,7 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
       assertFields(op, kind, ["kind", "alphabet", "occurrence"]);
       const a = opString(op, "alphabet", true)!;
       if (!["hex", "standard", "url"].includes(a)) fail("unknown recovery alphabet");
-      if (opUint(op, "occurrence") > (a === "hex" ? 1 : 3))
-        fail("recovery occurrence out of range");
+      if (opUint(op, "occurrence") > 3) fail("recovery occurrence out of range");
       return;
     }
     case "encoded_token_normalize": {
@@ -917,20 +916,49 @@ function stripLineBreaks(value: string): string {
 }
 
 function decodeRecovery(value: string, alphabet: string, occurrence: number): string {
-  const source = alphabet === "hex" ? stripV2HexPrefixes(value) : value;
-  let token = source.replace(
-    alphabet === "hex"
-      ? /[^0-9a-fA-F]/gu
-      : alphabet === "standard"
-        ? /[^A-Za-z0-9+/=]/gu
-        : /[^A-Za-z0-9_=\-]/gu,
-    "",
-  );
-  if (token.length > 4096) return "";
-  token = token.slice(occurrence);
-  if (alphabet === "hex")
-    return text(Buffer.from(token.slice(0, Math.floor(token.length / 2) * 2), "hex"), "output");
-  token = token.split("=")[0]!;
-  if (token.length % 4 === 1) token = token.slice(0, -1);
-  return text(Buffer.from(token, alphabet === "url" ? "base64url" : "base64"), "output");
+  const filter = (source: string): string =>
+    source.replace(
+      alphabet === "hex"
+        ? /[^0-9a-fA-F]/gu
+        : alphabet === "standard"
+          ? /[^A-Za-z0-9+/=]/gu
+          : /[^A-Za-z0-9_=\-]/gu,
+      "",
+    );
+  const tokens = [filter(alphabet === "hex" ? stripV2HexPrefixes(value) : value)];
+  if (alphabet === "hex") {
+    const preserved = filter(value);
+    if (preserved !== tokens[0]) tokens.push(preserved);
+  }
+  const views: Buffer[] = [];
+  const binaryViews: Buffer[] = [];
+  for (const token of tokens) {
+    if (token.length > 4096 || token.length < (alphabet === "hex" ? 16 : 11)) continue;
+    for (let offset = 0; offset < (alphabet === "hex" ? 2 : 4); offset++) {
+      let aligned = token.slice(offset);
+      let decoded: Buffer;
+      if (alphabet === "hex") {
+        decoded = Buffer.from(aligned.slice(0, Math.floor(aligned.length / 2) * 2), "hex");
+      } else {
+        aligned = aligned.split("=")[0]!;
+        if (aligned.length % 4 === 1) aligned = aligned.slice(0, -1);
+        decoded = Buffer.from(aligned, alphabet === "url" ? "base64url" : "base64");
+      }
+      let run = 0;
+      for (const c of decoded) {
+        run = c >= 0x20 && c <= 0x7e ? run + 1 : 0;
+        if (run >= 8) {
+          try {
+            text(decoded, "output");
+            views.push(decoded);
+          } catch {
+            binaryViews.push(decoded);
+          }
+          break;
+        }
+      }
+    }
+  }
+  const selected = [...views, ...binaryViews][occurrence];
+  return selected === undefined ? "" : text(selected, "output");
 }

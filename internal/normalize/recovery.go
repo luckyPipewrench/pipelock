@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // QueryUnescapePartial keeps malformed escapes verbatim and decodes every
@@ -54,10 +55,14 @@ func hexNibble(c byte) (byte, bool) {
 // surrounding junk as a reason to discard the candidate. The existing token
 // size bound also applies to recovery. Prefix removal precedes hex filtering.
 func RecoveryToken(value, alphabet string) string {
+	return recoveryToken(value, alphabet, true)
+}
+
+func recoveryToken(value, alphabet string, stripPrefixes bool) string {
 	var out strings.Builder
 	out.Grow(min(len(value), maxReassembledTokenLen))
 	for i := 0; i < len(value); i++ {
-		if alphabet == "hex" && i+3 < len(value) && (value[i] == '0' || value[i] == '\\') && (value[i+1] == 'x' || value[i+1] == 'X') {
+		if stripPrefixes && alphabet == "hex" && i+3 < len(value) && (value[i] == '0' || value[i] == '\\') && (value[i+1] == 'x' || value[i+1] == 'X') {
 			_, a := hexNibble(value[i+2])
 			_, b := hexNibble(value[i+3])
 			if a && b {
@@ -80,22 +85,21 @@ func RecoveryToken(value, alphabet string) string {
 	return out.String()
 }
 
-// DecodeRecovery reads a filtered token at one of its byte alignments. Only
-// complete hex pairs or base64 quanta are returned; undecodable tails do not
-// discard bytes that were decoded successfully. Occurrence is an ASCII offset.
+// DecodeRecovery selects the occurrence-th printable scanner recovery view.
+// An absent occurrence returns empty output. Alignment and hex-prefix
+// ambiguity are handled by the same candidate enumeration as production.
 func DecodeRecovery(value, alphabet string, occurrence uint32) (string, error) {
-	limit := uint32(3)
-	if alphabet == "hex" {
-		limit = 1
-	} else if alphabet != "standard" && alphabet != "url" {
+	if alphabet != "hex" && alphabet != "standard" && alphabet != "url" {
 		return "", fmt.Errorf("decode recovery: unknown alphabet %q", alphabet)
 	}
-	if occurrence > limit {
-		return "", fmt.Errorf("decode recovery: offset exceeds %d", limit)
+	if occurrence > 3 {
+		return "", fmt.Errorf("decode recovery: occurrence exceeds 3")
 	}
-	token := RecoveryToken(value, alphabet)
-	decoded, err := decodeRecoveryToken(token, alphabet, occurrence, make([]byte, len(token)))
-	return string(decoded), err
+	views := RecoveryViews(value, alphabet)
+	if int(occurrence) >= len(views) {
+		return "", nil
+	}
+	return views[occurrence], nil
 }
 
 // RecoveryViews filters once and reuses a decode buffer across alignments. Only
@@ -103,35 +107,50 @@ func DecodeRecovery(value, alphabet string, occurrence uint32) (string, error) {
 //
 //pipelock:provenance-transform decode_recovery
 func RecoveryViews(value, alphabet string) []string {
-	token := RecoveryToken(value, alphabet)
+	tokens := [2]string{RecoveryToken(value, alphabet)}
+	if alphabet == "hex" && strings.ContainsAny(value, "xX") {
+		// A zero before x can be notation or a real nibble followed by junk.
+		// Preserve both interpretations rather than choosing destructively.
+		preserved := recoveryToken(value, alphabet, false)
+		if preserved != tokens[0] {
+			tokens[1] = preserved
+		}
+	}
 	minimum, limit := 11, uint32(4)
 	if alphabet == "hex" {
 		minimum, limit = 16, 2
 	}
-	if len(token) < minimum {
-		return nil
-	}
 	var buffer [maxReassembledTokenLen]byte
-	var views []string
-	for offset := range limit {
-		decoded, err := decodeRecoveryToken(token, alphabet, offset, buffer[:])
-		if err != nil {
+	var views, binaryViews []string
+	for _, token := range tokens {
+		if len(token) < minimum {
 			continue
 		}
-		run := 0
-		for _, c := range decoded {
-			if c >= 0x20 && c <= 0x7e {
-				run++
-			} else {
-				run = 0
+		for offset := range limit {
+			decoded, err := decodeRecoveryToken(token, alphabet, offset, buffer[:])
+			if err != nil {
+				continue
 			}
-			if run >= 8 {
-				views = append(views, string(decoded))
-				break
+			run := 0
+			for _, c := range decoded {
+				if c >= 0x20 && c <= 0x7e {
+					run++
+				} else {
+					run = 0
+				}
+				if run >= 8 {
+					if utf8.Valid(decoded) {
+						views = append(views, string(decoded))
+					} else {
+						binaryViews = append(binaryViews, string(decoded))
+					}
+					break
+				}
 			}
 		}
 	}
-	return views
+	// Keep binary views for security scanning, after replayable UTF-8 views.
+	return append(views, binaryViews...)
 }
 
 func decodeRecoveryToken(token, alphabet string, occurrence uint32, buffer []byte) ([]byte, error) {

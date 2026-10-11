@@ -28,7 +28,7 @@ PROFILE_DIGEST_V2 = (
 PROFILE_DIGEST_V3 = (
     "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
 )
-PROFILE_DIGEST_V4 = "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c"
+PROFILE_DIGEST_V4 = "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af"
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
 PROFILE_DIGEST = PROFILE_DIGEST_V1
@@ -531,7 +531,7 @@ class Recipe:
             }:
                 raise ProvenanceError("unknown recovery alphabet")
             offset = op.get("occurrence", 0)
-            if not _uint(offset, 32) or offset > (1 if op["alphabet"] == "hex" else 3):
+            if not _uint(offset, 32) or offset > 3:
                 raise ProvenanceError("recovery occurrence out of range")
         elif kind == "encoded_token_normalize":
             allowed.add("alphabet")
@@ -920,22 +920,43 @@ def _decode_recovery(value: str, alphabet: str, occurrence: int) -> str:
         "standard": r"[^A-Za-z0-9+/=]",
         "url": r"[^A-Za-z0-9_=\-]",
     }[alphabet]
-    token = re.sub(pattern, "", source)
-    if len(token) > 4096:
-        return ""
-    token = token[occurrence:]
+    tokens = [re.sub(pattern, "", source)]
     if alphabet == "hex":
-        decoded = bytes.fromhex(token[: len(token) // 2 * 2])
-    else:
-        token = token.partition("=")[0]
-        if len(token) % 4 == 1:
-            token = token[:-1]
-        decoded = base64.b64decode(
-            token + "=" * (-len(token) % 4),
-            altchars=b"-_" if alphabet == "url" else None,
-            validate=True,
-        )
+        preserved = re.sub(pattern, "", value)
+        if preserved != tokens[0]:
+            tokens.append(preserved)
+    views: list[bytes] = []
+    binary_views: list[bytes] = []
+    for token in tokens:
+        if len(token) > 4096 or len(token) < (16 if alphabet == "hex" else 11):
+            continue
+        for offset in range(2 if alphabet == "hex" else 4):
+            aligned = token[offset:]
+            if alphabet == "hex":
+                decoded = bytes.fromhex(aligned[: len(aligned) // 2 * 2])
+            else:
+                aligned = aligned.partition("=")[0]
+                if len(aligned) % 4 == 1:
+                    aligned = aligned[:-1]
+                decoded = base64.b64decode(
+                    aligned + "=" * (-len(aligned) % 4),
+                    altchars=b"-_" if alphabet == "url" else None,
+                    validate=True,
+                )
+            run = 0
+            for c in decoded:
+                run = run + 1 if 0x20 <= c <= 0x7E else 0
+                if run >= 8:
+                    try:
+                        decoded.decode("utf-8")
+                        views.append(decoded)
+                    except UnicodeDecodeError:
+                        binary_views.append(decoded)
+                    break
+    candidates = views + binary_views
+    if occurrence >= len(candidates):
+        return ""
     try:
-        return decoded.decode("utf-8")
+        return candidates[occurrence].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ProvenanceError("output: invalid UTF-8") from exc

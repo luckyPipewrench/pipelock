@@ -3,7 +3,7 @@
 This additive, fixture-only profile extends the existing typed replay interpreter.
 Selection requires its exact digest:
 
-`sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c`
+`sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af`
 
 The normative document is
 [`evidence-provenance-transform-v4.json`](../../sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v4.json).
@@ -15,11 +15,13 @@ complete escapes in the same input. Its existing 500-round limit remains.
 `ordered_query_concat` and `query_subsequence` use this profile-specific behavior.
 Strict `percent_decode` and URL component selection retain their rejection rules.
 
-The new `decode_recovery` operation filters one selected encoding alphabet and
-reads a bounded byte alignment. It accepts `alphabet` (`hex`, `standard`, or
-`url`) and optional `occurrence` (default zero, at most one for hex or three for
-base64). Its retained token limit is 4096 bytes. The normative document defines
-prefix handling, incomplete tails, and padding. Operation commitment code 31 is
+The new `decode_recovery` operation selects a printable candidate from the same
+bounded alignments evaluated by the scanner. It accepts `alphabet` (`hex`,
+`standard`, or `url`) and optional `occurrence` (default zero, at most three).
+Hex candidates include both prefix notation and an interpretation preserving
+every hex digit. Each retained token is limited to 4096 bytes. The normative
+document defines candidate order, the eight-byte printable-run requirement,
+incomplete tails, and padding. Operation commitment code 31 is
 appended; existing operation codes retain their values.
 
 Every profile still rejects invalid UTF-8 before execution and after each

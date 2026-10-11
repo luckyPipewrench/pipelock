@@ -325,7 +325,7 @@ const (
 	// recomposition of matching_normalize.
 	EvidenceProvenanceProfileV3Digest = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
 	// EvidenceProvenanceProfileV4Digest adds partial query decoding and bounded encoding recovery.
-	EvidenceProvenanceProfileV4Digest       = "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c"
+	EvidenceProvenanceProfileV4Digest       = "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -759,7 +759,7 @@ func (op Operation) validate() error {
 		if op.Alphabet != "hex" && op.Alphabet != "standard" && op.Alphabet != "url" {
 			return fmt.Errorf("unknown recovery alphabet %q", op.Alphabet)
 		}
-		if op.Occurrence > 3 || op.Alphabet == "hex" && op.Occurrence > 1 {
+		if op.Occurrence > 3 {
 			return fmt.Errorf("recovery occurrence out of range")
 		}
 		return op.without(paramAlphabet | paramOccurrence).noParametersForValidation(reject)

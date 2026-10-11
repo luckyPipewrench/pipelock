@@ -1,6 +1,6 @@
 {
   "format": "pipelock-evidence-transform-corpus/v1",
-  "profile_digest": "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c",
+  "profile_digest": "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af",
   "vectors": [
     {
       "id": "partial",
@@ -120,7 +120,7 @@
       "output_b64": ""
     },
     {
-      "id": "hex-offset-0",
+      "id": "hex-alignment-0",
       "input_b64": "Njg2NTZjNmM2ZjIwNzc2ZjcyNmM2NA==",
       "recipe": [
         {
@@ -132,13 +132,13 @@
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "hex-offset-1",
+      "id": "hex-alignment-1",
       "input_b64": "YTY4NjU2YzZjNmYyMDc3NmY3MjZjNjQ=",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "hex",
-          "occurrence": 1
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
@@ -150,7 +150,7 @@
         {
           "kind": "decode_recovery",
           "alphabet": "hex",
-          "occurrence": 2
+          "occurrence": 4
         }
       ],
       "want_error": "occurrence"
@@ -201,7 +201,7 @@
       "output_b64": ""
     },
     {
-      "id": "standard-offset-0",
+      "id": "standard-alignment-0",
       "input_b64": "YUdWc2JHOGdkMjl5YkdR",
       "recipe": [
         {
@@ -213,37 +213,37 @@
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "standard-offset-1",
+      "id": "standard-alignment-1",
       "input_b64": "YWFHVnNiRzhnZDI5eWJHUQ==",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "standard",
-          "occurrence": 1
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "standard-offset-2",
+      "id": "standard-alignment-2",
       "input_b64": "YWFhR1ZzYkc4Z2QyOXliR1E=",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "standard",
-          "occurrence": 2
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "standard-offset-3",
+      "id": "standard-alignment-3",
       "input_b64": "YWFhYUdWc2JHOGdkMjl5YkdR",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "standard",
-          "occurrence": 3
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
@@ -306,7 +306,7 @@
       "output_b64": ""
     },
     {
-      "id": "url-offset-0",
+      "id": "url-alignment-0",
       "input_b64": "YUdWc2JHOGdkMjl5YkdR",
       "recipe": [
         {
@@ -318,37 +318,37 @@
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "url-offset-1",
+      "id": "url-alignment-1",
       "input_b64": "YWFHVnNiRzhnZDI5eWJHUQ==",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "url",
-          "occurrence": 1
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "url-offset-2",
+      "id": "url-alignment-2",
       "input_b64": "YWFhR1ZzYkc4Z2QyOXliR1E=",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "url",
-          "occurrence": 2
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
-      "id": "url-offset-3",
+      "id": "url-alignment-3",
       "input_b64": "YWFhYUdWc2JHOGdkMjl5YkdR",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "url",
-          "occurrence": 3
+          "occurrence": 0
         }
       ],
       "output_b64": "aGVsbG8gd29ybGQ="
@@ -379,51 +379,51 @@
     },
     {
       "id": "hex-prefixes",
-      "input_b64": "MHg2OGdcXHg2NWcwWDZjXFxYNmM2Zg==",
+      "input_b64": "MHg2OGdceDY1ZzBYNmNcWDZjNmYyMDc3NmY3MjZjNjQ=",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "hex"
         }
       ],
-      "output_b64": "aGVsbG8="
+      "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
       "id": "hex-tail",
-      "input_b64": "Njg2OWY=",
+      "input_b64": "Njg2NTZjNmM2ZjIwNzc2ZjcyNmM2NGY=",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "hex"
         }
       ],
-      "output_b64": "aGk="
+      "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
       "id": "base64-tail",
-      "input_b64": "YUdsIXgh",
+      "input_b64": "YUdWc2JHOGdkMjl5YkdRaCF4IQ==",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "standard"
         }
       ],
-      "output_b64": "aGlx"
+      "output_b64": "aGVsbG8gd29ybGQh"
     },
     {
       "id": "base64-invalid-padding",
-      "input_b64": "YUdrPWJhZA==",
+      "input_b64": "YUdWc2JHOGdkMjl5YkdRPWJhZA==",
       "recipe": [
         {
           "kind": "decode_recovery",
           "alphabet": "standard"
         }
       ],
-      "output_b64": "aGk="
+      "output_b64": "aGVsbG8gd29ybGQ="
     },
     {
       "id": "invalid-hex-utf8",
-      "input_b64": "ZmY=",
+      "input_b64": "Njg2NTZjNmM2ZjIwNzc2ZjcyNmM2NGZm",
       "recipe": [
         {
           "kind": "decode_recovery",
@@ -500,6 +500,160 @@
       ],
       "want_error": "unsupported",
       "transform_profile_digest": "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
+    },
+    {
+      "id": "hex-preserved-zero-x",
+      "input_b64": "Njg2NTZjNmM2ZjIweDc3NmY3MjZjNjQ=",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "aGVsbG8gd29ybGQ="
+    },
+    {
+      "id": "hex-preserved-zero-X",
+      "input_b64": "Njg2NTZjNmM2ZjIwWDc3NmY3MjZjNjQ=",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "aGVsbG8gd29ybGQ="
+    },
+    {
+      "id": "hex-preserved-zero-x-leading-junk",
+      "input_b64": "ZzY4NjU2YzZjNmYyMHg3NzZmNzI2YzY0",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "aGVsbG8gd29ybGQ="
+    },
+    {
+      "id": "hex-preserved-zero-X-leading-junk",
+      "input_b64": "ZzY4NjU2YzZjNmYyMFg3NzZmNzI2YzY0",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "aGVsbG8gd29ybGQ="
+    },
+    {
+      "id": "base64-leading-alphabet-junk",
+      "input_b64": "Z2dhR1ZzYkc4Z2QyOXliR1E9",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "standard",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "aGVsbG8gd29ybGQ="
+    },
+    {
+      "id": "hex-candidate-0",
+      "input_b64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": "ZmZmZmZmZmZmZmZm"
+    },
+    {
+      "id": "hex-candidate-1",
+      "input_b64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 1
+        }
+      ],
+      "output_b64": "ZmZmZmZmZmZmZmY="
+    },
+    {
+      "id": "hex-candidate-2",
+      "input_b64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 2
+        }
+      ],
+      "output_b64": ""
+    },
+    {
+      "id": "hex-candidate-3",
+      "input_b64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 3
+        }
+      ],
+      "output_b64": ""
+    },
+    {
+      "id": "hex-printable-short",
+      "input_b64": "Njg2NTZjNmM2Zg==",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "output_b64": ""
+    },
+    {
+      "id": "hex-printable-binary-tail",
+      "input_b64": "Njg2NTZjNmM2ZjIwNzc2ZjcyNmM2NGZm",
+      "recipe": [
+        {
+          "kind": "decode_recovery",
+          "alphabet": "hex",
+          "occurrence": 0
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "v2-malformed-query_unescape",
+      "input_b64": "JTQxJVpa",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "JTQxJVpa",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "v2-malformed-ordered_query_concat",
+      "input_b64": "YT0lNDElWlomYj0lNDI=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "JTQxJVpaQg==",
+      "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
     }
   ]
 }

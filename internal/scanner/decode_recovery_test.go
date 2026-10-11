@@ -20,16 +20,20 @@ func TestDecodeRecoveryCredentialViews(t *testing.T) {
 	h := hex.EncodeToString([]byte(credential))
 	b := base64.StdEncoding.EncodeToString([]byte(credential))
 	forms := map[string]string{
-		"plain control":       credential,
-		"hex control":         h,
-		"base64 control":      b,
-		"partial percent":     "%67" + credential[1:] + "%ZZ",
-		"hex prefix":          "g" + h,
-		"hex suffix":          h + "g",
-		"hex separator":       strings.Join(splitBytePairs(h), "g"),
-		"base64 prefix one":   "g" + b,
-		"base64 prefix two":   "gg" + b,
-		"base64 prefix three": "ggg" + b,
+		"plain control":           credential,
+		"hex control":             h,
+		"hex notation control":    "0x" + strings.Join(splitBytePairs(h), "0x"),
+		"base64 control":          b,
+		"partial percent":         "%67" + credential[1:] + "%ZZ",
+		"hex prefix":              "g" + h,
+		"hex suffix":              h + "g",
+		"hex separator":           strings.Join(splitBytePairs(h), "g"),
+		"hex zero junk":           strings.ReplaceAll(h, "0", "0x"),
+		"hex zero junk prefix":    "g" + strings.ReplaceAll(h, "0", "0x"),
+		"hex uppercase zero junk": strings.ReplaceAll(h, "0", "0X"),
+		"base64 prefix one":       "g" + b,
+		"base64 prefix two":       "gg" + b,
+		"base64 prefix three":     "ggg" + b,
 	}
 	for name, value := range forms {
 		t.Run(name, func(t *testing.T) {

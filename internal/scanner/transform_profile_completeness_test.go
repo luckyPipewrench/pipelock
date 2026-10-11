@@ -251,7 +251,7 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 		operation  normalize.Operation
 		production func(*testing.T) string
 	}{
-		{"query unescape plus and depth", "a+b%2525252521", normalize.Operation{Kind: normalize.OperationQueryUnescape}, func(*testing.T) string { return IterativeDecode("a+b%2525252521") }},
+		{"query unescape plus and depth", "a+b%2525252521%ZZ", normalize.Operation{Kind: normalize.OperationQueryUnescape}, func(*testing.T) string { return IterativeDecode("a+b%2525252521%ZZ") }},
 		{"invisible to space", "alpha\u200bbeta", normalize.Operation{Kind: normalize.OperationInvisibleSpace}, func(*testing.T) string { return normalize.ReplaceInvisibleWithSpace("alpha\u200bbeta") }},
 		{"matching normalize", "Ａ\u200bB\u00a0C", normalize.Operation{Kind: normalize.OperationMatchingNormalize, Profile: "pipelock-matching-v1"}, func(*testing.T) string { return normalize.ForMatching("Ａ\u200bB\u00a0C") }},
 		{"liberal uppercase hex", "4A", normalize.Operation{Kind: normalize.OperationHexDecodeLiberal}, func(t *testing.T) string { return findDecoded(t, "4A", encodingHex, "J") }},
@@ -271,9 +271,9 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 		{"Unicode whitespace", "a\u2003 b\n", normalize.Operation{Kind: normalize.OperationWhitespaceCompact}, func(*testing.T) string { return compactTextDLPWhitespace("a\u2003 b\n") }},
 		{"URL noise", "a./ +,;|\tb", normalize.Operation{Kind: normalize.OperationURLNoiseStrip}, func(*testing.T) string { return stripURLNoise("a./ +,;|\tb") }},
 		{"URL noise, newly-covered separators (CVE-class regression)", "a!b~c#d", normalize.Operation{Kind: normalize.OperationURLNoiseStrip}, func(*testing.T) string { return stripURLNoise("a!b~c#d") }},
-		{"ordered query", "a=x%2521&empty=&b=y+z", normalize.Operation{Kind: normalize.OperationOrderedQueryConcat}, func(*testing.T) string { return orderedQueryConcat("a=x%2521&empty=&b=y+z") }},
-		{"query subsequence", "a=one&b=junk&c=two&d=three", normalize.Operation{Kind: normalize.OperationQuerySubsequence, Indices: []uint8{0, 2, 3}}, func(t *testing.T) string {
-			return productionSubsequence(t, "a=one&b=junk&c=two&d=three", []uint8{0, 2, 3})
+		{"ordered query", "a=x%2521%ZZ&empty=&b=y+z", normalize.Operation{Kind: normalize.OperationOrderedQueryConcat}, func(*testing.T) string { return orderedQueryConcat("a=x%2521%ZZ&empty=&b=y+z") }},
+		{"query subsequence", "a=one%41%ZZ&b=junk&c=two&d=three", normalize.Operation{Kind: normalize.OperationQuerySubsequence, Indices: []uint8{0, 2, 3}}, func(t *testing.T) string {
+			return productionSubsequence(t, "a=one%41%ZZ&b=junk&c=two&d=three", []uint8{0, 2, 3})
 		}},
 		{"dot removal", "api.vendor.example", normalize.Operation{Kind: normalize.OperationHostnameDotRemove}, func(*testing.T) string { return removeHostnameDots("api.vendor.example") }},
 		{"encoded run", "prefix:QUJDRA== suffix", normalize.Operation{Kind: normalize.OperationEncodedRun, Occurrence: 1, MinimumLength: 6}, func(t *testing.T) string {
@@ -288,6 +288,10 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest, Operations: []normalize.Operation{test.operation}}
+			switch test.operation.Kind {
+			case normalize.OperationQueryUnescape, normalize.OperationOrderedQueryConcat, normalize.OperationQuerySubsequence:
+				recipe.TransformProfileDigest = normalize.EvidenceProvenanceProfileV4Digest
+			}
 			got, err := recipe.Apply(test.input)
 			if err != nil {
 				t.Fatal(err)
@@ -297,5 +301,38 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 				t.Fatalf("typed replay bytes = %x, production scanner bytes = %x", []byte(got), []byte(want))
 			}
 		})
+	}
+}
+
+func TestDecodeRecoveryReplaysSelectedScannerView(t *testing.T) {
+	input := "ggZ2hwX0FCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaMDEyMzQ1Njc4OQ=="
+	want := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	found := false
+	for _, view := range decodeEncodingsOnce(input, true) {
+		found = found || view.text == want
+	}
+	if !found {
+		t.Fatal("production recovery did not select the credential view")
+	}
+	recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV4Digest, Operations: []normalize.Operation{{Kind: normalize.OperationDecodeRecovery, Alphabet: "standard"}}}
+	got, err := recipe.Apply(input)
+	if err != nil || got != want {
+		t.Fatalf("replay = %q, %v; want selected scanner view %q", got, err, want)
+	}
+}
+
+func TestDecodeRecoveryV2MalformedQueryRemainsFrozen(t *testing.T) {
+	for _, test := range []struct {
+		kind        normalize.OperationKind
+		input, want string
+	}{
+		{normalize.OperationQueryUnescape, "%41%ZZ", "%41%ZZ"},
+		{normalize.OperationOrderedQueryConcat, "a=%41%ZZ&b=%42", "%41%ZZB"},
+	} {
+		recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV2Digest, Operations: []normalize.Operation{{Kind: test.kind}}}
+		got, err := recipe.Apply(test.input)
+		if err != nil || got != test.want {
+			t.Fatalf("v2 %s = %q, %v; want %q", test.kind, got, err, test.want)
+		}
 	}
 }

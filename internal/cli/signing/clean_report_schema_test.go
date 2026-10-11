@@ -93,10 +93,10 @@ func TestCleanReportSchemaRejectsInvalidTrustFields(t *testing.T) {
 	t.Parallel()
 	const body = `"chain":{"label":"l","receipt_count":1,"final_seq":0,"root_hash":"h","signer_keys":["k"]},"actions":[]}`
 	for name, doc := range map[string]string{
-		"missing schema version":    `{"verification_mode":"pinned_provenance",` + body,
-		"unknown schema version":    `{"schema_version":"pipelock.clean_report.v2","verification_mode":"pinned_provenance",` + body,
-		"missing verification mode": `{"schema_version":"pipelock.clean_report.v1",` + body,
-		"unsupported mode":          `{"schema_version":"pipelock.clean_report.v1","verification_mode":"unknown",` + body,
+		"missing schema version":           `{"verification_mode":"pinned_provenance",` + body,
+		"v2 missing extended trust fields": `{"schema_version":"pipelock.clean_report.v2","verification_mode":"pinned_provenance",` + body,
+		"missing verification mode":        `{"schema_version":"pipelock.clean_report.v1",` + body,
+		"unsupported mode":                 `{"schema_version":"pipelock.clean_report.v1","verification_mode":"unknown",` + body,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := validateCleanReportSchema(t, []byte(doc)); err == nil {
@@ -119,7 +119,7 @@ func TestCleanReportSchemaVersionBoundary(t *testing.T) {
 	report["integrity"] = "valid"
 	report["end_proof"] = map[string]any{"proven": true, "evidence": []string{"operator_head"}}
 	report["scope"] = "receipt_chain"
-	report["status"] = "CHAIN UNPINNED"
+	report["status"] = "CHAIN VALID"
 	encode := func(value map[string]any) []byte {
 		t.Helper()
 		data, err := json.Marshal(value)
@@ -146,9 +146,23 @@ func TestCleanReportSchemaVersionBoundary(t *testing.T) {
 		})
 	}
 	for _, status := range []string{"CHAIN VALID", "CHAIN UNPINNED", "CHAIN BROKEN", "VALID PREFIX, END UNPROVEN"} {
-		report["status"] = status
-		if err := validateCleanReportSchema(t, encode(report)); err != nil {
-			t.Fatalf("status %q: %v", status, err)
+		for _, mode := range []string{"pinned_provenance", "unpinned_structural"} {
+			for _, proven := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/proven=%t", status, mode, proven), func(t *testing.T) {
+					report["status"] = status
+					report["verification_mode"] = mode
+					report["end_proof"].(map[string]any)["proven"] = proven
+					wantValid := status == "CHAIN BROKEN" ||
+						status == "CHAIN VALID" && mode == "pinned_provenance" && proven ||
+						status == "CHAIN UNPINNED" && mode == "unpinned_structural" && proven ||
+						status == "VALID PREFIX, END UNPROVEN" && !proven
+					// Validate the published schema directly, without reader checks.
+					err := validateCleanReportSchemaAt(t, encode(report), "../../../docs/evidence/clean-report-v2.schema.json")
+					if (err == nil) != wantValid {
+						t.Fatalf("schema valid = %t, want %t: %v", err == nil, wantValid, err)
+					}
+				})
+			}
 		}
 	}
 	report["status"] = "UNKNOWN"

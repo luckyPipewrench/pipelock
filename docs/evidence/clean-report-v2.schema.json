@@ -179,5 +179,82 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CHAIN UNPINNED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "end_proof": {
+            "properties": {
+              "proven": {
+                "const": true
+              }
+            }
+          },
+          "verification_mode": {
+            "const": "unpinned_structural"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CHAIN VALID"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "end_proof": {
+            "properties": {
+              "proven": {
+                "const": true
+              }
+            }
+          },
+          "verification_mode": {
+            "const": "pinned_provenance"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "VALID PREFIX, END UNPROVEN"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "end_proof": {
+            "properties": {
+              "proven": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

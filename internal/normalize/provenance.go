@@ -1133,10 +1133,34 @@ func htmlEntityDecodeV5(value string) string {
 		if strings.HasPrefix(part, "&#") {
 			out.WriteString(htmlNumericReferenceV5(part))
 		} else {
-			out.WriteString(html.UnescapeString(part))
+			out.WriteString(htmlNamedReferenceV5(part))
 		}
 		value = value[end:]
 	}
+}
+
+// htmlNamedReferenceV5 uses the pinned WHATWG text-state table. The longest
+// matching name wins; only table entries without a semicolon allow omission.
+func htmlNamedReferenceV5(value string) string {
+	end := 1
+	for end < len(value) && end <= html5MaxNameBytes {
+		ch := value[end]
+		if ch == ';' {
+			end++
+			break
+		}
+		if (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+			break
+		}
+		end++
+	}
+	for end > 1 {
+		if decoded, ok := html5NamedReferences[value[1:end]]; ok {
+			return decoded + value[end:]
+		}
+		end--
+	}
+	return value
 }
 
 // htmlC1ReferenceReplacements is read-only after initialization. Only original

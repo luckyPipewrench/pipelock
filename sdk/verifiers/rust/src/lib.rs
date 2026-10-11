@@ -7,6 +7,7 @@ pub mod canonical;
 pub mod chain;
 pub mod chain_set;
 pub mod cli;
+mod html5_entities_v5;
 mod key_fold_data;
 pub mod lifecycle;
 pub mod line_space;

@@ -12,6 +12,14 @@ func TestHTMLEntityDecodeV5Scalars(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ input, want string }{
 		{"plain", "plain"},
+		{"&nGt;&nLt;&NotEqualTilde;", "\u226b\u20d2\u226a\u20d2\u2242\u0338"},
+		{"&fjlig;&ThickSpace;&caps;&race;&acE;&bne;", "fj\u205f\u200a\u2229\ufe00\u223d\u0331\u223e\u0333=\u20e5"},
+		{"&amp &lt &notit; &notin; &amp=tail", "& < \u00acit; \u2209 &=tail"},
+		{"&amp;&nGt;&amp;NotEqualTilde;", "&\u226b\u20d2\u2242\u0338"},
+		{"&CounterClockwiseContourIntegral;", "\u2233"},
+		{"&frac12;&frac12x", "\u00bd\u00bdx"},
+		{"&" + strings.Repeat("a", 40) + ";", "&" + strings.Repeat("a", 40) + ";"},
+		{"&; &! &é &", "&; &! &é &"},
 		{"&#4294967361;", "\ufffd"},
 		{"&#x100000041;", "\ufffd"},
 		{"&#4294967424;", "\ufffd"},

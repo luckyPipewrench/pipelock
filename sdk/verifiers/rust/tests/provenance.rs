@@ -35,6 +35,47 @@ const CORPORA: [(&str, &str); 5] = [
 ];
 
 #[test]
+fn evidence_provenance_v5_html5_full_table_parity() {
+    let table: Value = serde_json::from_str(
+        &fs::read_to_string("../../conformance/testdata/html5/parity-v5.json")
+            .expect("read HTML5 parity corpus"),
+    )
+    .expect("parse HTML5 parity corpus");
+    let vectors = table["vectors"].as_array().expect("vectors");
+    assert!(!vectors.is_empty());
+    let recipe = Recipe::from_json(
+        PROFILE_DIGEST_V5,
+        &serde_json::json!([{"kind": "html_entity_decode"}]),
+    )
+    .expect("recipe");
+    let mut divergences = Vec::new();
+    for vector in vectors {
+        let input = vector["input"].as_str().expect("input");
+        let want = vector["output"].as_str().expect("output").as_bytes();
+        let got = recipe.apply_bytes(input.as_bytes()).expect("decode");
+        if got != want {
+            divergences.push([
+                input.to_string(),
+                base64::engine::general_purpose::STANDARD.encode(want),
+                base64::engine::general_purpose::STANDARD.encode(&got),
+            ]);
+        }
+    }
+    println!(
+        "HTML5_DIVERGENCES:{}",
+        serde_json::to_string(&divergences).unwrap()
+    );
+    assert_eq!(
+        divergences.len(),
+        0,
+        "{} HTML5 divergences across {} cases",
+        divergences.len(),
+        vectors.len()
+    );
+    println!("PASS: {} HTML5 cases, zero divergences", vectors.len());
+}
+
+#[test]
 fn provenance_cli_requires_explicit_incomplete_opt_in() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../conformance/testdata/provenance/p00-valid.json");

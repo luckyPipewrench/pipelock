@@ -45,6 +45,34 @@ const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
   vectors: Vector[];
 };
 
+test("evidence provenance: v5 HTML5 full-table parity", () => {
+  const table = JSON.parse(
+    readFileSync(resolve(packageRoot, "../../conformance/testdata/html5/parity-v5.json"), "utf8"),
+  ) as {
+    vectors: { input: string; output: string }[];
+  };
+  assert.ok(table.vectors.length > 0);
+  const divergences: string[][] = [];
+  for (const vector of table.vectors) {
+    const got = Buffer.from(
+      applyEvidenceProvenanceRecipe(Buffer.from(vector.input), {
+        transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V5_DIGEST,
+        operations: [{ kind: "html_entity_decode" }],
+      }),
+    );
+    const want = Buffer.from(vector.output);
+    if (!got.equals(want))
+      divergences.push([vector.input, want.toString("base64"), got.toString("base64")]);
+  }
+  console.log("HTML5_DIVERGENCES:" + JSON.stringify(divergences));
+  assert.equal(
+    divergences.length,
+    0,
+    `${divergences.length} HTML5 divergences across ${table.vectors.length} cases`,
+  );
+  console.log(`PASS: ${table.vectors.length} HTML5 cases, zero divergences`);
+});
+
 test("evidence provenance: pinned corpus profile and every operation are exercised", () => {
   assert.equal(corpus.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST);
   const seen = new Set(

@@ -9,7 +9,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYTHON="${PYTHON:-$ROOT/sdk/verifiers/python/.venv/bin/python}"
 cd "$ROOT"
-go test ./sdk/conformance -run 'TestEvidenceProvenance(TransformCorpus|V[45]Corpus)$|TestEvidenceProvenanceTransformCorpusV[23]$' -count=1
+python3 sdk/conformance/generate-html5-entities.py --check
+go test ./sdk/conformance -run 'TestEvidenceProvenance(TransformCorpus|V[45]Corpus|V5HTML5Table)$|TestEvidenceProvenanceTransformCorpusV[23]$' -count=1
 (
   cd sdk/verifiers/ts
   npm run build
@@ -21,6 +22,6 @@ go test ./sdk/conformance -run 'TestEvidenceProvenance(TransformCorpus|V[45]Corp
 )
 (
   cd sdk/verifiers/rust
-  cargo test --locked --offline --test provenance evidence_provenance_shared_corpus
+  cargo test --locked --offline --test provenance evidence_provenance
 )
 printf 'PASS: Go, TypeScript, Python, and Rust replay corpora v1-v5\n'

@@ -1398,25 +1398,54 @@ fn html_decode_v5<B: Budget>(s: &str, budget: &mut B) -> Result<String, String> 
     }
     for _ in 0..16 {
         budget.charge(&value)?;
-        // Decode numeric and named references from the same input in one
-        // pass. Protect ampersands produced by numeric references from a
-        // second decode until the next charged pass.
+        // Every reference sees only the original pass input. Generated
+        // ampersands wait for the next charged pass.
         let mut next = String::new();
         let mut rest = value.as_str();
-        while let Some(start) = rest.find("&#") {
-            next.push_str(&html_escape::decode_html_entities(&rest[..start]));
-            let numeric = &rest[start..];
-            let end = numeric[2..].find('&').map_or(numeric.len(), |p| p + 2);
-            next.push_str(&html_numeric_references(&numeric[..end]));
-            rest = &numeric[end..];
+        while let Some(start) = rest.find('&') {
+            next.push_str(&rest[..start]);
+            rest = &rest[start..];
+            let end = rest[1..].find('&').map_or(rest.len(), |p| p + 1);
+            let part = &rest[..end];
+            if part.starts_with("&#") {
+                next.push_str(&html_numeric_references(part));
+            } else {
+                next.push_str(&html_named_reference_v5(part));
+            }
+            rest = &rest[end..];
         }
-        next.push_str(&html_escape::decode_html_entities(rest));
+        next.push_str(rest);
         if next == value {
             break;
         }
         value = next;
     }
     Ok(value)
+}
+
+// Longest WHATWG text-state match, including the legacy semicolon-less keys.
+// The ASCII bound also ensures every candidate ends on a UTF-8 boundary.
+fn html_named_reference_v5(s: &str) -> String {
+    use crate::html5_entities_v5::{MAX_NAME_BYTES, NAMED};
+    let mut end = 1;
+    while end < s.len() && end <= MAX_NAME_BYTES {
+        let byte = s.as_bytes()[end];
+        if byte == b';' {
+            end += 1;
+            break;
+        }
+        if !byte.is_ascii_alphanumeric() {
+            break;
+        }
+        end += 1;
+    }
+    while end > 1 {
+        if let Ok(index) = NAMED.binary_search_by_key(&&s[1..end], |(name, _)| name) {
+            return format!("{}{}", NAMED[index].1, &s[end..]);
+        }
+        end -= 1;
+    }
+    s.to_string()
 }
 fn strip_chars(s: &str, chars: &str) -> String {
     s.chars().filter(|c| !chars.contains(*c)).collect()

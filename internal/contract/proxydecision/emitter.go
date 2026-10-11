@@ -307,7 +307,12 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		ruleID = receipt.CleanOrRedacted(ruleID, e.sanitize)
 	}
 
+	// Configured callbacks may be stateful, so they run under e.mu; the lock
+	// is released again for the content scan.
+	e.mu.Lock()
 	eventID, err := e.eventID()
+	templateTime := e.clock().UTC()
+	e.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("generate proxy_decision event id: %w", err)
 	}
@@ -325,7 +330,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		Transport:     d.Transport,
 		PolicyHash:    d.PolicyHash,
 		EventID:       eventID,
-		Timestamp:     e.clock().UTC(),
+		Timestamp:     templateTime,
 		Principal:     e.principal,
 		Actor:         e.actor,
 		ChainSeq:      0,

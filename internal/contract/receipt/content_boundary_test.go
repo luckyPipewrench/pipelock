@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -213,5 +214,50 @@ func TestPrescanNeverVouchesForDifferentContent(t *testing.T) {
 	}
 	if pre, err := stamper.Prescan(context.Background(), &plainRecorder{}, clean); err != nil || pre == nil {
 		t.Fatalf("plain recorder prescan = %v, %v", pre, err)
+	}
+}
+
+// countingRecorder counts content scans on a real recorder.
+type countingRecorder struct {
+	*recorder.Recorder
+	scans int
+}
+
+func (c *countingRecorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Producer, detail []byte) (receiptcontent.Report, *recorder.ContentScan, error) {
+	c.scans++
+	return c.Recorder.ScanReceiptContent(ctx, p, detail)
+}
+
+// A prescan is reused when only generated fields changed, and a scan from one
+// recorder is never accepted by another.
+func TestPrescanReuseAndRecorderBinding(t *testing.T) {
+	counting := &countingRecorder{Recorder: v2Recorder(t)}
+	pre, err := prescanTestStamper.Prescan(context.Background(), counting, v2Receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := v2Receipt()
+	final.ChainSeq, final.Timestamp = 9, final.Timestamp.Add(time.Second)
+	if err := prescanTestStamper.RecordPrescanned(context.Background(), counting, recorder.DefaultSessionBase, final, false, pre); err != nil {
+		t.Fatal(err)
+	}
+	if counting.scans != 1 {
+		t.Fatalf("content scanned %d times, want the prescan reused", counting.scans)
+	}
+
+	other := v2Recorder(t)
+	foreign, err := prescanTestStamper.Prescan(context.Background(), counting, v2Receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prescanTestStamper.RecordPrescanned(context.Background(), other, recorder.DefaultSessionBase, v2Receipt(), false, foreign)
+	if err == nil || !strings.Contains(err.Error(), "attestation is invalid") {
+		t.Fatalf("scan from another recorder err = %v, want an attestation refusal", err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(other.Dir(), "evidence-*.jsonl")); len(files) != 0 {
+		t.Fatalf("refused record wrote evidence: %v", files)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,5 +78,47 @@ func TestEmitScansContentOutsideTheEmitterLock(t *testing.T) {
 	}
 	if seq := em.chainSeq; seq != 2 {
 		t.Fatalf("chain advanced to %d, want 2", seq)
+	}
+}
+
+// Configured callbacks are serialized even though the content scan runs
+// outside the lock: a stateful EventID callback never hands out one ID twice.
+func TestEmitSerializesConfiguredCallbacks(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), CheckpointInterval: 1000}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	next := 0
+	em := NewEmitter(EmitterConfig{
+		Recorder: rec, Signer: NewKeyedSigner(priv), Principal: "local", Actor: "pipelock",
+		EventID: func() (string, error) {
+			next++ // deliberately unsynchronized: the emitter must serialize it
+			return fmt.Sprintf("01a1292a-0000-7000-8000-%012d", next), nil
+		},
+	})
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- em.Emit(validDecision())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("emit: %v", err)
+		}
+	}
+	if next != n {
+		t.Fatalf("EventID called %d times, want %d", next, n)
 	}
 }

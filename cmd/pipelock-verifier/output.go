@@ -89,6 +89,9 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 	if r.Valid && !r.EndProof.Proven {
 		r.Warnings = append(r.Warnings, unanchoredChainWarning)
 	}
+	if r.Valid && r.EndProof.Proven && r.Unpinned {
+		r.Status = "CHAIN UNPINNED"
+	}
 	if jsonMode {
 		writeJSON(stdout, r)
 		return

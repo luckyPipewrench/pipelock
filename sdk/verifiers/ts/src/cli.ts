@@ -431,7 +431,13 @@ async function runChainSetCommand(
   const proven = report.valid && report.chains.every((c) => c.end_proof?.proven === true);
   report.end_proof = { proven, evidence: proven ? ["selected_chain_ends"] : [] };
   report.scope = "chain_set";
-  report.status = !report.valid ? "CHAIN BROKEN" : proven ? "CHAIN VALID" : prefixStatus;
+  report.status = !report.valid
+    ? "CHAIN BROKEN"
+    : !proven
+      ? prefixStatus
+      : report.chains.some((c) => c.unpinned)
+        ? "CHAIN UNPINNED"
+        : "CHAIN VALID";
   emitChainSet(report, json);
   if (!report.valid) {
     const reasons: string[] = [];

@@ -364,6 +364,8 @@ def _run_receipt(
             scope="receipt_chain",
             status="CHAIN BROKEN"
             if not report.get("valid")
+            else "CHAIN UNPINNED"
+            if proof and companion_closed and report.get("unpinned")
             else "CHAIN VALID"
             if proof and companion_closed
             else "VALID PREFIX, END UNPROVEN",

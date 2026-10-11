@@ -456,3 +456,48 @@ func TestWholeRecorderEvidenceOnlyPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestChainJSONUsageStatus(t *testing.T) {
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{"unused.jsonl", "--json", "--clean-report", "unused.json"})
+	err := cmd.Execute()
+	if cliutil.ExitCodeOf(err) != 2 {
+		t.Fatalf("error=%v", err)
+	}
+	var report endproof.Report
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "USAGE ERROR" || report.Integrity != "invalid" || report.EndProof.Proven {
+		t.Fatalf("report=%+v", report)
+	}
+}
+
+func TestChainJSONUnpinnedStatus(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "end-proof")
+	cmd := VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetArgs([]string{filepath.Join(root, "closed.jsonl"), "--json", "--allow-unpinned"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		endproof.Report
+		Chains []chainCLIReport
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "CHAIN UNPINNED" || len(report.Chains) != 1 || report.Chains[0].Status != "CHAIN UNPINNED" {
+		t.Fatalf("report=%+v", report)
+	}
+}

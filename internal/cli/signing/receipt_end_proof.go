@@ -25,6 +25,9 @@ func newChainCLIReport(r chainCLIReport, keys []string, scope string, proof []st
 	r.Report = endproof.New(r.Valid, scope, proof...)
 	r.SignaturesVerified = r.Valid && len(keys) > 0
 	r.Unpinned = len(keys) == 0
+	if r.Valid && r.EndProof.Proven && r.Unpinned {
+		r.Status = "CHAIN UNPINNED"
+	}
 	return r
 }
 
@@ -73,12 +76,23 @@ func aggregateChainReports(reports []chainCLIReport, err error, directory, whole
 	if len(reports) == 1 {
 		scope = reports[0].Scope
 	}
+	report := endproof.New(valid, scope, evidence...)
+	if err != nil && cliutil.ExitCodeOf(err) == cliutil.ExitConfig {
+		report.Status = "USAGE ERROR"
+	} else if valid && proven {
+		for _, r := range reports {
+			if r.Unpinned {
+				report.Status = "CHAIN UNPINNED"
+				break
+			}
+		}
+	}
 	return struct {
 		endproof.Report
 		Valid  bool             `json:"valid"`
 		Chains []chainCLIReport `json:"chains"`
 		Error  string           `json:"error,omitempty"`
-	}{endproof.New(valid, scope, evidence...), valid, reports, chainErrorText(err)}
+	}{report, valid, reports, chainErrorText(err)}
 }
 
 func chainErrorText(err error) string {

@@ -52,3 +52,22 @@ for (const cell of fixture.cases) {
     }
   });
 }
+
+test("closed unpinned chain keeps the same JSON and text label", () => {
+  for (const json of [false, true]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        resolve(packageRoot, "dist/src/cli.js"),
+        "chain",
+        resolve(root, "closed.jsonl"),
+        "--allow-unpinned",
+        ...(json ? ["--json"] : []),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    if (json) assert.equal(JSON.parse(result.stdout).status, "CHAIN UNPINNED");
+    else assert.ok(result.stdout.includes("CHAIN UNPINNED"));
+  }
+});

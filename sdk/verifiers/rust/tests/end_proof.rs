@@ -78,3 +78,24 @@ fn prefix_preserves_signer_trust_warning() {
     assert!(output.contains("VALID PREFIX, END UNPROVEN"), "{output}");
     assert!(output.contains("UNPINNED"), "{output}");
 }
+
+#[test]
+fn closed_unpinned_label() {
+    let path = common::repo_root().join("sdk/conformance/testdata/end-proof/closed.jsonl");
+    for json in [false, true] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"));
+        cmd.arg("chain").arg(&path).arg("--allow-unpinned");
+        if json {
+            cmd.arg("--json");
+        }
+        let result = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert_eq!(result.status.code(), Some(0), "{stdout}");
+        if json {
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(report["status"], "CHAIN UNPINNED");
+        } else {
+            assert!(stdout.contains("CHAIN UNPINNED"));
+        }
+    }
+}

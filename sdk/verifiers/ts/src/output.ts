@@ -80,6 +80,7 @@ export function emitReceipt(report: ReceiptReport, json: boolean): void {
 }
 
 export function emitChain(report: ChainCommandReport, json: boolean): void {
+  if (report.valid && report.end_proof?.proven && report.unpinned) report.status = "CHAIN UNPINNED";
   if (json) {
     writeJSON(report);
     return;

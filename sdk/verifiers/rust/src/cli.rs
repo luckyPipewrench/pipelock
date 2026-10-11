@@ -436,6 +436,8 @@ fn run_chain_set_command(
             scope: "chain_set".into(),
             status: if !valid {
                 "CHAIN BROKEN"
+            } else if proven && chains.iter().any(|c| c.report.unpinned == Some(true)) {
+                "CHAIN UNPINNED"
             } else if proven {
                 "CHAIN VALID"
             } else {
@@ -578,10 +580,12 @@ fn with_end_proof(mut report: ChainCommandReport, parsed: &ParsedArgs) -> ChainC
     report.scope = "receipt_chain".into();
     report.status = if !report.valid {
         "CHAIN BROKEN"
-    } else if report.end_proof.proven {
-        "CHAIN VALID"
-    } else {
+    } else if !report.end_proof.proven {
         crate::output::PREFIX_STATUS
+    } else if report.unpinned == Some(true) {
+        "CHAIN UNPINNED"
+    } else {
+        "CHAIN VALID"
     }
     .into();
     report

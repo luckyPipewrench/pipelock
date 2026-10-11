@@ -30,3 +30,15 @@ def test_end_proof(cell, json_mode, capsys):
         assert report["integrity"] == ("invalid" if cell["exit"] == 1 else "valid")
     else:
         assert cell["status"] in out + err
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_closed_unpinned_label(json_mode, capsys):
+    args = ["receipt", str(ROOT / "closed.jsonl"), "--chain", "--allow-unpinned"]
+    if json_mode:
+        args += ["--json"]
+    assert main(args) == 0
+    out, err = capsys.readouterr()
+    if json_mode:
+        assert json.loads(out)["status"] == "CHAIN UNPINNED"
+    else:
+        assert "CHAIN UNPINNED" in out + err

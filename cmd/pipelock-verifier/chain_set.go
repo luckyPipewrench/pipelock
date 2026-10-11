@@ -211,6 +211,14 @@ func runChainSetIfRunsInner(stdout, stderr io.Writer, location recorder.Evidence
 		proof = []string{"selected_chain_ends"}
 	}
 	report.Report = endproof.New(valid, "chain_set", proof...)
+	if valid && allClosed {
+		for _, c := range report.Chains {
+			if c.Unpinned {
+				report.Status = "CHAIN UNPINNED"
+				break
+			}
+		}
+	}
 	emitChainSetReport(stdout, stderr, report, opts.jsonOutput)
 	if !report.Valid {
 		return true, cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New(chainSetFailureReason(report)))

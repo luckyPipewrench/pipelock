@@ -77,3 +77,28 @@ func TestEvidenceOutputWithSequenceEndProof(t *testing.T) {
 		t.Fatalf("sequence proof contradicted: %s %s", stdout.String(), stderr.String())
 	}
 }
+
+func TestChainUnpinnedJSONLabel(t *testing.T) {
+	root := filepath.Join("..", "..", "sdk", "conformance", "testdata", "end-proof")
+	for _, jsonMode := range []bool{false, true} {
+		var out, errOut bytes.Buffer
+		args := []string{"chain", filepath.Join(root, "closed.jsonl"), "--allow-unpinned"}
+		if jsonMode {
+			args = append(args, "--json")
+		}
+		if code := execute(args, &out, &errOut); code != 0 {
+			t.Fatalf("code=%d: %s %s", code, out.String(), errOut.String())
+		}
+		if jsonMode {
+			var r endproof.Report
+			if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+				t.Fatal(err)
+			}
+			if r.Status != "CHAIN UNPINNED" {
+				t.Fatalf("report=%+v", r)
+			}
+		} else if !strings.Contains(out.String(), "CHAIN UNPINNED") {
+			t.Fatal(out.String())
+		}
+	}
+}

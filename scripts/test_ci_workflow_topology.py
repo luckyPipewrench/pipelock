@@ -385,9 +385,19 @@ def unit_lane_errors(jobs: dict) -> list[str]:
         errors.append(f"{UNIT_PRODUCER} runs no go test command")
     if any(re.search(r"(?:^|\s)-race(?:\s|$)", line) for line in go_tests):
         errors.append(f"{UNIT_PRODUCER} runs the race detector; that belongs to the race lane")
-    # Both spellings: -count=1 and -count 1 each disable result caching.
-    if any(re.search(r"(?:^|\s)--?count(?:=|\s|$)", line) for line in go_tests):
+    # Both spellings: -count=1 and -count 1 each disable result caching. Only
+    # the pass over packages whose tests run the go tool may set it.
+    count_re = re.compile(r"(?:^|\s)--?count(?:=|\s|$)")
+    cached = [line for line in go_tests if "$cached_packages" in line]
+    fresh = [line for line in go_tests if "$fresh_packages" in line]
+    if len(cached) != 1 or len(fresh) != 1 or len(go_tests) != 2:
+        errors.append(f"{UNIT_PRODUCER} must run one cached pass and one fresh pass")
+    if any(count_re.search(line) for line in cached) or any(
+        count_re.search(line) for line in go_tests if "$fresh_packages" not in line
+    ):
         errors.append(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache")
+    if fresh and "-count=1" not in fresh[0]:
+        errors.append(f"{UNIT_PRODUCER} must run go-tool packages fresh with -count=1")
     errors.extend(unit_cache_errors(unit))
     return errors
 
@@ -765,8 +775,17 @@ test "${{ needs.test-replay-go127.result }}" = "success"
             with self.subTest(spelling=spelling):
                 broken = copy.deepcopy(self.jobs)
                 run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
-                run["run"] = run["run"].replace("go test ", "go test " + spelling, 1)
+                lines = run["run"].splitlines()
+                at = next(i for i, line in enumerate(lines) if line.strip().startswith("go test ") and "$cached_packages" in line)
+                lines[at] = lines[at].replace("go test ", "go test " + spelling, 1)
+                run["run"] = "\n".join(lines)
                 self.assertIn(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache", unit_lane_errors(broken))
+
+        # The go-tool packages must keep running fresh.
+        broken = copy.deepcopy(self.jobs)
+        run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
+        run["run"] = run["run"].replace(" -count=1 ", " ", 1)
+        self.assertIn(f"{UNIT_PRODUCER} must run go-tool packages fresh with -count=1", unit_lane_errors(broken))
 
         # Every out-of-order arrangement of test, prune and save fails.
         order_error = f"{UNIT_PRODUCER} must run its tests, then prune, then save its Go cache"

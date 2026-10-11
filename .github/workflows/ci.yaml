@@ -433,17 +433,43 @@ jobs:
           # The planner's no-race plan: whole heavy trees or UNIT_SPLITS
           # sub-shards of them, complete and disjoint by construction, and the
           # race lane's rest packing.
+          planner_tags=()
           if [ "$VARIANT" = enterprise ]; then
-            packages="$(python3 scripts/ci_test_packages.py --tags enterprise --unit-shard "$TEST_SHARD")" || exit $?
-          else
-            packages="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD")" || exit $?
+            planner_tags=(--tags enterprise)
           fi
+          # Packages whose tests run the go tool in a subprocess depend on
+          # source Go's result cache cannot see, so they always run fresh;
+          # every other package may report main's cached result.
+          fresh_packages="$(python3 scripts/ci_test_packages.py "${planner_tags[@]}" --unit-shard "$TEST_SHARD" --fresh only)" || exit $?
+          cached_packages="$(python3 scripts/ci_test_packages.py "${planner_tags[@]}" --unit-shard "$TEST_SHARD" --fresh exclude)" || exit $?
           test_selector="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD" --selector)" || exit $?
-          # No -count=1: unchanged packages report their cached result.
-          # shellcheck disable=SC2086 # packages is a space-separated list
-          go test "${tags[@]}" -p=4 -timeout=8m -covermode=set -coverprofile=coverage.out ${test_selector:+"$test_selector"} $packages -json \
-            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test.json
-          test_status=$?
+          test_status=0
+          : > /tmp/go-test.json
+          profiles=()
+          if [ -n "$fresh_packages" ]; then
+            # shellcheck disable=SC2086 # a space-separated package list
+            go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile=coverage-fresh.out ${test_selector:+"$test_selector"} $fresh_packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL fresh" --json-out /tmp/go-test-fresh.json
+            status=$?
+            [ "$status" -eq 0 ] || test_status=$status
+            cat /tmp/go-test-fresh.json >> /tmp/go-test.json
+            profiles+=(coverage-fresh.out)
+          fi
+          if [ -n "$cached_packages" ]; then
+            # shellcheck disable=SC2086 # a space-separated package list
+            go test "${tags[@]}" -p=4 -timeout=8m -covermode=set -coverprofile=coverage-cached.out ${test_selector:+"$test_selector"} $cached_packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-cached.json
+            status=$?
+            [ "$status" -eq 0 ] || test_status=$status
+            cat /tmp/go-test-cached.json >> /tmp/go-test.json
+            profiles+=(coverage-cached.out)
+          fi
+          # One set-mode profile for the upload: one mode line, then every
+          # block from both passes.
+          echo "mode: set" > coverage.out
+          for profile in "${profiles[@]}"; do
+            [ -f "$profile" ] && tail -n +2 "$profile" >> coverage.out
+          done
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test.json
           summary_status=$?
           if [ "$summary_status" -ne 0 ]; then

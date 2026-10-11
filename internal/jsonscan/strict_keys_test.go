@@ -6,6 +6,7 @@ package jsonscan
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -150,6 +151,29 @@ func TestStrictKeyValidationBoundaries(t *testing.T) {
 	}
 	if !HasKeyAlias(map[string]int{"Key": 1}, "key") {
 		t.Fatal("Unicode alias missed")
+	}
+}
+
+func TestValidateKeysDecoderDepthParity(t *testing.T) {
+	for _, depth := range []int{9999, 10000, 10001} {
+		for _, shape := range []struct {
+			name, prefix, value, suffix string
+		}{
+			{"empty arrays", "[", "", "]"},
+			{"scalar arrays", "[", "null", "]"},
+			{"empty objects", `{"a":`, `{}`, "}"},
+		} {
+			t.Run(fmt.Sprintf("%s/%d", shape.name, depth), func(t *testing.T) {
+				body := []byte(strings.Repeat(shape.prefix, depth) + shape.value + strings.Repeat(shape.suffix, depth))
+				var value json.RawMessage
+				valid := json.Unmarshal(body, &value) == nil
+				for _, validate := range []func([]byte, int) error{ValidateKeys, ValidateFoldedKeys} {
+					if err := validate(body, 10000); (err == nil) != valid {
+						t.Fatalf("guard disagrees with decoder (valid=%v): %v", valid, err)
+					}
+				}
+			})
+		}
 	}
 }
 

@@ -75,4 +75,4 @@ func keyBlock(err error) error {
 }
 
 // Keep the MCP/redaction transport's existing encoding/json nesting bound.
-const maxDuplicateKeyScanDepth = 10000
+const maxDuplicateKeyScanDepth = jsonscan.MaxDecoderNestingDepth

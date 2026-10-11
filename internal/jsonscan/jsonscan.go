@@ -36,6 +36,10 @@ var ErrCaseFoldedKey = errors.New("case-folded object key alias")
 // affected; over-deep input is rejected, not crashed.
 const MaxNestingDepth = 128
 
+// MaxDecoderNestingDepth is encoding/json's container-depth ceiling. Older
+// toolchains do not enforce it in Decoder.Token, so the shared walker must.
+const MaxDecoderNestingDepth = 10000
+
 // MaxExactJSONInteger is the largest integer every supported verifier runtime
 // can represent exactly. JavaScript numbers lose integer precision above this
 // boundary, while Go and Rust retain it; accepting larger JSON numbers would
@@ -174,6 +178,11 @@ func check(dec *json.Decoder, tok json.Token, depth, maxDepth int, folded bool) 
 	delim, ok := tok.(json.Delim)
 	if !ok {
 		return nil // scalar value
+	}
+	// depth is zero-based for an opening container. An empty container at the
+	// ceiling still adds one level even though it has no value to recurse into.
+	if depth >= MaxDecoderNestingDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d (depth limit)", MaxDecoderNestingDepth)
 	}
 	switch delim {
 	case '{':

@@ -12,27 +12,8 @@ import (
 // The committed fixture is written by the base revision's Generate and Save.
 // PIPELOCK_JSON_UPGRADE_FIXTURE regenerates it in a base checkout.
 func TestCaseDistinctManifestUpgrade(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"README.md", "readme.md"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	manifest, err := Generate(dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, DefaultManifestFile)
-	if output := os.Getenv("PIPELOCK_JSON_UPGRADE_FIXTURE"); output != "" {
-		if err := manifest.Save(filepath.Clean(output)); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if err := manifest.Save(path); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{path, "testdata/case-distinct-manifest.json"} {
+	check := func(t *testing.T, path string) {
+		t.Helper()
 		loaded, err := Load(path)
 		if err != nil {
 			t.Fatalf("load case-distinct manifest: %v", err)
@@ -41,4 +22,39 @@ func TestCaseDistinctManifestUpgrade(t *testing.T) {
 			t.Fatalf("lost case-distinct paths: %+v", loaded.Files)
 		}
 	}
+	if os.Getenv("PIPELOCK_JSON_UPGRADE_FIXTURE") == "" {
+		t.Run("base-written", func(t *testing.T) {
+			check(t, "testdata/case-distinct-manifest.json")
+		})
+	}
+	t.Run("filesystem-round-trip", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"README.md", "readme.md"} {
+			path := filepath.Join(dir, name)
+			// The fixture load above is portable; generation needs two distinct files.
+			if _, err := os.Stat(path); err == nil {
+				t.Skip("filesystem aliases case-distinct filenames")
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		manifest, err := Generate(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, DefaultManifestFile)
+		if output := os.Getenv("PIPELOCK_JSON_UPGRADE_FIXTURE"); output != "" {
+			if err := manifest.Save(filepath.Clean(output)); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err := manifest.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		check(t, path)
+	})
 }

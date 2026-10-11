@@ -411,11 +411,13 @@ jobs:
         # The pytest suite is not run in CI, so pin the ext link-hash contract
         # here: the Go-generated ext chain must verify with the Go root hash,
         # and the copy whose linked ext bytes were edited must be rejected.
+        # The fixture's session is not a per-run session, so its close cannot
+        # prove the end; --allow-prefix keeps this check on the link bytes.
         run: |
           KEY=$(python -c 'import json; print(json.load(open("../../conformance/testdata/test-key.json"))["public_key_hex"])')
           PYTHONPATH=src python -m pipelock_aarp_verify receipt \
             ../../conformance/testdata/g1-ext-chain.jsonl --chain --key "$KEY" \
-            --json > "$RUNNER_TEMP/python-ext-chain.json"
+            --allow-prefix --json > "$RUNNER_TEMP/python-ext-chain.json"
           if PYTHONPATH=src python -m pipelock_aarp_verify receipt \
             ../../conformance/testdata/g1-ext-tampered-invalid.jsonl --chain --key "$KEY" \
             --json > "$RUNNER_TEMP/python-ext-tampered.json"; then

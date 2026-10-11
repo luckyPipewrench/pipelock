@@ -261,6 +261,7 @@ func TestReceiptFailureClass(t *testing.T) {
 		{"size refusal", size, "entry_too_large"},
 		{"durability", durable, "durability"},
 		{"post-advance", postAdvance, "post_advance"},
+		{"inherited durability", fmt.Errorf("%w: recording receipt: %w", receipt.ErrReceiptPostAdvance, recorder.ErrDurabilityInherited), "durability_inherited"},
 		{"size joined with durability", errors.Join(size, durable), "durability"},
 		{"size joined with post-advance", errors.Join(size, postAdvance), "post_advance"},
 		{"emitter unavailable", errReceiptEmitterUnavailable, "emitter_unavailable"},

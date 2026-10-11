@@ -1872,6 +1872,10 @@ func receiptFailureClass(err error) string {
 		return "none"
 	case errors.Is(err, recorder.ErrDurability):
 		return "durability"
+	case errors.Is(err, recorder.ErrDurabilityInherited):
+		// Checked before post-advance, which the deferred path also wraps:
+		// it matches the durability_inherited block metric reason.
+		return "durability_inherited"
 	case errors.Is(err, receipt.ErrReceiptPostAdvance):
 		return "post_advance"
 	case errors.Is(err, errReceiptEmitterUnavailable):

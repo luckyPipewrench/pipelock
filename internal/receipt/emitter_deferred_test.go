@@ -375,3 +375,32 @@ func TestEmitBehindFailedDurableFails(t *testing.T) {
 		})
 	}
 }
+
+// A failure after a receipt's sync confirmed it, such as checkpoint or
+// rotation maintenance, stays with that receipt. Only an unconfirmed chain
+// position (failed sync, failed AEL pair, or one inherited) fails successors.
+func TestCompletionInheritsOnlyUnconfirmedPositions(t *testing.T) {
+	e, _ := newDeferredTestEmitter(t, nil)
+	run := func(prevErr error, prevUnconfirmed bool) error {
+		prev := &emitCompletion{done: make(chan struct{})}
+		if got := e.finishCompletion(prev, Receipt{}, prevErr, prevUnconfirmed); !errors.Is(got, prevErr) {
+			t.Fatalf("predecessor outcome = %v, want %v", got, prevErr)
+		}
+		next := &emitCompletion{prev: prev, done: make(chan struct{})}
+		return e.finishCompletion(next, Receipt{}, nil, false)
+	}
+	if err := run(errors.New("writing checkpoint: disk full"), false); err != nil {
+		t.Fatalf("successor of a confirmed receipt failed: %v", err)
+	}
+	if err := run(recorder.ErrDurability, true); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("successor of an unconfirmed receipt err = %v, want ErrDurabilityInherited", err)
+	}
+	prev := &emitCompletion{done: make(chan struct{})}
+	_ = e.finishCompletion(prev, Receipt{}, recorder.ErrDurability, true)
+	mid := &emitCompletion{prev: prev, done: make(chan struct{})}
+	_ = e.finishCompletion(mid, Receipt{}, nil, false)
+	last := &emitCompletion{prev: mid, done: make(chan struct{})}
+	if err := e.finishCompletion(last, Receipt{}, nil, false); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("an inherited failure did not propagate down the chain: %v", err)
+	}
+}

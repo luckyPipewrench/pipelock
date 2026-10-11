@@ -394,13 +394,15 @@ func TestReceiptEmissionError_OmitsRawTargetAndAgent(t *testing.T) {
 		Agent:     "private-agent",
 	}, errors.New("disk full"))
 
+	// The error carries fixed labels only: no request text, caller identity,
+	// action ID or raw cause, whatever the caller supplied.
 	msg := err.Error()
-	for _, forbidden := range []string{"https://example.test", "raw-target-marker", "private-agent"} {
+	for _, forbidden := range []string{"https://example.test", "raw-target-marker", "private-agent", "act-123", "disk full", "receipt_emission", "required"} {
 		if strings.Contains(msg, forbidden) {
 			t.Fatalf("receipt emission error leaked %q in %q", forbidden, msg)
 		}
 	}
-	for _, want := range []string{"act-123", string(config.ActionAllow), TransportReverse, http.MethodGet, "disk full"} {
+	for _, want := range []string{"verdict=" + string(config.ActionAllow), "phase=", "layer=other", "failure=other"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("receipt emission error %q missing %q", msg, want)
 		}

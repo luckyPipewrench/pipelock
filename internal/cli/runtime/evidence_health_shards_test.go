@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -797,6 +798,9 @@ func TestEvidenceHealthConcurrentAnchorIsJudgedAgainstCurrentHead(t *testing.T) 
 // the anchor markers is a measurement gap. It must not latch, and health
 // recovers when access returns.
 func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory mode bits do not deny reads on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission denial does not apply to root")
 	}
@@ -820,6 +824,7 @@ func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
 	if err := os.Chmod(index, 0); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = syscall.Chmod(index, 0o750) })
 	rig.h.runPass()
 	if err := syscall.Chmod(index, 0o750); err != nil {
 		t.Fatal(err)

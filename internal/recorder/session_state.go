@@ -326,41 +326,51 @@ func (r *Recorder) FinalizeGroupSessions() error {
 	}
 	r.groupFinalizing = true
 	r.closed = true
+	// Each shard is finalized on its own: a failed shard is closed without a
+	// checkpoint and reported, and every healthy shard still gets its final
+	// checkpoint. Close skips checkpoints once finalizing has begun, so a
+	// shard skipped here would never be sealed.
+	var finalizeErr error
 	for _, session := range r.groupOrder {
 		state := r.groupSessions[session]
 		r.loadSessionStateLocked(state)
-		if r.durableFailure != nil {
-			r.saveSessionStateLocked(state)
-			return fmt.Errorf("finalize group shard %q: %w: %w", session, ErrDurabilityInherited, r.durableFailure)
-		}
-		if r.file != nil {
-			if err := r.fileSync(r.file); err != nil {
-				r.saveSessionStateLocked(state)
-				return fmt.Errorf("finalize group shard %q pre-checkpoint sync: %w", session, err)
-			}
-		}
-		if r.sinceCheckpoint > 0 {
-			r.waitDurableForCurrentFileLocked()
-			if r.sinceCheckpoint > 0 {
-				if err := r.checkpointLocked(); err != nil {
-					r.saveSessionStateLocked(state)
-					return fmt.Errorf("finalize group shard %q checkpoint: %w", session, err)
-				}
-			}
-		}
-		if r.file != nil {
-			if err := r.fileSync(r.file); err != nil {
-				r.saveSessionStateLocked(state)
-				return fmt.Errorf("finalize group shard %q sync: %w", session, err)
-			}
-		}
-		if err := r.closeFile(); err != nil {
-			r.saveSessionStateLocked(state)
-			return fmt.Errorf("finalize group shard %q close: %w", session, err)
+		if err := r.finalizeGroupShardLocked(); err != nil {
+			finalizeErr = errors.Join(finalizeErr, fmt.Errorf("finalize group shard %q: %w", session, err))
 		}
 		r.saveSessionStateLocked(state)
 	}
 	r.loadSessionStateLocked(r.groupSessions[r.groupOrder[0]])
+	return finalizeErr
+}
+
+// finalizeGroupShardLocked seals the loaded shard: sync, final checkpoint,
+// sync, close. A shard whose stream already failed, or that fails here, has
+// its file closed without a checkpoint. Callers hold groupMu and r.mu.
+func (r *Recorder) finalizeGroupShardLocked() error {
+	if r.durableFailure != nil {
+		return errors.Join(fmt.Errorf("%w: %w", ErrDurabilityInherited, r.durableFailure), r.closeFile())
+	}
+	if r.file != nil {
+		if err := r.fileSync(r.file); err != nil {
+			return errors.Join(fmt.Errorf("pre-checkpoint sync: %w", err), r.closeFile())
+		}
+	}
+	if r.sinceCheckpoint > 0 {
+		r.waitDurableForCurrentFileLocked()
+		if r.sinceCheckpoint > 0 {
+			if err := r.checkpointLocked(); err != nil {
+				return errors.Join(fmt.Errorf("checkpoint: %w", err), r.closeFile())
+			}
+		}
+	}
+	if r.file != nil {
+		if err := r.fileSync(r.file); err != nil {
+			return errors.Join(fmt.Errorf("sync: %w", err), r.closeFile())
+		}
+	}
+	if err := r.closeFile(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
 	return nil
 }
 

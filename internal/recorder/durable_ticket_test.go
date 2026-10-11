@@ -246,6 +246,39 @@ func TestGroupShardSyncFailureIsShardLocalAndBlocksFinalize(t *testing.T) {
 	}
 }
 
+// A failed shard ahead of healthy ones must not cost them their seal: with the
+// first shard failed, finalization still checkpoints and closes the second,
+// and reports the failed one.
+func TestGroupFinalizeSealsHealthyShardsAfterAFailedOne(t *testing.T) {
+	r, _, dir := newGroupRecorder(t)
+	sessions := groupSessionIDs(t, 2)
+	if err := r.AcquireGroupSessions(sessions); err != nil {
+		t.Fatal(err)
+	}
+	r.SetSyncForTest(func(f *os.File) error {
+		if strings.Contains(filepath.Base(f.Name()), sessions[0]) {
+			return errors.New("injected shard sync failure")
+		}
+		return f.Sync()
+	})
+	if err := r.RecordDurable(Entry{SessionID: sessions[0], Type: "test", Summary: "shard 0 fails"}); !errors.Is(err, ErrDurability) {
+		t.Fatalf("shard 0 = %v, want ErrDurability", err)
+	}
+	if err := r.RecordDurable(Entry{SessionID: sessions[1], Type: "test", Summary: "shard 1 ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.FinalizeGroupSessions(); !errors.Is(err, ErrDurabilityInherited) || !strings.Contains(err.Error(), sessions[0]) {
+		t.Fatalf("FinalizeGroupSessions = %v, want a refusal naming the failed shard", err)
+	}
+	entries, err := ReadEntries(filepath.Join(dir, fmt.Sprintf("evidence-%s-0.jsonl", sessions[1])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 || entries[len(entries)-1].Type != "checkpoint" {
+		t.Fatalf("healthy shard after a failed one was not sealed: last entry %+v", entries[len(entries)-1:])
+	}
+}
+
 // Single-run recovery refuses a receipt group before touching any of its
 // state: a standalone run would not be a member the group can write.
 func TestRecoverTornRunSessionRefusesGroups(t *testing.T) {
@@ -376,6 +409,8 @@ func TestTicketsFinishInAppendOrderAcrossWriters(t *testing.T) {
 func TestAppendRacingCloseIsRefusedOrDrained(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		rec := newDurableTestRecorder(t, Config{CheckpointInterval: 10_000, MaxEntriesPerFile: 10_000})
+		var accepted atomic.Int64
+		waitErrs := make(chan error, 8*20)
 		var wg sync.WaitGroup
 		for w := 0; w < 8; w++ {
 			wg.Add(1)
@@ -386,11 +421,36 @@ func TestAppendRacingCloseIsRefusedOrDrained(t *testing.T) {
 					if err != nil {
 						return
 					}
-					_ = ticket.Wait()
+					accepted.Add(1)
+					if err := ticket.Wait(); err != nil {
+						waitErrs <- err
+					}
 				}
 			}(w)
 		}
-		_ = rec.Close()
+		if err := rec.Close(); err != nil {
+			t.Fatalf("round %d: Close: %v", i, err)
+		}
 		wg.Wait()
+		close(waitErrs)
+		for err := range waitErrs {
+			t.Fatalf("round %d: an accepted append failed to confirm: %v", i, err)
+		}
+		if accepted.Load() == 0 {
+			// Close won every race: nothing was accepted, so nothing was written.
+			if _, err := os.Stat(filepath.Join(rec.cfg.Dir, "evidence-durable-session-0.jsonl")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("round %d: no append accepted but the evidence file exists or is unreadable: %v", i, err)
+			}
+			continue
+		}
+		requests := 0
+		for _, e := range readEntriesForSession(t, rec.cfg.Dir) {
+			if e.Type == "request" {
+				requests++
+			}
+		}
+		if int64(requests) != accepted.Load() {
+			t.Fatalf("round %d: %d request entries on disk, %d appends accepted", i, requests, accepted.Load())
+		}
 	}
 }

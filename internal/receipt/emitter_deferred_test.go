@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func newDeferredTestEmitter(t *testing.T, onReceipt func(*Receipt)) (*Emitter, *recorder.Recorder) {
@@ -78,17 +79,10 @@ func TestEmitDurableConfirmsOutsideChainLock(t *testing.T) {
 
 	second := make(chan error, 1)
 	go func() { second <- e.EmitDurable(deferredTestOpts("https://api.vendor.example/second")) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.For(t, 10*time.Second, func() bool {
 		snap, _ := e.HealthSnapshot()
-		if snap.ChainSeq == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("second receipt was not appended while the first sync was outstanding; the wait is under the chain lock")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return snap.ChainSeq == 2
+	}, "second receipt was not appended while the first sync was outstanding; the wait is under the chain lock")
 	select {
 	case err := <-first:
 		t.Fatalf("first returned before its sync completed: %v", err)
@@ -124,17 +118,10 @@ func TestEmitDurableObserverOrderAndDurability(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) { errs <- e.EmitDurable(deferredTestOpts(fmt.Sprintf("https://api.vendor.example/%d", i))) }(i)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.For(t, 10*time.Second, func() bool {
 		snap, _ := e.HealthSnapshot()
-		if snap.ChainSeq == n {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("receipts were not appended concurrently")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return snap.ChainSeq == n
+	}, "receipts were not appended concurrently")
 	mu.Lock()
 	early := len(seen)
 	mu.Unlock()
@@ -178,17 +165,10 @@ func TestEmitBehindUnconfirmedDurableKeepsChainOrder(t *testing.T) {
 
 	plain := make(chan error, 1)
 	go func() { plain <- e.Emit(deferredTestOpts("https://api.vendor.example/plain")) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.For(t, 10*time.Second, func() bool {
 		snap, _ := e.HealthSnapshot()
-		if snap.ChainSeq == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("plain receipt was not appended")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return snap.ChainSeq == 2
+	}, "plain receipt was not appended")
 	select {
 	case err := <-plain:
 		t.Fatalf("plain receipt returned ahead of the unconfirmed durable receipt before it: %v", err)
@@ -263,17 +243,10 @@ func TestEmitDurableSyncFailureFailsBatchAndLaterReceipts(t *testing.T) {
 	for i := 1; i < n; i++ {
 		go func(i int) { errs <- e.EmitDurable(deferredTestOpts(fmt.Sprintf("https://api.vendor.example/%d", i))) }(i)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.For(t, 10*time.Second, func() bool {
 		snap, _ := e.HealthSnapshot()
-		if snap.ChainSeq == n {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("followers were not appended behind the syncing leader")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return snap.ChainSeq == n
+	}, "followers were not appended behind the syncing leader")
 	releaseFn()
 	var storage, inherited int
 	for i := 0; i < n; i++ {
@@ -334,23 +307,14 @@ func TestEmitDurableInflightIsBounded(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) { errs <- e.EmitDurable(deferredTestOpts(fmt.Sprintf("https://api.vendor.example/%d", i))) }(i)
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
+	testwait.For(t, 20*time.Second, func() bool {
 		snap, _ := e.HealthSnapshot()
-		if snap.ChainSeq == uint64(maxInflightDurableEmits) {
-			break
-		}
-		if snap.ChainSeq > uint64(maxInflightDurableEmits) {
-			t.Fatalf("appended %d receipts with confirmations blocked, bound is %d", snap.ChainSeq, maxInflightDurableEmits)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("appended %d, want the bound %d", snap.ChainSeq, maxInflightDurableEmits)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(50 * time.Millisecond)
-	if snap, _ := e.HealthSnapshot(); snap.ChainSeq != uint64(maxInflightDurableEmits) {
-		t.Fatalf("appended %d past the in-flight bound %d", snap.ChainSeq, maxInflightDurableEmits)
+		return snap.ChainSeq >= uint64(maxInflightDurableEmits) && len(e.inflight) == cap(e.inflight)
+	}, "receipts did not fill the in-flight bound %d", maxInflightDurableEmits)
+	// Every slot is held by a receipt waiting on the gated sync, so the
+	// remaining emitters are parked on the slot channel and cannot append.
+	if snap, _ := e.HealthSnapshot(); snap.ChainSeq != uint64(maxInflightDurableEmits) || cap(e.inflight) != maxInflightDurableEmits {
+		t.Fatalf("appended %d with confirmations blocked, bound is %d", snap.ChainSeq, maxInflightDurableEmits)
 	}
 	releaseFn()
 	for i := 0; i < n; i++ {
@@ -393,17 +357,10 @@ func TestEmitBehindFailedDurableFails(t *testing.T) {
 			before := observed.Load()
 			plain := make(chan error, 1)
 			go func() { plain <- e.Emit(deferredTestOpts("https://api.vendor.example/plain")) }()
-			deadline := time.Now().Add(10 * time.Second)
-			for {
+			testwait.For(t, 10*time.Second, func() bool {
 				snap, _ := e.HealthSnapshot()
-				if snap.ChainSeq >= 3 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("plain receipt was not appended")
-				}
-				time.Sleep(time.Millisecond)
-			}
+				return snap.ChainSeq >= 3
+			}, "plain receipt was not appended")
 			releaseFn()
 			if err := <-durable; err == nil {
 				t.Fatal("durable receipt succeeded despite the injected sync failure")

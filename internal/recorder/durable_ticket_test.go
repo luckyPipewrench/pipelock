@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const durableTestSession = "durable-session"
@@ -185,19 +187,11 @@ func TestCloseDrainsOutstandingTicket(t *testing.T) {
 
 	closed := make(chan error, 1)
 	go func() { closed <- rec.Close() }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.For(t, 5*time.Second, func() bool {
 		rec.mu.Lock()
-		isClosed := rec.closed
-		rec.mu.Unlock()
-		if isClosed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Close did not refuse new appends while draining")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		defer rec.mu.Unlock()
+		return rec.closed
+	}, "Close did not refuse new appends while draining")
 	if _, err := rec.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: "durable-session", Type: "request", Summary: "late"}, nil, nil); err == nil {
 		t.Fatal("append during close drain succeeded")
 	}

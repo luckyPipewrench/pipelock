@@ -22,7 +22,7 @@ func BenchmarkRequestBodyDLPWithEnvSecret(b *testing.B) {
 func benchmarkRequestBodyDLP(b *testing.B, withEnvSecret bool) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	const secret = "q8Zr2Lm9Xv4Tn7Kp" + "1Wc6Hy3Bd5Fg0JsQ"
+	secret := strings.Join([]string{"example", "benchmark", "secret", "value!!"}, " ")
 	if withEnvSecret {
 		b.Setenv("PIPELOCK_BENCH_SECRET", secret)
 	} else {

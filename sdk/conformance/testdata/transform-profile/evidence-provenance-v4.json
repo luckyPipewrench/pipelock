@@ -170,6 +170,41 @@
         }
       ],
       "output_b64": "w6klWlo="
+    },
+    {
+      "id": "matching-hangul-nfc",
+      "input_b64": "4YSA4YWh",
+      "recipe": [
+        {
+          "kind": "matching_normalize",
+          "profile": "pipelock-matching-v1"
+        }
+      ],
+      "output_b64": "6rCA"
+    },
+    {
+      "id": "ordered_query_concat-nested-utf8-malformed",
+      "input_b64": "YT0lQzMlMjVBOSVaWiZiPSVFMiUyNTgyJTI1QUM=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "w6klWlrigqw="
+    },
+    {
+      "id": "query_subsequence-nested-utf8-malformed",
+      "input_b64": "YT0lQzMlMjVBOSVaWiZiPXNraXAmYz0lRTIlMjU4MiUyNUFD",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            2
+          ]
+        }
+      ],
+      "output_b64": "w6klWlrigqw="
     }
   ]
 }

@@ -102,6 +102,38 @@ func TestQueryDecodeViewsKnownSecrets(t *testing.T) {
 	}
 }
 
+func TestQueryDecodeViewsKnownSecretCasePreservation(t *testing.T) {
+	secret := "Zq7Lm2Xc9Vb4" + "Nn8Kp3Rt6Wy1"
+	sc := knownSecretEncodingScanner(t, []string{secret})
+	changed := strings.ToLower(secret)
+	for name, tc := range map[string]struct {
+		value string
+		clean bool
+	}{
+		"exact plaintext":          {secret, false},
+		"different plaintext":      {changed, true},
+		"uppercase hex spelling":   {strings.ToUpper(hex.EncodeToString([]byte(secret))), false},
+		"exact nested carrier":     {hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte("user:" + secret)))), false},
+		"different nested carrier": {hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte("user:" + changed)))), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if result := sc.ScanTextForDLP(t.Context(), tc.value); result.Clean != tc.clean {
+				t.Errorf("text: clean=%v, want %v", result.Clean, tc.clean)
+			}
+			if result := sc.ScanRequestBodyTextForDLP(t.Context(), `{"note":"`+tc.value+`"}`); result.Clean != tc.clean {
+				t.Errorf("body: clean=%v, want %v", result.Clean, tc.clean)
+			}
+			parsed, err := url.Parse("https://api.vendor.example/?q=" + url.QueryEscape(tc.value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := sc.checkSecretsInURL(sc.fileSecrets, parsed, "test secret"); result.Allowed != tc.clean {
+				t.Errorf("URL secret check: allowed=%v, want %v", result.Allowed, tc.clean)
+			}
+		})
+	}
+}
+
 func TestQueryDecodeViewsParserFloor(t *testing.T) {
 	sc := newEncodedCredentialScanner(t, true)
 	for _, value := range []string{hex.EncodeToString([]byte(githubClassicToken())), base64.RawURLEncoding.EncodeToString([]byte(githubClassicToken()))} {

@@ -392,14 +392,11 @@ export function applyEvidenceProvenanceRecipe(
   return encoder.encode(value);
 }
 
-function percentDecode(value: string, partial = false): string {
+function percentDecode(value: string): string {
   const bytes: number[] = [];
   const chars = [...value];
   for (let i = 0; i < chars.length; i++) {
-    if (
-      chars[i] === "%" &&
-      (!partial || /^[0-9a-f]{2}$/iu.test(chars.slice(i + 1, i + 3).join("")))
-    ) {
+    if (chars[i] === "%") {
       const h = chars.slice(i + 1, i + 3).join("");
       if (!/^[0-9a-f]{2}$/iu.test(h)) fail("percent decode: malformed escape");
       bytes.push(Number.parseInt(h, 16));

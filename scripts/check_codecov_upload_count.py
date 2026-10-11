@@ -80,11 +80,27 @@ def mapping(value: object, label: str) -> dict:
     return value
 
 
+# The one dynamic condition the count understands. A documentation-only pull
+# request skips every coverage producer, so it uploads nothing and Codecov posts
+# nothing; every other run uploads the full count. The exact text is pinned so a
+# broader condition cannot silently shrink the count on ordinary runs.
+DOCS_ONLY_SKIP = (
+    "${{ !cancelled() && needs.security-scan.result == 'success' "
+    "&& needs.changed-files.outputs.docs_only != 'true' }}"
+)
+
+
+def is_docs_only_skip(value: object) -> bool:
+    return isinstance(value, str) and " ".join(value.split()) == DOCS_ONLY_SKIP
+
+
 def enabled(value: object, label: str) -> bool:
     if value is None or value is True:
         return True
     if value is False:
         return False
+    if is_docs_only_skip(value):
+        return True
     raise TopologyError(f"{label} has unsupported condition {value!r}")
 
 
@@ -214,6 +230,10 @@ def upload_count(workflow: dict) -> int:
             dependencies = [dependencies]
         if not isinstance(dependencies, list) or any(not isinstance(dep, str) for dep in dependencies):
             raise TopologyError(f"job {name}.needs must name jobs")
+        if is_docs_only_skip(job.get("if")):
+            # !cancelled() runs past a skipped classifier (it skips on pushes),
+            # so only the dependencies the condition does not test still gate.
+            dependencies = [dep for dep in dependencies if dep != "changed-files"]
         visiting.add(name)
         ready = all([can_run(dep) for dep in dependencies])
         visiting.remove(name)

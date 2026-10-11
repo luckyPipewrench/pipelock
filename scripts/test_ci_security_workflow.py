@@ -16,6 +16,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
+# Every producer result the required build gate must see succeed.
+BUILD_GATE_RESULTS = (
+    "SECURITY_SCAN_RESULT",
+    "TEST_GO126_RESULT",
+    "TEST_GO127_RESULT",
+    "LINT_RESULT",
+    "LINT_POLICY_RESULT",
+    "LINT_ENTERPRISE_RESULT",
+    "CONFIG_EXAMPLES_RESULT",
+    "CROSS_TARGET_RESULT",
+    "HELM_RESULT",
+    "BUILD_BINARIES_RESULT",
+    "REVIEW_TESTS_RESULT",
+    "REVIEW_SOURCE_RESULT",
+)
+# The subset a documentation-only pull request skips on purpose.
+DOCS_SKIPPABLE_RESULTS = (
+    "LINT_RESULT",
+    "LINT_ENTERPRISE_RESULT",
+    "CROSS_TARGET_RESULT",
+    "HELM_RESULT",
+    "REVIEW_TESTS_RESULT",
+    "BUILD_BINARIES_RESULT",
+)
 
 
 def job_block(workflow: str, name: str) -> str:
@@ -142,8 +166,9 @@ exit "$DEFAULT_STATUS"
     def test_build_compiles_in_parallel_without_weakening_required_gate(self) -> None:
         producer_needs = re.search(r"(?m)^\s+needs:\s*\[([^]]+)\]$", self.build_binaries)
         self.assertIsNotNone(producer_needs, "build-binaries needs list not found")
+        # changed-files only lets a documentation-only pull request skip it.
         self.assertEqual(
-            {"security-scan"},
+            {"security-scan", "changed-files"},
             {dependency.strip() for dependency in producer_needs.group(1).split(",")},
         )
 
@@ -156,7 +181,9 @@ exit "$DEFAULT_STATUS"
                 "test-go126",
                 "test-go127",
                 "lint",
+                "lint-enterprise",
                 "lint-policy",
+                "config-examples",
                 "test-cross-target",
                 "helm",
                 "build-binaries",
@@ -166,37 +193,20 @@ exit "$DEFAULT_STATUS"
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )
         self.assertIn("if: ${{ always() }}", self.build)
-        for result in (
-            "SECURITY_SCAN_RESULT",
-            "TEST_GO126_RESULT",
-            "TEST_GO127_RESULT",
-            "LINT_RESULT",
-            "LINT_POLICY_RESULT",
-            "CROSS_TARGET_RESULT",
-            "HELM_RESULT",
-            "BUILD_BINARIES_RESULT",
-            "REVIEW_TESTS_RESULT",
-            "REVIEW_SOURCE_RESULT",
-        ):
+        for result in BUILD_GATE_RESULTS:
             self.assertIn(f'"${result}"', self.build)
 
     def test_required_build_gate_fails_closed_for_every_incomplete_result(self) -> None:
         script = step_script(self.build, "Report required build evidence")
-        result_names = (
-            "SECURITY_SCAN_RESULT",
-            "TEST_GO126_RESULT",
-            "TEST_GO127_RESULT",
-            "LINT_RESULT",
-            "LINT_POLICY_RESULT",
-            "CROSS_TARGET_RESULT",
-            "HELM_RESULT",
-            "BUILD_BINARIES_RESULT",
-            "REVIEW_TESTS_RESULT",
-            "REVIEW_SOURCE_RESULT",
-        )
+        result_names = BUILD_GATE_RESULTS
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in result_names})
-        base_env.update({"CHANGED_FILES_RESULT": "success", "EVENT_NAME": "pull_request", "REPOSITORY": "luckyPipewrench/pipelock"})
+        base_env.update({
+            "CHANGED_FILES_RESULT": "success",
+            "DOCS_ONLY": "false",
+            "EVENT_NAME": "pull_request",
+            "REPOSITORY": "luckyPipewrench/pipelock",
+        })
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             check=False,
@@ -239,17 +249,16 @@ exit "$DEFAULT_STATUS"
         # must refuse that unless the classifier itself succeeded.
         script = step_script(self.build, "Report required build evidence")
         base_env = os.environ.copy()
-        base_env.update({
-            name: "success"
-            for name in (
-                "SECURITY_SCAN_RESULT", "TEST_GO126_RESULT", "TEST_GO127_RESULT", "LINT_RESULT", "LINT_POLICY_RESULT",
-                "CROSS_TARGET_RESULT", "HELM_RESULT", "BUILD_BINARIES_RESULT", "REVIEW_TESTS_RESULT", "REVIEW_SOURCE_RESULT",
-            )
-        })
+        base_env.update({name: "success" for name in BUILD_GATE_RESULTS})
 
         def run(event: str, classifier: str) -> int:
             env = base_env.copy()
-            env.update({"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "REPOSITORY": "luckyPipewrench/pipelock"})
+            env.update({
+                "EVENT_NAME": event,
+                "CHANGED_FILES_RESULT": classifier,
+                "DOCS_ONLY": "false",
+                "REPOSITORY": "luckyPipewrench/pipelock",
+            })
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
@@ -260,6 +269,37 @@ exit "$DEFAULT_STATUS"
                 self.assertNotEqual(0, run("pull_request", classifier))
         # changed-files runs only on pull requests, so a push to main skips it.
         self.assertEqual(0, run("push", "skipped"))
+
+    def test_documentation_only_skips_need_classifier_proof(self) -> None:
+        script = step_script(self.build, "Report required build evidence")
+        base_env = os.environ.copy()
+        base_env.update({name: "success" for name in BUILD_GATE_RESULTS})
+        base_env.update({"REPOSITORY": "luckyPipewrench/pipelock"})
+
+        def run(event: str, classifier: str, docs: str, **results: str) -> int:
+            env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": docs} | results
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
+            ).returncode
+
+        skipped = dict.fromkeys(DOCS_SKIPPABLE_RESULTS, "skipped")
+        self.assertEqual(0, run("pull_request", "success", "true", **skipped))
+        for docs in ("false", "", "TRUE"):
+            with self.subTest(docs=docs):
+                self.assertNotEqual(0, run("pull_request", "success", docs, **skipped))
+        for classifier in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(classifier=classifier):
+                self.assertNotEqual(0, run("pull_request", classifier, "true", **skipped))
+        # A push never has a documentation-only proof.
+        self.assertNotEqual(0, run("push", "skipped", "true", **skipped))
+        # The skip covers only "skipped": a docs-only change cannot hide a failure.
+        for name in DOCS_SKIPPABLE_RESULTS:
+            with self.subTest(failed=name):
+                self.assertNotEqual(0, run("pull_request", "success", "true", **(skipped | {name: "failure"})))
+        # Producers a documentation-only change still needs can never skip.
+        for name in sorted(set(BUILD_GATE_RESULTS) - set(DOCS_SKIPPABLE_RESULTS) - {"REVIEW_SOURCE_RESULT"}):
+            with self.subTest(always_required=name):
+                self.assertNotEqual(0, run("pull_request", "success", "true", **(skipped | {name: "skipped"})))
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)

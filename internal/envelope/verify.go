@@ -37,13 +37,9 @@ type VerifierConfig struct {
 	// every verified envelope actor to be a valid SPIFFE ID; "legacy"
 	// keeps the permissive migration path.
 	ActorFormat string
-	// MaxSignatureLifetime caps the (expires - created) duration the
-	// verifier accepts. Without a cap, a trusted-but-careless signer that
-	// emits long-lived signatures defeats the replay window: the cache
-	// evicts the nonce after `window` elapses, while the signature itself
-	// stays valid much longer. Operators set this to ReplayCache.window +
-	// Skew so the cache always outlives the signature. Zero disables the
-	// cap (compat mode for the v2.4 migration default).
+	// MaxSignatureLifetime caps the declared (expires - created) duration.
+	// Replay state is retained through expires + skew independently of this
+	// cap. Zero disables the lifetime cap for compatibility.
 	MaxSignatureLifetime time.Duration
 	NowFn                func() time.Time
 }
@@ -181,6 +177,20 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	}, nil
 }
 
+// PreserveReplayState carries accepted nonces across verifier replacement.
+// Call only before publishing the new verifier. Limits remain those of the new
+// verifier; if the retained set exceeds a reduced capacity, admission stays
+// closed until enough signatures expire. In-flight uses of the old verifier
+// share the same nonce state, so publication cannot lose a concurrent insert.
+func (v *Verifier) PreserveReplayState(previous *Verifier) {
+	if v != nil && previous != nil && v.replayCache != nil && previous.replayCache != nil {
+		v.replayCache.replayState = previous.replayCache.replayState
+		v.replayCache.mu.Lock()
+		v.replayCache.maxSkew = max(v.replayCache.maxSkew, previous.skew, v.skew)
+		v.replayCache.mu.Unlock()
+	}
+}
+
 // VerifyRequest verifies the inbound Pipelock-Mediation header and matching
 // RFC 9421 signature. If body is non-nil and content-digest is covered, the
 // digest is checked against body before signature verification succeeds.
@@ -309,10 +319,7 @@ func (v *Verifier) validateTime(created, expires int64) error {
 		return verificationError(VerificationFailureExpired, "signature expires before created")
 	}
 	if v.maxSignatureLifetime > 0 {
-		// Cap declared signature lifetime so the replay cache (which
-		// evicts at now+window) always outlives the signature. Without
-		// this, an attacker can capture a long-lived signature and
-		// replay it after the nonce has been forgotten.
+		// Bound how long a signer can reserve replay-cache capacity.
 		if expiresAt.Sub(createdAt) > v.maxSignatureLifetime {
 			return verificationError(VerificationFailureExpired, "signature lifetime exceeds maximum")
 		}

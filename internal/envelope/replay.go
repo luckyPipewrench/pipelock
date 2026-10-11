@@ -17,11 +17,17 @@ var ErrReplayCacheCapacity = errors.New("signature replay cache capacity exhaust
 // ReplayCache is a bounded, nonce-keyed in-process cache for inbound envelope
 // verification. It is safe for concurrent use.
 type ReplayCache struct {
-	mu      sync.Mutex
-	entries map[string]time.Time
-	window  time.Duration
-	max     int
-	nowFn   func() time.Time
+	*replayState
+	window time.Duration
+	max    int
+	nowFn  func() time.Time
+}
+
+type replayState struct {
+	mu           sync.Mutex
+	entries      map[string]time.Time // signed expiration, before skew
+	maxSkew      time.Duration
+	prunedExpiry time.Time
 }
 
 func NewReplayCache(window time.Duration, maxEntries int) *ReplayCache {
@@ -39,10 +45,10 @@ func newReplayCache(window time.Duration, maxEntries int, nowFn func() time.Time
 		nowFn = time.Now
 	}
 	return &ReplayCache{
-		entries: make(map[string]time.Time),
-		window:  window,
-		max:     maxEntries,
-		nowFn:   nowFn,
+		replayState: &replayState{entries: make(map[string]time.Time)},
+		window:      window,
+		max:         maxEntries,
+		nowFn:       nowFn,
 	}
 }
 
@@ -68,19 +74,26 @@ func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, ske
 	if !expires.After(now.Add(-skew)) {
 		return fmt.Errorf("signature expired")
 	}
-	storedUntil := expires.Add(skew)
-	maxStoredUntil := now.Add(c.window).Add(skew)
-	if storedUntil.After(maxStoredUntil) {
-		storedUntil = maxStoredUntil
-	}
-
+	// Retain through the full accepted validity interval, including signer
+	// clock lead. Capacity exhaustion rejects new nonces instead of shortening
+	// protection for signatures that can still verify.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.maxSkew = max(c.maxSkew, skew)
 
 	for n, exp := range c.entries {
-		if !exp.After(now) {
+		if !exp.Add(c.maxSkew).After(now) {
 			delete(c.entries, n)
+			if exp.After(c.prunedExpiry) {
+				c.prunedExpiry = exp
+			}
 		}
+	}
+	// A relaxed skew or a clock rollback must not revive signatures whose
+	// nonce may already have been forgotten. Retain one conservative boundary
+	// instead of an unbounded set of expired nonces.
+	if !expires.After(c.prunedExpiry) {
+		return fmt.Errorf("signature replay state unavailable; a fresh signature is required")
 	}
 	if _, ok := c.entries[nonce]; ok {
 		return fmt.Errorf("signature replay detected")
@@ -89,6 +102,6 @@ func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, ske
 		return ErrReplayCacheCapacity
 	}
 
-	c.entries[nonce] = storedUntil
+	c.entries[nonce] = expires
 	return nil
 }

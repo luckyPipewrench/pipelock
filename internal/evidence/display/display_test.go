@@ -113,13 +113,15 @@ func TestHexdumpEmptyAndWrapped(t *testing.T) {
 	}
 }
 
-func TestSanitizePreservesPlainWhitespace(t *testing.T) {
-	got := Sanitize("a\tb\nc\rd")
-	if got.Suspicious {
-		t.Fatalf("tab/newline/cr marked suspicious: %+v", got)
-	}
-	if got.Safe != "a\tb\nc\rd" {
-		t.Fatalf("Safe = %q, want original whitespace preserved", got.Safe)
+func TestSanitizeMakesLayoutControlsVisible(t *testing.T) {
+	for _, value := range []string{"a\tb", "a\nb", "a\rb", "a\u2028b", "a\u2029b"} {
+		got := Sanitize(value)
+		if !got.Suspicious || strings.ContainsAny(got.Safe, "\t\n\r\u2028\u2029") {
+			t.Errorf("layout control not made visible: %+v", got)
+		}
+		if got.Raw != value {
+			t.Fatal("raw evidence changed")
+		}
 	}
 }
 
@@ -198,4 +200,15 @@ func hasClass(anns []Annotation, class Class) bool {
 		}
 	}
 	return false
+}
+
+func TestConfusableSuffixKeepsUnsafeRunesVisible(t *testing.T) {
+	t.Parallel()
+	for _, control := range []string{"\n", "\r", "\t", "\u2028", "\u2029", "\u202e", "\u200b", "\u0301", "\xff"} {
+		input := control + "\u0430"
+		got := Sanitize(input)
+		if strings.Contains(got.Safe, control) || !strings.Contains(got.Safe, "‹confusable:") || got.Raw != input {
+			t.Errorf("unsafe or missing confusable display: %+v", got)
+		}
+	}
 }

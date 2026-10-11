@@ -973,3 +973,45 @@ func copyFileForTest(src, dst string) error {
 // would otherwise prune the envelope.NewEmitter reference that only
 // shows up inside reload lane wiring).
 var _ = envelope.HeaderName
+
+func TestProxyReloadRetainsInboundReplayState(t *testing.T) {
+	t.Parallel()
+	p := envelopeReloadProxy(t)
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := p.CurrentConfig().Clone()
+	cfg.MediationEnvelope.VerifyInbound.Enabled = true
+	cfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{KeyID: testInboundKeyID, PublicKey: hex.EncodeToString(pub)}}
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.Window = "5m"
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 32
+	if !p.Reload(cfg, scanner.MustNew(cfg)) {
+		t.Fatal("enable failed")
+	}
+	req := signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy")
+	if _, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody)); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []string{"unrelated", "capacity", "disable-reenable"} {
+		next := p.CurrentConfig().Clone()
+		if change == "capacity" {
+			next.Mode = config.ModeStrict
+			next.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 16
+		}
+		if change == "disable-reenable" {
+			disabled := next.Clone()
+			disabled.MediationEnvelope.VerifyInbound.Enabled = false
+			if !p.Reload(disabled, scanner.MustNew(disabled)) || p.envelopeVerifierPtr.Load() != nil {
+				t.Fatal("disable failed")
+			}
+		}
+		if !p.Reload(next, scanner.MustNew(next)) {
+			t.Fatal("reload failed")
+		}
+		_, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody))
+		if code, ok := envelope.VerificationFailureCodeOf(err); !ok || code != envelope.VerificationFailureReplay {
+			t.Fatalf("want replay failure after reload, got %v", err)
+		}
+	}
+}

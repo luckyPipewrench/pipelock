@@ -164,6 +164,28 @@ func (f *evidenceFixture) writeEvidenceJSONL(t *testing.T, path string) {
 	}
 }
 
+func (f *evidenceFixture) writeRecorderEvidenceJSONL(t *testing.T, path string) {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := recorder.GenesisHash
+	for i, r := range f.receipts {
+		entry := recorder.Entry{
+			Version: recorder.CurrentWriteEntryVersion, Sequence: uint64(i),
+			Timestamp: time.Date(2026, 5, 10, 14, 0, i, 0, time.UTC),
+			SessionID: "proxy", Type: "evidence_receipt", Transport: tHTTPS,
+			Summary: verdictAllowed, Detail: r, PrevHash: prev,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		if err := json.NewEncoder(&buf).Encode(entry); err != nil {
+			t.Fatal(err)
+		}
+		prev = entry.Hash
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newFixture(t *testing.T, n int) *fixture {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -2358,7 +2380,7 @@ func TestChain_EvidenceAliasDirMode(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 2)
 	dir := t.TempDir()
-	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
 
 	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
 	if code != cliutil.ExitOK {
@@ -2704,7 +2726,7 @@ func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 3)
 	dir := t.TempDir()
-	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
 
 	stdout, stderr, code := runRoot(t,
 		"chain", "--dir",
@@ -2720,6 +2742,78 @@ func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
 	}
 }
 
+func TestChain_DirRejectsDisconnectedNonReceiptShard(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	_, stderr, code := runRoot(t, "chain", "--dir", "--key", fix.keyHex, dir)
+	if code != cliutil.ExitOK {
+		t.Fatalf("positive control: %s", stderr)
+	}
+	entry := recorder.Entry{
+		Version: recorder.CurrentWriteEntryVersion, Sequence: 99,
+		Timestamp: time.Now().UTC(), SessionID: "proxy", Type: "decision",
+		PrevHash: recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-9999.jsonl"), append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runRoot(t, "chain", "--dir", "--key", fix.keyHex, dir)
+	if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") || !strings.Contains(stderr, "chain break: PrevHash") {
+		t.Fatalf("disconnected shard: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestChain_BareEvidenceDirectoryCompatibility(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+	if code != cliutil.ExitOK || !strings.Contains(stdout, "record_type: evidence_receipt_v2") {
+		t.Fatalf("bare evidence directory: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestChain_BareEvidenceCannotHideRecorderEntries(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"metadata", "mixed", "decision", "duplicate"} {
+		t.Run(extra, func(t *testing.T) {
+			fix := newEvidenceFixture(t, 2)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+			fix.writeEvidenceJSONL(t, path)
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch extra {
+			case "metadata":
+				data = bytes.Replace(data, []byte(`{"`), []byte(`{"v":null,"`), 1)
+			case "mixed":
+				fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-99.jsonl"))
+			case "decision":
+				data = append(data, []byte("{\"type\":\"decision\",\"detail\":{}}\n")...)
+			case "duplicate":
+				data = bytes.Replace(data, []byte(`{"`), []byte(`{"type":"decision","`), 1)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+			if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") {
+				t.Fatalf("invalid evidence accepted: stdout=%s stderr=%s", stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 3)
@@ -2729,7 +2823,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	if err := os.MkdirAll(locationDir, 0o750); err != nil {
 		t.Fatalf("create selected location: %v", err)
 	}
-	fix.writeEvidenceJSONL(t, filepath.Join(locationDir, "evidence-proxy-0.jsonl"))
+	fix.writeRecorderEvidenceJSONL(t, filepath.Join(locationDir, "evidence-proxy-0.jsonl"))
 
 	stdout, stderr, code := runRoot(t,
 		"chain", "--dir",
@@ -2752,7 +2846,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
 		t.Fatalf("create nested location: %v", err)
 	}
-	fix.writeEvidenceJSONL(t, filepath.Join(nestedDir, "evidence-proxy-0.jsonl"))
+	fix.writeRecorderEvidenceJSONL(t, filepath.Join(nestedDir, "evidence-proxy-0.jsonl"))
 	stdout, stderr, code = runRoot(t, "chain", "--dir", "--location", filepath.ToSlash(locationID), "--key", fix.keyHex, root)
 	if code != cliutil.ExitOK {
 		t.Fatalf("selected parent location should not be resolved twice, stdout=%q stderr=%q", stdout, stderr)

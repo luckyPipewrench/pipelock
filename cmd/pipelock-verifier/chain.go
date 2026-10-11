@@ -125,6 +125,7 @@ type chainReport struct {
 	Unpinned           bool       `json:"unpinned,omitempty"`
 	SignerKeyID        string     `json:"signer_key_id,omitempty"`
 	Error              string     `json:"error,omitempty"`
+	Warnings           []string   `json:"warnings,omitempty"`
 	BrokenAtSeq        uint64     `json:"broken_at_seq,omitempty"`
 	Scorecard          *scorecard `json:"scorecard,omitempty"`
 }
@@ -678,6 +679,15 @@ func readChainSessionInput(location recorder.EvidenceLocation, session string) (
 	var actions []actionreceipt.Receipt
 	var evidence []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, session, func() error {
+		bare, err := isBareEvidenceSession(location, session)
+		if err != nil {
+			return err
+		}
+		if !bare {
+			if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
+				return err
+			}
+		}
 		var readErr error
 		evidence, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
 		if readErr != nil {
@@ -694,6 +704,39 @@ func readChainSessionInput(location recorder.EvidenceLocation, session string) (
 		return nil, nil, err
 	}
 	return actions, evidence, nil
+}
+
+// isBareEvidenceSession recognizes the receipt-only compatibility format.
+// Any recorder metadata or non-receipt entry requires the complete recorder
+// chain checks; a mixture cannot downgrade a recorder to receipt-only input.
+// The caller still verifies every receipt and holds the session snapshot.
+func isBareEvidenceSession(location recorder.EvidenceLocation, session string) (bool, error) {
+	notBare := errors.New("not a bare evidence receipt session")
+	seen := false
+	err := recorder.WalkSessionHistoryFiles(location, session, func(_ recorder.SessionHistoryShard, r io.Reader) error {
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
+		for scanner.Scan() {
+			line := bytes.TrimSpace(scanner.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(line, &fields) != nil || len(fields) != 2 || fields["detail"] == nil {
+				return notBare
+			}
+			var kind string
+			if json.Unmarshal(fields["type"], &kind) != nil || kind != contractreceipt.EvidenceEntryType {
+				return notBare
+			}
+			seen = true
+		}
+		return scanner.Err()
+	})
+	if errors.Is(err, notBare) {
+		return false, nil
+	}
+	return seen && err == nil, err
 }
 
 // actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.

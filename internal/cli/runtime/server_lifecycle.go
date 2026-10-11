@@ -1285,13 +1285,13 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			s.startLicenseExpiryWatcher(ctx)
 		}()
 	}
-	if (agentListenerCount > 0 || cfg.Conductor.Enabled) && cfg.LicenseCRLFile != "" {
-		lifecycleWG.Add(1)
-		go func() {
-			defer lifecycleWG.Done()
-			s.startLicenseCRLWatcher(ctx)
-		}()
-	}
+	// Keep the watcher alive without dedicated listeners, including when a
+	// license is installed or replaced by a later reload.
+	lifecycleWG.Add(1)
+	go func() {
+		defer lifecycleWG.Done()
+		s.startLicenseCRLWatcher(ctx)
+	}()
 
 	// Start the fetch proxy on the pre-bound listener (blocks until context
 	// cancelled or error). The listener was already bound above, so an error

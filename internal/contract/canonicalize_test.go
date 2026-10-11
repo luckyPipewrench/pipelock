@@ -213,7 +213,6 @@ func TestCanonicalize_UnsupportedTypeErrors(t *testing.T) {
 
 func TestParseJSONStrict_Array(t *testing.T) {
 	t.Parallel()
-	// Exercise the '[' branch in parseStrictFrom.
 	got, err := ParseJSONStrict([]byte(`[1,2,3]`))
 	if err != nil {
 		t.Fatalf("ParseJSONStrict: %v", err)
@@ -239,7 +238,6 @@ func TestParseJSONStrict_RejectsBadJSON(t *testing.T) {
 func TestParseJSONStrict_ArrayElementError(t *testing.T) {
 	t.Parallel()
 	// "[null," triggers dec.More()=true after reading null, but then EOF on next element.
-	// This exercises the parseStrictValue error branch inside the array case.
 	_, err := ParseJSONStrict([]byte(`[null,`))
 	if err == nil {
 		t.Error("expected error for truncated array (element read), got nil")
@@ -301,41 +299,12 @@ func TestCanonicalize_MapContainsUnsupportedValue(t *testing.T) {
 	}
 }
 
-func TestParseStrictFrom_UnexpectedDelimiter(t *testing.T) {
+func TestParseJSONStrict_RejectsInvalidTokens(t *testing.T) {
 	t.Parallel()
-	// parseStrictFrom dispatches on json.Delim - only '{' and '[' are valid.
-	// Passing ']' exercises the default: branch inside the Delim switch (line 187-189).
-	// The decoder is not used for this token so any reader works.
-	dec := json.NewDecoder(bytes.NewReader([]byte(`null`)))
-	_, err := parseStrictFrom(dec, json.Delim(']'), 0)
-	if err == nil {
-		t.Error("expected error for unexpected delimiter ']', got nil")
-	}
-}
-
-func TestParseStrictFrom_UnexpectedTokenType(t *testing.T) {
-	t.Parallel()
-	// json.Token is interface{}. Passing a type that is not json.Delim, json.Number,
-	// string, bool, or nil hits the outer default: branch (line 194-196).
-	dec := json.NewDecoder(bytes.NewReader([]byte(`null`)))
-	_, err := parseStrictFrom(dec, 42, 0) // int is not a recognized json.Token type
-	if err == nil {
-		t.Error("expected error for unrecognized token type int, got nil")
-	}
-}
-
-func TestParseStrictFrom_ObjectKeyTokenError(t *testing.T) {
-	t.Parallel()
-	// A truncated object stream (`{"`) makes dec.Token() error while reading
-	// the object key, exercising the err != nil return inside the '{' branch.
-	dec := json.NewDecoder(bytes.NewReader([]byte(`{"`)))
-	tok, err := dec.Token() // reads '{'
-	if err != nil {
-		t.Fatalf("expected '{' token, got err: %v", err)
-	}
-	_, err = parseStrictFrom(dec, tok, 0) // tok == json.Delim('{')
-	if err == nil {
-		t.Error("expected error from truncated object key read, got nil")
+	for _, raw := range []string{`]`, `}`, `{42:1}`, `{"`} {
+		if _, err := ParseJSONStrict([]byte(raw)); err == nil {
+			t.Errorf("accepted malformed input %q", raw)
+		}
 	}
 }
 

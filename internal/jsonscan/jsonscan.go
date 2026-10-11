@@ -1,10 +1,9 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package jsonscan provides a streaming duplicate-key check used on the receipt
-// and flight-recorder verify paths. It is a leaf package so both internal/receipt
-// and internal/recorder can share one implementation (receipt imports recorder,
-// so the shared helper cannot live in either of them).
+// Package jsonscan provides shared JSON key validation and strict schema
+// decoding for transport and signed-artifact ingestion. It is a leaf package
+// so callers with different dependency graphs use the same checks.
 package jsonscan
 
 import (
@@ -16,6 +15,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -44,8 +44,9 @@ const MaxNestingDepth = 128
 const MaxExactJSONInteger = 1<<53 - 1
 
 // RejectDuplicateKeys reports an error if data contains a duplicate object key
-// at any nesting depth. It streams tokens with a json.Decoder so it sees every
-// key occurrence, not the last-wins map encoding/json would build. encoding/json
+// at any nesting depth, including case-folded collisions. It streams tokens
+// with a json.Decoder so it sees every key occurrence, not the last-wins map
+// encoding/json would build. encoding/json
 // silently keeps the last value for a duplicate key, which lets an attacker
 // smuggle a different value past a display, log, or summary layer that reads the
 // first occurrence (a parser-differential vector).
@@ -60,7 +61,62 @@ func RejectDuplicateKeys(data []byte) error {
 		// produces the canonical parse error rather than masking it here.
 		return nil
 	}
-	return check(dec, tok, 0)
+	return check(dec, tok, 0, MaxNestingDepth)
+}
+
+// ErrTrailingTokens indicates content after the first JSON value.
+var ErrTrailingTokens = errors.New("trailing tokens after JSON value")
+
+// ValidateKeys validates one JSON document, rejecting duplicate names under
+// Unicode simple folding, including escaped spellings. maxDepth preserves each
+// transport's existing nesting bound; schema names and values are not rewritten.
+func ValidateKeys(data []byte, maxDepth int) error {
+	if !utf8.Valid(data) {
+		return errors.New("JSON is not valid UTF-8")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if err := check(dec, tok, 0, maxDepth); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrTrailingTokens, err)
+		}
+		return ErrTrailingTokens
+	}
+	return nil
+}
+
+// FoldKey returns a key for the equivalence classes used by strings.EqualFold
+// and encoding/json's struct-field lookup. Lowercasing alone misses the Kelvin
+// sign and long s. Folding each rune to the smallest rune in its SimpleFold
+// cycle covers ASCII, Unicode and decoded JSON escapes without normalization.
+func FoldKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		smallest := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < smallest {
+				smallest = next
+			}
+		}
+		return smallest
+	}, key)
+}
+
+// HasKeyAlias reports a noncanonical spelling of a configured field. It also
+// rejects a lone alias, which exact-key map lookup would otherwise call absent.
+func HasKeyAlias[V any](object map[string]V, field string) bool {
+	for key := range object {
+		if key != field && strings.EqualFold(key, field) {
+			return true
+		}
+	}
+	return false
 }
 
 // RejectCaseFoldedAliases rejects top-level object keys that match one of the
@@ -93,13 +149,13 @@ func RejectCaseFoldedAliases(data []byte, allowedKeys ...string) error {
 // it tracks the set of keys seen at that level; for arrays it recurses into each
 // element; scalars are accepted as-is. depth bounds the recursion to prevent a
 // stack-overflow panic on maliciously nested input.
-func check(dec *json.Decoder, tok json.Token, depth int) error {
+func check(dec *json.Decoder, tok json.Token, depth, maxDepth int) error {
 	delim, ok := tok.(json.Delim)
 	if !ok {
 		return nil // scalar value
 	}
-	if depth >= MaxNestingDepth {
-		return fmt.Errorf("JSON nesting exceeds maximum depth %d", MaxNestingDepth)
+	if depth >= maxDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d", maxDepth)
 	}
 	switch delim {
 	case '{':
@@ -113,15 +169,16 @@ func check(dec *json.Decoder, tok json.Token, depth int) error {
 			if !ok {
 				return fmt.Errorf("object key is not a string")
 			}
-			if _, dup := seen[key]; dup {
+			folded := FoldKey(key)
+			if _, dup := seen[folded]; dup {
 				return fmt.Errorf("%w: %q", ErrDuplicateKey, key)
 			}
-			seen[key] = struct{}{}
+			seen[folded] = struct{}{}
 			valTok, err := dec.Token()
 			if err != nil {
 				return err
 			}
-			if err := check(dec, valTok, depth+1); err != nil {
+			if err := check(dec, valTok, depth+1, maxDepth); err != nil {
 				return err
 			}
 		}
@@ -134,7 +191,7 @@ func check(dec *json.Decoder, tok json.Token, depth int) error {
 			if err != nil {
 				return err
 			}
-			if err := check(dec, valTok, depth+1); err != nil {
+			if err := check(dec, valTok, depth+1, maxDepth); err != nil {
 				return err
 			}
 		}
@@ -180,4 +237,41 @@ func RejectUnsafeNumbers(data []byte) error {
 			return fmt.Errorf("JSON number %q exceeds cross-language exact range", number)
 		}
 	}
+}
+
+// TopLevelDuplicateKeys inventories ambiguous keys in an already parsed object.
+// Values are skipped intact; duplicates in unrelated nested application data do
+// not make an operation discriminator ambiguous.
+func TopLevelDuplicateKeys(data []byte) map[string]struct{} {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	seen := make(map[string]string)
+	var duplicates map[string]struct{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil
+		}
+		folded := FoldKey(key)
+		if first, exists := seen[folded]; exists {
+			if duplicates == nil {
+				duplicates = make(map[string]struct{})
+			}
+			duplicates[first] = struct{}{}
+			duplicates[key] = struct{}{}
+		}
+		seen[folded] = key
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil
+		}
+	}
+	return duplicates
 }

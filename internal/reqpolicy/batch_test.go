@@ -311,3 +311,17 @@ func TestUninspectableBatch(t *testing.T) {
 		t.Error("uninspectable batch off-route should not match")
 	}
 }
+
+func TestKeyAliasesBatch(t *testing.T) {
+	m := batchMatcher(t, deleteRule())
+	for _, raw := range []string{
+		`{"requests":[],"Requests":[{"method":"POST","url":"/sendMail"}]}`,
+		`{"Requests":[]}`,
+		`{"requests":[{"method":"GET","url":"/me","Url":"/sendMail"}]}`,
+		`{"requests":[{"method":"GET","Method":"POST","url":"/me"}]}`,
+	} {
+		if d, ok := m.EvaluateBatch(batchMeta(), []byte(raw)); ok || d.Action != config.ActionBlock {
+			t.Errorf("accepted alias: %s: %+v parsed=%v", raw, d, ok)
+		}
+	}
+}

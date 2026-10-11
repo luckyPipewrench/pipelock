@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 	"unicode/utf8"
@@ -141,87 +140,15 @@ func canonicalizeInto(buf *bytes.Buffer, v any) error {
 // ErrTrailingTokens is returned if any non-whitespace tokens follow the value.
 // Trailing whitespace (spaces, newlines) is permitted by the JSON spec and is not an error.
 func ParseJSONStrict(data []byte) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	val, err := parseStrictValue(dec, 0)
-	if err != nil {
-		return nil, err
-	}
-	// Trailing whitespace is not a token and dec.Token returns io.EOF for it.
-	// Any other token, including a stray delimiter, is rejected.
-	if tok, err := dec.Token(); err != io.EOF {
-		if err != nil {
+	var value any
+	if err := jsonscan.DecodeStrict(data, &value); err != nil {
+		if errors.Is(err, jsonscan.ErrDuplicateKey) {
+			return nil, fmt.Errorf("%w: %w", ErrDuplicateKey, err)
+		}
+		if errors.Is(err, jsonscan.ErrTrailingTokens) {
 			return nil, fmt.Errorf("%w: %w", ErrTrailingTokens, err)
 		}
-		return nil, fmt.Errorf("%w: %v", ErrTrailingTokens, tok)
-	}
-	return val, nil
-}
-
-// parseStrictValue walks a json.Decoder rejecting duplicate keys. depth is
-// the number of containers already open around the value.
-func parseStrictValue(dec *json.Decoder, depth int) (any, error) {
-	tok, err := dec.Token()
-	if err != nil {
 		return nil, err
 	}
-	return parseStrictFrom(dec, tok, depth)
-}
-
-func parseStrictFrom(dec *json.Decoder, tok json.Token, depth int) (any, error) {
-	switch t := tok.(type) {
-	case json.Delim:
-		// The walk recurses once per container, and json.Decoder's own
-		// nesting limit differs by Go release, so the bound is enforced here.
-		if (t == '{' || t == '[') && depth >= jsonscan.MaxNestingDepth {
-			return nil, fmt.Errorf("JSON nesting exceeds maximum depth %d", jsonscan.MaxNestingDepth)
-		}
-		switch t {
-		case '{':
-			obj := map[string]any{}
-			for dec.More() {
-				ktok, err := dec.Token()
-				if err != nil {
-					return nil, err
-				}
-				key, ok := ktok.(string)
-				if !ok {
-					return nil, fmt.Errorf("expected string key, got %T", ktok)
-				}
-				if _, exists := obj[key]; exists {
-					return nil, fmt.Errorf("%w: %q", ErrDuplicateKey, key)
-				}
-				val, err := parseStrictValue(dec, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				obj[key] = val
-			}
-			if _, err := dec.Token(); err != nil {
-				return nil, err
-			}
-			return obj, nil
-		case '[':
-			arr := []any{}
-			for dec.More() {
-				val, err := parseStrictValue(dec, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				arr = append(arr, val)
-			}
-			if _, err := dec.Token(); err != nil {
-				return nil, err
-			}
-			return arr, nil
-		default:
-			return nil, fmt.Errorf("unexpected delimiter %v", t)
-		}
-	case json.Number:
-		return t, nil
-	case string, bool, nil:
-		return t, nil
-	default:
-		return nil, fmt.Errorf("unexpected token %T", tok)
-	}
+	return value, nil
 }

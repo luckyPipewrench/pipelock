@@ -268,7 +268,7 @@ func TestSecretEgressTypedContextProfile(t *testing.T) {
 	}
 }
 
-func TestEvidenceReceiptLegacyJSONBindingPreserved(t *testing.T) {
+func TestEvidenceReceiptLegacyStrictJSONRequiresCanonicalKeys(t *testing.T) {
 	t.Parallel()
 	legacy, _ := signedReceipt(t)
 	raw, err := json.Marshal(legacy)
@@ -286,8 +286,10 @@ func TestEvidenceReceiptLegacyJSONBindingPreserved(t *testing.T) {
 			}
 			var strict receipt.EvidenceReceipt
 			err := contract.DecodeStrictJSON(changed, &strict)
-			if (err != nil) != (name == "unknown") {
-				t.Fatalf("legacy strict binding changed: %v", err)
+			// Ordinary JSON binding remains compatible. Strict ingestion now
+			// rejects noncanonical field names for legacy receipts too.
+			if err == nil {
+				t.Fatal("strict ingestion accepted a noncanonical legacy receipt")
 			}
 		})
 	}

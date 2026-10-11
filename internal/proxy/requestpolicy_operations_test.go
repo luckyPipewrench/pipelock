@@ -288,3 +288,30 @@ func TestTopLevelDuplicateJSONKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyAliasesRequestPolicyBinding(t *testing.T) {
+	rule := config.RequestPolicyRule{
+		Name: rpRuleName, Action: config.ActionBlock,
+		Route:         config.RequestPolicyRoute{Hosts: []string{rpTestHost}},
+		Discriminator: &config.RequestPolicyDiscriminator{Field: "action", ValuePatterns: []string{"^delete"}},
+	}
+	p := newTestProxyWithConfig(t, reqPolicyConfig(rule))
+	for _, tc := range []struct {
+		raw   string
+		block bool
+	}{
+		{`{"action":"list"}`, false},
+		{`{"action":"delete"}`, true},
+		{`{"action":"list","Action":"delete"}`, true},
+		{`{"Action":"delete","action":"list"}`, true},
+		{`{"Action":"delete"}`, true},
+	} {
+		res := p.applyRequestPolicy(requestPolicyInput{
+			Host: rpTestHost, Method: http.MethodPost, Path: "/rpc", ContentType: "application/json",
+			Body: []byte(tc.raw), BodyRead: true, Transport: TransportFetch,
+		})
+		if res.Block != tc.block {
+			t.Errorf("%s: block=%v, want %v", tc.raw, res.Block, tc.block)
+		}
+	}
+}

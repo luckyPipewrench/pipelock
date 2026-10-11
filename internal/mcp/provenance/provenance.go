@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // metaKey is the _meta key under which provenance attestations are stored.
@@ -216,6 +218,10 @@ func verifyPipelockTool(tool ToolDef, att Attestation, cfg VerifyConfig) Verific
 //   - StatusFailed: attestation present but verification failed (ALWAYS BLOCK)
 //   - StatusError: attestation malformed or misconfigured
 func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, error) {
+	if err := jsonscan.RejectDuplicateKeys(response); err != nil {
+		return nil, fmt.Errorf("parsing tools/list response: %w", err)
+	}
+
 	var rpc struct {
 		Result toolsListResult `json:"result"`
 	}

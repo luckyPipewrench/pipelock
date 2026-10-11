@@ -4,13 +4,11 @@
 package aarp
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 )
@@ -321,18 +319,13 @@ func Unmarshal(data []byte) (Envelope, error) {
 	if err := EnforceSafeNumbers(tree); err != nil {
 		return Envelope{}, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	dec.UseNumber() // future-proof: preserve integers if a numeric field is ever added
 	var e Envelope
-	if err := dec.Decode(&e); err != nil {
-		// Distinguish an unknown AARP field (a smuggling attempt) from an
-		// ordinary type/shape decode error, so errors.Is(err, ErrUnknownField)
-		// is not a false positive on, e.g., a type mismatch.
-		if strings.Contains(err.Error(), "unknown field") {
+	if err := contract.DecodeStrictJSON(data, &e); err != nil {
+		if errors.Is(err, contract.ErrUnknownField) {
 			return Envelope{}, fmt.Errorf("%w: %w", ErrUnknownField, err)
 		}
 		return Envelope{}, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
+
 	return e, nil
 }

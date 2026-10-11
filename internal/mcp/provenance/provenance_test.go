@@ -726,3 +726,17 @@ func TestVerifyTool_EmptyMode(t *testing.T) {
 		t.Errorf("expected %q with empty mode, got %q: %s", StatusVerified, result.Status, result.Detail)
 	}
 }
+
+func TestKeyAliasesProvenance(t *testing.T) {
+	for _, raw := range []string{
+		`{"result":{"tools":[{"name":"sample","description":"hello"}]},"Result":{"tools":[]}}`,
+		`{"result":{"tools":[{"name":"sample","description":"hello"}],"Tools":[]}}`,
+	} {
+		if _, err := VerifyToolsList([]byte(raw), VerifyConfig{}); err == nil {
+			t.Errorf("ambiguous provenance accepted: %s", raw)
+		}
+	}
+	if _, err := VerifyToolsList([]byte(`{"result":{"tools":[]}}`), VerifyConfig{}); err != nil {
+		t.Fatal(err)
+	}
+}

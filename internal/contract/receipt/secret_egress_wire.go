@@ -19,8 +19,8 @@ import (
 
 // ParseEvidenceReceipt parses serialized v2 receipts at the authoritative raw
 // ingress boundary. The new secret-egress kind gets its wire-profile check
-// before the unchanged strict decoder binds fields. Other payload kinds retain
-// existing strict decoding behavior. Signature verification remains separate.
+// before the shared strict decoder binds fields. Every payload kind requires
+// canonical field names at this boundary. Signature verification remains separate.
 //
 // Generic json.Unmarshal/contract.DecodeStrictJSON are parsing operations, not
 // substitutes for this profile boundary. Typed verification cannot reconstruct

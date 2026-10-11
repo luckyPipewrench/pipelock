@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // discOutcome is the result of evaluating a discriminator predicate against a
@@ -57,7 +58,7 @@ func (e *exactException) matches(meta RequestMeta) bool {
 	if !ok {
 		return false
 	}
-	if _, duplicated := meta.JSONDupKeys[e.field]; duplicated {
+	if _, duplicated := meta.JSONDupKeys[e.field]; duplicated || jsonscan.HasKeyAlias(obj, e.field) {
 		return false
 	}
 	value, ok := obj[e.field].(string)
@@ -101,7 +102,7 @@ func (d *discPredicate) eval(meta RequestMeta) discOutcome {
 		// so treat it as opaque rather than a benign no-match.
 		return discOpaque
 	}
-	if _, dup := meta.JSONDupKeys[d.field]; dup {
+	if _, dup := meta.JSONDupKeys[d.field]; dup || jsonscan.HasKeyAlias(obj, d.field) {
 		// The targeted field appears more than once at the top level. Go keeps
 		// the last value, but a first-wins upstream could dispatch on a
 		// different one, so we cannot trust the collapsed value: fail closed.

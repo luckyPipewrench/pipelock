@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
@@ -24,6 +23,7 @@ var ErrUnknownField = errors.New("unknown field in signed-artifact transport pay
 // signed-artifact transports per the design doc canonicalization invariants:
 //
 //   - Empty input or the literal "null" reject (no silent zero-value binding).
+//   - Duplicate keys (including case aliases) and noncanonical schema names reject.
 //   - Unknown fields reject (Decoder.DisallowUnknownFields). This is the
 //     normative check from the design's "unknown fields reject recursively at
 //     every depth" rule. Without it, downstream Validate() runs on a typed
@@ -47,30 +47,17 @@ func DecodeStrictJSON(raw []byte, target any) error {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ErrEmptyPayload
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
-		return fmt.Errorf("strict decode: %w", err)
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	dec.UseNumber()
-	if err := dec.Decode(target); err != nil {
-		// json.Decoder reports unknown fields with a message starting with
-		// "json: unknown field"; normalize to our sentinel for errors.Is.
-		// Syntax errors stay as plain decode errors.
+	if err := jsonscan.DecodeStrict(raw, target); err != nil {
+		if errors.Is(err, jsonscan.ErrTrailingTokens) {
+			return fmt.Errorf("%w: %w", ErrTrailingTokens, err)
+		}
 		var syntaxErr *json.SyntaxError
 		if !errors.As(err, &syntaxErr) && isUnknownField(err) {
 			return fmt.Errorf("%w: %w", ErrUnknownField, err)
 		}
 		return fmt.Errorf("strict decode: %w", err)
 	}
-	// Trailing tokens after the value (another value, a delimiter) are rejected.
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrTrailingTokens, err)
-		}
-		return fmt.Errorf("%w after top-level value", ErrTrailingTokens)
-	}
+
 	return nil
 }
 

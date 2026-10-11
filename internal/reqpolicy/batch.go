@@ -4,14 +4,13 @@
 package reqpolicy
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // maxBatchDepth bounds nested-batch recursion so a maliciously deep nesting
@@ -167,35 +166,7 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 }
 
 func topLevelBatchDuplicateKeys(body []byte) map[string]struct{} {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	tok, err := dec.Token()
-	if err != nil || tok != json.Delim('{') {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	dups := make(map[string]struct{})
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil
-		}
-		key, ok := tok.(string)
-		if !ok {
-			return nil
-		}
-		if _, exists := seen[key]; exists {
-			dups[key] = struct{}{}
-		}
-		seen[key] = struct{}{}
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return nil
-		}
-	}
-	if _, err := dec.Token(); err != nil && err != io.EOF {
-		return nil
-	}
-	return dups
+	return jsonscan.TopLevelDuplicateKeys(body)
 }
 
 // uninspectableSub applies a fail-closed action to a sub-request whose body
@@ -231,7 +202,7 @@ func (b *compiledBatch) parseSubRequests(body []byte) ([]batchSubRequest, bool, 
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, false, false
 	}
-	if len(topLevelBatchDuplicateKeys(body)) != 0 {
+	if len(topLevelBatchDuplicateKeys(body)) != 0 || jsonscan.HasKeyAlias(envelope, b.requestsField) {
 		return nil, false, true
 	}
 	rawReqs, ok := envelope[b.requestsField]
@@ -251,7 +222,7 @@ func (b *compiledBatch) parseSubRequests(body []byte) ([]batchSubRequest, bool, 
 		if err := json.Unmarshal(rawItem, &item); err != nil {
 			return nil, false, false
 		}
-		if len(topLevelBatchDuplicateKeys(rawItem)) != 0 {
+		if len(topLevelBatchDuplicateKeys(rawItem)) != 0 || jsonscan.HasKeyAlias(item, b.methodField) || jsonscan.HasKeyAlias(item, b.urlField) || jsonscan.HasKeyAlias(item, b.bodyField) {
 			return nil, false, true
 		}
 		method, ok := requiredStringField(item, b.methodField)

@@ -195,3 +195,11 @@ func TestRejectDuplicateKeys_DepthBoundedMessage(t *testing.T) {
 		t.Fatalf("RejectDuplicateKeys(over-deep) = %v, want nesting-depth error", err)
 	}
 }
+
+func TestKeyAliasesDuplicateKeys(t *testing.T) {
+	for _, raw := range []string{`{"key":1,"KEY":2}`, `{"nested":[{"k":1,"\u212a":2}]}`, `{"s":1,"ſ":2}`, `{"a":1,"\u0041":2}`} {
+		if err := RejectDuplicateKeys([]byte(raw)); !errors.Is(err, ErrDuplicateKey) {
+			t.Errorf("alias accepted: %s: %v", raw, err)
+		}
+	}
+}

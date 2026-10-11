@@ -11,6 +11,7 @@ import (
 	"mime"
 	"mime/multipart"
 
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 )
 
@@ -84,38 +85,7 @@ func parseRequestPolicyJSONBody(in requestPolicyInput) (doc any, dupKeys map[str
 // so only the top level is considered. body must already be validated as a
 // single JSON value by parseRequestPolicyJSONBody.
 func topLevelDuplicateJSONKeys(body []byte) map[string]struct{} {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	tok, err := dec.Token()
-	if err != nil {
-		return nil
-	}
-	if delim, isDelim := tok.(json.Delim); !isDelim || delim != '{' {
-		return nil
-	}
-	seen := make(map[string]int)
-	var dups map[string]struct{}
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			return dups
-		}
-		key, isStr := keyTok.(string)
-		if !isStr {
-			return dups
-		}
-		seen[key]++
-		if seen[key] == 2 {
-			if dups == nil {
-				dups = make(map[string]struct{})
-			}
-			dups[key] = struct{}{}
-		}
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return dups
-		}
-	}
-	return dups
+	return jsonscan.TopLevelDuplicateKeys(body)
 }
 
 // isMultipartFormData reports whether ct is a multipart/form-data media type,

@@ -33,56 +33,86 @@ type upstreamClientError struct {
 	body   []byte
 }
 
-// validateFraming prevents a refusal from becoming an alternate MCP message
-// transport. Only a correlated error may carry a JSON-RPC envelope; results,
-// server requests and SSE need the full message pipeline, not an error wrapper.
-// A declared charset must agree with the UTF-8 bytes the scanner inspected.
-func (e upstreamClientError) validateFraming(id json.RawMessage) bool {
+// Framing problems that withhold a refusal. A disguised message is an upstream
+// trying to deliver protocol content through an error status, so it counts as
+// a block; ambiguous framing is more often a sloppy server and does not.
+const (
+	refusalFramingAmbiguous = "ambiguous reply framing"
+	refusalFramingDisguised = "protocol message disguised as a refusal"
+)
+
+// asciiCompatibleCharsets decode ASCII bytes exactly as UTF-8 does. Charsets
+// such as UTF-7 do not, so a body labelled with one is withheld even when its
+// bytes are ASCII.
+var asciiCompatibleCharsets = map[string]bool{
+	"us-ascii":     true,
+	"iso-8859-1":   true,
+	"latin1":       true,
+	"windows-1252": true,
+}
+
+// framingProblem keeps a refusal from becoming an alternate MCP message
+// transport, and returns "" when the reply may be relayed. Only an error may
+// carry a JSON-RPC envelope, and only one answering this request or no request
+// at all: results, server requests, batches and SSE need the full message
+// pipeline, and an error naming another request's ID could fail that call. A
+// declared charset must read the scanned UTF-8 bytes the same way.
+func (e upstreamClientError) framingProblem(id json.RawMessage) string {
 	for _, values := range e.header {
 		for _, value := range values {
 			if !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\x00") {
-				return false
+				return refusalFramingAmbiguous
 			}
 		}
 	}
 	contentTypes := e.header.Values("Content-Type")
 	if len(contentTypes) > 1 {
-		return false
+		return refusalFramingAmbiguous
 	}
+	body := bytes.TrimSpace(e.body)
 	mediaType := ""
 	if len(contentTypes) == 1 {
 		var params map[string]string
 		var err error
 		mediaType, params, err = mime.ParseMediaType(contentTypes[0])
-		if err != nil || mediaType == "text/event-stream" {
-			return false
+		if err != nil {
+			return refusalFramingAmbiguous
 		}
-		if charset := params["charset"]; charset != "" && !strings.EqualFold(charset, "utf-8") {
-			return false
+		if mediaType == "text/event-stream" {
+			return refusalFramingDisguised
+		}
+		if charset := strings.ToLower(params["charset"]); charset != "" && charset != "utf-8" &&
+			(!asciiCompatibleCharsets[charset] || !isASCII(string(e.body))) {
+			return refusalFramingAmbiguous
 		}
 	}
-	body := bytes.TrimSpace(e.body)
 	if len(body) == 0 {
-		return true
+		return ""
 	}
 	if body[0] == '[' {
-		return false // MCP does not support batch messages.
+		return refusalFramingDisguised // MCP does not support batch messages.
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(body, &fields) != nil {
-		return mediaType != "application/json"
+		if mediaType == "application/json" {
+			return refusalFramingAmbiguous
+		}
+		return ""
 	}
 	if jsonscan.RejectDuplicateKeys(body) != nil {
-		return false
+		return refusalFramingAmbiguous
 	}
 	for _, name := range []string{"jsonrpc", "id", "method", "result", "params"} {
 		for key := range fields {
 			if strings.EqualFold(key, name) {
-				return transport.IsClientErrorReply(body, id)
+				if transport.IsClientErrorReply(body, id) || transport.IsUncorrelatedErrorReply(body) {
+					return ""
+				}
+				return refusalFramingDisguised
 			}
 		}
 	}
-	return true // Ordinary HTTP/OAuth errors have no MCP message envelope.
+	return "" // Ordinary HTTP and OAuth errors carry no MCP message envelope.
 }
 
 // readUpstreamClientError captures a 4xx reply. The body is bounded, decoded
@@ -115,10 +145,12 @@ func (e upstreamClientError) scanEnvelope() []byte {
 		}
 	}
 	data := json.RawMessage(bytes.TrimSpace(e.body))
+	// Marshaling cannot fail here: a string always encodes, and data is
+	// valid JSON by this point.
 	if len(data) == 0 || !json.Valid(data) {
-		data, _ = json.Marshal(string(e.body)) //nolint:errcheck // a string always marshals
+		data, _ = json.Marshal(string(e.body))
 	}
-	envelope, _ := json.Marshal(rpcError{ //nolint:errcheck // known-good struct around valid JSON
+	envelope, _ := json.Marshal(rpcError{
 		JSONRPC: jsonrpc.Version,
 		ID:      json.RawMessage(jsonrpc.Null),
 		Error: rpcErrorDetail{
@@ -161,6 +193,21 @@ func upstreamClientErrorFinding(verdict jsonrpc.ScanVerdict) string {
 	}
 }
 
+// relayableMediaType reports a Content-Type a relayed refusal may keep: JSON,
+// problem details, or plain text.
+func relayableMediaType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	switch mediaType {
+	case "application/json", "application/problem+json", "text/plain":
+		return true
+	default:
+		return false
+	}
+}
+
 // write relays the reply with its status, kept headers and body.
 func (e upstreamClientError) write(w http.ResponseWriter) {
 	for name, values := range e.header {
@@ -168,11 +215,15 @@ func (e upstreamClientError) write(w http.ResponseWriter) {
 			w.Header().Add(name, value)
 		}
 	}
-	if len(e.body) > 0 && w.Header().Get("Content-Type") == "" {
-		// Without a declared type the server would sniff one from the body.
+	if !relayableMediaType(w.Header().Get("Content-Type")) && (len(e.body) > 0 || w.Header().Get("Content-Type") != "") {
+		// The scanner looks for injection and secrets, not markup, so a body
+		// is never relayed under a type a browser would render or a client
+		// would parse as a stream. Without a declared type the server would
+		// sniff one from the body.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
 	w.WriteHeader(e.status)
 	_, _ = w.Write(e.body)
 }

@@ -46,30 +46,102 @@ func TestHTTPListener_ClientErrorRejectsProtocolDisguises(t *testing.T) {
 }
 
 func TestUpstreamClientErrorFraming(t *testing.T) {
+	sessionNotFound := `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`
 	tests := []struct {
 		name   string
 		header http.Header
 		body   string
-		want   bool
+		want   string
 	}{
-		{name: "OAuth error", header: http.Header{"Content-Type": {"application/json"}}, body: `{"error":"invalid_token"}`, want: true},
-		{name: "correlated error", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`, want: true},
-		{name: "plain refusal", body: "unauthorized", want: true},
-		{name: "UTF-8 declaration", header: http.Header{"Content-Type": {"text/plain; charset=UTF-8"}}, body: "unauthorized", want: true},
-		{name: "empty", want: true},
-		{name: "duplicate type", header: http.Header{"Content-Type": {"text/plain", "application/json"}}},
-		{name: "invalid type", header: http.Header{"Content-Type": {";"}}},
-		{name: "invalid header UTF-8", header: http.Header{"Www-Authenticate": {string([]byte{0xff})}}},
-		{name: "header line break", header: http.Header{"Www-Authenticate": {"Bearer\r\nAllow: DELETE"}}},
-		{name: "invalid JSON type", header: http.Header{"Content-Type": {"application/json"}}, body: "not JSON"},
-		{name: "batch", body: `[{"jsonrpc":"2.0","id":1,"error":{}}]`},
-		{name: "duplicate keys", body: `{"error":"one","error":"two"}`},
+		{name: "OAuth error", header: http.Header{"Content-Type": {"application/json"}}, body: `{"error":"invalid_token"}`},
+		{name: "correlated error", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`},
+		{name: "null ID error from the reference server", header: http.Header{"Content-Type": {"application/json"}}, body: sessionNotFound},
+		{name: "absent ID error", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}`},
+		{name: "plain refusal", body: "unauthorized"},
+		{name: "UTF-8 declaration", header: http.Header{"Content-Type": {"text/plain; charset=UTF-8"}}, body: "unauthorized"},
+		{name: "Latin-1 label on ASCII bytes", header: http.Header{"Content-Type": {"text/plain; charset=ISO-8859-1"}}, body: "unauthorized"},
+		{name: "empty"},
+		{name: "Latin-1 label on non-ASCII bytes", header: http.Header{"Content-Type": {"text/plain; charset=iso-8859-1"}}, body: "café", want: refusalFramingAmbiguous},
+		{name: "UTF-7 label on ASCII bytes", header: http.Header{"Content-Type": {"text/plain; charset=utf-7"}}, body: "+AEk-GNORE", want: refusalFramingAmbiguous},
+		{name: "duplicate type", header: http.Header{"Content-Type": {"text/plain", "application/json"}}, want: refusalFramingAmbiguous},
+		{name: "invalid type", header: http.Header{"Content-Type": {";"}}, want: refusalFramingAmbiguous},
+		{name: "invalid header UTF-8", header: http.Header{"Www-Authenticate": {string([]byte{0xff})}}, want: refusalFramingAmbiguous},
+		{name: "header line break", header: http.Header{"Www-Authenticate": {"Bearer\r\nAllow: DELETE"}}, want: refusalFramingAmbiguous},
+		{name: "invalid JSON type", header: http.Header{"Content-Type": {"application/json"}}, body: "not JSON", want: refusalFramingAmbiguous},
+		{name: "duplicate keys", body: `{"error":"one","error":"two"}`, want: refusalFramingAmbiguous},
+		{name: "batch", body: `[{"jsonrpc":"2.0","id":1,"error":{}}]`, want: refusalFramingDisguised},
+		{name: "SSE", header: http.Header{"Content-Type": {"text/event-stream"}}, body: "data: {}\n\n", want: refusalFramingDisguised},
+		{name: "error for another request", body: `{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"x"}}`, want: refusalFramingDisguised},
+		{name: "result", body: `{"jsonrpc":"2.0","id":1,"result":{}}`, want: refusalFramingDisguised},
+		{name: "null ID result", body: `{"jsonrpc":"2.0","id":null,"result":{}}`, want: refusalFramingDisguised},
+		{name: "error carrying params", body: `{"jsonrpc":"2.0","id":null,"error":{"code":1,"message":"x"},"params":{}}`, want: refusalFramingDisguised},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reply := upstreamClientError{header: tt.header, body: []byte(tt.body)}
-			if got := reply.validateFraming([]byte("1")); got != tt.want {
-				t.Fatalf("validateFraming = %v, want %v", got, tt.want)
+			if got := reply.framingProblem([]byte("1")); got != tt.want {
+				t.Fatalf("framingProblem = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The reference server answers an expired session with 404 and id null, and
+// the specification tells the client to start a new session on that 404. A
+// 502 in its place hides the signal.
+func TestHTTPListener_RelaysUncorrelatedSessionRefusal(t *testing.T) {
+	const sessionNotFound = `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			upstream := newUpstreamStatusServer(t, upstreamStatusReply{
+				status: http.StatusNotFound,
+				header: http.Header{"Content-Type": {"application/json"}},
+				body:   []byte(sessionNotFound),
+			})
+			baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+			header := http.Header{"Mcp-Session-Id": {"expired-session"}}
+			request := ""
+			switch method {
+			case http.MethodPost:
+				request = `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`
+			case http.MethodGet:
+				header.Set("Accept", "text/event-stream")
+			}
+			resp, body := doListenerRequest(t, method, baseURL+"/", request, header)
+			if resp.StatusCode != http.StatusNotFound || string(body) != sessionNotFound {
+				t.Fatalf("status=%d body=%s, want relayed 404; log=%s", resp.StatusCode, body, logBuf.String())
+			}
+		})
+	}
+}
+
+func TestHTTPListener_RelayedRefusalNeverKeepsARenderableType(t *testing.T) {
+	tests := []struct {
+		name, contentType, body, want string
+	}{
+		{name: "HTML", contentType: "text/html; charset=utf-8", body: "<p>denied</p>", want: "text/plain; charset=utf-8"},
+		{name: "XML", contentType: "application/xml", body: "<error/>", want: "text/plain; charset=utf-8"},
+		{name: "problem details", contentType: "application/problem+json", body: `{"title":"denied"}`, want: "application/problem+json"},
+		{name: "JSON keeps its parameters", contentType: "application/json; charset=utf-8", body: `{"error":"denied"}`, want: "application/json; charset=utf-8"},
+		{name: "declared type on an empty body", contentType: "text/html", want: "text/plain; charset=utf-8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := newUpstreamStatusServer(t, upstreamStatusReply{
+				status: http.StatusForbidden,
+				header: http.Header{"Content-Type": {tt.contentType}},
+				body:   []byte(tt.body),
+			})
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+			resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", upstreamStatusInitialize, nil)
+			if resp.StatusCode != http.StatusForbidden || string(body) != tt.body {
+				t.Fatalf("status=%d body=%q, want relayed 403", resp.StatusCode, body)
+			}
+			if got := resp.Header.Get("Content-Type"); got != tt.want {
+				t.Fatalf("Content-Type = %q, want %q", got, tt.want)
+			}
+			if got := resp.Header.Get("Content-Security-Policy"); got != "default-src 'none'" {
+				t.Fatalf("Content-Security-Policy = %q, want default-src 'none'", got)
 			}
 		})
 	}
@@ -426,7 +498,7 @@ func TestHTTPListener_WithholdsHostileUpstreamClientError(t *testing.T) {
 				body:   []byte(`{"error":"benign","error":"duplicate-key-payload"}`),
 			},
 			leak:   "duplicate-key-payload",
-			reason: "uninspectable reply",
+			reason: refusalFramingAmbiguous,
 		},
 		{
 			name: "body larger than the relay bound",

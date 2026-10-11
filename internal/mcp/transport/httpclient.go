@@ -385,19 +385,37 @@ func IsClientErrorReply(body []byte, id json.RawMessage) bool {
 	if requestID == nil {
 		return false
 	}
+	replyID, ok := jsonRPCErrorReplyID(body)
+	return ok && httpRPCID(replyID) == requestID
+}
+
+// IsUncorrelatedErrorReply reports whether body is a JSON-RPC error with a
+// null or absent ID. Servers answer that way when they cannot tie a refusal
+// to a request: the MCP reference server sends "Session not found" with a 404
+// and id null, and the specification tells a client to start a new session
+// on that 404. Such an error answers no in-flight request, so a client cannot
+// mistake it for another call's outcome.
+func IsUncorrelatedErrorReply(body []byte) bool {
+	replyID, ok := jsonRPCErrorReplyID(body)
+	return ok && (replyID == nil || string(replyID) == "null")
+}
+
+// jsonRPCErrorReplyID returns the raw ID of body when body is exactly a
+// JSON-RPC 2.0 error: no result, method or params, a non-null error member,
+// and no duplicate or case-folded envelope keys a client might read instead.
+func jsonRPCErrorReplyID(body []byte) (json.RawMessage, bool) {
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil ||
 		jsonscan.RejectCaseFoldedAliases(body, "jsonrpc", "id", "method", "result", "error", "params") != nil {
-		return false
+		return nil, false
 	}
 	var version string
 	if json.Unmarshal(reply["jsonrpc"], &version) != nil || version != "2.0" ||
-		reply["method"] != nil || reply["result"] != nil ||
-		len(reply["error"]) == 0 || string(reply["error"]) == "null" ||
-		httpRPCID(reply["id"]) != requestID {
-		return false
+		reply["method"] != nil || reply["result"] != nil || reply["params"] != nil ||
+		len(reply["error"]) == 0 || string(reply["error"]) == "null" {
+		return nil, false
 	}
-	return true
+	return reply["id"], true
 }
 
 func httpInitializeRequestID(msg []byte) any {

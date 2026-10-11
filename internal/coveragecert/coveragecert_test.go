@@ -38,7 +38,7 @@ func validBody(pub ed25519.PublicKey) Body {
 				ChainIntact:        true,
 				Anchored:           "local",
 				CompletenessStatus: "LIMITED",
-				CompletenessReason: "bounded_closed",
+				CompletenessReason: "abnormal_end",
 			},
 			{
 				ID:                 "session-002",
@@ -718,7 +718,7 @@ func TestUnmarshal_RejectsStructuralJSONTamper(t *testing.T) {
 						"chain_intact": true,
 						"anchored": "local",
 						"completeness_status": "LIMITED",
-						"completeness_reason": "bounded_closed",
+						"completeness_reason": "abnormal_end",
 						"extra_claim": "all sessions covered"
 					}],
 					"total_receipts": 1,
@@ -1058,7 +1058,7 @@ func TestVerify_RejectsKnownCoverageCertificateOverclaimVectors(t *testing.T) {
 						ChainIntact:        true,
 						Anchored:           anchorLocal,
 						CompletenessStatus: completenessLimited,
-						CompletenessReason: reasonBoundedClosed,
+						CompletenessReason: reasonAbnormalEnd,
 					},
 					{
 						ID:                 "café",
@@ -1066,7 +1066,7 @@ func TestVerify_RejectsKnownCoverageCertificateOverclaimVectors(t *testing.T) {
 						ChainIntact:        true,
 						Anchored:           anchorLocal,
 						CompletenessStatus: completenessLimited,
-						CompletenessReason: reasonBoundedClosed,
+						CompletenessReason: reasonAbnormalEnd,
 					},
 				}
 				body.TotalReceipts = 2

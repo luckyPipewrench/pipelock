@@ -64,6 +64,6 @@ test("missing durability fields remain unknown instead of resetting cumulative c
 
   assert.deepEqual(analyzeLifecycle(receipts, defaultChain), {
     status: "LIMITED",
-    reason: "bounded_closed",
+    reason: "abnormal_end",
   });
 });

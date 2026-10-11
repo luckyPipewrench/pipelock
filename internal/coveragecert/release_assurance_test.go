@@ -49,7 +49,7 @@ func TestReleaseAssuranceVerifyRejectsMalformedSignedSessionSets(t *testing.T) {
 			name: "broken chain reported as limited",
 			modify: func(body *Body) {
 				body.Sessions[1].CompletenessStatus = completenessLimited
-				body.Sessions[1].CompletenessReason = reasonBoundedClosed
+				body.Sessions[1].CompletenessReason = reasonAbnormalEnd
 			},
 			want: "broken chains must report",
 		},
@@ -91,7 +91,7 @@ func TestReleaseAssuranceValidateRejectsReceiptOverflow(t *testing.T) {
 			ChainIntact:        true,
 			Anchored:           anchorLocal,
 			CompletenessStatus: completenessLimited,
-			CompletenessReason: reasonBoundedClosed,
+			CompletenessReason: reasonAbnormalEnd,
 		},
 		{
 			ID:                 "session-b",
@@ -99,7 +99,7 @@ func TestReleaseAssuranceValidateRejectsReceiptOverflow(t *testing.T) {
 			ChainIntact:        true,
 			Anchored:           anchorLocal,
 			CompletenessStatus: completenessLimited,
-			CompletenessReason: reasonBoundedClosed,
+			CompletenessReason: reasonAbnormalEnd,
 		},
 	}
 

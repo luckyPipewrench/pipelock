@@ -1,6 +1,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { isRunSession } from "./chain-set.js";
+
 import type { ChainResult, LifecycleReason, LifecycleStatus, Receipt } from "./types.js";
 
 export interface LifecycleReport {
@@ -10,6 +12,7 @@ export interface LifecycleReport {
 
 interface RunState {
   opened: boolean;
+  runScoped: boolean;
   closed: boolean;
   intents: Map<string, number>;
   outcomes: Map<string, number>;
@@ -50,6 +53,7 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     if (state === undefined) {
       state = {
         opened: false,
+        runScoped: false,
         closed: false,
         intents: new Map<string, number>(),
         outcomes: new Map<string, number>(),
@@ -78,6 +82,8 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
     const kind = control["kind"];
     if (kind === "session_open") {
       state.opened = true;
+      const session = objectField(control, "open")?.["recorder_session"];
+      state.runScoped = typeof session === "string" && isRunSession(session);
       state.closed = false;
       continue;
     }
@@ -218,7 +224,7 @@ function assessRun(state: RunState): LifecycleReport {
   }
   if (state.durabilityDrop) return { status: broken, reason: "chain_broken" };
   if (state.heartbeatGap) return { status: limited, reason: "heartbeat_gap" };
-  if (!state.closed) return { status: limited, reason: "abnormal_end" };
+  if (!state.closed || !state.runScoped) return { status: limited, reason: "abnormal_end" };
   return { status: limited, reason: "bounded_closed" };
 }
 

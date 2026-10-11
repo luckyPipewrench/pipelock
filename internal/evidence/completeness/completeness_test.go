@@ -7,6 +7,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -358,7 +362,7 @@ func TestAnalyzeReasons(t *testing.T) {
 				}
 				return chain, b.keyHex
 			},
-			want: ReasonBoundedClosed,
+			want: ReasonAbnormalEnd,
 		},
 		"abnormal_end": {
 			build: func(t *testing.T) ([]receipt.Receipt, string) {
@@ -405,7 +409,7 @@ func TestAnalyzeReasons(t *testing.T) {
 			t.Parallel()
 			chain, keyHex := tc.build(t)
 			run := requireOneRun(t, analyzeBuilt(chain, keyHex), StatusLimited, tc.want)
-			if tc.want == ReasonBoundedClosed {
+			if name == "bounded_closed" {
 				if run.MatchedPairs != 1 || run.UnmatchedIntents != 0 || !run.Closed || !run.DurabilityMonotonic {
 					t.Fatalf("bounded run counters wrong: %#v", run)
 				}
@@ -480,10 +484,10 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 		}
 
 		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
-		if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
-			t.Fatalf("same-key restart report = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+		if report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd {
+			t.Fatalf("same-key restart report = %s/%s, want LIMITED/abnormal_end: %#v", report.Status, report.Reason, report)
 		}
-		runB := requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
+		runB := requireRun(t, report, "run-b", StatusLimited, ReasonAbnormalEnd)
 		if runB.CloseReceiptCount != 4 || runB.CloseFinalSeq != 3 {
 			t.Fatalf("restart close claims = count %d seq %d, want whole-segment count 4 seq 3: %#v",
 				runB.CloseReceiptCount, runB.CloseFinalSeq, runB)
@@ -507,10 +511,10 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 			t.Fatalf("rotated fixture must verify before completeness analysis: %s", res.Error)
 		}
 		report := Analyze(chain, res)
-		if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
-			t.Fatalf("rotated restart report = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+		if report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd {
+			t.Fatalf("rotated restart report = %s/%s, want LIMITED/abnormal_end: %#v", report.Status, report.Reason, report)
 		}
-		runB := requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
+		runB := requireRun(t, report, "run-b", StatusLimited, ReasonAbnormalEnd)
 		if runB.CloseReceiptCount != 2 || runB.CloseFinalSeq != 1 {
 			t.Fatalf("rotated close claims = count %d seq %d, want segment count 2 seq 1: %#v",
 				runB.CloseReceiptCount, runB.CloseFinalSeq, runB)
@@ -577,11 +581,11 @@ func TestAnalyzePostCloseGuardIsScopedToRun(t *testing.T) {
 		}
 
 		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
-		if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
-			t.Fatalf("second run after close = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+		if report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd {
+			t.Fatalf("second run after close = %s/%s, want LIMITED/abnormal_end: %#v", report.Status, report.Reason, report)
 		}
-		requireRun(t, report, "run-a", StatusLimited, ReasonBoundedClosed)
-		requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
+		requireRun(t, report, "run-a", StatusLimited, ReasonAbnormalEnd)
+		requireRun(t, report, "run-b", StatusLimited, ReasonAbnormalEnd)
 	})
 
 	t.Run("same_run_heartbeat_after_close_is_broken", func(t *testing.T) {
@@ -824,11 +828,11 @@ func TestAnalyzeDurabilityCountersArePerRun(t *testing.T) {
 	}
 
 	report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
-	if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
-		t.Fatalf("durability counter reset across run = %s/%s, want LIMITED/bounded_closed: %#v",
+	if report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd {
+		t.Fatalf("durability counter reset across run = %s/%s, want LIMITED/abnormal_end: %#v",
 			report.Status, report.Reason, report)
 	}
-	runB := requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
+	runB := requireRun(t, report, "run-b", StatusLimited, ReasonAbnormalEnd)
 	if runB.DurabilityCounterDrop || !runB.DurabilityMonotonic {
 		t.Fatalf("run-b durability should be evaluated independently: %#v", runB)
 	}
@@ -1192,8 +1196,8 @@ func TestAnalyzeStatusDomainIsNeverGreen(t *testing.T) {
 			if report.Status == "COMPLETE" || report.Status == "PASS" || report.Status == "OK" {
 				t.Fatalf("green top-line status escaped: %#v", report)
 			}
-			if name == "clean_closed" && (report.Status != StatusLimited || report.Reason != ReasonBoundedClosed) {
-				t.Fatalf("clean run = %s/%s, want LIMITED/bounded_closed", report.Status, report.Reason)
+			if name == "clean_closed" && (report.Status != StatusLimited || report.Reason != ReasonAbnormalEnd) {
+				t.Fatalf("clean run = %s/%s, want LIMITED/abnormal_end", report.Status, report.Reason)
 			}
 		})
 	}
@@ -1212,5 +1216,46 @@ func assertReportStatusDomain(t *testing.T, report Report, allowed map[Status]bo
 		if !allowedStatus(run.Status, allowed) {
 			t.Fatalf("run status %q outside allowed domain: %#v", run.Status, run)
 		}
+	}
+}
+
+func TestAnalyzeEndProofSessionCorpus(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "sdk", "conformance", "testdata", "end-proof")
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(root, "expect.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		Key   string
+		Cases []struct {
+			Name, File string
+			Proven     bool
+		}
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range corpus.Cases {
+		if !strings.HasPrefix(tc.Name, "run-") && tc.Name != "legacy-close" && tc.Name != "closed" {
+			continue
+		}
+		t.Run(tc.Name, func(t *testing.T) {
+			chain, err := receipt.ExtractReceipts(filepath.Join(root, tc.File))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := receipt.VerifyChainTrusted(chain, []string{corpus.Key})
+			if !result.Valid {
+				t.Fatal(result.Error)
+			}
+			report := Analyze(chain, result)
+			want := ReasonAbnormalEnd
+			if tc.Proven {
+				want = ReasonBoundedClosed
+			}
+			if report.Reason != want {
+				t.Fatalf("reason=%s want=%s", report.Reason, want)
+			}
+		})
 	}
 }

@@ -46,7 +46,7 @@ func TestAnalyzeRefusedOutcomeClosesItsIntent(t *testing.T) {
 		t.Fatalf("signed outcome verdict = %q, want block", refusedVerdict)
 	}
 
-	run := requireOneRun(t, refused, StatusLimited, ReasonBoundedClosed)
+	run := requireOneRun(t, refused, StatusLimited, ReasonAbnormalEnd)
 	if run.Intents != 1 || run.Outcomes != 1 || run.MatchedPairs != 1 || run.UnmatchedIntents != 0 {
 		t.Fatalf("refused call run = %+v, want one matched intent/outcome pair", run)
 	}

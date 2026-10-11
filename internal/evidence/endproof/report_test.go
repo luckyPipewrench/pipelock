@@ -79,3 +79,28 @@ func TestCloseMustBeTerminal(t *testing.T) {
 		t.Fatal("close without its own session_open proved the chain end")
 	}
 }
+
+func TestRunScopedEmitterGrammar(t *testing.T) {
+	for _, tc := range []struct {
+		session string
+		want    bool
+	}{
+		{"proxy.run.0123456789abcdef0123456789abcdef", true},
+		{"π.run.0123456789abcdef0123456789abcdef", true},
+		{"proxy", false},
+		{"proxy.run.", false},
+		{"proxy.run.abc", false},
+		{"proxy.run.0123456789ABCDEF0123456789ABCDEF", false},
+		{"proxy.run.0123456789abcdef0123456789abcdefx", false},
+		{"proxy.run.x.run.0123456789abcdef0123456789abcdef", false},
+		{"proxy.RUN.0123456789abcdef0123456789abcdef", false},
+		{".run.0123456789abcdef0123456789abcdef", false},
+		{"a/b.run.0123456789abcdef0123456789abcdef", false},
+	} {
+		t.Run(tc.session, func(t *testing.T) {
+			if got := RunScoped(tc.session); got != tc.want {
+				t.Fatalf("RunScoped=%v want %v", got, tc.want)
+			}
+		})
+	}
+}

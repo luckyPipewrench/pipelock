@@ -97,7 +97,7 @@ fn missing_durability_fields_remain_unknown_instead_of_resetting_counters() {
         analyze_lifecycle(&receipts, &chain),
         pipelock_verifier_rs::lifecycle::LifecycleReport {
             status: "LIMITED".to_string(),
-            reason: "bounded_closed".to_string(),
+            reason: "abnormal_end".to_string(),
         }
     );
 }

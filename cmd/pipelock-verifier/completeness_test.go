@@ -416,8 +416,8 @@ func TestCompletenessCLITranscriptRootAfterCloseDoesNotTripPostCloseGuard(t *tes
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	report := parseCompletenessReport(t, stdout)
-	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonBoundedClosed {
-		t.Fatalf("report=%s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonAbnormalEnd {
+		t.Fatalf("report=%s/%s, want LIMITED/abnormal_end: %#v", report.Status, report.Reason, report)
 	}
 	if report.ReceiptCount != 2 {
 		t.Fatalf("receipt_count=%d, want 2 action receipts with transcript_root ignored: %#v", report.ReceiptCount, report)
@@ -469,8 +469,8 @@ func TestCompletenessCLILocationSelector(t *testing.T) {
 		t.Fatalf("selected location code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	report := parseCompletenessReport(t, stdout)
-	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonBoundedClosed {
-		t.Fatalf("report=%s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
+	if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonAbnormalEnd {
+		t.Fatalf("report=%s/%s, want LIMITED/abnormal_end: %#v", report.Status, report.Reason, report)
 	}
 	stdout, stderr, code = runRoot(t, "completeness", "--json", "--key", hex.EncodeToString(pub), root)
 	if code != cliutil.ExitOK {

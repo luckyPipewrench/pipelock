@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -85,8 +86,7 @@ func ActionEvidence(chain []receipt.Receipt) []string {
 // RunScoped reports whether a recorder session is a per-run session that no
 // later process resumes, so a boundary sealed inside it can end the chain.
 func RunScoped(session string) bool {
-	_, ok := receipt.RunSessionBase(session)
-	return ok
+	return evidencename.IsRunSession(session)
 }
 
 // Pin checks an independently supplied expected endpoint. It never creates

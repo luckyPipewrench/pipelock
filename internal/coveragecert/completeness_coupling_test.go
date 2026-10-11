@@ -29,7 +29,7 @@ func TestValidateCompletenessCoupling(t *testing.T) {
 	// one thing. receipt_count is positive except where the case needs zero.
 	session := func(status, reason string, receipts uint64) SessionCoverage {
 		return SessionCoverage{
-			ID:                 "session-001",
+			ID:                 "session-001.run." + strings.Repeat("a", 32),
 			ReceiptCount:       receipts,
 			ChainIntact:        status != completenessBroken,
 			Anchored:           "local",
@@ -164,5 +164,43 @@ func TestSignRefusesCompletenessCouplingViolation(t *testing.T) {
 
 	if _, err := Sign(body, priv); err == nil {
 		t.Fatal("Sign accepted LIMITED/chain_broken; a signed certificate must not understate a broken chain")
+	}
+}
+
+func TestSignRunScopedBoundedClose(t *testing.T) {
+	pub, priv := genTestKey(t)
+	for _, id := range []string{"proxy", "proxy.run.", "proxy.run.abc", "proxy.run." + strings.Repeat("A", 32)} {
+		body := validBody(pub)
+		body.Sessions[0].ID = id
+		body.Sessions[0].CompletenessReason = reasonBoundedClosed
+		if _, err := Sign(body, priv); err == nil {
+			t.Errorf("Sign accepted bounded_closed for %q", id)
+		}
+	}
+	body := validBody(pub)
+	body.Sessions[0].ID = "proxy.run." + strings.Repeat("a", 32)
+	body.Sessions[0].CompletenessReason = reasonBoundedClosed
+	if _, err := Sign(body, priv); err != nil {
+		t.Fatalf("per-run positive control: %v", err)
+	}
+	body.Sessions[0].ID = "proxy"
+	body.Sessions[0].CompletenessReason = reasonAbnormalEnd
+	if _, err := Sign(body, priv); err != nil {
+		t.Fatalf("legacy abnormal_end positive control: %v", err)
+	}
+}
+
+func TestVerifyRunScopedBoundedClose(t *testing.T) {
+	pub, priv := genTestKey(t)
+	body := validBody(pub)
+	body.Sessions[0].ID = "proxy"
+	body.Sessions[0].CompletenessReason = reasonBoundedClosed
+	cert := signCoverageCertBodyUnchecked(t, body, pub, priv)
+	result, err := Verify(cert, map[string]struct{}{body.TrustedSignerKey: {}})
+	if err == nil || !strings.Contains(err.Error(), "bounded_closed completeness requires a per-run session id") {
+		t.Fatalf("Verify error=%v", err)
+	}
+	if result.StructuralValid {
+		t.Fatal("Verify accepted a signed shared-session bounded_closed claim")
 	}
 }

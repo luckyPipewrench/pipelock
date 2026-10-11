@@ -4,10 +4,10 @@
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
-    chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
-    refuse_symlink_in_evidence_root_path, resolve_base_sessions, run_session_base, verify_base,
-    with_base_history_snapshot, with_pinned_evidence_directory, BaseVerifyOptions,
-    SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
+    chain_scoped_trust, check_file_entry_sessions, is_run_session, read_session_evidence,
+    read_session_receipts, refuse_symlink_in_evidence_root_path, resolve_base_sessions,
+    run_session_base, verify_base, with_base_history_snapshot, with_pinned_evidence_directory,
+    BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
 };
 use crate::lifecycle::analyze_lifecycle;
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
@@ -145,8 +145,7 @@ fn close_ends_chain(receipts: &[Receipt]) -> bool {
         return ctrl
             .pointer("/open/recorder_session")
             .and_then(|v| v.as_str())
-            .and_then(run_session_base)
-            .is_some();
+            .is_some_and(is_run_session);
     }
     false
 }

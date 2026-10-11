@@ -1,6 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::chain_set::is_run_session;
 use crate::types::{ChainResult, Receipt};
 use std::collections::HashMap;
 
@@ -15,6 +16,7 @@ pub struct LifecycleReport {
 #[derive(Default)]
 struct RunState {
     opened: bool,
+    run_scoped: bool,
     closed: bool,
     intents: HashMap<String, u64>,
     outcomes: HashMap<String, u64>,
@@ -93,6 +95,11 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
         match control.get("kind").and_then(serde_json::Value::as_str) {
             Some("session_open") => {
                 state.opened = true;
+                state.run_scoped = control
+                    .get("open")
+                    .and_then(|v| v.get("recorder_session"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(is_run_session);
                 state.closed = false;
             }
             Some("session_close") => {
@@ -264,7 +271,7 @@ fn assess_run(state: &RunState) -> LifecycleReport {
     if state.heartbeat_gap {
         return report("LIMITED", "heartbeat_gap");
     }
-    if !state.closed {
+    if !state.closed || !state.run_scoped {
         return report("LIMITED", "abnormal_end");
     }
     report("LIMITED", "bounded_closed")

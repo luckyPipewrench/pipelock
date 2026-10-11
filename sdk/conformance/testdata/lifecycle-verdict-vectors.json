@@ -97,7 +97,8 @@
               "open": {
                 "run_nonce": "run-closed",
                 "open_nonce": "open-closed",
-                "chain_open_seq": 0
+                "chain_open_seq": 0,
+                "recorder_session": "proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
               }
             }
           }
@@ -734,6 +735,50 @@
       "expected": {
         "status": "BROKEN",
         "reason": "chain_broken"
+      }
+    },
+    {
+      "name": "legacy_shared_close",
+      "receipts": [
+        {
+          "action_record": {
+            "run_nonce": "run-closed",
+            "chain_seq": 0,
+            "session_control": {
+              "kind": "session_open",
+              "open": {
+                "run_nonce": "run-closed",
+                "open_nonce": "open-closed",
+                "chain_open_seq": 0,
+                "recorder_session": "proxy"
+              }
+            }
+          }
+        },
+        {
+          "action_record": {
+            "run_nonce": "run-closed",
+            "chain_seq": 1,
+            "chain_prev_hash": "root-closed",
+            "session_control": {
+              "kind": "session_close",
+              "close": {
+                "run_nonce": "run-closed",
+                "open_nonce": "open-closed",
+                "final_seq": 1,
+                "root_hash": "root-closed",
+                "receipt_count": 2
+              }
+            }
+          }
+        }
+      ],
+      "chain_result": {
+        "valid": true
+      },
+      "expected": {
+        "status": "LIMITED",
+        "reason": "abnormal_end"
       }
     }
   ]

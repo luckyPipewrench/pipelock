@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import json
+import re
 import sys
 from typing import IO, Any
 
@@ -416,7 +417,13 @@ def _close_ends_chain(receipts: list[dict]) -> bool:
         if ctrl.get("kind") != "session_open" or opened.get("run_nonce") != run_nonce:
             continue
         session = opened.get("recorder_session")
-        return isinstance(session, str) and session.find(".run.") > 0
+        if not isinstance(session, str):
+            return False
+        base, sep, suffix = session.partition(".run.")
+        return (
+            bool(base) and bool(sep) and "/" not in base and "\\" not in base
+            and re.fullmatch(r"[0-9a-f]{32}", suffix) is not None
+        )
     return False
 
 

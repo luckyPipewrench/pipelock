@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
@@ -116,16 +115,7 @@ func (r *Recorder) clearSessionStateLocked() {
 }
 
 func validGroupRunSession(session string) bool {
-	base, suffix, ok := strings.Cut(session, evidencename.RunInfix)
-	if !ok || strings.Contains(suffix, evidencename.RunInfix) || evidencename.ValidateOperatorSessionID(base) != nil || len(suffix) != 32 {
-		return false
-	}
-	for _, ch := range []byte(suffix) {
-		if ch < '0' || (ch > '9' && ch < 'a') || ch > 'f' {
-			return false
-		}
-	}
-	return true
+	return evidencename.IsRunSession(session)
 }
 
 // AcquireGroupSessions binds the one directory owner to a fixed set of run

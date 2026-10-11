@@ -22,6 +22,7 @@ import {
   readSessionReceipts,
   resolveBaseSessions,
   runSessionBase,
+  isRunSession,
   verifyBase,
   withBaseHistorySnapshot,
   type BaseFinding,
@@ -186,7 +187,7 @@ function closeEndsChain(receipts: Receipt[]): boolean {
     if (ctrl?.["kind"] !== "session_open" || open === undefined || open["run_nonce"] !== runNonce)
       continue;
     const session = open["recorder_session"];
-    return typeof session === "string" && runSessionBase(session) !== undefined;
+    return typeof session === "string" && isRunSession(session);
   }
   return false;
 }

@@ -209,6 +209,19 @@ pub fn run_session_base(session: &str) -> Option<&str> {
     }
 }
 
+/// Exact emitter grammar, used for endpoint proof rather than chain discovery.
+pub fn is_run_session(session: &str) -> bool {
+    let Some((base, suffix)) = session.split_once(RUN_INFIX) else {
+        return false;
+    };
+    !base.is_empty()
+        && !base.contains(['/', '\\'])
+        && suffix.len() == 32
+        && suffix
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
 fn is_base_chain(session: &str, base: &str) -> bool {
     session == base || run_session_base(session) == Some(base)
 }

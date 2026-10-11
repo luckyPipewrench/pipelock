@@ -155,6 +155,20 @@ export function runSessionBase(session: string): string | undefined {
   return idx <= 0 ? undefined : session.slice(0, idx);
 }
 
+// Exact emitter grammar, used for endpoint proof rather than chain discovery.
+export function isRunSession(session: string): boolean {
+  const idx = session.indexOf(runInfix);
+  if (idx <= 0) return false;
+  const base = session.slice(0, idx);
+  const suffix = session.slice(idx + runInfix.length);
+  return (
+    !base.includes("/") &&
+    !base.includes("\\") &&
+    suffix.length === 32 &&
+    /^[0-9a-f]+$/u.test(suffix)
+  );
+}
+
 function isBaseChain(session: string, base: string): boolean {
   return session === base || runSessionBase(session) === base;
 }

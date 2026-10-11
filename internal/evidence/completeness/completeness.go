@@ -6,7 +6,10 @@
 // Pipelock saw, but it cannot prove the agent had no other egress path.
 package completeness
 
-import "github.com/luckyPipewrench/pipelock/internal/receipt"
+import (
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+)
 
 const maxSafeLifecycleInteger uint64 = 9_007_199_254_740_991
 
@@ -89,9 +92,10 @@ type DurabilitySnapshot struct {
 type runState struct {
 	report RunReport
 
-	hasOpen  bool
-	intents  map[string]int
-	outcomes map[string]int
+	hasOpen   bool
+	runScoped bool
+	intents   map[string]int
+	outcomes  map[string]int
 	// firstOutcomeSeq records the first outcome for each action so a
 	// terminal outcome-without-intent finding can retain the failing receipt.
 	firstOutcomeSeq map[string]uint64
@@ -463,6 +467,7 @@ func applyOpen(st *runState, ar receipt.ActionRecord, open *receipt.SessionOpen)
 		return "duplicate session_open for run_nonce"
 	}
 	st.hasOpen = true
+	st.runScoped = evidencename.IsRunSession(open.RecorderSession)
 	st.report.OpenNonce = open.OpenNonce
 	st.report.ChainOpenSeq = open.ChainOpenSeq
 	return ""
@@ -600,7 +605,7 @@ func finalizeRun(st *runState) {
 	case st.report.HeartbeatGapDetected:
 		st.report.Status = StatusLimited
 		st.report.Reason = ReasonHeartbeatGap
-	case !st.report.Closed:
+	case !st.report.Closed || !st.runScoped:
 		st.report.Status = StatusLimited
 		st.report.Reason = ReasonAbnormalEnd
 	default:

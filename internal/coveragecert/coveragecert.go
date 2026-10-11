@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -290,7 +291,11 @@ func validateCompletenessCoupling(s SessionCoverage) error {
 	switch s.CompletenessStatus {
 	case completenessLimited:
 		switch s.CompletenessReason {
-		case reasonBoundedClosed, reasonAbnormalEnd, reasonOpenAction, reasonHeartbeatGap:
+		case reasonBoundedClosed:
+			if !evidencename.IsRunSession(s.ID) {
+				return fmt.Errorf("bounded_closed completeness requires a per-run session id")
+			}
+		case reasonAbnormalEnd, reasonOpenAction, reasonHeartbeatGap:
 		default:
 			return fmt.Errorf("LIMITED completeness cannot use reason %s", safeQuotedVerifyValue(s.CompletenessReason))
 		}

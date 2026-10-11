@@ -78,6 +78,21 @@ func ValidateOperatorSessionID(id string) error {
 	return nil
 }
 
+// IsRunSession reports whether an ID has the exact form minted by
+// recorder.NewRunSessionID. Merely containing RunInfix is not end proof.
+func IsRunSession(session string) bool {
+	base, suffix, ok := strings.Cut(session, RunInfix)
+	if !ok || ValidateOperatorSessionID(base) != nil || len(suffix) != 32 {
+		return false
+	}
+	for _, ch := range []byte(suffix) {
+		if ch < '0' || (ch > '9' && ch < 'a') || ch > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
 // Parse splits a recorder evidence shard filename into its session ID and
 // starting sequence. It accepts a bare name or a full path.
 //

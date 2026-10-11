@@ -119,6 +119,70 @@
       "exit": 0,
       "status": "CHAIN VALID",
       "proven": true
+    },
+    {
+      "name": "run-empty-suffix",
+      "file": "run-empty-suffix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-short-suffix",
+      "file": "run-short-suffix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-nonhex-suffix",
+      "file": "run-nonhex-suffix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-upperhex-suffix",
+      "file": "run-upperhex-suffix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-extra-infix",
+      "file": "run-extra-infix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-case-infix",
+      "file": "run-case-infix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-encoded-infix",
+      "file": "run-encoded-infix.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "run-unicode-base",
+      "file": "run-unicode-base.jsonl",
+      "flags": [],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
     }
   ]
 }

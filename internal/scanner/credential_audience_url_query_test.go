@@ -448,6 +448,31 @@ func TestUrlDLPAudienceSurface_Edges(t *testing.T) {
 		t.Errorf("valid target surface = %q, want url_query", got)
 	}
 
+	// One scan asks for the same pattern and target once per matching query
+	// combination. The memo answers repeats from one computation and never
+	// hands one target's surface to another.
+	releaseTarget := githubReleaseAssetsBase + "?j=" + jwt
+	otherTarget := "https://api.vendor.example/a?j=" + jwt
+	perScan := &queryLessDLPMemo{}
+	for i := 0; i < 3; i++ {
+		if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, releaseTarget, perScan); got != credentialAudienceURLQuerySurface {
+			t.Fatalf("pass %d: release target surface = %q, want url_query", i, got)
+		}
+		if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, otherTarget, perScan); got != "url" {
+			t.Fatalf("pass %d: non-audience target surface = %q, want url", i, got)
+		}
+	}
+	if len(perScan.surfaces) != 2 {
+		t.Fatalf("memo holds %d surfaces, want one per pattern and target", len(perScan.surfaces))
+	}
+	// A repeat is served from the memo rather than recomputed.
+	seeded := &queryLessDLPMemo{surfaces: map[queryAudienceSurfaceKey]string{
+		{pattern: jwtPattern, target: otherTarget}: "memoized",
+	}}
+	if got := s.urlDLPAudienceSurfaceForTarget(jwtPattern, otherTarget, seeded); got != "memoized" {
+		t.Fatalf("memoized surface = %q, want the stored answer", got)
+	}
+
 	// A bare "url" surface must not earn the allow through the subsequence path.
 	kept, allows := s.credentialAudienceAllows(jwtPattern, "https://"+githubReleaseAssetsHost+"/a?j="+jwt, "url")
 	if allows || kept.PatternName != "" {

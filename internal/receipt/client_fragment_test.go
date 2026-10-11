@@ -59,8 +59,9 @@ func TestActionReceiptFragmentCandidates(t *testing.T) {
 			candidates = append(candidates, a.Field)
 		}
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("candidates = %v, want method, policy_hash override and target", candidates)
+	// A standard method is an enum value, not a candidate.
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %v, want policy_hash override and target", candidates)
 	}
 }
 
@@ -73,6 +74,13 @@ func TestActionReceiptDetectorCallBudget(t *testing.T) {
 	}{
 		{"plain GET", baseOpts(), 200},
 		{"block GET", EmitOpts{ActionID: NewActionID(), Target: testTarget, Verdict: "block", Transport: testTransport, Method: "GET", Layer: "dlp", Pattern: "credential"}, 700},
+		// The shape the forward proxy writes for every request: taint and
+		// authority labels are enums and must not multiply the search.
+		{"forward request with taint labels", EmitOpts{
+			ActionID: NewActionID(), Target: testTarget, Verdict: "allow", Transport: "forward", Method: "GET", RequestID: "req-2743",
+			DecisionPhase: DecisionPhaseIntent, SessionTaintLevel: "trusted", AuthorityKind: "user_broad",
+			TaintDecision: "allow", TaintDecisionReason: "taint_safe_read_only_action",
+		}, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(Receipt{Version: ReceiptVersion, ActionRecord: f.em.contentRecord(tc.opts, ActionRead, SideEffectExternalRead, ReversibilityFull, testConfigHash)})

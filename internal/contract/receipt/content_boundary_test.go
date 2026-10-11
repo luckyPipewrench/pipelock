@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -92,7 +93,7 @@ func TestRecordEvidenceExcludesGeneratedFields(t *testing.T) {
 	}
 	session := recorder.DefaultSessionBase
 	for i := 0; i < 3; i++ {
-		if err := recordEvidence(context.Background(), rec, session, raw, i%2 == 1); err != nil {
+		if err := recordEvidence(context.Background(), rec, session, raw, i%2 == 1, nil); err != nil {
 			t.Fatalf("v2 receipt with generated wedged head refused: %v", err)
 		}
 	}
@@ -113,11 +114,11 @@ func TestRecordEvidenceRejectsContentWithoutRedacting(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := v2Recorder(t)
-			err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, mutate), false)
+			err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, mutate), false, nil)
 			if !errors.Is(err, receiptcontent.ErrRejected) || strings.Contains(err.Error(), v2Canary) {
 				t.Fatalf("err = %v, want content rejection without echo", err)
 			}
-			if err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, nil), false); err != nil {
+			if err := recordEvidence(context.Background(), rec, recorder.DefaultSessionBase, v2Detail(t, nil), false, nil); err != nil {
 				t.Fatalf("clean receipt after rejection: %v", err)
 			}
 		})
@@ -131,20 +132,20 @@ func (p *plainRecorder) Record(e recorder.Entry) error { p.entries = append(p.en
 func TestRecordEvidenceFallbackAndMirrorDerivation(t *testing.T) {
 	p := &plainRecorder{}
 	raw := v2Detail(t, nil)
-	if err := recordEvidence(context.Background(), p, "s", raw, false); err != nil {
+	if err := recordEvidence(context.Background(), p, "s", raw, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.entries) != 1 || p.entries[0].Summary != "proxy_decision: read allow via policy" || p.entries[0].Transport != "forward" {
 		t.Fatalf("entry = %+v", p.entries)
 	}
-	if err := recordEvidence(context.Background(), p, "s", raw, true); !errors.Is(err, ErrNoDurableRecorder) {
+	if err := recordEvidence(context.Background(), p, "s", raw, true, nil); !errors.Is(err, ErrNoDurableRecorder) {
 		t.Fatalf("durable on plain recorder: %v", err)
 	}
-	if err := recordEvidence(context.Background(), p, "s", []byte(`{`), false); err == nil {
+	if err := recordEvidence(context.Background(), p, "s", []byte(`{`), false, nil); err == nil {
 		t.Fatal("malformed detail accepted")
 	}
 	shadow := v2Detail(t, func(m map[string]any) { m["payload_kind"] = string(PayloadShadowDelta) })
-	if err := recordEvidence(context.Background(), p, "s", shadow, false); err != nil || p.entries[1].Summary != string(PayloadShadowDelta) {
+	if err := recordEvidence(context.Background(), p, "s", shadow, false, nil); err != nil || p.entries[1].Summary != string(PayloadShadowDelta) {
 		t.Fatalf("shadow mirror = %+v, %v", p.entries, err)
 	}
 }
@@ -177,5 +178,86 @@ func TestDeclaredPayloadMembersAreNotKeyCandidates(t *testing.T) {
 	extra := v2Detail(t, func(m map[string]any) { m["payload"].(map[string]any)["undeclared"] = "x" })
 	if got := keys(extra); len(got) != 1 {
 		t.Fatalf("undeclared payload member key atoms = %v, want one", got)
+	}
+}
+
+// A scan taken before the receipt was final binds only to the content it
+// scanned. Recording different content with that scan rescans the final
+// bytes, so a clean prescan can never carry detector-positive content to disk,
+// and a matching prescan is bound without a second scan.
+var prescanTestStamper = NewStamper("test.prescan")
+
+func TestPrescanNeverVouchesForDifferentContent(t *testing.T) {
+	rec := v2Recorder(t)
+	stamper := prescanTestStamper
+	clean := v2Receipt()
+	pre, err := stamper.Prescan(context.Background(), rec, clean)
+	if err != nil {
+		t.Fatalf("prescan of a clean receipt: %v", err)
+	}
+	dirty := v2Receipt()
+	dirty.Principal = v2Canary
+	if err := stamper.RecordPrescanned(context.Background(), rec, recorder.DefaultSessionBase, dirty, false, pre); !errors.Is(err, receiptcontent.ErrRejected) {
+		t.Fatalf("different content recorded with a clean prescan: err = %v, want content rejection", err)
+	}
+	final := v2Receipt()
+	final.ChainSeq, final.Timestamp = 7, final.Timestamp.Add(time.Second)
+	if err := stamper.RecordPrescanned(context.Background(), rec, recorder.DefaultSessionBase, final, false, pre); err != nil {
+		t.Fatalf("generated fields changed after the prescan: %v", err)
+	}
+	if _, err := stamper.Prescan(context.Background(), rec, dirty); !errors.Is(err, receiptcontent.ErrRejected) {
+		t.Fatalf("prescan of detector-positive content: err = %v, want content rejection", err)
+	}
+	var none *Stamper
+	if _, err := none.Prescan(context.Background(), rec, clean); !errors.Is(err, ErrNoStamper) {
+		t.Fatalf("nil stamper prescan: %v", err)
+	}
+	if pre, err := stamper.Prescan(context.Background(), &plainRecorder{}, clean); err != nil || pre == nil {
+		t.Fatalf("plain recorder prescan = %v, %v", pre, err)
+	}
+}
+
+// countingRecorder counts content scans on a real recorder.
+type countingRecorder struct {
+	*recorder.Recorder
+	scans int
+}
+
+func (c *countingRecorder) ScanReceiptContent(ctx context.Context, p *receiptcontent.Producer, detail []byte) (receiptcontent.Report, *recorder.ContentScan, error) {
+	c.scans++
+	return c.Recorder.ScanReceiptContent(ctx, p, detail)
+}
+
+// A prescan is reused when only generated fields changed, and a scan from one
+// recorder is never accepted by another.
+func TestPrescanReuseAndRecorderBinding(t *testing.T) {
+	counting := &countingRecorder{Recorder: v2Recorder(t)}
+	pre, err := prescanTestStamper.Prescan(context.Background(), counting, v2Receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := v2Receipt()
+	final.ChainSeq, final.Timestamp = 9, final.Timestamp.Add(time.Second)
+	if err := prescanTestStamper.RecordPrescanned(context.Background(), counting, recorder.DefaultSessionBase, final, false, pre); err != nil {
+		t.Fatal(err)
+	}
+	if counting.scans != 1 {
+		t.Fatalf("content scanned %d times, want the prescan reused", counting.scans)
+	}
+
+	other := v2Recorder(t)
+	foreign, err := prescanTestStamper.Prescan(context.Background(), counting, v2Receipt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prescanTestStamper.RecordPrescanned(context.Background(), other, recorder.DefaultSessionBase, v2Receipt(), false, foreign)
+	if err == nil || !strings.Contains(err.Error(), "attestation is invalid") {
+		t.Fatalf("scan from another recorder err = %v, want an attestation refusal", err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if files, _ := filepath.Glob(filepath.Join(other.Dir(), "evidence-*.jsonl")); len(files) != 0 {
+		t.Fatalf("refused record wrote evidence: %v", files)
 	}
 }

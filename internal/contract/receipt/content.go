@@ -158,6 +158,45 @@ func NewStamper(producer string) *Stamper {
 // from those bytes. A *receiptcontent.RejectionError is deterministic for its
 // input: callers must not treat it as a storage failure.
 func (s *Stamper) Record(ctx context.Context, rec EntryRecorder, session string, rcpt EvidenceReceipt, durable bool) error {
+	return s.RecordPrescanned(ctx, rec, session, rcpt, durable, nil)
+}
+
+// Prescan is a content scan of an evidence receipt taken before its generated
+// fields (chain position, timestamp, signature) are final. Content does not
+// depend on them, so a producer can scan outside its chain lock and bind the
+// result to the final bytes under it.
+type Prescan struct{ cs *recorder.ContentScan }
+
+// Prescan scans rcpt's content. A rejection is returned as an error, exactly
+// as Record would return it. A recorder that does not scan content needs no
+// prescan, and gets an empty one.
+func (s *Stamper) Prescan(ctx context.Context, rec EntryRecorder, rcpt EvidenceReceipt) (*Prescan, error) {
+	if s == nil || s.name == "" {
+		return nil, ErrNoStamper
+	}
+	cr, ok := rec.(contentRecorder)
+	if !ok {
+		return &Prescan{}, nil
+	}
+	rcptJSON, err := json.Marshal(rcpt)
+	if err != nil {
+		return nil, fmt.Errorf("marshal evidence receipt: %w", err)
+	}
+	rep, cs, err := cr.ScanReceiptContent(ctx, evidenceReceiptProducer, rcptJSON)
+	if err == nil && cs == nil {
+		err = rep.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Prescan{cs: cs}, nil
+}
+
+// RecordPrescanned records rcpt using a scan from Prescan. The recorder binds
+// the scan only when the final bytes project to the scanned content; if they
+// do not, the final bytes are scanned again here, so a stale scan is never
+// trusted. A nil prescan scans in place, as Record does.
+func (s *Stamper) RecordPrescanned(ctx context.Context, rec EntryRecorder, session string, rcpt EvidenceReceipt, durable bool, pre *Prescan) error {
 	if s == nil || s.name == "" {
 		return ErrNoStamper
 	}
@@ -165,10 +204,14 @@ func (s *Stamper) Record(ctx context.Context, rec EntryRecorder, session string,
 	if err != nil {
 		return fmt.Errorf("marshal evidence receipt: %w", err)
 	}
-	return recordEvidence(ctx, rec, session, rcptJSON, durable)
+	var cs *recorder.ContentScan
+	if pre != nil {
+		cs = pre.cs
+	}
+	return recordEvidence(ctx, rec, session, rcptJSON, durable, cs)
 }
 
-func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool) error {
+func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool, pre *recorder.ContentScan) error {
 	outer, err := evidenceReceiptOuter(rcptJSON)
 	if err != nil {
 		return err
@@ -192,14 +235,7 @@ func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcpt
 		}
 		return dr.RecordDurable(entry)
 	}
-	rep, cs, err := cr.ScanReceiptContent(ctx, evidenceReceiptProducer, rcptJSON)
-	if err == nil && cs == nil {
-		err = rep.Err()
-	}
-	if err != nil {
-		return err
-	}
-	scan, err := cr.BindReceiptContent(cs, evidenceReceiptProducer, rcptJSON)
+	scan, err := bindEvidenceContent(ctx, cr, rcptJSON, pre)
 	if err != nil {
 		return err
 	}
@@ -207,4 +243,23 @@ func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcpt
 		return cr.RecordDurableWithReceiptScan(entry, &scan)
 	}
 	return cr.RecordWithReceiptScan(entry, &scan)
+}
+
+// bindEvidenceContent binds pre to rcptJSON, or scans rcptJSON when there is
+// no prescan or its content no longer matches the final bytes.
+func bindEvidenceContent(ctx context.Context, cr contentRecorder, rcptJSON []byte, pre *recorder.ContentScan) (recorder.ReceiptScan, error) {
+	if pre != nil {
+		scan, err := cr.BindReceiptContent(pre, evidenceReceiptProducer, rcptJSON)
+		if !errors.Is(err, recorder.ErrContentChanged) {
+			return scan, err
+		}
+	}
+	rep, cs, err := cr.ScanReceiptContent(ctx, evidenceReceiptProducer, rcptJSON)
+	if err == nil && cs == nil {
+		err = rep.Err()
+	}
+	if err != nil {
+		return recorder.ReceiptScan{}, err
+	}
+	return cr.BindReceiptContent(cs, evidenceReceiptProducer, rcptJSON)
 }

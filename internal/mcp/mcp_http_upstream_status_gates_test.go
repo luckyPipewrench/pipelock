@@ -16,23 +16,25 @@ import (
 )
 
 func TestUpstreamClientErrorWriteState(t *testing.T) {
-	for _, revoked := range []bool{false, true} {
-		name := "active"
-		if revoked {
-			name = "revoked"
-		}
+	for _, name := range []string{"active", "revoked", "escalated"} {
 		t.Run(name, func(t *testing.T) {
 			state := newMCPListenerTransientState()
-			if revoked {
+			if name == "revoked" {
 				state.revoke()
+			}
+			opts := MCPProxyOpts{}
+			if name == "escalated" {
+				opts.Rec = &mockRecorder{level: 1}
+				opts.AdaptiveCfg = &config.AdaptiveEnforcement{Enabled: true, Levels: config.EscalationLevels{Elevated: config.EscalationActions{BlockAll: boolPtr(true)}}}
 			}
 			w := httptest.NewRecorder()
 			reply := upstreamClientError{status: http.StatusUnauthorized, header: http.Header{"Www-Authenticate": {upstreamStatusChallenge}}, body: []byte("refusal")}
-			ok, reason := reply.writeIfActive(w, state, MCPProxyOpts{})
-			if ok == revoked {
-				t.Fatalf("write allowed=%v revoked=%v reason=%s", ok, revoked, reason)
+			ok, reason := reply.writeIfActive(w, state, opts)
+			want := name == "active"
+			if ok != want {
+				t.Fatalf("write allowed=%v want=%v reason=%s", ok, want, reason)
 			}
-			if revoked {
+			if !want {
 				if w.Body.Len() != 0 || len(w.Header()) != 0 {
 					t.Fatalf("revoked state wrote upstream content: %v %s", w.Header(), w.Body.String())
 				}

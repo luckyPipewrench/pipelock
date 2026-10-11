@@ -917,11 +917,18 @@ func RunHTTPListenerProxy(
 		// that means "no GET stream", or read a JSON-RPC error. Anything the
 		// scanner flags or cannot read gets the sanitized 502 instead. It
 		// returns false for any other status so the caller carries on.
-		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string) bool {
+		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent receipt.EmitOpts) bool {
 			if !transport.IsClientError(upResp.StatusCode) {
 				return false
 			}
+			outcomeReason := "upstream_http_client_error"
+			defer func() {
+				if intent.ActionID != "" {
+					emitMCPOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, "error", -1, outcomeReason, requestBaseOpts.requireReceipts())
+				}
+			}()
 			withhold := func(reason string) {
+				outcomeReason = reason
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
@@ -1148,7 +1155,7 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey()) {
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
 				return
 			}
 			if upResp.StatusCode >= 400 {
@@ -1309,7 +1316,7 @@ func RunHTTPListenerProxy(
 			// A refused DELETE (405 when the server does not let clients end
 			// sessions, 404 for an unknown one) is relayed, and the session
 			// state below is kept because nothing was terminated.
-			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey()) {
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
 				return
 			}
 			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
@@ -1804,7 +1811,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// A 4xx is relayed once scanned; see relayUpstreamClientError.
-		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey) {
+		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome.Receipt) {
 			return
 		}
 

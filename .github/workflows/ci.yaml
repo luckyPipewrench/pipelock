@@ -416,7 +416,11 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           # One top-level test slower than this, without -race, is a test to
           # split or speed up; the summarizer fails the shard and names it.
-          TEST_CEILING_SECONDS: '120'
+          # 120s tripped on receipt-load's four real-proxy integrity runs
+          # (147s beside the receipt packages on a 4-core runner), a normal
+          # run under contention rather than a runaway test, so the ceiling
+          # leaves room for that and still sits far inside the 8m timeout.
+          TEST_CEILING_SECONDS: '240'
         run: |
           set -o pipefail
           # GitHub runs this under bash -e; the summary below must still run

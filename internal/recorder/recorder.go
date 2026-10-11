@@ -927,6 +927,12 @@ func (r *Recorder) runPostRecordMaintenanceLocked() error {
 		}
 	}
 	if r.fileEntryCount >= r.cfg.MaxEntriesPerFile {
+		// A size rotation in progress replaces the file; rotate only if the
+		// count still calls for it afterwards.
+		r.awaitRotationLocked()
+		if r.fileEntryCount < r.cfg.MaxEntriesPerFile {
+			return nil
+		}
 		if err := r.rotateFile(); err != nil {
 			return fmt.Errorf("rotating file: %w", err)
 		}
@@ -1766,7 +1772,12 @@ func (r *Recorder) closeFile() error {
 	if r.file == nil {
 		return nil
 	}
+	f := r.file
 	r.waitDurableForCurrentFileLocked()
+	if r.file != f {
+		// The wait releases mu, and another caller closed this file meanwhile.
+		return nil
+	}
 	defer func(name string) {
 		r.lastFileName = filepath.Base(name)
 		if info, err := os.Stat(name); err == nil {

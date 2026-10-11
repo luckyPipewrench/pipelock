@@ -203,6 +203,7 @@ func TestCheckpointWaitsForRotationInProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateEntered := make(chan struct{}, 1)
+	endRotationOnCleanup(t, rec)
 	rec.mu.Lock()
 	rec.rotating = true
 	rec.rotationWaitHook = func() {
@@ -236,6 +237,140 @@ func TestCheckpointWaitsForRotationInProgress(t *testing.T) {
 	if err := VerifyChain(entries); err != nil {
 		t.Fatalf("chain: %v", err)
 	}
+}
+
+// The entry-count rotation after a write waits for a size rotation in
+// progress, and does not rotate the file that rotation just opened.
+func TestEntryCountRotationWaitsForSizeRotation(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	session, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Record(Entry{SessionID: session, Type: "test", Summary: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	gateEntered := make(chan struct{}, 1)
+	endRotationOnCleanup(t, rec)
+	rec.mu.Lock()
+	file := rec.file
+	rec.fileEntryCount = rec.cfg.MaxEntriesPerFile
+	rec.rotating = true
+	rec.rotationWaitHook = func() {
+		select {
+		case gateEntered <- struct{}{}:
+		default:
+		}
+	}
+	rec.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		done <- rec.runPostRecordMaintenanceLocked()
+	}()
+	select {
+	case <-gateEntered:
+	case err := <-done:
+		t.Fatalf("entry-count rotation ran during a size rotation: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("entry-count rotation neither waited nor finished")
+	}
+	// The size rotation finishes and its new file has one entry.
+	rec.mu.Lock()
+	rec.fileEntryCount = 1
+	rec.rotating = false
+	rec.durableCond.Broadcast()
+	rec.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.file != file {
+		t.Fatal("entry-count rotation rotated the file the size rotation left open")
+	}
+}
+
+// closeFile waits for the file's syncs and that wait releases mu. A second
+// caller that closed the file meanwhile leaves nothing for the first to close.
+func TestCloseFileSkipsAFileClosedDuringItsWait(t *testing.T) {
+	rec := newTestRecorderForAcquire(t)
+	session, err := AcquireRunSession(rec, "proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.RecordDurable(Entry{SessionID: session, Type: "test", Summary: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	syncStarted := make(chan struct{}, 1)
+	rec.mu.Lock()
+	rec.fileSync = func(f *os.File) error {
+		select {
+		case syncStarted <- struct{}{}:
+		default:
+		}
+		<-release
+		return f.Sync()
+	}
+	rec.mu.Unlock()
+	ticket, err := rec.AppendDurableWithReceiptScanPreAdvance(Entry{SessionID: session, Type: "test", Summary: "pending"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-syncStarted:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("sync never started")
+	}
+	closers := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		entered := make(chan struct{})
+		go func() {
+			rec.mu.Lock()
+			close(entered)
+			err := rec.closeFile()
+			rec.mu.Unlock()
+			closers <- err
+		}()
+		<-entered
+		// The closer holds mu until its wait for the pending sync releases it.
+		testwait.For(t, 5*time.Second, func() bool {
+			if rec.mu.TryLock() {
+				rec.mu.Unlock()
+				return true
+			}
+			return false
+		}, "closer never started waiting for the pending sync")
+	}
+	close(release)
+	if err := ticket.Wait(); err != nil {
+		t.Fatalf("pending entry: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-closers; err != nil {
+			t.Fatalf("closer: %v", err)
+		}
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.file != nil {
+		t.Fatal("file still open after both closers returned")
+	}
+}
+
+// endRotationOnCleanup clears a simulated rotation before the recorder's own
+// cleanup closes it, so a failing test cannot leave Close waiting at the gate.
+func endRotationOnCleanup(t *testing.T, rec *Recorder) {
+	t.Helper()
+	t.Cleanup(func() {
+		rec.mu.Lock()
+		rec.rotating = false
+		rec.durableCond.Broadcast()
+		rec.mu.Unlock()
+	})
 }
 
 func currentFileSize(t *testing.T, rec *Recorder) int64 {

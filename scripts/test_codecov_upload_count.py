@@ -347,9 +347,14 @@ class UploadCountTest(unittest.TestCase):
         self.assertEqual(uploads[0]["with"]["files"], "./coverage.out")
         run = "\n".join(step.get("run", "") for step in steps)
         commands = [line.strip() for line in run.splitlines() if line.strip().startswith("go test ")]
-        self.assertEqual(len(commands), 1)
-        self.assertNotIn("-race", commands[0])
-        self.assertIn("-covermode=set -coverprofile=coverage.out", commands[0])
+        # A fresh pass for go-tool packages and a cached pass for the rest,
+        # merged into the one profile the upload names.
+        self.assertEqual(len(commands), 2)
+        for command, profile in zip(commands, ("coverage-fresh.out", "coverage-cached.out")):
+            self.assertNotIn("-race", command)
+            self.assertIn(f"-covermode=set -coverprofile={profile}", command)
+        self.assertIn('echo "mode: set" > coverage.out', run)
+        self.assertIn('tail -n +2 "$profile" >> coverage.out', run)
         verify = [step for step in steps if step.get("name") == "Verify coverage profile"]
         self.assertEqual(len(verify), 1)
         self.assertEqual(verify[0]["run"], "bash scripts/check-coverage-profile.sh coverage.out")

@@ -73,14 +73,15 @@ REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 #
 # Measured without -race on four pinned cores: internal/mcp took 694s and
 # internal/proxy 552s alone, so each splits three ways; every rest package
-# together came to about eight minutes of four-way work, so two rest shards.
+# together came to about eight minutes of four-way work. Two rest shards left the
+# enterprise pair the slowest jobs in the lane at about six minutes, so three.
 UNIT_SPLITS = {
     "proxy": 3,
     "scanner": 1,
     "mcp": 3,
     "runtime": 1,
 }
-UNIT_REST_SHARDS = ("rest-0", "rest-1")
+UNIT_REST_SHARDS = ("rest-0", "rest-1", "rest-2")
 
 # Trees whose coverage is collected by a separate non-race pass instead of the
 # race run. -race forces atomic coverage counters, which made the scanner's
@@ -120,6 +121,73 @@ def _heavy_shard_names() -> tuple[str, ...]:
 
 HEAVY_SHARDS = _heavy_shard_names()
 SHARDS = (*HEAVY_SHARDS, *REST_SHARDS)
+
+# Go's test-result cache keys a result on the test binary's own inputs and the
+# files and environment the test process reads. A test that runs the go tool in
+# a subprocess (go build ./cmd/pipelock, then exercises that binary) depends on
+# source the child compiles, which that key never sees, so a cached pass could
+# outlive a change to it. A file that both calls exec.Command and names "go" is
+# treated as doing that, and every package whose test binary includes such a
+# file runs with -count=1 in the no-race lane.
+GO_TOOL_EXEC_RE = re.compile(r"\bexec\.Command(?:Context)?\(")
+GO_TOOL_NAME_RE = re.compile(r'"go"')
+
+
+def go_tool_dirs(root: Path = ROOT) -> tuple[set[str], set[str]]:
+    """Repository-relative directories with a .go file that runs the go tool.
+
+    Returns (library, test): a non-test file is compiled into every test binary
+    that imports its package; a _test.go file only into its own package's.
+    """
+    library: set[str] = set()
+    test: set[str] = set()
+    for directory, subdirs, files in os.walk(root):
+        subdirs[:] = sorted(d for d in subdirs if not d.startswith(".") and d not in {"testdata", "node_modules"})
+        for filename in files:
+            if not filename.endswith(".go"):
+                continue
+            text = (Path(directory) / filename).read_text(encoding="utf-8", errors="replace")
+            if GO_TOOL_EXEC_RE.search(text) and GO_TOOL_NAME_RE.search(text):
+                rel = Path(directory).relative_to(root).as_posix()
+                (test if filename.endswith("_test.go") else library).add(rel)
+    return library, test
+
+
+def fresh_packages(packages: list[str], tags: str) -> list[str]:
+    """The subset of packages whose test binary includes a go-tool-running file."""
+    if not packages:
+        return []
+    module = module_path()
+    library_dirs, test_dirs = go_tool_dirs()
+    as_package = lambda d: f"{module}/{d}" if d != "." else module  # noqa: E731
+    tool_packages = {as_package(d) for d in library_dirs}
+    self_fresh = {as_package(d) for d in test_dirs}
+    cmd = ["go", "list", "-test"]
+    if tags:
+        cmd.extend(["-tags", tags])
+    cmd.extend(["-f", "{{.ImportPath}}|{{join .Deps \" \"}}", *packages])
+    result = subprocess.run(cmd, check=True, text=True, capture_output=True, cwd=ROOT)
+    test_deps: dict[str, set[str]] = {}
+    for line in result.stdout.splitlines():
+        name, _, deps = line.partition("|")
+        # "pkg.test" is the test main; its Deps cover the package, its internal
+        # and external test files, and everything they import.
+        if name.endswith(".test"):
+            test_deps[name[: -len(".test")]] = set(deps.split())
+    fresh = []
+    for pkg in packages:
+        deps = test_deps.get(pkg, set()) | {pkg}
+        if pkg in self_fresh or {d.split(" ")[0] for d in deps} & tool_packages:
+            fresh.append(pkg)
+    return fresh
+
+
+def module_path() -> str:
+    for line in (ROOT / "go.mod").read_text(encoding="utf-8").splitlines():
+        if line.startswith("module "):
+            return line.split()[1]
+    raise ValueError("go.mod has no module line")
+
 
 # The kernel refuses a single argv entry longer than 128 KiB (MAX_ARG_STRLEN),
 # and `go test` forwards the selector to the test binary as one argument. Keep
@@ -571,6 +639,11 @@ def main() -> int:
         help="no-race lane shard to print (packages, or its selector with --selector)",
     )
     parser.add_argument(
+        "--fresh",
+        choices=("only", "exclude"),
+        help="with --unit-shard: print only the packages that must run with -count=1, or all the others",
+    )
+    parser.add_argument(
         "--list-unit-shards",
         action="store_true",
         help="print the no-race lane's shard names as a JSON list",
@@ -611,8 +684,12 @@ def main() -> int:
         if args.unit_shard:
             if args.selector:
                 print(unit_shard_selector(args.unit_shard))
-            else:
-                print(" ".join(unit_shard_packages(list_packages(args.tags), args.unit_shard)))
+                return 0
+            packages = unit_shard_packages(list_packages(args.tags), args.unit_shard)
+            if args.fresh:
+                fresh = set(fresh_packages(packages, args.tags))
+                packages = [p for p in packages if (p in fresh) == (args.fresh == "only")]
+            print(" ".join(packages))
             return 0
         if args.check_budget:
             return check_budget(args.tags, args.budget_seconds)

@@ -524,6 +524,38 @@ class TestTestNameSplit(unittest.TestCase):
         self.assertEqual(set(seen), set(packages))
         self.assertTrue(all(len(owners) == 1 for owners in seen.values()), seen)
 
+    def test_go_tool_scan_separates_library_from_test_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            files = {
+                # Compiled into every importer's test binary.
+                "lib/run.go": 'package lib\nimport "os/exec"\nfunc B() { _ = exec.Command("go", "build") }\n',
+                # Compiled only into its own package's test binary.
+                "own/x_test.go": 'package own\nimport "os/exec"\nfunc h() { _ = exec.CommandContext(nil, "go", "build") }\n',
+                # Names "go" but runs nothing.
+                "plain/p.go": 'package plain\nconst s = "go"\n',
+                # Runs a different program.
+                "other/o.go": 'package other\nimport "os/exec"\nfunc O() { _ = exec.Command("git", "status") }\n',
+                # The go tool never compiles testdata.
+                "own/testdata/f.go": 'package f\nfunc F() { exec.Command("go") }\n',
+            }
+            for name, text in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            self.assertEqual(ci_test_packages.go_tool_dirs(root), ({"lib"}, {"own"}))
+
+    def test_real_go_tool_packages_run_fresh(self) -> None:
+        module = ci_test_packages.module_path()
+        packages = [
+            f"{module}/scripts/receipt-load",   # its test builds ./cmd/pipelock
+            f"{module}/internal/playground",    # library code runs the go tool
+            f"{module}/internal/normalize",
+            f"{module}/internal/proxy",         # imports internal/sandbox, whose own tests build binaries
+        ]
+        fresh = set(ci_test_packages.fresh_packages(packages, ""))
+        self.assertEqual(fresh, set(packages[:2]))
+
     def test_unknown_no_race_shard_is_refused(self) -> None:
         for shard in ("proxy-9", "scanner-0", "mcp", "rest-9", "nope"):
             with self.subTest(shard=shard), self.assertRaises(ValueError):

@@ -343,6 +343,17 @@ jobs:
   # No retry wrapper here. A timeout is either a hang or a slow test, and both
   # should fail fast with the test named: go test's own timeout panic lists the
   # running tests, and the job limit leaves room for it to fire first.
+  #
+  # Go's test cache. Each shard restores the build and test-result cache main
+  # saved, and go test runs without -count=1, so a package whose code and the
+  # files its tests read are unchanged reports the cached pass instead of
+  # running again (coverage profiles are replayed from the cache too). A rest
+  # shard measured 302s cold and 46s with every result cached. Go's cache is
+  # content-addressed, so a stale entry is never used for changed input; the
+  # race lane on main still runs everything with -count=1. Only main saves,
+  # once per shard per day, after pruning what that run did not use, which
+  # keeps the shards inside the repository's cache allowance. A pull request
+  # can read main's entries but cannot write any main reads.
   test-unit-go126:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
@@ -355,7 +366,7 @@ jobs:
       matrix:
         variant: ['oss', 'enterprise']
         # Must equal scripts/ci_test_packages.py --list-unit-shards (UNIT_SPLITS).
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'scanner', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'scanner', 'mcp-0', 'mcp-1', 'mcp-2', 'runtime', 'rest-0', 'rest-1', 'rest-2']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -365,6 +376,32 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26'
+          # setup-go's one shared cache holds whichever job saved it first;
+          # this job keeps its own per-shard cache below instead.
+          cache: false
+
+      - name: Go cache key
+        id: go-cache-key
+        run: |
+          set -euo pipefail
+          {
+            echo "go=$(go env GOVERSION)"
+            echo "day=$(date -u +%Y%m%d)"
+            echo "dir=$(go env GOCACHE)"
+          } >> "$GITHUB_OUTPUT"
+          # Anything older than this marker after the tests ran was restored
+          # and never used; the save step prunes it.
+          touch "$RUNNER_TEMP/go-cache-start"
+
+      - name: Restore Go build and test-result cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.go-cache-key.outputs.dir }}
+          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          restore-keys: |
+            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
+            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -379,7 +416,11 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           # One top-level test slower than this, without -race, is a test to
           # split or speed up; the summarizer fails the shard and names it.
-          TEST_CEILING_SECONDS: '120'
+          # 120s tripped on receipt-load's four real-proxy integrity runs
+          # (147s beside the receipt packages on a 4-core runner), a normal
+          # run under contention rather than a runaway test, so the ceiling
+          # leaves room for that and still sits far inside the 8m timeout.
+          TEST_CEILING_SECONDS: '240'
         run: |
           set -o pipefail
           # GitHub runs this under bash -e; the summary below must still run
@@ -392,16 +433,43 @@ jobs:
           # The planner's no-race plan: whole heavy trees or UNIT_SPLITS
           # sub-shards of them, complete and disjoint by construction, and the
           # race lane's rest packing.
+          planner_tags=()
           if [ "$VARIANT" = enterprise ]; then
-            packages="$(python3 scripts/ci_test_packages.py --tags enterprise --unit-shard "$TEST_SHARD")" || exit $?
-          else
-            packages="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD")" || exit $?
+            planner_tags=(--tags enterprise)
           fi
+          # Packages whose tests run the go tool in a subprocess depend on
+          # source Go's result cache cannot see, so they always run fresh;
+          # every other package may report main's cached result.
+          fresh_packages="$(python3 scripts/ci_test_packages.py "${planner_tags[@]}" --unit-shard "$TEST_SHARD" --fresh only)" || exit $?
+          cached_packages="$(python3 scripts/ci_test_packages.py "${planner_tags[@]}" --unit-shard "$TEST_SHARD" --fresh exclude)" || exit $?
           test_selector="$(python3 scripts/ci_test_packages.py --unit-shard "$TEST_SHARD" --selector)" || exit $?
-          # shellcheck disable=SC2086 # packages is a space-separated list
-          go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile=coverage.out ${test_selector:+"$test_selector"} $packages -json \
-            | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test.json
-          test_status=$?
+          test_status=0
+          : > /tmp/go-test.json
+          profiles=()
+          if [ -n "$fresh_packages" ]; then
+            # shellcheck disable=SC2086 # a space-separated package list
+            go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile=coverage-fresh.out ${test_selector:+"$test_selector"} $fresh_packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL fresh" --json-out /tmp/go-test-fresh.json
+            status=$?
+            [ "$status" -eq 0 ] || test_status=$status
+            cat /tmp/go-test-fresh.json >> /tmp/go-test.json
+            profiles+=(coverage-fresh.out)
+          fi
+          if [ -n "$cached_packages" ]; then
+            # shellcheck disable=SC2086 # a space-separated package list
+            go test "${tags[@]}" -p=4 -timeout=8m -covermode=set -coverprofile=coverage-cached.out ${test_selector:+"$test_selector"} $cached_packages -json \
+              | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-cached.json
+            status=$?
+            [ "$status" -eq 0 ] || test_status=$status
+            cat /tmp/go-test-cached.json >> /tmp/go-test.json
+            profiles+=(coverage-cached.out)
+          fi
+          # One set-mode profile for the upload: one mode line, then every
+          # block from both passes.
+          echo "mode: set" > coverage.out
+          for profile in "${profiles[@]}"; do
+            [ -f "$profile" ] && tail -n +2 "$profile" >> coverage.out
+          done
           python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" --max-test-seconds "$TEST_CEILING_SECONDS" < /tmp/go-test.json
           summary_status=$?
           if [ "$summary_status" -ne 0 ]; then
@@ -434,6 +502,29 @@ jobs:
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+      # Go marks a cache entry used by touching it, so files still older than
+      # the start marker were restored and never needed. Dropping them keeps
+      # each day's entry to what that day's tree uses instead of every day's
+      # leftovers. Go touches an entry only when it is over an hour old, so an
+      # entry saved less than an hour earlier can be pruned while in use; that
+      # costs a rebuild later, never a wrong result.
+      - name: Prune unused Go cache entries
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true' }}
+        env:
+          GO_CACHE_DIR: ${{ steps.go-cache-key.outputs.dir }}
+        run: |
+          set -euo pipefail
+          before="$(du -sh "$GO_CACHE_DIR" | cut -f1)"
+          find "$GO_CACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-start" -delete
+          echo "Go cache: ${before} before pruning, $(du -sh "$GO_CACHE_DIR" | cut -f1) after"
+
+      - name: Save Go build and test-result cache
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ steps.go-cache-key.outputs.dir }}
+          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
 
   test-oss-go127:
     needs: [security-scan, changed-files]

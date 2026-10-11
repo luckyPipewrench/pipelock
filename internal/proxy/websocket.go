@@ -1182,14 +1182,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
-	stopLicenseClose := context.AfterFunc(r.Context(), func() {
-		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
-			_ = clientConn.Close()
-			_ = upstreamConn.Close()
-		}
-	})
-	defer stopLicenseClose()
-
 	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	for _, wsSess := range wsAirlockSessions {
 		// Register airlock cancel for WebSocket connections. When the session

@@ -126,6 +126,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	}
 	loopbackServicesChanged := false
 	publishedServicesChanged := false
+	agentEntitlementLost := false
 	flightRecorderAnchorChanged := oldCfg != nil && !reflect.DeepEqual(oldCfg.FlightRecorder.Anchor, newCfg.FlightRecorder.Anchor)
 	if oldCfg != nil {
 		// Block fetch_proxy.listen changes via reload. The listener binds at
@@ -419,6 +420,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 
 		switch {
 		case agentsRevokedByLicense && reloadClass.ProvesLoss(reloadLic, license.FeatureAgents):
+			agentEntitlementLost = true
 			// License gate disabled agents on reload and the loss is PROVEN
 			// (revoked / expired / downgraded). Shut down already-bound listener
 			// servers so the agent ports stop accepting traffic.
@@ -657,6 +659,11 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	if !s.proxy.Reload(newCfg, newSc) {
 		s.killswitch.AbortReload()
 		return errors.New("reload failed: proxy kept previous config")
+	}
+	if agentEntitlementLost {
+		// Same-input reloads share the license generation. End it only once
+		// proven entitlement loss has committed, never for profile edits.
+		s.proxy.SetLicenseRevoked(newCfg, true)
 	}
 	if s.containmentManaged {
 		s.containmentMetricsDenied.Store(false)

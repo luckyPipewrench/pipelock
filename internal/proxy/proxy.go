@@ -2739,7 +2739,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 
 	if prevEdSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); prevEdSnap != nil {
-		if !config.SameLicenseInputs(oldCfg, cfg) || namedProfilesLost(oldCfg, cfg) {
+		if !config.SameLicenseInputs(oldCfg, cfg) {
 			if receiver, ok := prevEdSnap.Edition.(edition.LicenseRevocationReceiver); ok {
 				receiver.SetLicenseRevoked(true)
 			}
@@ -3247,19 +3247,6 @@ func (p *Proxy) knownProfiles() map[string]bool {
 // The Edition handles context override, CIDR, header/query, and fallback.
 func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity) {
 	return p.editionPtr.Load().ResolveAgent(r.Context(), r)
-}
-
-// namedProfilesLost reports removal of a previously configured paid profile.
-// The old edition's generation must end only after the replacement commits.
-func namedProfilesLost(oldCfg, cfg *config.Config) bool {
-	for name := range oldCfg.Agents {
-		if name != edition.ProfileDefault {
-			if _, ok := cfg.Agents[name]; !ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // resolveAgentRuntimeFromRequest snapshots the request's resolved agent state

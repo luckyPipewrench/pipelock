@@ -239,8 +239,8 @@ func isZeroWidth(r rune) bool {
 }
 
 func isControl(r rune) bool {
-	if r == '\t' || r == '\n' || r == '\r' {
-		return false
+	if r == '\u2028' || r == '\u2029' {
+		return true
 	}
 	return r == 0x7F || (r >= 0x00 && r <= 0x1F) || (r >= 0x80 && r <= 0x9F)
 }

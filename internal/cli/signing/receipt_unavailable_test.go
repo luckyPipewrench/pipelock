@@ -5,10 +5,12 @@ package signing
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -99,5 +101,28 @@ func TestSessionVerificationReportsSymlinkedShardAsBroken(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "CHAIN BROKEN") || strings.Contains(out.String(), "CHAIN UNAVAILABLE") {
 		t.Fatalf("output = %q, want CHAIN BROKEN", out.String())
+	}
+}
+
+func TestSessionVerificationRejectsDisconnectedNonReceiptShard(t *testing.T) {
+	dir := parityFixture(t)
+	const session = "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
+	location := recorder.EvidenceLocation{Root: dir, Dir: dir}
+	var out bytes.Buffer
+	if err := verifyChainFromResolvedSessionDirDetailed(&out, location, session, []string{parityKey(t)}, verifyReceiptOptions{}); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	entry := recorder.Entry{Version: recorder.EntryVersion, Sequence: 9999, Timestamp: time.Now().UTC(), SessionID: session, Type: "decision", Transport: "fetch", Summary: "later entry", PrevHash: recorder.GenesisHash}
+	entry.Hash = recorder.ComputeHash(entry)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "evidence-"+session+"-9999.jsonl"), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := verifyChainFromResolvedSessionDirDetailed(&out, location, session, []string{parityKey(t)}, verifyReceiptOptions{}); err == nil {
+		t.Fatalf("disconnected shard accepted: %s", out.String())
 	}
 }

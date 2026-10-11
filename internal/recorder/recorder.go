@@ -214,6 +214,9 @@ type Recorder struct {
 	// file's syncs. That wait releases mu, so every path that takes a sequence
 	// waits for it first (see awaitRotationLocked).
 	rotating bool
+	// rotationWaitHook, when set by tests, runs each time a caller starts
+	// waiting for a rotation. Callers hold mu.
+	rotationWaitHook func()
 	// lastFileName and lastFileSize describe the session's evidence file
 	// when none is open: the file closed by the last rotation, or the file a
 	// resumed session continues from. SessionWriteEnd reports them so a
@@ -1799,6 +1802,9 @@ func (r *Recorder) rotateFile() error {
 // entry's. Callers hold mu.
 func (r *Recorder) awaitRotationLocked() {
 	for r.rotating && r.durableCond != nil {
+		if r.rotationWaitHook != nil {
+			r.rotationWaitHook()
+		}
 		r.durableCond.Wait()
 	}
 }

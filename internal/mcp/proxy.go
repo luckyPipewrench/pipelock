@@ -1156,6 +1156,7 @@ func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer
 // emitRejectedResponseOutcome preserves receipt evidence using only metadata
 // from an admitted request. Ambiguous IDs cannot attribute an outcome, and the
 // rejected response never consumes the outstanding request or admits its state.
+// A tracker reservation bounds rejection receipts to one per pending request.
 func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
 	if !isResponse(raw) {
 		return
@@ -1170,8 +1171,8 @@ func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *
 	if _, request := fields["method"]; request || jsonscan.HasKeyAlias(fields, "method") {
 		return
 	}
-	outcome, ok := tracker.peekOutcome(fields["id"])
-	if !ok || outcome.Receipt.ActionID == "" {
+	outcome, ok := tracker.claimRejectedOutcome(fields["id"])
+	if !ok {
 		return
 	}
 	reason := "response_key_validation"

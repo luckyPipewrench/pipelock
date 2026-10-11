@@ -113,6 +113,77 @@ func TestResponseKeyRejectionPreservesOutcomeReceipts(t *testing.T) {
 	}
 }
 
+func TestResponseKeyRejectionBoundsOutcomeReceipts(t *testing.T) {
+	for _, kind := range []string{"stdio", "http", "sse", "websocket"} {
+		for _, concurrent := range []bool{false, true} {
+			t.Run(kind+"/concurrent="+strconv.FormatBool(concurrent), func(t *testing.T) {
+				emitter, rec, dir, _ := newReceiptTestHarness(t)
+				intent := receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: kind, Target: "read_file", MCPMethod: methodToolsCall, ToolName: "read_file"}
+				if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{Receipt: intent, RequireReceipt: true}); err != nil {
+					t.Fatal(err)
+				}
+				tracker := NewRequestTracker()
+				tracker.TrackOutcome(json.RawMessage("1"), TrackedRequestOutcome{Receipt: intent, Method: methodToolsCall})
+				baseline := tools.NewToolBaseline()
+				opts := buildTestOpts(testInputScanner(t), withToolCfg(&tools.ToolScanConfig{Action: config.ActionWarn, DetectDrift: true, Baseline: baseline}))
+				opts.ReceiptEmitter, opts.Transport = emitter, kind
+				var admissions atomic.Int32
+				opts.OnResponseKeysValidated = func() { admissions.Add(1) }
+				reject := func() {
+					var out, logs bytes.Buffer
+					if _, err := ForwardScanned(responseStateReader(t, kind, `{"jsonrpc":"2.0","id":1,"Result":{}}`), transport.NewStdioWriter(&out), &logs, tracker, opts); err != nil {
+						t.Error(err)
+					} else if !bytes.Contains(out.Bytes(), []byte(`"error"`)) {
+						t.Errorf("rejected response forwarded: %s", out.String())
+					}
+				}
+				const attempts = 8
+				if concurrent {
+					start, done := make(chan struct{}), make(chan struct{}, attempts)
+					for range attempts {
+						go func() {
+							<-start
+							reject()
+							done <- struct{}{}
+						}()
+					}
+					close(start)
+					for range attempts {
+						<-done
+					}
+				} else {
+					for range attempts {
+						reject()
+					}
+				}
+				if admissions.Load() != 0 || baseline.HasBaseline() || baseline.HasDriftBaseline() {
+					t.Fatal("rejection admitted response state")
+				}
+				var out, logs bytes.Buffer
+				if _, err := ForwardScanned(responseStateReader(t, kind, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`), transport.NewStdioWriter(&out), &logs, tracker, opts); err != nil {
+					t.Fatal(err)
+				}
+				if admissions.Load() != 1 || !bytes.Contains(out.Bytes(), []byte(`"result"`)) || tracker.Validate(json.RawMessage("1")) {
+					t.Fatal("valid response did not consume preserved correlation exactly once")
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				receipts := readActionReceipts(t, dir)
+				if len(receipts) != 3 {
+					t.Fatalf("receipts=%d, want intent, one rejection outcome and valid outcome", len(receipts))
+				}
+				for i, status := range []string{"error", "result"} {
+					got := receipts[i+1].ActionRecord
+					if got.ActionID != intent.ActionID || got.DecisionPhase != receipt.DecisionPhaseOutcome || !strings.Contains(got.Pattern, "status="+status) {
+						t.Fatalf("unexpected outcome: %+v", got)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestMalformedResponseKeyRejectionPreservesCorrelation(t *testing.T) {
 	for _, kind := range []string{"stdio", "http", "sse", "websocket"} {
 		for _, tc := range []struct {

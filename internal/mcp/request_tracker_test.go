@@ -5,9 +5,61 @@ package mcp
 
 import (
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
+
+func TestRequestTracker_ClaimRejectedOutcome(t *testing.T) {
+	id := json.RawMessage("1")
+	for _, tc := range []struct {
+		name    string
+		tracker *RequestTracker
+		id      json.RawMessage
+	}{
+		{"nil-tracker", nil, id},
+		{"nil-id", NewRequestTracker(), nil},
+		{"null-id", NewRequestTracker(), json.RawMessage("null")},
+		{"untracked", NewRequestTracker(), id},
+		{"no-receipt-metadata", NewStrictRequestTracker(id), id},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := tc.tracker.claimRejectedOutcome(tc.id); ok {
+				t.Fatal("claimed rejection without trusted receipt metadata")
+			}
+		})
+	}
+
+	tr := NewRequestTracker()
+	want := TrackedRequestOutcome{Receipt: receipt.EmitOpts{ActionID: receipt.NewActionID()}, Method: methodToolsCall}
+	tr.TrackOutcome(id, want)
+	if got, ok := tr.claimRejectedOutcome(id); !ok || !reflect.DeepEqual(got, want) {
+		t.Fatal("first rejection did not preserve trusted metadata")
+	}
+	tr.TrackOutcome(id, want)
+	if _, ok := tr.claimRejectedOutcome(id); ok {
+		t.Fatal("retracking a pending request reset its rejection bound")
+	}
+	if got, ok := tr.Consume(id); !ok || !reflect.DeepEqual(got, want) {
+		t.Fatal("rejection consumed or changed trusted request metadata")
+	}
+	if _, ok := tr.claimRejectedOutcome(id); ok {
+		t.Fatal("claimed rejection after request consumption")
+	}
+	tr.TrackOutcome(id, want)
+	if _, ok := tr.claimRejectedOutcome(id); !ok {
+		t.Fatal("new request inherited the consumed request's rejection bound")
+	}
+	if got := tr.DrainPendingOutcomes(); len(got) != 1 || !reflect.DeepEqual(got[0].Outcome, want) {
+		t.Fatal("rejection changed pending timeout metadata")
+	}
+	tr.TrackOutcome(id, want)
+	if _, ok := tr.claimRejectedOutcome(id); !ok {
+		t.Fatal("new request inherited the drained request's rejection bound")
+	}
+}
 
 func TestRequestTracker_TrackAndValidate(t *testing.T) {
 	tr := NewRequestTracker()

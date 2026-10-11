@@ -22,8 +22,17 @@ Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`)
 | `--expect-head HASH` | Require the independently known final receipt hash. |
 | `--expect-seq N` | Require the independently known final unsigned sequence. |
 | `--json` | Emit separate `integrity`, `end_proof`, `scope`, and `status` fields plus per-chain signer trust. |
-| `--clean-report PATH` | Write `pipelock.clean_report.v1` JSON with the same endpoint status and separate signer-trust mode. |
+| `--clean-report PATH` | Write `pipelock.clean_report.v2` JSON with the same endpoint status and separate signer-trust mode. |
 | `--group ID` | Verify a complete signed group in `--chain DIR` with pinned keys. |
 | `--allow-unpinned` | Acknowledge reduced signer trust; this doesn't accept an unproven end. |
 
 For chains, exit 0 means integrity verified and the endpoint proven for the declared scope. Exit 1 means invalid evidence; exit 2 means usage or configuration failure; exit 3 means `VALID PREFIX, END UNPROVEN`. `--allow-prefix` changes only the last exit to 0. Single receipts and fleet reports keep their existing exit contracts. Report-write failures remain errors. A script that treats any non-zero exit as failure now stops on an unproven end; add a pin or `--allow-prefix` where an open chain is expected, such as a recorder that's still running.
+
+Clean-report readers must dispatch by `schema_version` and reject unknown versions.
+Validate historical `pipelock.clean_report.v1` reports with the unchanged
+[v1 schema](../evidence/clean-report-v1.schema.json), which has no endpoint status.
+New reports use the [v2 schema](../evidence/clean-report-v2.schema.json), which
+requires `integrity`, `end_proof`, `scope`, and `status` as well as the chain,
+actions, and signer-trust mode. `CHAIN UNPINNED` means valid integrity and a
+proven end without pinned signer trust. An unproven end keeps
+`VALID PREFIX, END UNPROVEN`, including with `--allow-unpinned` or `--allow-prefix`.

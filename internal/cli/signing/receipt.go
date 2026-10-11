@@ -1853,10 +1853,13 @@ func verifyCleanReportDetailed(out io.Writer, label string, receipts []receipt.R
 	}
 	report.Report = endproof.New(true, "receipt_chain", proof...)
 	collectChainReport(opts.verifyReceiptOptions, newChainCLIReport(chainCLIReport{Path: label, Valid: true, RootHash: result.RootHash, FinalSeq: result.FinalSeq, ReceiptCount: result.ReceiptCount}, trustedKeys, "receipt_chain", proof))
-	report.SchemaVersion = "pipelock.clean_report.v1"
+	report.SchemaVersion = "pipelock.clean_report.v2"
 	report.VerificationMode = "pinned_provenance"
 	if len(trustedKeys) == 0 {
 		report.VerificationMode = "unpinned_structural"
+		if report.Integrity == "valid" && report.EndProof.Proven {
+			report.Status = "CHAIN UNPINNED"
+		}
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

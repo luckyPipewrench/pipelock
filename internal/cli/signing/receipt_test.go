@@ -1599,7 +1599,7 @@ func TestVerifyReceiptCmd_CleanReportVerificationMode(t *testing.T) {
 			if err := json.Unmarshal(raw, &report); err != nil {
 				t.Fatal(err)
 			}
-			if report["schema_version"] != "pipelock.clean_report.v1" || report["verification_mode"] != tc.wantMode {
+			if report["schema_version"] != "pipelock.clean_report.v2" || report["verification_mode"] != tc.wantMode {
 				t.Fatalf("report trust contract: %s", raw)
 			}
 			if err := validateCleanReportSchema(t, raw); err != nil {

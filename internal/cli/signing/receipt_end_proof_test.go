@@ -116,14 +116,20 @@ func TestCleanReportEndProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		file   string
-		allow  bool
-		code   int
-		proven bool
+		file     string
+		allow    bool
+		code     int
+		proven   bool
+		unpinned bool
 	}{
-		{"truncated.jsonl", false, 3, false}, {"truncated.jsonl", true, 0, false}, {"closed.jsonl", false, 0, true},
+		{"truncated.jsonl", false, 3, false, false},
+		{"truncated.jsonl", true, 0, false, false},
+		{"closed.jsonl", false, 0, true, false},
+		{"closed.jsonl", false, 0, true, true},
+		{"truncated.jsonl", false, 3, false, true},
+		{"truncated.jsonl", true, 0, false, true},
 	} {
-		t.Run(tc.file+fmt.Sprint(tc.allow), func(t *testing.T) {
+		t.Run(tc.file+fmt.Sprint(tc.allow, tc.unpinned), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "clean.json")
 			cmd := VerifyReceiptCmd()
 			var out bytes.Buffer
@@ -132,6 +138,9 @@ func TestCleanReportEndProof(t *testing.T) {
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
 			args := []string{filepath.Join(root, tc.file), "--key", fixture.Key, "--clean-report", path}
+			if tc.unpinned {
+				args = []string{filepath.Join(root, tc.file), "--allow-unpinned", "--clean-report", path}
+			}
 			if tc.allow {
 				args = append(args, "--allow-prefix")
 			}
@@ -161,6 +170,16 @@ func TestCleanReportEndProof(t *testing.T) {
 			}
 			if !tc.proven && (!strings.Contains(out.String(), endproof.Prefix) || report.Status != endproof.Prefix) {
 				t.Fatalf("missing prefix: %s %s", out.String(), data)
+			}
+			wantStatus := endproof.Prefix
+			if tc.proven {
+				wantStatus = endproof.Valid
+				if tc.unpinned {
+					wantStatus = "CHAIN UNPINNED"
+				}
+			}
+			if report.SchemaVersion != "pipelock.clean_report.v2" || report.Status != wantStatus {
+				t.Fatalf("status/schema: %s", data)
 			}
 			if err := validateCleanReportSchema(t, data); err != nil {
 				t.Fatal(err)

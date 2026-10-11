@@ -402,14 +402,21 @@ verified.
 report describes one chain: `--clean-report` selects a lone run, and requires
 `--session` when several runs are present. An empty report is an error.
 
-Clean report v1 requires `schema_version: pipelock.clean_report.v1` and an explicit
-`verification_mode`: `pinned_provenance` means the receipt signer matched an
-operator-supplied key; `unpinned_structural` means `--allow-unpinned` accepted
-a self-consistent chain without signer provenance. The required fields are in
-[`clean-report-v1.schema.json`](../evidence/clean-report-v1.schema.json).
-Clean reports also carry `integrity`, `end_proof`, `scope`, and `status`. An open prefix prints `VALID PREFIX, END UNPROVEN` and returns 3 after writing the report. `--allow-prefix` changes that exit to 0 while preserving the label and JSON status. Signer trust remains in `verification_mode`.
-Upgrade report parsers to require both fields. For older reports with no mode,
-treat trust as unknown and require re-verification before accepting provenance.
+New clean reports use `schema_version: pipelock.clean_report.v2`. The
+[v2 schema](../evidence/clean-report-v2.schema.json) requires `integrity`,
+`end_proof`, `scope`, and `status`, along with `verification_mode`, `chain`, and
+`actions`. `pinned_provenance` means the signer matched an operator-supplied key;
+`unpinned_structural` means `--allow-unpinned` accepted a self-consistent chain
+without signer provenance. `CHAIN UNPINNED` requires valid integrity and a proven
+end. An open prefix keeps `VALID PREFIX, END UNPROVEN` and returns 3 after writing
+the report. `--allow-prefix` changes that exit to 0 while preserving the status.
+
+Readers must dispatch by `schema_version` and reject unknown versions. Historical
+`pipelock.clean_report.v1` reports still use the unchanged
+[v1 schema](../evidence/clean-report-v1.schema.json), which has no top-level
+integrity or endpoint fields and rejects extended reports. Do not infer end proof
+from v1 reports. For older reports with no verification mode, treat signer trust
+as unknown and require re-verification before accepting provenance.
 
 ## Anchoring receipts
 

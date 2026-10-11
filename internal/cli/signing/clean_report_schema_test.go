@@ -5,6 +5,8 @@ package signing
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +18,27 @@ const cleanReportSchemaPath = "../../../docs/evidence/clean-report-v1.schema.jso
 
 func validateCleanReportSchema(t *testing.T, raw []byte) error {
 	t.Helper()
-	f, err := os.Open(filepath.Clean(cleanReportSchemaPath))
+	var header struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return err
+	}
+	var path string
+	switch header.SchemaVersion {
+	case "pipelock.clean_report.v1":
+		path = cleanReportSchemaPath
+	case "pipelock.clean_report.v2":
+		path = "../../../docs/evidence/clean-report-v2.schema.json"
+	default:
+		return fmt.Errorf("unsupported clean report schema_version %q", header.SchemaVersion)
+	}
+	return validateCleanReportSchemaAt(t, raw, path)
+}
+
+func validateCleanReportSchemaAt(t *testing.T, raw []byte, path string) error {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		t.Fatalf("open clean report schema: %v", err)
 	}
@@ -81,5 +103,60 @@ func TestCleanReportSchemaRejectsInvalidTrustFields(t *testing.T) {
 				t.Fatal("schema accepted invalid trust fields")
 			}
 		})
+	}
+}
+
+func TestCleanReportSchemaVersionBoundary(t *testing.T) {
+	t.Parallel()
+	const legacy = `{"schema_version":"pipelock.clean_report.v1","verification_mode":"pinned_provenance","chain":{"label":"l","receipt_count":1,"final_seq":0,"root_hash":"h","signer_keys":["k"]},"actions":[]}`
+	if err := validateCleanReportSchema(t, []byte(legacy)); err != nil {
+		t.Fatalf("original v1 fixture rejected: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(legacy), &report); err != nil {
+		t.Fatal(err)
+	}
+	report["integrity"] = "valid"
+	report["end_proof"] = map[string]any{"proven": true, "evidence": []string{"operator_head"}}
+	report["scope"] = "receipt_chain"
+	report["status"] = "CHAIN UNPINNED"
+	encode := func(value map[string]any) []byte {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	if err := validateCleanReportSchema(t, encode(report)); err == nil {
+		t.Fatal("v1 accepted extended report fields")
+	}
+	report["schema_version"] = "pipelock.clean_report.v2"
+	if err := validateCleanReportSchema(t, encode(report)); err != nil {
+		t.Fatalf("complete v2 fixture rejected: %v", err)
+	}
+	for _, field := range []string{"integrity", "end_proof", "scope", "status"} {
+		t.Run(field, func(t *testing.T) {
+			value := report[field]
+			delete(report, field)
+			if err := validateCleanReportSchema(t, encode(report)); err == nil {
+				t.Fatalf("v2 accepted missing %s", field)
+			}
+			report[field] = value
+		})
+	}
+	for _, status := range []string{"CHAIN VALID", "CHAIN UNPINNED", "CHAIN BROKEN", "VALID PREFIX, END UNPROVEN"} {
+		report["status"] = status
+		if err := validateCleanReportSchema(t, encode(report)); err != nil {
+			t.Fatalf("status %q: %v", status, err)
+		}
+	}
+	report["status"] = "UNKNOWN"
+	if err := validateCleanReportSchema(t, encode(report)); err == nil {
+		t.Fatal("v2 accepted unknown status")
+	}
+	report["schema_version"] = "pipelock.clean_report.v3"
+	if err := validateCleanReportSchema(t, encode(report)); err == nil {
+		t.Fatal("reader accepted unknown version")
 	}
 }

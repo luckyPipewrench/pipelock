@@ -252,7 +252,7 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 	if len(trimmed) == 0 || string(trimmed) == jsonrpc.Null {
 		return mcpResourceURIParserFinding("missing resources/read params")
 	}
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
 		return []scanner.Result{{
 			Allowed: false,
 			Reason:  fmt.Sprintf("duplicate resource URI key: %v", err),
@@ -309,11 +309,20 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// benign sibling that wins last-wins, while upstream first-wins
 	// parsers still see the real attack. external review C-1.
 	//
-	// Only block on actual duplicate-key matches; let malformed-JSON
-	// errors flow through to the existing parse-error path below so
-	// telemetry stays attributable to the right cause.
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
-		return InputVerdict{ID: recoveredID, Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
+	// Every key-validation error fails closed before structural parsing.
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
+		verdict := InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock}
+		if redact.IsDuplicateKeyBlock(err) {
+			verdict.Error = fmt.Sprintf("duplicate JSON object key: %v", err)
+		} else {
+			// Retain raw content diagnostics, but never forward guard failures.
+			verdict = scanRawBeforeForward(ctx, trimmed, sc, action)
+			verdict.ID = recoveredID
+			verdict.Clean = false
+			verdict.Action = config.ActionBlock
+			verdict.Error = fmt.Sprintf("invalid JSON: %v", err)
+		}
+		return verdict
 	}
 
 	var rpc jsonrpc.RPCResponse // Reuse struct - has Method and Params fields.

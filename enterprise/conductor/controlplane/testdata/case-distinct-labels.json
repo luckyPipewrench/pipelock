@@ -1,0 +1,36 @@
+{
+  "bundle": {
+    "schema_version": 1,
+    "bundle_id": "case-distinct-labels",
+    "org_id": "org-main",
+    "fleet_id": "prod",
+    "environment": "prod",
+    "audience": {
+      "labels": {
+        "Team": "red",
+        "team": "blue"
+      }
+    },
+    "version": 1,
+    "created_at": "2026-05-24T11:59:00Z",
+    "not_before": "2026-05-24T11:59:00Z",
+    "expires_at": "2026-05-24T14:00:00Z",
+    "min_pipelock_version": "1.2.3",
+    "policy_hash": "8413f2dddc48890af2158d492a8a29e90f3f6752fa01e3ff1395fb0ee960e0ac",
+    "payload_sha256": "24632b593ac52f1b67a30551e72925f74c50af25740e8e0c1d3708f523cba9d2",
+    "payload": {
+      "config_yaml": "mode: strict\napi_allowlist:\n  - api.example.com\n"
+    },
+    "signatures": [
+      {
+        "signer_key_id": "policy-key-1",
+        "key_purpose": "policy-bundle-signing",
+        "algorithm": "ed25519",
+        "signature": "ed25519:51d780fd5b7bebe50833c099630c00ba43fb399c04e9b28dcea3f203e9db53d781faac78df31d0880b6aa1702201d537d68929f2637bc4891a27cdc90a416406"
+      }
+    ]
+  },
+  "bundle_hash": "c83eb3baa8f1156f08778b478dc48ed1297e5452bb1fe9a286d024e1636a679b",
+  "stream_key": "org-main\u0000prod\u0000prod\u00006dac6706ad8d2d7bae3d9ad8e502b4a8a885c0e9849f5690e82f5f2d7af80fcf",
+  "published_at": "2026-05-24T12:00:00Z"
+}

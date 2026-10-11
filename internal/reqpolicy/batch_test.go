@@ -325,3 +325,11 @@ func TestKeyAliasesBatch(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchFreeFormKeysStayCaseSensitive(t *testing.T) {
+	m := batchMatcher(t, deleteRule())
+	raw := []byte(`{"requests":[{"method":"GET","url":"/read","custom":1,"CUSTOM":2,"body":{"variables":{"id":1,"ID":2}}}],"custom":1,"CUSTOM":2}`)
+	if d, ok := m.EvaluateBatch(batchMeta(), raw); !ok || d.Matched() {
+		t.Fatalf("free-form keys rejected: %+v parsed=%v", d, ok)
+	}
+}

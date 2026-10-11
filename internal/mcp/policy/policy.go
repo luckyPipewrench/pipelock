@@ -1177,10 +1177,8 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
-	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(line)); err != nil {
-		if redact.IsDuplicateKeyBlock(err) {
-			return duplicateJSONKeyVerdict()
-		}
+	if err := jsonrpc.ValidateMessageKeys(bytes.TrimSpace(line)); err != nil {
+		return duplicateJSONKeyVerdict()
 	}
 	if hasMalformedA2AParams(line) {
 		return malformedA2AParamsVerdict()
@@ -1282,6 +1280,9 @@ func uninspectableStructuralArgsVerdict(ruleName string) Verdict {
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.
 func (pc *Config) checkBatch(line []byte) Verdict {
+	if err := jsonrpc.ValidateMessageKeys(line); err != nil {
+		return duplicateJSONKeyVerdict()
+	}
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		return Verdict{}

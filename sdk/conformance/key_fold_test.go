@@ -33,14 +33,14 @@ func TestJSONKeyFoldParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := jsonscan.RejectDuplicateKeys(raw); err == nil {
+			if err := jsonscan.ValidateFoldedKeys(raw, jsonscan.MaxNestingDepth); err == nil {
 				t.Errorf("fold cycle accepted: %q", group)
 			}
 		}
 	}
 	for _, tc := range fixture.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if err := jsonscan.ValidateKeys([]byte(tc.Raw), jsonscan.MaxNestingDepth); (err == nil) != tc.Valid {
+			if err := jsonscan.ValidateFoldedKeys([]byte(tc.Raw), jsonscan.MaxNestingDepth); (err == nil) != tc.Valid {
 				t.Fatalf("valid=%v: %v", tc.Valid, err)
 			}
 		})

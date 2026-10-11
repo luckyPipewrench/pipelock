@@ -78,7 +78,8 @@ func frameParseErrFailsClosed(err error) bool {
 	// These parser errors can change the callable identity or params view
 	// between policy and upstream parsers. Treat them as non-configurable
 	// parse-error blocks even when content scanning is disabled.
-	return errors.Is(err, ErrInvalidMethodType) || redact.IsDuplicateKeyBlock(err)
+	var block *redact.BlockError
+	return errors.Is(err, ErrInvalidMethodType) || errors.As(err, &block)
 }
 
 // MCPInputEvaluation aggregates the outputs of the configured inbound

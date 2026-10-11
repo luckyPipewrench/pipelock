@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "created": "2026-10-11T16:40:21Z",
+  "updated": "2026-10-11T16:40:21Z",
+  "files": {
+    "README.md": {
+      "sha256": "b335630551682c19a781afebcf4d07bf978fb1f8ac04c6bf87428ed5106870f5",
+      "size": 9,
+      "mode": "0600"
+    },
+    "readme.md": {
+      "sha256": "5a831ea67cf5cf8703b0de46901ab25bd191f56b320053be9332d9a3b0d01d15",
+      "size": 9,
+      "mode": "0600"
+    }
+  },
+  "excludes": null
+}

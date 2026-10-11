@@ -1,0 +1,16 @@
+[
+  {"artifact":"aarp-ext","variant":"control","accept":true},
+  {"artifact":"aarp-ext","variant":"case-distinct-map","accept":true},
+  {"artifact":"aarp-ext","variant":"schema-alias","accept":false},
+  {"artifact":"aarp-ext","variant":"exact-map-duplicate","accept":false},
+  {"artifact":"recorder-line","variant":"control","accept":true},
+  {"artifact":"recorder-line","variant":"schema-alias","accept":false},
+  {"artifact":"rotation","variant":"control","accept":true},
+  {"artifact":"rotation","variant":"schema-alias","accept":false},
+  {"artifact":"group","variant":"control","accept":true},
+  {"artifact":"group","variant":"schema-alias","accept":false},
+  {"artifact":"provenance-proof","variant":"control","accept":true},
+  {"artifact":"provenance-proof","variant":"schema-alias","accept":false},
+  {"artifact":"svid","variant":"control","accept":true},
+  {"artifact":"svid","variant":"schema-alias","accept":false}
+]

@@ -677,7 +677,7 @@ fn malformed_link_files_are_findings_not_skipped() {
         (
             "case-folded alias",
             with("Version", Value::from(1)),
-            "duplicate object key",
+            "aliases \"version\"",
         ),
         (
             "unknown field",

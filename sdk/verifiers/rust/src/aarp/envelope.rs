@@ -161,6 +161,13 @@ fn reject_unknown_fields(
     ctx: &str,
 ) -> Result<(), FatalError> {
     for key in map.keys() {
+        if let Some(alias) = allowed.iter().find(|name| {
+            key.as_str() != **name && crate::util::fold_key(key) == crate::util::fold_key(name)
+        }) {
+            return Err(FatalError(format!(
+                "{key:?} aliases {alias:?} (case-insensitive) in {ctx}"
+            )));
+        }
         if !allowed.contains(&key.as_str()) {
             return Err(FatalError(format!(
                 "unknown field {key:?} in AARP-controlled object {ctx}"

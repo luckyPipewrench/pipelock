@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 func TestVerifierKeyFoldParity(t *testing.T) {
@@ -31,14 +33,14 @@ func TestVerifierKeyFoldParity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := rejectDuplicateJSONKeys(raw); err == nil {
+			if err := jsonscan.ValidateFoldedKeys(raw, provenanceMaxJSONDepth); err == nil {
 				t.Errorf("fold cycle accepted: %q", group)
 			}
 		}
 	}
 	for _, tc := range fixture.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if err := rejectDuplicateJSONKeys([]byte(tc.Raw)); (err == nil) != tc.Valid {
+			if err := jsonscan.ValidateFoldedKeys([]byte(tc.Raw), provenanceMaxJSONDepth); (err == nil) != tc.Valid {
 				t.Fatalf("valid=%v: %v", tc.Valid, err)
 			}
 		})

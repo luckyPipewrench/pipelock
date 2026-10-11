@@ -15,7 +15,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -44,7 +43,7 @@ const MaxNestingDepth = 128
 const MaxExactJSONInteger = 1<<53 - 1
 
 // RejectDuplicateKeys reports an error if data contains a duplicate object key
-// at any nesting depth, including case-folded collisions. It streams tokens
+// at any nesting depth, comparing decoded names exactly. It streams tokens
 // with a json.Decoder so it sees every key occurrence, not the last-wins map
 // encoding/json would build. encoding/json
 // silently keeps the last value for a duplicate key, which lets an attacker
@@ -61,16 +60,27 @@ func RejectDuplicateKeys(data []byte) error {
 		// produces the canonical parse error rather than masking it here.
 		return nil
 	}
-	return check(dec, tok, 0, MaxNestingDepth)
+	return check(dec, tok, 0, MaxNestingDepth, false)
 }
 
 // ErrTrailingTokens indicates content after the first JSON value.
 var ErrTrailingTokens = errors.New("trailing tokens after JSON value")
 
 // ValidateKeys validates one JSON document, rejecting duplicate names under
-// Unicode simple folding, including escaped spellings. maxDepth preserves each
+// exact decoded spelling, including escaped spellings. maxDepth preserves each
 // transport's existing nesting bound; schema names and values are not rewritten.
 func ValidateKeys(data []byte, maxDepth int) error {
+	return validateKeys(data, maxDepth, false)
+}
+
+// ValidateFoldedKeys rejects case-insensitive collisions in a schema object.
+// Use ValidateKeys for free-form application maps. Typed decoders should use
+// RejectStructAliases so only schema-bound names are folded.
+func ValidateFoldedKeys(data []byte, maxDepth int) error {
+	return validateKeys(data, maxDepth, true)
+}
+
+func validateKeys(data []byte, maxDepth int, folded bool) error {
 	if !utf8.Valid(data) {
 		return errors.New("JSON is not valid UTF-8")
 	}
@@ -80,7 +90,7 @@ func ValidateKeys(data []byte, maxDepth int) error {
 	if err != nil {
 		return err
 	}
-	if err := check(dec, tok, 0, maxDepth); err != nil {
+	if err := check(dec, tok, 0, maxDepth, folded); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
@@ -92,27 +102,33 @@ func ValidateKeys(data []byte, maxDepth int) error {
 	return nil
 }
 
-// FoldKey returns a key for the equivalence classes used by strings.EqualFold
-// and encoding/json's struct-field lookup. Lowercasing alone misses the Kelvin
-// sign and long s. Folding each rune to the smallest rune in its SimpleFold
-// cycle covers ASCII, Unicode and decoded JSON escapes without normalization.
+// FoldKey uses the pinned Unicode simple-fold table shared by every verifier.
+// Native lowercase/full casefold and toolchain-dependent tables differ.
 func FoldKey(key string) string {
 	return strings.Map(func(r rune) rune {
-		smallest := r
-		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
-			if next < smallest {
-				smallest = next
-			}
+		if folded, ok := keyFoldTable[r]; ok {
+			return folded
 		}
-		return smallest
+		return r
 	}, key)
 }
+
+var keyFoldTable = func() map[rune]rune {
+	result := make(map[rune]rune)
+	for _, group := range strings.Fields(KeyFoldGroups) {
+		chars := []rune(group)
+		for _, char := range chars {
+			result[char] = chars[0]
+		}
+	}
+	return result
+}()
 
 // HasKeyAlias reports a noncanonical spelling of a configured field. It also
 // rejects a lone alias, which exact-key map lookup would otherwise call absent.
 func HasKeyAlias[V any](object map[string]V, field string) bool {
 	for key := range object {
-		if key != field && strings.EqualFold(key, field) {
+		if key != field && FoldKey(key) == FoldKey(field) {
 			return true
 		}
 	}
@@ -137,8 +153,8 @@ func RejectCaseFoldedAliases(data []byte, allowedKeys ...string) error {
 	}
 	for key := range object {
 		for _, allowed := range allowedKeys {
-			if key != allowed && strings.EqualFold(key, allowed) {
-				return fmt.Errorf("%w: %q aliases %q", ErrCaseFoldedKey, key, allowed)
+			if key != allowed && FoldKey(key) == FoldKey(allowed) {
+				return fmt.Errorf("%w: %q aliases %q (case-insensitive)", ErrCaseFoldedKey, key, allowed)
 			}
 		}
 	}
@@ -149,17 +165,17 @@ func RejectCaseFoldedAliases(data []byte, allowedKeys ...string) error {
 // it tracks the set of keys seen at that level; for arrays it recurses into each
 // element; scalars are accepted as-is. depth bounds the recursion to prevent a
 // stack-overflow panic on maliciously nested input.
-func check(dec *json.Decoder, tok json.Token, depth, maxDepth int) error {
+func check(dec *json.Decoder, tok json.Token, depth, maxDepth int, folded bool) error {
+	if depth > maxDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d (depth limit)", maxDepth)
+	}
 	delim, ok := tok.(json.Delim)
 	if !ok {
 		return nil // scalar value
 	}
-	if depth >= maxDepth {
-		return fmt.Errorf("JSON nesting exceeds maximum depth %d", maxDepth)
-	}
 	switch delim {
 	case '{':
-		seen := make(map[string]struct{})
+		seen := make(map[string]string)
 		for dec.More() {
 			keyTok, err := dec.Token()
 			if err != nil {
@@ -169,16 +185,22 @@ func check(dec *json.Decoder, tok json.Token, depth, maxDepth int) error {
 			if !ok {
 				return fmt.Errorf("object key is not a string")
 			}
-			folded := FoldKey(key)
-			if _, dup := seen[folded]; dup {
+			identity := key
+			if folded {
+				identity = FoldKey(key)
+			}
+			if previous, dup := seen[identity]; dup {
+				if previous != key {
+					return fmt.Errorf("%w: %q and %q collide (case-insensitive)", ErrDuplicateKey, previous, key)
+				}
 				return fmt.Errorf("%w: %q", ErrDuplicateKey, key)
 			}
-			seen[folded] = struct{}{}
+			seen[identity] = key
 			valTok, err := dec.Token()
 			if err != nil {
 				return err
 			}
-			if err := check(dec, valTok, depth+1, maxDepth); err != nil {
+			if err := check(dec, valTok, depth+1, maxDepth, folded); err != nil {
 				return err
 			}
 		}
@@ -191,7 +213,7 @@ func check(dec *json.Decoder, tok json.Token, depth, maxDepth int) error {
 			if err != nil {
 				return err
 			}
-			if err := check(dec, valTok, depth+1, maxDepth); err != nil {
+			if err := check(dec, valTok, depth+1, maxDepth, folded); err != nil {
 				return err
 			}
 		}
@@ -259,15 +281,14 @@ func TopLevelDuplicateKeys(data []byte) map[string]struct{} {
 		if !ok {
 			return nil
 		}
-		folded := FoldKey(key)
-		if first, exists := seen[folded]; exists {
+		if first, exists := seen[key]; exists {
 			if duplicates == nil {
 				duplicates = make(map[string]struct{})
 			}
 			duplicates[first] = struct{}{}
 			duplicates[key] = struct{}{}
 		}
-		seen[folded] = key
+		seen[key] = key
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
 			return nil

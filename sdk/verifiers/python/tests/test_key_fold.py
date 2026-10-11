@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from pipelock_aarp_verify.number import StrictParseError, parse_json_strict
-from pipelock_aarp_verify.receipt import ReceiptError, _reject_duplicate_pairs
+from pipelock_aarp_verify.key_fold import reject_folded_pairs
+from pipelock_aarp_verify.number import parse_json_strict
+from pipelock_aarp_verify.receipt import _reject_duplicate_pairs
 
 
 def test_json_key_fold_shared_parity():
@@ -20,16 +21,14 @@ def test_json_key_fold_shared_parity():
     for group in fixture["groups"]:
         for char in group[1:]:
             raw = json.dumps({group[0]: 1, char: 2})
-            with pytest.raises(ReceiptError, match="duplicate object key"):
-                json.loads(raw, object_pairs_hook=_reject_duplicate_pairs)
-            with pytest.raises(StrictParseError, match="duplicate key"):
-                parse_json_strict(raw)
+            with pytest.raises(ValueError, match="duplicate object key"):
+                json.loads(raw, object_pairs_hook=reject_folded_pairs)
+            parse_json_strict(raw)
+            json.loads(raw, object_pairs_hook=_reject_duplicate_pairs)
     for entry in fixture["cases"]:
         if entry["valid"]:
-            json.loads(entry["raw"], object_pairs_hook=_reject_duplicate_pairs)
+            json.loads(entry["raw"], object_pairs_hook=reject_folded_pairs)
             parse_json_strict(entry["raw"])
         else:
-            with pytest.raises(ReceiptError, match="duplicate object key"):
-                json.loads(entry["raw"], object_pairs_hook=_reject_duplicate_pairs)
-            with pytest.raises(StrictParseError, match="duplicate key"):
-                parse_json_strict(entry["raw"])
+            with pytest.raises(ValueError, match="duplicate object key"):
+                json.loads(entry["raw"], object_pairs_hook=reject_folded_pairs)

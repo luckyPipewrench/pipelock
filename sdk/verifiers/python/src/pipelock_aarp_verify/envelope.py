@@ -20,6 +20,7 @@ import hashlib
 from typing import Any
 
 from .canonical import canonicalize
+from .key_fold import field_alias
 from .number import (
     BadGrammarError,
     StrictParseError,
@@ -109,6 +110,10 @@ def _require_str(obj: dict[str, Any], key: str, where: str) -> str:
 
 def _check_unknown(obj: dict[str, Any], allowed: set[str], where: str) -> None:
     for key in obj:
+        if alias := field_alias(key, allowed):
+            raise UnknownFieldError(
+                f"{where}: {key!r} aliases {alias!r} (case-insensitive)"
+            )
         if key not in allowed:
             raise UnknownFieldError(f"unknown field {key!r} in {where}")
 

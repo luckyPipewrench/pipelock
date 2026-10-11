@@ -311,11 +311,12 @@ func TestScanRequest(t *testing.T) {
 			wantError:    true,
 		},
 		{
-			name:         "parse error with on_parse_error=forward",
+			name:         "invalid JSON blocks with on_parse_error=forward",
 			line:         "not json at all",
 			action:       config.ActionBlock,
 			onParseError: "forward",
-			wantClean:    true,
+			wantClean:    false,
+			wantError:    true,
 		},
 		{
 			name:         "invalid JSON-RPC version with block",
@@ -1409,8 +1410,8 @@ func TestForwardScannedInput_ParseErrorWithIDProducesErrorResponse(t *testing.T)
 func TestForwardScannedInput_ParseErrorForwardMode(t *testing.T) {
 	sc := testInputScanner(t)
 
-	// With on_parse_error=forward, parse errors should result in clean verdict
-	// which means the (invalid) line is forwarded to the server
+	// Key validation is a parser-integrity gate. Invalid JSON is blocked
+	// even when on_parse_error=forward permits other protocol parse failures.
 	var serverIn bytes.Buffer
 	var logW bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 10)
@@ -1418,9 +1419,8 @@ func TestForwardScannedInput_ParseErrorForwardMode(t *testing.T) {
 	clientIn := strings.NewReader("not json\n")
 	fwdScannedInput(clientIn, &serverIn, &logW, sc, "block", "forward", blockedCh)
 
-	// With forward parse error, the line gets verdict.Clean=true so it's forwarded
-	if !strings.Contains(serverIn.String(), "not json") {
-		t.Error("expected forwarded parse error line in forward mode")
+	if serverIn.Len() != 0 {
+		t.Error("invalid JSON forwarded despite key-validation failure")
 	}
 }
 

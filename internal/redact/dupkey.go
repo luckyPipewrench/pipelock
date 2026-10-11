@@ -5,6 +5,7 @@ package redact
 
 import (
 	"errors"
+	"reflect"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
@@ -17,7 +18,8 @@ func checkNoDuplicateKeys(body []byte) error {
 }
 
 // NoDuplicateJSONKeys verifies that no JSON object in body has two members
-// with names equal under Unicode case folding at the same nesting level.
+// with exactly equal decoded names at the same nesting level. Schema field
+// aliases are checked separately by NoSchemaKeyAliases.
 // Decoding duplicate-key JSON into map[string]interface{} (or
 // map[string]json.RawMessage) silently
 // discards all but one occurrence, which lets an attacker smuggle a secret
@@ -41,11 +43,25 @@ func checkNoDuplicateKeys(body []byte) error {
 // falls through to the same fail-closed path as elsewhere in
 // RewriteJSON.
 func NoDuplicateJSONKeys(body []byte) error {
-	if err := jsonscan.ValidateKeys(body, maxDuplicateKeyScanDepth); err != nil {
-		if errors.Is(err, jsonscan.ErrDuplicateKey) {
+	return keyBlock(jsonscan.ValidateKeys(body, maxDuplicateKeyScanDepth))
+}
+
+// NoSchemaKeyAliases validates exact duplicates throughout the document and
+// rejects noncanonical case aliases only at fields bound by schema. RawMessage
+// and free-form map keys retain their case-sensitive application meaning.
+func NoSchemaKeyAliases(body []byte, schema reflect.Type) error {
+	if err := NoDuplicateJSONKeys(body); err != nil {
+		return err
+	}
+	return keyBlock(jsonscan.RejectStructAliases(body, schema))
+}
+
+func keyBlock(err error) error {
+	if err != nil {
+		if errors.Is(err, jsonscan.ErrDuplicateKey) || errors.Is(err, jsonscan.ErrCaseFoldedKey) {
 			return newBlock(ReasonDuplicateKey, 0, err.Error())
 		}
-		return newBlock(ReasonBodyUnparseable, 0, err.Error())
+		return newBlock(ReasonBodyUnparseable, 0, "invalid JSON: "+err.Error())
 	}
 	return nil
 }

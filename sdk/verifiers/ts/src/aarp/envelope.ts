@@ -7,6 +7,7 @@
 // AARP-controlled objects so a producer cannot smuggle unsigned content past
 // appraisal. ext is a free map and is NOT part of the signed payload.
 
+import { foldKey } from "../util.js";
 import { createHash } from "node:crypto";
 import { canonicalize } from "./canonical.js";
 import {
@@ -103,6 +104,8 @@ function rejectUnknownKeys(
 ): void {
   const allow = new Set(allowed);
   for (const key of Object.keys(obj)) {
+    const alias = [...allowed].find((name) => key !== name && foldKey(key) === foldKey(name));
+    if (alias !== undefined) throw new SchemaError(`${key} aliases ${alias} (case-insensitive)`);
     if (!allow.has(key)) {
       throw new SchemaError(`unknown field ${JSON.stringify(key)} in ${field}`);
     }

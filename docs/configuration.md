@@ -778,14 +778,14 @@ Semantics, all fail-closed:
 
 - A string value at `field` is matched against `value_patterns`; the predicate matches when any pattern matches.
 - An absent `field` does not match. The allow-by-default rail forwards unless another rule matches.
-- A present but non-string value, a top-level body that is not a JSON object, or a duplicated target key is opaque and fails closed via `on_opaque_operation`.
+- A present but non-string value, a top-level body that is not a JSON object, or a duplicated target key (including a case-insensitive alias) is opaque and fails closed via `on_opaque_operation`.
 - A body that is not valid JSON fails closed via `on_parse_error`.
 
 A rule may set both `graphql` and `discriminator`; when it does, both predicates must match (in addition to the route). The discriminator predicate is evaluated on every HTTP transport and per WebSocket text frame, the same surfaces as the GraphQL predicate, and it folds into the canonical policy hash.
 
 ### Exact JSON exception on a block rule
 
-Use `except` when a narrowly scoped block rule must permit one exact top-level JSON string value. The exception applies only after the body is fully read and parsed. A missing or duplicate key, different value or case, non-string value, malformed JSON, or unreadable body keeps the block active, even if `on_parse_error` or `on_opaque_operation` is `warn` or `allow`.
+Use `except` when a narrowly scoped block rule must permit one exact top-level JSON string value. The exception applies only after the body is fully read and parsed. A missing or duplicate key (including a case-insensitive alias), different value or case, non-string value, malformed JSON, or unreadable body keeps the block active, even if `on_parse_error` or `on_opaque_operation` is `warn` or `allow`.
 
 ```yaml
   rules:
@@ -817,7 +817,7 @@ A JSON batch endpoint wraps multiple sub-requests in one outer request, each car
 | `body_field` | `"body"` | Sub-request body field. |
 | `max_sub_requests` | `64` | Cap on sub-requests evaluated per batch. Over the cap, the envelope fails closed via `on_parse_error`. |
 
-The envelope field names default to the common OData-style JSON batch shape (`requests[].{method,url,body}`); override them for a differently shaped envelope. A sub-request whose method or URL field is missing or not a string fails closed (it must not silently evaluate as `method="" path="/"`). Nested batches are expanded up to a fixed depth; beyond that depth a sub-request that itself targets a batch endpoint fails closed regardless of configuration. An unread, oversize, or unparseable envelope fails closed via `on_parse_error`. An envelope or sub-request object with a duplicated JSON key is blocked outright (rule `batch`, reason `batch contains duplicate JSON keys`) regardless of `on_parse_error`, on every configured batch endpoint.
+The envelope field names default to the common OData-style JSON batch shape (`requests[].{method,url,body}`); override them for a differently shaped envelope. A sub-request whose method or URL field is missing or not a string fails closed (it must not silently evaluate as `method="" path="/"`). Nested batches are expanded up to a fixed depth; beyond that depth a sub-request that itself targets a batch endpoint fails closed regardless of configuration. An unread, oversize, or unparseable envelope fails closed via `on_parse_error`. An envelope or sub-request object with an exact duplicated JSON key, or a case-insensitive alias of a configured envelope field, is blocked outright (rule `batch`, reason `batch contains duplicate JSON keys`) regardless of `on_parse_error`, on every configured batch endpoint.
 
 ### Transport coverage
 
@@ -1287,10 +1287,12 @@ mcp_input_scanning:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable input scanning |
 | `action` | `"warn"` | warn or block. Immutable core DLP findings (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) in a request hard-block regardless of this action; the operator cannot downgrade the core floor here. Two things happen before this stage rather than downgrading it: a core credential that top-level `redaction` fully rewrites follows this action instead (see the redaction note below), and a core-floor credential that carries a compiled audience (`GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`) is removed from the finding set before enforcement when it is presented to its compiled audience on a permitted carrier (see [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md)), so it never reaches this hard-block. Non-core findings follow this action. |
-| `on_parse_error` | `"block"` | What to do with malformed JSON-RPC |
+| `on_parse_error` | `"block"` | What to do with protocol parse errors in otherwise valid JSON: `block` or `forward`. Malformed JSON, invalid UTF-8, exact duplicate keys, and noncanonical aliases of protocol fields always block the request. |
 | `response_timeout_seconds` | `0` | Per-read timeout (seconds) for upstream MCP server responses. `0` disables it (default). When set, a wrapped server that accepts a request but never replies no longer hangs the agent: the proxy fails closed, emitting a JSON-RPC `-32000` error for every pending request. The deadline is per complete response message (one JSON-RPC message, or one SSE data event on the bridge): it resets when each message arrives, so a steady stream of responses is never severed, but it does bound the wait for the *next* message — set it above your slowest legitimate tool's response latency. Applies to the **stdio subprocess proxy** (`-- COMMAND`, including sandboxed mode) and the **stdio-to-HTTP bridge** (`--upstream URL`). On the subprocess proxy a timeout **terminates the hung child** (a stuck subprocess cannot recover); on the HTTP bridge it **fails the affected request closed and the session keeps serving** (one slow response should not kill a shared HTTP upstream). The HTTP reverse-proxy listener (`--listen`) instead uses its own HTTP client/server timeouts. |
 
 The table shows the values an explicitly written section starts from. When the section is left out of the config entirely (no `enabled: true` and no `action`), `pipelock mcp proxy` turns it on with `action: block`. `response_timeout_seconds` applies independently of `enabled`; it governs the response read path whenever the stdio-fronted proxy is running.
+
+Request key validation runs before content scanning on every MCP transport. Free-form tool arguments, environment maps, and JSON Schema properties keep case-sensitive keys; exact duplicate keys are refused throughout the request. A refusal preserves the JSON-RPC parse error code and raw content diagnostics.
 
 The stdio proxy runs the full input content scan while this section is enabled, including when it was turned on because the section was omitted. When this section is explicitly disabled (`enabled: false` with an `action` set), every MCP transport — stdio, HTTP, and WebSocket — skips configurable input findings but still scans for the immutable core credential floor and hostname exfiltration; a core credential in `tools/call` arguments or another JSON-RPC field therefore hard-blocks on every MCP transport.
 
@@ -3731,6 +3733,8 @@ a2a_scanning:
 | `max_raw_size` | `1048576` | Reserved, not yet enforced (companion to `scan_raw_parts`) |
 | `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
 | `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
+
+Agent Cards reject exact duplicate keys and noncanonical case aliases of schema fields before scanning or drift comparison, even when `scan_agent_cards` is disabled. Keys inside free-form maps, including JSON Schema `properties`, remain case-sensitive.
 
 A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. It recognizes Agent Card paths `/.well-known/agent-card.json` and `/extendedAgentCard`, including tenant-prefixed forms such as `/tenant/.well-known/agent-card.json` and `/tenant/extendedAgentCard`. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and evaluates mid-session changes.
 

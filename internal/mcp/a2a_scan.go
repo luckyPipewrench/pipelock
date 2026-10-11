@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -801,10 +802,14 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 
 	// Card structure feeds drift and signature checks even when content scanning
 	// is disabled. Refuse ambiguous input before any typed decode or baseline use.
-	if err := redact.NoDuplicateJSONKeys(body); err != nil {
+	if err := redact.NoSchemaKeyAliases(body, reflect.TypeFor[A2AAgentCard]()); err != nil {
+		reason := fmt.Sprintf("a2a: invalid Agent Card JSON: %v", err)
+		if redact.IsDuplicateKeyBlock(err) {
+			reason = fmt.Sprintf("a2a: duplicate JSON object key: %v", err)
+		}
 		return AgentCardScanResult{
 			Clean: false, Action: config.ActionBlock,
-			Reason:   fmt.Sprintf("a2a: invalid Agent Card JSON: %v", err),
+			Reason:   reason,
 			Findings: A2AScanResult{Clean: false, Action: config.ActionBlock, InspectionIncomplete: true},
 		}
 	}

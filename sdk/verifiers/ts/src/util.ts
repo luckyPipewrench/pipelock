@@ -274,14 +274,23 @@ for (const group of KEY_FOLD_GROUPS.split(/\s+/u)) {
   const chars = [...group];
   for (const char of chars) keyFold.set(char, chars[0]);
 }
-function foldKey(value: string): string {
+export function foldKey(value: string): string {
   return [...value].map((char) => keyFold.get(char) ?? char).join("");
 }
 
 export function rejectDuplicateKeys(text: string): void {
+  rejectKeys(text, false);
+}
+
+// For schema objects only; free-form data uses the exact checker.
+export function rejectFoldedKeys(text: string): void {
+  rejectKeys(text, true);
+}
+
+function rejectKeys(text: string, caseInsensitive: boolean): void {
   interface Frame {
     isObject: boolean;
-    keys: Set<string>;
+    keys: Map<string, string>;
     expectKey: boolean;
   }
   const stack: Frame[] = [];
@@ -337,9 +346,16 @@ export function rejectDuplicateKeys(text: string): void {
       }
       const top = stack[stack.length - 1];
       if (top !== undefined && top.isObject && top.expectKey) {
-        const folded = foldKey(str);
-        if (top.keys.has(folded)) throw new InvalidError(`duplicate object key: ${str}`);
-        top.keys.add(folded);
+        const folded = caseInsensitive ? foldKey(str) : str;
+        const prior = top.keys.get(folded);
+        if (prior !== undefined) {
+          throw new InvalidError(
+            caseInsensitive && prior !== str
+              ? `case-insensitive duplicate object keys: ${JSON.stringify(prior)} and ${JSON.stringify(str)}`
+              : `duplicate object key: ${str}`,
+          );
+        }
+        top.keys.set(folded, str);
       }
       continue;
     }
@@ -365,9 +381,9 @@ export function rejectDuplicateKeys(text: string): void {
       }
     }
     if (c === "{") {
-      stack.push({ isObject: true, keys: new Set(), expectKey: true });
+      stack.push({ isObject: true, keys: new Map(), expectKey: true });
     } else if (c === "[") {
-      stack.push({ isObject: false, keys: new Set(), expectKey: false });
+      stack.push({ isObject: false, keys: new Map(), expectKey: false });
     } else if (c === "}" || c === "]") {
       stack.pop();
     } else if (c === ":") {

@@ -21,7 +21,7 @@ func TestKeyAliasesInputTransports(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","Method":"ping","params":{"name":"write_file","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","Name":"read_file","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{},"PARAMS":{}}`,
-		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{"arguments":{},"Arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{},"Arguments":{}}}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			opts := MCPProxyOpts{Scanner: testInputScanner(t), PolicyCfg: policy}
@@ -61,6 +61,46 @@ func TestKeyAliasesResponse(t *testing.T) {
 	}
 }
 
+func TestKeyGuardInputErrorsAndFreeFormMaps(t *testing.T) {
+	policy := buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{{Name: "deny-write", ToolPattern: `^write_file$`}})
+	bad := string([]byte{0xff})
+	for _, raw := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","name":"read_file","arguments":{"text":"` + bad + `"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","Name":"read_file","arguments":{"text":"` + bad + `"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"text":"` + bad + `"}}}`,
+	} {
+		t.Run(fmt.Sprintf("%x", raw), func(t *testing.T) {
+			if v := policy.CheckRequest([]byte(raw)); !v.Matched || v.Action != config.ActionBlock {
+				t.Errorf("policy accepted invalid key-check input: %+v", v)
+			}
+			opts := MCPProxyOpts{Scanner: testInputScanner(t), PolicyCfg: policy}
+			if v := scanHTTPInputDecision([]byte(raw), &bytes.Buffer{}, "session-1", "session-1", opts); v.Blocked == nil {
+				t.Error("HTTP accepted invalid key-check input")
+			}
+			var upstream, logs bytes.Buffer
+			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(raw+"\n")), transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionBlock, make(chan BlockedRequest, 1), nil, nil, opts)
+			if upstream.Len() != 0 {
+				t.Error("stdio forwarded invalid key-check input")
+			}
+		})
+	}
+	raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","unrelated":{"custom":"valid"},"params":{"name":"read_file","arguments":{"env":{"PATH":"one","Path":"two"}}}}`)
+	if v := policy.CheckRequest(raw); v.Matched {
+		t.Fatalf("case-distinct argument keys blocked: %+v", v)
+	}
+	if v := scanHTTPInputDecision(raw, &bytes.Buffer{}, "session-1", "session-1", MCPProxyOpts{Scanner: testInputScanner(t), PolicyCfg: policy}); v.Blocked != nil {
+		t.Fatal("HTTP blocked case-distinct argument keys")
+	}
+	var upstream, logs bytes.Buffer
+	ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(raw, '\n'))), transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionBlock, make(chan BlockedRequest, 1), nil, nil, MCPProxyOpts{Scanner: testInputScanner(t), PolicyCfg: policy})
+	if upstream.Len() == 0 {
+		t.Fatal("stdio blocked case-distinct argument keys")
+	}
+	if v := ScanResponse([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"sample","description":"hello","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"ID":{"type":"string"}}}}]}}`), testScanner(t)); !v.Clean {
+		t.Fatalf("case-distinct schema properties blocked: %+v", v)
+	}
+}
+
 func TestKeyAliasesAgentCard(t *testing.T) {
 	for _, scan := range []bool{true, false} {
 		t.Run(fmt.Sprint(scan), func(t *testing.T) {
@@ -70,7 +110,7 @@ func TestKeyAliasesAgentCard(t *testing.T) {
 			cfg.DetectCardDrift = true
 			baseline := NewCardBaseline(10)
 			key := CardCacheKeyFromRequest("https://agent.vendor.example/card", "")
-			clean := []byte(`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search"}]}`)
+			clean := []byte(`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search","inputSchema":{"properties":{"id":{},"ID":{}}}}]}`)
 			if v := ScanAgentCard(t.Context(), clean, sc, baseline, key, cfg); !v.Clean {
 				t.Fatalf("valid baseline: %+v", v)
 			}

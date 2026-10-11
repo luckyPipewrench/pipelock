@@ -48,7 +48,7 @@ func RejectStructAliases(data []byte, typ reflect.Type) error {
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
+		return nil // The consuming decoder owns type errors.
 	}
 	if fields == nil {
 		return nil // Let the caller's strict decoder report the schema error.
@@ -63,8 +63,8 @@ func RejectStructAliases(data []byte, typ reflect.Type) error {
 			continue
 		}
 		for name, field := range schema {
-			if !field.ambiguous && key != name && strings.EqualFold(key, name) {
-				return fmt.Errorf("%w: %q aliases %q", ErrCaseFoldedKey, key, name)
+			if !field.ambiguous && key != name && FoldKey(key) == FoldKey(name) {
+				return fmt.Errorf("%w: %q aliases %q (case-insensitive)", ErrCaseFoldedKey, key, name)
 			}
 		}
 	}
@@ -87,7 +87,7 @@ func rejectNestedAliases(data []byte, typ reflect.Type) error {
 		}
 		var items []json.RawMessage
 		if err := json.Unmarshal(data, &items); err != nil {
-			return err
+			return nil // The consuming decoder owns type errors.
 		}
 		for _, item := range items {
 			if err := rejectNestedAliases(item, typ.Elem()); err != nil {
@@ -97,7 +97,7 @@ func rejectNestedAliases(data []byte, typ reflect.Type) error {
 	case reflect.Map:
 		var items map[string]json.RawMessage
 		if err := json.Unmarshal(data, &items); err != nil {
-			return err
+			return nil // The consuming decoder owns type errors.
 		}
 		for _, item := range items {
 			if err := rejectNestedAliases(item, typ.Elem()); err != nil {

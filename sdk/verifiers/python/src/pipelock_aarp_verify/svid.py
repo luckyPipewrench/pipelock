@@ -62,6 +62,7 @@ from .appraise import (
 from .canonical import canonicalize
 from .envelope import Envelope
 from .input_file import read_verifier_file
+from .key_fold import field_alias
 from .timestamp import validate_timestamp
 
 # ContextSVIDBinding is the domain separator for the SVID proof-of-possession
@@ -893,6 +894,10 @@ _SIDECAR_KEYS = {"evidence", "verify"}
 
 def _reject_unknown(obj: dict[str, Any], allowed: set[str], where: str) -> None:
     for key in obj:
+        if alias := field_alias(key, allowed):
+            raise SVIDConfigError(
+                f"{where}: {key!r} aliases {alias!r} (case-insensitive)"
+            )
         if key not in allowed:
             raise SVIDConfigError(f"unknown field {key!r} in {where}")
 

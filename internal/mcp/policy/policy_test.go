@@ -575,8 +575,8 @@ func TestCheckRequest_Batch_Empty(t *testing.T) {
 func TestCheckRequest_Batch_InvalidJSON(t *testing.T) {
 	pc := testConfig(t)
 	v := pc.CheckRequest([]byte(`[not json`))
-	if v.Matched {
-		t.Error("expected no match for invalid batch JSON")
+	if !v.Matched || v.Action != config.ActionBlock {
+		t.Errorf("expected invalid batch JSON to block: %+v", v)
 	}
 }
 

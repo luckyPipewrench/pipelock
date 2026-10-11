@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,14 @@ type aliasRecursive struct {
 	Value string `json:"value"`
 }
 type aliasEmbedded struct{ aliasLeaf }
+
+func TestSchemaAliasDiagnostic(t *testing.T) {
+	var target aliasLeaf
+	err := DecodeStrict([]byte(`{"key":"one","KEY":"two"}`), &target)
+	if err == nil || !strings.Contains(err.Error(), `"KEY"`) || !strings.Contains(err.Error(), `"key"`) || !strings.Contains(err.Error(), "case-insensitive") {
+		t.Fatalf("alias diagnostic = %v", err)
+	}
+}
 
 func TestDecodeStrictKeys(t *testing.T) {
 	type document struct {
@@ -32,7 +41,7 @@ func TestDecodeStrictKeys(t *testing.T) {
 	for _, raw := range []string{
 		`{"Item":{}}`, `{"item":{"Key":"x"}}`, `{"items":[{"KEY":"x"}]}`,
 		`{"array":[{"\u212aey":"x"}]}`, `{"map":{"arbitrary":{"KEY":"x"}}}`,
-		`{"item":{},"ITEM":{}}`, `{"raw":{"a":1,"A":2}}`, `{"unknown":1}`,
+		`{"item":{},"ITEM":{}}`, `{"unknown":1}`,
 	} {
 		var target document
 		if err := DecodeStrict([]byte(raw), &target); err == nil {
@@ -40,7 +49,7 @@ func TestDecodeStrictKeys(t *testing.T) {
 		}
 	}
 	var target document
-	if err := DecodeStrict([]byte(`{"item":{"key":"ok"},"items":[{"key":"ok"}],"array":[{"key":"ok"}],"map":{"KEY":{"key":"ok"}},"raw":{"Custom":1},"bytes":"YQ==","number":9007199254740993}`), &target); err != nil {
+	if err := DecodeStrict([]byte(`{"item":{"key":"ok"},"items":[{"key":"ok"}],"array":[{"key":"ok"}],"map":{"KEY":{"key":"ok"}},"raw":{"Custom":1,"custom":2},"bytes":"YQ==","number":9007199254740993}`), &target); err != nil {
 		t.Fatal(err)
 	}
 	if target.Number != json.Number("9007199254740993") {
@@ -108,9 +117,9 @@ func TestStrictKeyValidationBoundaries(t *testing.T) {
 		valid bool
 	}{
 		{`{"a":[{}]}`, 3, true},
-		{`{"a":[{}]}`, 2, false},
+		{`{"a":[{}]}`, 1, false},
 		{`0`, 0, true},
-		{`{}`, 0, false},
+		{`{}`, 0, true},
 		{`{} trailing`, 3, false},
 		{`[] []`, 3, false},
 		{`{"a":`, 3, false},
@@ -128,16 +137,35 @@ func TestStrictKeyValidationBoundaries(t *testing.T) {
 		}
 	}
 	got := TopLevelDuplicateKeys([]byte(`{"key":{},"\u212aey":[],"KEY":null,"key":4}`))
-	for _, name := range []string{"key", "Key", "KEY"} {
+	for _, name := range []string{"key"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("missing duplicate spelling %q: %v", name, got)
 		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("case-distinct map names reported as duplicates: %v", got)
 	}
 	if HasKeyAlias(map[string]int{"key": 1, "other": 2}, "key") {
 		t.Fatal("canonical key reported as alias")
 	}
 	if !HasKeyAlias(map[string]int{"Key": 1}, "key") {
 		t.Fatal("Unicode alias missed")
+	}
+}
+
+func TestFreeFormKeysRemainCaseSensitive(t *testing.T) {
+	raw := []byte(`{"a":1,"A":2,"nested":{"k":1,"K":2}}`)
+	if err := RejectDuplicateKeys(raw); err != nil {
+		t.Fatalf("exact duplicate guard rejects free-form map: %v", err)
+	}
+	var target struct {
+		Values map[string]int `json:"values"`
+	}
+	if err := DecodeStrict([]byte(`{"values":{"a":1,"A":2}}`), &target); err != nil || len(target.Values) != 2 {
+		t.Fatalf("typed decode changed map keys: %+v, %v", target, err)
+	}
+	if err := DecodeStrict([]byte(`{"Values":{}}`), &target); err == nil {
+		t.Fatal("typed field alias accepted")
 	}
 }
 
@@ -171,13 +199,23 @@ func TestRejectStructAliasesNestedShapes(t *testing.T) {
 		{`{}`, &hiddenEmbedded{}, false},
 		{`{"ITEM":{"key":"x"}}`, &named{}, true},
 		{`null`, &aliasLeaf{}, false},
-		{`[]`, &aliasLeaf{}, true},
-		{`{}`, &[]aliasLeaf{}, true},
-		{`[]`, &map[string]aliasLeaf{}, true},
+		{`[]`, &aliasLeaf{}, false},
+		{`{}`, &[]aliasLeaf{}, false},
+		{`[]`, &map[string]aliasLeaf{}, false},
 		{`[{"KEY":"x"}]`, &[]*aliasLeaf{}, true},
 	} {
 		if err := RejectStructAliases([]byte(tc.raw), reflect.TypeOf(tc.target)); (err != nil) != tc.reject {
 			t.Errorf("%s into %T: %v", tc.raw, tc.target, err)
 		}
+	}
+	// Alias inspection leaves shape errors to the consumer. Strict decoding
+	// still rejects them; callers that handle malformed entries keep that flow.
+	for _, target := range []any{&aliasLeaf{}, &map[string]aliasLeaf{}} {
+		if err := DecodeStrict([]byte(`[]`), target); err == nil {
+			t.Errorf("strict decode accepted array into %T", target)
+		}
+	}
+	if err := DecodeStrict([]byte(`{}`), &[]aliasLeaf{}); err == nil {
+		t.Fatal("strict decode accepted object into slice")
 	}
 }

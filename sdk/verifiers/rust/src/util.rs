@@ -235,6 +235,15 @@ pub fn parse_json_text(text: &str, label: &str) -> Result<Value> {
 /// such input before signature verification. Implemented as a recursive serde
 /// Visitor so it reuses serde_json's tokenizer rather than a hand parser.
 pub fn reject_duplicate_keys(text: &str) -> Result<()> {
+    reject_keys(text, false)
+}
+
+/// Only schema objects use case-insensitive key identity.
+pub fn reject_folded_keys(text: &str) -> Result<()> {
+    reject_keys(text, true)
+}
+
+fn reject_keys(text: &str, folded: bool) -> Result<()> {
     use serde::de::DeserializeSeed;
     let mut de = serde_json::Deserializer::from_str(text);
     // serde_json's built-in recursion limit rejects one level earlier than the
@@ -242,14 +251,14 @@ pub fn reject_duplicate_keys(text: &str) -> Result<()> {
     // receipt-nesting bound explicitly in NoDupSeed so all four allow exactly
     // 128 nested JSON arrays/objects and reject the 129th.
     de.disable_recursion_limit();
-    match (NoDupSeed { depth: 0 }).deserialize(&mut de) {
+    match (NoDupSeed { depth: 0, folded }).deserialize(&mut de) {
         Ok(_) => Ok(()),
         Err(err) => Err(VerifierError::Invalid(err.to_string())),
     }
 }
 
 // Pin key identity to Go's simple-fold cycles; native lowercase differs.
-fn fold_key(key: &str) -> String {
+pub fn fold_key(key: &str) -> String {
     use std::collections::HashMap;
     use std::sync::OnceLock;
     static FOLD: OnceLock<HashMap<char, char>> = OnceLock::new();
@@ -273,6 +282,7 @@ const MAX_EXACT_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 /// object keys; it carries no data.
 struct NoDupSeed {
     depth: usize,
+    folded: bool,
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
@@ -283,11 +293,12 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
         D: serde::de::Deserializer<'de>,
     {
         use serde::de::{self, MapAccess, SeqAccess, Visitor};
-        use std::collections::HashSet;
+        use std::collections::HashMap;
         use std::fmt;
 
         struct NoDupVisitor {
             depth: usize,
+            folded: bool,
         }
 
         impl<'de> Visitor<'de> for NoDupVisitor {
@@ -306,13 +317,23 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
                         "JSON nesting exceeds maximum depth {MAX_NESTING_DEPTH}"
                     )));
                 }
-                let mut seen: HashSet<String> = HashSet::new();
+                let mut seen: HashMap<String, String> = HashMap::new();
                 while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(fold_key(&key)) {
-                        return Err(de::Error::custom(format!("duplicate object key: {key}")));
+                    let identity = if self.folded {
+                        fold_key(&key)
+                    } else {
+                        key.clone()
+                    };
+                    if let Some(prior) = seen.insert(identity, key.clone()) {
+                        return Err(de::Error::custom(if self.folded && prior != key {
+                            format!("case-insensitive duplicate object keys: {prior:?} and {key:?}")
+                        } else {
+                            format!("duplicate object key: {key}")
+                        }));
                     }
                     map.next_value_seed(NoDupSeed {
                         depth: self.depth + 1,
+                        folded: self.folded,
                     })?;
                 }
                 Ok(())
@@ -330,6 +351,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
                 while seq
                     .next_element_seed(NoDupSeed {
                         depth: self.depth + 1,
+                        folded: self.folded,
                     })?
                     .is_some()
                 {}
@@ -394,7 +416,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
             }
         }
 
-        deserializer.deserialize_any(NoDupVisitor { depth: self.depth })
+        deserializer.deserialize_any(NoDupVisitor {
+            depth: self.depth,
+            folded: self.folded,
+        })
     }
 }
 

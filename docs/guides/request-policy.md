@@ -81,7 +81,7 @@ out of scope.
 Several conditions are **always** unclassifiable and fail closed regardless of the
 two knobs: duplicate GraphQL fragment names, fragment cycles, unresolved fragment
 spreads, expansion-budget exhaustion, and a duplicated top-level discriminator key
-(where JSON parsers disagree on which value wins). If a route-matched body is
+(including case-insensitive aliases, where JSON parsers disagree on which value wins). GraphQL JSON bodies reject exact duplicate keys and noncanonical aliases of `query` and `operationName` through `on_parse_error`; keys in `variables` and `extensions` remain case-sensitive. If a route-matched body is
 **uninspectable** (unread, over `request_body_scanning.max_body_bytes` default
 5 MiB, or a read error), it is blocked outright before the two knobs even apply.
 

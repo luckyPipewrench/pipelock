@@ -448,7 +448,9 @@ jobs:
           RUST_AARP: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs aarp
           PYTHONPATH: ${{ github.workspace }}/sdk/verifiers/python/src
           PY_AARP: python -m pipelock_aarp_verify aarp
-        run: bash sdk/conformance/aarp-corpus-gate.sh
+        run: |
+          bash sdk/conformance/aarp-corpus-gate.sh
+          python sdk/conformance/key-artifact-gate.py
 
   # A pull request checkout is the merge commit, so its first parent is the
   # base. A main push compares with the previous tip, and only after that

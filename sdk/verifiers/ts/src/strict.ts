@@ -19,7 +19,7 @@
 // verdict. Only v1 receipts are validated here; the v2 evidence_receipt_v2
 // shape has its own path.
 
-import { InvalidError } from "./util.js";
+import { foldKey, InvalidError } from "./util.js";
 
 const RECEIPT_KEYS = new Set(["version", "action_record", "signature", "signer_key", "ext"]);
 
@@ -184,6 +184,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function rejectUnknownKeys(obj: unknown, allowed: Set<string>, objectName: string): void {
   if (!isPlainObject(obj)) return;
   for (const key of Object.keys(obj)) {
+    const alias = [...allowed].find((name) => key !== name && foldKey(key) === foldKey(name));
+    if (alias !== undefined)
+      throw new InvalidError(`${objectName}: ${key} aliases ${alias} (case-insensitive)`);
     if (!allowed.has(key)) {
       throw new InvalidError(`unknown field "${key}" on signed v1 ${objectName} object`);
     }

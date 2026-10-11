@@ -1896,7 +1896,7 @@ func joinInputVerdictReasons(verdict InputVerdict) string {
 // jsonRPCErrorCodeForInputError maps scanner parse failures onto JSON-RPC
 // protocol error codes.
 func jsonRPCErrorCodeForInputError(errText string) int {
-	if strings.HasPrefix(errText, "invalid JSON") || strings.HasPrefix(errText, "invalid JSON batch") {
+	if strings.HasPrefix(errText, "invalid JSON") || strings.Contains(errText, "redact: blocked (body_unparseable): invalid JSON:") {
 		return -32700
 	}
 	return -32600
@@ -2010,10 +2010,9 @@ func stripInboundMCPMeta(msg []byte) []byte {
 // an error before encoding/json can collapse them.
 func extractInboundMCPAuthority(msg []byte) ([]byte, string, error) {
 	trimmed := bytes.TrimSpace(msg)
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
-		// Do not unmarshal/remarshal duplicate-key payloads. The parser
-		// and scanner paths intentionally fail closed on duplicate keys;
-		// remarshal would collapse them before those checks can run.
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
+		// Preserve invalid bytes until the input gate rejects them; decoding
+		// and remarshal could repair malformed text or collapse duplicate keys.
 		return msg, "", err
 	}
 

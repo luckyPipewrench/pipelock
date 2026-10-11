@@ -45,10 +45,8 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	// silently collapse them. A duplicate `method` lets an attacker hide
 	// a tools/call with secret-bearing arguments behind a benign sibling
 	// (or vice versa) - Go last-wins vs upstream first-wins parser
-	// differential. external review C-1. Only block on actual duplicate-key
-	// matches; let malformed-JSON errors flow through to the existing
-	// parse-error path so the BlockError reason stays attributable.
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+	// differential. Every key-validation error fails closed.
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
 		return nil, nil, err
 	}
 
@@ -107,7 +105,7 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 
 	// Same dup-key trap on params: a duplicate `arguments` could hide
 	// secret-bearing args behind a benign sibling that wins last-wins.
-	if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil {
 		return nil, nil, err
 	}
 
@@ -159,7 +157,7 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 }
 
 func rewriteRedactableJSON(raw json.RawMessage, cfg MCPRedactionConfig, objectKind string) ([]byte, *redact.Report, error) {
-	if err := redact.NoDuplicateJSONKeys(raw); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(raw); err != nil {
 		return nil, nil, err
 	}
 	// A non-object value fails closed for every callable kind. The redaction

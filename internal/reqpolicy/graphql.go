@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -72,7 +73,14 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	if len(trimmed) == 0 {
 		return nil, false, false
 	}
-	if err := jsonscan.RejectDuplicateKeys(trimmed); err != nil {
+	if err := jsonscan.ValidateKeys(trimmed, 10000); err != nil {
+		return nil, false, false
+	}
+	var schema any = gqlRequest{}
+	if trimmed[0] == '[' {
+		schema = []gqlRequest{}
+	}
+	if err := jsonscan.RejectStructAliases(trimmed, reflect.TypeOf(schema)); err != nil {
 		return nil, false, false
 	}
 

@@ -121,7 +121,7 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		verdict, _ := scanBatch(trimmed, sc, opts, includeDLP)
 		return verdict
 	}
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
 			ID:    recoverTopLevelJSONRPCID(trimmed),
 			Clean: false,
@@ -597,7 +597,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		return oversizedResponseVerdict(line)
 	}
 	trimmed := bytes.TrimSpace(line)
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
 			ID:    recoverTopLevelJSONRPCID(trimmed),
 			Clean: false,
@@ -1200,7 +1200,7 @@ func validateA2AResponseEnvelope(line []byte) (jsonrpc.ScanVerdict, bool) {
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		return jsonrpc.ScanVerdict{}, true
 	}
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
 			ID:    recoverTopLevelJSONRPCID(trimmed),
 			Clean: false,

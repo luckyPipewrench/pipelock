@@ -185,6 +185,13 @@ fn reject_unknown_keys(obj: &Value, allowed: &[&str], object_name: &str) -> Resu
         None => return Ok(()),
     };
     for key in map.keys() {
+        if let Some(alias) = allowed.iter().find(|name| {
+            key.as_str() != **name && crate::util::fold_key(key) == crate::util::fold_key(name)
+        }) {
+            return Err(VerifierError::Invalid(format!(
+                "{key:?} aliases {alias:?} (case-insensitive) on {object_name}"
+            )));
+        }
         if !allowed.contains(&key.as_str()) {
             return Err(VerifierError::Invalid(format!(
                 "unknown field {key:?} on signed v1 {object_name} object"

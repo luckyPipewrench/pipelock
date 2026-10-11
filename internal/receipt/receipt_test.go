@@ -738,8 +738,16 @@ func TestUnmarshalRejectsDuplicateKeys(t *testing.T) {
 }
 
 func TestUnmarshalRejectsConflictingFieldAlias(t *testing.T) {
-	if err := rejectReceiptAliases([]byte("{")); err == nil {
-		t.Fatal("malformed receipt alias input accepted")
+	for name, raw := range map[string]string{
+		"malformed":        `{`,
+		"invalid encoding": `{"version":"` + string([]byte{0xff}) + `"}`,
+		"exact duplicate":  `{"version":1,"version":2}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectReceiptAliases([]byte(raw)); err == nil {
+				t.Fatal("invalid receipt alias input accepted")
+			}
+		})
 	}
 	if err := rejectReceiptAliases([]byte("null")); err != nil {
 		t.Fatalf("null must reach the schema decoder: %v", err)

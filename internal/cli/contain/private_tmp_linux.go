@@ -54,6 +54,9 @@ func privateTmpSystemdRunArgs(uid, gid uint32, groups []uint32, homeDir, display
 		"--gid=" + strconv.FormatUint(uint64(gid), 10),
 		"--working-directory=" + homeDir,
 	}
+	for _, property := range runtimeSocketProperties() {
+		args = append(args, "--property="+property)
+	}
 	if collect {
 		args = append(args, "--collect")
 	}

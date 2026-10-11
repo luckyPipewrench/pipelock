@@ -9,7 +9,7 @@ import "fmt"
 
 // ApplyLandlock is not used on macOS - seatbelt (sandbox-exec) handles
 // filesystem restrictions. Returns ErrUnavailable.
-func ApplyLandlock(_ Policy) (LayerStatus, error) {
+func ApplyLandlock(_ Policy, _ ...string) (LayerStatus, error) {
 	return LayerStatus{
 		Name:   LayerLandlock,
 		Active: false,

@@ -1487,10 +1487,7 @@ func TestCovNSAssertManagedNetworkNamespaceMalformedIdentityPrefix(t *testing.T)
 	env := netnsAssertEnv{
 		agentUser: testAgentUser,
 		proxyPort: 8888,
-		runCmd: func(context.Context, string, ...string) (string, int, error) {
-			return "", 0, nil
-		},
-		readFile: func(string) ([]byte, error) { return []byte("garbage-without-brackets\n"), nil },
+		readFile:  func(string) ([]byte, error) { return []byte("garbage-without-brackets\n"), nil },
 	}
 	err := assertManagedNetworkNamespace(context.Background(), env)
 	if err == nil || !strings.Contains(err.Error(), "is malformed") {

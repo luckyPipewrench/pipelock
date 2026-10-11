@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,17 @@ type initChildResult struct {
 	stderr    string
 	exitCode  int
 	waitState syscall.WaitStatus
+}
+
+func initBridgeSocketFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(shortTempDir(t), "proxy.sock")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return path
 }
 
 func runInitChildFailureCase(t *testing.T, binary string, env []string) initChildResult {
@@ -124,7 +136,7 @@ func requireInitFailure(t *testing.T, result initChildResult, wantStderr string)
 func TestIntegration_InitChildrenRejectUnsafeResolvedPolicies(t *testing.T) {
 	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
-	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
+	socketPath := initBridgeSocketFixture(t)
 	missingPath := filepath.Join(t.TempDir(), "missing")
 
 	protectedHome := t.TempDir()
@@ -194,7 +206,7 @@ func TestIntegration_InitChildrenRejectUnsafeResolvedPolicies(t *testing.T) {
 func TestIntegration_InitChildrenFailClosedOnEnvironmentAndNetworkStartup(t *testing.T) {
 	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
-	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
+	socketPath := initBridgeSocketFixture(t)
 
 	t.Run("dangerous extra environment", func(t *testing.T) {
 		for _, mode := range []struct {
@@ -257,7 +269,7 @@ func TestIntegration_InitChildrenFailClosedOnEnvironmentAndNetworkStartup(t *tes
 func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
-	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
+	socketPath := initBridgeSocketFixture(t)
 
 	t.Run("mcp rejects inaccessible working directory", func(t *testing.T) {
 		restrictedWorkspace := t.TempDir()
@@ -395,7 +407,7 @@ func TestIntegration_InitChildrenPropagateCommandFailures(t *testing.T) {
 func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 	binary := buildTestBinaryWithoutSandboxProbe(t)
 	workspace := t.TempDir()
-	socketPath := filepath.Join(t.TempDir(), "proxy.sock")
+	socketPath := initBridgeSocketFixture(t)
 
 	probe := runNamespacedInitChildFailureCase(t, binary, []string{
 		initEnvKey + "=1",

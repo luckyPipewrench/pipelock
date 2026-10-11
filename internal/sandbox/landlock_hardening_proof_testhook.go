@@ -11,7 +11,7 @@ import "github.com/landlock-lsm/go-landlock/landlock"
 // The fixture needs the kernel's proc access decision to be observable without
 // Landlock denying the same open first. Production binaries compile the real
 // Landlock implementation.
-func ApplyLandlock(Policy) (LayerStatus, error) {
+func ApplyLandlock(Policy, ...string) (LayerStatus, error) {
 	return LayerStatus{Name: LayerLandlock, Active: true, Version: 1}, nil
 }
 

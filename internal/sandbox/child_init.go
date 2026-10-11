@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -105,7 +106,7 @@ func RunInit() {
 		exitSandboxProcess(1)
 	}
 	policy = resolvedPolicy
-	llStatus, llErr := ApplyLandlock(policy)
+	llStatus, llErr := ApplyLandlock(policy, socketPath)
 	reportLayer(os.Stderr, llStatus, llErr)
 
 	// Set no_new_privs (MUST come before seccomp).
@@ -168,7 +169,7 @@ func RunInit() {
 	}
 
 	if socketPath != "" {
-		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals)
+		runInitWithBridge(command, env, workspace, socketPath, bridgeSignals, llStatus)
 		return
 	}
 
@@ -194,6 +195,13 @@ func RunInit() {
 	}
 
 	reportSubprocessCoverageError(flushSubprocessCoverage())
+	if !llStatus.Active || llStatus.Version < 9 {
+		runtime.LockOSThread()
+		if err := restrictTargetUnixSockets(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: %v\n", err)
+			exitSandboxProcess(1)
+		}
+	}
 	err = processexec.Replace(binary, command, env)
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
 	exitSandboxProcess(1)
@@ -209,7 +217,7 @@ func applyRlimitsOrExit() {
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] rlimits: ACTIVE\n")
 }
 
-func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal) {
+func runInitWithBridge(command, env []string, workspace, socketPath string, sigCh <-chan os.Signal, filesystem LayerStatus) {
 	noNetNS := IsNoNetNS()
 	bridgeAddr := ""
 	if noNetNS {
@@ -256,7 +264,7 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 	childCmd.Env = env
 	childCmd.Dir = workspace
 
-	if err := childCmd.Start(); err != nil {
+	if err := startSandboxTarget(childCmd, filesystem); err != nil {
 		cancel()
 		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)

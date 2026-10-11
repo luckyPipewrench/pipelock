@@ -203,7 +203,7 @@ func TestSyntheticEnv_DoesNotInheritUnlistedVars(t *testing.T) {
 
 func TestSyntheticEnv_BlocksDangerousExtraEnv(t *testing.T) {
 	dir := t.TempDir()
-	for key := range dangerousEnvKeys {
+	for key := range sandboxOwnedEnvKeys {
 		_, err := SyntheticEnv(dir, dir, []string{key + "=/tmp/evil"})
 		if err == nil {
 			t.Errorf("expected error for dangerous env key %q, got nil", key)

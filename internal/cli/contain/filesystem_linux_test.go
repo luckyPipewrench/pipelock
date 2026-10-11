@@ -30,6 +30,7 @@ func TestFilesystemPropertyParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lines = append(runtimeSocketProperties(), lines...)
 	profile, err := filesystemProfileProperties(in)
 	if err != nil {
 		t.Fatal(err)

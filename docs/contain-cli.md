@@ -65,7 +65,7 @@ pipelock contain run: session contract for claude
 
 Use `--dry-run` to run preflight, print the contract, and exit without emitting a posture capsule or launching. This is the way to review what a launch would grant before running it. It applies the same expiry gate as a real launch: a grant that has already expired fails preflight at the `workspace_access` check (probe 15) before any contract is printed, and the command exits 1. A grant that expires after probe 15 passes is refused by a final expiry check after the contract prints, and that refusal exits 2.
 
-Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+Without `--dry-run`, if preflight passes and no recorded workspace grant has expired, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config. It then starts `/usr/local/bin/plk-launch <tool> ...` in a transient systemd service as `pipelock-agent` with `PrivateTmp=true`, `PrivateNetwork=true`, and `JoinsNamespaceOf=pipelock-agent-netns.service`. Each managed launch also hides host `/run` and `/dev/shm` with temporary filesystems, even when filesystem confinement is off. Only the root-owned network namespace identity is bound back under `/run`; proxy access uses the loopback forwarder. An expired grant is refused fail-closed (re-grant or `revoke-workspace` first). Pipelock doesn't read or store the agent's API keys. The launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
 
 The capsule stays schema version 1. An off-mode capsule has the same JSON fields as a capsule from before filesystem confinement: `filesystem_mode` and `filesystem_binds_sha256` are absent. An enforce-mode capsule adds those two fields on the launch evidence and the containment evidence. A verifier older than this release rejects an enforce-mode capsule, because it rejects unknown fields, and that rejection is fail-closed. Upgrade the verifier before it checks an enforce-mode capsule.
 
@@ -400,11 +400,16 @@ Group=pipelock-agent
 WorkingDirectory=/home/pipelock-agent
 PrivateNetwork=true
 PrivateTmp=true
+TemporaryFileSystem=/run:ro
+TemporaryFileSystem=/dev/shm:rw,nosuid,nodev,noexec
+BindReadOnlyPaths=/run/pipelock-contain/agent-netns.id
 ExecStartPre=!/usr/local/bin/pipelock contain service-posture -- agent-tool
 ExecStart=
 ExecStart=/usr/local/bin/plk-launch agent-tool
 Restart=on-failure
 ```
+
+Workspace and agent-home binds inside `/run`, `/var/run`, or `/dev/shm` are refused so a grant cannot reopen those runtime directories. The runtime mounts hide host pathname sockets. The example assumes `/var/run` resolves to `/run`; add `TemporaryFileSystem=/var/run:ro` if it is a separate directory. Managed units select this from the host filesystem during installation. Managed namespace forwarders receive only their exact doorway socket, and managed display services retain only their display runtime directory under `/run`. Re-run `contain install` to update managed helpers and wrappers; operator-written units need the properties shown above. The existing user-namespace remount and same-UID `/proc` limitations still apply.
 
 The dependencies stop the agent when the namespace or proxy forwarder is missing, masked, failed, or stopped. `JoinsNamespaceOf=` belongs in `[Unit]`; systemd ignores it under `[Service]` and logs `Unknown key 'JoinsNamespaceOf' in section [Service], ignoring`, and the unit then gets its own empty namespace. `PrivateNetwork=true` creates that separate empty namespace whenever the join has no valid target, so it isn't enough on its own.
 

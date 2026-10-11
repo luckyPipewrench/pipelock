@@ -30,6 +30,7 @@ Type=simple
 User=pipelock-agent
 Group=pipelock-agent
 UMask=0077
+` + strings.Join(runtimeSocketMountProperties(), "\n") + `
 ExecStart=/usr/bin/Xvfb :99 -auth /var/lib/pipelock-agent/Xauthority -screen 0 1280x1024x24 -nolisten tcp -nolisten local -listen unix
 ExecStartPost=/usr/bin/bash -c 'for i in {1..200}; do if [ -S "$1" ]; then chmod 0700 "$1"; exit; fi; sleep 0.1; done; exit 1' _ /tmp/.X11-unix/X99
 Restart=on-failure

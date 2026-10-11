@@ -134,6 +134,8 @@ Type=simple
 User=%s
 Group=%s
 ExecStart=%s contain netns-forward --listen %s --target %s
+%s
+BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
 PrivateTmp=true
@@ -147,6 +149,8 @@ WantedBy=multi-user.target
 		base, base, containedNetworkNamespaceUnit,
 		agentUser, agentUser, pipelockPath,
 		systemdListenAddress(service.Host, service.Port),
+		declaredLoopbackDoorwayPath(service.Host, service.Port),
+		strings.Join(runtimeSocketMountProperties(), "\n"),
 		declaredLoopbackDoorwayPath(service.Host, service.Port))
 }
 
@@ -721,6 +725,8 @@ Type=simple
 User=%s
 Group=%s
 ExecStart=%s contain netns-forward --listen 127.0.0.1:%d --target %s
+%s
+BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
 PrivateTmp=true
@@ -733,7 +739,7 @@ WantedBy=multi-user.target
 `, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
 		containedProxyForwarderUnit, containedProxyForwarderUnit,
 		containedNetworkNamespaceUnit,
-		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath)
+		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), containedDoorwaySocketPath)
 }
 
 // renderContainedProxyForwarderUnit relays the host doorway to Pipelock's own

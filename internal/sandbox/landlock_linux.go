@@ -19,7 +19,7 @@ import (
 // downgraded to the supported ABI level. Returns the active ABI version
 // and any error. If Landlock is completely unavailable, returns
 // ErrUnavailable.
-func ApplyLandlock(policy Policy) (LayerStatus, error) {
+func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 	status := LayerStatus{Name: LayerLandlock}
 
 	abi, err := llsys.LandlockGetABIVersion()
@@ -37,10 +37,21 @@ func ApplyLandlock(policy Policy) (LayerStatus, error) {
 	// access rights the kernel doesn't support. IgnoreIfMissing skips
 	// paths that don't exist on this distro (e.g., /lib64/, /etc/pki/).
 	rules := buildRules(policy)
+	if abi >= 9 && len(proxySocket) > 0 && proxySocket[0] != "" {
+		// Admit the exact parent doorway inode, never its directory. Ordinary
+		// filesystem grants do not authorize connections to host sockets.
+		rules = append(rules, landlock.ROFiles(proxySocket[0]).WithResolveUnix())
+	}
 
-	if err := landlock.V5.BestEffort().RestrictPaths(rules...); err != nil {
+	if err := landlock.V9.BestEffort().RestrictPaths(rules...); err != nil {
 		status.Reason = fmt.Sprintf("restrict failed: %v", err)
 		return status, fmt.Errorf("applying landlock: %w", err)
+	}
+	if abi >= 6 {
+		if err := landlock.V6.RestrictScoped(); err != nil {
+			status.Reason = fmt.Sprintf("IPC scope failed: %v", err)
+			return status, fmt.Errorf("applying landlock IPC scope: %w", err)
+		}
 	}
 
 	status.Active = true

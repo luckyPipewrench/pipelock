@@ -28,31 +28,23 @@ var safePassthroughKeys = []string{
 	"TZ",
 }
 
-// IsDangerousEnvKey returns true if the key could subvert sandbox containment:
-// every envcontrol.CodeLoadingNames entry, the dangerousEnvKeys extras, and any
-// proxy variable in any case.
+// IsDangerousEnvKey refuses shared runtime controls and replacements for the
+// synthetic environment owned by the sandbox. Developer-environment launches
+// use a separate, explicit contract.
 func IsDangerousEnvKey(key string) bool {
-	if dangerousEnvKeys[key] || envcontrol.IsCodeLoading(key) {
-		return true
-	}
-	upper := strings.ToUpper(key)
-	return strings.HasSuffix(upper, "_PROXY")
+	return sandboxOwnedEnvKeys[strings.ToUpper(key)] || envcontrol.IsUnsafeOverride(key)
 }
 
-// dangerousEnvKeys are environment variable keys that must NOT be passed
-// into the sandbox via --env flags. These can subvert containment by
-// injecting code before the agent process starts.
-var dangerousEnvKeys = map[string]bool{
-	"LD_PRELOAD":      true, // shared library injection
-	"LD_LIBRARY_PATH": true, // library search path hijack
-	"NODE_OPTIONS":    true, // Node.js arbitrary flag injection
-	"PYTHONSTARTUP":   true, // Python executes this file on startup
-	"PYTHONPATH":      true, // Python module search path hijack
-	"RUBYOPT":         true, // Ruby arbitrary option injection
-	"PERL5OPT":        true, // Perl arbitrary option injection
-	"BASH_ENV":        true, // Bash executes this file on startup
-	"ENV":             true, // sh executes this file on startup
-	"CDPATH":          true, // directory traversal manipulation
+var sandboxOwnedEnvKeys = map[string]bool{
+	"HOME":            true,
+	"PATH":            true,
+	"TMPDIR":          true,
+	"PWD":             true,
+	"SHELL":           true,
+	"XDG_CONFIG_HOME": true,
+	"XDG_CACHE_HOME":  true,
+	"XDG_DATA_HOME":   true,
+	"XDG_STATE_HOME":  true,
 }
 
 // telemetrySuppression prevents package managers from hanging on network

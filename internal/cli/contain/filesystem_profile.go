@@ -171,7 +171,6 @@ func filesystemProfileProperties(in filesystemProfileInput) (filesystemProfile, 
 		properties = append(properties, "InaccessiblePaths="+systemdPathToken(hiddenPath))
 	}
 	properties = append(properties,
-		"TemporaryFileSystem=/dev/shm",
 		"ProtectKernelTunables=true",
 		"ProtectKernelModules=true",
 		"ProtectControlGroups=true",
@@ -370,8 +369,13 @@ func refuseUnsupportedOperatorHome(home string) error {
 }
 
 func refuseFilesystemBind(kind, original, resolved string, operatorHomes ...string) error {
+	for _, runtimeDir := range []string{"/run", "/var/run", "/dev/shm"} {
+		if resolved == runtimeDir || linuxPathContains(runtimeDir, resolved) {
+			return fmt.Errorf("%s %q resolves inside runtime socket directory %s, which cannot be bound into a contained agent", kind, original, runtimeDir)
+		}
+	}
 	switch resolved {
-	case "/", "/home", "/root", "/run/user":
+	case "/", "/home", "/root":
 		return fmt.Errorf("%s %q resolves to %s, which cannot be bound into a contained agent", kind, original, resolved)
 	}
 	for _, operatorHome := range operatorHomes {

@@ -457,6 +457,10 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 	if flag := strings.TrimSpace(expandEnvironmentFlag(env)); flag != "" {
 		expand = "  " + flag + "\n"
 	}
+	runtimeProperties := make([]string, 0, len(runtimeSocketProperties()))
+	for _, property := range runtimeSocketProperties() {
+		runtimeProperties = append(runtimeProperties, "  --property="+property)
+	}
 	return strings.Join([]string{
 		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
@@ -497,6 +501,7 @@ func renderContainedLaunchWrapper(env *installEnv) string {
 		strings.TrimRight(expand, "\n"),
 		`  --property=PrivateTmp=true`,
 		`  --property=PrivateNetwork=true`,
+		strings.Join(runtimeProperties, "\n"),
 		`  --property=JoinsNamespaceOf=` + shellQuote(anchor),
 		`)`,
 		`if ((${#property_args[@]} > 0)); then`,

@@ -27,12 +27,6 @@ func TestAssertAgentNetworkNamespace(t *testing.T) {
 			lookup: func(string) (*user.User, error) {
 				return &user.User{Uid: "987", Username: testAgentUser}, nil
 			},
-			runCmd: func(_ context.Context, name string, args ...string) (string, int, error) {
-				if name != containSystemctlPath || !containsArg(args, containedNetworkNamespaceUnit) || !containsArg(args, "is-active") {
-					t.Fatalf("unexpected command: %s %v", name, args)
-				}
-				return "", 0, nil
-			},
 			readFile: func(string) ([]byte, error) { return []byte("net:[200]\n"), nil },
 			readLink: func(string) (string, error) { return "net:[200]", nil },
 			interfaces: func() ([]net.Interface, error) {
@@ -80,19 +74,9 @@ func TestAssertAgentNetworkNamespace(t *testing.T) {
 		{name: "interface listing unavailable", mutate: func(env *netnsAssertEnv) {
 			env.interfaces = func() ([]net.Interface, error) { return nil, errors.New("interface failure") }
 		}, wantErr: "interface failure"},
-		{name: "inactive anchor", mutate: func(env *netnsAssertEnv) {
-			env.runCmd = func(context.Context, string, ...string) (string, int, error) {
-				return "inactive\n", 3, nil
-			}
-		}, wantErr: "not active"},
 		{name: "proxy doorway unavailable", mutate: func(env *netnsAssertEnv) {
 			env.proxyHealth = func(context.Context, int) error { return errors.New("connection refused") }
 		}, wantErr: "connection refused"},
-		{name: "systemctl unavailable", mutate: func(env *netnsAssertEnv) {
-			env.runCmd = func(context.Context, string, ...string) (string, int, error) {
-				return "", 0, errors.New("unavailable")
-			}
-		}, wantErr: "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := base()

@@ -10,7 +10,10 @@
 // Keeping one list means a variable added for one surface is refused by all.
 package envcontrol
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // codeLoading names variables whose value selects code for a loader or a
 // runtime to load or run.
@@ -19,6 +22,13 @@ var codeLoading = []string{
 	// $ORIGIN library lookup; GCONV_PATH makes iconv load charset modules from a
 	// chosen directory.
 	"GCONV_PATH", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_ORIGIN_PATH", "LD_PRELOAD",
+	// macOS dynamic loader search and injection controls.
+	"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+	"DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+	// Git commands and configuration can select executable helpers.
+	"GIT_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF",
+	"GIT_PROXY_COMMAND", "GIT_EDITOR", "GIT_PAGER", "GIT_CONFIG_GLOBAL",
+	"GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 	// Node.js, Bun and Electron-as-Node. ELECTRON_RUN_AS_NODE turns an Electron
 	// application into a Node interpreter for its arguments.
 	"BUN_OPTIONS", "ELECTRON_EXTRA_LAUNCH_ARGS", "ELECTRON_RUN_AS_NODE",
@@ -37,7 +47,7 @@ var codeLoading = []string{
 	"CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER", "CORECLR_PROFILER_PATH",
 	"DOTNET_ADDITIONAL_DEPS", "DOTNET_SHARED_STORE", "DOTNET_STARTUP_HOOKS",
 	// POSIX shells started for scripts.
-	"BASH_ENV", "ENV",
+	"BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND",
 }
 
 var codeLoadingSet = func() map[string]struct{} {
@@ -65,4 +75,13 @@ func CodeLoadingNames() []string {
 func IsCodeLoading(name string) bool {
 	_, ok := codeLoadingSet[name]
 	return ok
+}
+
+// IsUnsafeOverride is the shared MCP and sandbox override denial policy.
+// Matching ignores case so environment transport has the same policy across
+// operating systems. Loader tuning and directory selection also belong here,
+// even where their values do not directly name code.
+func IsUnsafeOverride(name string) bool {
+	upper := strings.ToUpper(name)
+	return IsCodeLoading(upper) || upper == "GLIBC_TUNABLES" || upper == "CDPATH" || strings.HasSuffix(upper, "_PROXY")
 }

@@ -169,7 +169,7 @@ func RunStandaloneInit() {
 		exitSandboxProcess(1)
 	}
 	policy = resolvedPolicy
-	llStatus, llErr := ApplyLandlock(policy)
+	llStatus, llErr := ApplyLandlock(policy, socketPath)
 	reportLayer(os.Stderr, llStatus, llErr)
 
 	// Set no_new_privs + seccomp (strict blocks clone3).
@@ -329,7 +329,7 @@ func RunStandaloneInit() {
 		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader, guardStatus}
 	}
 
-	if err := agentCmd.Start(); err != nil {
+	if err := startSandboxTarget(agentCmd, llStatus); err != nil {
 		if guardEnvironmentReader != nil {
 			_ = guardEnvironmentReader.Close()
 			_ = guardEnvironmentWriter.Close()

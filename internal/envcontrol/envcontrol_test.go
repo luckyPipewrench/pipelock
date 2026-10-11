@@ -56,3 +56,16 @@ func TestIsCodeLoadingRefusesOnlyListedNames(t *testing.T) {
 		}
 	}
 }
+
+func TestIsUnsafeOverride(t *testing.T) {
+	for _, key := range append(CodeLoadingNames(), "GLIBC_TUNABLES", "CDPATH", "Http_Proxy", "custom_proxy") {
+		if !IsUnsafeOverride(key) || !IsUnsafeOverride(strings.ToLower(key)) {
+			t.Errorf("override accepted: %s", key)
+		}
+	}
+	for _, key := range []string{"PATH", "HOME", "LANG", "APP_OPTION", "", "PROXY_HOST"} {
+		if IsUnsafeOverride(key) {
+			t.Errorf("ordinary variable denied: %s", key)
+		}
+	}
+}

@@ -205,6 +205,8 @@ func renderAgentDisplayUnit(env *installEnv) string {
 			displayUnitMarker, "[Unit]", "Description=Pipelock contained agent X display",
 			"After=systemd-tmpfiles-setup.service", "", "[Service]", "Type=simple",
 			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
+			strings.Join(runtimeSocketMountProperties(), "\n"),
+			"BindPaths=/run/pipelock-agent-display",
 			// RuntimeDirectory with User= would make the directory agent-owned.
 			// A privileged pre-start action owns it as root while Xvnc gets only
 			// group create/traverse access. Contained agent processes lack that gid.
@@ -225,6 +227,7 @@ func renderAgentDisplayUnit(env *installEnv) string {
 		"User=" + env.agentUserName,
 		"Group=" + env.agentUserName,
 		"UMask=0077",
+		strings.Join(runtimeSocketMountProperties(), "\n"),
 		"ExecStart=" + env.xvfbPath + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -screen 0 " + env.displayConfig.EffectiveGeometry() + "x24 -nolisten tcp -nolisten local -listen unix",
 		"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ]; then chmod 0700 \"$1\"; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket,
 		"Restart=on-failure",

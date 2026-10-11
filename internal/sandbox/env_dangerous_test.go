@@ -31,8 +31,8 @@ func TestIsDangerousEnvKey(t *testing.T) {
 		{name: "NO_PROXY", key: "NO_PROXY", want: true},
 
 		// Safe keys that should NOT be flagged.
-		{name: "PATH is safe", key: "PATH", want: false},
-		{name: "HOME is safe", key: "HOME", want: false},
+		{name: "PATH is sandbox-owned", key: "PATH", want: true},
+		{name: "HOME is sandbox-owned", key: "HOME", want: true},
 		{name: "USER is safe", key: "USER", want: false},
 		{name: "LANG is safe", key: "LANG", want: false},
 		{name: "TZ is safe", key: "TZ", want: false},
@@ -40,9 +40,9 @@ func TestIsDangerousEnvKey(t *testing.T) {
 		{name: "empty string is safe", key: "", want: false},
 		{name: "OPENAI_API_KEY is safe", key: "OPENAI_API_KEY", want: false},
 
-		// Non-proxy injection keys are exact match.
-		{name: "lowercase ld_preload is safe", key: "ld_preload", want: false},
-		{name: "mixed case Node_Options is safe", key: "Node_Options", want: false},
+		// Match the MCP override policy in every casing.
+		{name: "lowercase ld_preload", key: "ld_preload", want: true},
+		{name: "mixed case Node_Options", key: "Node_Options", want: true},
 	}
 
 	for _, tt := range tests {
@@ -56,21 +56,11 @@ func TestIsDangerousEnvKey(t *testing.T) {
 }
 
 func TestIsDangerousEnvKey_AllKeysInMap(t *testing.T) {
-	// Verify every key in the dangerousEnvKeys map returns true.
-	for key := range dangerousEnvKeys {
+	// Verify every key in the sandboxOwnedEnvKeys map returns true.
+	for key := range sandboxOwnedEnvKeys {
 		if !IsDangerousEnvKey(key) {
-			t.Errorf("IsDangerousEnvKey(%q) = false, want true (key is in dangerousEnvKeys map)", key)
+			t.Errorf("IsDangerousEnvKey(%q) = false, want true (key is in sandboxOwnedEnvKeys map)", key)
 		}
-	}
-}
-
-func TestIsDangerousEnvKey_Count(t *testing.T) {
-	// Verify the expected number of dangerous keys to catch accidental
-	// removal or additions that aren't tested.
-	const expectedCount = 10
-	if len(dangerousEnvKeys) != expectedCount {
-		t.Errorf("dangerousEnvKeys has %d entries, expected %d — update tests if keys were added or removed",
-			len(dangerousEnvKeys), expectedCount)
 	}
 }
 
@@ -84,7 +74,7 @@ func TestIsDangerousEnvKey_RefusesSharedCodeLoadingList(t *testing.T) {
 		}
 	}
 	// Variables that change behavior without choosing code stay passable.
-	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "GLIBC_TUNABLES", "LD_PROFILE"} {
+	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "LD_PROFILE"} {
 		if IsDangerousEnvKey(key) {
 			t.Errorf("IsDangerousEnvKey(%q) = true; it loads no code and must remain passable", key)
 		}

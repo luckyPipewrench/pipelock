@@ -134,7 +134,6 @@ func TestFilesystemProfileProperties_EnforceBindsGrantsAndSecrets(t *testing.T) 
 		"InaccessiblePaths=/etc/pipelock/integrity",
 		"InaccessiblePaths=/etc/pipelock/tls",
 		"InaccessiblePaths=/etc/pipelock/keys/flight-recorder-signing.key",
-		"TemporaryFileSystem=/dev/shm",
 		"ProtectKernelTunables=true",
 		"ProtectKernelModules=true",
 		"ProtectControlGroups=true",

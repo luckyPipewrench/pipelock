@@ -40,7 +40,23 @@ func TestWSRelayContainsUnexpectedPanic(t *testing.T) {
 			if clientDirection {
 				pump = relay.clientToUpstream
 			}
-			_, _, _, blocked := pump(ctx, cancel, time.Second)
+			done := make(chan bool, 1)
+			go func() {
+				_, _, _, blocked := pump(ctx, cancel, time.Second)
+				done <- blocked
+			}()
+			if err := clientPeer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			frame, err := ws.ReadFrame(clientPeer)
+			if err != nil {
+				t.Fatalf("panic close frame: %v", err)
+			}
+			code, _ := ws.ParseCloseFrameData(frame.Payload)
+			if frame.Header.OpCode != ws.OpClose || code != ws.StatusInternalServerError {
+				t.Fatalf("panic wire close: opcode=%v code=%d", frame.Header.OpCode, code)
+			}
+			blocked := <-done
 			if !blocked || ctx.Err() == nil || !relay.panicked.Load() {
 				t.Fatal("panic did not fail closed")
 			}
@@ -103,8 +119,13 @@ func TestWSRelayPanicOutcomeReceipt(t *testing.T) {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ws.ReadFrame(conn); !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("panic did not close client: %v", err)
+	frame, err := ws.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("panic close frame: %v", err)
+	}
+	code, _ := ws.ParseCloseFrameData(frame.Payload)
+	if frame.Header.OpCode != ws.OpClose || code != ws.StatusInternalServerError {
+		t.Fatalf("panic wire close: opcode=%v code=%d", frame.Header.OpCode, code)
 	}
 	integrityWait(t, done)
 	r := rph.requireReceipt(t, receiptOutcomeLayer)
@@ -137,6 +158,35 @@ func (w panicRelayHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 type panicRelayConn struct{ net.Conn }
 
 func (panicRelayConn) Read([]byte) (int, error) { panic("unexpected relay read failure") }
+
+func TestWSRelayPanicCloseContainment(t *testing.T) {
+	for _, panicWrite := range []bool{false, true} {
+		conn := &panicCloseConn{panicWrite: panicWrite}
+		closePanickedRelayConn(conn, true)
+		if !conn.closed {
+			t.Fatal("recovery did not close the panicking connection")
+		}
+	}
+	closePanickedRelayConn(nil, true)
+}
+
+type panicCloseConn struct {
+	discardConn
+	panicWrite bool
+	closed     bool
+}
+
+func (c *panicCloseConn) Write(p []byte) (int, error) {
+	if c.panicWrite {
+		panic("unexpected write failure")
+	}
+	return len(p), nil
+}
+
+func (c *panicCloseConn) Close() error {
+	c.closed = true
+	panic("unexpected close failure")
+}
 
 func TestWSRelayCompletionMetrics(t *testing.T) {
 	t.Parallel()

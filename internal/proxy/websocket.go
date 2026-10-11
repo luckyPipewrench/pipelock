@@ -83,9 +83,10 @@ type wsRelay struct {
 	// upstreamCancelled records that the upstream direction ended because the
 	// relay or a local close stopped it, not because the upstream finished or
 	// broke off. Written only by upstreamToClient, read after it returns.
-	upstreamCancelled bool
-	panicked          atomic.Bool // either pump can panic; read after both return
-	clientClosing     atomic.Bool // client sent Close; only the upstream Close reply may follow
+	upstreamCancelled   bool
+	panicked            atomic.Bool               // either pump can panic; read after both return
+	clientClosing       atomic.Bool               // client sent Close; only the upstream Close reply may follow
+	clientCloseDeadline atomic.Pointer[time.Time] // one grace deadline, never renewed by discarded frames
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
 	// same escaped path and method-override headers as the handshake gate.
@@ -1519,7 +1520,10 @@ const relayCloseGrace = time.Second
 // hold the relay open. A final close frame still goes out: the close-frame
 // writers set their own write deadline first.
 func wakeRelayConn(conn net.Conn) {
-	deadline := time.Now().Add(relayCloseGrace)
+	wakeRelayConnUntil(conn, time.Now().Add(relayCloseGrace))
+}
+
+func wakeRelayConnUntil(conn net.Conn, deadline time.Time) {
 	_ = conn.SetReadDeadline(deadline)
 	_ = conn.SetWriteDeadline(deadline)
 }
@@ -1531,9 +1535,19 @@ func wakeRelayConn(conn net.Conn) {
 // and one that landed before it is caught by the check.
 func (r *wsRelay) armReadDeadline(ctx context.Context, conn net.Conn, idleTimeout time.Duration) {
 	_ = conn.SetReadDeadline(r.idleDeadline(idleTimeout))
-	if ctx.Err() != nil || r.clientClosing.Load() {
+	if r.clientClosing.Load() {
+		_ = conn.SetReadDeadline(r.closeGraceDeadline())
+	} else if ctx.Err() != nil {
 		_ = conn.SetReadDeadline(time.Now().Add(relayCloseGrace))
 	}
+}
+
+func (r *wsRelay) closeGraceDeadline() time.Time {
+	if r.clientCloseDeadline.Load() == nil {
+		deadline := time.Now().Add(relayCloseGrace)
+		r.clientCloseDeadline.CompareAndSwap(nil, &deadline)
+	}
+	return *r.clientCloseDeadline.Load()
 }
 
 // recoverRelayPanic contains unexpected scanner or relay failures to this
@@ -1543,16 +1557,28 @@ func (r *wsRelay) recoverRelayPanic(cancel context.CancelFunc, blocked *bool) {
 		return
 	}
 	*blocked = true
-	r.panicked.Store(true)
+	if r.panicked.Swap(true) {
+		cancel()
+		return
+	}
 	cancel()
-	if r.clientConn != nil {
-		_ = r.clientConn.Close()
-	}
-	if r.upstreamConn != nil {
-		_ = r.upstreamConn.Close()
-	}
+	closePanickedRelayConn(r.clientConn, true)
+	closePanickedRelayConn(r.upstreamConn, false)
 	if r.proxy != nil && r.proxy.logger != nil {
 		r.proxy.logger.LogError(audit.NewMethodLogContext("WS"), errors.New("WebSocket relay panic; connection closed"))
+	}
+}
+
+// Recovery must also contain a connection implementation that panics while
+// writing or closing. The client gets a best-effort internal-error Close first.
+func closePanickedRelayConn(conn net.Conn, notifyClient bool) {
+	if conn == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	defer func() { _ = conn.Close() }()
+	if notifyClient {
+		plwsutil.WriteCloseFrame(conn, ws.StatusInternalServerError, "relay panic")
 	}
 }
 
@@ -2501,7 +2527,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if r.clientClosing.Load() {
 			// Keep the context live for the close reply, bounded by the close
 			// grace. Revocation still cancels the parent and stops both pumps.
-			wakeRelayConn(r.upstreamConn)
+			wakeRelayConnUntil(r.upstreamConn, r.closeGraceDeadline())
 		} else {
 			cancel()
 		}
@@ -2660,6 +2686,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
+				r.closeGraceDeadline()
 				r.clientClosing.Store(true)
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
@@ -3051,6 +3078,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 
 	for {
+		if r.clientClosing.Load() && !time.Now().Before(r.closeGraceDeadline()) {
+			r.upstreamCancelled = true
+			return
+		}
 		if r.blockIdentityReload() {
 			blocked = true
 			return
@@ -3200,9 +3231,19 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
-		if ctx.Err() != nil || (r.clientClosing.Load() && hdr.OpCode != ws.OpClose) {
+		if ctx.Err() != nil {
 			r.upstreamCancelled = true
 			return
+		}
+		if r.clientClosing.Load() && hdr.OpCode != ws.OpClose {
+			// These bounded frames may have been in flight before our Close.
+			// Discard them without scanning or forwarding, then await the reply
+			// under the original grace deadline.
+			if !time.Now().Before(r.closeGraceDeadline()) {
+				r.upstreamCancelled = true
+				return
+			}
+			continue
 		}
 
 		if r.blockIdentityReload() {
@@ -3228,9 +3269,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				blocked = true
 				return
 			}
-			if ctx.Err() != nil || r.clientClosing.Load() {
+			if ctx.Err() != nil {
 				r.upstreamCancelled = true
 				return
+			}
+			if r.clientClosing.Load() {
+				continue
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
 			err = wsutil.WriteServerMessage(r.clientConn, hdr.OpCode, payload)
@@ -3372,9 +3416,12 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
-		if ctx.Err() != nil || r.clientClosing.Load() {
+		if ctx.Err() != nil {
 			r.upstreamCancelled = true
 			return
+		}
+		if r.clientClosing.Load() {
+			continue
 		}
 		// Forward complete message to client (proxy is SERVER, no masking).
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)

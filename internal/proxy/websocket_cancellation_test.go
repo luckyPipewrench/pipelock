@@ -78,13 +78,35 @@ func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
 			if err := ws.WriteFrame(&wire, ws.NewFrame(op, true, []byte("after close"))); err != nil {
 				t.Fatal(err)
 			}
+			if err := ws.WriteFrame(&wire, ws.NewFrame(op, true, []byte("another discarded frame"))); err != nil {
+				t.Fatal(err)
+			}
+			if err := ws.WriteFrame(&wire, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "done"))); err != nil {
+				t.Fatal(err)
+			}
 			source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
 			sink := &cancelPayloadConn{}
 			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: source, clientConn: sink, maxMsg: 1024}
 			relay.clientClosing.Store(true)
 			n, _, _, blocked := relay.upstreamToClient(t.Context(), func() {}, time.Second)
-			if n != 0 || blocked || relay.panicked.Load() || !relay.upstreamCancelled || sink.writes != 0 {
+			if n != 0 || blocked || relay.panicked.Load() || relay.upstreamCancelled || sink.writes != 1 {
 				t.Fatalf("data after client close: bytes=%d blocked=%v panic=%v cancelled=%v writes=%d", n, blocked, relay.panicked.Load(), relay.upstreamCancelled, sink.writes)
+			}
+			frame, err := ws.ReadFrame(&sink.written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, _ := ws.ParseCloseFrameData(frame.Payload)
+			if frame.Header.OpCode != ws.OpClose || code != ws.StatusNormalClosure {
+				t.Fatalf("discarded frame reached client: %+v", frame)
+			}
+			if len(source.deadlines) != 6 {
+				t.Fatalf("read deadlines: %v", source.deadlines)
+			}
+			for i := 3; i < len(source.deadlines); i += 2 {
+				if !source.deadlines[i].Equal(source.deadlines[1]) {
+					t.Fatal("intervening frame extended the close grace")
+				}
 			}
 		})
 	}
@@ -92,9 +114,25 @@ func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
 
 type cancelPayloadConn struct {
 	net.Conn
-	reader *bytes.Reader
-	cancel context.CancelFunc
-	writes int
+	reader    *bytes.Reader
+	cancel    context.CancelFunc
+	writes    int
+	written   bytes.Buffer
+	deadlines []time.Time
+}
+
+func TestWSRelayClientCloseGraceExpired(t *testing.T) {
+	cfg := testScannerConfig()
+	p := newTestProxyWithConfig(t, cfg)
+	sink := &cancelPayloadConn{}
+	relay := &wsRelay{proxy: p, cfg: cfg, clientConn: sink}
+	deadline := time.Now().Add(-time.Second)
+	relay.clientCloseDeadline.Store(&deadline)
+	relay.clientClosing.Store(true)
+	n, _, _, blocked := relay.upstreamToClient(t.Context(), func() {}, time.Minute)
+	if n != 0 || blocked || relay.panicked.Load() || !relay.upstreamCancelled || sink.writes != 0 {
+		t.Fatal("expired close grace did not terminate before reading or forwarding")
+	}
 }
 
 func (c *cancelPayloadConn) Read(p []byte) (int, error) {
@@ -104,7 +142,12 @@ func (c *cancelPayloadConn) Read(p []byte) (int, error) {
 	}
 	return n, err
 }
-func (c *cancelPayloadConn) Write(p []byte) (int, error)    { c.writes++; return len(p), nil }
-func (*cancelPayloadConn) SetReadDeadline(time.Time) error  { return nil }
+
+func (c *cancelPayloadConn) Write(p []byte) (int, error) { c.writes++; return c.written.Write(p) }
+
+func (c *cancelPayloadConn) SetReadDeadline(d time.Time) error {
+	c.deadlines = append(c.deadlines, d)
+	return nil
+}
 func (*cancelPayloadConn) SetWriteDeadline(time.Time) error { return nil }
 func (*cancelPayloadConn) Close() error                     { return nil }

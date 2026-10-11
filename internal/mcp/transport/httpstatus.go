@@ -79,7 +79,9 @@ func ReadClientErrorBody(resp *http.Response) ([]byte, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxClientErrorBodySize+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading body: %w", ErrClientErrorNotRelayable, err)
+		// A broken read is an incomplete response, the same as a 200 body
+		// that fails mid-read, not a property of the refusal.
+		return nil, fmt.Errorf("%w: %w: reading body: %w", ErrClientErrorNotRelayable, ErrIncompleteResponse, err)
 	}
 	if len(body) > MaxClientErrorBodySize {
 		return nil, fmt.Errorf("%w: body exceeds %d bytes", ErrClientErrorNotRelayable, MaxClientErrorBodySize)

@@ -391,6 +391,11 @@ func (r *clientErrorReader) ReadMessage() ([]byte, error) {
 	r.done = true
 	body, err := ReadClientErrorBody(r.resp)
 	_ = r.resp.Body.Close()
+	if errors.Is(err, ErrIncompleteResponse) {
+		// Cancellation, a deadline or a dropped connection: report it the way
+		// SingleMessageReader reports a broken 200 body, not as an answer.
+		return nil, err
+	}
 	if err == nil && IsClientErrorReply(body, r.requestID) {
 		return body, nil
 	}
@@ -402,19 +407,11 @@ func (r *clientErrorReader) Close() error {
 	return r.resp.Body.Close()
 }
 
+// sanitizedClientErrorReply is composed directly rather than encoded: id is a
+// JSON string or number already accepted by httpRPCID, and the rest is
+// constant, so the bytes are exactly what an encoder would produce.
 func sanitizedClientErrorReply(id json.RawMessage) []byte {
-	reply, _ := json.Marshal(struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Error   struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}{JSONRPC: "2.0", ID: id, Error: struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}{Code: -32003, Message: UpstreamRequestFailedMessage}})
-	return reply
+	return []byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32003,"message":"` + UpstreamRequestFailedMessage + `"}}`)
 }
 
 // IsClientErrorReply reports whether body is a JSON-RPC error answering id.

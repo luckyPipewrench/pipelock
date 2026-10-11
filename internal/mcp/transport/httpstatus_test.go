@@ -120,8 +120,15 @@ func TestReadClientErrorBody(t *testing.T) {
 	})
 	t.Run("read failure", func(t *testing.T) {
 		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}, Body: io.NopCloser(io.MultiReader(strings.NewReader("partial"), errReader{}))}
-		if _, err := ReadClientErrorBody(resp); !errors.Is(err, ErrClientErrorNotRelayable) {
-			t.Fatalf("err = %v, want ErrClientErrorNotRelayable", err)
+		_, err := ReadClientErrorBody(resp)
+		if !errors.Is(err, ErrClientErrorNotRelayable) || !errors.Is(err, ErrIncompleteResponse) {
+			t.Fatalf("err = %v, want ErrClientErrorNotRelayable and ErrIncompleteResponse", err)
+		}
+	})
+	t.Run("policy rejection is not incomplete", func(t *testing.T) {
+		resp := &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("bad \xff"))}
+		if _, err := ReadClientErrorBody(resp); errors.Is(err, ErrIncompleteResponse) {
+			t.Fatalf("err = %v, a body that is not UTF-8 is a policy rejection, not an incomplete read", err)
 		}
 	})
 }
@@ -374,4 +381,41 @@ func TestHTTPClient_SendMessage_StalledRefusalIsBoundedByTheReader(t *testing.T)
 		t.Fatalf("ReadMessage err = %v, want ErrResponseTimeout", err)
 	}
 	_ = reader.(interface{ Close() error }).Close()
+}
+
+// The composed reply must be exactly what an encoder would write, for every ID
+// shape httpRPCID accepts.
+func TestSanitizedClientErrorReplyMatchesEncoder(t *testing.T) {
+	for _, id := range []string{`1`, `-7`, `1.5e3`, `"a"`, `"quote\"inside"`, `"é"`} {
+		t.Run(id, func(t *testing.T) {
+			type rpcErr struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			}
+			want, err := json.Marshal(struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Error   rpcErr          `json:"error"`
+			}{"2.0", json.RawMessage(id), rpcErr{-32003, UpstreamRequestFailedMessage}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sanitizedClientErrorReply(json.RawMessage(id)); string(got) != string(want) {
+				t.Fatalf("composed %s, encoder %s", got, want)
+			}
+		})
+	}
+}
+
+// A refusal whose body read breaks is an incomplete response, not an answer:
+// the caller must not see a synthetic error as if the upstream had replied.
+func TestClientErrorReaderReportsBrokenReadAsIncomplete(t *testing.T) {
+	r := &clientErrorReader{
+		resp:      &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{}, Body: io.NopCloser(io.MultiReader(strings.NewReader(`{"jsonrpc"`), errReader{}))},
+		requestID: json.RawMessage("1"),
+	}
+	msg, err := r.ReadMessage()
+	if !errors.Is(err, ErrIncompleteResponse) || msg != nil {
+		t.Fatalf("ReadMessage = (%q, %v), want ErrIncompleteResponse and no message", msg, err)
+	}
 }

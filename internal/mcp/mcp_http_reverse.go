@@ -948,7 +948,13 @@ func RunHTTPListenerProxy(
 				withhold(finding)
 				return true
 			}
-			reply.write(w)
+			relayOpts := requestBaseOpts
+			relayOpts.Rec = reqRec
+			relayOpts.AdaptiveCfg = adaptiveCfg
+			relayOpts.AdaptiveCfgFn = nil
+			if ok, reason := reply.writeIfActive(w, clientState, relayOpts); !ok {
+				withhold(reason)
+			}
 			return true
 		}
 		blockedByForwardedHeaderDLP := func() bool {

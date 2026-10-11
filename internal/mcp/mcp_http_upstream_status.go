@@ -11,6 +11,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -171,4 +173,29 @@ func (e upstreamClientError) write(w http.ResponseWriter) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(e.status)
 	_, _ = w.Write(e.body)
+}
+
+// writeIfActive makes the final refusal write share the listener's revocation
+// boundary. Reading and scanning can take time; check live response gates after
+// both and before committing any upstream header or byte.
+func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpListenerClientState, opts MCPProxyOpts) (bool, string) {
+	reason := ""
+	if !state.commitIfActive(func() {
+		if opts.checkServerIdentity() != nil {
+			reason = "upstream identity changed"
+			return
+		}
+		if opts.KillSwitch != nil && opts.KillSwitch.IsActiveMCP(nil).Active {
+			reason = "kill switch blocks responses"
+			return
+		}
+		if opts.Rec != nil && decide.UpgradeAction("", opts.Rec.EscalationLevel(), opts.adaptiveCfg()) == config.ActionBlock {
+			reason = "session escalation blocks responses"
+			return
+		}
+		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() { e.write(w) })
+	}) {
+		return false, "listener state revoked"
+	}
+	return reason == "", reason
 }

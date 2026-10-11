@@ -449,16 +449,23 @@ func TestHTTPClient_ErrorStatusOmitsBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// A JSON-typed refusal to a request is answered with a sanitized error
+	// for that request; the upstream body that is not a JSON-RPC error for
+	// it never reaches the caller.
 	c := NewHTTPClient(srv.URL, nil)
-	_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if err == nil {
-		t.Fatal("expected error for 400 response")
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
 	}
-	if strings.Contains(err.Error(), "session expired") || strings.Contains(err.Error(), "error") {
-		t.Errorf("error should omit upstream body, got: %v", err)
+	msg, err := reader.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
 	}
-	if !strings.Contains(err.Error(), "400") {
-		t.Errorf("error should include status code, got: %v", err)
+	if strings.Contains(string(msg), "session expired") {
+		t.Errorf("reply should omit upstream body, got: %s", msg)
+	}
+	if !strings.Contains(string(msg), `"id":1`) || !strings.Contains(string(msg), `"code":-32003`) {
+		t.Errorf("reply = %s, want the sanitized error for request 1", msg)
 	}
 }
 

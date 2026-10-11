@@ -17,6 +17,7 @@ from pipelock_aarp_verify.provenance import (
     PROFILE_DIGEST_V2,
     PROFILE_DIGEST_V3,
     PROFILE_DIGEST_V4,
+    PROFILE_DIGEST_V5,
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
@@ -276,6 +277,7 @@ def test_liberal_decode_errors_name_the_operation(
     with pytest.raises(ProvenanceError, match=label):
         recipe.apply(value)
 
+
 def test_evidence_provenance_transform_v4_corpus() -> None:
     corpus = json.loads(CORPUS_V4.read_text())
     assert corpus["profile_digest"] == PROFILE_DIGEST_V4
@@ -302,3 +304,27 @@ def test_v4_nested_utf8_charges_intermediate_bytes() -> None:
     recipe = Recipe.from_json(PROFILE_DIGEST_V4, [{"kind": "query_unescape"}])
     assert recipe.apply("%C3%25A9", charges.append) == "é"
     assert charges == [8, 8, 4, 2]
+
+
+def test_evidence_provenance_transform_v5_corpus() -> None:
+    corpus = json.loads(CORPUS.with_name("evidence-provenance-v5.json").read_text())
+    assert corpus["profile_digest"] == PROFILE_DIGEST_V5
+    assert corpus["vectors"], "v5 corpus has no vectors"
+    for vector in corpus["vectors"]:
+        recipe = Recipe.from_json(
+            vector.get("transform_profile_digest", corpus["profile_digest"]),
+            vector.get("recipe", []),
+        )
+        if vector.get("want_error"):
+            with pytest.raises(ProvenanceError) as excinfo:
+                recipe.apply_bytes(base64.b64decode(vector["input_b64"], validate=True))
+            assert vector["want_error"] in str(excinfo.value), vector["id"]
+        else:
+            charges: list[int] = []
+            assert recipe.apply_bytes(
+                base64.b64decode(vector["input_b64"], validate=True), charges.append
+            ).encode() == base64.b64decode(vector["output_b64"], validate=True), vector[
+                "id"
+            ]
+            if "processed_bytes" in vector:
+                assert sum(charges) == vector["processed_bytes"], vector["id"]

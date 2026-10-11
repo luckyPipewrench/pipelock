@@ -12,6 +12,9 @@ The registry contains these immutable profiles:
 - v2: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v2.json`, digest `sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7`.
 - v3: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v3.json`, digest `sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e`.
 
+- v4: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v4.json`, digest `sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37`.
+- v5: `sdk/conformance/testdata/transform-profile/evidence-provenance-transform-v5.json`, digest `sha256:1ba7ea1a9a18622e259531bab86e4e2671fbfabe8259fde38223b0d80ca6d441`.
+
 Every normative profile document and its digest are frozen at publication, including experimental profiles. A semantic correction MUST create a new document and digest. It MUST NOT rewrite a prior profile in place. Verifiers retain every registered profile for the receipt-retention period.
 
 Before executing any operation, a verifier MUST resolve `transform_profile_digest` by exact allowlisted match. An unknown, malformed, or unsupported digest is a rejection. It MUST NOT fall back to v1, select the newest profile, or try another profile after a failure. Ordered fallback would let an attacker choose a weaker interpretation of the same bytes.
@@ -19,6 +22,26 @@ Before executing any operation, a verifier MUST resolve `transform_profile_diges
 V2 adds `ascii_alphanumeric_strip`; v1 recipes MUST reject it. V3 adds `ascii_upper` and `json_unicode_escape`, allows a `base32hex` alphabet on `base32_decode` and `base32_decode_liberal`, and recomposes `matching_normalize` with NFC after combining-mark removal. v1 and v2 recipes MUST reject the new operations and a present base32 alphabet, and their `matching_normalize` stays the NFD form. The digest remains the semantic selector, so no verifier may reinterpret an older recipe under a newer profile.
 
 `encoded_token_normalize` and `url_noise_strip` differ between the profiles. v1 retains its original allow-list behavior: token normalization removes only its listed delimiters and rejects other separators, while URL noise stripping removes dot, slash, ASCII space/TAB/LF/CR, plus, comma, semicolon, and vertical bar. For hex, v2 consumes `0x`, `0X`, `\\x`, or `\\X` only when the prefix is immediately followed by two ASCII hex bytes, rejects the token when a remaining ASCII letter falls outside `[A-Fa-f]` and is not `x` or `X`, rejects a retained result longer than 4096 bytes, then keeps token data bytes by alphabet: hex `[0-9A-Fa-f]`; Base32 `[A-Z2-7=]`; standard Base64 `[A-Za-z0-9+/=]`; and URL-safe Base64 `[A-Za-z0-9_-=]`. v2 `url_noise_strip` keeps ASCII `[A-Za-z0-9_-=]`. The profile documents remain normative for the complete operation behavior.
+
+### Replay errata (documents and digests unchanged)
+
+**V3:** The normative document requires valid UTF-8 before the first operation
+and after each operation, not after each internal decoding pass. Go matches
+that rule. TypeScript, Python, and Rust v3 replays of inputs that are invalid
+UTF-8 between passes are non-portable: `percent_decode`, `query_unescape`, and
+the query-decoding steps in `ordered_query_concat` and `query_subsequence` can
+reject or retain different bytes. Verifiers MUST NOT fall back between profiles
+after a failure. Existing v3 documents, digests, and published vectors are unchanged.
+
+**V4:** Byte-oriented `query_unescape` fixes the internal-pass boundary, but
+`percent_decode` still validates UTF-8 between passes in TypeScript, Python, and
+Rust. Their `ordered_query_concat` and `query_subsequence` implementations also
+validate each decoded value before concatenation, rather than the complete
+operation output. Query selection in `url_component` validates unselected decoded
+components early. Go keeps bytes until the operation boundary. Use the immutable
+[v5 profile](evidence-provenance-transform-v5.md) for portable replay. V5 also
+preserves decoded byte-order marks and applies HTML5 numeric-reference replacement
+in Rust. No older profile is reinterpreted or upgraded automatically.
 
 ## Scope and terms
 
@@ -28,7 +51,7 @@ Implementations MUST reject invalid UTF-8 source or view bytes; starts or ends i
 
 ## Typed recipe language
 
-`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched registry profile before reconstructing a view. The v1, v2, and v3 documents and digests are listed above.
+`transform_profile_digest` is a `sha256:<lowercase hex>` digest of the profile document. A verifier MUST possess the exact digest-matched registry profile before reconstructing a view. The v1–v5 documents and digests are listed above.
 
 That profile document, rather than a Pipelock implementation, is the normative source of truth for the ordered vocabulary, operation parameter shapes, Unicode/control-character and malformed-input policy, decoding and padding selection, canonical encodings, UTF-8 checks, and execution limits. It declares a 32-operation maximum, a 16 MiB cumulative processing budget charged before every operation and repeated internal decode pass, a 2 MiB input limit, a 1 MiB post-operation output limit, and at most four percent-decode passes. Implementations MUST reject an oversized recipe before execution or commitment reconstruction. The Go implementation deliberately does not load a conformance document at runtime; its digest test parses the document and fails if those implementation constants or the operation order diverge. This keeps receipt validation hermetic while preventing a second source of truth. It is a distinct document from `pipelock-transform-v1.json`, which remains the source-span transform profile.
 

@@ -39,6 +39,7 @@ type intervalVector struct {
 }
 
 type provenanceVector struct {
+	ProcessedBytes         *int                  `json:"processed_bytes"`
 	ID                     string                `json:"id"`
 	Operations             []string              `json:"operations"`
 	Errors                 []string              `json:"errors"`
@@ -186,7 +187,7 @@ func replayProvenanceCorpus(t *testing.T, version, digest string) {
 			if vector.TransformProfileDigest != nil {
 				recipe.TransformProfileDigest = *vector.TransformProfileDigest
 			}
-			output, err := recipe.Apply(string(input))
+			output, used, err := recipe.ApplyWithinBudget(string(input), 16<<20)
 			if vector.WantError != "" {
 				if err == nil || !strings.Contains(err.Error(), vector.WantError) {
 					t.Fatalf("error = %v, want %q", err, vector.WantError)
@@ -199,6 +200,15 @@ func replayProvenanceCorpus(t *testing.T, version, digest string) {
 			want, err := base64.StdEncoding.DecodeString(vector.OutputB64)
 			if err != nil {
 				t.Fatalf("output: %v", err)
+			}
+			if vector.ProcessedBytes != nil {
+				if used != *vector.ProcessedBytes {
+					t.Fatalf("processed bytes = %d, want %d", used, *vector.ProcessedBytes)
+				}
+				_, _, budgetErr := recipe.ApplyWithinBudget(string(input), *vector.ProcessedBytes-1)
+				if !errors.Is(budgetErr, normalize.ErrEvidenceProvenanceFixtureProcessingBudget) {
+					t.Fatalf("tight byte budget: %v", budgetErr)
+				}
 			}
 			if output != string(want) {
 				t.Fatalf("output = %q, want %q", output, string(want))
@@ -342,4 +352,8 @@ func executedOperationKinds(recipe normalize.Recipe, input string, applyErr erro
 
 func TestEvidenceProvenanceV4Corpus(t *testing.T) {
 	replayProvenanceCorpus(t, "v4", normalize.EvidenceProvenanceProfileV4Digest)
+}
+
+func TestEvidenceProvenanceV5Corpus(t *testing.T) {
+	replayProvenanceCorpus(t, "v5", normalize.EvidenceProvenanceProfileV5Digest)
 }

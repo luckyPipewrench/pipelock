@@ -265,7 +265,7 @@ func SupportedOperationKindsForProfile(digest string) []OperationKind {
 		return kinds[:28]
 	case EvidenceProvenanceProfileV3Digest:
 		return kinds[:30]
-	case EvidenceProvenanceProfileV4Digest:
+	case EvidenceProvenanceProfileV4Digest, EvidenceProvenanceProfileV5Digest:
 		return kinds
 	default:
 		return nil
@@ -324,7 +324,9 @@ const (
 	// recomposition of matching_normalize.
 	EvidenceProvenanceProfileV3Digest = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
 	// EvidenceProvenanceProfileV4Digest preserves malformed escapes during query decoding.
-	EvidenceProvenanceProfileV4Digest       = "sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37"
+	EvidenceProvenanceProfileV4Digest = "sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37"
+	// EvidenceProvenanceProfileV5Digest pins operation-boundary byte decoding.
+	EvidenceProvenanceProfileV5Digest       = "sha256:1ba7ea1a9a18622e259531bab86e4e2671fbfabe8259fde38223b0d80ca6d441"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -336,6 +338,7 @@ const (
 	transformProfileV2
 	transformProfileV3
 	transformProfileV4
+	transformProfileV5
 )
 
 type transformProfile struct {
@@ -358,6 +361,9 @@ var evidenceProvenanceProfiles = map[string]transformProfile{
 	},
 	EvidenceProvenanceProfileV4Digest: {
 		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV4,
+	},
+	EvidenceProvenanceProfileV5Digest: {
+		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV5,
 	},
 }
 

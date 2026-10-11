@@ -4,13 +4,14 @@
 use base64::Engine;
 use pipelock_verifier_rs::provenance::{
     Recipe, PROFILE_DIGEST, PROFILE_DIGEST_V2, PROFILE_DIGEST_V3, PROFILE_DIGEST_V4,
+    PROFILE_DIGEST_V5,
 };
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const CORPORA: [(&str, &str); 4] = [
+const CORPORA: [(&str, &str); 5] = [
     (
         "../../conformance/testdata/transform-profile/evidence-provenance-v1.json",
         PROFILE_DIGEST,
@@ -26,6 +27,10 @@ const CORPORA: [(&str, &str); 4] = [
     (
         "../../conformance/testdata/transform-profile/evidence-provenance-v4.json",
         PROFILE_DIGEST_V4,
+    ),
+    (
+        "../../conformance/testdata/transform-profile/evidence-provenance-v5.json",
+        PROFILE_DIGEST_V5,
     ),
 ];
 

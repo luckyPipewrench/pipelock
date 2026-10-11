@@ -1,0 +1,819 @@
+{
+  "format": "pipelock-evidence-transform-corpus/v5",
+  "profile_digest": "sha256:1ba7ea1a9a18622e259531bab86e4e2671fbfabe8259fde38223b0d80ca6d441",
+  "vectors": [
+    {
+      "id": "percent_decode-acute",
+      "input_b64": "JUMzJTI1QTk=",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "output_b64": "w6k=",
+      "processed_bytes": 20
+    },
+    {
+      "id": "percent_decode-euro",
+      "input_b64": "JUUyJTI1ODIlMjVBQw==",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "percent_decode-four-byte",
+      "input_b64": "JUYwJTI1OUYlMjU5MiUyNUE5",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "output_b64": "8J+SqQ=="
+    },
+    {
+      "id": "percent_decode-invalid-final",
+      "input_b64": "JUMzJTI1NDE=",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "percent-one-pass-invalid",
+      "input_b64": "JUMzJTI1QTk=",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "percent-operation-boundary",
+      "input_b64": "JUMzJTI1QTk=",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        },
+        {
+          "kind": "percent_decode",
+          "passes": 1
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "percent-malformed-next-pass",
+      "input_b64": "JUMzJTI1QQ==",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "want_error": "percent decode:"
+    },
+    {
+      "id": "percent-plus-literal",
+      "input_b64": "YSti",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "output_b64": "YSti"
+    },
+    {
+      "id": "query_unescape-acute",
+      "input_b64": "JUMzJTI1QTk=",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "w6k=",
+      "processed_bytes": 22
+    },
+    {
+      "id": "query_unescape-euro",
+      "input_b64": "JUUyJTI1ODIlMjVBQw==",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "query_unescape-four-byte",
+      "input_b64": "JUYwJTI1OUYlMjU5MiUyNUE5",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "8J+SqQ=="
+    },
+    {
+      "id": "query_unescape-invalid-final",
+      "input_b64": "JUMzJTI1NDE=",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "query_unescape-partial-and-plus",
+      "input_b64": "YSslRzElMjUyQg==",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "YSAlRzEg"
+    },
+    {
+      "id": "ordered_query_concat-acute",
+      "input_b64": "YT0lQzMlMjVBOSZiPXg=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "w6l4"
+    },
+    {
+      "id": "ordered_query_concat-euro",
+      "input_b64": "YT0lRTIlMjU4MiUyNUFDJmI9eA==",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "4oKseA=="
+    },
+    {
+      "id": "ordered_query_concat-four-byte",
+      "input_b64": "YT0lRjAlMjU5RiUyNTkyJTI1QTkmYj14",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "8J+SqXg="
+    },
+    {
+      "id": "ordered_query_concat-invalid-final",
+      "input_b64": "YT0lQzMlMjU0MSZiPXg=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "ordered_query_concat-partial-and-plus",
+      "input_b64": "YT1hKyVHMSUyNTJCJmI9eA==",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "YSAlRzEgeA=="
+    },
+    {
+      "id": "query_subsequence-acute",
+      "input_b64": "YT0lQzMlMjVBOSZiPXg=",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "w6l4"
+    },
+    {
+      "id": "query_subsequence-euro",
+      "input_b64": "YT0lRTIlMjU4MiUyNUFDJmI9eA==",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "4oKseA=="
+    },
+    {
+      "id": "query_subsequence-four-byte",
+      "input_b64": "YT0lRjAlMjU5RiUyNTkyJTI1QTkmYj14",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "8J+SqXg="
+    },
+    {
+      "id": "query_subsequence-invalid-final",
+      "input_b64": "YT0lQzMlMjU0MSZiPXg=",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "query_subsequence-partial-and-plus",
+      "input_b64": "YT1hKyVHMSUyNTJCJmI9eA==",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "YSAlRzEgeA=="
+    },
+    {
+      "id": "ordered_query_concat-split-scalar",
+      "input_b64": "YT0lQzMmYj0lQTk=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "w6k=",
+      "processed_bytes": 19
+    },
+    {
+      "id": "ordered_query_concat-split-euro",
+      "input_b64": "YT0lRTImYj0lODIlQUM=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "ordered_query_concat-split-nested",
+      "input_b64": "YT0lQzMmYj0lMjVBOQ==",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "ordered_query_concat-split-invalid",
+      "input_b64": "YT0lQzMmYj0lNDE=",
+      "recipe": [
+        {
+          "kind": "ordered_query_concat"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "query_subsequence-split-scalar",
+      "input_b64": "YT0lQzMmYj0lQTk=",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "w6k=",
+      "processed_bytes": 19
+    },
+    {
+      "id": "query_subsequence-split-euro",
+      "input_b64": "YT0lRTImYj0lODIlQUM=",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "query_subsequence-split-nested",
+      "input_b64": "YT0lQzMmYj0lMjVBOQ==",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "query_subsequence-split-invalid",
+      "input_b64": "YT0lQzMmYj0lNDE=",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "subsequence-unselected-invalid",
+      "input_b64": "YT0lQzMmbm9pc2U9JUZGJmI9JUE5",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            2
+          ]
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "subsequence-unavailable",
+      "input_b64": "YT1vayZiPW9r",
+      "recipe": [
+        {
+          "kind": "query_subsequence",
+          "indices": [
+            0,
+            2
+          ]
+        }
+      ],
+      "want_error": "query subsequence: index 2 unavailable"
+    },
+    {
+      "id": "url-query_value-unselected-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP25vaXNlPSVGRiZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "a"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "url-query_value-selected-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP2E9JUZG",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "a"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "url-query_value-unselected-key-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvPyVGRj1ub2lzZSZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "a"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "url-query_value-malformed-unselected",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP25vaXNlPSVHMSZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "a"
+        }
+      ],
+      "want_error": "query parse:"
+    },
+    {
+      "id": "url-query_key-unselected-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP25vaXNlPSVGRiZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_key",
+          "selector": "a"
+        }
+      ],
+      "output_b64": "YQ=="
+    },
+    {
+      "id": "url-query_key-selected-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP2E9JUZG",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_key",
+          "selector": "a"
+        }
+      ],
+      "output_b64": "YQ=="
+    },
+    {
+      "id": "url-query_key-unselected-key-invalid",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvPyVGRj1ub2lzZSZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_key",
+          "selector": "a"
+        }
+      ],
+      "output_b64": "YQ=="
+    },
+    {
+      "id": "url-query_key-malformed-unselected",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP25vaXNlPSVHMSZhPcOp",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_key",
+          "selector": "a"
+        }
+      ],
+      "want_error": "query parse:"
+    },
+    {
+      "id": "url-duplicates",
+      "input_b64": "aHR0cHM6Ly9hcGkudmVuZG9yLmV4YW1wbGUvP2E9JUZGJmE9JUMzJUE5",
+      "recipe": [
+        {
+          "kind": "url_component",
+          "component": "query_value",
+          "selector": "a",
+          "occurrence": 1
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "hex_decode-valid",
+      "input_b64": "YzNhOQ==",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "hex_decode-invalid-boundary",
+      "input_b64": "ZmY=",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "hex_decode_liberal-valid",
+      "input_b64": "QzNBOQ==",
+      "recipe": [
+        {
+          "kind": "hex_decode_liberal"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "hex_decode_liberal-invalid-boundary",
+      "input_b64": "RkY=",
+      "recipe": [
+        {
+          "kind": "hex_decode_liberal"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "base32_decode-valid",
+      "input_b64": "WU9VUQ==",
+      "recipe": [
+        {
+          "kind": "base32_decode"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "base32_decode-invalid-boundary",
+      "input_b64": "NzQ=",
+      "recipe": [
+        {
+          "kind": "base32_decode"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "base32_decode_liberal-valid",
+      "input_b64": "WU9VUQ==",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "base32_decode_liberal-invalid-boundary",
+      "input_b64": "NzQ=",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "base64_decode-valid",
+      "input_b64": "dzZr",
+      "recipe": [
+        {
+          "kind": "base64_decode"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "base64_decode-invalid-boundary",
+      "input_b64": "L3c=",
+      "recipe": [
+        {
+          "kind": "base64_decode"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "base64_decode_liberal-valid",
+      "input_b64": "dzZr",
+      "recipe": [
+        {
+          "kind": "base64_decode_liberal",
+          "alphabet": "standard"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "base64_decode_liberal-invalid-boundary",
+      "input_b64": "L3c=",
+      "recipe": [
+        {
+          "kind": "base64_decode_liberal",
+          "alphabet": "standard"
+        }
+      ],
+      "want_error": "invalid UTF-8"
+    },
+    {
+      "id": "html-nested-scalars",
+      "input_b64": "JmFtcDsjeEU5OyZhbXA7I3gyMEFDOw==",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "w6nigqw="
+    },
+    {
+      "id": "html-surrogate-replacement",
+      "input_b64": "JiN4RDgwMDs=",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "json-surrogate-pair",
+      "input_b64": "XHVEODNEXHVEQ0E5",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "8J+SqQ=="
+    },
+    {
+      "id": "json-unpaired-surrogate",
+      "input_b64": "XHVEODAw",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "json-malformed-preserved",
+      "input_b64": "XHVEODA=",
+      "recipe": [
+        {
+          "kind": "json_unicode_escape"
+        }
+      ],
+      "output_b64": "XHVEODA="
+    },
+    {
+      "id": "identity-preserves-bom",
+      "input_b64": "77u/w6k=",
+      "recipe": [
+        {
+          "kind": "identity"
+        }
+      ],
+      "output_b64": "77u/w6k="
+    },
+    {
+      "id": "percent-preserves-bom",
+      "input_b64": "JUVGJTI1QkIlMjVCRg==",
+      "recipe": [
+        {
+          "kind": "percent_decode",
+          "passes": 2
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "query-preserves-bom",
+      "input_b64": "JUVGJTI1QkIlMjVCRg==",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "hex_decode-preserves-bom",
+      "input_b64": "ZWZiYmJm",
+      "recipe": [
+        {
+          "kind": "hex_decode"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "hex_decode_liberal-preserves-bom",
+      "input_b64": "RUZCQkJG",
+      "recipe": [
+        {
+          "kind": "hex_decode_liberal"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "base32_decode-preserves-bom",
+      "input_b64": "NTY1MzY=",
+      "recipe": [
+        {
+          "kind": "base32_decode"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "base32_decode_liberal-preserves-bom",
+      "input_b64": "NTY1MzY=",
+      "recipe": [
+        {
+          "kind": "base32_decode_liberal"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "base64_decode-preserves-bom",
+      "input_b64": "Nzd1Lw==",
+      "recipe": [
+        {
+          "kind": "base64_decode"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "base64_decode_liberal-preserves-bom",
+      "input_b64": "Nzd1Lw==",
+      "recipe": [
+        {
+          "kind": "base64_decode_liberal",
+          "alphabet": "standard"
+        }
+      ],
+      "output_b64": "77u/"
+    },
+    {
+      "id": "html-68",
+      "input_b64": "JiMwOw==",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "html-69",
+      "input_b64": "JiN4MTEwMDAwOw==",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "77+9"
+    },
+    {
+      "id": "html-70",
+      "input_b64": "JiMxMjg7",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "html-71",
+      "input_b64": "JiN4RTk=",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "html-72",
+      "input_b64": "JiMzODthbXA7IzIzMzs=",
+      "recipe": [
+        {
+          "kind": "html_entity_decode"
+        }
+      ],
+      "output_b64": "w6k="
+    }
+  ]
+}

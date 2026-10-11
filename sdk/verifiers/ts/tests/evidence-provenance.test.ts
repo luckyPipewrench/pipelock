@@ -11,12 +11,14 @@ import {
   EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V5_DIGEST,
   supportedOperationKindsForProfile,
 } from "../src/provenance.js";
 import { findPackageRoot } from "./paths.js";
 
 type Vector = {
   id: string;
+  processed_bytes?: number;
   input_b64: string;
   output_b64?: string;
   want_error?: string;
@@ -313,4 +315,43 @@ test("evidence provenance v4: nested UTF-8 charges intermediate byte counts", ()
   );
   assert.equal(Buffer.from(output).toString("utf8"), "é");
   assert.deepEqual(charges, [8, 8, 4, 2]);
+});
+
+test("evidence provenance: v5 corpus executes every vector byte-exactly", () => {
+  const v5 = JSON.parse(readFileSync(corpusPathV3.replace("v3.json", "v5.json"), "utf8")) as {
+    profile_digest: string;
+    vectors: Vector[];
+  };
+  assert.equal(v5.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V5_DIGEST);
+  assert.ok(v5.vectors.length > 0, "v5 corpus has no vectors");
+  for (const vector of v5.vectors) {
+    const recipe: { transform_profile_digest: string; operations: unknown[] } = {
+      transform_profile_digest: vector.transform_profile_digest ?? v5.profile_digest,
+      operations: vector.recipe ?? [],
+    };
+    if (vector.want_error) {
+      assert.throws(
+        () => applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        (error: unknown) => error instanceof Error && error.message.includes(vector.want_error!),
+        vector.id,
+      );
+    } else {
+      const charges: number[] = [];
+      assert.equal(
+        Buffer.from(
+          applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe, (bytes) =>
+            charges.push(bytes),
+          ),
+        ).toString("base64"),
+        vector.output_b64,
+        vector.id,
+      );
+      if (vector.processed_bytes !== undefined)
+        assert.equal(
+          charges.reduce((a, b) => a + b, 0),
+          vector.processed_bytes,
+          vector.id,
+        );
+    }
+  }
 });

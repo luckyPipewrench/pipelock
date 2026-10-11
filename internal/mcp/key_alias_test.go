@@ -18,13 +18,17 @@ import (
 func TestKeyAliasesInputTransports(t *testing.T) {
 	policy := buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{{Name: "deny-write", ToolPattern: `^write_file$`}})
 	for _, raw := range []string{
+		`{"jsonrpc":2,"id":1,"method":"tools/call","params":{"name":"write_file","Name":"read_file","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","Method":"ping","params":{"name":"write_file","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","Name":"read_file","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{},"PARAMS":{}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{},"Arguments":{}}}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
-			opts := MCPProxyOpts{Scanner: testInputScanner(t), PolicyCfg: policy}
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), PolicyCfg: policy,
+				InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionForward},
+			}
 			if v := policy.CheckRequest([]byte(raw)); !v.Matched || v.Action != config.ActionBlock {
 				t.Errorf("direct policy accepted ambiguous input: %+v", v)
 			}
@@ -34,7 +38,7 @@ func TestKeyAliasesInputTransports(t *testing.T) {
 			}
 			var upstream, logs bytes.Buffer
 			blocked := make(chan BlockedRequest, 1)
-			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(raw+"\n")), transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(raw+"\n")), transport.NewStdioWriter(&upstream), &logs, config.ActionWarn, config.ActionForward, blocked, nil, nil, opts)
 			if upstream.Len() != 0 {
 				t.Errorf("stdio forwarded ambiguous input: %s", upstream.String())
 			}

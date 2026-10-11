@@ -34,16 +34,27 @@ func ValidateMessageKeys(data []byte) error {
 	if err := redact.NoSchemaKeyAliases(data, reflect.TypeFor[RPCResponse]()); err != nil {
 		return err
 	}
-	var rpc RPCResponse
+	// Extract raw fields so an unrelated field-type error cannot skip nested
+	// schema checks. The consumer still owns field-type and protocol validation.
+	var rpc struct {
+		Method json.RawMessage `json:"method"`
+		Params json.RawMessage `json:"params"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
 	if err := json.Unmarshal(data, &rpc); err != nil {
-		return nil // The consumer owns field-type and protocol validation.
+		return nil
+	}
+	var method string
+	if len(rpc.Method) > 0 {
+		_ = json.Unmarshal(rpc.Method, &method)
 	}
 	if len(rpc.Error) > 0 {
 		if err := redact.NoSchemaKeyAliases(rpc.Error, reflect.TypeFor[RPCError]()); err != nil {
 			return err
 		}
 	}
-	if rpc.Method == "tools/call" {
+	if method == "tools/call" {
 		var schema struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
@@ -55,7 +66,7 @@ func ValidateMessageKeys(data []byte) error {
 			}
 		}
 	}
-	if rpc.Method == "resources/read" && len(rpc.Params) > 0 {
+	if method == "resources/read" && len(rpc.Params) > 0 {
 		var schema struct {
 			URI string `json:"uri"`
 		}

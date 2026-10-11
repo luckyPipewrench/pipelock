@@ -37,8 +37,10 @@ func startSandboxTarget(cmd *exec.Cmd, filesystem LayerStatus) error {
 }
 
 // restrictTargetUnixSockets installs a thread-local, inherited filter. Its
-// caller must remain pinned until exec/fork or retire the thread. Socketpairs
-// are also denied: a datagram pair can be redirected to a pathname address.
+// caller must remain pinned until exec/fork or retire the thread. Datagram
+// socketpairs are denied because they can be redirected to a pathname address.
+// Connected stream and sequenced-packet pairs remain available for stdio and
+// runtime signal self-pipes; they cannot connect to a different peer.
 // All recvmsg/recvmmsg calls are denied: classic BPF cannot inspect msghdr to
 // distinguish ordinary messages from ancillary descriptor imports. Inherited
 // Unix descriptors can still send; this filter does not revoke existing fds.
@@ -69,10 +71,15 @@ func targetUnixSocketFilter() []unix.SockFilter {
 		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
 		bpfJumpEq(unix.SYS_RECVMMSG, 0, 1),
 		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
-		bpfJumpEq(unix.SYS_SOCKET, 1, 0),
-		bpfJumpEq(unix.SYS_SOCKETPAIR, 0, 3),
+		bpfJumpEq(unix.SYS_SOCKET, 0, 3),
 		bpfLoad(offsetArgs0),
 		bpfJumpEq(unix.AF_UNIX, 0, 1),
+		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
+		bpfJumpEq(unix.SYS_SOCKETPAIR, 0, 5),
+		bpfLoad(offsetArgs0 + 8),
+		{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: 0xf}, // Strip SOCK_CLOEXEC and SOCK_NONBLOCK.
+		bpfJumpEq(unix.SOCK_STREAM, 2, 0),
+		bpfJumpEq(unix.SOCK_SEQPACKET, 1, 0),
 		bpfRet(unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)),
 		bpfRet(unix.SECCOMP_RET_ALLOW),
 	}

@@ -88,10 +88,10 @@ func warnUnavailableHostLoopbackServices(
 }
 
 // declaredLoopbackDoorwayPath is the per-service host doorway. Each declared
-// service gets its own socket so one service's reachability cannot be widened
-// by another's, and so revoking one removes exactly one filesystem object.
+// service gets its own directory so a forwarder can observe socket replacement
+// without gaining access to another declared service's doorway.
 func declaredLoopbackDoorwayPath(host string, port int) string {
-	return "/run/" + loopbackForwarderUnitBase(host, port) + ".sock"
+	return "/run/" + loopbackForwarderUnitBase(host, port) + "/doorway.sock"
 }
 
 // renderDeclaredLoopbackSocketUnit declares one host doorway per declared
@@ -151,7 +151,7 @@ WantedBy=multi-user.target
 		systemdListenAddress(service.Host, service.Port),
 		declaredLoopbackDoorwayPath(service.Host, service.Port),
 		strings.Join(runtimeSocketMountProperties(), "\n"),
-		declaredLoopbackDoorwayPath(service.Host, service.Port))
+		filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port)))
 }
 
 // renderDeclaredLoopbackForwarderUnit relays one declared service's host
@@ -223,12 +223,10 @@ const (
 	containedProxyForwarderUnit     = "pipelock-agent-proxy"
 	containedNamespaceForwarderUnit = "pipelock-agent-netns-forward.service"
 	containedNamespaceIdentityPath  = "/run/pipelock-contain/agent-netns.id"
-	// containedDoorwaySocketPath is the one filesystem object the contained
-	// namespace may cross. It sits directly in /run rather than a subdirectory
-	// so the socket unit does not depend on anything else having created a
-	// directory first; /run is tmpfs, so no stale socket survives a reboot,
-	// and RemoveOnStop= clears it when the socket stops.
-	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy.sock"
+	// systemd creates the doorway's dedicated parent directory. Binding that
+	// directory preserves replacement visibility while RemoveOnStop clears
+	// the socket itself. The agent unit does not receive this directory.
+	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy/doorway.sock"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
 	legacyOwnedLoopbackMark       = "0x504c4b01"
 	legacyOwnedLoopbackSlice      = "pipelock_contained.slice"
@@ -739,7 +737,7 @@ WantedBy=multi-user.target
 `, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
 		containedProxyForwarderUnit, containedProxyForwarderUnit,
 		containedNetworkNamespaceUnit,
-		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), containedDoorwaySocketPath)
+		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), filepath.Dir(containedDoorwaySocketPath))
 }
 
 // renderContainedProxyForwarderUnit relays the host doorway to Pipelock's own

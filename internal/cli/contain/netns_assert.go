@@ -28,6 +28,7 @@ type netnsAssertEnv struct {
 	euid        func() int
 	lookup      lookupUserFunc
 	readFile    func(string) ([]byte, error)
+	readDir     func(string) ([]os.DirEntry, error)
 	readLink    func(string) (string, error)
 	interfaces  func() ([]net.Interface, error)
 	proxyHealth func(context.Context, int) error
@@ -40,6 +41,7 @@ func defaultNetnsAssertEnv() netnsAssertEnv {
 		euid:        os.Geteuid,
 		lookup:      user.Lookup,
 		readFile:    os.ReadFile,
+		readDir:     os.ReadDir,
 		readLink:    os.Readlink,
 		interfaces:  net.Interfaces,
 		proxyHealth: directContainedProxyHealth,
@@ -94,7 +96,7 @@ func assertManagedNetworkNamespace(ctx context.Context, env netnsAssertEnv) erro
 	// runs with host runtime sockets hidden, including the service manager.
 	identity, err := env.readFile(containedNamespaceIdentityPath)
 	if err != nil {
-		return fmt.Errorf("read managed network namespace identity: %w", err)
+		return runtimeMountRefusal(fmt.Errorf("read managed network namespace identity: %w", err))
 	}
 	wantNamespace := strings.TrimSpace(string(identity))
 	if !strings.HasPrefix(wantNamespace, "net:[") || !strings.HasSuffix(wantNamespace, "]") {
@@ -110,6 +112,9 @@ func assertManagedNetworkNamespace(ctx context.Context, env netnsAssertEnv) erro
 	}
 	if selfNamespace != wantNamespace {
 		return fmt.Errorf("launcher network namespace %s does not match managed namespace %s; refusing tool launch", selfNamespace, wantNamespace)
+	}
+	if err := assertManagedRuntimeMounts(env); err != nil {
+		return err
 	}
 
 	interfaces, err := env.interfaces()

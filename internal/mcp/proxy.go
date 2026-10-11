@@ -2238,6 +2238,61 @@ var safeEnvKeySet = func() map[string]bool {
 	return m
 }()
 
+// dangerousEnvKeys are environment variable names that can inject code or libraries
+// into child processes. These are blocked even when explicitly requested via --env.
+// IsDangerousEnvKey also refuses every envcontrol.CodeLoadingNames entry; this
+// map adds the git, proxy and macOS loader variables that list does not hold.
+var dangerousEnvKeys = map[string]bool{
+	// Dynamic linker injection (Linux/macOS).
+	"LD_PRELOAD":            true,
+	"LD_LIBRARY_PATH":       true,
+	"LD_AUDIT":              true,
+	"DYLD_INSERT_LIBRARIES": true,
+	"DYLD_LIBRARY_PATH":     true,
+	"DYLD_FRAMEWORK_PATH":   true,
+	// The FALLBACK_ variants are consulted when the primary search fails, so
+	// blocking only the primaries leaves a second way to place a library.
+	"DYLD_FALLBACK_LIBRARY_PATH":   true,
+	"DYLD_FALLBACK_FRAMEWORK_PATH": true,
+	// Runtime code injection.
+	"NODE_OPTIONS":      true,
+	"PYTHONSTARTUP":     true,
+	"PYTHONPATH":        true,
+	"PERL5OPT":          true,
+	"RUBYOPT":           true,
+	"BASH_ENV":          true,
+	"JAVA_TOOL_OPTIONS": true,
+	"_JAVA_OPTIONS":     true,
+	"JDK_JAVA_OPTIONS":  true,
+	// Credential helper injection - causes git to execute arbitrary programs.
+	// GIT_ASKPASS was blocked first, but it is one of several variables that
+	// hand git a command line to run, so the siblings belong with it.
+	"GIT_ASKPASS":                      true,
+	"GIT_SSH":                          true,
+	"GIT_SSH_COMMAND":                  true,
+	"GIT_EXTERNAL_DIFF":                true,
+	"GIT_PROXY_COMMAND":                true,
+	"GIT_EDITOR":                       true,
+	"GIT_PAGER":                        true,
+	"GIT_CONFIG_GLOBAL":                true,
+	"GIT_CONFIG_SYSTEM":                true,
+	"GIT_CONFIG_COUNT":                 true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	// Proxy redirection - the MCP proxy IS the controlled network path.
+	// Both cases listed because Go checks HTTP_PROXY/http_proxy, Node.js
+	// checks case-insensitively, etc. Mixed-case caught by IsDangerousEnvKey.
+	"HTTP_PROXY":  true,
+	"HTTPS_PROXY": true,
+	"ALL_PROXY":   true,
+	"FTP_PROXY":   true,
+	"NO_PROXY":    true,
+	"http_proxy":  true,
+	"https_proxy": true,
+	"all_proxy":   true,
+	"ftp_proxy":   true,
+	"no_proxy":    true,
+}
+
 // IsSafeEnvKey reports whether the given key is one of the system variables
 // already provided by safeEnv(). These cannot be overridden via --env.
 func IsSafeEnvKey(key string) bool {
@@ -2250,7 +2305,13 @@ func IsSafeEnvKey(key string) bool {
 // case, so a child started with pythonpath=... reads it as PYTHONPATH, and
 // different runtimes (Go, Node.js, Python, curl) honor different proxy casings.
 func IsDangerousEnvKey(key string) bool {
-	return envcontrol.IsUnsafeOverride(key)
+	upper := strings.ToUpper(key)
+	if dangerousEnvKeys[upper] || envcontrol.IsCodeLoading(upper) {
+		return true
+	}
+	// Case-insensitive catch-all for proxy vars. Covers mixed-case forms
+	// like Http_Proxy that some runtimes (notably Node.js) honor.
+	return strings.HasSuffix(upper, "_PROXY")
 }
 
 // safeEnv builds a filtered environment from the current process, keeping only

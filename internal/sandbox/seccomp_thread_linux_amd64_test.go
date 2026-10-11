@@ -102,7 +102,8 @@ func TestSeccomp_ThreadCompatibilityOnlyChangesClone3Decision(t *testing.T) {
 }
 
 // evaluateThreadFilter supports exactly the forward-only instructions emitted
-// by buildSeccompFilter. Invalid instructions and out-of-range jumps fail tests.
+// by buildSeccompFilter and targetUnixSocketFilter. Invalid instructions and
+// out-of-range jumps fail tests.
 func evaluateThreadFilter(t *testing.T, prog []unix.SockFilter, nr uint32, args [6]uint64) uint32 {
 	t.Helper()
 	data := [16]uint32{nr, unix.AUDIT_ARCH_X86_64}
@@ -118,6 +119,8 @@ func evaluateThreadFilter(t *testing.T, prog []unix.SockFilter, nr uint32, args 
 				t.Fatalf("invalid filter load at instruction %d: %d", pc, insn.K)
 			}
 			accumulator = data[insn.K/4]
+		case unix.BPF_ALU | unix.BPF_AND | unix.BPF_K:
+			accumulator &= insn.K
 		case unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K:
 			if accumulator == insn.K {
 				pc += int(insn.Jt)

@@ -6,12 +6,69 @@
 package contain
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestDocumentedOperatorUnitRuntimeMountParity(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Clean("../../../docs/contain-cli.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unit string
+	for _, block := range strings.Split(string(doc), "```") {
+		if strings.Contains(block, "ExecStartPre=!/usr/local/bin/pipelock contain service-posture") {
+			unit = block
+			break
+		}
+	}
+	if unit == "" {
+		t.Fatal("documented operator unit was not found")
+	}
+	for _, property := range runtimeSocketProperties() {
+		if property == "TemporaryFileSystem=/var/run:ro" {
+			if !strings.Contains(string(doc), "add `"+property+"`") {
+				t.Errorf("separate /var/run mount instructions missing: %s", property)
+			}
+			continue
+		}
+		if !strings.Contains(unit, "\n"+property+"\n") {
+			t.Errorf("operator unit differs from runtime properties: %s", property)
+		}
+	}
+}
+
+func TestDoorwayForwardersBindDedicatedDirectory(t *testing.T) {
+	services := []struct{ socket, forwarder, path string }{
+		{renderContainedProxySocketUnit("agent"), renderContainedNamespaceForwarderUnit("/usr/bin/pipelock", "agent", 8888), containedDoorwaySocketPath},
+	}
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		service := config.ContainmentLoopbackService{Host: host, Port: 3000}
+		services = append(services, struct{ socket, forwarder, path string }{renderDeclaredLoopbackSocketUnit("agent", service), renderDeclaredLoopbackNamespaceForwarderUnit("/usr/bin/pipelock", "agent", service), declaredLoopbackDoorwayPath(host, 3000)})
+	}
+	parents := make(map[string]bool)
+	for _, service := range services {
+		parent := filepath.Dir(service.path)
+		if parents[parent] {
+			t.Errorf("independent doorways share a grant directory: %s", parent)
+		}
+		parents[parent] = true
+		if parent == "/run" {
+			t.Errorf("doorway lacks dedicated directory: %s", service.path)
+		}
+		if !strings.Contains(service.socket, "ListenStream="+service.path+"\n") || !strings.Contains(service.forwarder, "--target "+service.path+"\n") {
+			t.Errorf("doorway producers and consumers disagree: %s", service.path)
+		}
+		if !strings.Contains(service.forwarder, "BindReadOnlyPaths="+parent+"\n") || strings.Contains(service.forwarder, "BindReadOnlyPaths="+service.path+"\n") {
+			t.Errorf("forwarder pins replaceable socket inode: %s", service.path)
+		}
+	}
+}
 
 func TestContainedLaunchHidesHostRuntimeSockets(t *testing.T) {
 	args := privateTmpSystemdRunArgs(1000, 1000, nil, "/home/agent", "", nil, []string{"true"}, false, true, "")

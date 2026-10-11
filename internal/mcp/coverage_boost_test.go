@@ -577,7 +577,7 @@ func TestDangerousEnvKeys_SharedCodeLoadingList(t *testing.T) {
 		}
 	}
 	// Variables that change behavior without choosing code stay passable.
-	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "LD_PROFILE"} {
+	for _, key := range []string{"NODE_EXTRA_CA_CERTS", "GLIBC_TUNABLES", "LD_PROFILE"} {
 		if IsDangerousEnvKey(key) {
 			t.Errorf("IsDangerousEnvKey(%q) = true; it loads no code and must remain passable", key)
 		}

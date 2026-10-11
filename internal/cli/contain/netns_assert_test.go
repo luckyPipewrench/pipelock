@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestAssertAgentNetworkNamespace(t *testing.T) {
@@ -27,7 +28,8 @@ func TestAssertAgentNetworkNamespace(t *testing.T) {
 			lookup: func(string) (*user.User, error) {
 				return &user.User{Uid: "987", Username: testAgentUser}, nil
 			},
-			readFile: func(string) ([]byte, error) { return []byte("net:[200]\n"), nil },
+			readFile: managedRuntimeFixtureReadFile,
+			readDir:  managedRuntimeFixtureReadDir,
 			readLink: func(string) (string, error) { return "net:[200]", nil },
 			interfaces: func() ([]net.Interface, error) {
 				return []net.Interface{{Name: "lo", Flags: net.FlagLoopback | net.FlagUp}}, nil
@@ -92,6 +94,192 @@ func TestAssertAgentNetworkNamespace(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("assertAgentNetworkNamespace() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+const (
+	managedRuntimeMountFixture = "20 1 0:200 / /run ro - tmpfs tmpfs ro\n21 1 0:201 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw\n22 20 0:50 /pipelock-contain/agent-netns.id /run/pipelock-contain/agent-netns.id ro - tmpfs tmpfs rw\n"
+	hostRuntimeMountFixture    = "10 1 0:50 / /run rw - tmpfs tmpfs rw\n11 1 0:51 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw\n"
+)
+
+func managedRuntimeFixtureReadFile(path string) ([]byte, error) {
+	switch path {
+	case "/proc/self/mountinfo":
+		return []byte(managedRuntimeMountFixture), nil
+	case "/proc/1/mountinfo":
+		return []byte(hostRuntimeMountFixture), nil
+	case containedNamespaceIdentityPath:
+		return []byte("net:[200]\n"), nil
+	default:
+		return nil, os.ErrNotExist
+	}
+}
+
+func managedRuntimeFixtureReadDir(path string) ([]os.DirEntry, error) {
+	tree := fstest.MapFS{"pipelock-contain/agent-netns.id": &fstest.MapFile{Data: []byte("net:[200]\n"), Mode: 0o600}}
+	name := strings.TrimPrefix(strings.TrimPrefix(path, "/run"), "/")
+	if name == "" {
+		name = "."
+	}
+	return tree.ReadDir(name)
+}
+
+func TestManagedNamespaceRefusesMissingRuntimeMounts(t *testing.T) {
+	for _, tc := range []struct{ name, mounts string }{
+		{"host runtime", hostRuntimeMountFixture},
+		{"writable run", strings.Replace(managedRuntimeMountFixture, "/run ro", "/run rw", 1)},
+		{"missing shm mask", strings.Replace(managedRuntimeMountFixture, "0:201", "0:51", 1)},
+		{"missing identity bind", strings.Join(strings.Split(managedRuntimeMountFixture, "\n")[:2], "\n")},
+		{"not tmpfs", strings.Replace(managedRuntimeMountFixture, "tmpfs", "ext4", 1)},
+		{"malformed mountinfo", "unparseable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := defaultNetnsAssertEnv()
+			env.readFile = func(path string) ([]byte, error) {
+				if path == "/proc/self/mountinfo" {
+					return []byte(tc.mounts), nil
+				}
+				return managedRuntimeFixtureReadFile(path)
+			}
+			env.readDir = managedRuntimeFixtureReadDir
+			env.readLink = func(string) (string, error) { return "net:[200]", nil }
+			env.interfaces = func() ([]net.Interface, error) { return []net.Interface{{Name: "lo", Flags: net.FlagLoopback}}, nil }
+			env.proxyHealth = func(context.Context, int) error {
+				t.Fatal("runtime mount refusal must precede proxy health")
+				return nil
+			}
+			err := assertManagedNetworkNamespace(t.Context(), env)
+			if err == nil {
+				t.Fatal("namespace admitted without runtime isolation")
+			}
+			for _, property := range []string{"TemporaryFileSystem=/run:ro", "TemporaryFileSystem=/dev/shm:rw,nosuid,nodev,noexec", "BindReadOnlyPaths=" + containedNamespaceIdentityPath} {
+				if !strings.Contains(err.Error(), property) {
+					t.Errorf("refusal must name %s: %v", property, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeMountEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, mounts, want string
+		mutate             func(*netnsAssertEnv)
+	}{
+		{name: "valid"},
+		{name: "shadowed host mounts", mounts: "10 1 0:50 / /run rw - tmpfs tmpfs rw\n11 1 0:51 / /dev/shm rw - tmpfs tmpfs rw\n" + strings.ReplaceAll(strings.ReplaceAll(managedRuntimeMountFixture, "20 1", "20 10"), "21 1", "21 11")},
+		{name: "unordered shadow stack", mounts: strings.ReplaceAll(strings.ReplaceAll(managedRuntimeMountFixture, "20 1", "20 10"), "21 1", "21 11") + "11 1 0:51 / /dev/shm rw - tmpfs tmpfs rw\n10 1 0:50 / /run rw - tmpfs tmpfs rw\n"},
+		{name: "missing run", mounts: strings.Join(strings.Split(managedRuntimeMountFixture, "\n")[1:], "\n"), want: "private tmpfs"},
+		{name: "host run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200", "0:50", 1), want: "private filesystem identity"},
+		{name: "subtree run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200 /", "0:200 /subtree", 1), want: "private tmpfs"},
+		{name: "readonly shm", mounts: strings.Replace(managedRuntimeMountFixture, "/dev/shm rw", "/dev/shm ro", 1), want: "lacks rw"},
+		{name: "executable shm", mounts: strings.Replace(managedRuntimeMountFixture, ",noexec", "", 1), want: "lacks noexec"},
+		{name: "writable identity", mounts: strings.Replace(managedRuntimeMountFixture, "agent-netns.id ro", "agent-netns.id rw", 1), want: "read-only bind"},
+		{name: "duplicate mount", mounts: managedRuntimeMountFixture + "23 1 0:202 / /run ro - tmpfs tmpfs ro\n", want: "ambiguous"},
+		{name: "duplicate mount id", mounts: managedRuntimeMountFixture + "20 1 0:202 / /run ro - tmpfs tmpfs ro\n", want: "duplicate runtime mount identity"},
+		{name: "mount cycle", mounts: strings.Replace(managedRuntimeMountFixture, "20 1", "20 20", 1), want: "ambiguous"},
+		{name: "missing reader", want: "readers are unavailable", mutate: func(env *netnsAssertEnv) { env.readDir = nil }},
+		{name: "self unreadable", want: "permission denied", mutate: func(env *netnsAssertEnv) {
+			env.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+		}},
+		{name: "host unreadable", want: "permission denied", mutate: func(env *netnsAssertEnv) {
+			env.readFile = func(path string) ([]byte, error) {
+				if path == "/proc/1/mountinfo" {
+					return nil, os.ErrPermission
+				}
+				return managedRuntimeFixtureReadFile(path)
+			}
+		}},
+		{name: "host missing shm", want: "private filesystem identity", mutate: func(env *netnsAssertEnv) {
+			env.readFile = func(path string) ([]byte, error) {
+				if path == "/proc/1/mountinfo" {
+					return []byte(strings.Split(hostRuntimeMountFixture, "\n")[0]), nil
+				}
+				return managedRuntimeFixtureReadFile(path)
+			}
+		}},
+		{name: "directory unreadable", want: "inspect isolated runtime", mutate: func(env *netnsAssertEnv) {
+			env.readDir = func(string) ([]os.DirEntry, error) { return nil, os.ErrPermission }
+		}},
+		{name: "extra host directory", want: "contain only", mutate: func(env *netnsAssertEnv) {
+			env.readDir = func(path string) ([]os.DirEntry, error) {
+				tree := fstest.MapFS{"pipelock-contain/agent-netns.id": &fstest.MapFile{}, "user/bus": &fstest.MapFile{}}
+				if path == "/run" {
+					return tree.ReadDir(".")
+				}
+				return tree.ReadDir("pipelock-contain")
+			}
+		}},
+		{name: "extra identity sibling", want: "contain only", mutate: func(env *netnsAssertEnv) {
+			env.readDir = func(path string) ([]os.DirEntry, error) {
+				if path == "/run" {
+					return managedRuntimeFixtureReadDir(path)
+				}
+				return (fstest.MapFS{"agent-netns.id": &fstest.MapFile{}, "socket": &fstest.MapFile{}}).ReadDir(".")
+			}
+		}},
+		{name: "symlink identity", want: "contain only", mutate: func(env *netnsAssertEnv) {
+			env.readDir = func(path string) ([]os.DirEntry, error) {
+				if path == "/run" {
+					return managedRuntimeFixtureReadDir(path)
+				}
+				return (fstest.MapFS{"agent-netns.id": &fstest.MapFile{Mode: os.ModeSymlink}}).ReadDir(".")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := defaultNetnsAssertEnv()
+			env.readFile, env.readDir = managedRuntimeFixtureReadFile, managedRuntimeFixtureReadDir
+			if tc.mounts != "" {
+				env.readFile = func(path string) ([]byte, error) {
+					if path == "/proc/self/mountinfo" {
+						return []byte(tc.mounts), nil
+					}
+					return managedRuntimeFixtureReadFile(path)
+				}
+			}
+			if tc.mutate != nil {
+				tc.mutate(&env)
+			}
+			err := assertManagedRuntimeMounts(env)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("mount refusal = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeMountEvidenceSeparateVarRun(t *testing.T) {
+	env := defaultNetnsAssertEnv()
+	env.readDir = managedRuntimeFixtureReadDir
+	for _, tc := range []struct {
+		name, extra string
+		denied      bool
+	}{
+		{"private", "24 1 0:202 / /var/run ro - tmpfs tmpfs ro\n", false},
+		{"missing", "", true},
+		{"host bind", "24 1 0:1 /var/run /var/run ro - ext4 root ro\n", true},
+		{"writable", "24 1 0:202 / /var/run rw - tmpfs tmpfs rw\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env.readFile = func(path string) ([]byte, error) {
+				if path == "/proc/self/mountinfo" {
+					return []byte(managedRuntimeMountFixture + tc.extra), nil
+				}
+				if path == "/proc/1/mountinfo" {
+					return []byte(hostRuntimeMountFixture + "1 0 0:1 / / rw - ext4 root rw\n"), nil
+				}
+				return managedRuntimeFixtureReadFile(path)
+			}
+			err := checkRuntimeMountsForProperties(env, []string{"/run:ro", "/dev/shm:rw,nosuid,nodev,noexec", "/var/run:ro"})
+			if (err != nil) != tc.denied {
+				t.Fatalf("separate /var/run %s: %v", tc.name, err)
 			}
 		})
 	}

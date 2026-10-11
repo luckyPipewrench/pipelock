@@ -6,6 +6,7 @@
 package contain
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -28,16 +29,10 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		return fail(classInfra, "managed contained-launch wrapper is missing", installRemedy)
 	}
 	if err != nil {
-		return unknown("managed contained-launch wrapper could not be read", "restore access and rerun `pipelock contain doctor`")
+		return unknown("managed contained-launch wrapper could not be read", "restore access to the managed wrapper and rerun `pipelock contain install`")
 	}
-	flags := make(map[string]bool)
-	for _, line := range strings.Split(string(body), "\n") {
-		flags[strings.TrimSpace(line)] = true
-	}
-	for _, mount := range runtimeSocketTemporaryFileSystems() {
-		if !flags["--property=TemporaryFileSystem="+mount] {
-			return fail(classInfra, "managed contained-launch wrapper lacks runtime socket isolation", installRemedy)
-		}
+	if !doctorContainedLaunchWrapperMatches(body, wrapperDir, env) {
+		return fail(classInfra, "managed contained-launch wrapper differs from the installed template; runtime socket isolation cannot be established", installRemedy)
 	}
 	probe := filesystemProbeEnvForDoctor(env)
 	services, problem, unusable := declaredContainmentLoopbackServicesForVerify(probe, probe.port)
@@ -74,4 +69,25 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		}
 	}
 	return pass("managed contained-launch wrapper and namespace/display units hide host runtime sockets")
+}
+
+func doctorContainedLaunchWrapperMatches(body []byte, wrapperDir string, env *doctorEnv) bool {
+	expected := &installEnv{
+		wrapperDir:               wrapperDir,
+		networkNamespaceUnitPath: containedNetworkNamespaceUnit,
+		pipelockTarget:           env.pipelockTarget,
+		agentUserName:            env.agentUserName,
+		agentHome:                env.agentHome,
+		bashPath:                 env.bashPath,
+	}
+	// Installation supports both systemd versions with and without this
+	// optional flag. Require the entire generated script, including the exec
+	// invocation, so unused arrays or altered control flow cannot pass.
+	for _, version := range []int{0, systemdExpandEnvironmentMinVersion} {
+		expected.systemdVersion = version
+		if bytes.Equal(body, []byte(renderContainedLaunchWrapper(expected))) {
+			return true
+		}
+	}
+	return false
 }

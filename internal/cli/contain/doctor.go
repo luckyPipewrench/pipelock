@@ -53,6 +53,7 @@ type doctorEnv struct {
 	agentUserName  string
 	proxyUserName  string
 	pipelockTarget string
+	bashPath       string
 	lookupUser     lookupUserFunc
 	lstat          func(string) (os.FileInfo, error)
 	wrapperDir     string
@@ -101,6 +102,7 @@ func defaultDoctorEnv() *doctorEnv {
 		port:             defaultProxyPort,
 		proxyUserName:    defaultProxyUser,
 		pipelockTarget:   defaultPipelockTarget,
+		bashPath:         platform.bashPath,
 		lookupUser:       user.Lookup,
 		lstat:            os.Lstat,
 		agentUserName:    defaultAgentUser,

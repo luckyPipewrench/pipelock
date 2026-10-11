@@ -158,11 +158,80 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 			if got.status != tc.want {
 				t.Fatalf("result = %+v, want %s", got, tc.want)
 			}
-			if got.status == statusFail && !strings.Contains(got.remediation, "contain install") {
+			if (got.status == statusFail || tc.readErr != nil) && !strings.Contains(got.remediation, "contain install") {
 				t.Fatalf("unusable remedy: %+v", got)
 			}
 			if tc.showCode != 0 && (!strings.Contains(got.remediation, "restore access to systemctl") || strings.Contains(got.remediation, "contain install")) {
 				t.Fatalf("command failure got reinstall remedy: %+v", got)
+			}
+		})
+	}
+}
+
+func TestReviewDoctorUnusedFlagsReproduction(t *testing.T) {
+	wrapper := renderContainedLaunchWrapper(&installEnv{wrapperDir: "/fixture", networkNamespaceUnitPath: containedNetworkNamespaceUnit})
+	env := &doctorEnv{
+		wrapperDir: "/fixture",
+		readFile: func(path string) ([]byte, error) {
+			if path != "/fixture/plk-contained-launch" {
+				return nil, os.ErrNotExist
+			}
+			return []byte(wrapper), nil
+		},
+		runCmd: func(context.Context, string, ...string) (string, int, error) {
+			return strings.Join(runtimeSocketTemporaryFileSystems(), " "), 0, nil
+		},
+	}
+	if got := probeDoctorRuntimeSockets(t.Context(), env); got.status != statusPass {
+		t.Fatalf("generated wrapper positive control = %+v", got)
+	}
+	// The properties remain in an unused array, but the actual invocation
+	// omits them. Their presence alone must not establish runtime isolation.
+	wrapper = strings.ReplaceAll(wrapper, `exec /usr/bin/systemd-run "${systemd_args[@]}" "$@"`, `exec /usr/bin/systemd-run --wait --collect -- "$@"`)
+	got := probeDoctorRuntimeSockets(t.Context(), env)
+	if got.status != statusFail || !strings.Contains(got.remediation, "contain install") {
+		t.Fatalf("unused properties result = %+v, want FAIL with install remedy", got)
+	}
+}
+
+func TestDoctorRuntimeSocketWrapperTemplate(t *testing.T) {
+	env := &doctorEnv{
+		wrapperDir:     "/fixture",
+		pipelockTarget: "/fixture/pipelock",
+		agentUserName:  "fixture-agent",
+		agentHome:      "/fixture/agent home",
+		bashPath:       "/usr/bin/bash",
+	}
+	installed := &installEnv{
+		wrapperDir:               env.wrapperDir,
+		networkNamespaceUnitPath: containedNetworkNamespaceUnit,
+		pipelockTarget:           env.pipelockTarget,
+		agentUserName:            env.agentUserName,
+		agentHome:                env.agentHome,
+		bashPath:                 env.bashPath,
+	}
+	legacy := renderContainedLaunchWrapper(installed)
+	installed.systemdVersion = systemdExpandEnvironmentMinVersion
+	current := renderContainedLaunchWrapper(installed)
+	const invocation = `exec /usr/bin/systemd-run "${systemd_args[@]}" "$@"`
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{name: "legacy systemd", body: legacy, want: true},
+		{name: "current systemd", body: current, want: true},
+		{name: "unused properties", body: strings.ReplaceAll(current, invocation, `exec /usr/bin/systemd-run -- "$@"`)},
+		{name: "cleared array", body: strings.ReplaceAll(current, invocation, "systemd_args=()\n"+invocation)},
+		{name: "unreachable invocation", body: strings.ReplaceAll(current, invocation, "exit 0\n"+invocation)},
+		{name: "uninvoked function", body: "#!/usr/bin/bash\nunused() {\n" + current + "\n}\n"},
+		{name: "different interpreter", body: strings.ReplaceAll(current, "#!/usr/bin/bash", "#!/usr/bin/false")},
+		{name: "different target", body: strings.ReplaceAll(current, "'/fixture/pipelock'", "'/fixture/other'")},
+		{name: "different home", body: strings.ReplaceAll(current, "'/fixture/agent home'", "'/fixture/other home'")},
+		{name: "missing identity bind", body: strings.ReplaceAll(current, "  --property=BindReadOnlyPaths="+containedNamespaceIdentityPath, "")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := doctorContainedLaunchWrapperMatches([]byte(tc.body), env.wrapperDir, env); got != tc.want {
+				t.Fatalf("template match = %v, want %v", got, tc.want)
 			}
 		})
 	}

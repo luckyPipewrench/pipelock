@@ -89,16 +89,15 @@ var btcLegacyRegex = regexp.MustCompile(`\b[13][1-9A-HJ-NP-Za-km-z]{24,33}\b`)
 
 // Bech32 (SegWit v0 + Taproot v1): bc1 followed by bech32 chars.
 // v0 (bc1q): 42 total chars. v1 (bc1p): 62 total chars.
-var btcBech32Regex = regexp.MustCompile(`\bbc1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{39,59}\b`)
+var btcBech32Regex = regexp.MustCompile(`\b[bB][cC]1[qpzry9x8gf2tvdw0s3jn54khce6mua7lQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{39,59}\b`)
 
 type btcValidator struct{}
 
 func (btcValidator) Detect(text string) []rawMatch {
-	lower := strings.ToLower(text)
 	var matches []rawMatch
 
 	// Detect bech32 addresses (case-insensitive, but bech32 must be uniform case).
-	for _, loc := range btcBech32Regex.FindAllStringIndex(lower, -1) {
+	for _, loc := range btcBech32Regex.FindAllStringIndex(text, -1) {
 		// Use the original text segment to preserve case for validation.
 		matches = append(matches, rawMatch{text: text[loc[0]:loc[1]], offset: loc[0]})
 	}

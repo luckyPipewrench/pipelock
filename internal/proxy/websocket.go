@@ -1508,6 +1508,25 @@ func (r *wsRelay) armReadDeadline(ctx context.Context, conn net.Conn, idleTimeou
 	}
 }
 
+// recoverRelayPanic contains unexpected scanner or relay failures to this
+// connection. Never include the panic value: it may contain request content.
+func (r *wsRelay) recoverRelayPanic(cancel context.CancelFunc, blocked *bool) {
+	if recover() == nil {
+		return
+	}
+	*blocked = true
+	cancel()
+	if r.clientConn != nil {
+		_ = r.clientConn.Close()
+	}
+	if r.upstreamConn != nil {
+		_ = r.upstreamConn.Close()
+	}
+	if r.proxy != nil && r.proxy.logger != nil {
+		r.proxy.logger.LogError(audit.NewMethodLogContext("WS"), errors.New("WebSocket relay panic; connection closed"))
+	}
+}
+
 // run starts bidirectional frame relay. Returns stats when both directions complete.
 func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	idleTimeout := time.Duration(r.cfg.WebSocketProxy.IdleTimeoutSeconds) * time.Second
@@ -2449,6 +2468,7 @@ func (r *wsRelay) blockIdentityReload() bool {
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
+	defer r.recoverRelayPanic(cancel, &blocked)
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte   // rolling tail for text-message DLP scanning
 	var controlMsgTail []byte // separate tail for Ping/Pong payload DLP scanning
@@ -2969,6 +2989,7 @@ func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
 // upstreamToClient reads frames from upstream, injection-scans text, writes to client.
 func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
+	defer r.recoverRelayPanic(cancel, &blocked)
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 

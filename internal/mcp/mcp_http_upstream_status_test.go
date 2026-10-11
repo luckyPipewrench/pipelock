@@ -56,7 +56,7 @@ func TestUpstreamClientErrorFraming(t *testing.T) {
 		{name: "OAuth error", header: http.Header{"Content-Type": {"application/json"}}, body: `{"error":"invalid_token"}`},
 		{name: "correlated error", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`},
 		{name: "null ID error from the reference server", header: http.Header{"Content-Type": {"application/json"}}, body: sessionNotFound},
-		{name: "absent ID error", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}`},
+		{name: "absent ID error", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}`, want: refusalFramingDisguised},
 		{name: "plain refusal", body: "unauthorized"},
 		{name: "UTF-8 declaration", header: http.Header{"Content-Type": {"text/plain; charset=UTF-8"}}, body: "unauthorized"},
 		{name: "Latin-1 label on ASCII bytes", header: http.Header{"Content-Type": {"text/plain; charset=ISO-8859-1"}}, body: "unauthorized"},

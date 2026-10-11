@@ -390,15 +390,16 @@ func IsClientErrorReply(body []byte, id json.RawMessage) bool {
 	return ok && httpRPCID(replyID) == requestID
 }
 
-// IsUncorrelatedErrorReply reports whether body is a JSON-RPC error with a
-// null or absent ID. Servers answer that way when they cannot tie a refusal
-// to a request: the MCP reference server sends "Session not found" with a 404
-// and id null, and the specification tells a client to start a new session
-// on that 404. Such an error answers no in-flight request, so a client cannot
-// mistake it for another call's outcome.
+// IsUncorrelatedErrorReply reports whether body is a JSON-RPC error whose ID
+// is null. JSON-RPC 2.0 requires the id member in every response and sets it to
+// null when the request could not be identified: the MCP reference server sends
+// "Session not found" with a 404 and id null, and the specification tells a
+// client to start a new session on that 404. Such an error answers no
+// in-flight request, so a client cannot mistake it for another call's outcome.
+// An absent id is a malformed response, not an uncorrelated one.
 func IsUncorrelatedErrorReply(body []byte) bool {
 	replyID, ok := jsonRPCErrorReplyID(body)
-	return ok && (replyID == nil || string(replyID) == "null")
+	return ok && string(replyID) == "null"
 }
 
 // jsonRPCErrorReplyID returns the raw ID of body when body is exactly a

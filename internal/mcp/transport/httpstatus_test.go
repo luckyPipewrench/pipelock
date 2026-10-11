@@ -250,7 +250,7 @@ func TestIsUncorrelatedErrorReply(t *testing.T) {
 		want bool
 	}{
 		{name: "null ID from the reference server", body: `{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"},"id":null}`, want: true},
-		{name: "absent ID", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request"}}`, want: true},
+		{name: "absent ID is malformed", body: `{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request"}}`},
 		{name: "correlated ID is not uncorrelated", body: `{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x"}}`},
 		{name: "null ID result", body: `{"jsonrpc":"2.0","id":null,"result":{}}`},
 		{name: "null ID server request", body: `{"jsonrpc":"2.0","id":null,"method":"sampling/createMessage","error":{"code":1,"message":"x"}}`},

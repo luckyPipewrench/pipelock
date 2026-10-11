@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 func responseStateReader(t *testing.T, kind, raw string) transport.MessageReader {
@@ -41,6 +42,74 @@ func responseStateReader(t *testing.T, kind, raw string) transport.MessageReader
 		return transport.NewWSClientFromConn(client, false)
 	default:
 		return transport.NewStdioReader(strings.NewReader(raw + "\n"))
+	}
+}
+
+func TestResponseKeyRejectionPreservesOutcomeReceipts(t *testing.T) {
+	for _, kind := range []string{"stdio", "http", "sse", "websocket"} {
+		for _, tc := range []struct {
+			name, raw   string
+			wantOutcome bool
+		}{
+			{"duplicate", `{"jsonrpc":"2.0","id":1,"result":{},"result":{}}`, true},
+			{"alias", `{"jsonrpc":"2.0","id":1,"Result":{}}`, true},
+			{"nested-alias", `{"jsonrpc":"2.0","id":1,"result":{"Content":[]}}`, true},
+			{"duplicate-id", `{"jsonrpc":"2.0","id":1,"id":2,"result":{}}`, false},
+			{"aliased-id", `{"jsonrpc":"2.0","id":1,"ID":2,"result":{}}`, false},
+			{"unsolicited", `{"jsonrpc":"2.0","id":2,"Result":{}}`, false},
+			{"server-request", `{"jsonrpc":"2.0","id":1,"Method":"ping"}`, false},
+			{"malformed", `{"jsonrpc":"2.0","id":1,"result":`, false},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				emitter, rec, dir, _ := newReceiptTestHarness(t)
+				intent := receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+					Transport: kind, Target: "read_file", MCPMethod: methodToolsCall, ToolName: "read_file",
+				}
+				if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{Receipt: intent, RequireReceipt: true}); err != nil {
+					t.Fatal(err)
+				}
+				tracker := NewRequestTracker()
+				tracked := TrackedRequestOutcome{Receipt: intent, Method: methodToolsCall}
+				tracker.TrackOutcome(json.RawMessage("1"), tracked)
+				baseline := tools.NewToolBaseline()
+				opts := buildTestOpts(testInputScanner(t), withToolCfg(&tools.ToolScanConfig{Action: config.ActionWarn, DetectDrift: true, Baseline: baseline}))
+				opts.ReceiptEmitter = emitter
+				opts.Transport = kind
+				admissions := 0
+				opts.OnResponseKeysValidated = func() { admissions++ }
+				var out, logs bytes.Buffer
+				if _, err := ForwardScanned(responseStateReader(t, kind, tc.raw), transport.NewStdioWriter(&out), &logs, tracker, opts); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Contains(out.Bytes(), []byte(`"error"`)) {
+					t.Fatalf("rejected response forwarded: %s", out.String())
+				}
+				if admissions != 0 || baseline.HasBaseline() || baseline.HasDriftBaseline() {
+					t.Fatal("rejection admitted response state")
+				}
+				if got, ok := tracker.Consume(json.RawMessage("1")); !ok || !reflect.DeepEqual(got, tracked) {
+					t.Fatal("rejection consumed or changed request metadata")
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				receipts := readActionReceipts(t, dir)
+				want := 1
+				if tc.wantOutcome {
+					want++
+				}
+				if len(receipts) != want {
+					t.Fatalf("receipts=%d, want %d (intent plus expected rejection outcome)", len(receipts), want)
+				}
+				if tc.wantOutcome {
+					got := receipts[1].ActionRecord
+					if got.ActionID != intent.ActionID || got.DecisionPhase != receipt.DecisionPhaseOutcome || !strings.Contains(got.Pattern, "status=error") || !strings.Contains(got.Pattern, "reason=response_key_validation") {
+						t.Fatalf("unexpected rejection outcome: %+v", got)
+					}
+				}
+			})
+		}
 	}
 }
 

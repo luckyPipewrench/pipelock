@@ -236,11 +236,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Key rejection must precede tracker consumption, adaptive recovery,
 		// tool drift promotion, inventory reservations and taint observations.
 		if frame.KeyValidationErr != nil {
-			detected, err := rejectResponseKeys(frame, lineNum, sc, writer, logW, opts)
+			detected, outbound, err := rejectResponseKeys(frame, lineNum, sc, writer, logW, opts)
 			foundInjection = foundInjection || detected
 			if err != nil {
 				return foundInjection, err
 			}
+			emitRejectedResponseOutcome(frame.Raw, outbound, logW, tracker, opts)
 			continue
 		}
 
@@ -1126,19 +1127,18 @@ func writeUnparseableResponse(frame MCPFrame, detail string, lineNum int, sc *sc
 // rejectResponseKeys writes diagnostics without consuming correlation or running
 // any response-derived state updates. Cancellation remains a scan error; valid
 // but ambiguous messages remain security findings, unlike ordinary malformed JSON.
-func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, opts MCPProxyOpts) (bool, error) {
+func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, opts MCPProxyOpts) (bool, []byte, error) {
 	if err := opts.warnContext().Err(); err != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: response scan failed: %v\n", lineNum, err)
 		resp := blockResponseReason(frame.ID, "upstream response scan failed")
 		if err := writer.WriteMessage(resp); err != nil {
-			return false, fmt.Errorf("writing scan-error block response: %w", err)
+			return false, resp, fmt.Errorf("writing scan-error block response: %w", err)
 		}
-		return false, nil
+		return false, resp, nil
 	}
 	if !json.Valid(frame.Raw) {
 		verdict := responseKeyErrorVerdict(frame.Raw, frame.KeyValidationErr)
-		found, _, err := writeUnparseableResponse(frame, verdict.Error, lineNum, sc, writer, logW)
-		return found, err
+		return writeUnparseableResponse(frame, verdict.Error, lineNum, sc, writer, logW)
 	}
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: invalid or ambiguous JSON before tool processing: %v\n", lineNum, frame.KeyValidationErr)
 	id := recoverTopLevelJSONRPCID(frame.Raw)
@@ -1146,10 +1146,39 @@ func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer
 	if shape, _ := toolsListShape(frame.Raw); shape == toolsListUninspectable || (shape == toolsListScannable && jsonscan.RejectDuplicateKeys(frame.Raw) == nil) {
 		reason = "tools/list cannot be safely inspected: tool_definition_uninspectable"
 	}
-	if err := writer.WriteMessage(blockResponseReason(id, reason)); err != nil {
-		return true, fmt.Errorf("writing preflight JSON block: %w", err)
+	resp := blockResponseReason(id, reason)
+	if err := writer.WriteMessage(resp); err != nil {
+		return true, resp, fmt.Errorf("writing preflight JSON block: %w", err)
 	}
-	return true, nil
+	return true, resp, nil
+}
+
+// emitRejectedResponseOutcome preserves receipt evidence using only metadata
+// from an admitted request. Ambiguous IDs cannot attribute an outcome, and the
+// rejected response never consumes the outstanding request or admits its state.
+func emitRejectedResponseOutcome(raw, outbound []byte, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
+	if !isResponse(raw) {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return
+	}
+	if _, duplicate := jsonscan.TopLevelDuplicateKeys(raw)["id"]; duplicate || jsonscan.HasKeyAlias(fields, "id") {
+		return
+	}
+	if _, request := fields["method"]; request || jsonscan.HasKeyAlias(fields, "method") {
+		return
+	}
+	outcome, ok := tracker.peekOutcome(fields["id"])
+	if !ok || outcome.Receipt.ActionID == "" {
+		return
+	}
+	reason := "response_key_validation"
+	if opts.warnContext().Err() != nil {
+		reason = "response_scan_error"
+	}
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, outcome.Receipt, "error", int64(len(outbound)), reason, opts.requireReceipts())
 }
 
 func toolScanHasDrift(result tools.ToolScanResult) bool {

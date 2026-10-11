@@ -138,6 +138,22 @@ func (t *RequestTracker) Validate(id json.RawMessage) bool {
 	return ok
 }
 
+// peekOutcome reads trusted request metadata without consuming correlation.
+// Rejected responses can record an outcome while leaving the request pending.
+func (t *RequestTracker) peekOutcome(id json.RawMessage) (TrackedRequestOutcome, bool) {
+	if t == nil {
+		return TrackedRequestOutcome{}, false
+	}
+	key := canonicalID(id)
+	if key == "" {
+		return TrackedRequestOutcome{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	outcome, ok := t.pending[key]
+	return outcome, ok
+}
+
 // Consume checks whether id was previously tracked and returns the associated
 // outcome metadata. It consumes matching IDs exactly once.
 func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, bool) {

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -73,14 +74,7 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	if len(trimmed) == 0 {
 		return nil, false, false
 	}
-	if err := jsonscan.ValidateKeys(trimmed, jsonscan.MaxDecoderNestingDepth); err != nil {
-		return nil, false, false
-	}
-	var schema any = gqlRequest{}
-	if trimmed[0] == '[' {
-		schema = []gqlRequest{}
-	}
-	if err := jsonscan.RejectStructAliases(trimmed, reflect.TypeOf(schema)); err != nil {
+	if err := ValidateGraphQLKeys(trimmed); err != nil {
 		return nil, false, false
 	}
 
@@ -110,6 +104,33 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	default:
 		return nil, false, false
 	}
+}
+
+// ValidateGraphQLKeys reports key-integrity failures separately from syntax and
+// shape errors. Callers must block these errors independently of on_parse_error.
+// Free-form maps retain exact-key semantics; only schema-bound fields fold case.
+func ValidateGraphQLKeys(body []byte) error {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if err := jsonscan.ValidateKeys(trimmed, jsonscan.MaxDecoderNestingDepth); err != nil {
+		if errors.Is(err, jsonscan.ErrDuplicateKey) || !utf8.Valid(trimmed) {
+			return err
+		}
+		// JSON syntax, depth and trailing-value errors remain parse errors.
+		return nil
+	}
+	var schema any = gqlRequest{}
+	if trimmed[0] == '[' {
+		schema = []gqlRequest{}
+	}
+	if err := jsonscan.RejectStructAliases(trimmed, reflect.TypeOf(schema)); err != nil {
+		if errors.Is(err, jsonscan.ErrCaseFoldedKey) || errors.Is(err, jsonscan.ErrDuplicateKey) {
+			return err
+		}
+	}
+	return nil
 }
 
 // ExtractGraphQLFromQuery builds a GraphQL-over-HTTP JSON request from a URL

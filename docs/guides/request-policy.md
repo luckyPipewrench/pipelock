@@ -70,7 +70,7 @@ operation **cannot be inspected**. Both default to `block`.
 
 | Knob | Fires when | Default |
 |------|------------|---------|
-| `on_parse_error` | The body is read but is not valid JSON for the configured predicate, or a contained GraphQL query fails to parse. | `block` |
+| `on_parse_error` | The body is read but has a JSON syntax or shape error for the configured predicate, or a contained GraphQL query fails to parse. GraphQL key-integrity failures always block, independently of this setting. | `block` |
 | `on_opaque_operation` | The route matches but there is no inspectable operation: a GraphQL Automatic Persisted Query that ships only a hash, an empty/missing `query`, or a non-string discriminator value. | `block` |
 
 Leaving these at `block` is the safe posture: an attacker cannot smuggle a
@@ -81,7 +81,7 @@ out of scope.
 Several conditions are **always** unclassifiable and fail closed regardless of the
 two knobs: duplicate GraphQL fragment names, fragment cycles, unresolved fragment
 spreads, expansion-budget exhaustion, and a duplicated top-level discriminator key
-(including case-insensitive aliases, where JSON parsers disagree on which value wins). GraphQL JSON bodies reject exact duplicate keys and noncanonical aliases of `query` and `operationName` through `on_parse_error`; keys in `variables` and `extensions` remain case-sensitive. If a route-matched body is
+(including case-insensitive aliases, where JSON parsers disagree on which value wins). GraphQL JSON bodies always block exact duplicate keys at any depth, noncanonical aliases of `query` and `operationName`, and invalid UTF-8 with reason `invalid_graphql_json_keys`, independently of `on_parse_error`. Keys in `variables` and `extensions` remain case-sensitive. If a route-matched body is
 **uninspectable** (unread, over `request_body_scanning.max_body_bytes` default
 5 MiB, or a read error), it is blocked outright before the two knobs even apply.
 

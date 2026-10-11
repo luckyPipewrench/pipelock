@@ -327,11 +327,78 @@ func TestRequestPolicyGraphQLKeyAliases(t *testing.T) {
 	} {
 		res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: "application/json", Body: []byte(raw), BodyRead: true, Transport: TransportForward})
 		if !res.Block {
-			t.Errorf("ambiguous GraphQL did not apply on_parse_error: %s", raw)
+			t.Errorf("ambiguous GraphQL did not block: %s", raw)
 		}
 	}
 	res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: "application/json", Body: []byte(gqlJSONBody("query{record{id}}")), BodyRead: true, Transport: TransportForward})
 	if res.Block {
 		t.Fatal("canonical query control blocked")
+	}
+}
+
+func TestGraphQLKeyGuardCannotDowngradePolicy(t *testing.T) {
+	for _, action := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
+		t.Run(action, func(t *testing.T) {
+			cfg := reqPolicyConfig(gqlOperationRule())
+			cfg.RequestPolicy.OnParseError = action
+			p := newTestProxyWithConfig(t, cfg)
+			for _, tc := range []struct {
+				name, body string
+				block      bool
+			}{
+				{"extensions duplicate", `{"query":"mutation{deleteRecord{id}}","extensions":{"note":1,"note":2}}`, true},
+				{"variables duplicate", `{"query":"mutation{deleteRecord{id}}","variables":{"note":1,"note":2}}`, true},
+				{"schema alias", `{"query":"query{record{id}}","Query":"mutation{deleteRecord{id}}"}`, true},
+				{"batch duplicate", `[{"query":"query{record{id}}"},{"query":"mutation{deleteRecord{id}}","extensions":{"note":1,"note":2}}]`, true},
+				{"invalid UTF-8", "{\"query\":\"query{record{id}}\",\"extensions\":{\"note\":\"\xff\"}}", true},
+				{"benign", `{"query":"query{record{id}}","variables":{"id":1,"ID":2}}`, false},
+				{"mutation", `{"query":"mutation{deleteRecord{id}}"}`, true},
+				{"syntax", `{"query":`, action == config.ActionBlock},
+				{"shape", `{"query":123}`, action == config.ActionBlock},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					for _, multipartBody := range []bool{false, true} {
+						body, contentType := []byte(tc.body), "application/json"
+						if multipartBody {
+							var buf bytes.Buffer
+							w := multipart.NewWriter(&buf)
+							if err := w.WriteField("operations", tc.body); err != nil {
+								t.Fatal(err)
+							}
+							if err := w.Close(); err != nil {
+								t.Fatal(err)
+							}
+							body, contentType = buf.Bytes(), w.FormDataContentType()
+						}
+						res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: contentType, Body: body, BodyRead: true, Transport: TransportForward})
+						if res.Block != tc.block {
+							t.Fatalf("multipart=%v: block=%v, want %v", multipartBody, res.Block, tc.block)
+						}
+						switch tc.name {
+						case "extensions duplicate", "variables duplicate", "schema alias", "batch duplicate", "invalid UTF-8":
+							if res.Reason != "invalid_graphql_json_keys" {
+								t.Fatalf("reason=%q", res.Reason)
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGraphQLKeyGuardPreservesEnforcedDiscriminator(t *testing.T) {
+	rule := gqlOperationRule()
+	rule.Shadow = true
+	cfg := reqPolicyConfig(rule, config.RequestPolicyRule{
+		Name: "deny-discriminator", Action: config.ActionBlock,
+		Route:         config.RequestPolicyRoute{Hosts: []string{rpTestHost}},
+		Discriminator: &config.RequestPolicyDiscriminator{Field: "action", ValuePatterns: []string{"^delete$"}},
+	})
+	cfg.RequestPolicy.OnParseError = config.ActionAllow
+	p := newTestProxyWithConfig(t, cfg)
+	res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: "application/json", Body: []byte(`{"query":"query{record{id}}","action":"delete","extensions":{"note":1,"note":2}}`), BodyRead: true, Transport: TransportForward})
+	if !res.Block {
+		t.Fatal("shadow GraphQL key decision suppressed enforced discriminator")
 	}
 }

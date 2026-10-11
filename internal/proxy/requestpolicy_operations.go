@@ -49,6 +49,20 @@ func extractRequestPolicyOperations(in requestPolicyInput) (ops []reqpolicy.Requ
 	return reqpolicy.ExtractGraphQL(in.Body)
 }
 
+// requestPolicyGraphQLKeyError inspects the same bytes as operation extraction.
+// GET parameters are encoded into canonical JSON by ExtractGraphQLFromQuery.
+func requestPolicyGraphQLKeyError(in requestPolicyInput) error {
+	body := in.Body
+	if isMultipartFormData(in.ContentType) {
+		var ok bool
+		body, ok = multipartOperationsField(in.ContentType, body)
+		if !ok {
+			return nil
+		}
+	}
+	return reqpolicy.ValidateGraphQLKeys(body)
+}
+
 // parseRequestPolicyJSONBody parses the request body as a single generic JSON
 // value for discriminator-field predicates, returning ok=false when there is no
 // body or it is not exactly one well-formed JSON value. UseNumber preserves

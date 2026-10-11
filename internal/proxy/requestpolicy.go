@@ -321,6 +321,13 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 		// and discriminator) is uninspectable.
 		return p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation(), reqpolicy.PredAnyBody)
 	}
+	var keyDecision reqpolicy.Decision
+	if requestPolicyGraphQLKeyError(in) != nil {
+		keyDecision = p.evaluateRequestPolicyUninspectable(in, config.ActionBlock, reqpolicy.PredGraphQL)
+		if keyDecision.Matched() {
+			keyDecision.Reason = "invalid_graphql_json_keys"
+		}
+	}
 	ops, gqlParseOK, gqlOpaque := extractRequestPolicyOperations(in)
 	jsonDoc, jsonDupKeys, jsonParsed := parseRequestPolicyJSONBody(in)
 	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType,
@@ -334,7 +341,7 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 	if !jsonParsed {
 		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError(), reqpolicy.PredDiscriminator))
 	}
-	return d
+	return reqpolicy.Stricter(d, keyDecision)
 }
 
 // finalizeRequestPolicyDecision records the decision metric and audit event for

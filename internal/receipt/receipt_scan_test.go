@@ -6,12 +6,14 @@ package receipt
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -24,10 +26,12 @@ func TestEmitterReceiptScanRejectsDirtyDetailBeforeChainAdvance(t *testing.T) {
 		{name: "durable", durable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var wholeReceiptScans atomic.Int64
+			// The detector must never see signed material: the wedge came from
+			// scanning Pipelock's own signature, key and chain hash.
+			var signedMaterialScans atomic.Int64
 			dlp := func(_ context.Context, text string) scanner.TextDLPResult {
-				if strings.Contains(text, `"action_record"`) {
-					wholeReceiptScans.Add(1)
+				if strings.Contains(text, "ed25519:") || strings.Contains(text, "chain_prev_hash") {
+					signedMaterialScans.Add(1)
 				}
 				return scanner.TextDLPResult{Clean: !strings.Contains(text, "test-sensitive-value")}
 			}
@@ -45,21 +49,26 @@ func TestEmitterReceiptScanRejectsDirtyDetailBeforeChainAdvance(t *testing.T) {
 			}
 			opts := EmitOpts{
 				ActionID: NewActionID(), Target: testTarget, Verdict: config.ActionAllow,
-				Transport: testTransport, Method: http.MethodGet, Agent: "test-sensitive-value",
+				Transport: testTransport, Method: http.MethodGet, RequestID: "req-test-sensitive-value",
 			}
-			if err := emit(opts); err == nil || !strings.Contains(err.Error(), "refusing to record unverifiable redaction") {
-				t.Fatalf("dirty receipt error = %v", err)
+			// An identity field is never redacted: a hit is a typed content
+			// rejection that leaves the chain and the emitter's health intact.
+			if err := emit(opts); !errors.Is(err, receiptcontent.ErrRejected) || !strings.Contains(err.Error(), "action_record.request_id") {
+				t.Fatalf("dirty identity error = %v, want typed content rejection naming the field", err)
 			}
 			if state, ok := e.HealthSnapshot(); !ok || state.ChainSeq != 0 {
 				t.Fatalf("chain advanced after dirty receipt: %+v, available=%t", state, ok)
 			}
-			opts.ActionID = NewActionID()
-			opts.Agent = "safe-actor"
-			if err := emit(opts); err != nil {
-				t.Fatalf("clean receipt: %v", err)
+			if e.HealthError() != nil {
+				t.Fatalf("content rejection poisoned the emitter: %v", e.HealthError())
 			}
-			if got := wholeReceiptScans.Load(); got != 2 {
-				t.Fatalf("whole-receipt DLP scans = %d, want one per attempted receipt", got)
+			opts.ActionID = NewActionID()
+			opts.RequestID = "req-safe"
+			if err := emit(opts); err != nil {
+				t.Fatalf("clean receipt after content rejection: %v", err)
+			}
+			if got := signedMaterialScans.Load(); got != 0 {
+				t.Fatalf("detector saw signed material %d times; want 0", got)
 			}
 			if err := rec.Close(); err != nil {
 				t.Fatalf("Close: %v", err)

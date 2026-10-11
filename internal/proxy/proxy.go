@@ -1987,6 +1987,12 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	}
 	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
 	if current := p.receiptEmitterPtr.Load(); !tornRecovery && current != nil && current.InitError() == nil && current.HealthError() == nil && current.SignerKeyHex() == currentKeyHex {
+		// The reused emitter will stamp the new policy hash on every receipt.
+		// Validate it with the emitter's retained content before publication,
+		// so a refusal keeps the old generation instead of refusing receipts.
+		if err := current.ValidateConfigHash(cfg.Hash()); err != nil {
+			return receiptEmitterStage{}, err
+		}
 		v2 := p.v2EmitterPtr.Load()
 		if v2 == nil {
 			v2 = proxydecision.NewEmitter(proxydecision.EmitterConfig{
@@ -2035,7 +2041,9 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		PriorSignerKeys: append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex()),
 	})
 	if emitter != nil {
-		if initErr := emitter.InitError(); initErr != nil {
+		if initErr := emitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {
+			return receiptEmitterStage{}, fmt.Errorf("flight_recorder: %w", initErr)
+		} else if initErr != nil {
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", initErr)
 		}
 	}
@@ -5313,6 +5321,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// /fetch reaches the origin outside TLS interception, so record its URL
+	// as sent: a value it carries must never later mint as a server-issued ID.
+	p.recordIssuerFetchSent(cfg, agent, clientIP, id.Auth, parsed)
 
 	// Fully decode the URL for display in responses and logs. The scanner
 	// internally decodes for matching, but targetURL retains partial decoding

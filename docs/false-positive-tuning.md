@@ -122,6 +122,19 @@ For non-core body and header findings, use `suppress` entries at the top level o
 
 For a custom provider API key that you own, use both controls together: add `exempt_domains` on the DLP pattern for URL scans to the provider's own host, and add a matching `suppress` entry for body/header findings on that provider URL. Built-in provider-key patterns and the messaging-platform token patterns (Discord and Slack) instead have an immutable compiled audience host set: a match is allowed only at that set, logged as `dlp_credential_audience_allow`, and blocked everywhere else. This includes `Slack Token`, a core-floor pattern whose exact encrypted Slack API authorities include both the Web API and hosted MCP server, yet which still refuses every operator control (a URL-carried Slack Token is also blocked, because the core URL floor runs first). YAML cannot extend or clear that audience, and MCP input stays blocked because it has no verified upstream authority.
 
+### Package registry credential audiences
+
+Legitimate registry authentication can qualify for a compiled credential audience without a YAML exemption. The audience filters only the matching credential finding; it doesn't approve the whole request.
+
+- **GitHub registry Basic auth:** `ghcr.io`, `maven.pkg.github.com`, and `nuget.pkg.github.com` accept this audience over HTTPS in `Authorization: Basic`. The decoded username must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$` and must not itself match a GitHub registry token. The password must match the compiled GitHub token or fine-grained PAT pattern.
+- **GHCR registry JWT:** only `ghcr.io` qualifies for the separate HTTPS `Authorization: Bearer` registry rule. The JWT's `aud` must name that exact host (as a string or an entry in an audience array), and `access` must be a nonempty array. Pipelock doesn't authenticate the JWT signature or prove who issued the token; this rule only limits its destination to `ghcr.io`.
+
+`rubygems.pkg.github.com` uses the normal GitHub Token / GitHub Fine-Grained PAT provider audience, alongside `api.github.com` and `uploads.github.com`. Its GitHub-token Bearer authentication is separate from the GHCR JWT rule; RubyGems isn't a registry Basic-auth audience.
+
+These registry host lists and carrier rules are compiled into the binary. Lookalike hosts, subdomains, URL-carried credentials, and other credential matches don't gain this allowance. The immutable core DLP and SSRF floors and all other applicable checks still run. If authentication still blocks, check the reported scanner and pattern before changing policy.
+
+The host lists live in [`internal/config/dlp_patterns.go`](../internal/config/dlp_patterns.go); the carrier and claim checks live in [`internal/scanner/credential_audience.go`](../internal/scanner/credential_audience.go).
+
 ## Tuning Entropy Thresholds
 
 Path entropy and subdomain entropy are the most common false positive sources. APIs that use UUIDs, base64-encoded IDs, or hash-based URLs in their paths trigger entropy checks. Defaults already exempt common package/object hosts with hash-based routing paths: `files.pythonhosted.org`, `pypi.org`, and `objects.githubusercontent.com`.

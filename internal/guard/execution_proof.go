@@ -4,11 +4,11 @@
 package guard
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
+
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 )
 
 // ExecutionProof binds the kernel result to the exact invocation whose helper
@@ -67,6 +67,8 @@ func (p ExecutionProof) VerifyInvocation(expected ExecControlOptions, command []
 	return nil
 }
 
+var executionDigestOrigin = digestorigin.NewIssuer("guard.execution")
+
 func (p ExecutionProof) recomputeHash() string {
 	material := struct {
 		Record           EnforcementRecord `json:"record"`
@@ -78,6 +80,5 @@ func (p ExecutionProof) recomputeHash() string {
 		Command          []string          `json:"command"`
 	}{p.Record, p.ConfigPolicyHash, p.Profile, p.Workspace, p.TempDir, p.Binary, p.Command}
 	encoded, _ := json.Marshal(material)
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:])
+	return executionDigestOrigin.Sum(encoded).String()
 }

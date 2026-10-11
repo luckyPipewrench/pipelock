@@ -25,7 +25,11 @@ func newReceiptScanRecorder(t *testing.T, dir string, scans *atomic.Int64) *reco
 	r, err := recorder.New(recorder.Config{
 		Enabled: true, Dir: dir, Redact: true, CheckpointInterval: 1000,
 	}, func(_ context.Context, text string) scanner.TextDLPResult {
-		scans.Add(1)
+		// Count detail scans only; the session handle is validated once, at
+		// acquisition, through its own structured view.
+		if strings.HasPrefix(text, "{") && !strings.HasPrefix(text, `{"session_id":`) {
+			scans.Add(1)
+		}
 		return scanner.TextDLPResult{Clean: !strings.Contains(text, "test-sensitive-value") && !strings.Contains(text, `"evil"`)}
 	}, nil)
 	if err != nil {

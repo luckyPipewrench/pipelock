@@ -5,7 +5,6 @@ package recorder
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 )
 
@@ -62,7 +61,7 @@ func (r *Recorder) AppendDurableWithReceiptScanPreAdvance(e Entry, scan *Receipt
 	state := r.groupSessions[e.SessionID]
 	r.groupMu.Unlock()
 	if state == nil {
-		return nil, fmt.Errorf("recorder: session %q is not an acquired group member", e.SessionID)
+		return nil, errors.New("recorder: entry session is not an acquired group member")
 	}
 	// writeMu orders this shard's appends against its other writers; it is not
 	// held across the confirmation, which the ticket chain orders instead.

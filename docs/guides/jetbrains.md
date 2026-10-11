@@ -81,9 +81,7 @@ configurations are stored in a `_pipelock` metadata field for clean removal.
 {"command": "/usr/local/bin/pipelock", "args": ["mcp", "proxy", "--", "node", "server.js"]}
 ```
 
-**Environment variables** are passed through automatically. If your MCP server
-config has an `env` block, pipelock adds `--env KEY` flags so the child process
-receives them.
+**Environment variables:** If your MCP server config has an `env` block, pipelock adds `--env KEY` flags so the child process receives allowed values. The proxy refuses code-loading and other blocked names at startup. See [child environment restrictions](sandbox.md#child-environment-restrictions) before passing runtime settings; ordinary credentials can still pass through.
 
 **HTTP/SSE servers** without custom headers are converted to stdio with
 `--upstream`. Servers with authentication headers (e.g., `Authorization`) are

@@ -177,8 +177,14 @@ func TestInterceptWebPlatformEntropyShapes(t *testing.T) {
 		{"deliver the page carrying a credential", site, "/leak", "agent-one", nil, http.StatusOK},
 		{"issued credential value", site, "/credential?token=" + issuerUnissuedSecret(), "agent-one", nil, http.StatusForbidden},
 		{"deliver the JSON body", site, "/json", "agent-one", nil, http.StatusOK},
-		{"bare JSON word is not a link", site, "/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusForbidden},
-		{"relative JSON word resolved under the response directory", site, "/json/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusForbidden},
+		// A bare JSON word is not a link, so it issues no path. It is a
+		// server-issued object ID, though: the origin introduced it and the
+		// session never sent it, so it may be named back to this origin as one
+		// segment. Any other high-entropy segment beside it still blocks.
+		{"bare JSON word as one segment is a server-issued id", site, "/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusOK},
+		{"bare JSON word under the response directory is a server-issued id", site, "/json/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-one", nil, http.StatusOK},
+		{"bare JSON word beside an unissued segment", site, "/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp/" + issuedTestToken(), "agent-one", nil, http.StatusForbidden},
+		{"bare JSON word for another session", site, "/img-headshot-RosalindFranklinCrick.Qm27nB5wL9yP.webp", "agent-two", nil, http.StatusForbidden},
 		{"rooted JSON path is a link", site, "/rooted/img-headshot-HenriettaLacksSmith.Tn84kC6xM2zR.webp", "agent-one", nil, http.StatusOK},
 	}
 	for _, step := range steps {

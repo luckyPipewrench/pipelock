@@ -3024,7 +3024,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 	defer func() {
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
-	for size := 2; size <= 4 && size <= n; size++ {
+	for size := 2; size <= SubsequenceMaxSize && size <= n; size++ {
 		result, warns := s.checkDLPCombinations(values, n, size, hostname, target, memo)
 		warnMatches = append(warnMatches, warns...)
 		credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
@@ -3036,10 +3036,30 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 	return Result{Allowed: true}, warnMatches
 }
 
+// SubsequenceMaxParts and SubsequenceMaxSize bound the ordered subsequence
+// search on the request path: at most this many parts are combined, in
+// ordered combinations of 2..SubsequenceMaxSize, and further values are
+// truncated. The receipt content boundary uses the same combination order.
+// Within SubsequenceMaxParts it runs the same sizes. A wider receipt degrades
+// to a complete smaller search or refuses, which
+// docs/guides/receipt-verification.md describes. The request path does not
+// refuse when the part cap is exceeded.
+const (
+	SubsequenceMaxParts = 20
+	SubsequenceMaxSize  = 4
+)
+
+// NextSubsequence advances indices to the next ordered combination of n
+// parts, in the same lexicographic order the query-subsequence detector uses.
+// It returns false when the combinations of len(indices) are exhausted.
+func NextSubsequence(indices []int, n int) bool {
+	return nextCombination(indices, n)
+}
+
 // querySubsequenceValues extracts the production query-value view shared by
 // core DLP, configured DLP, and the provenance parity test.
 func querySubsequenceValues(rawQuery string) []string {
-	const maxValues = 20
+	const maxValues = SubsequenceMaxParts
 	values := make([]string, 0, maxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
@@ -4566,6 +4586,23 @@ func WithIssuerPathAllowance(ctx context.Context, allows func(escapedPath string
 	return context.WithValue(ctx, issuerPathAllowanceContextKey{}, allows)
 }
 
+type issuerSegmentAllowanceContextKey struct{}
+
+// issuerSegmentAllowed reports whether the request context carries an issuer
+// allowance for this one decoded path segment.
+func issuerSegmentAllowed(ctx context.Context, segment string) bool {
+	allows, ok := ctx.Value(issuerSegmentAllowanceContextKey{}).(func(string) bool)
+	return ok && allows(segment)
+}
+
+// WithIssuerSegmentAllowance scopes server-issued object IDs to this scan
+// only. Each allowed segment is skipped by path-segment entropy and nothing
+// else; every other segment of the same path is still scored. The caller must
+// verify the ID was issued by the origin being scanned.
+func WithIssuerSegmentAllowance(ctx context.Context, allows func(segment string) bool) context.Context {
+	return context.WithValue(ctx, issuerSegmentAllowanceContextKey{}, allows)
+}
+
 // entropyQueryValues parses a raw query for the entropy heuristic. url.ParseQuery
 // silently drops any pair whose key or value carries a malformed percent
 // escape, which would let a secret skip inspection by appending "%ZZ". Pairs
@@ -4622,7 +4659,18 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	if !excludedPath && !routeExemptPath {
 		// Only entropy is relieved for a path the same origin issued: the rest
 		// of the pipeline already ran or still runs on this URL.
-		if entropy, blocked := s.pathEntropy(parsed.Path); blocked && !issuerPathAllowed(ctx, parsed.EscapedPath()) {
+		entropy, blocked := s.pathEntropy(parsed.Path)
+		if blocked && issuerPathAllowed(ctx, parsed.EscapedPath()) {
+			blocked = false
+		}
+		if blocked {
+			// Rescore without the segments the origin issued as object IDs;
+			// any other high-entropy segment still blocks.
+			entropy, blocked = s.pathEntropySkipping(parsed.Path, func(segment string) bool {
+				return issuerSegmentAllowed(ctx, segment)
+			})
+		}
+		if blocked {
 			return Result{
 				Allowed: false,
 				Reason:  fmt.Sprintf("high entropy path segment (%.2f > %.2f threshold)", entropy, s.entropyThreshold),

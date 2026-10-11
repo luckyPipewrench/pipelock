@@ -189,6 +189,7 @@ func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool)
 		}
 		resolved := *agent
 		resolved.LicenseRevoked = done
+		resolved.LicenseExpiresAt = r.licenseExpiresAt
 		return &resolved, true
 	}
 	return r.fallback, false

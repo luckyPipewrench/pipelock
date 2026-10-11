@@ -174,6 +174,7 @@ func (s *Server) expireLicensedRuntime() {
 		return
 	}
 	if s.proxy != nil {
+		s.proxy.SetLicenseRevoked(s.proxy.CurrentConfig(), true)
 		s.proxy.ShutdownAgentServers()
 	}
 	s.teardownConductor("expired")

@@ -261,7 +261,7 @@ type wsRelayStats struct {
 func (s wsRelayStats) closeOutcome() (ws.StatusCode, string) {
 	switch {
 	case s.panicked:
-		return ws.StatusPolicyViolation, "relay_panic"
+		return ws.StatusInternalServerError, "relay_panic"
 	case s.blocked:
 		return ws.StatusPolicyViolation, "policy_blocked"
 	case s.incomplete:
@@ -270,6 +270,19 @@ func (s wsRelayStats) closeOutcome() (ws.StatusCode, string) {
 		return ws.StatusGoingAway, httpstream.Cancelled
 	default:
 		return ws.StatusNormalClosure, "complete"
+	}
+}
+
+// recordWSRelayCompletion counts policy blocks separately from internal
+// failures and entitlement teardown. Neither is a normal completion.
+func (p *Proxy) recordWSRelayCompletion(stats wsRelayStats, revoked bool) {
+	if stats.panicked || revoked {
+		return
+	}
+	if stats.blocked {
+		p.metrics.RecordWSBlocked()
+	} else {
+		p.metrics.RecordWSCompleted()
 	}
 }
 
@@ -286,10 +299,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries. The contract
 	// loader is captured for the handshake gate; per-frame scanning stays
 	// independent and unchanged.
-	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
-	licenseCtx, releaseLicense := agentLicenseContext(r.Context(), resolved)
+	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
-	r = r.WithContext(licenseCtx)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -306,6 +317,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext(r.Method), fmt.Errorf("inbound envelope verify rejected WebSocket: %w", err))
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportWS, requestID)
 		emitWebSocketReceipt(receipt.EmitOpts{
@@ -1170,8 +1182,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
-	stopLicenseClose := context.AfterFunc(licenseCtx, func() {
-		if errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked) {
+	stopLicenseClose := context.AfterFunc(r.Context(), func() {
+		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			_ = clientConn.Close()
 			_ = upstreamConn.Close()
 		}
@@ -1236,18 +1248,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := relay.run(r.Context())
-	licenseRevoked := errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked)
+	licenseRevoked := errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked)
 	if licenseRevoked {
 		stats.blocked = true
 	}
 
 	p.metrics.DecrActiveWS()
 	duration := time.Since(start)
-	if stats.blocked {
-		p.metrics.RecordWSBlocked()
-	} else {
-		p.metrics.RecordWSCompleted()
-	}
+	p.recordWSRelayCompletion(stats, licenseRevoked)
 	p.metrics.RecordWSStats(duration, stats.clientToServer, stats.serverToClient)
 	log.LogWSClose(audit.WSCloseEvent{
 		Target:    targetURL,

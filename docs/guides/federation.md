@@ -241,7 +241,9 @@ All failures reject the request with HTTP 403 and increment `pipelock_envelope_v
 | Inbound digest mismatch | `inbound_verify_digest` |
 | Inbound parse error (envelope structure malformed) | `inbound_verify_parse` |
 | Inbound actor not in trust list | `inbound_verify_not_trusted` |
-| Replay (nonce already seen within cache window) | `inbound_verify_replay` |
+| Replay (nonce already accepted and still valid) | `inbound_verify_replay` |
+| Replay cache full of still-valid nonces | `inbound_verify_replay_capacity` |
+| Replay state unavailable after a clock or skew change; correct the clock and wait past the retained expiry boundary | `inbound_verify_replay_state` |
 | Inbound envelope expired (timestamp outside the replay window) | `inbound_verify_expired` |
 | Inbound signature missing while `verify_inbound.enabled: true` | `inbound_verify_missing` |
 | Other / uncategorised verification failure | `inbound_verify_failed` |

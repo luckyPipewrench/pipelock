@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -65,7 +68,7 @@ func TestWSRelayCloseOutcome(t *testing.T) {
 		{"incomplete", wsRelayStats{incomplete: true}, ws.StatusAbnormalClosure, "incomplete"},
 		{"cancelled", wsRelayStats{cancelled: true}, ws.StatusGoingAway, "stream_cancelled"},
 		{"policy", wsRelayStats{blocked: true, cancelled: true}, ws.StatusPolicyViolation, "policy_blocked"},
-		{"panic", wsRelayStats{panicked: true, blocked: true, incomplete: true}, ws.StatusPolicyViolation, "relay_panic"},
+		{"panic", wsRelayStats{panicked: true, blocked: true, incomplete: true}, ws.StatusInternalServerError, "relay_panic"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, reason := tc.stats.closeOutcome()
@@ -99,7 +102,41 @@ func TestWSRelayPanicOutcomeReceipt(t *testing.T) {
 	if err := receipt.VerifyWithKey(r, rph.pubHex); err != nil {
 		t.Fatalf("panic receipt signature: %v", err)
 	}
-	if !strings.Contains(r.ActionRecord.Pattern, "reason=relay_panic") {
+	if !strings.Contains(r.ActionRecord.Pattern, "status=1011") || !strings.Contains(r.ActionRecord.Pattern, "reason=relay_panic") {
 		t.Fatalf("panic receipt reason: %s", r.ActionRecord.Pattern)
+	}
+}
+
+func TestWSRelayCompletionMetrics(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name               string
+		stats              wsRelayStats
+		revoked            bool
+		blocked, completed int
+	}{
+		{"policy", wsRelayStats{blocked: true}, false, 1, 0},
+		{"panic", wsRelayStats{blocked: true, panicked: true}, false, 0, 0},
+		{"revoked", wsRelayStats{blocked: true}, true, 0, 0},
+		{"normal", wsRelayStats{}, false, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Proxy{metrics: metrics.New()}
+			p.recordWSRelayCompletion(tc.stats, tc.revoked)
+			rec := httptest.NewRecorder()
+			p.metrics.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+			for suffix, want := range map[string]int{"blocked": tc.blocked, "completed": tc.completed} {
+				line := "pipelock_ws_connections_total{result=\"" + suffix + "\"} " + strconv.Itoa(want)
+				if want == 0 {
+					if strings.Contains(rec.Body.String(), strings.TrimSuffix(line, "0")+"1") {
+						t.Fatalf("unexpected metric: %s", rec.Body.String())
+					}
+					continue
+				}
+				if !strings.Contains(rec.Body.String(), line) {
+					t.Fatalf("metric missing %s: %s", line, rec.Body.String())
+				}
+			}
+		})
 	}
 }

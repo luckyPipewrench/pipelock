@@ -79,7 +79,7 @@ func (e *enterpriseEdition) Reload(cfg *config.Config, sc *scanner.Scanner) (edi
 	// Preserve runtime revocation across unrelated reloads and share updates
 	// with handlers holding the previous edition. A replacement token starts
 	// with the freshly validated configuration's entitlement state.
-	if cfg.LicenseKey == e.cfg.LicenseKey {
+	if config.SameLicenseInputs(cfg, e.cfg) {
 		reg.licenseRevoked = e.registry.licenseRevoked
 	}
 	return &enterpriseEdition{registry: reg, cfg: cfg, sc: sc}, nil

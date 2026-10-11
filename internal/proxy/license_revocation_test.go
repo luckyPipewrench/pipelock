@@ -59,6 +59,9 @@ func TestLicenseRevocationAppliesAcrossUnrelatedReload(t *testing.T) {
 	if !p.SetLicenseRevoked(old, true) || !ed.revoked {
 		t.Fatal("same-license reload dropped revocation")
 	}
+	if p.SetLicenseRevoked(old, false) || !ed.revoked {
+		t.Fatal("stale recovery cleared same-input revocation")
+	}
 	next.LicenseCRLFile = "replacement-crl.json"
 	ed.revoked = false
 	if p.SetLicenseRevoked(old, true) || ed.revoked {

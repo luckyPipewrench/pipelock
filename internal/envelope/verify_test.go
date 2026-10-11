@@ -490,13 +490,14 @@ func TestVerifierConfigAndErrorHelpers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.cfg.ReplayCache = NewReplayCache(time.Minute, 100)
 			if _, err := NewVerifier(tc.cfg); err == nil {
 				t.Fatal("NewVerifier should fail")
 			}
 		})
 	}
 
-	verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}})
+	verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}, ReplayCache: NewReplayCache(time.Minute, 100)})
 	if err != nil {
 		t.Fatalf("NewVerifier default nowFn: %v", err)
 	}

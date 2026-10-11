@@ -122,10 +122,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// exposes host:port; the contract gate evaluates a synthetic URL with
 	// path "/", so root-path rules can match and non-root path rules fall
 	// through to enforce-default-deny.
-	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
-	licenseCtx, releaseLicense := agentLicenseContext(r.Context(), resolved)
+	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
 	defer releaseLicense()
-	r = r.WithContext(licenseCtx)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -147,6 +145,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext(r.Method), fmt.Errorf("inbound envelope verify rejected CONNECT: %w", err))
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportConnect, requestID)
 		emitConnectReceipt(receipt.EmitOpts{
@@ -788,8 +787,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// both sockets on revocation, including while waiting for a TLS ClientHello.
 	// Capture the current upstream: interception later clears targetConn.
 	revocationTarget := targetConn
-	stopLicenseClose := context.AfterFunc(licenseCtx, func() {
-		if errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked) {
+	stopLicenseClose := context.AfterFunc(r.Context(), func() {
+		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
 			_ = clientConn.Close()
 			_ = revocationTarget.Close()
 		}
@@ -1011,7 +1010,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// loader is captured here too so the request scans, taint-evaluates,
 	// and gates under one policy revision; a reload between scan and gate
 	// would otherwise let a poisoned policy slip through.
-	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
+	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
+	defer releaseLicense()
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -1030,6 +1030,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext(r.Method), fmt.Errorf("inbound envelope verify rejected forward: %w", err))
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportForward, requestID)
 		emitForwardReceipt(receipt.EmitOpts{
@@ -2267,6 +2268,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	defer func() {
+		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
+			outcomeReason = "license_revoked"
+		}
 		p.emitOutcomeReceipt(cfg, forwardAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 	}()
 	emitForwardAllowReceipt := func() {

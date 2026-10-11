@@ -1256,11 +1256,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 	}
 
-	// License expiry watchdog: shut down agent listeners when the
-	// enterprise license expires at runtime. Agent shutdown only matters
-	// when listeners exist, but renewal warnings still emit for long-running
-	// proxy-only processes.
-	if (agentListenerCount > 0 || cfg.Conductor.Enabled) && cfg.LicenseExpiresAt > 0 {
+	// License expiry applies to all paid resolutions, including CIDR profiles
+	// on the main listener without dedicated listeners or Conductor.
+	if cfg.LicenseExpiresAt > 0 {
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()

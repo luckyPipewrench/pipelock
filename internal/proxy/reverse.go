@@ -893,6 +893,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
+		rp.logger.LogError(audit.NewMethodLogContext(r.Method), fmt.Errorf("inbound envelope verify rejected reverse: %w", err))
 		recordInboundEnvelopeVerify(rp.metrics, cfg, err)
 		pattern := inboundEnvelopeFailurePattern(err)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")

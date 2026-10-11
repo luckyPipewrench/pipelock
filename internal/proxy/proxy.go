@@ -2739,6 +2739,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 
 	if prevEdSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); prevEdSnap != nil {
+		if !config.SameLicenseInputs(oldCfg, cfg) || namedProfilesLost(oldCfg, cfg) {
+			if receiver, ok := prevEdSnap.Edition.(edition.LicenseRevocationReceiver); ok {
+				receiver.SetLicenseRevoked(true)
+			}
+		}
 		prevEdSnap.Close()
 	}
 
@@ -2970,24 +2975,13 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 	p.reloadSerialMu.Lock()
 	defer p.reloadSerialMu.Unlock()
 	current := p.cfgPtr.Load()
-	if current != cfg && (!revoked || !sameLicenseVerificationInputs(current, cfg)) {
+	if current != cfg && (!revoked || !config.SameLicenseInputs(current, cfg)) {
 		return false
 	}
 	if receiver, ok := p.Edition().(edition.LicenseRevocationReceiver); ok {
 		receiver.SetLicenseRevoked(revoked)
 	}
 	return true
-}
-
-func sameLicenseVerificationInputs(a, b *config.Config) bool {
-	return a != nil && b != nil &&
-		a.LicenseKey == b.LicenseKey &&
-		a.LicensePublicKey == b.LicensePublicKey &&
-		a.LicenseCRLFile == b.LicenseCRLFile &&
-		bytes.Equal(a.LicenseIntermediateCert, b.LicenseIntermediateCert) &&
-		a.LicenseIntermediateFile == b.LicenseIntermediateFile &&
-		a.LicenseRequireIntermediateResolved == b.LicenseRequireIntermediateResolved &&
-		a.LicenseCRLMaxAgeResolved == b.LicenseCRLMaxAgeResolved
 }
 
 // ShutdownAgentServers gracefully shuts down all registered agent servers.
@@ -3255,15 +3249,30 @@ func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*edition.ResolvedAgent
 	return p.editionPtr.Load().ResolveAgent(r.Context(), r)
 }
 
+// namedProfilesLost reports removal of a previously configured paid profile.
+// The old edition's generation must end only after the replacement commits.
+func namedProfilesLost(oldCfg, cfg *config.Config) bool {
+	for name := range oldCfg.Agents {
+		if name != edition.ProfileDefault {
+			if _, ok := cfg.Agents[name]; !ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // resolveAgentRuntimeFromRequest snapshots the request's resolved agent state
 // and envelope emitter under the reload lock. The request then keeps that
 // emitter for its forwarding and redirect path so a reload cannot pair the
-// old config with a newly disabled or rotated emitter.
-func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity, *envelope.Emitter, *contractruntime.Loader) {
+// old config with a newly disabled or rotated emitter. Every consumer receives
+// the entitlement-bound request context and releases it when handling ends.
+func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity, *envelope.Emitter, *contractruntime.Loader, *http.Request, context.CancelFunc) {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
 	resolved, id := p.resolveAgentFromRequest(r)
-	return resolved, id, p.envelopeEmitterPtr.Load(), p.contractLoaderPtr.Load()
+	ctx, release := agentLicenseContext(r.Context(), resolved)
+	return resolved, id, p.envelopeEmitterPtr.Load(), p.contractLoaderPtr.Load(), r.WithContext(ctx), release
 }
 
 // pinResolvedScanner registers in-flight scanner use on a resolved-agent
@@ -3363,8 +3372,6 @@ func inboundEnvelopeFailurePattern(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, envelope.ErrReplayStateUnavailable), errors.Is(err, envelope.ErrReplayCacheRequired):
-		return "inbound_verify_replay_state"
 	case strings.Contains(msg, "replay"):
 		return "inbound_verify_replay"
 	case strings.Contains(msg, "expired"), strings.Contains(msg, "created in the future"), strings.Contains(msg, "expires before created"), strings.Contains(msg, "lifetime exceeds"):
@@ -5298,7 +5305,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries. The contract
 	// loader is captured here too so the URL scan and contract gate use
 	// one coherent policy revision.
-	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
+	resolved, id, envEmitter, snapshotContractLoader, r, releaseLicense := p.resolveAgentRuntimeFromRequest(r)
+	defer releaseLicense()
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {

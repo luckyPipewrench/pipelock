@@ -8,11 +8,15 @@ package proxy
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +24,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func revocationConnectionConfig(cfg *config.Config) {
@@ -28,22 +33,6 @@ func revocationConnectionConfig(cfg *config.Config) {
 	cfg.Agents = map[string]config.AgentProfile{"client": {SourceCIDRs: []string{"127.0.0.0/8"}}}
 	cfg.ForwardProxy.IdleTimeoutSeconds = 60
 	cfg.WebSocketProxy.IdleTimeoutSeconds = 60
-}
-
-func revokeAfterReload(t *testing.T, p *Proxy) {
-	t.Helper()
-	old := p.CurrentConfig()
-	next := old.Clone()
-	next.Logging.IncludeAllowed = !old.Logging.IncludeAllowed
-	if !p.Reload(next, scanner.MustNew(next)) {
-		t.Fatal("unrelated reload failed")
-	}
-	if !p.SetLicenseRevoked(old, true) {
-		t.Fatal("same-license revocation dropped after reload")
-	}
-	if _, ok := p.Edition().LookupProfile("client"); ok {
-		t.Fatal("revoked profile remained selectable")
-	}
 }
 
 func requireRevocationClose(t *testing.T, conn net.Conn) {
@@ -60,8 +49,10 @@ func requireRevocationClose(t *testing.T, conn net.Conn) {
 func TestLicenseRevocationClosesMainListenerConnect(t *testing.T) {
 	t.Parallel()
 	target, live := airlockProbeHoldListener(t)
-	addr, p, cleanup := setupForwardProxyWithInstance(t, revocationConnectionConfig)
+	addr, p, cleanup := setupForwardProxyWithInstance(t, revocationReceiptConnectionConfig)
 	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
 	conn := dialProxy(t, addr)
 	defer func() { _ = conn.Close() }()
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target.Addr(), target.Addr()); err != nil {
@@ -83,16 +74,21 @@ func TestLicenseRevocationClosesMainListenerConnect(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("positive control: CONNECT probe not delivered")
 	}
-	revokeAfterReload(t, p)
+	if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
+		t.Fatal("revocation not published")
+	}
 	requireRevocationClose(t, conn)
+	requireLicenseRevocationOutcome(t, rph)
 }
 
 func TestLicenseRevocationClosesMainListenerWebSocket(t *testing.T) {
 	t.Parallel()
 	backend, stop := wsEchoServer(t)
 	defer stop()
-	addr, p, cleanup := setupWSProxyDefaultWithProxy(t, revocationConnectionConfig)
+	addr, p, cleanup := setupWSProxyDefaultWithProxy(t, revocationReceiptConnectionConfig)
 	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
 	conn := dialWS(t, addr, backend)
 	defer func() { _ = conn.Close() }()
 	if err := wsutil.WriteClientText(conn, []byte("hello")); err != nil {
@@ -104,8 +100,11 @@ func TestLicenseRevocationClosesMainListenerWebSocket(t *testing.T) {
 	if ra, ok := p.Edition().LookupProfile("client"); !ok || ra.Name == edition.ProfileDefault {
 		t.Fatal("positive control: paid profile not selectable")
 	}
-	revokeAfterReload(t, p)
+	if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
+		t.Fatal("revocation not published")
+	}
 	requireRevocationClose(t, conn)
+	requireLicenseRevocationOutcome(t, rph)
 }
 
 func TestLicenseRevocationClosesConnectBeforeClientHello(t *testing.T) {
@@ -130,4 +129,41 @@ func TestLicenseRevocationClosesConnectBeforeClientHello(t *testing.T) {
 		t.Fatal("revocation not published")
 	}
 	requireRevocationClose(t, conn)
+}
+
+func requireLicenseRevocationOutcome(t *testing.T, rph *receiptProxyHelper) {
+	t.Helper()
+	testwait.For(t, 3*time.Second, func() bool {
+		entries, err := os.ReadDir(rph.dir)
+		if err != nil {
+			return false
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(rph.dir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if json.Valid([]byte(line)) && strings.Contains(line, "reason=license_revoked") {
+					return true
+				}
+			}
+		}
+		return false
+	}, "signed revocation outcome")
+	r := rph.requireReceipt(t, receiptOutcomeLayer)
+	if err := receipt.VerifyWithKey(r, rph.pubHex); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.ActionRecord.Pattern, "reason=license_revoked") {
+		t.Fatalf("revocation reason: %s", r.ActionRecord.Pattern)
+	}
+}
+
+func revocationReceiptConnectionConfig(cfg *config.Config) {
+	revocationConnectionConfig(cfg)
+	cfg.FlightRecorder.RequireReceipts = true
 }

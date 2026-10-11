@@ -22,6 +22,9 @@ func TestAgentLicenseContext(t *testing.T) {
 			}
 			ctx, cancel := agentLicenseContext(t.Context(), &edition.ResolvedAgent{LicenseRevoked: done})
 			defer cancel()
+			if alreadyRevoked && ctx.Err() == nil {
+				t.Fatal("already-revoked context must be canceled synchronously")
+			}
 			if !alreadyRevoked {
 				if ctx.Err() != nil {
 					t.Fatal("unrevoked entitlement cancelled")
@@ -54,5 +57,30 @@ func TestAgentLicenseContext(t *testing.T) {
 	cancel()
 	if !errors.Is(context.Cause(ctx), context.Canceled) {
 		t.Fatal("normal completion did not stop watcher")
+	}
+}
+
+func TestAgentLicenseContextExpiry(t *testing.T) {
+	t.Parallel()
+	for _, future := range []bool{false, true} {
+		t.Run(map[bool]string{false: "expired", true: "upcoming"}[future], func(t *testing.T) {
+			deadline := time.Now().Add(-time.Second).Unix()
+			if future {
+				deadline = time.Now().Add(2 * time.Second).Unix()
+			}
+			ctx, release := agentLicenseContext(t.Context(), &edition.ResolvedAgent{LicenseRevoked: make(chan struct{}), LicenseExpiresAt: deadline})
+			defer release()
+			if !future && ctx.Err() == nil {
+				t.Fatal("expired entitlement must cancel synchronously")
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(3 * time.Second):
+				t.Fatal("expiry did not cancel request")
+			}
+			if !errors.Is(context.Cause(ctx), errAgentLicenseRevoked) {
+				t.Fatal(context.Cause(ctx))
+			}
+		})
 	}
 }

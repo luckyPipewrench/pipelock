@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
@@ -20,6 +21,17 @@ func agentLicenseContext(parent context.Context, resolved *edition.ResolvedAgent
 		return parent, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(parent)
+	// Bound each request independently of the runtime watchdog so an expiry
+	// teardown delayed by another lifecycle operation cannot prolong traffic.
+	var expiry *time.Timer
+	if resolved.LicenseExpiresAt > 0 {
+		remaining := time.Until(time.Unix(resolved.LicenseExpiresAt, 0))
+		if remaining <= 0 {
+			cancel(errAgentLicenseRevoked)
+		} else {
+			expiry = time.AfterFunc(remaining, func() { cancel(errAgentLicenseRevoked) })
+		}
+	}
 	select {
 	case <-resolved.LicenseRevoked:
 		cancel(errAgentLicenseRevoked)
@@ -32,5 +44,10 @@ func agentLicenseContext(parent context.Context, resolved *edition.ResolvedAgent
 			}
 		}()
 	}
-	return ctx, func() { cancel(context.Canceled) }
+	return ctx, func() {
+		if expiry != nil {
+			expiry.Stop()
+		}
+		cancel(context.Canceled)
+	}
 }

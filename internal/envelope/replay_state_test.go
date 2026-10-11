@@ -33,8 +33,11 @@ func TestVerifierClockRollbackReportsUnavailableState(t *testing.T) {
 	if !errors.Is(err, ErrReplayStateUnavailable) {
 		t.Fatalf("clock refusal lost sentinel: %v", err)
 	}
-	if strings.Contains(err.Error(), "fresh signature") || !strings.Contains(err.Error(), "clock") {
+	if strings.Contains(err.Error(), "restart") || strings.Contains(err.Error(), "fresh signature") || !strings.Contains(err.Error(), "clock") {
 		t.Fatalf("incorrect remedy: %v", err)
+	}
+	if !strings.Contains(err.Error(), start.Add(5*time.Minute).Format(time.RFC3339Nano)) {
+		t.Fatalf("retained expiry boundary missing from diagnostics: %v", err)
 	}
 	now = start.Add(7 * time.Minute)
 	if _, err := v.VerifyRequest(signedVerifierRequest(t, priv, now, ""), nil); err != nil {
@@ -44,15 +47,9 @@ func TestVerifierClockRollbackReportsUnavailableState(t *testing.T) {
 
 func TestVerifierMissingReplayCacheFailsClosed(t *testing.T) {
 	t.Parallel()
-	pub, priv := testSignerKey(t)
-	now := time.Now()
-	v := newTestVerifier(t, pub, now)
-	v.replayCache = nil
-	_, err := v.VerifyRequest(signedVerifierRequest(t, priv, now, ""), nil)
-	if code, ok := VerificationFailureCodeOf(err); !ok || code != "replay_state" {
-		t.Fatalf("missing cache: code=%q err=%v", code, err)
-	}
-	if !errors.Is(err, ErrReplayCacheRequired) {
-		t.Fatalf("missing cache lost sentinel: %v", err)
+	pub, _ := testSignerKey(t)
+	verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}})
+	if verifier != nil || !errors.Is(err, ErrReplayCacheRequired) {
+		t.Fatalf("missing cache constructor: %v %v", verifier, err)
 	}
 }

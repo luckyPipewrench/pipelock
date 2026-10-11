@@ -4,7 +4,6 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -382,22 +381,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// _default. Detect loss of non-default profiles instead of a nil agents
 		// map so reload cannot re-add stripped named agents when _default remains.
 		agentsRevokedByLicense := hasNamedAgentProfiles(oldCfg.Agents) && !hasNamedAgentProfiles(newCfg.Agents)
-		licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey ||
-			oldCfg.LicensePublicKey != newCfg.LicensePublicKey ||
-			oldCfg.LicenseFile != newCfg.LicenseFile ||
-			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile ||
-			oldCfg.LicenseIntermediateFile != newCfg.LicenseIntermediateFile ||
-			!bytes.Equal(oldCfg.LicenseIntermediateCert, newCfg.LicenseIntermediateCert) ||
-			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError ||
-			// A require-intermediate flip is a license-trust change: compare the
-			// MATERIALIZED value so a reload that turns require on/off (via config
-			// or env) re-verifies and can tear down a surface that no longer
-			// satisfies the required trust tier.
-			oldCfg.LicenseRequireIntermediateResolved != newCfg.LicenseRequireIntermediateResolved ||
-			// A CRL freshness-window change is also a license-trust change: shrinking
-			// it can make a previously-fresh CRL stale, which under require mode is
-			// proven loss. Compare the materialized window.
-			oldCfg.LicenseCRLMaxAgeResolved != newCfg.LicenseCRLMaxAgeResolved
+		licenseInputsChanged := !config.SameLicenseInputs(oldCfg, newCfg)
 
 		// Re-verify the NEW license inputs ONCE and classify the result so both
 		// paid surfaces — agent listeners and the Conductor follower — make the

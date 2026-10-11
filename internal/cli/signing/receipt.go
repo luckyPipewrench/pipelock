@@ -109,7 +109,7 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
-For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes, whole-recorder transcript roots with trailing signed checkpoints, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links and recovery seals do not. Single-receipt and fleet-report exit contracts are unchanged.
+For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes and whole-recorder transcript roots with trailing signed checkpoints in per-run sessions, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links, recovery seals, and closes in a legacy shared session such as "proxy" do not. Single-receipt and fleet-report exit contracts are unchanged.
 
 Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, refused (a symlink inside an evidence directory, an entry filed under the wrong session), or report delivery failed; exit 2 = usage or configuration error, such as a malformed --key or a missing directory.
 
@@ -870,7 +870,9 @@ func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 		_, _ = fmt.Fprintln(out, "  UNANCHORED: no signed checkpoint covers the transcript_root seal; recorder entries after the last signed checkpoint that are not receipts are hash-linked but not authenticated")
 		return fmt.Errorf("whole-recorder verification unanchored: no signed checkpoint covers the transcript_root seal (checkpoints absent, unsigned, or none after the seal); pass --allow-unanchored-seal to accept hash linkage only for the non-receipt entries after the last anchor")
 	}
-	if opts.CheckEnd && anchor.lastSignedIndex > rootIndex {
+	// The seal ends the recorder only in a per-run session; a restart resumed a
+	// legacy shared session after its seal (see endproof.ActionEvidence).
+	if opts.CheckEnd && anchor.lastSignedIndex > rootIndex && endproof.RunScoped(s.rootSessionID) {
 		opts.EndEvidence = []string{"transcript_root", "trailing_checkpoint"}
 	}
 	if opts.CheckEnd {

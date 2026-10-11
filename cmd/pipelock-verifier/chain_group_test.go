@@ -9,11 +9,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -91,8 +94,15 @@ func TestStandaloneChainDefaultGroupDirectoryAndMixedLegacy(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err = runChain(&stdout, &stderr, dir, chainOptions{asDir: true, sessionID: "proxy", signerKeys: []string{hex.EncodeToString(pub)}})
-	if err != nil || !strings.Contains(stdout.String(), "GROUP_VALID") || !strings.Contains(stdout.String(), "proxy") {
+	// The legacy shared-session run's close cannot end its chain: a restart
+	// resumed that session after every close.
+	if !isEndUnproven(err) || !strings.Contains(stdout.String(), "GROUP_VALID") || !strings.Contains(stdout.String(), endproof.Prefix+": ") {
 		t.Fatalf("mixed default directory stdout=%q stderr=%q err=%v", stdout.String(), stderr.String(), err)
+	}
+	stdout.Reset()
+	err = runChain(&stdout, &stderr, dir, chainOptions{asDir: true, sessionID: "proxy", allowPrefix: true, signerKeys: []string{hex.EncodeToString(pub)}})
+	if err != nil || !strings.Contains(stdout.String(), "GROUP_VALID") {
+		t.Fatalf("mixed default directory with accepted prefix stdout=%q stderr=%q err=%v", stdout.String(), stderr.String(), err)
 	}
 }
 
@@ -122,7 +132,7 @@ func TestStandaloneChainDefaultGroupDirectoryJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{dir, "--dir", "--json", "--key", hex.EncodeToString(pub)})
+	cmd.SetArgs([]string{dir, "--dir", "--json", "--allow-prefix", "--key", hex.EncodeToString(pub)})
 	err = cmd.Execute()
 	if err != nil {
 		t.Fatalf("default mixed group JSON: %v: %s", err, stderr.String())
@@ -240,4 +250,9 @@ func TestStandaloneChainGroupVerdicts(t *testing.T) {
 	if out, err := verify(); err == nil || strings.Contains(out, string(receipt.GroupValid)) {
 		t.Fatalf("unpinned group output=%q err=%v", out, err)
 	}
+}
+
+func isEndUnproven(err error) bool {
+	var exitErr *cliutil.ExitError
+	return errors.As(err, &exitErr) && exitErr.Code == endproof.ExitPrefix
 }

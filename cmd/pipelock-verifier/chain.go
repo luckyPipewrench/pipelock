@@ -91,9 +91,10 @@ must hold from genesis.
 
 Exit 0 requires a proven endpoint for the declared scope. A valid prefix
 prints VALID PREFIX, END UNPROVEN and exits 3. --allow-prefix returns 0
-while keeping that label. A terminal signed session_close, group close, or
-independently supplied --expect-head/--expect-seq proves its endpoint.
-Restart links and recovery seals do not. JSON separates integrity,
+while keeping that label. A terminal signed session_close in a per-run
+session, a group close, or an independently supplied
+--expect-head/--expect-seq proves its endpoint. Restart links, recovery
+seals, and closes in a legacy shared session such as "proxy" do not. JSON separates integrity,
 end_proof, scope, and signer trust.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,

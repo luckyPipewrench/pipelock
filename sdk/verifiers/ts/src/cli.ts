@@ -170,6 +170,27 @@ export interface ChainSetReport {
   };
 }
 
+// A trailing session_close ends its run, and it ends the chain only when no
+// later run can continue that chain. Pipelock never resumes a per-run recorder
+// session ("<base>.run.<hex>"); a restart resumed a legacy shared session
+// ("proxy") after its close, so deleting the later runs leaves a chain that
+// ends at a genuine close. The session comes from the closed run's signed
+// session_open. Called only after the chain verified.
+function closeEndsChain(receipts: Receipt[]): boolean {
+  const close = receipts.at(-1)?.action_record?.session_control;
+  if (close?.["kind"] !== "session_close") return false;
+  const runNonce = (close["close"] as Record<string, unknown> | undefined)?.["run_nonce"];
+  for (let i = receipts.length - 1; i >= 0; i--) {
+    const ctrl = receipts[i]?.action_record?.session_control;
+    const open = ctrl?.["open"] as Record<string, unknown> | undefined;
+    if (ctrl?.["kind"] !== "session_open" || open === undefined || open["run_nonce"] !== runNonce)
+      continue;
+    const session = open["recorder_session"];
+    return typeof session === "string" && runSessionBase(session) !== undefined;
+  }
+  return false;
+}
+
 async function chainReportFor(
   label: string,
   receipts: Receipt[],
@@ -199,16 +220,9 @@ async function chainReportFor(
   return {
     path: label,
     end_proof: {
-      proven:
-        result.valid &&
-        !lifecycleBroken &&
-        receipts.at(-1)?.action_record?.session_control?.["kind"] === "session_close",
+      proven: result.valid && !lifecycleBroken && closeEndsChain(receipts),
       evidence:
-        result.valid &&
-        !lifecycleBroken &&
-        receipts.at(-1)?.action_record?.session_control?.["kind"] === "session_close"
-          ? ["session_close"]
-          : [],
+        result.valid && !lifecycleBroken && closeEndsChain(receipts) ? ["session_close"] : [],
     },
     valid: result.valid && !lifecycleBroken,
     unpinned:

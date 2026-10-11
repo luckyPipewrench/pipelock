@@ -53,11 +53,29 @@ func TestCloseMustBeTerminal(t *testing.T) {
 	if ActionEvidence(nil) != nil {
 		t.Fatal("empty chain has no endpoint")
 	}
-	closeReceipt := receipt.Receipt{ActionRecord: receipt.ActionRecord{SessionControl: &receipt.SessionControl{Kind: receipt.SessionControlClose, Close: &receipt.SessionClose{}}}}
-	if len(ActionEvidence([]receipt.Receipt{closeReceipt})) != 1 {
-		t.Fatal("terminal close missing")
+	open := func(run, session string) receipt.Receipt {
+		return receipt.Receipt{ActionRecord: receipt.ActionRecord{SessionControl: &receipt.SessionControl{Kind: receipt.SessionControlOpen, Open: &receipt.SessionOpen{RunNonce: run, RecorderSession: session}}}}
 	}
-	if ActionEvidence([]receipt.Receipt{closeReceipt, {}}) != nil {
+	closeOf := func(run string) receipt.Receipt {
+		return receipt.Receipt{ActionRecord: receipt.ActionRecord{SessionControl: &receipt.SessionControl{Kind: receipt.SessionControlClose, Close: &receipt.SessionClose{RunNonce: run}}}}
+	}
+	runSession := "proxy.run.0123456789abcdef0123456789abcdef"
+	if len(ActionEvidence([]receipt.Receipt{open("a", runSession), closeOf("a")})) != 1 {
+		t.Fatal("terminal close of a per-run session missing")
+	}
+	if ActionEvidence([]receipt.Receipt{open("a", runSession), closeOf("a"), {}}) != nil {
 		t.Fatal("earlier close proved a later prefix")
+	}
+	// A legacy shared session was resumed by the next restart, so a chain cut
+	// after any close of it is indistinguishable from one that ended there.
+	if ActionEvidence([]receipt.Receipt{open("a", "proxy"), closeOf("a")}) != nil {
+		t.Fatal("close of a resumable shared session proved the chain end")
+	}
+	// The closed run decides, not an earlier run-scoped open in the chain.
+	if ActionEvidence([]receipt.Receipt{open("a", runSession), closeOf("a"), open("b", "proxy"), closeOf("b")}) != nil {
+		t.Fatal("an earlier run's session proved a later shared run's close")
+	}
+	if ActionEvidence([]receipt.Receipt{open("a", runSession), closeOf("b")}) != nil {
+		t.Fatal("close without its own session_open proved the chain end")
 	}
 }

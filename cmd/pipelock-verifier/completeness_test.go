@@ -93,7 +93,7 @@ func (f *completenessFixture) open(runNonce, openNonce string) receipt.Receipt {
 	open := receipt.SessionOpen{
 		RunNonce:         runNonce,
 		OpenNonce:        openNonce,
-		RecorderSession:  "proxy",
+		RecorderSession:  "proxy.run.0123456789abcdef0123456789abcdef",
 		PolicyHash:       "policy-completeness-cli",
 		SignerKeyEpoch:   "epoch-cli",
 		HeartbeatSeconds: 10,

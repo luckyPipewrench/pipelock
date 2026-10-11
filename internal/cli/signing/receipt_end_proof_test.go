@@ -5,6 +5,8 @@ package signing
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 func TestVerifyReceiptEndProofParity(t *testing.T) {
@@ -269,7 +273,8 @@ func TestCleanReportStructuralPrefixAPI(t *testing.T) {
 }
 
 func TestWholeRecorderEndProof(t *testing.T) {
-	sealed, sealedKey := buildSealedRecorderJSONL(t)
+	sealed, sealedKey := buildRunSealedRecorderJSONL(t)
+	legacy, legacyKey := buildSealedRecorderJSONL(t)
 	open, openKey := buildChainJSONL(t, 1)
 	for _, tc := range []struct {
 		name, path, key string
@@ -278,6 +283,10 @@ func TestWholeRecorderEndProof(t *testing.T) {
 		proven          bool
 	}{
 		{"sealed", sealed, hex.EncodeToString(sealedKey), nil, 0, true},
+		// A legacy shared session's seal is not its end: the next restart
+		// resumed the same recorder chain after it.
+		{"legacy-sealed", legacy, hex.EncodeToString(legacyKey), nil, 3, false},
+		{"legacy-sealed-prefix", legacy, hex.EncodeToString(legacyKey), []string{"--allow-prefix"}, 0, false},
 		{"open", open, hex.EncodeToString(openKey), nil, 3, false},
 		{"accepted-prefix", open, hex.EncodeToString(openKey), []string{"--allow-prefix"}, 0, false},
 		{"required-seal", open, hex.EncodeToString(openKey), []string{"--require-seal", "--allow-prefix"}, 1, false},
@@ -324,4 +333,41 @@ func TestWholeRecorderEndProof(t *testing.T) {
 			}
 		})
 	}
+}
+
+// buildRunSealedRecorderJSONL builds the production shape: a per-run recorder
+// session, sealed by a transcript_root with a trailing signed checkpoint.
+func buildRunSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
+	t.Helper()
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "test-chain-hash", Principal: "test", Actor: "test", Session: session})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: "allow", Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/data"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.EmitTranscriptRoot(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("run-session recorder files = %v, %v", matches, err)
+	}
+	return matches[0], priv.Public().(ed25519.PublicKey)
 }

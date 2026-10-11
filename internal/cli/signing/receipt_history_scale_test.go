@@ -89,7 +89,9 @@ func TestVerifyReceiptCmd_ChainPastDisplayBudgetVerifies(t *testing.T) {
 	}
 
 	out, err := runVerifyReceipt(t, "--chain", dir, "--whole-recorder", "--require-seal", "--key", key)
-	if err != nil || strings.Contains(out, "INCOMPLETE") {
+	// The legacy shared session's seal cannot end the chain, so the run is
+	// listed as an accepted prefix; the seal itself must still verify.
+	if err != nil || !strings.Contains(out, "Seal:      sealed at seq") || !strings.Contains(out, "VALID PREFIX, END UNPROVEN") {
 		t.Fatalf("whole-recorder verification of a long chain failed: %v\n%s", err, out)
 	}
 	out, err = runVerifyReceipt(t, "--chain", dir, "--key", key)

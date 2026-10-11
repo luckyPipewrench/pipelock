@@ -335,22 +335,13 @@ def _run_receipt(
                     raise ValueError(
                         "action receipt chain: " + companion.get("error", "invalid")
                     )
-                companion_closed = (
-                    action[-1]
-                    .get("action_record", {})
-                    .get("session_control", {})
-                    .get("kind")
-                    == "session_close"
-                )
+                companion_closed = _close_ends_chain(action)
             report = {
                 "path": target,
                 **verify_evidence_chain(receipts, key_hex, allow_unpinned),
             }
             if report.get("valid"):
-                control = (
-                    receipts[-1].get("action_record", {}).get("session_control", {})
-                )
-                if control.get("kind") == "session_close":
+                if _close_ends_chain(receipts):
                     proof.append("session_close")
                 if expect_head:
                     if report.get("root_hash") != expect_head:
@@ -402,6 +393,31 @@ def _run_receipt(
     ):
         return EXIT_PREFIX
     return EXIT_OK if report.get("valid") else EXIT_GENERAL
+
+
+def _close_ends_chain(receipts: list[dict]) -> bool:
+    """Report whether a verified chain's trailing session_close ends the chain.
+
+    A close ends its run, and it ends the chain only when no later run can
+    continue that chain. Pipelock never resumes a per-run recorder session
+    ("<base>.run.<hex>"); a restart resumed a legacy shared session ("proxy")
+    after its close, so deleting the later runs leaves a chain that ends at a
+    genuine close. The session comes from the closed run's signed session_open.
+    """
+    if not receipts:
+        return False
+    control = receipts[-1].get("action_record", {}).get("session_control") or {}
+    if control.get("kind") != "session_close":
+        return False
+    run_nonce = (control.get("close") or {}).get("run_nonce")
+    for item in reversed(receipts):
+        ctrl = item.get("action_record", {}).get("session_control") or {}
+        opened = ctrl.get("open") or {}
+        if ctrl.get("kind") != "session_open" or opened.get("run_nonce") != run_nonce:
+            continue
+        session = opened.get("recorder_session")
+        return isinstance(session, str) and session.find(".run.") > 0
+    return False
 
 
 def _run_provenance(

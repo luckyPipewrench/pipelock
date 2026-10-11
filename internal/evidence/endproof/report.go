@@ -53,15 +53,40 @@ func New(valid bool, scope string, evidence ...string) Report {
 
 // ActionEvidence is called only after full chain verification. A close must
 // be the final receipt: an earlier close cannot bound a later reopened run.
+//
+// A close ends its run, and it ends the chain only when no later run can
+// continue that chain. Pipelock never resumes a per-run recorder session
+// ("<base>.run.<hex>"), so a close there is final. A legacy shared session
+// ("proxy") was resumed by every restart, which appended a new session_open
+// after the close, so deleting the later runs leaves a chain that ends at a
+// genuine close. The session is read from the closed run's signed
+// session_open.
 func ActionEvidence(chain []receipt.Receipt) []string {
 	if len(chain) == 0 {
 		return nil
 	}
 	c := chain[len(chain)-1].ActionRecord.SessionControl
-	if c != nil && c.Kind == receipt.SessionControlClose && c.Close != nil {
-		return []string{"session_close"}
+	if c == nil || c.Kind != receipt.SessionControlClose || c.Close == nil {
+		return nil
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		o := chain[i].ActionRecord.SessionControl
+		if o == nil || o.Kind != receipt.SessionControlOpen || o.Open == nil || o.Open.RunNonce != c.Close.RunNonce {
+			continue
+		}
+		if RunScoped(o.Open.RecorderSession) {
+			return []string{"session_close"}
+		}
+		return nil
 	}
 	return nil
+}
+
+// RunScoped reports whether a recorder session is a per-run session that no
+// later process resumes, so a boundary sealed inside it can end the chain.
+func RunScoped(session string) bool {
+	_, ok := receipt.RunSessionBase(session)
+	return ok
 }
 
 // Pin checks an independently supplied expected endpoint. It never creates

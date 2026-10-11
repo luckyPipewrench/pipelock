@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -294,7 +295,9 @@ func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationMatchesFinalSegmentSeal(t
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("whole-recorder endorsed rotation verification failed: %v\n%s", err, buf.String())
 	}
-	for _, want := range []string{"CHAIN VALID", "(endorsed)", "Seal:      sealed at seq"} {
+	// The fixture records under the legacy shared session, whose seal cannot
+	// end the chain, so the accepted prefix keeps its label.
+	for _, want := range []string{endproof.Prefix, "(endorsed)", "Seal:      sealed at seq"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Fatalf("whole-recorder endorsed rotation output missing %q:\n%s", want, buf.String())
 		}
@@ -313,7 +316,7 @@ func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationVerifiesSuccessorSignedCh
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("successor-signed checkpoints must verify through the endorsement: %v\n%s", err, buf.String())
 	}
-	for _, want := range []string{"CHAIN VALID", "(endorsed)", "Seal:      sealed at seq", "signed checkpoints verified"} {
+	for _, want := range []string{endproof.Prefix, "(endorsed)", "Seal:      sealed at seq", "signed checkpoints verified"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Fatalf("endorsed rotation output missing %q:\n%s", want, buf.String())
 		}

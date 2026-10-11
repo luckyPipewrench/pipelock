@@ -1,5 +1,5 @@
 {
-  "key": "026e37b56c724ac0a60f015673e108972a0efd68462c580a5e648eee3cf54815",
+  "key": "49131515e58f653ad8e2f5972b8be9efbbcb943af2c7ed4c6e41ff23b0c11f52",
   "cases": [
     {
       "name": "truncated",
@@ -40,7 +40,7 @@
       "file": "truncated.jsonl",
       "flags": [
         "--expect-head",
-        "2e7f8ed8dbf507418beca6d206f0c0560f1b8127be5a5ef20aee96abf29a7b60"
+        "dfb38cc075ef59e2904db149f9d3f9e3f06af49945f005e59c9a9f7347ad6316"
       ],
       "exit": 0,
       "status": "CHAIN VALID",
@@ -51,7 +51,7 @@
       "file": "truncated.jsonl",
       "flags": [
         "--expect-head",
-        "28916933c67ec3bebd8eb101d28274731b0d0995edc2ef6061cb3eb83a129137"
+        "132c6eb28384224ca8d3956be56075b12cc84e9a317bb38f08cffd654099d5a8"
       ],
       "exit": 1,
       "status": "CHAIN BROKEN",
@@ -94,12 +94,31 @@
       "file": "truncated.jsonl",
       "flags": [
         "--expect-head",
-        "28916933c67ec3bebd8eb101d28274731b0d0995edc2ef6061cb3eb83a129137",
+        "132c6eb28384224ca8d3956be56075b12cc84e9a317bb38f08cffd654099d5a8",
         "--allow-prefix"
       ],
       "exit": 1,
       "status": "CHAIN BROKEN",
       "proven": false
+    },
+    {
+      "name": "legacy-close",
+      "file": "legacy-close.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "legacy-close-pinned",
+      "file": "legacy-close.jsonl",
+      "flags": [
+        "--expect-head",
+        "703bd2116d314094c2fd006e879a168c29b262149210e65b851a70f55e8d2e40"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
     }
   ]
 }

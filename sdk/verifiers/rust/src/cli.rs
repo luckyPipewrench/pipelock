@@ -116,6 +116,41 @@ fn run_audit_packet_command(args: &[String]) -> Result<i32> {
     Ok(if report.valid { 0 } else { 1 })
 }
 
+/// A trailing session_close ends its run, and it ends the chain only when no
+/// later run can continue that chain. Pipelock never resumes a per-run recorder
+/// session ("<base>.run.<hex>"); a restart resumed a legacy shared session
+/// ("proxy") after its close, so deleting the later runs leaves a chain that
+/// ends at a genuine close. The session comes from the closed run's signed
+/// session_open. Called only after the chain verified.
+fn close_ends_chain(receipts: &[Receipt]) -> bool {
+    let Some(close) = receipts
+        .last()
+        .and_then(|r| r.pointer("/action_record/session_control"))
+    else {
+        return false;
+    };
+    if close.get("kind").and_then(|v| v.as_str()) != Some("session_close") {
+        return false;
+    }
+    let run_nonce = close.pointer("/close/run_nonce");
+    for item in receipts.iter().rev() {
+        let Some(ctrl) = item.pointer("/action_record/session_control") else {
+            continue;
+        };
+        if ctrl.get("kind").and_then(|v| v.as_str()) != Some("session_open")
+            || ctrl.pointer("/open/run_nonce") != run_nonce
+        {
+            continue;
+        }
+        return ctrl
+            .pointer("/open/recorder_session")
+            .and_then(|v| v.as_str())
+            .and_then(run_session_base)
+            .is_some();
+    }
+    false
+}
+
 fn chain_report_for(
     label: String,
     receipts: &[Receipt],
@@ -143,13 +178,7 @@ fn chain_report_for(
     };
     let lifecycle = analyze_lifecycle(receipts, &result);
     let lifecycle_broken = lifecycle.status == "BROKEN";
-    let closed = result.valid
-        && !lifecycle_broken
-        && receipts
-            .last()
-            .and_then(|r| r.pointer("/action_record/session_control/kind"))
-            .and_then(|v| v.as_str())
-            == Some("session_close");
+    let closed = result.valid && !lifecycle_broken && close_ends_chain(receipts);
     ChainCommandReport {
         path: label,
         valid: result.valid && !lifecycle_broken,

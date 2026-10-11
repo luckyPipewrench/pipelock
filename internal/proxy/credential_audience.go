@@ -181,7 +181,7 @@ func (p *Proxy) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) 
 		},
 	)
 	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
-		failRequiredAllowReceiptGroup(p.receiptGroupPtr.Load(), opts, err)
+		failRequiredReceiptGroup(p.receiptGroupPtr.Load(), opts, err)
 	}
 	return err
 }
@@ -296,14 +296,15 @@ func (rp *ReverseProxyHandler) emitAllowPathReceipt(cfg *config.Config, opts rec
 		},
 	)
 	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
-		failRequiredAllowReceiptGroup(rp.receiptGroup(), opts, err)
+		failRequiredReceiptGroup(rp.receiptGroup(), opts, err)
 	}
 	return err
 }
 
 // A sticky writer failure invalidates the whole required group, including
-// admissions on surviving shards. Pre-advance input rejections stay local.
-func failRequiredAllowReceiptGroup(group *receiptGroupRuntime, opts receipt.EmitOpts, err error) {
+// admissions on surviving shards. Pre-advance input rejections stay local,
+// including a failure marker that is refused before it is written.
+func failRequiredReceiptGroup(group *receiptGroupRuntime, opts receipt.EmitOpts, err error) {
 	if group == nil || err == nil {
 		return
 	}

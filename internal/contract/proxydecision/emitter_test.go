@@ -704,8 +704,10 @@ func TestEmitDurableSyncFailureStopsRetryAtSameChainPosition(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("sync calls = %d, want 1", calls)
 	}
-	if err := rec.Close(); err != nil {
-		t.Fatal(err)
+	// The injected sync failure leaves the stream failed, so close
+	// refuses to sign a final checkpoint over it.
+	if err := rec.Close(); !errors.Is(err, recorder.ErrDurabilityInherited) {
+		t.Fatalf("recorder close after a failed sync = %v, want the final checkpoint refused", err)
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 	if err != nil {

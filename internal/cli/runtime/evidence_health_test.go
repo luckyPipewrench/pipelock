@@ -32,6 +32,9 @@ import (
 func TestEvidenceHealthSeparatesLiveStateFromAELCapability(t *testing.T) {
 	h, _, e, _ := newEvidenceHealthTestMonitor(t, nil)
 	emitEvidenceHealthTestReceipt(t, e, "https://api.vendor.example/baseline")
+	// start() runs one self-audit pass before stats are published; a chain
+	// that has never been compared with its disk tail is pending, not green.
+	h.runPass()
 
 	stats, ok := h.stats()
 	if !ok {
@@ -190,6 +193,15 @@ func TestEvidenceHealthSelfAuditTailDivergenceLatches(t *testing.T) {
 	}
 	emitEvidenceHealthTestReceipt(t, staleDiskEmitter, "https://api.vendor.example/bravo")
 
+	// A second writer's receipt on the live chain's session is unverified for
+	// a pass (a reload replaces the writer that quickly) and divergence once
+	// it persists while the chain's own writer stays live.
+	for pass := 1; pass < maxForeignTailPasses; pass++ {
+		h.runPass()
+		if !h.selfAuditOK.Load() {
+			t.Fatalf("pass %d latched before the foreign tail persisted", pass)
+		}
+	}
 	h.runPass()
 
 	assertEvidenceHealthLatched(t, h)
@@ -516,7 +528,7 @@ func readLastReceiptTailFromTestFile(t *testing.T, path string) (receiptTail, er
 	if err != nil {
 		t.Fatalf("ResolveEvidenceLocation(%q): %v", filepath.Dir(path), err)
 	}
-	return readLastReceiptTailFromFile(location, filepath.Base(path))
+	return readLastReceiptTailFromFile(location, filepath.Base(path), -1)
 }
 
 func TestReadAnchorStateStrictJSON(t *testing.T) {

@@ -351,10 +351,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 		}
 		if err := ic.Proxy.emitGroupV2Receipt(group, opts, false); err != nil {
 			markerErr := ic.Proxy.emitReceiptFailureMarker(ic.Proxy.receiptEmitterPtr.Load(), opts, "outcome receipt emission failed", config.ActionAllow)
-			selected, selectErr := group.v2Emitter(opts)
-			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
-				group.failRequired(errors.Join(err, markerErr))
-			}
+			failRequiredReceiptGroup(group, opts, errors.Join(err, markerErr))
 		}
 		return
 	}

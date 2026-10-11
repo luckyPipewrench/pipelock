@@ -164,8 +164,7 @@ func emitRequiredV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.Emi
 	}
 	d, ok := v2DecisionFromOpts(opts)
 	if !ok {
-		err := fmt.Errorf("%w: could not derive v2 decision action_id=%s transport=%s target=%q",
-			errV2ReceiptEmit, opts.ActionID, opts.Transport, opts.Target)
+		err := fmt.Errorf("%w: could not derive v2 decision", errV2ReceiptEmit)
 		if logErr != nil {
 			logErr(err)
 		}
@@ -191,8 +190,8 @@ func logV2EmitFailure(logger *audit.Logger, opts receipt.EmitOpts, err error) {
 		return
 	}
 	logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-		fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s layer=%s transport=%s: %w",
-			opts.ActionID, opts.Verdict, opts.Layer, opts.Transport, err))
+		fmt.Errorf("emit v2 proxy_decision verdict=%s phase=%s layer=%s failure=%s",
+			receiptVerdictLabel(opts.Verdict), receiptPhaseLabel(opts.DecisionPhase), receiptLayerLabel(opts.Layer), receiptFailureClass(err)))
 }
 
 // emitV2Receipt dual-emits the v2 proxy_decision for opts on the main proxy.

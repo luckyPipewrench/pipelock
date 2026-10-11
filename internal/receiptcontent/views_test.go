@@ -538,3 +538,21 @@ func TestRepeatedFragmentsRetainMultiplicity(t *testing.T) {
 	rep, err := Scan(t.Context(), sc.ScanTextForDLPQuiet, proj)
 	requireView(t, rep, err, ViewFragments)
 }
+
+// A caller's own top-level member at the reserved mirror key would be
+// replaced in the structured view, hiding field context a rule needs. Such
+// a detail is refused when a mirror is added and scanned as is otherwise.
+func TestReservedOuterMemberIsNotOverwritten(t *testing.T) {
+	det := testDetector(t)
+	detail := []byte(`{"` + OuterKey + `":{"actor":"rightfixture","principal":"leftfixture"}}`)
+	var rejection *RejectionError
+	if _, err := ProjectUnproven(detail, &Outer{Type: "evidence_receipt", Summary: "safe"}); !errors.As(err, &rejection) || rejection.View != ViewMalformed {
+		t.Fatalf("detail using the reserved member err = %v, want a malformed rejection", err)
+	}
+	p, err := ProjectUnproven(detail, nil)
+	if err != nil {
+		t.Fatalf("detail without a mirror refused: %v", err)
+	}
+	rep, err := Scan(context.Background(), det, p)
+	requireView(t, rep, err, ViewStructured)
+}

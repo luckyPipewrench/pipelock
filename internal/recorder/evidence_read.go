@@ -137,7 +137,7 @@ func readBoundedEvidence(path string, maxBytes int64, sink io.Writer) error {
 		return err
 	}
 	if after.Size() != info.Size() || after.ModTime() != info.ModTime() {
-		return fmt.Errorf("%w: evidence file changed during read", ErrEvidenceChanged)
+		return ErrEvidenceFileChanged
 	}
 	return nil
 }

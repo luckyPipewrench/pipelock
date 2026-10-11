@@ -94,6 +94,9 @@ const (
 	// remain silent when receipts are disabled; this reason is for fail-closed
 	// require_receipts decisions only.
 	FailReasonUnavailable = "unavailable"
+	// FailReasonDurabilityInherited is a durable receipt refused or left
+	// unconfirmed because an earlier sync on the same evidence stream failed.
+	FailReasonDurabilityInherited = "durability_inherited"
 )
 
 // ErrExtensionMerge identifies a malformed or conflicting advisory extension.
@@ -148,19 +151,39 @@ type Emitter struct {
 	// notices receives operator-facing lines about cross-run linking.
 	notices io.Writer
 
+	// emissionGate lets ordinary durable receipts confirm outside chainMu
+	// (read side, held until confirmed) while lifecycle records, transcript
+	// roots, chain links and native AEL transitions (write side) wait until
+	// every outstanding confirmation has finished. Always taken before chainMu.
+	emissionGate   sync.RWMutex
+	completionTail *emitCompletion
+	inflightOnce   sync.Once
+	inflight       chan struct{}
+
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
-	chainStart    time.Time // timestamp of first receipt
-	chainEnd      time.Time // timestamp of most recent receipt
-	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
-	closeEmitted  bool      // true after session_close; prevents duplicate closes
-	closeErr      error     // sticky error for a written session_close whose durability confirmation failed
-	openErr       error     // sticky error for a written session_open whose durability confirmation failed
-	openNonce     string
-	heartbeatBeat uint64
-	lastHeartbeat time.Time
+	// persistedSeq and persistedHash name the newest receipt known to be
+	// written to the recorder: the resumed tail, then each receipt whose
+	// record call succeeded. They differ from the chain head only after a
+	// receipt's position was assigned and its write failed.
+	persistedSeq  uint64
+	persistedHash string
+	// unconfirmedSeq names the first receipt whose write reached the file
+	// but whose durable sync then failed. It is sticky like the stream
+	// failure behind it: the chain can no longer be shown intact.
+	unconfirmedSeq uint64
+	unconfirmed    bool
+	chainStart     time.Time // timestamp of first receipt
+	chainEnd       time.Time // timestamp of most recent receipt
+	rootEmitted    bool      // true after EmitTranscriptRoot; prevents duplicate roots
+	closeEmitted   bool      // true after session_close; prevents duplicate closes
+	closeErr       error     // sticky error for a written session_close whose durability confirmation failed
+	openErr        error     // sticky error for a written session_open whose durability confirmation failed
+	openNonce      string
+	heartbeatBeat  uint64
+	lastHeartbeat  time.Time
 
 	// heartbeatSeconds is the configured heartbeat cadence (seconds) recorded
 	// in the session_open record's Open.HeartbeatSeconds so a witness reading
@@ -417,6 +440,8 @@ func (e *Emitter) ChainLink() *ChainLink {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.chainLink == nil {
@@ -478,6 +503,57 @@ func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
 		RootEmitted:       e.rootEmitted,
 		RunNonce:          e.runNonce,
 	}, true
+}
+
+// TailObservation is one consistent view of a chain's head and its evidence
+// file, taken under the chain lock. Receipts are written only while that lock
+// is held, so the newest receipt in the first WriteEnd bytes of WriteFile (or
+// in the session's earlier files) is exactly the persisted receipt.
+type TailObservation struct {
+	HealthSnapshot
+	Session       string
+	PersistedSeq  uint64
+	PersistedHash string
+	// Unconfirmed reports a receipt that was written but whose durable sync
+	// failed; UnconfirmedSeq is its position.
+	Unconfirmed    bool
+	UnconfirmedSeq uint64
+	WriteFile      string
+	WriteEnd       int64
+	WriteKnown     bool
+}
+
+// TailObservation returns the chain head and the recorder's write position
+// for this emitter's session at the same instant. Nil-safe.
+func (e *Emitter) TailObservation() (TailObservation, error) {
+	if e == nil {
+		return TailObservation{}, errors.New("receipt emitter unavailable")
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	obs := TailObservation{
+		HealthSnapshot: HealthSnapshot{
+			InitErr:           e.initErr != nil,
+			ChainSeq:          e.chainSeq,
+			PrevHash:          e.chainPrevHash,
+			LastEmit:          e.chainEnd,
+			LastHeartbeat:     e.lastHeartbeat,
+			HeartbeatObserved: !e.lastHeartbeat.IsZero(),
+			RootEmitted:       e.rootEmitted,
+			RunNonce:          e.runNonce,
+		},
+		Session:        e.session,
+		PersistedSeq:   e.persistedSeq,
+		PersistedHash:  e.persistedHash,
+		Unconfirmed:    e.unconfirmed,
+		UnconfirmedSeq: e.unconfirmedSeq,
+	}
+	name, end, ok, err := e.recorder.SessionWriteEnd(e.session)
+	if err != nil {
+		return TailObservation{}, fmt.Errorf("observe recorder write position: %w", err)
+	}
+	obs.WriteFile, obs.WriteEnd, obs.WriteKnown = name, end, ok
+	return obs, nil
 }
 
 // Session returns the recorder session this emitter records under. Nil-safe.
@@ -778,13 +854,36 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.beforeChainLockForTest()
 	}
 
-	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
-	// The mutex must span from timestamp through persist so concurrent Emit
+	// Lifecycle records see a chain with no unconfirmed receipts: they take
+	// the gate exclusively, which waits for every ordinary emission still
+	// confirming. Ordinary emissions share it until they are confirmed.
+	if lifecycle {
+		e.emissionGate.Lock()
+		defer e.emissionGate.Unlock()
+	} else {
+		e.emissionGate.RLock()
+		defer e.emissionGate.RUnlock()
+	}
+	deferred := durable && !lifecycle
+	if deferred {
+		release := e.acquireInflight()
+		defer release()
+	}
+
+	// Chain integrity: lock covers stamp → sign → hash → append → advance.
+	// The mutex must span from timestamp through append so concurrent Emit
 	// calls produce monotonic timestamps in chain order. State advances before
 	// recorder persistence so a failed Record leaves a detectable gap instead
-	// of reusing the same prev_hash/seq and forking the chain.
+	// of reusing the same prev_hash/seq and forking the chain. An ordinary
+	// durable receipt confirms its durability after the lock is released; only
+	// the append, never the confirmation wait, happens under it.
 	e.chainMu.Lock()
-	defer e.chainMu.Unlock()
+	chainLocked := true
+	defer func() {
+		if chainLocked {
+			e.chainMu.Unlock()
+		}
+	}()
 	// Retirement can happen after the optimistic check above while this emit
 	// waits for chainMu. Re-check under the chain lock so a call admitted before
 	// signer rotation cannot append after the old native AEL run is closed.
@@ -901,14 +1000,50 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.pendingTransition = nil
 	}
 	var recordErr error
-	if durable {
+	var ticket *recorder.DurableTicket
+	switch {
+	case deferred:
+		ticket, recordErr = e.recorder.AppendDurableWithReceiptScanPreAdvance(entry, &scan, advance)
+	case durable:
 		recordErr = e.recorder.RecordDurableWithReceiptScanPreAdvance(entry, &scan, advance)
-	} else {
+	default:
 		recordErr = e.recorder.RecordWithReceiptScanPreAdvance(entry, &scan, advance)
+	}
+	if ticket != nil {
+		// The append succeeded, so the receipt is in the file; its sync is
+		// confirmed after the lock is released.
+		e.persistedSeq, e.persistedHash = ar.ChainSeq, receiptHash
+		if !e.linked {
+			e.linked = true
+			e.linkPredecessor()
+		}
+		pending := deferredDurableEmission{rcpt: rcpt, ticket: ticket}
+		// The AEL record is appended in the same order as its receipt; its
+		// sync is reserved here and confirmed with the receipt's.
+		if aelErr := e.emitNativeAEL(ar, nil, false); aelErr != nil {
+			pending.aelErr = fmt.Errorf("emitting native AEL record: %w", aelErr)
+		} else if e.nativeAEL != nil && e.sessionOpenEmitted {
+			pending.waitAEL, aelErr = e.nativeAEL.ReserveDurability()
+			if aelErr != nil {
+				pending.aelErr = fmt.Errorf("emitting native AEL record: %w", aelErr)
+			}
+		}
+		if pending.aelErr != nil {
+			e.recordFailure(FailReasonAEL)
+			e.MarkUnhealthy(pending.aelErr)
+		}
+		pending.completion = e.nextCompletionLocked()
+		chainLocked = false
+		e.chainMu.Unlock()
+		return e.confirmDeferred(pending)
 	}
 	if recordErr != nil {
 		if !advanced {
-			e.recordFailure(FailReasonRecord)
+			if errors.Is(recordErr, recorder.ErrDurabilityInherited) {
+				e.recordFailure(FailReasonDurabilityInherited)
+			} else {
+				e.recordFailure(FailReasonRecord)
+			}
 			return fmt.Errorf("recording receipt before chain advance: %w", recordErr)
 		}
 		// A failed first write may leave no successor chain at all. Never
@@ -947,6 +1082,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		}
 		return fmt.Errorf("%w: %w", ErrReceiptPostAdvance, emitErr)
 	}
+	e.persistedSeq, e.persistedHash = ar.ChainSeq, receiptHash
 	if !e.linked {
 		e.linked = true
 		e.linkPredecessor()
@@ -971,11 +1107,19 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		e.lastHeartbeat = ar.Timestamp
 	}
 
-	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
-	// streamed decision can never appear before it exists on disk. The call is
-	// under the chain mutex, preserving chain order for observers. A copy is
+	// Notify the observer (if any) AFTER the receipt is recorded, so a
+	// streamed decision can never appear before it exists on disk, and in
+	// chain order. An ordinary receipt may follow durable receipts still
+	// confirming, so it takes a completion slot behind them; a lifecycle
+	// record holds the gate exclusively and has none ahead of it. A copy is
 	// passed so the observer cannot mutate emitter state, and the observer is
 	// contractually non-blocking (see EmitterConfig.OnReceipt).
+	if !lifecycle {
+		completion := e.nextCompletionLocked()
+		chainLocked = false
+		e.chainMu.Unlock()
+		return e.finishCompletion(completion, rcpt, nil, false)
+	}
 	if e.onReceipt != nil {
 		rc := rcpt
 		e.onReceipt(&rc)
@@ -1115,6 +1259,8 @@ func (e *Emitter) CloseNativeAEL() error {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.nativeAEL == nil || !e.nativeAEL.Opened() {
@@ -1143,6 +1289,8 @@ func (e *Emitter) RetireNativeAEL() error {
 	if e == nil {
 		return nil
 	}
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 	if e.nativeAEL != nil && e.nativeAEL.Opened() {
@@ -1381,6 +1529,8 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 		return fmt.Errorf("resume receipt chain: %w", e.initErr)
 	}
 
+	e.emissionGate.Lock()
+	defer e.emissionGate.Unlock()
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 
@@ -1619,6 +1769,7 @@ func (e *Emitter) resumeChain() error {
 			}
 			e.chainSeq = 0
 			e.chainPrevHash = hash
+			e.persistedSeq, e.persistedHash = lastReceipt.ActionRecord.ChainSeq, hash
 			e.hasPriorTail = true
 			e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
 			e.priorTailHash = hash
@@ -1642,6 +1793,7 @@ func (e *Emitter) resumeChain() error {
 	e.chainPrevHash = hash
 	e.chainSeq = lastReceipt.ActionRecord.ChainSeq + 1
 	e.chainEnd = lastReceipt.ActionRecord.Timestamp
+	e.persistedSeq, e.persistedHash = lastReceipt.ActionRecord.ChainSeq, hash
 	e.hasPriorTail = true
 	e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
 	e.priorTailHash = hash

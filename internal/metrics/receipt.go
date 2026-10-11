@@ -22,12 +22,16 @@ var receiptEmitFailureReasons = map[string]bool{
 	"sync":        true,
 	"sealed":      true,
 	"unavailable": true,
+	// durability_inherited: refused or unconfirmed because an earlier sync on
+	// the same evidence stream failed; not a new storage failure.
+	"durability_inherited": true,
 }
 
 var requiredReceiptBlockReasons = map[string]bool{
-	"durability":  true,
-	"emit_error":  true,
-	"unavailable": true,
+	"durability":           true,
+	"durability_inherited": true,
+	"emit_error":           true,
+	"unavailable":          true,
 }
 
 func (m *Metrics) registerReceiptMetrics(reg *prometheus.Registry) {

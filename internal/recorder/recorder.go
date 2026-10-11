@@ -139,7 +139,10 @@ type durableBatch struct {
 	syncing        bool
 	done           chan struct{}
 	err            error
-	entries        []durableBatchEntry
+	// inherited marks a batch failed because an earlier sync on its stream
+	// failed; it was never synced and is not a new storage failure.
+	inherited bool
+	entries   []durableBatchEntry
 }
 
 type durableBatchEntry struct {
@@ -171,22 +174,24 @@ type Recorder struct {
 	activeGroupState *SessionState
 	groupClosing     bool
 	groupWrites      sync.WaitGroup
-	groupOrder       []string
-	groupOwner       *os.File
-	legacyStarted    bool
-	groupFinalizing  bool
-	seq              uint64
-	prevHash         string
-	writer           *bufio.Writer
-	file             *os.File
-	runPresence      *os.File
-	ceremonyLock     *os.File
-	ceremonyDir      os.FileInfo
-	evidenceDir      os.FileInfo
-	fileEntryCount   int
-	fileSeqStart     uint64
-	fileGeneration   uint64
-	sessionID        string
+	// legacyTickets counts single-session durable tickets not yet finished.
+	legacyTickets   sync.WaitGroup
+	groupOrder      []string
+	groupOwner      *os.File
+	legacyStarted   bool
+	groupFinalizing bool
+	seq             uint64
+	prevHash        string
+	writer          *bufio.Writer
+	file            *os.File
+	runPresence     *os.File
+	ceremonyLock    *os.File
+	ceremonyDir     os.FileInfo
+	evidenceDir     os.FileInfo
+	fileEntryCount  int
+	fileSeqStart    uint64
+	fileGeneration  uint64
+	sessionID       string
 	// recoveryPredecessor survives reload staging failures until publication.
 	recoveryPredecessor string
 
@@ -205,6 +210,18 @@ type Recorder struct {
 	durableBatch   *durableBatch
 	durableSyncing bool
 	durablePending map[uint64]int
+	// lastFileName and lastFileSize describe the session's evidence file
+	// when none is open: the file closed by the last rotation, or the file a
+	// resumed session continues from. SessionWriteEnd reports them so a
+	// caller can bound a read to what was written before it looked.
+	lastFileName string
+	lastFileSize int64
+	// durableFailure is the first failed sync on the active stream. It is
+	// sticky: see ErrDurabilityInherited.
+	durableFailure error
+	// lastDurableTicket is the most recent ticket on the active stream; the
+	// next ticket finishes after it.
+	lastDurableTicket *DurableTicket
 
 	fsyncErrorsGated atomic.Uint64
 }
@@ -540,66 +557,11 @@ func (r *Recorder) RecordDurableWithReceiptScanPreAdvance(e Entry, scan *Receipt
 }
 
 func (r *Recorder) recordDurable(e Entry, scan *ReceiptScan, advance func()) error {
-	if r.nop {
-		if advance != nil {
-			advance()
-		}
-		return nil
-	}
-	var err error
-	scan, err = r.prepareReceiptScan(e, scan)
+	ticket, err := r.AppendDurableWithReceiptScanPreAdvance(e, scan, advance)
 	if err != nil {
 		return err
 	}
-	r.groupMu.Lock()
-	if r.groupSessions == nil {
-		r.legacyStarted = true
-		r.groupMu.Unlock()
-		return r.recordDurablePrepared(e, scan, advance)
-	}
-	state := r.groupSessions[e.SessionID]
-	r.groupMu.Unlock()
-	if state == nil {
-		return errors.New("recorder: entry session is not an acquired group member")
-	}
-	state.writeMu.Lock()
-	defer state.writeMu.Unlock()
-	r.groupMu.Lock()
-	if r.groupClosing {
-		r.groupMu.Unlock()
-		return errors.New("recorder: receipt group is closing")
-	}
-	var pending durableWrite
-	err = r.withGroupSessionLocked(e.SessionID, func() error {
-		var writeErr error
-		pending, writeErr = r.prepareDurableWrite(e, scan, advance)
-		return writeErr
-	})
-	if err == nil {
-		r.groupWrites.Add(1)
-	}
-	r.groupMu.Unlock()
-	if err != nil {
-		return err
-	}
-	defer r.groupWrites.Done()
-	if err := r.confirmDurableWrite(pending); err != nil {
-		return err
-	}
-	r.groupMu.Lock()
-	defer r.groupMu.Unlock()
-	return r.withGroupSessionLocked(e.SessionID, func() error { return r.finishDurableWrite(pending.written) })
-}
-
-func (r *Recorder) recordDurablePrepared(e Entry, scan *ReceiptScan, advance func()) error {
-	pending, err := r.prepareDurableWrite(e, scan, advance)
-	if err != nil {
-		return err
-	}
-	if err := r.confirmDurableWrite(pending); err != nil {
-		return err
-	}
-	return r.finishDurableWrite(pending.written)
+	return ticket.Wait()
 }
 
 type durableWrite struct {
@@ -608,11 +570,13 @@ type durableWrite struct {
 	reservation durableReservation
 }
 
-func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
-	r.mu.Lock()
+// prepareDurableWriteLocked appends e and reserves its sync. The first
+// reservation of a batch starts that batch's sync at once, so storage confirms
+// and retires the batch whether or not any caller is waiting yet. Callers hold
+// r.mu.
+func (r *Recorder) prepareDurableWriteLocked(e Entry, scan *ReceiptScan, advance func()) (durableWrite, error) {
 	written, err := r.prepareAndWriteEntryWithScanAndAdvanceLocked(e, false, scan, advance)
 	if err != nil {
-		r.mu.Unlock()
 		return durableWrite{}, err
 	}
 
@@ -623,18 +587,14 @@ func (r *Recorder) prepareDurableWrite(e Entry, scan *ReceiptScan, advance func(
 
 	generation := r.fileGeneration
 	reservation := r.enqueueDurabilityLocked(generation, written.Sequence, r.lastEntryOffsetLocked(written))
-	r.mu.Unlock()
+	if reservation.leader {
+		go r.runDurabilitySync(reservation.batch)
+	}
 	return durableWrite{written: written, generation: generation, reservation: reservation}, nil
 }
 
 func (r *Recorder) confirmDurableWrite(pending durableWrite) error {
-	if pending.reservation.leader {
-		r.runDurabilitySync(pending.reservation.batch)
-	}
-	if err := r.waitDurability(pending.reservation.batch, pending.generation, pending.written.Sequence); err != nil {
-		return err
-	}
-	return nil
+	return r.waitDurability(pending.reservation.batch, pending.generation, pending.written.Sequence)
 }
 
 func (r *Recorder) finishDurableWrite(written Entry) error {
@@ -749,6 +709,12 @@ func (r *Recorder) prepareAndWriteEntryWithScanLocked(e Entry, notify bool, scan
 func (r *Recorder) prepareAndWriteEntryWithScanAndAdvanceLocked(e Entry, notify bool, scan *ReceiptScan, advance func()) (Entry, error) {
 	if r.closed {
 		return Entry{}, fmt.Errorf("recorder is closed")
+	}
+	// Every write path, durable or not, refuses a stream whose sync failed:
+	// an entry chained onto an unconfirmed prefix could later be covered by
+	// a signed checkpoint.
+	if r.durableFailure != nil {
+		return Entry{}, fmt.Errorf("%w: %w", ErrDurabilityInherited, r.durableFailure)
 	}
 
 	// Session ID validation: require non-empty, reject path separators
@@ -999,11 +965,12 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 
 		r.mu.Lock()
 		batch.err = err
-		if err != nil {
+		if err != nil && !batch.inherited {
 			r.fsyncErrorsGated.Add(1)
 			if r.metrics != nil {
 				r.metrics.RecordFsyncError(true, len(batch.entries))
 			}
+			r.setDurableFailureLocked(batch.owner, err)
 		}
 		if syncStarted {
 			r.setDurableSyncingLocked(batch.owner, false)
@@ -1017,6 +984,17 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 			}
 		} else if r.durableBatch == batch {
 			r.durableBatch = nil
+		}
+		// The batch is settled for every entry in it, so its pending count is
+		// retired here rather than as each caller waits: maintenance and
+		// close must not depend on callers having started to wait.
+		pending := r.durablePending
+		if batch.owner != nil && r.activeGroupState != batch.owner {
+			pending = batch.owner.durablePending
+		}
+		pending[batch.generation] -= len(batch.entries)
+		if pending[batch.generation] <= 0 {
+			delete(pending, batch.generation)
 		}
 		close(batch.done)
 		r.durableCond.Broadcast()
@@ -1033,27 +1011,50 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 	// later durable syncs waiting forever on durableSyncing.
 	r.setDurableSyncingLocked(batch.owner, true)
 	syncStarted = true
+	if failure := r.durableFailureForLocked(batch.owner); failure != nil {
+		// Do not sync: a success here would not mean the earlier, failed
+		// pages of this chain reached storage.
+		batch.inherited = true
+		err = failure
+		r.mu.Unlock()
+		return
+	}
 	r.mu.Unlock()
 
 	err = r.fileSync(batch.file)
 }
 
+func (r *Recorder) durableFailureForLocked(owner *SessionState) error {
+	if owner != nil && r.activeGroupState != owner {
+		return owner.durableFailure
+	}
+	return r.durableFailure
+}
+
+// setDurableFailureLocked records the stream's first sync failure. It never
+// replaces an earlier one.
+func (r *Recorder) setDurableFailureLocked(owner *SessionState, err error) {
+	if owner != nil && r.activeGroupState != owner {
+		if owner.durableFailure == nil {
+			owner.durableFailure = err
+		}
+		return
+	}
+	if r.durableFailure == nil {
+		r.durableFailure = err
+	}
+	if owner != nil {
+		owner.durableFailure = r.durableFailure
+	}
+}
+
 func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) error {
 	<-batch.done
 
-	r.mu.Lock()
-	pending := r.durablePending
-	if batch.owner != nil {
-		pending = batch.owner.durablePending
-	}
-	pending[generation]--
-	if pending[generation] <= 0 {
-		delete(pending, generation)
-	}
-	r.durableCond.Broadcast()
-	r.mu.Unlock()
-
 	if batch.err != nil {
+		if batch.inherited {
+			return fmt.Errorf("%w: file generation %d seq %d: %w", ErrDurabilityInherited, generation, seq, batch.err)
+		}
 		return fmt.Errorf("%w: file generation %d seq %d: %w", ErrDurability, generation, seq, batch.err)
 	}
 	return nil
@@ -1098,6 +1099,13 @@ func (r *Recorder) Close() error {
 		} else {
 			r.legacyStarted = true
 			r.groupMu.Unlock()
+			// Refuse new appends first, then let outstanding tickets finish
+			// (checkpoint, rotation, observer) before the stream is sealed.
+			// Draining before refusing could wait forever under load.
+			r.mu.Lock()
+			r.closed = true
+			r.mu.Unlock()
+			r.legacyTickets.Wait()
 			r.closeErr = r.close()
 		}
 	})
@@ -1117,6 +1125,11 @@ func (r *Recorder) close() (retErr error) {
 		retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())
 	}()
 
+	if r.durableFailure != nil {
+		// A signed checkpoint would attest entries whose sync failed. Close
+		// the file without one and report why the run is incomplete.
+		return errors.Join(fmt.Errorf("final checkpoint refused: %w: %w", ErrDurabilityInherited, r.durableFailure), r.closeFile())
+	}
 	if r.sinceCheckpoint > 0 {
 		r.waitDurableForCurrentFileLocked()
 		// A pending durable caller can finish the checkpoint while Cond.Wait
@@ -1135,6 +1148,10 @@ func (r *Recorder) close() (retErr error) {
 
 // checkpointLocked writes a signed checkpoint entry. Must be called with mu held.
 func (r *Recorder) checkpointLocked() error {
+	if r.durableFailure != nil {
+		// A signed checkpoint would attest entries whose sync failed.
+		return fmt.Errorf("checkpoint refused: %w: %w", ErrDurabilityInherited, r.durableFailure)
+	}
 	cpDetail := CheckpointDetail{
 		EntryCount: r.sinceCheckpoint,
 		FirstSeq:   r.firstSeqInSpan,
@@ -1310,6 +1327,7 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	resumedSeq := uint64(0)
 	resumedPrevHash := GenesisHash
 	resumedFirstSeqInSpan := uint64(0)
+	resumedFile, resumedFileSize := "", int64(0)
 
 	// Matches the name ensureFile writes and sessionResumeCandidates filters on.
 	wantSession := filepath.Base(sessionID)
@@ -1374,6 +1392,10 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 		resumedSeq = last.Sequence + 1
 		resumedPrevHash = last.Hash
 		resumedFirstSeqInSpan = resumedSeq
+		resumedFile = candidate.base
+		if info, statErr := os.Stat(candidate.path); statErr == nil {
+			resumedFileSize = info.Size()
+		}
 		break
 	}
 
@@ -1387,6 +1409,11 @@ func (r *Recorder) resumeSessionLocked(sessionID string) error {
 	r.prevHash = resumedPrevHash
 	r.sinceCheckpoint = 0
 	r.firstSeqInSpan = resumedFirstSeqInSpan
+	r.lastFileName, r.lastFileSize = resumedFile, resumedFileSize
+	// The stream now continues from what is on disk, as after a restart, so
+	// an earlier sync failure no longer leaves an unconfirmed prefix behind it.
+	r.durableFailure = nil
+	r.lastDurableTicket = nil
 	return nil
 }
 
@@ -1722,6 +1749,12 @@ func (r *Recorder) closeFile() error {
 		return nil
 	}
 	r.waitDurableForCurrentFileLocked()
+	defer func(name string) {
+		r.lastFileName = filepath.Base(name)
+		if info, err := os.Stat(name); err == nil {
+			r.lastFileSize = info.Size()
+		}
+	}(r.file.Name())
 	if err := r.writer.Flush(); err != nil {
 		_ = r.file.Close()
 		r.file = nil
@@ -1740,6 +1773,9 @@ func (r *Recorder) closeFile() error {
 
 // rotateFile closes the current file so the next write opens a new one.
 func (r *Recorder) rotateFile() error {
+	if r.durableFailure != nil {
+		return fmt.Errorf("rotation refused: %w: %w", ErrDurabilityInherited, r.durableFailure)
+	}
 	return r.closeFile()
 }
 

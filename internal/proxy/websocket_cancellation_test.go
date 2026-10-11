@@ -69,6 +69,27 @@ func TestWSRelayCancelledResponseScan(t *testing.T) {
 	}
 }
 
+func TestWSRelayClientCloseDoesNotForwardData(t *testing.T) {
+	for _, op := range []ws.OpCode{ws.OpText, ws.OpPing} {
+		t.Run(opCodeLabel(op), func(t *testing.T) {
+			cfg := testScannerConfig()
+			p := newTestProxyWithConfig(t, cfg)
+			var wire bytes.Buffer
+			if err := ws.WriteFrame(&wire, ws.NewFrame(op, true, []byte("after close"))); err != nil {
+				t.Fatal(err)
+			}
+			source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
+			sink := &cancelPayloadConn{}
+			relay := &wsRelay{proxy: p, cfg: cfg, upstreamConn: source, clientConn: sink, maxMsg: 1024}
+			relay.clientClosing.Store(true)
+			n, _, _, blocked := relay.upstreamToClient(t.Context(), func() {}, time.Second)
+			if n != 0 || blocked || relay.panicked.Load() || !relay.upstreamCancelled || sink.writes != 0 {
+				t.Fatalf("data after client close: bytes=%d blocked=%v panic=%v cancelled=%v writes=%d", n, blocked, relay.panicked.Load(), relay.upstreamCancelled, sink.writes)
+			}
+		})
+	}
+}
+
 type cancelPayloadConn struct {
 	net.Conn
 	reader *bytes.Reader

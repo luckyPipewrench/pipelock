@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func requireLicensedWebSocketTeardown(t *testing.T, mutate func(cfg *config.Config), act func(t *testing.T, p *Proxy)) {
@@ -73,17 +74,10 @@ func TestLicenseExpiryClosesPreviousGeneration(t *testing.T) {
 		revocationConnectionConfig(cfg)
 		cfg.LicenseExpiresAt = time.Now().Add(2 * time.Second).Unix()
 	}, func(t *testing.T, p *Proxy) {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, ok := p.Edition().LookupProfile("client"); !ok {
-				return
-			}
-			select {
-			case <-time.After(100 * time.Millisecond):
-			case <-t.Context().Done():
-				t.Fatal("test canceled")
-			}
-		}
+		testwait.For(t, 5*time.Second, func() bool {
+			_, ok := p.Edition().LookupProfile("client")
+			return !ok
+		}, "paid profile expiry")
 	})
 }
 

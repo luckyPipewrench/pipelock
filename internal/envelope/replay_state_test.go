@@ -48,8 +48,25 @@ func TestVerifierClockRollbackReportsUnavailableState(t *testing.T) {
 func TestVerifierMissingReplayCacheFailsClosed(t *testing.T) {
 	t.Parallel()
 	pub, _ := testSignerKey(t)
-	verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}})
-	if verifier != nil || !errors.Is(err, ErrReplayCacheRequired) {
-		t.Fatalf("missing cache constructor: %v %v", verifier, err)
+	caches := []*ReplayCache{nil, {}}
+	for _, invalidate := range []func(*ReplayCache){
+		func(c *ReplayCache) { c.replayState = nil },
+		func(c *ReplayCache) { c.entries = nil },
+		func(c *ReplayCache) { c.nowFn = nil },
+		func(c *ReplayCache) { c.window = 0 },
+		func(c *ReplayCache) { c.max = 0 },
+	} {
+		cache := NewReplayCache(time.Minute, 1)
+		invalidate(cache)
+		caches = append(caches, cache)
+	}
+	for _, cache := range caches {
+		verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}, ReplayCache: cache})
+		if verifier != nil || !errors.Is(err, ErrReplayCacheRequired) {
+			t.Fatalf("uninitialized cache constructor: %v %v", verifier, err)
+		}
+		if err := cache.CheckAndStore("nonce", time.Now().Add(time.Minute)); !errors.Is(err, ErrReplayCacheRequired) {
+			t.Fatalf("uninitialized cache check: %v", err)
+		}
 	}
 }

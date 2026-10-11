@@ -92,7 +92,7 @@ func TestResponseScanCancellationIsAnErrorAcrossHTTPHandlers(t *testing.T) {
 	}
 }
 
-func TestResponseScanCancellationIsAnErrorForReverseAndWebSocket(t *testing.T) {
+func TestResponseScanCancellationDispositionByTransport(t *testing.T) {
 	for _, transport := range []string{"reverse", "websocket"} {
 		t.Run(transport, func(t *testing.T) {
 			cfg := testScannerConfig()
@@ -138,17 +138,17 @@ func TestResponseScanCancellationIsAnErrorForReverseAndWebSocket(t *testing.T) {
 				p.receiptEmitterPtr.Store(rph.emitter)
 				relay := &wsRelay{proxy: p, cfg: cfg, scanner: sc, scanText: true, clientConn: discardConn{}, upstreamConn: discardConn{}, targetURL: "ws://api.vendor.example/events", hostname: "api.vendor.example"}
 				payload, blocked := relay.enforceUpstreamTextPayload(ctx, logger, []byte("ordinary content"), true)
-				if !blocked || payload != nil {
+				if blocked || payload != nil {
 					t.Fatalf("websocket payload=%q blocked=%v", payload, blocked)
 				}
 			}
 			if transport == "websocket" {
-				// WebSocket frames do not have a response-capture observer;
-				// their durable outcome is recorded by the receipt emitter.
-				r := rph.requireReceipt(t, "response_scan_error")
-				if r.ActionRecord.Verdict != config.ActionBlock {
-					t.Fatalf("scan error receipt verdict = %q", r.ActionRecord.Verdict)
+				// Cancellation ends the relay without a policy finding. The
+				// handler records the connection's terminal outcome separately.
+				if receipts := rph.findReceipts(t); len(receipts) != 0 || logs.Len() != 0 {
+					t.Fatalf("cancelled WebSocket scan produced findings: receipts=%d logs=%s", len(receipts), logs.String())
 				}
+				return
 			} else {
 				assertScanErrorEvidence(t, obs, rph)
 			}

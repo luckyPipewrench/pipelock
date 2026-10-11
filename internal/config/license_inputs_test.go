@@ -4,9 +4,39 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSameLicenseInputsMaterializesTokenFileContents(t *testing.T) {
+	t.Setenv("PIPELOCK_LICENSE_KEY", "")
+	path := filepath.Join(t.TempDir(), "license.token")
+	load := func(token string) *Config {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := Defaults()
+		cfg.LicenseFile = path
+		if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseKey != token {
+			t.Fatal("file contents were not materialized")
+		}
+		return cfg
+	}
+	old := load("first-test-token")
+	if !SameLicenseInputs(old, load("first-test-token")) {
+		t.Fatal("unchanged file changed input identity")
+	}
+	next := load("replacement-test-token")
+	if old.LicenseFile != next.LicenseFile || SameLicenseInputs(old, next) {
+		t.Fatal("in-place token replacement preserved input identity")
+	}
+}
 
 func TestSameLicenseInputs(t *testing.T) {
 	t.Parallel()

@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -81,23 +82,31 @@ func TestWSRelayCloseOutcome(t *testing.T) {
 
 func TestWSRelayPanicOutcomeReceipt(t *testing.T) {
 	t.Parallel()
-	client, clientPeer := net.Pipe()
-	upstream, upstreamPeer := net.Pipe()
-	defer func() { _ = clientPeer.Close() }()
-	defer func() { _ = upstreamPeer.Close() }()
+	backend, stop := wsEchoServer(t)
+	defer stop()
 	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.WebSocketProxy.Enabled = true
 	cfg.FlightRecorder.RequireReceipts = true
-	// Both pumps panic before reading because their runtime is absent.
-	relay := &wsRelay{clientConn: client, upstreamConn: upstream, cfg: cfg}
-	stats := relay.run(t.Context())
-	if !stats.blocked || !stats.panicked {
-		t.Fatal("panic state not retained")
-	}
-	code, reason := stats.closeOutcome()
 	rph := newReceiptProxyHelper(t)
-	p := &Proxy{}
+	p := newTestProxyWithConfig(t, cfg)
 	p.receiptEmitterPtr.Store(rph.emitter)
-	p.emitOutcomeReceipt(cfg, receipt.EmitOpts{ActionID: receipt.NewActionID(), Transport: TransportWS, Method: "WS", Target: "ws://api.vendor.example/"}, strconv.Itoa(int(code)), 0, reason)
+	done := make(chan struct{})
+	server := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		defer close(done)
+		p.handleWebSocket(panicRelayHijacker{ResponseWriter: w}, req)
+	}))
+	defer server.Close()
+	conn := dialWS(t, strings.TrimPrefix(server.URL, "http://"), backend)
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.ReadFrame(conn); !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("panic did not close client: %v", err)
+	}
+	integrityWait(t, done)
 	r := rph.requireReceipt(t, receiptOutcomeLayer)
 	if err := receipt.VerifyWithKey(r, rph.pubHex); err != nil {
 		t.Fatalf("panic receipt signature: %v", err)
@@ -105,7 +114,29 @@ func TestWSRelayPanicOutcomeReceipt(t *testing.T) {
 	if !strings.Contains(r.ActionRecord.Pattern, "status=1011") || !strings.Contains(r.ActionRecord.Pattern, "reason=relay_panic") {
 		t.Fatalf("panic receipt reason: %s", r.ActionRecord.Pattern)
 	}
+	closeReceipt := rph.requireReceipt(t, "session_close")
+	if closeReceipt.ActionRecord.Pattern != "relay_panic" || closeReceipt.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("panic close receipt: %+v", closeReceipt.ActionRecord)
+	}
+	if err := receipt.VerifyWithKey(closeReceipt, rph.pubHex); err != nil {
+		t.Fatalf("panic close signature: %v", err)
+	}
 }
+
+// The HTTP upgrade succeeds; the first relay read fails unexpectedly.
+type panicRelayHijacker struct{ http.ResponseWriter }
+
+func (w panicRelayHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, buffered, err := w.ResponseWriter.(http.Hijacker).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return panicRelayConn{Conn: conn}, buffered, nil
+}
+
+type panicRelayConn struct{ net.Conn }
+
+func (panicRelayConn) Read([]byte) (int, error) { panic("unexpected relay read failure") }
 
 func TestWSRelayCompletionMetrics(t *testing.T) {
 	t.Parallel()

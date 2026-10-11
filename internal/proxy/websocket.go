@@ -85,6 +85,7 @@ type wsRelay struct {
 	// broke off. Written only by upstreamToClient, read after it returns.
 	upstreamCancelled bool
 	panicked          atomic.Bool // either pump can panic; read after both return
+	clientClosing     atomic.Bool // client sent Close; only the upstream Close reply may follow
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
 	// same escaped path and method-override headers as the handshake gate.
@@ -1530,7 +1531,7 @@ func wakeRelayConn(conn net.Conn) {
 // and one that landed before it is caught by the check.
 func (r *wsRelay) armReadDeadline(ctx context.Context, conn net.Conn, idleTimeout time.Duration) {
 	_ = conn.SetReadDeadline(r.idleDeadline(idleTimeout))
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || r.clientClosing.Load() {
 		_ = conn.SetReadDeadline(time.Now().Add(relayCloseGrace))
 	}
 }
@@ -2496,7 +2497,15 @@ func (r *wsRelay) blockIdentityReload() bool {
 
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
-	defer cancel()
+	defer func() {
+		if r.clientClosing.Load() {
+			// Keep the context live for the close reply, bounded by the close
+			// grace. Revocation still cancels the parent and stops both pumps.
+			wakeRelayConn(r.upstreamConn)
+		} else {
+			cancel()
+		}
+	}()
 	defer r.recoverRelayPanic(cancel, &blocked)
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte   // rolling tail for text-message DLP scanning
@@ -2651,6 +2660,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
 				// Forward close frame to upstream, then exit.
+				r.clientClosing.Store(true)
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
 			}
@@ -3124,7 +3134,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// active (it advanced the shared clock), re-arm instead of tearing
 			// down an actively streaming socket.
 			var nerr net.Error
-			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) {
+			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) && !r.clientClosing.Load() {
 				continue
 			}
 			// An idle or relay-ending deadline is the proxy closing an idle
@@ -3190,7 +3200,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || (r.clientClosing.Load() && hdr.OpCode != ws.OpClose) {
 			r.upstreamCancelled = true
 			return
 		}
@@ -3218,7 +3228,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				blocked = true
 				return
 			}
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || r.clientClosing.Load() {
 				r.upstreamCancelled = true
 				return
 			}
@@ -3362,7 +3372,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || r.clientClosing.Load() {
 			r.upstreamCancelled = true
 			return
 		}

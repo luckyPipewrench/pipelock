@@ -127,7 +127,7 @@ func (k trustedKey) pinsTrustDomain() bool {
 }
 
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
-	if cfg.ReplayCache == nil {
+	if !cfg.ReplayCache.initialized() {
 		return nil, ErrReplayCacheRequired
 	}
 	if len(cfg.TrustedKeys) == 0 {

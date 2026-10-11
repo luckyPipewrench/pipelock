@@ -10,7 +10,7 @@ pipelock verify-receipt --chain evidence --session proxy --allow-prefix --key si
 
 Chain verification reports integrity and endpoint proof separately. A terminal signed session close proves an action-chain end, and a transcript root covered by its trailing signed checkpoint proves a whole-recorder end, when the run recorded under its own per-run session. A complete group close proves the group scope. `--expect-head HASH` or `--expect-seq N` pins an independently known receipt endpoint. Restart links and recovery seals don't prove an end. Mixed v1/v2 input verifies both chains; endpoint pins apply to v2. A pin must select one run when the directory has several.
 
-Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`) since v3.6.0. Older releases recorded every run under one shared session such as `proxy` and resumed that chain after each restart, so a close or seal there doesn't show that nothing came after it. Those chains exit 3 unless you pin the endpoint with `--expect-head` or `--expect-seq`, or accept the prefix with `--allow-prefix`.
+Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`) since v3.6.0. Older releases recorded every run under one shared session such as `proxy` and resumed that chain after each restart, so a close or seal there doesn't show that nothing came after it. Those chains exit 3. In receipt-chain mode, pin the endpoint with `--expect-head` or `--expect-seq`. Under `--whole-recorder` a receipt pin can't authenticate the recorder entries, so it never proves the end there; use `--allow-prefix` to accept the prefix.
 
 | Flag | Effect |
 |---|---|

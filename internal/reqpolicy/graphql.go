@@ -73,7 +73,7 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	if len(trimmed) == 0 {
 		return nil, false, false
 	}
-	if err := jsonscan.ValidateKeys(trimmed, 10000); err != nil {
+	if err := jsonscan.ValidateKeys(trimmed, jsonscan.MaxDecoderNestingDepth); err != nil {
 		return nil, false, false
 	}
 	var schema any = gqlRequest{}

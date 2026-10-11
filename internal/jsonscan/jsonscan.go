@@ -273,6 +273,8 @@ func RejectUnsafeNumbers(data []byte) error {
 }
 
 // TopLevelDuplicateKeys inventories ambiguous keys in an already parsed object.
+// Callers must first validate that data is valid UTF-8 JSON. This helper returns
+// nil on scan errors, which is indistinguishable from finding no duplicates.
 // Values are skipped intact; duplicates in unrelated nested application data do
 // not make an operation discriminator ambiguous.
 func TopLevelDuplicateKeys(data []byte) map[string]struct{} {

@@ -799,6 +799,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateGuard(); err != nil {
 		return warnings, err
 	}
+	if _, err := c.DestinationGrantSet(); err != nil {
+		return warnings, err
+	}
 	// Advisory only, and last: it reads across sections that the validators
 	// above have already accepted, and it can never fail a config.
 	c.validateActionDivergence(&warnings)

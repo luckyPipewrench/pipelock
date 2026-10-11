@@ -229,6 +229,11 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 	addDomainList("TLS interception", diag.ConfigScopeTLSPassthroughDomains, cfg.TLSInterception.PassthroughDomains)
 	addDomainList("SSRF", "trusted_domains", cfg.TrustedDomains)
 	addDomainList("SSRF", "ssrf.ip_allowlist", cfg.SSRF.IPAllowlist)
+	for _, grant := range cfg.DestinationGrants {
+		scope := fmt.Sprintf("%s://%s:%d", grant.Protocol, grant.Host, grant.Port)
+		entries = append(entries, newExemptionEntry("SSRF", "destination_grants", scope, scope,
+			attr("protocol", grant.Protocol), attr("host", grant.Host), attr("port", fmt.Sprint(grant.Port))))
+	}
 	for _, cidr := range cfg.KillSwitch.AllowlistIPs {
 		entries = append(entries, newExemptionEntry("Kill switch", "kill_switch.allowlist_ips", cidr, cidr))
 	}

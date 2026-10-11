@@ -493,12 +493,13 @@ type Config struct {
 	// omitted / non-positive falls back to DefaultCRLMaxAge — a configured value
 	// can never DISABLE the freshness check. Excluded from the canonical policy
 	// hash: it is a license-trust knob, not effective request policy.
-	LicenseCRLMaxAge string   `yaml:"license_crl_max_age,omitempty" json:"-"`
-	LicensePublicKey string   `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
-	Internal         []string `yaml:"internal"`
-	TrustedDomains   []string `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
-	SSRF             SSRF     `yaml:"ssrf"`
-	DNS              DNS      `yaml:"dns"`
+	LicenseCRLMaxAge  string             `yaml:"license_crl_max_age,omitempty" json:"-"`
+	LicensePublicKey  string             `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
+	Internal          []string           `yaml:"internal"`
+	TrustedDomains    []string           `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
+	DestinationGrants []DestinationGrant `yaml:"destination_grants" json:"DestinationGrants,omitempty"`
+	SSRF              SSRF               `yaml:"ssrf"`
+	DNS               DNS                `yaml:"dns"`
 
 	// LicenseExpiresAt, LicenseIssuedAt, and LicenseTier are claims from the
 	// verified license token, populated at runtime. They are used for expiry

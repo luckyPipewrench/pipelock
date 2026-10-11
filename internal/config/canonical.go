@@ -277,6 +277,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.APIAllowlist = canonicalHostSet(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = canonicalHostSet(view.TrustedDomains)
+	view.DestinationGrants = canonicalDestinationGrants(view.DestinationGrants)
 	// Declared credential-audience hosts are exact-match sets; order and case
 	// never change which destination receives a credential.
 	view.DLP.GitHubEnterpriseHosts = canonicalHostSet(view.DLP.GitHubEnterpriseHosts)

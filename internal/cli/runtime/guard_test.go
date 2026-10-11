@@ -29,8 +29,12 @@ import (
 )
 
 func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Mkdir(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
+	cfg.DestinationGrants = []config.DestinationGrant{{Protocol: "tcp", Host: "preview.vendor.example", Port: 8443}}
 	var got sandbox.StandaloneLaunchConfig
 	err := launchGuard(GuardLaunchOptions{
 		Context:   t.Context(),
@@ -49,9 +53,13 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 		t.Fatalf("launch requirements = %+v", got)
 	}
 	wantRuntimeConfig := cfg.Clone()
+	wantRuntimeConfig.DestinationGrants = nil
 	wantRuntimeConfig.ForwardProxy.Enabled = true
 	if got.GuardDeclaration == nil || got.GuardPolicyHash != wantRuntimeConfig.CanonicalPolicyHash() {
 		t.Fatalf("guard binding declaration=%v hash=%q", got.GuardDeclaration, got.GuardPolicyHash)
+	}
+	if len(cfg.DestinationGrants) != 1 {
+		t.Fatal("Guard changed ordinary proxy grants in the input config")
 	}
 	if got.ProxyHandler == nil || got.Policy == nil {
 		t.Fatalf("launch omitted proxy or policy: %+v", got)

@@ -785,3 +785,27 @@ func TestHTTPListener_UpstreamProxyAuthRequiredIsNotRelayed(t *testing.T) {
 		t.Fatalf("Proxy-Authenticate relayed from upstream: %q", got)
 	}
 }
+
+// An empty acknowledgment answers a message that is owed no reply. A request
+// keeps only the legacy 202. (This listener refuses a bare client response at
+// input validation, so it never reaches the upstream here.)
+func TestHTTPListener_EmptyAcknowledgmentDependsOnTheMessage(t *testing.T) {
+	tests := []struct {
+		name, message string
+		status, want  int
+	}{
+		{name: "request with legacy 202", message: `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`, status: http.StatusAccepted, want: http.StatusAccepted},
+		{name: "request with 204", message: `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`, status: http.StatusNoContent, want: http.StatusBadGateway},
+		{name: "notification with 204", message: upstreamStatusNotification, status: http.StatusNoContent, want: http.StatusAccepted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := newUpstreamStatusServer(t, upstreamStatusReply{status: tt.status})
+			baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+			resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", tt.message, nil)
+			if resp.StatusCode != tt.want {
+				t.Fatalf("status = %d, want %d; body=%s log=%s", resp.StatusCode, tt.want, body, logBuf.String())
+			}
+		})
+	}
+}

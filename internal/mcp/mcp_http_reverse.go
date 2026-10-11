@@ -918,10 +918,7 @@ func RunHTTPListenerProxy(
 		// scanner flags or cannot read gets the sanitized 502 instead. It
 		// returns false for any other status so the caller carries on.
 		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent receipt.EmitOpts) bool {
-			// 407 is the listener's own credential challenge. An upstream 407
-			// relayed as-is would read as Pipelock refusing the client's
-			// listener credential, so it takes the sanitized 502 instead.
-			if !transport.IsClientError(upResp.StatusCode) || upResp.StatusCode == http.StatusProxyAuthRequired {
+			if !transport.IsClientError(upResp.StatusCode) {
 				return false
 			}
 			outcomeReason := "upstream_http_client_error"
@@ -936,6 +933,14 @@ func RunHTTPListenerProxy(
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed")))
+			}
+			// 407 is the listener's own credential challenge. An upstream 407
+			// relayed as-is would read as Pipelock refusing the client's
+			// listener credential, so it is withheld like any other reply
+			// that cannot be relayed faithfully, and the intent still closes.
+			if upResp.StatusCode == http.StatusProxyAuthRequired {
+				withhold("upstream 407 is not relayed")
+				return true
 			}
 			// A session escalated to block every response gets no upstream
 			// content, refusals included, matching ForwardScanned.
@@ -1793,7 +1798,9 @@ func RunHTTPListenerProxy(
 		// An empty 2xx acknowledges a notification or client response. The
 		// client always gets 202 Accepted, the status the MCP specification
 		// requires, even when the upstream answered 204 or another empty 2xx.
-		if transport.AcceptedWithoutBody(upResp) {
+		// A request is owed an answer, so only the legacy 202 acknowledges
+		// one; any other empty 2xx falls through to the sanitized 502.
+		if transport.AcceptedWithoutBody(upResp) && (upResp.StatusCode == http.StatusAccepted || !transport.ExpectsReply(decision.ForwardMessage)) {
 			if !clientState.commitIfActive(func() {
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				w.WriteHeader(http.StatusAccepted)

@@ -26,6 +26,7 @@ func TestHTTPListener_UpstreamRefusalClosesIntent(t *testing.T) {
 		{"withheld injection", `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"` + upstreamStatusInjection + `"}}`, http.StatusBadRequest, http.StatusBadGateway},
 		{"withheld body encoding", string([]byte{0xff}), http.StatusBadRequest, http.StatusBadGateway},
 		{"withheld framing", `{"jsonrpc":"2.0","id":999,"error":{"code":-32600,"message":"wrong ID"}}`, http.StatusBadRequest, http.StatusBadGateway},
+		{"withheld 407", `{"error":"proxy credentials required"}`, http.StatusProxyAuthRequired, http.StatusBadGateway},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

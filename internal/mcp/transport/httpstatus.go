@@ -4,6 +4,7 @@
 package transport
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,20 @@ func AcceptedWithoutBody(resp *http.Response) bool {
 		return false
 	}
 	return resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.ContentLength == 0
+}
+
+// ExpectsReply reports whether msg is a JSON-RPC request: a method and a
+// non-null ID, so the sender is owed a result or an error. An empty
+// acknowledgment answers a notification or a client response; for a request it
+// would report success while the answer never arrives. The original 202 for
+// requests is kept for servers that answer on the GET stream.
+func ExpectsReply(msg []byte) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(msg, &fields) != nil {
+		return false
+	}
+	id := fields["id"]
+	return fields["method"] != nil && len(id) != 0 && string(id) != "null"
 }
 
 // IsClientError reports a 4xx status: the upstream refused this request, as

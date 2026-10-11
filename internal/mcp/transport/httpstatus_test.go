@@ -266,3 +266,40 @@ func TestIsUncorrelatedErrorReply(t *testing.T) {
 		})
 	}
 }
+
+func TestExpectsReply(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, true},
+		{`{"jsonrpc":"2.0","id":"a","method":"tools/call"}`, true},
+		{`{"jsonrpc":"2.0","method":"notifications/initialized"}`, false},
+		{`{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}`, false},
+		{`{"jsonrpc":"2.0","id":1,"result":{}}`, false},
+		{`not json`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.msg, func(t *testing.T) {
+			if got := ExpectsReply([]byte(tt.msg)); got != tt.want {
+				t.Fatalf("ExpectsReply(%s) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+// A request answered with the legacy 202 still acknowledges: some servers send
+// the answer on the GET stream.
+func TestHTTPClient_SendMessage_RequestKeepsLegacyAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	reader, err := NewHTTPClient(srv.URL, nil).SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if msg, readErr := reader.ReadMessage(); !errors.Is(readErr, io.EOF) || msg != nil {
+		t.Fatalf("ReadMessage = (%q, %v), want immediate EOF", msg, readErr)
+	}
+}

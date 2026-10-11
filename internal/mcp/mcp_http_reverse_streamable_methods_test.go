@@ -796,9 +796,10 @@ func TestHTTPListener_GETStreamFailsClosedOnUnexpectedStatus(t *testing.T) {
 }
 
 func TestHTTPListener_POSTFailsClosedOnUnexpected2xxStatus(t *testing.T) {
-	// 204 is absent: it cannot carry content, so it acknowledges like 202
+	// The request here is owed an answer, so 204 fails closed too; for a
+	// notification it acknowledges like 202
 	// (TestHTTPListener_EmptyUpstream2xxAcknowledgesNotification).
-	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusPartialContent} {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusNoContent, http.StatusPartialContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			const upstreamBody = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"unexpected 2xx body must not leak"}]}}`
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

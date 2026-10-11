@@ -238,8 +238,9 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// An empty 2xx acknowledges a notification or client response; there is
-	// no message to read.
-	if AcceptedWithoutBody(resp) {
+	// no message to read. A request is owed an answer, so only the legacy 202
+	// acknowledges one.
+	if AcceptedWithoutBody(resp) && (resp.StatusCode == http.StatusAccepted || !ExpectsReply(msg)) {
 		if err := trackSessionID(); err != nil {
 			_ = resp.Body.Close()
 			return nil, err

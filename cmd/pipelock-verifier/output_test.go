@@ -31,3 +31,12 @@ func TestEmitReceiptReport_HumanEvidencePolicyHash(t *testing.T) {
 		t.Fatalf("stdout missing policy_hash line:\n%s", stdout.String())
 	}
 }
+
+func TestEmitChainReportActionTailWarning(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	emitChainReport(&out, &errOut, chainReport{Valid: true, Path: "evidence.jsonl"}, false)
+	if !strings.Contains(out.String(), "CHAIN VALID") || !strings.Contains(out.String(), "WARNING: chain end is unanchored") {
+		t.Fatalf("output: %s", out.String())
+	}
+}

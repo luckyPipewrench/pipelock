@@ -4,15 +4,41 @@
 package recorder
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // AppendLockFileName is the recorder's empty per-directory append lock.
 // Directory scanners that refuse unknown files must allow it (and only while
 // it is an empty regular file, so it can never carry evidence bytes).
 const AppendLockFileName = ".append.lock"
+
+var errAppendLockBusy = errors.New("evidence append lock busy")
+
+// ErrAppendLockTimeout means receipt persistence could not acquire its append
+// lock within the bounded wait. Callers must handle it as a persistence failure.
+var ErrAppendLockTimeout = errors.New("evidence append lock timed out")
+
+func waitAppendLock(f *os.File) error {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := lockEvidenceAppend(f)
+		if !errors.Is(err, errAppendLockBusy) {
+			return err
+		}
+		select {
+		case <-timer.C:
+			return ErrAppendLockTimeout
+		case <-ticker.C:
+		}
+	}
+}
 
 // acquireAppendLock serializes tail inspection and append for legacy sessions
 // which can still have multiple writers. A shared evidence-presence lock cannot
@@ -35,7 +61,7 @@ func acquireAppendLock(dir string) (func(), error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("evidence append lock is not a regular file")
 	}
-	if err := lockEvidenceAppend(f); err != nil {
+	if err := waitAppendLock(f); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("acquire evidence append lock: %w", err)
 	}

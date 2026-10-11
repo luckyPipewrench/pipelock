@@ -267,6 +267,9 @@ Examples:
 				var receipts []receipt.Receipt
 				var evidenceReceipts []contractreceipt.EvidenceReceipt
 				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
+					if err := recorder.VerifySessionHistoryChain(*resolvedLocation, sessionID); err != nil {
+						return err
+					}
 					var extractErr error
 					receipts, extractErr = receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
 					if extractErr != nil {
@@ -1459,6 +1462,9 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 	var receipts []receipt.Receipt
 	var evidenceReceipts []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
+		if err := recorder.VerifySessionHistoryChain(location, sessionID); err != nil {
+			return err
+		}
 		var readErr error
 		receipts, readErr = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
 		if readErr != nil {
@@ -1598,6 +1604,7 @@ func verifyChainSummaryDetailed(out io.Writer, label string, posture receiptPost
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", result.RootHash)
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
+	_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
 	printSignerKeys(out, result)
 	for i, basis := range result.TrustBasis {
 		if i < len(result.Segments) {

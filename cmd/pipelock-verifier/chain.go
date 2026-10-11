@@ -678,6 +678,9 @@ func readChainSessionInput(location recorder.EvidenceLocation, session string) (
 	var actions []actionreceipt.Receipt
 	var evidence []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, session, func() error {
+		if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
+			return err
+		}
 		var readErr error
 		evidence, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
 		if readErr != nil {

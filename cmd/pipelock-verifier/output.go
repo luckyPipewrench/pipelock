@@ -118,6 +118,10 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 				_, _ = fmt.Fprintln(stdout, "  completeness: not proven (a truncated chain also verifies; pass --expect-head with a trusted head hash)")
 			}
 		}
+		if r.RecordType != recordTypeEvidenceV2 {
+			_, _ = fmt.Fprintln(stdout, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+		}
+
 		if r.Scorecard != nil {
 			emitScorecard(stdout, *r.Scorecard)
 		}

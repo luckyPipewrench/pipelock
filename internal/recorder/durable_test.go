@@ -202,7 +202,7 @@ func TestRecordDurable_SyncFailureIsStickyAndDoesNotRollBack(t *testing.T) {
 		t.Fatalf("sync calls = %d, want 1; the refused append must not sync", calls)
 	}
 
-	entries := readEntriesForSession(t, dir, "durable-session")
+	entries := readEntriesForSession(t, dir)
 	if len(entries) != 1 || entries[0].Sequence != 0 || entries[0].Summary != "first fails sync" {
 		t.Fatalf("entries after sticky failure = %+v, want only the failed seq 0 entry", entries)
 	}
@@ -331,7 +331,7 @@ func TestRecordDurable_BatchSyncFailurePropagatesToFollowersAndKeepsGap(t *testi
 		t.Fatalf("later RecordDurable = %v, want ErrDurabilityInherited and not ErrDurability", err)
 	}
 
-	entries := readEntriesForSession(t, dir, "durable-session")
+	entries := readEntriesForSession(t, dir)
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want the 2 failed batch entries and no later append", len(entries))
 	}
@@ -427,7 +427,7 @@ func TestRecordDurable_ConcurrentReservationsKeepUniqueValidChain(t *testing.T) 
 		t.Fatalf("Close: %v", err)
 	}
 
-	entries := readEntriesForSession(t, dir, "durable-session")
+	entries := readEntriesForSession(t, dir)
 	dataEntries := make([]Entry, 0, len(entries))
 	for _, e := range entries {
 		if e.Type == "request" {
@@ -530,9 +530,9 @@ func TestRecordDurable_RotationWaitsForPendingSync(t *testing.T) {
 	}
 }
 
-func readEntriesForSession(t *testing.T, dir, sessionID string) []Entry { //nolint:unparam // the session names the file being read
+func readEntriesForSession(t *testing.T, dir string) []Entry {
 	t.Helper()
-	path := filepath.Join(filepath.Clean(dir), fmt.Sprintf("evidence-%s-0.jsonl", sessionID))
+	path := filepath.Join(filepath.Clean(dir), "evidence-durable-session-0.jsonl")
 	entries, err := ReadEntries(path)
 	if err != nil {
 		t.Fatalf("ReadEntries(%q): %v", path, err)

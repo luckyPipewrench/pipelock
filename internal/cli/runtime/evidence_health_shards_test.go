@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
@@ -820,7 +821,7 @@ func TestEvidenceHealthUnreadableAnchorStateIsRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.h.runPass()
-	if err := os.Chmod(index, 0o700); err != nil { //nolint:gosec // restores the directory mode the test removed
+	if err := syscall.Chmod(index, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	rig.assertNotLatched(t)

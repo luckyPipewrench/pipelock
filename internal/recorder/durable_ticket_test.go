@@ -156,7 +156,7 @@ func TestCloseRefusesCheckpointAfterSyncFailure(t *testing.T) {
 	if err := rec.Close(); !errors.Is(err, ErrDurabilityInherited) {
 		t.Fatalf("Close = %v, want a refusal naming the earlier failure", err)
 	}
-	for _, e := range readEntriesForSession(t, dir, "durable-session") {
+	for _, e := range readEntriesForSession(t, dir) {
 		if e.Type == checkpointType {
 			t.Fatalf("close wrote a checkpoint over a failed sync: %+v", e)
 		}
@@ -289,7 +289,7 @@ func TestFailedStreamRefusesEveryWriteAndCheckpoint(t *testing.T) {
 			t.Fatalf("non-durable Record on a failed stream = %v, want ErrDurabilityInherited", err)
 		}
 		_ = rec.Close()
-		for _, e := range readEntriesForSession(t, dir, "durable-session") {
+		for _, e := range readEntriesForSession(t, dir) {
 			if e.Type == checkpointType {
 				t.Fatalf("a checkpoint was signed over a failed sync: %+v", e)
 			}

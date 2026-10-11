@@ -781,9 +781,10 @@ function htmlDecode(
   charge: (value: string | Uint8Array) => void,
   portable = false,
 ): string {
-  // `he` ships the full WHATWG/HTML5 named-character-reference table. Its
-  // non-strict text-mode decoding matches Go html.UnescapeString's liberal
-  // treatment of malformed and semicolon-less references.
+  // `he` ships the full WHATWG/HTML5 named-character-reference table, decoded
+  // non-strictly in text mode. Profiles v1-v4 pair it with Go
+  // html.UnescapeString; v5 pins it to the vendored WHATWG table, and the
+  // full-table parity test is what holds that agreement.
   if (portable && !value.includes("&")) return value;
   for (let i = 0; i < 16 && (portable || value.includes("&")); i++) {
     charge(value);

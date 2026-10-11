@@ -372,18 +372,31 @@ func clientErrorReply(resp *http.Response, msg []byte) []byte {
 	if err != nil {
 		return nil
 	}
+	if !IsClientErrorReply(body, request["id"]) {
+		return nil
+	}
+	return body
+}
+
+// IsClientErrorReply reports whether body is a JSON-RPC error answering id.
+// Both HTTP transports use this guard before relaying a refusal as a message.
+func IsClientErrorReply(body []byte, id json.RawMessage) bool {
+	requestID := httpRPCID(id)
+	if requestID == nil {
+		return false
+	}
 	var reply map[string]json.RawMessage
 	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil {
-		return nil
+		return false
 	}
 	var version string
 	if json.Unmarshal(reply["jsonrpc"], &version) != nil || version != "2.0" ||
 		reply["method"] != nil || reply["result"] != nil ||
 		len(reply["error"]) == 0 || string(reply["error"]) == "null" ||
 		httpRPCID(reply["id"]) != requestID {
-		return nil
+		return false
 	}
-	return body
+	return true
 }
 
 func httpInitializeRequestID(msg []byte) any {

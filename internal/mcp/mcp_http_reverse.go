@@ -938,6 +938,11 @@ func RunHTTPListenerProxy(
 				withhold("reply cannot be read for scanning")
 				return true
 			}
+			if !reply.validateFraming(rpcID) {
+				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, "uninspectable reply")
+				withhold("uninspectable reply")
+				return true
+			}
 			if ok, finding := reply.scan(requestBaseOpts); !ok {
 				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
 				withhold(finding)

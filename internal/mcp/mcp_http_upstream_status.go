@@ -6,8 +6,12 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -25,6 +29,56 @@ type upstreamClientError struct {
 	status int
 	header http.Header
 	body   []byte
+}
+
+// validateFraming prevents a refusal from becoming an alternate MCP message
+// transport. Only a correlated error may carry a JSON-RPC envelope; results,
+// server requests and SSE need the full message pipeline, not an error wrapper.
+// A declared charset must agree with the UTF-8 bytes the scanner inspected.
+func (e upstreamClientError) validateFraming(id json.RawMessage) bool {
+	for _, values := range e.header {
+		for _, value := range values {
+			if !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\x00") {
+				return false
+			}
+		}
+	}
+	contentTypes := e.header.Values("Content-Type")
+	if len(contentTypes) > 1 {
+		return false
+	}
+	mediaType := ""
+	if len(contentTypes) == 1 {
+		var params map[string]string
+		var err error
+		mediaType, params, err = mime.ParseMediaType(contentTypes[0])
+		if err != nil || mediaType == "text/event-stream" {
+			return false
+		}
+		if charset := params["charset"]; charset != "" && !strings.EqualFold(charset, "utf-8") {
+			return false
+		}
+	}
+	body := bytes.TrimSpace(e.body)
+	if len(body) == 0 {
+		return true
+	}
+	if body[0] == '[' {
+		return false // MCP does not support batch messages.
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return mediaType != "application/json"
+	}
+	if jsonscan.RejectDuplicateKeys(body) != nil {
+		return false
+	}
+	for _, name := range []string{"jsonrpc", "id", "method", "result", "params"} {
+		if _, ok := fields[name]; ok {
+			return transport.IsClientErrorReply(body, id)
+		}
+	}
+	return true // Ordinary HTTP/OAuth errors have no MCP message envelope.
 }
 
 // readUpstreamClientError captures a 4xx reply. The body is bounded, decoded

@@ -189,6 +189,8 @@ func TestDoorwaySocketProducerKeepsDirectory(t *testing.T) {
 	}
 	for i, body := range bodies {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
 			dir, err := os.MkdirTemp(runtimeDir, "pipelock-socket-producer-")
 			if err != nil {
 				t.Fatal(err)
@@ -197,12 +199,14 @@ func TestDoorwaySocketProducerKeepsDirectory(t *testing.T) {
 			parent := filepath.Join(dir, "doorway")
 			path := filepath.Join(parent, "doorway.sock")
 			unit := fmt.Sprintf("pipelock-socket-producer-%d-%d", os.Getpid(), time.Now().UnixNano())
-			control := func(args ...string) ([]byte, error) {
-				cmd := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...) // #nosec G204 -- exclusively test-owned units.
+			stopUnits := func(units ...string) ([]byte, error) {
+				stop, cancelStop := context.WithTimeout(context.WithoutCancel(ctx), testwait.Deadline(5*time.Second))
+				defer cancelStop()
+				cmd := exec.CommandContext(stop, "systemctl", append([]string{"--user", "stop"}, units...)...) // #nosec G204 -- exclusively test-owned units.
 				cmd.Env = env
 				return cmd.CombinedOutput()
 			}
-			t.Cleanup(func() { _, _ = control("stop", unit+".socket", unit+".service") })
+			t.Cleanup(func() { _, _ = stopUnits(unit+".socket", unit+".service") })
 			args := []string{"--user", "--quiet", "--unit=" + unit, "--socket-property=ListenStream=" + path}
 			// Ownership is delegated to the current user manager for this
 			// unprivileged proof; lifecycle properties come from the producer.
@@ -221,7 +225,10 @@ func TestDoorwaySocketProducerKeepsDirectory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out, err := control("stop", unit+".socket"); err != nil {
+			// The same stop operation used by cleanup must work after the
+			// test context is canceled, including an early-failure path.
+			cancel()
+			if out, err := stopUnits(unit + ".socket"); err != nil {
 				t.Fatalf("stop socket producer: %v: %s", err, out)
 			}
 			after, err := os.Stat(parent)

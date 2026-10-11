@@ -43,8 +43,15 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		return unknown("managed runtime socket units cannot be determined: "+problem, "restore access and rerun `pipelock contain doctor`")
 	}
 	units := []string{containedNamespaceForwarderUnit}
+	proxyParent := filepath.Dir(containedDoorwaySocketPath)
+	expectedBinds := map[string]string{
+		containedNamespaceForwarderUnit: canonicalBind(proxyParent, proxyParent, "rbind"),
+	}
 	for _, service := range services {
-		units = append(units, loopbackForwarderUnitBase(service.Host, service.Port)+"-netns.service")
+		unit := loopbackForwarderUnitBase(service.Host, service.Port) + "-netns.service"
+		units = append(units, unit)
+		parent := filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port))
+		expectedBinds[unit] = canonicalBind(parent, parent, "rbind")
 	}
 	if env.configPath != "" {
 		cfg, loadErr := config.LoadForInspection(env.configPath)
@@ -66,6 +73,16 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		}
 		if err := sameLifecyclePathList(strings.TrimSpace(out), runtimeSocketTemporaryFileSystems()); err != nil {
 			return fail(classInfra, "managed unit "+unit+" lacks runtime socket isolation", installRemedy)
+		}
+		if expected, forwarder := expectedBinds[unit]; forwarder {
+			out, code, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=BindReadOnlyPaths", "--value")
+			if showErr != nil || code != 0 {
+				return unknown("runtime doorway bind for "+unit+" could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+			}
+			binds, parseErr := parseSystemdBindShow(strings.TrimSpace(out))
+			if parseErr != nil || !sameBindList(binds, []string{expected}) {
+				return fail(classInfra, "managed unit "+unit+" lacks its runtime doorway bind", installRemedy)
+			}
 		}
 	}
 	return pass("managed contained-launch wrapper and configured namespace/display units specify runtime socket masks; live mounts are verified at launch")

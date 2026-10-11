@@ -76,6 +76,10 @@ func TestDoctorRuntimeSocketUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	units := []string{containedNamespaceForwarderUnit, loopbackForwarderUnitBase("127.0.0.1", 3000) + "-netns.service", filepath.Base(defaultDisplayUnitPath)}
+	binds := map[string]string{
+		units[0]: filepath.Dir(containedDoorwaySocketPath),
+		units[1]: filepath.Dir(declaredLoopbackDoorwayPath("127.0.0.1", 3000)),
+	}
 	for _, stale := range append([]string{""}, units...) {
 		t.Run(stale, func(t *testing.T) {
 			seen := make(map[string]bool)
@@ -87,8 +91,18 @@ func TestDoctorRuntimeSocketUnits(t *testing.T) {
 				return os.ReadFile(filepath.Clean(path))
 			}
 			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-				if name != "systemctl" || len(args) != 4 || args[0] != "show" || args[2] != "--property=TemporaryFileSystem" || args[3] != "--value" {
+				if name != "systemctl" || len(args) != 4 || args[0] != "show" || args[3] != "--value" {
 					t.Fatalf("unexpected unit probe: %s %v", name, args)
+				}
+				if args[2] == "--property=BindReadOnlyPaths" {
+					parent, ok := binds[args[1]]
+					if !ok {
+						t.Fatalf("unexpected doorway bind probe: %v", args)
+					}
+					return parent + ":" + parent + ":rbind", 0, nil
+				}
+				if args[2] != "--property=TemporaryFileSystem" {
+					t.Fatalf("unexpected property: %v", args)
 				}
 				seen[args[1]] = true
 				if args[1] == stale {
@@ -151,7 +165,11 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 					return nil, os.ErrNotExist
 				}
 				return []byte(tc.body), tc.readErr
-			}, runCmd: func(context.Context, string, ...string) (string, int, error) {
+			}, runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+				if len(args) == 4 && args[2] == "--property=BindReadOnlyPaths" {
+					parent := filepath.Dir(containedDoorwaySocketPath)
+					return parent + ":" + parent + ":rbind", 0, nil
+				}
 				return tc.mounts, tc.showCode, tc.showErr
 			}}
 			got := check(t.Context(), env)
@@ -171,6 +189,86 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 	}
 }
 
+func TestDoctorRuntimeDoorwayBinds(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "pipelock.yaml")
+	data := []byte("containment:\n  loopback_services:\n    - host: 127.0.0.1\n      port: 3000\n      owner: operator\n      reason: synthetic service test\n      expires_at: \"" + farFutureExpiry() + "\"\n  display:\n    enabled: true\n    backend: xvnc\n")
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loopbackUnit := loopbackForwarderUnitBase("127.0.0.1", 3000) + "-netns.service"
+	doorways := map[string]string{
+		containedNamespaceForwarderUnit: filepath.Dir(containedDoorwaySocketPath),
+		loopbackUnit:                    filepath.Dir(declaredLoopbackDoorwayPath("127.0.0.1", 3000)),
+	}
+	for _, unit := range []string{containedNamespaceForwarderUnit, loopbackUnit} {
+		t.Run(unit, func(t *testing.T) {
+			parent := doorways[unit]
+			valid := parent + ":" + parent + ":rbind"
+			for _, tc := range []struct {
+				name, bind, want string
+				code             int
+				err              error
+			}{
+				{name: "current colon", bind: valid, want: statusPass},
+				{name: "current tuple", bind: parent + " " + parent + " false 16384", want: statusPass},
+				{name: "missing", want: statusFail},
+				{name: "wrong source", bind: "/other:" + parent + ":rbind", want: statusFail},
+				{name: "wrong destination", bind: parent + ":/other:rbind", want: statusFail},
+				{name: "nonrecursive", bind: parent + ":" + parent + ":norbind", want: statusFail},
+				{name: "missing flags", bind: parent + ":" + parent, want: statusFail},
+				{name: "ignore missing", bind: "-" + valid, want: statusFail},
+				{name: "extra bind", bind: valid + " /other:/other:rbind", want: statusFail},
+				{name: "malformed", bind: "\"unterminated", want: statusFail},
+				{name: "reader error", err: errors.New("manager unavailable"), want: statusUnknown},
+				{name: "nonzero exit", code: 1, bind: "Access denied", want: statusUnknown},
+				{name: "nonzero with valid output", code: 1, bind: valid, want: statusUnknown},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					env := &doctorEnv{wrapperDir: root, configPath: configPath, port: defaultProxyPort}
+					env.readFile = func(path string) ([]byte, error) {
+						if path == filepath.Join(root, "plk-contained-launch") {
+							return []byte(renderContainedLaunchWrapper(&installEnv{wrapperDir: root, networkNamespaceUnitPath: containedNetworkNamespaceUnit})), nil
+						}
+						return os.ReadFile(filepath.Clean(path))
+					}
+					env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+						if name != "systemctl" || len(args) != 4 || args[0] != "show" || args[3] != "--value" {
+							t.Fatalf("unexpected unit probe: %s %v", name, args)
+						}
+						switch args[2] {
+						case "--property=TemporaryFileSystem":
+							return strings.Join(runtimeSocketTemporaryFileSystems(), " "), 0, nil
+						case "--property=BindReadOnlyPaths":
+							if args[1] == unit {
+								return tc.bind, tc.code, tc.err
+							}
+							other, ok := doorways[args[1]]
+							if !ok {
+								t.Fatalf("non-forwarder unit requires a doorway bind: %s", args[1])
+							}
+							return other + ":" + other + ":rbind", 0, nil
+						default:
+							t.Fatalf("unexpected property: %v", args)
+							return "", 1, nil
+						}
+					}
+					got := probeDoctorRuntimeSockets(t.Context(), env)
+					if got.status != tc.want {
+						t.Fatalf("doorway bind result = %+v, want %s", got, tc.want)
+					}
+					if got.status == statusFail && (!strings.Contains(got.detail, unit) || !strings.Contains(got.remediation, "contain install")) {
+						t.Fatalf("missing unit/install remedy: %+v", got)
+					}
+					if got.status == statusUnknown && (!strings.Contains(got.detail, unit) || !strings.Contains(got.remediation, "restore access to systemctl") || strings.Contains(got.remediation, "contain install")) {
+						t.Fatalf("reader error has wrong remedy: %+v", got)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestReviewDoctorUnusedFlagsReproduction(t *testing.T) {
 	wrapper := renderContainedLaunchWrapper(&installEnv{wrapperDir: "/fixture", networkNamespaceUnitPath: containedNetworkNamespaceUnit})
 	env := &doctorEnv{
@@ -181,7 +279,11 @@ func TestReviewDoctorUnusedFlagsReproduction(t *testing.T) {
 			}
 			return []byte(wrapper), nil
 		},
-		runCmd: func(context.Context, string, ...string) (string, int, error) {
+		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+			if len(args) == 4 && args[2] == "--property=BindReadOnlyPaths" {
+				parent := filepath.Dir(containedDoorwaySocketPath)
+				return parent + ":" + parent + ":rbind", 0, nil
+			}
 			return strings.Join(runtimeSocketTemporaryFileSystems(), " "), 0, nil
 		},
 	}

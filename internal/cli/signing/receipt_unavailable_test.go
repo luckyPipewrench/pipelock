@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -43,6 +44,17 @@ func TestSessionVerificationReportsUnreadableEvidenceAsUnavailable(t *testing.T)
 	}
 	if !strings.Contains(out.String(), "CHAIN UNAVAILABLE") || strings.Contains(out.String(), "CHAIN BROKEN") {
 		t.Fatalf("output = %q, want CHAIN UNAVAILABLE", out.String())
+	}
+}
+
+func TestEvidenceOnlyChainTailWarning(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := verifyEvidenceChainResultDetailed(&out, "evidence.jsonl", contractreceipt.ChainResult{Valid: true, ReceiptCount: 1}, nil, verifyReceiptOptions{AllowUnpinned: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "WARNING: chain end is unanchored") {
+		t.Fatalf("missing tail warning: %s", out.String())
 	}
 }
 
@@ -122,7 +134,7 @@ func TestSessionVerificationRejectsDisconnectedNonReceiptShard(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := verifyChainFromResolvedSessionDirDetailed(&out, location, session, []string{parityKey(t)}, verifyReceiptOptions{}); err == nil {
-		t.Fatalf("disconnected shard accepted: %s", out.String())
+	if err := verifyChainFromResolvedSessionDirDetailed(&out, location, session, []string{parityKey(t)}, verifyReceiptOptions{}); err == nil || !strings.Contains(err.Error(), "chain break: PrevHash") {
+		t.Fatalf("want predecessor chain break, got %v: %s", err, out.String())
 	}
 }

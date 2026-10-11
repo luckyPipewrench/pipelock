@@ -18,6 +18,8 @@ import (
 
 const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key"
 
+const unanchoredChainWarning = "chain end is unanchored; tail completeness is not proven by this check."
+
 // emitReport writes the audit-packet report to stdout in either JSON or
 // human-readable form. The human form is loosely structured so script
 // consumers should prefer --json.
@@ -80,6 +82,9 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 
 // emitChainReport mirrors emitReport for the chain subcommand.
 func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
+	if r.Valid && r.RecordType != recordTypeEvidenceV2 {
+		r.Warnings = append(r.Warnings, unanchoredChainWarning)
+	}
 	if jsonMode {
 		writeJSON(stdout, r)
 		return
@@ -119,7 +124,7 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 			}
 		}
 		if r.RecordType != recordTypeEvidenceV2 {
-			_, _ = fmt.Fprintln(stdout, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+			_, _ = fmt.Fprintln(stdout, "  WARNING: "+unanchoredChainWarning)
 		}
 
 		if r.Scorecard != nil {

@@ -201,3 +201,14 @@ func hasClass(anns []Annotation, class Class) bool {
 	}
 	return false
 }
+
+func TestConfusableSuffixKeepsUnsafeRunesVisible(t *testing.T) {
+	t.Parallel()
+	for _, control := range []string{"\n", "\r", "\t", "\u2028", "\u2029", "\u202e", "\u200b", "\u0301", "\xff"} {
+		input := control + "\u0430"
+		got := Sanitize(input)
+		if strings.Contains(got.Safe, control) || !strings.Contains(got.Safe, "‹confusable:") || got.Raw != input {
+			t.Errorf("unsafe or missing confusable display: %+v", got)
+		}
+	}
+}

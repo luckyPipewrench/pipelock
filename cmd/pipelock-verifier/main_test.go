@@ -2765,8 +2765,52 @@ func TestChain_DirRejectsDisconnectedNonReceiptShard(t *testing.T) {
 		t.Fatal(err)
 	}
 	stdout, stderr, code := runRoot(t, "chain", "--dir", "--key", fix.keyHex, dir)
-	if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") || !strings.Contains(stderr, "recorder entry hash chain") {
+	if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") || !strings.Contains(stderr, "chain break: PrevHash") {
 		t.Fatalf("disconnected shard: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestChain_BareEvidenceDirectoryCompatibility(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+	if code != cliutil.ExitOK || !strings.Contains(stdout, "record_type: evidence_receipt_v2") {
+		t.Fatalf("bare evidence directory: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestChain_BareEvidenceCannotHideRecorderEntries(t *testing.T) {
+	t.Parallel()
+	for _, extra := range []string{"metadata", "mixed", "decision", "duplicate"} {
+		t.Run(extra, func(t *testing.T) {
+			fix := newEvidenceFixture(t, 2)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+			fix.writeEvidenceJSONL(t, path)
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch extra {
+			case "metadata":
+				data = bytes.Replace(data, []byte(`{"`), []byte(`{"v":null,"`), 1)
+			case "mixed":
+				fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-99.jsonl"))
+			case "decision":
+				data = append(data, []byte("{\"type\":\"decision\",\"detail\":{}}\n")...)
+			case "duplicate":
+				data = bytes.Replace(data, []byte(`{"`), []byte(`{"type":"decision","`), 1)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+			if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") {
+				t.Fatalf("invalid evidence accepted: stdout=%s stderr=%s", stdout, stderr)
+			}
+		})
 	}
 }
 

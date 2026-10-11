@@ -131,6 +131,10 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	// OnResponseKeysValidated admits transport metadata only after message keys
+	// pass the shared guard. It must be set before response scanning starts.
+	OnResponseKeysValidated func()
+
 	// ListenerBearerToken authenticates inbound HTTP-listener clients through
 	// Proxy-Authorization. It is never forwarded to the MCP upstream, whose
 	// independent credential continues to use Authorization.

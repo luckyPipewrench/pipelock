@@ -98,6 +98,9 @@ type MCPFrame struct {
 	// fields are zero-valued in this case; Raw and IsBatch are still
 	// populated because they derive from the bytes directly.
 	ParseErr error
+
+	// KeyValidationErr identifies failures that must precede response state changes.
+	KeyValidationErr error
 }
 
 // IsRequest reports whether the frame carries a JSON-RPC request ID
@@ -143,6 +146,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	// Every key-validation error fails closed before structural parsing.
 	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
 		frame.ParseErr = err
+		frame.KeyValidationErr = err
 		return frame
 	}
 

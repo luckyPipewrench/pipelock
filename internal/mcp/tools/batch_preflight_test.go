@@ -42,3 +42,23 @@ func TestScanToolsBatch_RejectedBatchLeavesDriftBaselineUnchanged(t *testing.T) 
 		})
 	}
 }
+
+func TestScanToolsKeyRejectionLeavesStateUntouched(t *testing.T) {
+	const valid = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe","description":"A normal tool"}]}}`
+	sc := testScanner(t)
+	for _, raw := range []string{
+		strings.Replace(valid, `"result"`, `"Result"`, 1),
+		strings.Replace(valid, `"id":1`, `"id":1,"id":1`, 1),
+		"[" + valid + "," + strings.Replace(valid, `"result"`, `"Result"`, 1) + "]",
+	} {
+		baseline := NewToolBaseline()
+		cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline}
+		result := ScanTools([]byte(raw), sc, cfg)
+		if result.Clean || baseline.HasDriftBaseline() || baseline.HasBaseline() || len(baseline.hashes) != 0 || len(baseline.descs) != 0 || len(baseline.params) != 0 {
+			t.Fatal("rejected keys changed tool state")
+		}
+		if result := ScanTools([]byte(valid), sc, cfg); !result.Clean || !baseline.HasDriftBaseline() {
+			t.Fatal("valid inventory failed to establish baseline")
+		}
+	}
+}

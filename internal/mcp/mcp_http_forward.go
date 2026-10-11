@@ -18,6 +18,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
@@ -183,6 +184,7 @@ func RunHTTPProxy(
 	defer recordMCPBaselineSample(opts, rec)
 
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
+	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys
 	var upstreamMu sync.Mutex
 
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg

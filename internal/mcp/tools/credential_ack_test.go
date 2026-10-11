@@ -213,6 +213,13 @@ func TestScanToolsStaleAcknowledgmentRefuses(t *testing.T) {
 			}
 			cfg.CredentialAcks = NewCredentialAckSet([]config.MCPAcknowledgedFinding{e}, ackTestKey)
 			r := ScanTools(toolsListLine(tt.raw), testScanner(t), cfg)
+			if tt.name == "duplicate member" {
+				// Key admission now precedes acknowledgment evaluation and state changes.
+				if r.Clean || r.ResourceLimit != "tool_definition_uninspectable" || r.CredentialAckApplied() {
+					t.Fatalf("duplicate key admitted before acknowledgment: %+v", r)
+				}
+				return
+			}
 			m, ok := credentialMatch(r)
 			if r.Clean || !ok || m.CredentialAck != tt.outcome || !r.CredentialAckRefused() {
 				t.Fatalf("outcome = %q (clean=%v refused=%v), want %q", m.CredentialAck, r.Clean, r.CredentialAckRefused(), tt.outcome)

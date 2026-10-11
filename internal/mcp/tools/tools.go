@@ -2291,6 +2291,16 @@ func ScanToolsForMethod(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, m
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
 
+	// Validate the whole response before any batch member can change drift or
+	// inventory state. Direct callers have the same admission boundary as proxies.
+	if err := jsonrpc.ValidateMessageKeys(line); err != nil {
+		if !json.Valid(line) {
+			// The response scanner owns malformed JSON; no tool state is touched.
+			return ToolScanResult{IsToolsList: false, Clean: true}
+		}
+		return ToolScanResult{IsToolsList: true, Clean: false, ResourceLimit: "tool_definition_uninspectable", ResourceDetail: err.Error()}
+	}
+
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	// Trim so a leading-whitespace array is not treated as an unparseable
 	// single object, which would return Clean and skip per-element scanning.

@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -1216,7 +1217,7 @@ func RunHTTPListenerProxy(
 
 			if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
 				if opts.DoWRegisterSession != nil {
-					opts.DoWRegisterSession(sid)
+					reqOpts.OnResponseKeysValidated = sync.OnceFunc(func() { opts.DoWRegisterSession(sid) })
 				}
 				w.Header().Set("Mcp-Session-Id", sid)
 			}
@@ -1930,7 +1931,7 @@ func RunHTTPListenerProxy(
 		// Pass Mcp-Session-Id from upstream back to client.
 		if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
 			if opts.DoWRegisterSession != nil {
-				opts.DoWRegisterSession(sid)
+				reqOpts.OnResponseKeysValidated = sync.OnceFunc(func() { opts.DoWRegisterSession(sid) })
 			}
 			w.Header().Set("Mcp-Session-Id", sid)
 		}

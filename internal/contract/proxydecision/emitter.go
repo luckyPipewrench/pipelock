@@ -298,12 +298,6 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		return nil
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.healthErr != nil {
-		return fmt.Errorf("proxy_decision emitter unhealthy: %w", e.healthErr)
-	}
-
 	// Sanitize secret-bearing fields BEFORE signing, byte-identically to the v1
 	// emitter (#676). The signed target must never carry raw secret bytes.
 	target := d.Target
@@ -334,8 +328,8 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		Timestamp:     e.clock().UTC(),
 		Principal:     e.principal,
 		Actor:         e.actor,
-		ChainSeq:      e.chainSeq,
-		ChainPrevHash: e.chainPrevHash,
+		ChainSeq:      0,
+		ChainPrevHash: recorder.GenesisHash,
 	}
 	// Sanitize free-form span fields BEFORE the commitment is computed, for the
 	// same reason target/rule_id are scrubbed above (#676): these fields land in
@@ -343,6 +337,43 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 	// preimage inputs, so scrubbing must happen before buildReceipt computes the
 	// HMAC.
 	evidence := sanitizeSpanEvidence(d.SourceSpanEvidence, e.sanitize)
+	stamp := contractruntime.ReceiptContext{
+		ActiveManifestHash: d.ActiveManifestHash,
+		ContractHash:       d.ContractHash,
+		SelectorID:         d.SelectorID,
+		ContractGeneration: d.ContractGeneration,
+	}
+
+	// Content does not depend on the chain position, timestamp or signature,
+	// so it is scanned here, outside e.mu: a slow scan must not hold every
+	// other decision behind it. The record step binds this scan to the final
+	// bytes and rescans them if their content differs.
+	template, err := buildReceipt(in, d.SpanHMACKey, evidence)
+	if err != nil {
+		return fmt.Errorf("build proxy_decision receipt: %w", err)
+	}
+	template = stamp.StampReceipt(template)
+	template.Signature = contractreceipt.SignatureProof{
+		SignerKeyID: e.signer.KeyID(),
+		KeyPurpose:  keyPurposeReceiptSigning,
+		Algorithm:   signatureAlgorithm,
+	}
+	prescan, prescanErr := evidenceStamper.Prescan(context.Background(), e.recorder, template)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.healthErr != nil {
+		return fmt.Errorf("proxy_decision emitter unhealthy: %w", e.healthErr)
+	}
+	if prescanErr != nil {
+		// A content rejection is deterministic for its input and consumes no
+		// chain position, so it never latches the emitter.
+		return fmt.Errorf("record proxy_decision receipt: %w", prescanErr)
+	}
+
+	in.Timestamp = e.clock().UTC()
+	in.ChainSeq = e.chainSeq
+	in.ChainPrevHash = e.chainPrevHash
 	rcpt, err := buildReceipt(in, d.SpanHMACKey, evidence)
 	if err != nil {
 		return fmt.Errorf("build proxy_decision receipt: %w", err)
@@ -351,12 +382,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 	// Stamp the contract envelope only when a real resolved contract existed.
 	// For scanner / kill-switch decisions these fields are empty, so the stamp
 	// is a no-op (the fields are omitempty in the wire form).
-	rcpt = contractruntime.ReceiptContext{
-		ActiveManifestHash: d.ActiveManifestHash,
-		ContractHash:       d.ContractHash,
-		SelectorID:         d.SelectorID,
-		ContractGeneration: d.ContractGeneration,
-	}.StampReceipt(rcpt)
+	rcpt = stamp.StampReceipt(rcpt)
 
 	preimage, err := rcpt.SignablePreimage()
 	if err != nil {
@@ -383,7 +409,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 	if err != nil {
 		return fmt.Errorf("hash proxy_decision receipt: %w", err)
 	}
-	recordErr := evidenceStamper.Record(context.Background(), e.recorder, e.session, rcpt, durable)
+	recordErr := evidenceStamper.RecordPrescanned(context.Background(), e.recorder, e.session, rcpt, durable, prescan)
 	if errors.Is(recordErr, contractreceipt.ErrNoDurableRecorder) {
 		return errors.New("proxy_decision recorder does not support durable writes")
 	}

@@ -1109,7 +1109,14 @@ func writeUnparseableResponse(frame MCPFrame, detail string, lineNum int, sc *sc
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s)\n", lineNum, strings.Join(matchNames(rawResult.Matches), ", "))
 	}
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
-	resp := blockResponseReason(nil, "upstream response is not parseable JSON-RPC")
+	// Key preflight previously preserved a recoverable request ID even when
+	// the remaining JSON was malformed. Keep that correlation without
+	// consuming the tracker or admitting any response-derived state.
+	var id json.RawMessage
+	if frame.KeyValidationErr != nil {
+		id = frame.ID
+	}
+	resp := blockResponseReason(id, "upstream response is not parseable JSON-RPC")
 	if err := writer.WriteMessage(resp); err != nil {
 		return !rawResult.Clean, resp, fmt.Errorf("writing block response: %w", err)
 	}

@@ -44,6 +44,52 @@ func responseStateReader(t *testing.T, kind, raw string) transport.MessageReader
 	}
 }
 
+func TestMalformedResponseKeyRejectionPreservesCorrelation(t *testing.T) {
+	for _, kind := range []string{"stdio", "http", "sse", "websocket"} {
+		for _, tc := range []struct {
+			name string
+			raw  string
+			id   string
+		}{
+			{"numeric", `{"id":7,"result":`, "7"},
+			{"string", `{"id":"request-a","result":`, `"request-a"`},
+			{"escaped", `{"i\u0064":7,"result":`, "7"},
+			{"unrecoverable", `{"result":`, jsonrpc.Null},
+			{"field-type-error", `{"jsonrpc":1,"id":7,"result":{}}`, jsonrpc.Null},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				baseline := tools.NewToolBaseline()
+				opts := buildTestOpts(testScannerWithAction(t, config.ActionWarn), withToolCfg(&tools.ToolScanConfig{Action: config.ActionWarn, DetectDrift: true, Baseline: baseline}))
+				admitted := 0
+				opts.OnResponseKeysValidated = func() { admitted++ }
+				tracker := NewStrictRequestTrackerFor(json.RawMessage("7"), "tools/list")
+				var out, logs bytes.Buffer
+				if _, err := ForwardScanned(responseStateReader(t, kind, tc.raw), transport.NewStdioWriter(&out), &logs, tracker, opts); err != nil {
+					t.Fatal(err)
+				}
+				var response struct {
+					ID    json.RawMessage `json:"id"`
+					Error json.RawMessage `json:"error"`
+				}
+				if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &response); err != nil {
+					t.Fatal(err)
+				}
+				if string(response.ID) != tc.id || len(response.Error) == 0 {
+					t.Fatalf("block response = %s, want id %s", out.String(), tc.id)
+				}
+				if tc.name != "field-type-error" {
+					if admitted != 0 || baseline.HasDriftBaseline() || baseline.HasBaseline() {
+						t.Fatal("malformed response admitted session state")
+					}
+					if _, ok := tracker.Consume(json.RawMessage("7")); !ok {
+						t.Fatal("malformed response consumed outstanding request")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestResponseKeyRejectionLeavesStateUntouched(t *testing.T) {
 	const valid = `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"safe","description":"A normal tool"}]}}`
 	for _, kind := range []string{"stdio", "http", "sse", "websocket"} {

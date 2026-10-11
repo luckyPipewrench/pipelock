@@ -9,14 +9,25 @@ import os
 import stat
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 MAX_VERIFIER_INPUT_BYTES = 8 << 20
 MAX_RECORDER_LINE_BYTES = 1 << 20
 
 
-def read_verifier_file(path: str | Path) -> bytes:
+def _open_regular_input(path: str | Path) -> BinaryIO:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(fd, "rb") as stream:
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("input must be a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_verifier_file(path: str | Path) -> bytes:
+    with _open_regular_input(path) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise OSError("input must be a regular file")
@@ -34,8 +45,7 @@ def iter_verifier_jsonl_lines(path: str | Path) -> Iterator[bytes]:
         path_before = os.stat(path)
     except OSError as exc:
         raise OSError("input changed while opening") from exc
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(fd, "rb") as stream:
+    with _open_regular_input(path) as stream:
         initial = os.fstat(stream.fileno())
         if not stat.S_ISREG(initial.st_mode):
             raise OSError("input must be a regular file")
@@ -55,9 +65,13 @@ def iter_verifier_jsonl_lines(path: str | Path) -> Iterator[bytes]:
                 payload = line[:-1] if line.endswith(b"\n") else line
                 if payload.endswith(b"\r") and line.endswith(b"\r\n"):
                     payload = payload[:-1]
-                if len(payload) > MAX_RECORDER_LINE_BYTES or len(line) > MAX_RECORDER_LINE_BYTES + 2:
+                if (
+                    len(payload) > MAX_RECORDER_LINE_BYTES
+                    or len(line) > MAX_RECORDER_LINE_BYTES + 2
+                ):
                     raise OSError(
-                        f"line exceeds {MAX_RECORDER_LINE_BYTES}-byte recorder entry limit"
+                        f"line exceeds {MAX_RECORDER_LINE_BYTES}-byte "
+                        "recorder entry limit"
                     )
                 yield line
         finally:

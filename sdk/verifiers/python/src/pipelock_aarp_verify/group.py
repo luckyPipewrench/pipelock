@@ -1550,7 +1550,9 @@ def verify_receipt_group(
         result["verdict"] = GROUP_INVALID
         cause: BaseException | None = exc
         while cause is not None:
-            if isinstance(cause, OSError) and not isinstance(cause, FileNotFoundError):
+            if isinstance(cause, OSError) and not isinstance(
+                cause, (FileNotFoundError, BlockingIOError)
+            ):
                 result["verdict"] = GROUP_INCOMPLETE
                 break
             cause = cause.__cause__
@@ -1573,7 +1575,9 @@ def verify_receipt_group(
             and ael_info is not None
         ):
             result["verdict"] = GROUP_INCOMPLETE
-            result["error"] = "receipt group inventory was unavailable during verification"
+            result["error"] = (
+                "receipt group inventory was unavailable during verification"
+            )
         if before is not None and root_info is not None and ael_info is not None:
             try:
                 changed = (

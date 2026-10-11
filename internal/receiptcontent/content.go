@@ -329,6 +329,11 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 	if !ok {
 		return nil, reject(ViewMalformed, "detail is not a JSON object")
 	}
+	// The mirror replaces whatever sits at OuterKey in the structured view,
+	// so a detail that already uses the member would lose its own context.
+	if _, taken := obj[OuterKey]; taken && outer != nil {
+		return nil, reject(ViewMalformed, "detail uses the reserved "+OuterKey+" member")
+	}
 	w := &walker{p: p}
 	tree, keep, err := w.walk(obj, "", "", 0)
 	if err != nil {

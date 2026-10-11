@@ -276,7 +276,7 @@ func newReceiptEmissionBlockedRequest(err error) *blockedRequestError {
 	return newBlockedRequestError(
 		blockLayerReceiptEmission,
 		receiptEmissionBlockReason,
-		receiptEmissionBlockReason+": "+err.Error(),
+		receiptEmissionBlockReason+": failure="+receiptFailureClass(err),
 	)
 }
 
@@ -1631,6 +1631,11 @@ func requiredReceiptBlockMetricReason(err error) string {
 	if errors.Is(err, recorder.ErrDurability) {
 		return "durability"
 	}
+	// Kept apart from "durability" so the durability blocks counted against
+	// gated fsync failures stay one per storage failure.
+	if errors.Is(err, recorder.ErrDurabilityInherited) {
+		return receipt.FailReasonDurabilityInherited
+	}
 	return "emit_error"
 }
 
@@ -1677,12 +1682,7 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	if err := p.emitRequiredV2Receipt(opts); err != nil {
 		markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
-		if group := p.receiptGroupPtr.Load(); group != nil {
-			selected, selectErr := group.v2Emitter(opts)
-			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
-				group.failRequired(errors.Join(err, markerErr))
-			}
-		}
+		failRequiredReceiptGroup(p.receiptGroupPtr.Load(), opts, errors.Join(err, markerErr))
 		return errors.Join(err, markerErr)
 	}
 	return nil
@@ -1738,12 +1738,7 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	}
 	if err := p.emitV2Receipt(opts); err != nil {
 		markerErr := p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
-		if group := p.receiptGroupPtr.Load(); group != nil {
-			selected, selectErr := group.v2Emitter(opts)
-			if markerErr != nil || selectErr == nil && selected.HealthError() != nil {
-				group.failRequired(errors.Join(err, markerErr))
-			}
-		}
+		failRequiredReceiptGroup(p.receiptGroupPtr.Load(), opts, errors.Join(err, markerErr))
 	}
 }
 
@@ -1852,16 +1847,82 @@ func (p *Proxy) logReceiptChannelBroken(opts receipt.EmitOpts, err error) {
 	logReceiptChannelBrokenTo(p.logger, opts, err)
 }
 
+// Receipt failure diagnostics name only bounded labels. The receipt options
+// and the emitter's error can carry request text (method, target, pattern) or
+// the content that caused the refusal, so neither is written to the log.
 func receiptEmissionError(opts receipt.EmitOpts, err error) error {
-	return fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s: %w",
-		opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-		opts.Transport, opts.Method, err)
+	return fmt.Errorf("emit receipt verdict=%s phase=%s layer=%s failure=%s",
+		receiptVerdictLabel(opts.Verdict), receiptPhaseLabel(opts.DecisionPhase), receiptLayerLabel(opts.Layer), receiptFailureClass(err))
 }
 
 func receiptChannelBrokenError(opts receipt.EmitOpts, err error) error {
-	return fmt.Errorf("event=receipt_channel_broken audit_gap=true action_id=%s verdict=%s phase=%s layer=%s pattern=%q transport=%s method=%s: %w",
-		opts.ActionID, opts.Verdict, opts.DecisionPhase, opts.Layer,
-		opts.Pattern, opts.Transport, opts.Method, err)
+	return fmt.Errorf("event=receipt_channel_broken audit_gap=true verdict=%s phase=%s layer=%s failure=%s",
+		receiptVerdictLabel(opts.Verdict), receiptPhaseLabel(opts.DecisionPhase), receiptLayerLabel(opts.Layer), receiptFailureClass(err))
+}
+
+const receiptLabelOther = "other"
+
+// receiptFailureClass reduces a receipt emission failure to a fixed label.
+// An uncertain write outranks a pre-write refusal: a joined error that holds
+// both reports the write that may have reached the disk. A durability
+// failure is also post-advance, so it is checked first.
+func receiptFailureClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, recorder.ErrDurability):
+		return "durability"
+	case errors.Is(err, recorder.ErrDurabilityInherited):
+		// Checked before post-advance, which the deferred path also wraps:
+		// it matches the durability_inherited block metric reason.
+		return "durability_inherited"
+	case errors.Is(err, receipt.ErrReceiptPostAdvance):
+		return "post_advance"
+	case errors.Is(err, errReceiptEmitterUnavailable):
+		return "emitter_unavailable"
+	case errors.Is(err, recorder.ErrSerializedEntryTooLarge):
+		return "entry_too_large"
+	case errors.Is(err, receipt.ErrChainSealed):
+		return "chain_sealed"
+	case errors.Is(err, errV2ReceiptEmit):
+		return "v2_emit"
+	default:
+		return receiptLabelOther
+	}
+}
+
+func receiptVerdictLabel(verdict string) string {
+	switch verdict {
+	case config.ActionAllow, config.ActionBlock, config.ActionWarn, config.ActionAsk,
+		config.ActionStrip, config.ActionForward, config.ActionRedirect, config.ActionDefer:
+		return verdict
+	default:
+		return receiptLabelOther
+	}
+}
+
+// receiptLayerLabel names only the receipt layers this package owns; any
+// other layer text is reported as "other".
+func receiptLayerLabel(layer string) string {
+	switch layer {
+	case "":
+		return "none"
+	case receiptOutcomeLayer, receiptEmissionFailedLayer:
+		return layer
+	default:
+		return receiptLabelOther
+	}
+}
+
+func receiptPhaseLabel(phase string) string {
+	switch phase {
+	case "":
+		return "none"
+	case receipt.DecisionPhaseIntent, receipt.DecisionPhaseOutcome, receipt.DecisionPhaseDefer, receipt.DecisionPhaseResolution:
+		return phase
+	default:
+		return receiptLabelOther
+	}
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.
@@ -1932,7 +1993,14 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	activeSession := p.recordingSession()
 	keys := append(p.receiptSignerKeysHeld(), p.receiptEmitterPtr.Load().SignerKeyHex(), fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey)))
 	tornRecovery := p.receiptEmitterPtr.Load() != nil && p.receiptEmitterPtr.Load().SessionID() != activeSession
-	if tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys); tailErr != nil {
+	tailErr := receipt.CheckSessionTail(p.recorder, activeSession, keys)
+	if tailErr == nil && p.recorder.DurabilityFailed() {
+		// The current run's sync failed. Its bytes may read back intact while
+		// earlier pages were lost, so it is recovered like a torn run: kept
+		// as is, and a fresh run takes over.
+		tailErr = fmt.Errorf("%w: %w", recorder.ErrTornTail, recorder.ErrDurabilityInherited)
+	}
+	if tailErr != nil {
 		if !errors.Is(tailErr, recorder.ErrTornTail) {
 			p.receiptEmitterPtr.Load().MarkUnhealthy(tailErr)
 			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", tailErr)

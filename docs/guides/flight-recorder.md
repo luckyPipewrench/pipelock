@@ -185,6 +185,23 @@ Operational notes:
       is refused rather than ignored.
   Turning `require_receipts` **off** through a reload is rejected in every case
   and takes a restart, because it is a required security contract.
+- **A failed durability confirmation stops that receipt chain until restart.**
+  A required receipt is confirmed with `fsync` before its request is forwarded.
+  If that sync fails, every receipt waiting on it fails, and so does every later
+  receipt on the same chain: after a failed `fsync` a later one can report
+  success even though the earlier writes were lost, so nothing written after
+  the failure can be confirmed. Requests are blocked with
+  `receipt_emission_failed`; the first failure is counted under the
+  `durability` reason and the later refusals under `durability_inherited`.
+  Graceful shutdown then refuses to sign a final checkpoint over the failed
+  chain. Fix the storage problem, then restart Pipelock or, with a single
+  chain, reload its configuration: either way receipts continue in a new run
+  and the failed run is kept as it was. That new run is not linked to the
+  failed one by a recovery seal, so verification lists it as unlinked.
+  With several receipt chains the storage failure is local to one chain, but
+  under `require_receipts` Pipelock still stops the whole group, because a
+  required group cannot keep writing to its surviving chains as if complete.
+  Closing the group reports it incomplete.
 - **An allowed request that is later blocked carries two receipts.** The
   pre-egress allow receipt attests the egress *decision*; if response scanning
   then blocks the reply, a block receipt is emitted under the **same

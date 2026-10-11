@@ -101,6 +101,7 @@ type EvidenceHealthStats struct {
 	AutoAnchor                 EvidenceAutoAnchorStats    `json:"auto_anchor"`
 	TornTails                  EvidenceTornTailStats      `json:"torn_tails"`
 	TornTailPresent            bool                       `json:"torn_tail_present"`
+	SelfAudit                  EvidenceSelfAuditStats     `json:"self_audit"`
 	CPC                        any                        `json:"cpc"`
 	AnchoredFinalSeq           uint64                     `json:"-"`
 	AnchorLagReceipts          uint64                     `json:"-"`
@@ -180,17 +181,50 @@ type EvidenceAutoAnchorStats struct {
 	LastError string `json:"last_error"`
 }
 
+// Self-audit tail states. A shard is verified only when its own disk tail was
+// read and matched its own in-memory head. Pending means the comparison could
+// not be made (missing evidence, a transient read error, a tail beyond the
+// read bound); it is not green and is not latched. Failed is a proven
+// mismatch and latches selfaudit_ok for the process lifetime.
+const (
+	EvidenceSelfAuditVerified = "verified"
+	EvidenceSelfAuditPending  = "pending"
+	EvidenceSelfAuditFailed   = "failed"
+)
+
+// EvidenceSelfAuditStats reports the per-chain tail comparison behind
+// selfaudit_ok. State is the worst shard state.
+type EvidenceSelfAuditStats struct {
+	State  string                `json:"state"`
+	Shards []EvidenceShardHealth `json:"shards"`
+}
+
+// EvidenceShardHealth is one receipt chain's observation. Every field comes
+// from the same shard: its own emitter, its own recorder session, and its own
+// disk tail and anchor marker.
+type EvidenceShardHealth struct {
+	ShardIndex        int     `json:"shard_index"`
+	SessionID         string  `json:"session_id"`
+	ChainHeadSeq      uint64  `json:"chain_head_seq"`
+	EmitterHealthy    bool    `json:"emitter_healthy"`
+	TailState         string  `json:"tail_state"`
+	TailDetail        string  `json:"tail_detail,omitempty"`
+	AnchoredFinalSeq  *uint64 `json:"anchored_final_seq"`
+	AnchorLagReceipts uint64  `json:"anchor_lag_receipts"`
+}
+
 type EvidenceOperationalInput struct {
 	RecorderEnabled  bool
 	EmitterHealthy   bool
 	SelfAuditOK      bool
+	SelfAuditPending bool
 	UnresolvedGaps   bool
 	UngatedFsyncFail bool
 }
 
 func EvidenceLocalRecorderOperational(in EvidenceOperationalInput) bool {
 	return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK &&
-		!in.UnresolvedGaps && !in.UngatedFsyncFail
+		!in.SelfAuditPending && !in.UnresolvedGaps && !in.UngatedFsyncFail
 }
 
 // EvidenceTornTailStats reports unsigned process-local observations of damaged shards.
@@ -450,7 +484,7 @@ func (m *Metrics) RecordEvidenceAutoAnchorFailure(err string) {
 		return
 	}
 	const maxLastErrorRunes = 1024
-	trimmed := []rune(strings.ToValidUTF8(strings.TrimSpace(err), "�"))
+	trimmed := []rune(strings.ToValidUTF8(strings.TrimSpace(err), "\uFFFD"))
 	if len(trimmed) > maxLastErrorRunes {
 		trimmed = trimmed[:maxLastErrorRunes]
 	}

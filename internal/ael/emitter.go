@@ -79,6 +79,9 @@ type Emitter struct {
 	prev           string
 	opened, closed bool
 	lastErr        error
+	fileSync       func(*os.File) error
+	syncBatch      *durabilityBatch
+	syncMu         sync.Mutex
 }
 
 // NewEmitter creates the manifest, published key, and compact record stream.
@@ -286,7 +289,12 @@ func (e *Emitter) emit(kind string, extra map[string]any, durable bool) error {
 		e.closed = true
 	}
 	if _, err = e.file.WriteString(line); err == nil && durable {
-		err = e.file.Sync()
+		fn := e.fileSync
+		if fn == nil {
+			err = e.file.Sync()
+		} else {
+			err = fn(e.file)
+		}
 	}
 	if err != nil {
 		e.lastErr = err

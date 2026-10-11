@@ -155,7 +155,7 @@ func resolveHeaderCarrierEntries(mappings []string) ([]carrierHeader, error) {
 		}
 		value, ok := os.LookupEnv(carrier)
 		if !ok {
-			return nil, fmt.Errorf("--header-carrier %q: required carrier %s is unset", mapping, carrier)
+			return nil, fmt.Errorf("--header-carrier: required carrier %s is unset", carrier)
 		}
 		entries = append(entries, carrierHeader{Header: header, Carrier: carrier, Value: value})
 	}
@@ -166,7 +166,22 @@ func resolveHeaderCarrierEntries(mappings []string) ([]carrierHeader, error) {
 // with the source it came from (file, flag or carrier and the carrier
 // variable name). The values are validated by the same parser the transport
 // uses. They are never logged.
+func mergeHeaderLines(fileLines, flagLines []string, carriers []carrierHeader) []string {
+	lines := make([]string, 0, len(fileLines)+len(flagLines)+len(carriers))
+	lines = append(lines, fileLines...)
+	lines = append(lines, flagLines...)
+	for _, c := range carriers {
+		lines = append(lines, c.Header+": "+c.Value)
+	}
+	return lines
+}
+
 func identityHeaders(fileLines, flagLines []string, carriers []carrierHeader) ([]identity.Header, error) {
+	// Validate the whole launch before preserving individual sources below.
+	// Parsing each line alone would miss singleton duplicates across sources.
+	if _, err := parseHeaderFlags(mergeHeaderLines(fileLines, flagLines, carriers)); err != nil {
+		return nil, err
+	}
 	headers := make([]identity.Header, 0, len(fileLines)+len(flagLines)+len(carriers))
 	add := func(line, source, carrier string) error {
 		parsed, err := parseHeaderFlags([]string{line})

@@ -14,6 +14,14 @@ import (
 // still-valid replay state and make a prior request replayable.
 var ErrReplayCacheCapacity = errors.New("signature replay cache capacity exhausted; cannot safely verify nonce")
 
+// ErrReplayStateUnavailable means a clock rollback or skew change has made
+// previously pruned signatures valid again. New signatures are also refused
+// until their expiration passes the retained boundary.
+var ErrReplayStateUnavailable = errors.New("signature replay state unavailable after a clock or skew change; correct the clock and wait for signature expiry to pass the retained high-water mark, or restart the proxy")
+
+// ErrReplayCacheRequired reports a verifier without nonce protection.
+var ErrReplayCacheRequired = errors.New("signature replay cache is missing; configure a replay cache before verifying requests")
+
 // ReplayCache is a bounded, nonce-keyed in-process cache for inbound envelope
 // verification. It is safe for concurrent use.
 type ReplayCache struct {
@@ -58,7 +66,7 @@ func (c *ReplayCache) CheckAndStore(nonce string, expires time.Time) error {
 
 func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, skew time.Duration) error {
 	if c == nil {
-		return nil
+		return ErrReplayCacheRequired
 	}
 	if nonce == "" {
 		return fmt.Errorf("signature nonce is required")
@@ -93,7 +101,7 @@ func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, ske
 	// nonce may already have been forgotten. Retain one conservative boundary
 	// instead of an unbounded set of expired nonces.
 	if !expires.After(c.prunedExpiry) {
-		return fmt.Errorf("signature replay state unavailable; a fresh signature is required")
+		return ErrReplayStateUnavailable
 	}
 	if _, ok := c.entries[nonce]; ok {
 		return fmt.Errorf("signature replay detected")

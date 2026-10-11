@@ -90,7 +90,11 @@ func TestVerifierReloadLargerSkewRetainsNonces(t *testing.T) {
 			}
 			now = start.Add(6*time.Minute + time.Second)
 			_, err := next.VerifyRequest(req, nil)
-			if code, ok := VerificationFailureCodeOf(err); !ok || code != VerificationFailureReplay {
+			want := VerificationFailureReplay
+			if timing == "already-pruned" {
+				want = VerificationFailureReplayState
+			}
+			if code, ok := VerificationFailureCodeOf(err); !ok || code != want {
 				t.Fatalf("want replay failure after larger-skew reload, got %v", err)
 			}
 			if err := next.replayCache.CheckAndStoreWithSkew("fresh", now.Add(time.Minute), next.skew); err != nil {

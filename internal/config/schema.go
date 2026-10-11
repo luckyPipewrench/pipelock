@@ -2113,11 +2113,10 @@ type MediationEnvelope struct {
 
 	// SignatureExpires is the per-signature lifetime emitted by the
 	// outbound signer (Go duration string, e.g. "5m"). Empty falls
-	// back to the verifier's replay-cache window so the cache always
-	// outlives the signature. The validator rejects values larger
-	// than verify_inbound.replay_cache.window because a longer-lived
-	// signature would be replayable after its nonce was evicted from
-	// the cache.
+	// back to the verifier's replay-cache window. The validator caps
+	// this value at verify_inbound.replay_cache.window to bound the
+	// emitted lifetime. Replay protection retains each nonce through
+	// its signed expiry plus skew and refuses new nonces at capacity.
 	SignatureExpires string `yaml:"signature_expires"`
 
 	// ActorFormat controls emitted envelope actor values and inbound

@@ -123,6 +123,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// path "/", so root-path rules can match and non-root path rules fall
 	// through to enforce-default-deny.
 	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
+	licenseCtx, releaseLicense := agentLicenseContext(r.Context(), resolved)
+	defer releaseLicense()
+	r = r.WithContext(licenseCtx)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -713,6 +716,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
 	defer func() {
+		if errors.Is(context.Cause(r.Context()), errAgentLicenseRevoked) {
+			outcomeReason = "license_revoked"
+		}
 		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
 	}()
 
@@ -778,6 +784,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(clientConn, "clientConn", p.logger)
+	// Hijacked tunnels no longer participate in net/http cancellation. Close
+	// both sockets on revocation, including while waiting for a TLS ClientHello.
+	// Capture the current upstream: interception later clears targetConn.
+	revocationTarget := targetConn
+	stopLicenseClose := context.AfterFunc(licenseCtx, func() {
+		if errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked) {
+			_ = clientConn.Close()
+			_ = revocationTarget.Close()
+		}
+	})
+	defer stopLicenseClose()
 
 	// Send 200 Connection Established. A hijacked connection bypasses net/http's
 	// normal header serialization, so carry the already-validated recorded

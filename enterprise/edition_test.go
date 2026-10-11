@@ -385,3 +385,96 @@ func TestEnterpriseEditionAgentBudgetSnapshots(t *testing.T) {
 		t.Fatalf("bounded snapshots = %+v, want alpha only", bounded)
 	}
 }
+
+func TestEnterpriseEdition_RevocationHidesProfiles(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"client":               {Listeners: []string{":9001"}},
+		edition.ProfileDefault: {Listeners: []string{":9002"}},
+	}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	ed, err := NewEdition(cfg, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ed.Close()
+	if !ed.KnownProfiles()["client"] || ed.Ports()[":9001"] != "client" {
+		t.Fatal("positive control missing profile")
+	}
+	ed.(edition.LicenseRevocationReceiver).SetLicenseRevoked(true)
+	if ed.KnownProfiles()["client"] || len(ed.Ports()) != 1 || ed.Ports()[":9002"] != edition.ProfileDefault || !ed.KnownProfiles()[edition.ProfileDefault] {
+		t.Fatal("revoked profile advertised")
+	}
+	ed.(edition.LicenseRevocationReceiver).SetLicenseRevoked(false)
+	if !ed.KnownProfiles()["client"] || ed.Ports()[":9001"] != "client" {
+		t.Fatal("recovery did not restore profile")
+	}
+}
+
+func TestEnterpriseEdition_RevocationSnapshotGenerations(t *testing.T) {
+	cfg := testConfig()
+	cfg.LicenseKey = "original"
+	cfg.Agents = map[string]config.AgentProfile{"client": {}}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	ed, err := NewEdition(cfg, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ed.Close()
+	first, ok := ed.LookupProfile("client")
+	if !ok || first.LicenseRevoked == nil {
+		t.Fatal("paid snapshot missing revocation signal")
+	}
+	defaultAgent, _ := ed.LookupProfile(edition.ProfileDefault)
+	if defaultAgent.LicenseRevoked != nil {
+		t.Fatal("free profile depends on paid license")
+	}
+	nextCfg := cfg.Clone()
+	nextCfg.Logging.IncludeAllowed = !cfg.Logging.IncludeAllowed
+	nextSc := scanner.MustNew(nextCfg)
+	defer nextSc.Close()
+	next, err := ed.Reload(nextCfg, nextSc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	second, _ := next.LookupProfile("client")
+	if first.LicenseRevoked != second.LicenseRevoked {
+		t.Fatal("same-token reload lost revocation generation")
+	}
+	next.(edition.LicenseRevocationReceiver).SetLicenseRevoked(true)
+	next.(edition.LicenseRevocationReceiver).SetLicenseRevoked(true)
+	select {
+	case <-first.LicenseRevoked:
+	default:
+		t.Fatal("previous snapshot not revoked")
+	}
+	next.(edition.LicenseRevocationReceiver).SetLicenseRevoked(false)
+	recovered, _ := ed.LookupProfile("client")
+	if recovered.LicenseRevoked == first.LicenseRevoked {
+		t.Fatal("recovery resurrected old snapshot")
+	}
+	select {
+	case <-recovered.LicenseRevoked:
+		t.Fatal("recovery signal already revoked")
+	default:
+	}
+	replacementCfg := cfg.Clone()
+	replacementCfg.LicenseKey = "replacement"
+	replacementSc := scanner.MustNew(replacementCfg)
+	defer replacementSc.Close()
+	replacement, err := next.Reload(replacementCfg, replacementSc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	replacementAgent, _ := replacement.LookupProfile("client")
+	next.(edition.LicenseRevocationReceiver).SetLicenseRevoked(true)
+	select {
+	case <-replacementAgent.LicenseRevoked:
+		t.Fatal("old entitlement revoked replacement token")
+	default:
+	}
+}

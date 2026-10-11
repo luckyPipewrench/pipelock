@@ -31,6 +31,8 @@ type TrustedKey struct {
 
 type VerifierConfig struct {
 	TrustedKeys []TrustedKey
+	// ReplayCache is required for successful verification. A missing cache
+	// returns VerificationFailureReplayState instead of accepting a nonce.
 	ReplayCache *ReplayCache
 	Skew        time.Duration
 	// ActorFormat controls inbound actor parsing. "spiffe" requires
@@ -64,6 +66,7 @@ type VerificationFailureCode string
 const (
 	VerificationFailureReplay         VerificationFailureCode = "replay"
 	VerificationFailureReplayCapacity VerificationFailureCode = "replay_capacity"
+	VerificationFailureReplayState    VerificationFailureCode = "replay_state"
 	VerificationFailureExpired        VerificationFailureCode = "expired"
 	VerificationFailureNotTrusted     VerificationFailureCode = "not_trusted"
 	VerificationFailureMissing        VerificationFailureCode = "missing"
@@ -290,6 +293,8 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 		code := VerificationFailureReplay
 		if errors.Is(err, ErrReplayCacheCapacity) {
 			code = VerificationFailureReplayCapacity
+		} else if errors.Is(err, ErrReplayStateUnavailable) || errors.Is(err, ErrReplayCacheRequired) {
+			code = VerificationFailureReplayState
 		} else if strings.Contains(strings.ToLower(err.Error()), "expired") {
 			code = VerificationFailureExpired
 		}

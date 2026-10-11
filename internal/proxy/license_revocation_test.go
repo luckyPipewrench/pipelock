@@ -20,7 +20,9 @@ func (e *revocationTestEdition) SetLicenseRevoked(revoked bool) { e.revoked = re
 func TestLicenseRevocationRejectsStaleConfiguration(t *testing.T) {
 	t.Parallel()
 	old := config.Defaults()
+	old.LicenseKey = "original"
 	next := old.Clone()
+	next.LicenseKey = "replacement"
 	p := &Proxy{}
 	p.cfgPtr.Store(old)
 	ed := &revocationTestEdition{}
@@ -41,5 +43,25 @@ func TestLicenseRevocationRejectsStaleConfiguration(t *testing.T) {
 	p.editionPtr.Store(&editionSnapshot{})
 	if !p.SetLicenseRevoked(next, true) {
 		t.Fatal("edition without revocation receiver rejected current configuration")
+	}
+}
+
+func TestLicenseRevocationAppliesAcrossUnrelatedReload(t *testing.T) {
+	t.Parallel()
+	old := config.Defaults()
+	old.LicenseKey = "original"
+	next := old.Clone()
+	next.Logging.IncludeAllowed = !old.Logging.IncludeAllowed
+	p := &Proxy{}
+	p.cfgPtr.Store(next)
+	ed := &revocationTestEdition{}
+	p.editionPtr.Store(&editionSnapshot{Edition: ed})
+	if !p.SetLicenseRevoked(old, true) || !ed.revoked {
+		t.Fatal("same-license reload dropped revocation")
+	}
+	next.LicenseCRLFile = "replacement-crl.json"
+	ed.revoked = false
+	if p.SetLicenseRevoked(old, true) || ed.revoked {
+		t.Fatal("changed verification policy accepted stale revocation")
 	}
 }

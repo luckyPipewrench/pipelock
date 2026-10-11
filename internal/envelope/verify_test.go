@@ -306,8 +306,8 @@ func TestReplayCacheDefaultsAndNoopPaths(t *testing.T) {
 	if cache.nowFn == nil {
 		t.Fatal("default nowFn was not installed")
 	}
-	if err := (*ReplayCache)(nil).CheckAndStore("nonce", now); err != nil {
-		t.Fatalf("nil cache should be a noop: %v", err)
+	if err := (*ReplayCache)(nil).CheckAndStore("nonce", now); !errors.Is(err, ErrReplayCacheRequired) {
+		t.Fatalf("nil cache must fail closed: %v", err)
 	}
 
 	cache = newReplayCache(time.Minute, 2, func() time.Time { return now })

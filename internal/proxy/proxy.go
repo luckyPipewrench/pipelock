@@ -2962,19 +2962,32 @@ func (p *Proxy) RegisterAgentServer(srv *http.Server) {
 	p.agentServers = append(p.agentServers, srv)
 }
 
-// SetLicenseRevoked publishes a runtime license check only if its config is
-// still current. Serializing with reload prevents a stale check from revoking
-// a replacement token or missing the newly published edition.
+// SetLicenseRevoked publishes a runtime license check serialized with reload.
+// A failure remains applicable across unrelated reloads of the same license
+// verification inputs. Recovery must use the current snapshot so an old check
+// cannot clear a newer revocation.
 func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 	p.reloadSerialMu.Lock()
 	defer p.reloadSerialMu.Unlock()
-	if p.cfgPtr.Load() != cfg {
+	current := p.cfgPtr.Load()
+	if current != cfg && (!revoked || !sameLicenseVerificationInputs(current, cfg)) {
 		return false
 	}
 	if receiver, ok := p.Edition().(edition.LicenseRevocationReceiver); ok {
 		receiver.SetLicenseRevoked(revoked)
 	}
 	return true
+}
+
+func sameLicenseVerificationInputs(a, b *config.Config) bool {
+	return a != nil && b != nil &&
+		a.LicenseKey == b.LicenseKey &&
+		a.LicensePublicKey == b.LicensePublicKey &&
+		a.LicenseCRLFile == b.LicenseCRLFile &&
+		bytes.Equal(a.LicenseIntermediateCert, b.LicenseIntermediateCert) &&
+		a.LicenseIntermediateFile == b.LicenseIntermediateFile &&
+		a.LicenseRequireIntermediateResolved == b.LicenseRequireIntermediateResolved &&
+		a.LicenseCRLMaxAgeResolved == b.LicenseCRLMaxAgeResolved
 }
 
 // ShutdownAgentServers gracefully shuts down all registered agent servers.
@@ -3331,6 +3344,8 @@ func inboundEnvelopeFailurePattern(err error) string {
 			return "inbound_verify_replay"
 		case envelope.VerificationFailureReplayCapacity:
 			return "inbound_verify_replay_capacity"
+		case envelope.VerificationFailureReplayState:
+			return "inbound_verify_replay_state"
 		case envelope.VerificationFailureExpired:
 			return "inbound_verify_expired"
 		case envelope.VerificationFailureNotTrusted:
@@ -3348,6 +3363,8 @@ func inboundEnvelopeFailurePattern(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, envelope.ErrReplayStateUnavailable), errors.Is(err, envelope.ErrReplayCacheRequired):
+		return "inbound_verify_replay_state"
 	case strings.Contains(msg, "replay"):
 		return "inbound_verify_replay"
 	case strings.Contains(msg, "expired"), strings.Contains(msg, "created in the future"), strings.Contains(msg, "expires before created"), strings.Contains(msg, "lifetime exceeds"):

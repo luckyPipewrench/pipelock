@@ -84,6 +84,7 @@ type wsRelay struct {
 	// relay or a local close stopped it, not because the upstream finished or
 	// broke off. Written only by upstreamToClient, read after it returns.
 	upstreamCancelled bool
+	panicked          atomic.Bool // either pump can panic; read after both return
 	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
 	// for per-frame request_policy evaluation, so a frame is judged against the
 	// same escaped path and method-override headers as the handshake gate.
@@ -252,8 +253,24 @@ type wsRelayStats struct {
 	textFrames     int64
 	binaryFrames   int64
 	blocked        bool // true if relay terminated due to a policy/DLP/injection block
+	panicked       bool // unexpected internal failure, distinct from policy denial
 	incomplete     bool // upstream ended without completing its WebSocket stream
 	cancelled      bool // the relay or a local close ended the upstream direction
+}
+
+func (s wsRelayStats) closeOutcome() (ws.StatusCode, string) {
+	switch {
+	case s.panicked:
+		return ws.StatusPolicyViolation, "relay_panic"
+	case s.blocked:
+		return ws.StatusPolicyViolation, "policy_blocked"
+	case s.incomplete:
+		return ws.StatusAbnormalClosure, receiptReasonIncomplete
+	case s.cancelled:
+		return ws.StatusGoingAway, httpstream.Cancelled
+	default:
+		return ws.StatusNormalClosure, "complete"
+	}
 }
 
 // handleWebSocket handles /ws WebSocket proxy requests.
@@ -270,6 +287,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// loader is captured for the handshake gate; per-frame scanning stays
 	// independent and unchanged.
 	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
+	licenseCtx, releaseLicense := agentLicenseContext(r.Context(), resolved)
+	defer releaseLicense()
+	r = r.WithContext(licenseCtx)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -1150,6 +1170,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
+	stopLicenseClose := context.AfterFunc(licenseCtx, func() {
+		if errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked) {
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+		}
+	})
+	defer stopLicenseClose()
 
 	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	for _, wsSess := range wsAirlockSessions {
@@ -1209,6 +1236,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := relay.run(r.Context())
+	licenseRevoked := errors.Is(context.Cause(licenseCtx), errAgentLicenseRevoked)
+	if licenseRevoked {
+		stats.blocked = true
+	}
 
 	p.metrics.DecrActiveWS()
 	duration := time.Since(start)
@@ -1229,19 +1260,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		BinaryFrames:   stats.binaryFrames,
 		Duration:       duration,
 	})
-	outcomeCloseCode := ws.StatusNormalClosure
-	outcomeReason = "complete"
-	switch {
-	case stats.incomplete:
-		outcomeCloseCode = ws.StatusAbnormalClosure
-		outcomeReason = receiptReasonIncomplete
-	case stats.cancelled:
-		outcomeCloseCode = ws.StatusGoingAway
-		outcomeReason = httpstream.Cancelled
-	}
-	if stats.blocked {
-		outcomeCloseCode = ws.StatusPolicyViolation
-		outcomeReason = "policy_blocked"
+	outcomeCloseCode, closeReason := stats.closeOutcome()
+	outcomeReason = closeReason
+	if licenseRevoked && !stats.panicked {
+		outcomeReason = "license_revoked"
 	}
 	p.emitOutcomeReceipt(cfg, admissionReceipt, strconv.Itoa(int(outcomeCloseCode)), stats.clientToServer+stats.serverToClient, outcomeReason)
 	outcomeEmitted = true
@@ -1261,6 +1283,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Agent:            agent,
 		RedactionProfile: cfg.Redaction.DefaultProfile,
 		RedactionReport:  relay.redactionLog,
+	}
+	if stats.panicked {
+		closeReceipt.Pattern = "relay_panic"
+	} else if licenseRevoked {
+		closeReceipt.Pattern = "license_revoked"
 	}
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
@@ -1515,6 +1542,7 @@ func (r *wsRelay) recoverRelayPanic(cancel context.CancelFunc, blocked *bool) {
 		return
 	}
 	*blocked = true
+	r.panicked.Store(true)
 	cancel()
 	if r.clientConn != nil {
 		_ = r.clientConn.Close()
@@ -1567,6 +1595,7 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 		textFrames:     c2sText + s2cText,
 		binaryFrames:   c2sBinary + s2cBinary,
 		blocked:        c2sBlocked || s2cBlocked,
+		panicked:       r.panicked.Load(),
 		incomplete:     r.upstreamIncomplete,
 		cancelled:      r.upstreamCancelled,
 	}

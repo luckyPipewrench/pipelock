@@ -68,6 +68,10 @@ func TestRuntimeCRLRevokesProfileSelection(t *testing.T) {
 	if resolved.Name != "client" {
 		t.Fatalf("positive control: %s", resolved.Name)
 	}
+	initialSignal := resolved.LicenseRevoked
+	if initialSignal == nil {
+		t.Fatal("paid profile did not carry revocation signal")
+	}
 	if s.refreshLicenseCRLOnce() {
 		t.Fatal("unrevoked license denied")
 	}
@@ -80,6 +84,11 @@ func TestRuntimeCRLRevokesProfileSelection(t *testing.T) {
 	if _, ok := ed.LookupProfile("client"); ok {
 		t.Fatal("missing CRL retained paid profile")
 	}
+	select {
+	case <-initialSignal:
+	default:
+		t.Fatal("missing CRL did not revoke existing snapshot")
+	}
 	if err := os.Rename(crlPath+".saved", crlPath); err != nil {
 		t.Fatal(err)
 	}
@@ -89,9 +98,30 @@ func TestRuntimeCRLRevokesProfileSelection(t *testing.T) {
 	if resolved, ok := ed.LookupProfile("client"); !ok || resolved.Name != "client" {
 		t.Fatal("valid CRL recovery did not restore profile")
 	}
+	// Start a CRL check on this snapshot, then publish an unrelated reload
+	// before its result is applied. The same license must still be revoked.
+	checked := s.proxy.CurrentConfig()
+	active, _ := ed.LookupProfile("client")
+	if active.LicenseRevoked == initialSignal {
+		t.Fatal("recovery reused revoked generation")
+	}
 	writeCRL(true)
+	failClosed, checkErr := checkLicenseCRLConfig(checked)
+	if !failClosed || checkErr == nil {
+		t.Fatal("revocation not detected")
+	}
+	next := checked.Clone()
+	next.Logging.IncludeAllowed = !checked.Logging.IncludeAllowed
+	if !s.proxy.Reload(next, scanner.MustNew(next)) || !s.proxy.SetLicenseRevoked(checked, failClosed) {
+		t.Fatal("same-license reload dropped checked revocation")
+	}
+	select {
+	case <-active.LicenseRevoked:
+	default:
+		t.Fatal("reload did not revoke existing snapshot")
+	}
 	if !s.refreshLicenseCRLOnce() {
-		t.Fatal("revocation not observed")
+		t.Fatal("revocation not observed by runtime refresh")
 	}
 	for _, ctx := range []bool{false, true} {
 		context := req.Context()

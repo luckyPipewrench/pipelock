@@ -66,6 +66,19 @@ func TestIdentityHeaders(t *testing.T) {
 		{name: "malformed file line", file: []string{"nocolon"}, wantErr: true},
 		{name: "malformed flag line", flag: []string{"nocolon"}, wantErr: true},
 		{name: "carrier value with a newline", carriers: []carrierHeader{{Header: "Authorization", Carrier: testIdentityCarrier, Value: "Bearer a\r\nX: y"}}, wantErr: true},
+		{name: "duplicate credential in file", file: []string{"Authorization: first", "authorization: second"}, wantErr: true},
+		{name: "duplicate credential across file and flag", file: []string{"Authorization: first"}, flag: []string{"authorization: second"}, wantErr: true},
+		{name: "duplicate credential across flag and carrier", flag: []string{"authorization: first"}, carriers: []carrierHeader{{Header: "Authorization", Carrier: testIdentityCarrier, Value: "second"}}, wantErr: true},
+		{name: "duplicate credential across carriers", carriers: []carrierHeader{{Header: "Authorization", Value: "first"}, {Header: "authorization", Value: "second"}}, wantErr: true},
+		{
+			name: "repeatable headers keep their sources",
+			file: []string{"X-Foo: first"},
+			flag: []string{"x-foo: second"},
+			want: []identity.Header{
+				{Name: "X-Foo", Value: "first", Source: identity.HeaderSourceFile},
+				{Name: "X-Foo", Value: "second", Source: identity.HeaderSourceFlag},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -403,8 +403,10 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	// Quinary: vowel-folded matching.
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
-		if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: folded}
+		if folded != content {
+			if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
+				return responseMatchSet{matches: matches, content: folded}
+			}
 		}
 	}
 
@@ -509,8 +511,10 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 	}
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
-		if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: folded}
+		if folded != normalized {
+			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+				return responseMatchSet{matches: matches, content: folded}
+			}
 		}
 	}
 	return responseMatchSet{}
@@ -782,18 +786,22 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
 		key := pair.key
 		decodedKey := IterativeDecode(key)
+		onceKey := normalize.QueryUnescapePartial(key)
+		targets = append(targets, dlpTarget{onceKey, dlpViewLabel("url_query_key"), ""})
+		targets = append(targets, queryValueDecodedTargetsWithDecodes(onceKey, decodes)...)
 		if decodedKey != key {
 			targets = append(targets, queryValueDecodedTargetsWithDecodes(key, decodes)...)
 		}
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
-		for _, d := range decodes.decode(decodedKey, false) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-		}
+		targets = append(targets, queryValueDecodedTargetsWithDecodes(decodedKey, decodes)...)
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
 		}
 		{
 			v := pair.value
+			once := normalize.QueryUnescapePartial(v)
+			targets = append(targets, dlpTarget{once, dlpViewLabel("url_query_value"), ""})
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(once, decodes)...)
 			decoded := IterativeDecode(v)
 			if decoded != v {
 				targets = append(targets, queryValueDecodedTargetsWithDecodes(v, decodes)...)

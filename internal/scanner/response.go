@@ -686,7 +686,9 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 	// Folding all vowels to 'a' in both content and patterns makes them match.
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
-		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.match(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
+		if folded != content {
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, memo.match(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
+		}
 	}
 
 	// Senary: base64/hex decode pass. Only runs when content contains a
@@ -1612,8 +1614,10 @@ func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) respo
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
-		if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
+		if folded != normalized {
+			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)); len(matches) > 0 {
+				return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
+			}
 		}
 	}
 	return responseMatchSet{}

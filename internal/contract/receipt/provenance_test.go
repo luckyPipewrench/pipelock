@@ -311,7 +311,6 @@ func TestCommitmentEnumBytesAreStable(t *testing.T) {
 		normalize.OperationQuerySubsequence: 24, normalize.OperationHostnameDotRemove: 25, normalize.OperationEncodedRun: 26,
 		normalize.OperationCanaryCanonicalize: 27, normalize.OperationASCIIAlphanumericStrip: 28,
 		normalize.OperationASCIIUpper: 29, normalize.OperationJSONUnicodeEscape: 30,
-		normalize.OperationDecodeRecovery: 31,
 	}
 	for kind, want := range kinds {
 		t.Run("kind/"+string(kind), func(t *testing.T) {

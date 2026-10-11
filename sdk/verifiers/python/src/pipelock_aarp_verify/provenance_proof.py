@@ -84,7 +84,6 @@ _OP_BYTES = {
     "ascii_alphanumeric_strip": 28,
     "ascii_upper": 29,
     "json_unicode_escape": 30,
-    "decode_recovery": 31,
 }
 _COMPONENT_BYTES = {
     "": 0,

@@ -14,7 +14,7 @@ import (
 // externalTransferURLCandidateRE finds the indirect-tool branch without
 // guessing how a query key was percent-encoded. Query-key classification is
 // performed after URL-query decoding by externalTransferHasSensitiveQueryKey.
-var externalTransferURLCandidateRE = regexp.MustCompile(`(?im)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?(?:(?:please|must|required\s+to|need\s+to|you\s+(?:must|should|need\s+to))\s+)?(?:call|invoke|execute|run|fetch|curl|wget)\b(?:[^.\n!?;|&]|\.[^\s]){0,180}\bhttps?://[^\s;|]{1,600}`)
+var externalTransferURLCandidateRE = regexp.MustCompile(`(?im)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?(?:(?:please|must|required\s+to|need\s+to|you\s+(?:must|should|need\s+to))\s+)?(?:call|invoke|execute|run|fetch|curl|wget)\b(?:[^.\n!?;|&]|\.[^\s]){0,180}\bhttps?://[^\s|]{1,600}`)
 
 var externalTransferURLStartRE = regexp.MustCompile(`(?i)https?://`)
 
@@ -170,20 +170,15 @@ func overlapsResponseMatch(existing [][]int, candidate []int) bool {
 func externalTransferHasSensitiveQueryKey(candidate string) bool {
 	for _, loc := range externalTransferURLStartRE.FindAllStringIndex(candidate, -1) {
 		rawURL := candidate[loc[0]:]
-		if end := strings.IndexAny(rawURL, " \t\r\n;|"); end >= 0 {
+		if end := strings.IndexAny(rawURL, " \t\r\n|"); end >= 0 {
 			rawURL = rawURL[:end]
 		}
 		parsed, err := url.Parse(rawURL)
 		if err != nil || parsed.RawQuery == "" {
 			continue
 		}
-		for _, field := range strings.Split(parsed.RawQuery, "&") {
-			rawKey, _, ok := strings.Cut(field, "=")
-			if !ok {
-				continue
-			}
-			key, err := url.QueryUnescape(rawKey)
-			if err == nil && isSensitiveTransferQueryKey(key) {
+		for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
+			if pair.hasValue && isSensitiveTransferQueryKey(IterativeDecode(pair.key)) {
 				return true
 			}
 		}

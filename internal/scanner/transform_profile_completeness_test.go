@@ -304,24 +304,7 @@ func TestTransformProfileReplaysProductionScannerTransforms(t *testing.T) {
 	}
 }
 
-func TestDecodeRecoveryReplaysSelectedScannerView(t *testing.T) {
-	input := "ggZ2hwX0FCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaMDEyMzQ1Njc4OQ=="
-	want := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	found := false
-	for _, view := range decodeEncodingsOnce(input, true) {
-		found = found || view.text == want
-	}
-	if !found {
-		t.Fatal("production recovery did not select the credential view")
-	}
-	recipe := normalize.Recipe{TransformProfileDigest: normalize.EvidenceProvenanceProfileV4Digest, Operations: []normalize.Operation{{Kind: normalize.OperationDecodeRecovery, Alphabet: "standard"}}}
-	got, err := recipe.Apply(input)
-	if err != nil || got != want {
-		t.Fatalf("replay = %q, %v; want selected scanner view %q", got, err, want)
-	}
-}
-
-func TestDecodeRecoveryV2MalformedQueryRemainsFrozen(t *testing.T) {
+func TestV2MalformedQueryRemainsFrozen(t *testing.T) {
 	for _, test := range []struct {
 		kind        normalize.OperationKind
 		input, want string

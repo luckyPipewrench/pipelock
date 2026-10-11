@@ -594,7 +594,6 @@ func TestSupportedOperationKinds(t *testing.T) {
 		OperationASCIIAlphanumericStrip,
 		OperationASCIIUpper,
 		OperationJSONUnicodeEscape,
-		OperationDecodeRecovery,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("SupportedOperationKinds() = %v, want %v", got, want)

@@ -134,15 +134,11 @@ func parseDNSQueryValue(rawValue string) (dnsMessage, bool) {
 // entropy relief stays on parseDNSQuery's strict form.
 func dnsQueryDLPTexts(rawQuery string) []string {
 	var out []string
-	for _, part := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
-		rawKey, rawValue, ok := strings.Cut(part, "=")
-		if !ok {
+	for _, pair := range rawQuerySecurityPairs(rawQuery) {
+		if !pair.hasValue || IterativeDecode(pair.key) != dnsQueryParam {
 			continue
 		}
-		if key, err := url.QueryUnescape(rawKey); err != nil || key != dnsQueryParam {
-			continue
-		}
-		if msg, ok := parseDNSQueryValue(rawValue); ok {
+		if msg, ok := parseDNSQueryValue(pair.value); ok {
 			out = append(out, msg.dlpTexts()...)
 		}
 	}

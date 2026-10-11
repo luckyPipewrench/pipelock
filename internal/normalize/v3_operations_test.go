@@ -62,7 +62,7 @@ func TestSupportedOperationKindsForProfile(t *testing.T) {
 	v1 := SupportedOperationKindsForProfile(EvidenceProvenanceProfileV1Digest)
 	v2 := SupportedOperationKindsForProfile(EvidenceProvenanceProfileV2Digest)
 	v3 := SupportedOperationKindsForProfile(EvidenceProvenanceProfileV3Digest)
-	if len(v3) != 30 || len(v2) != 28 || len(v1) != 27 || len(all) != 31 {
+	if len(v3) != 30 || len(v2) != 28 || len(v1) != 27 || len(all) != 30 {
 		t.Fatalf("vocabulary sizes v1=%d v2=%d v3=%d all=%d", len(v1), len(v2), len(v3), len(all))
 	}
 	for _, k := range []OperationKind{OperationASCIIUpper, OperationJSONUnicodeEscape} {

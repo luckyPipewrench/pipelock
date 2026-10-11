@@ -902,7 +902,6 @@ fn kind_byte(kind: &str) -> std::result::Result<u8, String> {
         "ascii_alphanumeric_strip" => Ok(28),
         "ascii_upper" => Ok(29),
         "json_unicode_escape" => Ok(30),
-        "decode_recovery" => Ok(31),
         _ => Err("unknown operation".into()),
     }
 }

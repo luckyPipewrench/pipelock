@@ -1067,21 +1067,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 	// the next value's text. Every other view comes from one key or value, where
 	// a match must be exactly a grant.
 	joined := []string{IterativeDecode(parsed.RawQuery), orderedQueryConcat(parsed.RawQuery)}
-	var views []string
-	for key, values := range parsed.Query() {
-		decodedKey := IterativeDecode(key)
-		views = append(views, decodedKey, stripURLNoise(decodedKey))
-		for _, d := range decodeEncodingsRecursive(decodedKey) {
-			views = append(views, d.text)
-		}
-		for _, v := range values {
-			decoded := IterativeDecode(v)
-			views = append(views, decoded, stripURLNoise(decoded))
-			for _, t := range queryValueDecodedTargets(decoded) {
-				views = append(views, t.text)
-			}
-		}
-	}
+	views := queryDLPSecurityViews(parsed.RawQuery)
 	// Every credential match in the query must be a download grant issued for
 	// this host. One unrelated or undecodable token keeps the whole URL on the
 	// bare surface, so a real grant cannot carry a second token past DLP.
@@ -1413,24 +1399,7 @@ func rawQueryWithoutParam(rawQuery, name string) string {
 // exists outside the one sig parameter a release grant covers.
 func releaseGrantSASQueryViews(rawQuery string) []string {
 	views := []string{rawQuery, IterativeDecode(rawQuery), orderedQueryConcat(rawQuery)}
-	if once, err := url.QueryUnescape(rawQuery); err == nil {
-		views = append(views, once)
-	}
-	values, _ := url.ParseQuery(rawQuery)
-	for key, vals := range values {
-		decodedKey := IterativeDecode(key)
-		views = append(views, decodedKey, stripURLNoise(decodedKey))
-		for _, d := range decodeEncodingsRecursive(decodedKey) {
-			views = append(views, d.text)
-		}
-		for _, v := range vals {
-			decoded := IterativeDecode(v)
-			views = append(views, decoded, stripURLNoise(decoded))
-			for _, t := range queryValueDecodedTargets(decoded) {
-				views = append(views, t.text)
-			}
-		}
-	}
+	views = append(views, queryDLPSecurityViews(rawQuery)...)
 	return views
 }
 

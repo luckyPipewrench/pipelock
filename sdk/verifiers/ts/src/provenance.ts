@@ -12,7 +12,7 @@ export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
 export const EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST =
   "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
 export const EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST =
-  "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af";
+  "sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37";
 type ProfileVersion = "v1" | "v2" | "v3" | "v4";
 
 const MAX_INPUT_BYTES = 2 << 20;
@@ -52,7 +52,6 @@ const kinds = new Set([
   "ascii_alphanumeric_strip",
   "ascii_upper",
   "json_unicode_escape",
-  "decode_recovery",
 ]);
 
 export function supportedOperationKinds(): string[] {
@@ -66,8 +65,7 @@ export function supportedOperationKindsForProfile(digest: string): string[] {
       (profile !== "v1" || kind !== "ascii_alphanumeric_strip") &&
       (profile === "v3" ||
         profile === "v4" ||
-        (kind !== "ascii_upper" && kind !== "json_unicode_escape")) &&
-      (profile === "v4" || kind !== "decode_recovery"),
+        (kind !== "ascii_upper" && kind !== "json_unicode_escape")),
   );
 }
 
@@ -231,7 +229,6 @@ export function validateEvidenceProvenanceRecipe(
     const kind = opString(op, "kind", true)!;
     if (!kinds.has(kind)) fail(`recipe operation ${index} (${kind}): unknown operation`);
     validateOperation(op, kind);
-    if (kind === "decode_recovery" && profile !== "v4") fail("unsupported by transform profile");
     if (kind === "ascii_alphanumeric_strip" && profile === "v1")
       fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
     if (
@@ -321,13 +318,6 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
       const a = opString(op, "alphabet", true)!;
       if (a !== "standard" && a !== "url") fail(`unknown base64 alphabet ${JSON.stringify(a)}`);
       opBool(op, "decode_padding");
-      return;
-    }
-    case "decode_recovery": {
-      assertFields(op, kind, ["kind", "alphabet", "occurrence"]);
-      const a = opString(op, "alphabet", true)!;
-      if (!["hex", "standard", "url"].includes(a)) fail("unknown recovery alphabet");
-      if (opUint(op, "occurrence") > 3) fail("recovery occurrence out of range");
       return;
     }
     case "encoded_token_normalize": {
@@ -852,12 +842,6 @@ function apply(
         opBool(op, "decode_padding"),
         false,
       );
-    case "decode_recovery":
-      return decodeRecovery(
-        value,
-        op.alphabet as string,
-        (op.occurrence as number | undefined) ?? 0,
-      );
     case "encoded_token_normalize":
       return encodedToken(value, op.alphabet as string, profile);
     case "text_segment": {
@@ -913,52 +897,4 @@ function apply(
 
 function stripLineBreaks(value: string): string {
   return value.replace(/[\r\n]/gu, "");
-}
-
-function decodeRecovery(value: string, alphabet: string, occurrence: number): string {
-  const filter = (source: string): string =>
-    source.replace(
-      alphabet === "hex"
-        ? /[^0-9a-fA-F]/gu
-        : alphabet === "standard"
-          ? /[^A-Za-z0-9+/=]/gu
-          : /[^A-Za-z0-9_=\-]/gu,
-      "",
-    );
-  const tokens = [filter(alphabet === "hex" ? stripV2HexPrefixes(value) : value)];
-  if (alphabet === "hex") {
-    const preserved = filter(value);
-    if (preserved !== tokens[0]) tokens.push(preserved);
-  }
-  const views: Buffer[] = [];
-  const binaryViews: Buffer[] = [];
-  for (const token of tokens) {
-    if (token.length > 4096 || token.length < (alphabet === "hex" ? 16 : 11)) continue;
-    for (let offset = 0; offset < (alphabet === "hex" ? 2 : 4); offset++) {
-      let aligned = token.slice(offset);
-      let decoded: Buffer;
-      if (alphabet === "hex") {
-        decoded = Buffer.from(aligned.slice(0, Math.floor(aligned.length / 2) * 2), "hex");
-      } else {
-        aligned = aligned.split("=")[0]!;
-        if (aligned.length % 4 === 1) aligned = aligned.slice(0, -1);
-        decoded = Buffer.from(aligned, alphabet === "url" ? "base64url" : "base64");
-      }
-      let run = 0;
-      for (const c of decoded) {
-        run = c >= 0x20 && c <= 0x7e ? run + 1 : 0;
-        if (run >= 8) {
-          try {
-            text(decoded, "output");
-            views.push(decoded);
-          } catch {
-            binaryViews.push(decoded);
-          }
-          break;
-        }
-      }
-    }
-  }
-  const selected = [...views, ...binaryViews][occurrence];
-  return selected === undefined ? "" : text(selected, "output");
 }

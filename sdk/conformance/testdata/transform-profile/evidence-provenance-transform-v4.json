@@ -71,8 +71,7 @@
       "base32": "RFC 4648 standard base32 or base32hex selected by alphabet and decode_padding, without a canonical re-encoding check; alphabet is v3 and later and absent means standard base32",
       "base64": "RFC 4648 standard or URL-safe base64 selected by alphabet and decode_padding, without a canonical re-encoding check"
     },
-    "json_unicode_escape": "replace each JSON-style \\uXXXX escape, four ASCII hex digits, with its Unicode scalar; a high surrogate escape immediately followed by a low surrogate escape becomes one scalar; an unpaired surrogate escape becomes U+FFFD; any other text beginning with \\u, including a truncated escape and non-hex digits, is copied unchanged; the operation never rejects",
-    "decode_recovery": "Enumerate scanner recovery candidates in order. Filter ASCII bytes to the chosen alphabet (hex [0-9A-Fa-f], standard [A-Za-z0-9+/=], url [A-Za-z0-9_-=]). For hex, first filter after consuming 0x, 0X, \\x or \\X only when followed by two ASCII hex digits; then also filter the original input, preserving every hex digit, if that token differs. Ignore each retained token longer than 4096 bytes or shorter than 16 bytes for hex or 11 for base64. For each token enumerate offsets 0 and 1 for hex, or 0 through 3 for base64. Hex decodes complete pairs, dropping one trailing digit. Base64 discards the first equals sign and everything after it, drops one trailing symbol when length modulo four is one, then decodes raw RFC 4648 with unused trailing bits ignored. Retain only decoded candidates containing at least eight consecutive bytes in ASCII range 0x20 through 0x7e. Do not deduplicate decoded candidates. Stable-partition candidates so valid UTF-8 candidates precede invalid UTF-8 candidates, preserving enumeration order within each group. Return candidate occurrence (default 0; maximum 3), or empty if absent. Reject invalid UTF-8 in the selected output."
+    "json_unicode_escape": "replace each JSON-style \\uXXXX escape, four ASCII hex digits, with its Unicode scalar; a high surrogate escape immediately followed by a low surrogate escape becomes one scalar; an unpaired surrogate escape becomes U+FFFD; any other text beginning with \\u, including a truncated escape and non-hex digits, is copied unchanged; the operation never rejects"
   },
   "normalization": {
     "lowercase": "Unicode simple lowercase mapping",
@@ -935,41 +934,6 @@
         "minimum_length"
       ],
       "semantics": "apply decoding.json_unicode_escape"
-    },
-    {
-      "kind": "decode_recovery",
-      "required": [
-        "kind",
-        "alphabet"
-      ],
-      "optional": [
-        "occurrence"
-      ],
-      "forbidden": [
-        "component",
-        "selector",
-        "passes",
-        "profile",
-        "decode_padding",
-        "indices",
-        "minimum_length"
-      ],
-      "alphabet": {
-        "type": "string",
-        "enum": [
-          "hex",
-          "standard",
-          "url"
-        ]
-      },
-      "occurrence": {
-        "type": "uint32",
-        "minimum": 0,
-        "maximum": 3,
-        "default": 0,
-        "constraint": "indexes eligible decoded candidates in enumeration order"
-      },
-      "semantics": "apply decoding.decode_recovery"
     }
   ],
   "recipe_execution": "Apply operation_vocabulary in listed order only as selected by the ordered recipe. Reject unknown operations and fields, forbidden fields, missing required fields, and malformed input unless the selected operation explicitly defines recovery. Invalid UTF-8 is always rejected before the first operation and after every operation."

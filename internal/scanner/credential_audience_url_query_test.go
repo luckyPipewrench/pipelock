@@ -104,6 +104,7 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 	s.now = func() time.Time { return time.Unix(1100, 0) }
 	defer s.Close()
 	jwt := fakeAudienceJWT()
+	other := claimJWT(`{"sub":"synthetic-session","iss":"idp.vendor.example","exp":99999999999}`)
 
 	for _, tc := range []struct {
 		name      string
@@ -116,6 +117,11 @@ func TestScan_GitHubReleaseGrantJWT_QueryCarriage(t *testing.T) {
 		{"trailing dot host", "https://" + githubReleaseAssetsHost + "./a/b?jwt=" + jwt, true},
 		{"explicit default port", "https://" + githubReleaseAssetsHost + ":443/a/b?jwt=" + jwt, true},
 		{"percent-encoded value", githubReleaseAssetsBase + "?jwt=" + url.QueryEscape(jwt), true},
+		{"malformed prefix encoded sibling", githubReleaseAssetsBase + "?jwt=" + jwt + "&k=%ZZ" + hex.EncodeToString([]byte(other)), false},
+		{"malformed encoded sibling", githubReleaseAssetsBase + "?jwt=" + jwt + "&k=" + hex.EncodeToString([]byte(other)) + "%ZZ", false},
+		{"malformed base64 sibling", githubReleaseAssetsBase + "?jwt=" + jwt + "&k=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(other))) + "%ZZ", false},
+		{"semicolon encoded sibling", githubReleaseAssetsBase + "?jwt=" + jwt + "&x=1;k=" + hex.EncodeToString([]byte(other)), false},
+		{"malformed grant", githubReleaseAssetsBase + "?jwt=" + jwt + "%ZZ", false},
 		{"split across query values", githubReleaseAssetsBase + "?a=" + jwt[:40] + "&b=" + jwt[40:] + "&c=1", false},
 
 		{"other host", "https://api.vendor.example/a?jwt=" + jwt, false},

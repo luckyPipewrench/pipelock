@@ -18,7 +18,7 @@ pub const PROFILE_DIGEST_V2: &str =
 pub const PROFILE_DIGEST_V3: &str =
     "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
 pub const PROFILE_DIGEST_V4: &str =
-    "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af";
+    "sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -72,8 +72,7 @@ impl Recipe {
             .map(|(i, v)| Operation::from_json(v).map_err(|e| format!("recipe operation {i}: {e}")))
             .collect::<Result<Vec<_>, _>>()?;
         for operation in &operations {
-            if (profile != ProfileVersion::V4 && operation.kind == "decode_recovery")
-                || (profile == ProfileVersion::V1 && operation.kind == "ascii_alphanumeric_strip")
+            if (profile == ProfileVersion::V1 && operation.kind == "ascii_alphanumeric_strip")
                 || (!matches!(profile, ProfileVersion::V3 | ProfileVersion::V4)
                     && ["ascii_upper", "json_unicode_escape"].contains(&operation.kind.as_str()))
                 || (!matches!(profile, ProfileVersion::V3 | ProfileVersion::V4)
@@ -242,7 +241,6 @@ impl Operation {
             "base64_decode" => (&["kind"], &["decode_padding"]),
             "base64_decode_liberal" => (&["kind", "alphabet"], &["decode_padding"]),
             "encoded_token_normalize" => (&["kind", "alphabet"], &[]),
-            "decode_recovery" => (&["kind", "alphabet"], &["occurrence"]),
             "text_segment" => (&["kind"], &["occurrence"]),
             "query_subsequence" => (&["kind", "indices"], &[]),
             "encoded_run" => (&["kind", "minimum_length"], &["occurrence"]),
@@ -338,15 +336,6 @@ impl Operation {
                     "unknown encoded-token alphabet {:?}",
                     required_str(&self.fields, "alphabet")?
                 ));
-            }
-            "decode_recovery" => {
-                let a = required_str(&self.fields, "alphabet")?;
-                if !["hex", "standard", "url"].contains(&a) {
-                    return Err("unknown recovery alphabet".to_string());
-                }
-                if optional_u32(&self.fields, "occurrence")?.unwrap_or(0) > 3 {
-                    return Err("recovery occurrence out of range".to_string());
-                }
             }
             "encoded_token_normalize" => {}
             "text_segment" => {
@@ -479,11 +468,6 @@ impl Operation {
                 optional_bool(&self.fields, "decode_padding")?.unwrap_or(false),
                 false,
                 "liberal base64 decode",
-            ),
-            "decode_recovery" => decode_recovery(
-                value,
-                required_str(&self.fields, "alphabet")?,
-                optional_u32(&self.fields, "occurrence")?.unwrap_or(0),
             ),
             "encoded_token_normalize" => Ok(encoded_token_normalize(
                 value,
@@ -1289,91 +1273,5 @@ mod tests {
         let recipe =
             Recipe::from_json(PROFILE_DIGEST, &json!([{"kind": "ordered_query_concat"}])).unwrap();
         assert_eq!(recipe.apply(&input).unwrap(), "x".repeat(21));
-    }
-}
-
-fn decode_recovery(value: &str, alphabet: &str, occurrence: u32) -> Result<String, String> {
-    let source = if alphabet == "hex" {
-        strip_v2_hex_prefixes(value)
-    } else {
-        value.to_string()
-    };
-    let filter = |source: &str| -> String {
-        source
-            .bytes()
-            .filter(|c| {
-                if alphabet == "hex" {
-                    c.is_ascii_hexdigit()
-                } else {
-                    c.is_ascii_alphanumeric()
-                        || *c == b'='
-                        || if alphabet == "standard" {
-                            *c == b'+' || *c == b'/'
-                        } else {
-                            *c == b'-' || *c == b'_'
-                        }
-                }
-            })
-            .map(char::from)
-            .collect()
-    };
-    let mut tokens = vec![filter(&source)];
-    if alphabet == "hex" {
-        let preserved = filter(value);
-        if preserved != tokens[0] {
-            tokens.push(preserved);
-        }
-    }
-    let engine = general_purpose::GeneralPurpose::new(
-        if alphabet == "url" {
-            &base64::alphabet::URL_SAFE
-        } else {
-            &base64::alphabet::STANDARD
-        },
-        general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::RequireNone)
-            .with_decode_allow_trailing_bits(true),
-    );
-    let mut views = Vec::new();
-    let mut binary_views = Vec::new();
-    for token in tokens {
-        if token.len() > 4096 || token.len() < if alphabet == "hex" { 16 } else { 11 } {
-            continue;
-        }
-        for offset in 0..if alphabet == "hex" { 2 } else { 4 } {
-            let mut aligned = &token[offset..];
-            let decoded = if alphabet == "hex" {
-                hex::decode(&aligned[..aligned.len() / 2 * 2]).map_err(|e| e.to_string())?
-            } else {
-                aligned = aligned.split('=').next().unwrap_or("");
-                if aligned.len() % 4 == 1 {
-                    aligned = &aligned[..aligned.len() - 1];
-                }
-                engine.decode(aligned).map_err(|e| e.to_string())?
-            };
-            let mut run = 0;
-            for c in &decoded {
-                run = if (0x20..=0x7e).contains(c) {
-                    run + 1
-                } else {
-                    0
-                };
-                if run >= 8 {
-                    if std::str::from_utf8(&decoded).is_ok() {
-                        views.push(decoded);
-                    } else {
-                        binary_views.push(decoded);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-    views.extend(binary_views);
-    match views.into_iter().nth(occurrence as usize) {
-        Some(decoded) => {
-            String::from_utf8(decoded).map_err(|_| "output: invalid UTF-8".to_string())
-        }
-        None => Ok(String::new()),
     }
 }

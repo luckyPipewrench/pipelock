@@ -231,7 +231,6 @@ const (
 	OperationASCIIAlphanumericStrip OperationKind = "ascii_alphanumeric_strip"
 	OperationASCIIUpper             OperationKind = "ascii_upper"
 	OperationJSONUnicodeEscape      OperationKind = "json_unicode_escape"
-	OperationDecodeRecovery         OperationKind = "decode_recovery"
 )
 
 // SupportedOperationKinds is the union of the registered recipe vocabularies.
@@ -249,7 +248,7 @@ func SupportedOperationKinds() []OperationKind {
 		OperationWhitespaceCompact, OperationURLNoiseStrip, OperationOrderedQueryConcat,
 		OperationQuerySubsequence, OperationHostnameDotRemove, OperationEncodedRun,
 		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip,
-		OperationASCIIUpper, OperationJSONUnicodeEscape, OperationDecodeRecovery,
+		OperationASCIIUpper, OperationJSONUnicodeEscape,
 	}
 }
 
@@ -324,8 +323,8 @@ const (
 	// uppercase folding, JSON unicode-escape decoding, base32hex, and NFC
 	// recomposition of matching_normalize.
 	EvidenceProvenanceProfileV3Digest = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
-	// EvidenceProvenanceProfileV4Digest adds partial query decoding and bounded encoding recovery.
-	EvidenceProvenanceProfileV4Digest       = "sha256:bc90648392a6417a157091f8ad4d2dd9f02a356d81003e32f95571e64c8bc7af"
+	// EvidenceProvenanceProfileV4Digest preserves malformed escapes during query decoding.
+	EvidenceProvenanceProfileV4Digest       = "sha256:925a91d9137c52ba70a7e71450929e5b11a00c0f979ee5fa3bc1e227789ffd37"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -407,10 +406,6 @@ func (r Recipe) Validate() error {
 // vocabularies when a later profile adds a step.
 func operationAllowedByProfile(op Operation, version transformProfileVersion) error {
 	switch op.Kind {
-	case OperationDecodeRecovery:
-		if version < transformProfileV4 {
-			return fmt.Errorf("unsupported by transform profile")
-		}
 	case OperationASCIIAlphanumericStrip:
 		if version < transformProfileV2 {
 			return fmt.Errorf("unsupported by transform profile")
@@ -648,8 +643,6 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 			return "", fmt.Errorf("liberal base64 decode: %w", err)
 		}
 		return string(decoded), nil
-	case OperationDecodeRecovery:
-		return DecodeRecovery(value, op.Alphabet, op.Occurrence)
 	case OperationEncodedTokenNormalize:
 		return scannerEncodedTokenNormalize(value, op.Alphabet, profile.version), nil
 	case OperationTextSegment:
@@ -755,14 +748,6 @@ func (op Operation) validate() error {
 			return fmt.Errorf("unknown base64 alphabet %q", op.Alphabet)
 		}
 		return op.without(paramAlphabet | paramDecodePadding).noParametersForValidation(reject)
-	case OperationDecodeRecovery:
-		if op.Alphabet != "hex" && op.Alphabet != "standard" && op.Alphabet != "url" {
-			return fmt.Errorf("unknown recovery alphabet %q", op.Alphabet)
-		}
-		if op.Occurrence > 3 {
-			return fmt.Errorf("recovery occurrence out of range")
-		}
-		return op.without(paramAlphabet | paramOccurrence).noParametersForValidation(reject)
 	case OperationEncodedTokenNormalize:
 		switch op.Alphabet {
 		case "hex", "base32", "base64_standard", "base64_url":

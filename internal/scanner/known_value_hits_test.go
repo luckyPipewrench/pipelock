@@ -119,6 +119,17 @@ func referenceCheckSecretsInText(s *Scanner, secrets []string, text string) (kno
 			return match, start, end, view, true
 		}
 	}
+	// The production fallback scans carrier decodings. This reference uses
+	// unshared decoding and window lookups so memo behavior remains checked.
+	decoded := decodedKnownSecretViews(text, nil)
+	for _, secret := range secrets {
+		if start, end, label, ok := indexAnyView(secret, decoded); ok {
+			return knownSecretMatch{encoding: strings.TrimPrefix(label, ViewDLPNormalized+":")}, start, end, label, true
+		}
+		if start, end, length, label, ok := indexKnownValueSubstring(secret, s.knownSecretWindows[secret], decoded); ok {
+			return knownSecretMatch{encoding: strings.TrimPrefix(label, ViewDLPNormalized+":"), partialLen: length}, start, end, label, true
+		}
+	}
 	return knownSecretMatch{}, 0, 0, "", false
 }
 

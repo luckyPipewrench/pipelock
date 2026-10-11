@@ -356,7 +356,7 @@ func allDoctorChecks() []doctorCheck {
 		{7, "managed_chain_structure", "managed nftables chain has the installed structure (a definite agent bypass is a FAIL)", checkManagedChainStructure},
 		{8, "managed_doorway_sockets", "managed containment doorway sockets and namespace forwarders are active", checkManagedDoorwaySockets},
 		{9, "filesystem_confinement", "contained-agent filesystem profile", checkFilesystemConfinement},
-		{14, "runtime_socket_isolation", "managed wrappers and units hide host runtime sockets", checkRuntimeSocketIsolation},
+		{14, "runtime_socket_isolation", "managed wrappers and configured units specify runtime socket masks", checkRuntimeSocketIsolation},
 	}
 }
 

@@ -118,33 +118,40 @@ func TestSandboxProxyDoorwayIsolation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(15*time.Second))
 			defer cancel()
 			var calls atomic.Int32
+			var mismatches atomic.Int32
 			err := LaunchStandalone(StandaloneLaunchConfig{
 				Ctx: ctx, Workspace: t.TempDir(), Strict: strict,
 				Command:      []string{python, "-c", `import urllib.request; assert urllib.request.urlopen("http://api.vendor.example/check",timeout=5).read() == b"doorway"`},
-				ProxyHandler: func(conn net.Conn) { serveIPCProxyProbe(conn, &calls) },
+				ProxyHandler: func(conn net.Conn) { serveIPCProxyProbe(conn, &calls, &mismatches) },
 			})
 			if err != nil {
-				t.Fatalf("proxy doorway launch: %v", err)
+				t.Fatalf("proxy doorway launch: %v; proxy mismatches: %d", err, mismatches.Load())
 			}
 			if calls.Load() != 1 {
 				t.Fatalf("proxy handled %d requests, want 1", calls.Load())
+			}
+			if mismatches.Load() != 0 {
+				t.Fatalf("proxy received %d malformed or nonmatching requests", mismatches.Load())
 			}
 		})
 	}
 }
 
-func serveIPCProxyProbe(conn net.Conn, calls *atomic.Int32) {
+func serveIPCProxyProbe(conn net.Conn, calls, mismatches *atomic.Int32) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(testwait.Deadline(5 * time.Second)))
 	request, err := http.ReadRequest(bufio.NewReader(conn))
 	if err != nil {
+		mismatches.Add(1)
 		return
 	}
 	defer func() { _ = request.Body.Close() }()
 	if request.Host == "api.vendor.example" && request.URL.Path == "/check" {
 		calls.Add(1)
 		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ndoorway")
+		return
 	}
+	mismatches.Add(1)
 }
 
 func TestIPCProxyProbeAcceptsFragmentedHeaders(t *testing.T) {
@@ -154,7 +161,8 @@ func TestIPCProxyProbeAcceptsFragmentedHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	go serveIPCProxyProbe(server, &calls)
+	var mismatches atomic.Int32
+	go serveIPCProxyProbe(server, &calls, &mismatches)
 	for _, fragment := range []string{"GET http://api.vendor.", "example/check HTTP/1.1\r\nHost: api.vendor.example\r\n", "\r\n"} {
 		if _, err := io.WriteString(client, fragment); err != nil {
 			t.Fatalf("writing fragmented request: %v", err)
@@ -166,7 +174,7 @@ func TestIPCProxyProbeAcceptsFragmentedHeaders(t *testing.T) {
 	}
 	defer func() { _ = response.Body.Close() }()
 	data, err := io.ReadAll(response.Body)
-	if err != nil || string(data) != "doorway" || calls.Load() != 1 {
-		t.Fatalf("response body %q, calls %d, error %v", data, calls.Load(), err)
+	if err != nil || string(data) != "doorway" || calls.Load() != 1 || mismatches.Load() != 0 {
+		t.Fatalf("response body %q, calls %d, mismatches %d, error %v", data, calls.Load(), mismatches.Load(), err)
 	}
 }

@@ -158,6 +158,9 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 			if got.status != tc.want {
 				t.Fatalf("result = %+v, want %s", got, tc.want)
 			}
+			if got.status == statusPass && !strings.Contains(got.detail, "configured") {
+				t.Fatalf("configuration-only probe claims applied isolation: %+v", got)
+			}
 			if (got.status == statusFail || tc.readErr != nil) && !strings.Contains(got.remediation, "contain install") {
 				t.Fatalf("unusable remedy: %+v", got)
 			}

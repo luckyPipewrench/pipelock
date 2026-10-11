@@ -68,7 +68,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 			return fail(classInfra, "managed unit "+unit+" lacks runtime socket isolation", installRemedy)
 		}
 	}
-	return pass("managed contained-launch wrapper and namespace/display units hide host runtime sockets")
+	return pass("managed contained-launch wrapper and configured namespace/display units specify runtime socket masks; live mounts are verified at launch")
 }
 
 func doctorContainedLaunchWrapperMatches(body []byte, wrapperDir string, env *doctorEnv) bool {

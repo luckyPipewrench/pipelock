@@ -86,7 +86,7 @@ func TestPrivateTmpSystemdRunArgs_NoDisplayNoBind(t *testing.T) {
 		if !strings.Contains(joined, "--property=PrivateTmp=true") {
 			t.Fatalf("display=%q: args = %q, PrivateTmp isolation missing", display, joined)
 		}
-		if strings.Contains(joined, "BindReadOnlyPaths=/tmp/.X11-unix") {
+		if strings.Contains(joined, "/tmp/.X11-unix") {
 			t.Fatalf("display=%q: args = %q, bound a display socket for a non-local DISPLAY", display, joined)
 		}
 	}

@@ -144,3 +144,28 @@ func TestValidateOperatorSessionIDRefusesInvalidUTF8(t *testing.T) {
 		t.Fatalf("ValidateOperatorSessionID error = %v, want non-UTF-8 refusal", err)
 	}
 }
+
+func TestIsRunSession(t *testing.T) {
+	hex32 := strings.Repeat("0123456789abcdef", 2)
+	cases := []struct {
+		id   string
+		want bool
+	}{
+		{"proxy" + RunInfix + hex32, true},
+		{"agent-é" + RunInfix + hex32, true},
+		{"proxy", false},
+		{RunInfix + hex32, false},
+		{"proxy" + RunInfix + hex32[:31], false},
+		{"proxy" + RunInfix + hex32 + "0", false},
+		{"proxy" + RunInfix + strings.ToUpper(hex32), false},
+		{"proxy" + RunInfix + strings.Repeat("g", 32), false},
+		{"proxy" + RunInfix + hex32[:16] + RunInfix + hex32[:16], false},
+		{"a/b" + RunInfix + hex32, false},
+		{"proxy%2Erun%2E" + hex32, false},
+	}
+	for _, tc := range cases {
+		if got := IsRunSession(tc.id); got != tc.want {
+			t.Errorf("IsRunSession(%q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}

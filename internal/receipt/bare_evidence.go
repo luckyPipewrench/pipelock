@@ -11,6 +11,7 @@ import (
 	"io"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -27,8 +28,14 @@ func IsBareEvidenceSession(location recorder.EvidenceLocation, session string) (
 			if len(line) == 0 {
 				continue
 			}
+			// A map collapses duplicate keys and accepts a null detail, so
+			// either one could pass for a two-field receipt line. Both route
+			// to full recorder verification instead.
+			if jsonscan.RejectDuplicateKeys(line) != nil {
+				return notBare
+			}
 			var fields map[string]json.RawMessage
-			if json.Unmarshal(line, &fields) != nil || len(fields) != 2 || fields["detail"] == nil {
+			if json.Unmarshal(line, &fields) != nil || len(fields) != 2 || !bytes.HasPrefix(fields["detail"], []byte("{")) {
 				return notBare
 			}
 			var kind string

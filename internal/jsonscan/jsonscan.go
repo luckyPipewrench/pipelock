@@ -81,9 +81,6 @@ func ValidateFoldedKeys(data []byte, maxDepth int) error {
 }
 
 func validateKeys(data []byte, maxDepth int, folded bool) error {
-	if !utf8.Valid(data) {
-		return errors.New("JSON is not valid UTF-8")
-	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	tok, err := dec.Token()
@@ -92,6 +89,11 @@ func validateKeys(data []byte, maxDepth int, folded bool) error {
 	}
 	if err := check(dec, tok, 0, maxDepth, folded); err != nil {
 		return err
+	}
+	// Preserve duplicate diagnostics even when another string contains invalid
+	// UTF-8. Callers must still reject every other validation error.
+	if !utf8.Valid(data) {
+		return errors.New("JSON is not valid UTF-8")
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		if err != nil {

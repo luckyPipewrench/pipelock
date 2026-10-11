@@ -111,6 +111,18 @@ func oversizedResponseVerdict(line []byte) jsonrpc.ScanVerdict {
 	}
 }
 
+func responseKeyErrorVerdict(line []byte, err error) jsonrpc.ScanVerdict {
+	reason := "invalid JSON"
+	if redact.IsDuplicateKeyBlock(err) {
+		reason = "duplicate JSON object key"
+	}
+	return jsonrpc.ScanVerdict{
+		ID:    recoverTopLevelJSONRPCID(line),
+		Clean: false,
+		Error: fmt.Sprintf("%s: %v", reason, err),
+	}
+}
+
 func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions, includeDLP bool) jsonrpc.ScanVerdict {
 	if len(line) > transport.MaxLineSize {
 		return oversizedResponseVerdict(line)
@@ -121,12 +133,8 @@ func scanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		verdict, _ := scanBatch(trimmed, sc, opts, includeDLP)
 		return verdict
 	}
-	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
-		return jsonrpc.ScanVerdict{
-			ID:    recoverTopLevelJSONRPCID(trimmed),
-			Clean: false,
-			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
-		}
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
+		return responseKeyErrorVerdict(trimmed, err)
 	}
 
 	var rpc jsonrpc.RPCResponse
@@ -597,12 +605,8 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		return oversizedResponseVerdict(line)
 	}
 	trimmed := bytes.TrimSpace(line)
-	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
-		return jsonrpc.ScanVerdict{
-			ID:    recoverTopLevelJSONRPCID(trimmed),
-			Clean: false,
-			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
-		}
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
+		return responseKeyErrorVerdict(trimmed, err)
 	}
 
 	var rpc jsonrpc.RPCResponse
@@ -1200,12 +1204,8 @@ func validateA2AResponseEnvelope(line []byte) (jsonrpc.ScanVerdict, bool) {
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		return jsonrpc.ScanVerdict{}, true
 	}
-	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
-		return jsonrpc.ScanVerdict{
-			ID:    recoverTopLevelJSONRPCID(trimmed),
-			Clean: false,
-			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
-		}, false
+	if err := jsonrpc.ValidateMessageKeys(trimmed); err != nil {
+		return responseKeyErrorVerdict(trimmed, err), false
 	}
 	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(trimmed, &rpc); err != nil {

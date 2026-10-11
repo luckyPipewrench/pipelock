@@ -53,6 +53,14 @@ func NoSchemaKeyAliases(body []byte, schema reflect.Type) error {
 	if err := NoDuplicateJSONKeys(body); err != nil {
 		return err
 	}
+	return NoSchemaKeyAliasesInValidatedJSON(body, schema)
+}
+
+// NoSchemaKeyAliasesInValidatedJSON checks only schema field spellings. The
+// caller must first validate syntax, encoding and exact duplicates, either on
+// body itself or on the complete document containing it. This lets batch
+// ingestion share one document scan rather than rescanning each subtree.
+func NoSchemaKeyAliasesInValidatedJSON(body []byte, schema reflect.Type) error {
 	return keyBlock(jsonscan.RejectStructAliases(body, schema))
 }
 

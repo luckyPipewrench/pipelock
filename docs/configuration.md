@@ -1730,6 +1730,8 @@ A configuration that carries `mcp_identities` or `server_binding_mode` is reject
 
 Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 30 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, protected-path and audit-log tampering, and encoded command execution.
 
+The policy's JSON key guard fails closed before rule matching. Duplicate keys and case aliases of protocol fields report `duplicate_json_object_key`; malformed or invalid-UTF-8 input reports `invalid_json_key_input`. Keys in tool arguments remain case-sensitive.
+
 A protected-path rule matches the tools that write a path and also the move, rename, copy, delete, permission-change and link-creation tools that reach the same destination, with forward or backslash separators. An `apply_patch` call is matched against the targets named in the patch headers, and an unparseable patch is blocked instead of passing unmatched. Audit-log rules cover the system log and Pipelock state directories rather than any file ending in `.log`. Operations that name only a parent directory, such as a recursive delete, and archive extraction are not matched, because their arguments do not name the protected file.
 
 ```yaml

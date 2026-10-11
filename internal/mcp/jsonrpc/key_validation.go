@@ -25,13 +25,23 @@ func ValidateMessageKeys(data []byte) error {
 			return err
 		}
 		for _, item := range items {
-			if err := ValidateMessageKeys(item); err != nil {
+			if err := validateMessageSchemaKeys(bytes.TrimSpace(item)); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if err := redact.NoSchemaKeyAliases(data, reflect.TypeFor[RPCResponse]()); err != nil {
+	return validateMessageSchemaKeys(trimmed)
+}
+
+// The whole document has already passed key validation. A batch has exactly
+// one message level; non-object elements have no protocol fields to bind.
+// Consumers own rejection of invalid message shapes, including nested arrays.
+func validateMessageSchemaKeys(data []byte) error {
+	if len(data) == 0 || data[0] != '{' {
+		return nil
+	}
+	if err := redact.NoSchemaKeyAliasesInValidatedJSON(data, reflect.TypeFor[RPCResponse]()); err != nil {
 		return err
 	}
 	// Extract raw fields so an unrelated field-type error cannot skip nested
@@ -50,7 +60,7 @@ func ValidateMessageKeys(data []byte) error {
 		_ = json.Unmarshal(rpc.Method, &method)
 	}
 	if len(rpc.Error) > 0 {
-		if err := redact.NoSchemaKeyAliases(rpc.Error, reflect.TypeFor[RPCError]()); err != nil {
+		if err := redact.NoSchemaKeyAliasesInValidatedJSON(rpc.Error, reflect.TypeFor[RPCError]()); err != nil {
 			return err
 		}
 	}
@@ -61,7 +71,7 @@ func ValidateMessageKeys(data []byte) error {
 			Meta      json.RawMessage `json:"_meta"`
 		}
 		if len(rpc.Params) > 0 {
-			if err := redact.NoSchemaKeyAliases(rpc.Params, reflect.TypeOf(schema)); err != nil {
+			if err := redact.NoSchemaKeyAliasesInValidatedJSON(rpc.Params, reflect.TypeOf(schema)); err != nil {
 				return err
 			}
 		}
@@ -70,7 +80,7 @@ func ValidateMessageKeys(data []byte) error {
 		var schema struct {
 			URI string `json:"uri"`
 		}
-		if err := redact.NoSchemaKeyAliases(rpc.Params, reflect.TypeOf(schema)); err != nil {
+		if err := redact.NoSchemaKeyAliasesInValidatedJSON(rpc.Params, reflect.TypeOf(schema)); err != nil {
 			return err
 		}
 	}
@@ -92,7 +102,7 @@ func ValidateMessageKeys(data []byte) error {
 			NextCursor        string          `json:"nextCursor"`
 			Meta              json.RawMessage `json:"_meta"`
 		}
-		if err := redact.NoSchemaKeyAliases(result, reflect.TypeOf(schema)); err != nil {
+		if err := redact.NoSchemaKeyAliasesInValidatedJSON(result, reflect.TypeOf(schema)); err != nil {
 			return err
 		}
 	}

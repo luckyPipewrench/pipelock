@@ -66,6 +66,29 @@ func TestKeyAliasesResponse(t *testing.T) {
 }
 
 func TestKeyGuardInputErrorsAndFreeFormMaps(t *testing.T) {
+	t.Run("frame gates without policy or content scanning", func(t *testing.T) {
+		for _, raw := range [][]byte{
+			[]byte(`{"jsonrpc":"2.0","id":1,"method":"ping","custom":"` + string([]byte{0xff}) + `"}`),
+			[]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"`),
+		} {
+			frame := ParseMCPFrame(raw)
+			http := EvaluateMCPInputGates(t.Context(), frame, raw, "session-1", MCPProxyOpts{}, config.ActionWarn, config.ActionForward, false)
+			stdio := evaluateMCPInputGatesStdio(t.Context(), frame, raw, bytes.TrimSpace(raw), nil, MCPProxyOpts{}, config.ActionWarn, config.ActionForward, false)
+			for name, verdict := range map[string]InputVerdict{"HTTP": http.ContentVerdict, "stdio": stdio.ContentVerdict} {
+				if verdict.Clean || verdict.Error == "" {
+					t.Errorf("%s frame gate accepted malformed input without policy: %+v", name, verdict)
+				}
+			}
+		}
+		raw := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping","custom":"valid"}`)
+		frame := ParseMCPFrame(raw)
+		if v := EvaluateMCPInputGates(t.Context(), frame, raw, "session-1", MCPProxyOpts{}, config.ActionWarn, config.ActionForward, false); !v.ContentVerdict.Clean {
+			t.Fatal("HTTP frame gate blocked valid input without policy")
+		}
+		if v := evaluateMCPInputGatesStdio(t.Context(), frame, raw, raw, nil, MCPProxyOpts{}, config.ActionWarn, config.ActionForward, false); !v.ContentVerdict.Clean {
+			t.Fatal("stdio frame gate blocked valid input without policy")
+		}
+	})
 	policy := buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{{Name: "deny-write", ToolPattern: `^write_file$`}})
 	bad := string([]byte{0xff})
 	for _, raw := range []string{

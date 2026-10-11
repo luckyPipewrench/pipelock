@@ -28,6 +28,7 @@ const (
 	uninspectableJSONDepthRule    = "uninspectable_json_depth"
 	uninspectablePatchTargetsRule = "uninspectable_patch_targets"
 	duplicateJSONKeyRule          = "duplicate_json_object_key"
+	invalidJSONKeyInputRule       = "invalid_json_key_input"
 	malformedA2AParamsRule        = "malformed_a2a_params"
 )
 
@@ -1178,7 +1179,7 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
 	if err := jsonrpc.ValidateMessageKeys(bytes.TrimSpace(line)); err != nil {
-		return duplicateJSONKeyVerdict()
+		return jsonKeyGuardVerdict(err)
 	}
 	if hasMalformedA2AParams(line) {
 		return malformedA2AParamsVerdict()
@@ -1237,6 +1238,17 @@ func duplicateJSONKeyVerdict() Verdict {
 	}
 }
 
+func jsonKeyGuardVerdict(err error) Verdict {
+	if redact.IsDuplicateKeyBlock(err) {
+		return duplicateJSONKeyVerdict()
+	}
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   []string{invalidJSONKeyInputRule},
+	}
+}
+
 // malformedA2AParamsVerdict is a fail-closed result for known A2A methods with
 // present, non-null params that are not a JSON object. A2A policy rules inspect
 // object params; scalar and array params are malformed enough that skipping
@@ -1281,7 +1293,7 @@ func uninspectableStructuralArgsVerdict(ruleName string) Verdict {
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.
 func (pc *Config) checkBatch(line []byte) Verdict {
 	if err := jsonrpc.ValidateMessageKeys(line); err != nil {
-		return duplicateJSONKeyVerdict()
+		return jsonKeyGuardVerdict(err)
 	}
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {

@@ -6,7 +6,6 @@ package store
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -480,14 +480,15 @@ func (s Store) loadAcceptedManifestByHash(hash string, opts Options) (acceptedMa
 	return s.loadAcceptedManifestFile(path, name, opts)
 }
 
+var contractDigestOrigin = digestorigin.NewIssuer("contract.store")
+
 // ActiveManifestHash returns sha256 over the manifest body's canonical preimage.
 func ActiveManifestHash(m contract.ActiveManifest) (string, error) {
 	preimage, err := m.SignablePreimage()
 	if err != nil {
 		return "", fmt.Errorf("manifest preimage: %w", err)
 	}
-	sum := sha256.Sum256(preimage)
-	return hashPrefix + hex.EncodeToString(sum[:]), nil
+	return hashPrefix + contractDigestOrigin.Sum(preimage).String(), nil
 }
 
 // ContractHash returns sha256 over the canonical contract body with
@@ -498,8 +499,7 @@ func ContractHash(c contract.Contract) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("contract preimage: %w", err)
 	}
-	sum := sha256.Sum256(preimage)
-	return hashPrefix + hex.EncodeToString(sum[:]), nil
+	return hashPrefix + contractDigestOrigin.Sum(preimage).String(), nil
 }
 
 func (s Store) loadContracts(selectors []contract.ManifestSelector, opts Options) (map[string]contract.ContractEnvelope, error) {

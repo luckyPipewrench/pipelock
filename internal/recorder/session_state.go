@@ -121,6 +121,12 @@ func (r *Recorder) AcquireGroupSessions(sessions []string) error {
 	if len(sessions) < 2 || len(sessions) > 32 {
 		return errors.New("recorder: group requires 2 to 32 sessions")
 	}
+	// Content first, so no later diagnostic echoes a detector-positive handle.
+	for _, session := range sessions {
+		if err := r.checkSessionContent(session); err != nil {
+			return fmt.Errorf("recorder: group run session: %w", err)
+		}
+	}
 	r.groupMu.Lock()
 	defer r.groupMu.Unlock()
 	r.mu.Lock()
@@ -229,12 +235,25 @@ func (r *Recorder) withGroupSessionLocked(session string, write func() error) er
 // checkpoint before any shard emitter can open. Both entries are synced before
 // success; a failed sync leaves the group incomplete and startup must stop.
 func (r *Recorder) RecordGroupGate(e Entry) error {
+	return r.RecordGroupGateWithScan(e, nil)
+}
+
+// RecordGroupGateWithScan is RecordGroupGate with a content scan bound to the
+// gate detail's exact bytes (see BindLifecycleContent). A nil scan keeps the
+// fail-closed whole-detail preflight for callers without a producer.
+func (r *Recorder) RecordGroupGateWithScan(e Entry, bound *ReceiptScan) error {
 	if r == nil || r.nop || e.Type != GroupGateEntryType || e.SessionID == "" || e.Detail == nil {
 		return errors.New("recorder: invalid group gate entry")
 	}
-	scan, err := r.PreflightSignedReceiptDetail(e.Detail)
-	if err != nil {
-		return fmt.Errorf("preflight group gate: %w", err)
+	var scan ReceiptScan
+	if bound != nil {
+		scan = *bound
+	} else {
+		var err error
+		scan, err = r.PreflightSignedReceiptDetail(e.Detail)
+		if err != nil {
+			return fmt.Errorf("preflight group gate: %w", err)
+		}
 	}
 	r.groupMu.Lock()
 	defer r.groupMu.Unlock()

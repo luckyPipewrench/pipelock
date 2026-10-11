@@ -3024,7 +3024,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 	defer func() {
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
-	for size := 2; size <= 4 && size <= n; size++ {
+	for size := 2; size <= SubsequenceMaxSize && size <= n; size++ {
 		result, warns := s.checkDLPCombinations(values, n, size, hostname, target, memo)
 		warnMatches = append(warnMatches, warns...)
 		credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
@@ -3036,10 +3036,30 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 	return Result{Allowed: true}, warnMatches
 }
 
+// SubsequenceMaxParts and SubsequenceMaxSize bound the ordered subsequence
+// search on the request path: at most this many parts are combined, in
+// ordered combinations of 2..SubsequenceMaxSize, and further values are
+// truncated. The receipt content boundary uses the same combination order.
+// Within SubsequenceMaxParts it runs the same sizes. A wider receipt degrades
+// to a complete smaller search or refuses, which
+// docs/guides/receipt-verification.md describes. The request path does not
+// refuse when the part cap is exceeded.
+const (
+	SubsequenceMaxParts = 20
+	SubsequenceMaxSize  = 4
+)
+
+// NextSubsequence advances indices to the next ordered combination of n
+// parts, in the same lexicographic order the query-subsequence detector uses.
+// It returns false when the combinations of len(indices) are exhausted.
+func NextSubsequence(indices []int, n int) bool {
+	return nextCombination(indices, n)
+}
+
 // querySubsequenceValues extracts the production query-value view shared by
 // core DLP, configured DLP, and the provenance parity test.
 func querySubsequenceValues(rawQuery string) []string {
-	const maxValues = 20
+	const maxValues = SubsequenceMaxParts
 	values := make([]string, 0, maxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")

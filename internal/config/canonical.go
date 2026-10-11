@@ -4,13 +4,12 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
 	"sync/atomic"
 
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
@@ -66,21 +65,31 @@ func (c *Config) CanonicalPolicyHash() string {
 		// holder; zero-value Config falls back to uncached computation.
 		return c.computeCanonicalPolicyHash()
 	}
-	if cached := c.canonicalHashCache.Load(); cached != nil {
-		if s, ok := cached.(string); ok {
-			return s
-		}
+	if cached, ok := c.canonicalHashCache.Load().(cachedPolicyHash); ok {
+		return cached.hash
 	}
 
-	h := c.computeCanonicalPolicyHash()
+	h := c.canonicalPolicyDigest()
 	c.canonicalHashCache.Store(h)
-	return h
+	return h.hash
+}
+
+// cachedPolicyHash is the cached canonical policy hash. It keeps the
+// digest's origin for the Config's lifetime, so a receipt stamped with this
+// Config's policy hash never has that hash scanned as content.
+type cachedPolicyHash struct {
+	hash   string
+	origin digestorigin.Digest
 }
 
 // computeCanonicalPolicyHash is CanonicalPolicyHash without the cache.
 // Exported only through the cached wrapper; kept separate so tests can
 // exercise the determinism guarantees on fresh Config values.
 func (c *Config) computeCanonicalPolicyHash() string {
+	return c.canonicalPolicyDigest().hash
+}
+
+func (c *Config) canonicalPolicyDigest() cachedPolicyHash {
 	view := c.policySemanticView()
 	data, err := json.Marshal(view)
 	if err != nil {
@@ -88,10 +97,10 @@ func (c *Config) computeCanonicalPolicyHash() string {
 		// (channels, functions, cycles). Fall back to the raw byte hash
 		// so the proxy stays up. Stale / non-canonical ph is a soft
 		// regression; a panicked proxy is not.
-		return c.Hash()
+		return cachedPolicyHash{hash: c.Hash()}
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	d := policyHashOrigin.Sum(data)
+	return cachedPolicyHash{hash: d.String(), origin: d}
 }
 
 // policySemanticView returns a shallow copy of Config with noise fields

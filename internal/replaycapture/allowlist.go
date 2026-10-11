@@ -55,10 +55,10 @@ var reservedHostExact = map[string]struct{}{
 var safeEnumRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 
 // safeRequestIDRE matches pipelock's own internal request id: a "req-" prefix
-// followed by a monotonic counter. This carries no provider/account correlation
-// and no private data — it is a sequence number. Any other shape (e.g. a real
-// provider request id) is rejected.
-var safeRequestIDRE = regexp.MustCompile(`^req-[0-9]+$`)
+// followed by a random UUIDv7 or, when one could not be minted, a counter.
+// Neither carries provider/account correlation or private data. Any other
+// shape (e.g. a real provider request id) is rejected.
+var safeRequestIDRE = regexp.MustCompile(`^req-(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`)
 
 // safeMCPRequestIDRE permits the bounded synthetic JSON-RPC ids used by the
 // replay lab. It is consulted only for MCP transports; HTTP receipt request ids

@@ -17,9 +17,13 @@ import (
 )
 
 // outcomeDetail is a v1 outcome receipt shaped like the forward-proxy
-// receipts a load run writes, without the fields the producer generates.
-func outcomeDetail(t *testing.T, n int, actor, pattern string) []byte {
+// receipts a load run writes, without the fields the producer generates. An
+// empty requestID records the unproven counter shape, which stays content.
+func outcomeDetail(t *testing.T, n int, actor, pattern, requestID string) []byte {
 	t.Helper()
+	if requestID == "" {
+		requestID = fmt.Sprintf("req-%d", n)
+	}
 	raw, err := json.Marshal(map[string]any{
 		"version": 1,
 		"action_record": map[string]any{
@@ -29,7 +33,7 @@ func outcomeDetail(t *testing.T, n int, actor, pattern string) []byte {
 			"decision_phase": "outcome", "session_taint_level": "trusted", "authority_kind": "user_broad",
 			"taint_decision": "allow", "taint_decision_reason": "taint_safe_read_only_action",
 			"transport": "forward", "method": "GET", "layer": "outcome", "pattern": pattern,
-			"request_id": fmt.Sprintf("req-%d", n),
+			"request_id": requestID,
 		},
 	})
 	if err != nil {
@@ -64,16 +68,18 @@ func TestCachedReceiptDetectorMatchesScalar(t *testing.T) {
 		wantClean bool
 		view      receiptcontent.View
 	}{
-		{"clean first request", outcomeDetail(t, 1, "anonymous", clean), true, ""},
-		{"clean second request", outcomeDetail(t, 2, "anonymous", clean), true, ""},
+		{"clean first request", outcomeDetail(t, 1, "anonymous", clean, ""), true, ""},
+		{"clean second request", outcomeDetail(t, 2, "anonymous", clean, ""), true, ""},
 		// The alphanumeric layer label between the halves extends the token
 		// run, so the joined values already hold it.
-		{"token split across caller fields", outcomeDetail(t, 3, token[:20], token[20:]), false, receiptcontent.ViewValues},
-		{"token split in reverse field order", outcomeDetail(t, 4, token[20:], token[:20]), false, receiptcontent.ViewFragments},
-		{"secret completed only by the fixed principal", outcomeDetail(t, 5, bridgeLeft, bridgeRight), false, receiptcontent.ViewFragments},
-		{"bridged secret in reverse field order", outcomeDetail(t, 6, bridgeRight, bridgeLeft), false, receiptcontent.ViewFragments},
-		{"clean after dirty", outcomeDetail(t, 7, "anonymous", clean), true, ""},
-		{"configured actor", outcomeDetail(t, 8, "pipelock", clean), true, ""},
+		{"token split across caller fields", outcomeDetail(t, 3, token[:20], token[20:], ""), false, receiptcontent.ViewValues},
+		{"token split in reverse field order", outcomeDetail(t, 4, token[20:], clean, token[:20]), false, receiptcontent.ViewFragments},
+		// The principal sits right before the request ID in projection
+		// order, so the joined values already hold this one.
+		{"secret around the fixed principal in field order", outcomeDetail(t, 5, bridgeLeft, clean, bridgeRight), false, receiptcontent.ViewValues},
+		{"secret completed only by the fixed principal", outcomeDetail(t, 6, bridgeRight, clean, bridgeLeft), false, receiptcontent.ViewFragments},
+		{"clean after dirty", outcomeDetail(t, 7, "anonymous", clean, ""), true, ""},
+		{"configured actor", outcomeDetail(t, 8, "pipelock", clean, ""), true, ""},
 	}
 
 	scalar := receiptcontent.Detector(sc.ScanTextForDLPQuiet)

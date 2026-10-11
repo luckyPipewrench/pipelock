@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -275,5 +277,29 @@ func TestValidateReceiptPublicSafe_AllCapturedReceiptsPass(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateReceiptPublicSafe_ProxyRequestIDShapes(t *testing.T) {
+	t.Parallel()
+	for _, requestID := range []string{"req-12", receiptcontent.NewRequestID()} {
+		ar := safeBaseRecord()
+		ar.RequestID = requestID
+		if err := ValidateReceiptPublicSafe(ar); err != nil {
+			t.Fatalf("proxy request id %q rejected: %v", requestID, err)
+		}
+	}
+	for _, requestID := range []string{
+		"req-01a12bcb-6bb0-4e78-8522-f69bdaf2e4c0", // version 4, not a minted v7
+		"req-01A12BCB-6BB0-7E78-8522-F69BDAF2E4C0",
+		"req-01a12bcb-6bb0-7e78-8522-f69bdaf2e4c0x",
+		"req-01a12bcb6bb07e788522f69bdaf2e4c0",
+		"req-",
+	} {
+		ar := safeBaseRecord()
+		ar.RequestID = requestID
+		if err := ValidateReceiptPublicSafe(ar); err == nil {
+			t.Fatalf("request id %q was accepted", requestID)
+		}
 	}
 }

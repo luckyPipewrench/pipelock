@@ -223,6 +223,9 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 	// A fixed value is public text, so repeating it adds nothing: it joins the
 	// bridge set once, at its first position.
 	for i, a := range p.atoms {
+		if a.Standalone {
+			continue // scanned alone, structured and joined; never a fragment
+		}
 		if a.Fixed {
 			if _, dup := bridged[a.Text]; !dup {
 				bridged[a.Text] = struct{}{}

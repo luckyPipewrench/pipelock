@@ -163,9 +163,11 @@ type Emitter struct {
 	sanitize  SanitizeFunc
 	principal string
 	actor     string
-	clock     func() time.Time
-	eventID   func() (string, error)
-	session   string
+	// stamper records with principal and actor fixed (see contentStamper).
+	stamper *contractreceipt.Stamper
+	clock   func() time.Time
+	eventID func() (string, error)
+	session string
 
 	mu            sync.Mutex
 	chainSeq      uint64
@@ -202,6 +204,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		sanitize:      cfg.Sanitize,
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
+		stamper:       evidenceStamper.WithRetained(cfg.Principal, cfg.Actor),
 		clock:         clock,
 		eventID:       eventID,
 		chainSeq:      cfg.ResumeSeq,
@@ -249,6 +252,15 @@ var ErrEmitterRetired = errors.New("proxydecision: emitter retired")
 // evidenceStamper is this package's capability to record the v2 receipts it
 // builds and signs. It never leaves the package.
 var evidenceStamper = contractreceipt.NewStamper("contract.proxydecision")
+
+// contentStamper is the stamper narrowed to this emitter's configured
+// principal and actor, which every receipt it writes stamps unchanged.
+func (e *Emitter) contentStamper() *contractreceipt.Stamper {
+	if e.stamper != nil {
+		return e.stamper
+	}
+	return evidenceStamper
+}
 
 // Retire atomically stops further emission and returns the final chain head,
 // so a successor resumes from the last recorded receipt even when requests
@@ -363,7 +375,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 		KeyPurpose:  keyPurposeReceiptSigning,
 		Algorithm:   signatureAlgorithm,
 	}
-	prescan, prescanErr := evidenceStamper.Prescan(context.Background(), e.recorder, template)
+	prescan, prescanErr := e.contentStamper().Prescan(context.Background(), e.recorder, template)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -414,7 +426,7 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 	if err != nil {
 		return fmt.Errorf("hash proxy_decision receipt: %w", err)
 	}
-	recordErr := evidenceStamper.RecordPrescanned(context.Background(), e.recorder, e.session, rcpt, durable, prescan)
+	recordErr := e.contentStamper().RecordPrescanned(context.Background(), e.recorder, e.session, rcpt, durable, prescan)
 	if errors.Is(recordErr, contractreceipt.ErrNoDurableRecorder) {
 		return errors.New("proxy_decision recorder does not support durable writes")
 	}

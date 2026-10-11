@@ -640,8 +640,10 @@ signer keys, nonces, timestamps and IDs that Pipelock generated are never
 scanned, so a signature or chain head that happens to resemble a rule-bundle
 pattern cannot refuse receipts. The same holds for the random suffix of a run
 session (`<base>.run.<suffix>`) and for a policy hash Pipelock computed from its
-configuration. An ID, hash or session suffix a caller supplied is scanned like
-any other content, even when it has the same shape as a generated one.
+configuration. A request ID the proxy minted (`req-` followed by a UUID that
+carries this process's proof) is generated too. An ID, hash or session suffix a
+caller supplied is scanned like any other content, even when it has the same
+shape as a generated one.
 
 Content is scanned alone, as a joined value list, as reassembled fragments,
 and as structured JSON.
@@ -655,13 +657,22 @@ client search, but each may stand as one piece between client fragments, in
 any position, because a credential can contain a fixed word (a host name
 holding the principal "local", for example). A fixed value repeated in a
 receipt counts once. For v1 action receipts the fixed values are the emitter's
-configured principal and default actor, the recorder session base in a session
-opener, the fixed session-control targets and recognized transport labels. An
-agent override that differs from the configured actor, or an unrecognized
-transport label, is a client part. For v2 receipts, recognized payload-kind,
-action-type, transport, verdict and decision-source labels are fixed;
-principal, actor and arbitrary payload values are client parts. Unknown fields
-and caller-chosen member names are always client parts.
+configured principal and default actor, the `anonymous` actor recorded for a
+request that names no agent, the recorder session base in a session opener,
+the fixed session-control targets, recognized transport labels and recognized
+decision layer names. An agent override that differs from the configured
+actor, or an unrecognized transport or layer label, is a client part. For v2
+receipts, recognized payload-kind, action-type, transport, verdict and
+decision-source labels are fixed, and so are the principal and actor when they
+are the values the emitter was configured with; arbitrary payload values are
+client parts. Unknown fields and caller-chosen member names are always client
+parts.
+
+The decision text Pipelock formats for a receipt (the v1 `pattern` and the v2
+`payload.rule_id`, such as `status=200 bytes=2 reason=complete`) is scanned
+alone, in the joined value list and as structured JSON, but is not a
+reassembly piece. It interpolates values, so it has no fixed vocabulary, and as
+a piece it would multiply the search on every receipt.
 
 The recorder's derived mirror fields take the same role: they repeat detail
 content with fixed formatting, so each may stand as one piece but is not a
@@ -669,6 +680,8 @@ client fragment. Unattested mirror fields are client parts. A split that
 needs two or more fixed values as separate pieces is outside the bound, as is
 a split that needs a constant the receipt does not carry as text (an enum
 value that is dropped from the scanned content, such as a reversibility label).
+So is a split between the decision text and a field it does not sit next to
+in field order.
 
 Reassembly follows field order, skipping unrelated parts. It tries every order
 of 2 or 3 parts and the reverse order of 4. A receipt of at most 20 client

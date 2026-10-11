@@ -46,6 +46,22 @@ func NewGeneratedID() GeneratedID {
 	return GeneratedID{s: uuid.UUID(b).String()}
 }
 
+// RequestIDPrefix starts the proxy's request IDs. NewRequestID wraps a
+// generated ID in it, so a request ID keeps its familiar shape and still
+// carries this process's origin proof.
+const RequestIDPrefix = "req-"
+
+// NewRequestID mints a proxy request ID carrying this process's origin
+// proof. It returns "" if the system random source fails; the caller then
+// uses an unproven ID, which is scanned as content.
+func NewRequestID() string {
+	id := NewGeneratedID().String()
+	if id == "" {
+		return ""
+	}
+	return RequestIDPrefix + id
+}
+
 // VerifyGeneratedID reports whether s is the exact canonical text of an
 // identifier minted by NewGeneratedID in this process. Any other value,
 // including a well-formed UUIDv7 a caller chose, is not generated.

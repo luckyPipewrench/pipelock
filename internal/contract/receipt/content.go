@@ -26,19 +26,23 @@ const EvidenceReceiptContentKind = "pipelock.evidence_receipt.v2"
 // envelope's generated fields. Payload members are all content: every
 // registered payload kind is scanned, and an unknown member is scanned too.
 var evidenceReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
-	Kind:   EvidenceReceiptContentKind,
-	Fields: evidenceReceiptFields(),
-	Outer:  evidenceReceiptOuter,
-	FixedValues: map[string][]string{
-		"payload_kind":             {string(PayloadProxyDecision), string(PayloadProxyDecisionWithSpans), string(PayloadSecretEgressDecisionV1), string(PayloadContractRatified), string(PayloadContractPromoteIntent), string(PayloadContractPromoteCommitted), string(PayloadContractRollbackAuthorized), string(PayloadContractRollbackCommitted), string(PayloadContractDemoted), string(PayloadContractExpired), string(PayloadContractDrift), string(PayloadShadowDelta), string(PayloadOpportunityMissing), string(PayloadKeyRotation), string(PayloadContractRedactionRequest), string(PayloadDeferOpened), string(PayloadDeferResolved)},
-		"payload.transport":        {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse"},
-		"payload.action_type":      {"read", "write", "http_request", "mcp_tool_call", "websocket_frame"},
-		"payload.verdict":          {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
-		"payload.live_verdict":     {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
-		"payload.winning_source":   {"scanner", "kill_switch", "contract", "policy"},
-		"payload.policy_sources[]": {"scanner", "kill_switch", "contract", "policy"},
-	},
+	Kind:        EvidenceReceiptContentKind,
+	Fields:      evidenceReceiptFields(),
+	Outer:       evidenceReceiptOuter,
+	FixedValues: evidenceReceiptFixedValues,
 })
+
+// evidenceReceiptFixedValues are the producer constants of a v2 receipt:
+// each may stand as the one fixed piece of a fragment combination.
+var evidenceReceiptFixedValues = map[string][]string{
+	"payload_kind":             {string(PayloadProxyDecision), string(PayloadProxyDecisionWithSpans), string(PayloadSecretEgressDecisionV1), string(PayloadContractRatified), string(PayloadContractPromoteIntent), string(PayloadContractPromoteCommitted), string(PayloadContractRollbackAuthorized), string(PayloadContractRollbackCommitted), string(PayloadContractDemoted), string(PayloadContractExpired), string(PayloadContractDrift), string(PayloadShadowDelta), string(PayloadOpportunityMissing), string(PayloadKeyRotation), string(PayloadContractRedactionRequest), string(PayloadDeferOpened), string(PayloadDeferResolved)},
+	"payload.transport":        {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse"},
+	"payload.action_type":      {"read", "write", "http_request", "mcp_tool_call", "websocket_frame"},
+	"payload.verdict":          {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
+	"payload.live_verdict":     {"allow", "block", "warn", "ask", "strip", "forward", "defer"},
+	"payload.winning_source":   {"scanner", "kill_switch", "contract", "policy"},
+	"payload.policy_sources[]": {"scanner", "kill_switch", "contract", "policy"},
+}
 
 func evidenceReceiptFields() map[string]receiptcontent.Class {
 	f := map[string]receiptcontent.Class{
@@ -66,10 +70,15 @@ func evidenceReceiptFields() map[string]receiptcontent.Class {
 	// Declared payload members have fixed names; unknown members remain key
 	// atoms. Payload values remain content.
 	for _, name := range []string{
-		"action_type", "target", "transport", "verdict", "live_verdict", "policy_sources", "winning_source", "rule_id",
+		"action_type", "target", "transport", "verdict", "live_verdict", "policy_sources", "winning_source",
 	} {
 		f["payload."+name] = receiptcontent.Content
 	}
+	// The rule ID carries Pipelock's formatted decision text (an outcome line
+	// interpolates status, size and reason). It is scanned alone, in the
+	// structured projection and in the joined values, but does not multiply
+	// the fragment search.
+	f["payload.rule_id"] = receiptcontent.Standalone
 	f["payload.policy_sources[]"] = receiptcontent.Content
 	return f
 }
@@ -139,7 +148,12 @@ var ErrNoStamper = errors.New("evidence receipt recorded without a producer stam
 // from content. A Stamper records a receipt value, never bytes, so serialized
 // receipt bytes have no path to that classification. NewStamper returns it
 // once per producer, which keeps it private to the producing package.
-type Stamper struct{ name string }
+type Stamper struct {
+	name string
+	// producer is the schema capability, narrowed by WithRetained; nil means
+	// the registered v2 producer.
+	producer *receiptcontent.Producer
+}
 
 var (
 	stampersMu sync.Mutex
@@ -160,6 +174,33 @@ func NewStamper(producer string) *Stamper {
 	}
 	stampers[producer] = struct{}{}
 	return &Stamper{name: producer}
+}
+
+// WithRetained derives a stamper whose producer treats the emitter's own
+// configured principal and actor as fixed values, as the v1 emitter does.
+// Those values are still scanned in every view and can still complete a
+// split as the one fixed piece of a combination; they no longer combine with
+// each other. Pass only values the emitter stamps from its configuration,
+// never per-request text. Empty values are ignored.
+func (s *Stamper) WithRetained(principal, actor string) *Stamper {
+	if s == nil {
+		return nil
+	}
+	values := map[string][]string{}
+	if principal != "" {
+		values["principal"] = []string{principal}
+	}
+	if actor != "" {
+		values["actor"] = []string{actor}
+	}
+	return &Stamper{name: s.name, producer: s.contentProducer().WithFixedValues(values)}
+}
+
+func (s *Stamper) contentProducer() *receiptcontent.Producer {
+	if s.producer != nil {
+		return s.producer
+	}
+	return evidenceReceiptProducer
 }
 
 // Record writes one signed v2 receipt that this stamper's producer built.
@@ -194,7 +235,7 @@ func (s *Stamper) Prescan(ctx context.Context, rec EntryRecorder, rcpt EvidenceR
 	if err != nil {
 		return nil, fmt.Errorf("marshal evidence receipt: %w", err)
 	}
-	rep, cs, err := cr.ScanReceiptContent(ctx, evidenceReceiptProducer, rcptJSON)
+	rep, cs, err := cr.ScanReceiptContent(ctx, s.contentProducer(), rcptJSON)
 	if err == nil && cs == nil {
 		err = rep.Err()
 	}
@@ -220,10 +261,23 @@ func (s *Stamper) RecordPrescanned(ctx context.Context, rec EntryRecorder, sessi
 	if pre != nil {
 		cs = pre.cs
 	}
-	return recordEvidence(ctx, rec, session, rcptJSON, durable, cs)
+	return recordEvidenceAs(ctx, s.contentProducer(), rec, evidenceWrite{session: session, rcptJSON: rcptJSON, durable: durable, pre: cs})
 }
 
-func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool, pre *recorder.ContentScan) error {
+func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcptJSON []byte, durable bool) error {
+	return recordEvidenceAs(ctx, evidenceReceiptProducer, rec, evidenceWrite{session: session, rcptJSON: rcptJSON, durable: durable})
+}
+
+// evidenceWrite is one serialized v2 receipt and how to persist it.
+type evidenceWrite struct {
+	session  string
+	rcptJSON []byte
+	durable  bool
+	pre      *recorder.ContentScan
+}
+
+func recordEvidenceAs(ctx context.Context, producer *receiptcontent.Producer, rec EntryRecorder, w evidenceWrite) error {
+	session, rcptJSON, durable, pre := w.session, w.rcptJSON, w.durable, w.pre
 	outer, err := evidenceReceiptOuter(rcptJSON)
 	if err != nil {
 		return err
@@ -247,7 +301,7 @@ func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcpt
 		}
 		return dr.RecordDurable(entry)
 	}
-	scan, err := bindEvidenceContent(ctx, cr, rcptJSON, pre)
+	scan, err := bindEvidenceContent(ctx, cr, producer, rcptJSON, pre)
 	if err != nil {
 		return err
 	}
@@ -259,19 +313,19 @@ func recordEvidence(ctx context.Context, rec EntryRecorder, session string, rcpt
 
 // bindEvidenceContent binds pre to rcptJSON, or scans rcptJSON when there is
 // no prescan or its content no longer matches the final bytes.
-func bindEvidenceContent(ctx context.Context, cr contentRecorder, rcptJSON []byte, pre *recorder.ContentScan) (recorder.ReceiptScan, error) {
+func bindEvidenceContent(ctx context.Context, cr contentRecorder, producer *receiptcontent.Producer, rcptJSON []byte, pre *recorder.ContentScan) (recorder.ReceiptScan, error) {
 	if pre != nil {
-		scan, err := cr.BindReceiptContent(pre, evidenceReceiptProducer, rcptJSON)
+		scan, err := cr.BindReceiptContent(pre, producer, rcptJSON)
 		if !errors.Is(err, recorder.ErrContentChanged) {
 			return scan, err
 		}
 	}
-	rep, cs, err := cr.ScanReceiptContent(ctx, evidenceReceiptProducer, rcptJSON)
+	rep, cs, err := cr.ScanReceiptContent(ctx, producer, rcptJSON)
 	if err == nil && cs == nil {
 		err = rep.Err()
 	}
 	if err != nil {
 		return recorder.ReceiptScan{}, err
 	}
-	return cr.BindReceiptContent(cs, evidenceReceiptProducer, rcptJSON)
+	return cr.BindReceiptContent(cs, producer, rcptJSON)
 }

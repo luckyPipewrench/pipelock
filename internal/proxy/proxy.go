@@ -55,6 +55,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
@@ -185,7 +186,7 @@ var (
 	shieldReceiptOpaquePathTokenRe  = regexp.MustCompile(`(?i)^[A-F0-9]{32,}$|^[A-Za-z0-9_-]{40,}$`)
 )
 
-// requestCounter provides monotonic request IDs.
+// requestCounter numbers request IDs when a proven ID cannot be minted.
 var requestCounter atomic.Uint64
 
 const (
@@ -501,7 +502,12 @@ func requestMeta(r *http.Request) (clientIP, requestID string) {
 	if host, _, err := net.SplitHostPort(clientIP); err == nil {
 		clientIP = host
 	}
-	requestID = fmt.Sprintf("req-%d", requestCounter.Add(1))
+	// A minted ID carries this process's origin proof, so receipt content
+	// scanning knows it is Pipelock's own and skips it. If minting fails the
+	// counter ID is used, which receipts scan as ordinary content.
+	if requestID = receiptcontent.NewRequestID(); requestID == "" {
+		requestID = fmt.Sprintf("%s%d", receiptcontent.RequestIDPrefix, requestCounter.Add(1))
+	}
 	return
 }
 

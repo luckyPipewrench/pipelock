@@ -35,7 +35,7 @@ func TestEvidenceClientFragmentsRemainCandidates(t *testing.T) {
 			rcpt.Actor = tc.actor
 			payload := map[string]string{"target": tc.target, "transport": "forward", "verdict": "allow"}
 			if tc.name == "reversed payload fields" {
-				payload["rule_id"] = whole[10:]
+				payload["live_verdict"] = whole[10:] // sorts before target
 			}
 			var err error
 			rcpt.Payload, err = json.Marshal(payload)

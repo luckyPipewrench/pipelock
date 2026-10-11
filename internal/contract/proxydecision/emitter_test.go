@@ -1034,3 +1034,15 @@ func TestRetireAndResumeAtNilEmitter(t *testing.T) {
 	}
 	em.ResumeAt(3, "head")
 }
+
+// TestEmitterRecordsWithRetainedIdentity narrows the content stamper to the
+// configured principal and actor, which every receipt it writes stamps.
+func TestEmitterRecordsWithRetainedIdentity(t *testing.T) {
+	em, _, _ := newTestEmitter(t, &partialErrorRecorder{}, nil)
+	if em.contentStamper() == evidenceStamper {
+		t.Fatal("emitter records with the unnarrowed stamper")
+	}
+	if (&Emitter{}).contentStamper() != evidenceStamper {
+		t.Fatal("an emitter without a derived stamper must fall back to the package stamper")
+	}
+}

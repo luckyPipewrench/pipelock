@@ -66,9 +66,18 @@ const (
 	// "sha256:") is a digest this process computed (see digestorigin); any
 	// other value, including a chosen 64-character hex string, is Content.
 	ComputedDigest
-	// ProvenRequestID accepts generated UUIDs and Guard correlation IDs whose
-	// digest was computed locally. Every other value remains an Identity.
+	// ProvenRequestID accepts generated UUIDs, the proxy's "req-" request IDs
+	// that wrap one, and Guard correlation IDs whose digest was computed
+	// locally. Every other value remains an Identity.
 	ProvenRequestID
+	// Standalone is Content that is scanned alone, in the structured
+	// projection, and in the joined values, but is never a piece of the
+	// fragment search. It is for producer-formatted free text such as an
+	// outcome line, which interpolates values and so has no closed set, and
+	// which would otherwise multiply the fragment search on every receipt.
+	// A secret split between it and another field is still found when the
+	// two are neighbors in projection order.
+	Standalone
 )
 
 // Limits bound projection work before any expanded allocation. MaxDetailBytes
@@ -137,7 +146,7 @@ func Register(s Schema) *Producer {
 	}
 	p := &Producer{schema: &Schema{Kind: s.Kind, Outer: s.Outer, Fields: map[string]Class{}}, enums: map[string]map[string]struct{}{}}
 	for path, class := range s.Fields {
-		if class < Content || class > ProvenRequestID {
+		if class < Content || class > Standalone {
 			panic(fmt.Sprintf("receiptcontent: %s: invalid class for %q", s.Kind, path))
 		}
 		p.schema.Fields[path] = class
@@ -252,7 +261,10 @@ type Atom struct {
 	// bridges client fragments, but is not itself a client fragment.
 	Fixed    bool
 	Identity bool
-	Text     string
+	// Standalone marks Content that stays out of the fragment search (see the
+	// Standalone class); it is still scanned in every other view.
+	Standalone bool
+	Text       string
 }
 
 // Projection is the content-only view of one detail. It is immutable.
@@ -375,7 +387,7 @@ func project(p *Producer, detail []byte, outer *Outer) (*Projection, error) {
 		// class must not satisfy a prior scan's redaction decision. Fragment
 		// eligibility is also bound, so a scan under a narrower search cannot
 		// attest a projection with a wider search.
-		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t\x00%t", a.Path, a.Kind, a.Identity, a.Fixed)
+		_, _ = fmt.Fprintf(h, "\x00%s\x00%d\x00%t\x00%t\x00%t", a.Path, a.Kind, a.Identity, a.Fixed, a.Standalone)
 	}
 	proj := &Projection{kind: kind, atoms: w.atoms, structured: structured}
 	copy(proj.digest[:], h.Sum(nil))
@@ -489,6 +501,9 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 				if digest, ok := strings.CutPrefix(text, "guard-exec:"); ok && digestorigin.Computed(digest) {
 					return nil, false, nil
 				}
+				if id, ok := strings.CutPrefix(text, RequestIDPrefix); ok && VerifyGeneratedID(id) {
+					return nil, false, nil
+				}
 			}
 			if VerifyGeneratedID(text) {
 				return nil, false, nil
@@ -516,6 +531,7 @@ func (w *walker) leaf(v any, text, schemaPath, path string, class Class, classif
 	if classified && w.p != nil {
 		_, fixed = w.p.fixed[schemaPath][text]
 	}
-	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Fixed: fixed, Text: text})
+	standalone := classified && class == Standalone && !fixed
+	w.atoms = append(w.atoms, Atom{Path: path, Field: schemaPath, Kind: AtomValue, Identity: identity, Fixed: fixed, Standalone: standalone, Text: text})
 	return v, true, nil
 }

@@ -40,37 +40,71 @@ var actionReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 	FixedValues: map[string][]string{
 		"action_record.transport": {"proxy", "fetch", "forward", "connect", "intercept", "websocket", "mcp_http", "mcp_stdio", "reverse", sessionControlTransport},
 		"action_record.target":    {sessionOpenTarget, sessionHeartbeatTarget, sessionCloseTarget},
+		// The unattributed-agent sentinel. Operators cannot configure it as an
+		// agent name, so the text is always Pipelock's own.
+		"action_record.actor": {anonymousAgent},
+		// Layer names are Pipelock's decision labels. A name missing from this
+		// list stays a client fragment: the list only spends search work, it
+		// never removes a value from any view.
+		"action_record.layer": receiptLayerNames,
 	},
-	Enums: map[string][]string{
-		"action_record.action_type":       actionTypeNames(),
-		"action_record.side_effect_class": {string(SideEffectNone), string(SideEffectExternalRead), string(SideEffectExternalWrite), string(SideEffectFinancial), string(SideEffectPhysical)},
-		"action_record.reversibility":     {string(ReversibilityFull), string(ReversibilityCompensatable), string(ReversibilityIrreversible), string(ReversibilityUnknown)},
-		"action_record.verdict":           {"block", "allow", "warn", "ask", "strip", "forward", "defer"},
-		"action_record.decision_phase":    {DecisionPhaseIntent, DecisionPhaseOutcome, DecisionPhaseDefer, DecisionPhaseResolution},
-		"action_record.session_control.kind": {
-			string(SessionControlOpen), string(SessionControlHeartbeat), string(SessionControlClose),
-		},
-		// Taint and authority labels are decision codes Pipelock derives, never
-		// caller text; a value outside these lists is still scanned as content.
-		// Each fragment-search candidate costs a full detector call, so these
-		// constants must not multiply the search.
-		"action_record.session_taint_level": {"trusted", "internal_generated", "allowlisted_reference", "external_low_risk", "external_untrusted", "external_hostile"},
-		"action_record.authority_kind":      {"unknown", "external", "policy", "user_broad", "user_exact", "operator_override"},
-		"action_record.taint_decision":      {"allow", "warn", "ask", "block"},
-		"action_record.taint_decision_reason": {
-			"taint_safe_read_only_action", "trusted_or_allowlisted_context", "taint_permissive_observe_only",
-			"sensitive_action_after_hostile_external_exposure", "fail_safe_low_confidence_read_after_untrusted_exposure",
-			"protected_write_after_untrusted_external_exposure", "elevated_write_after_untrusted_external_exposure",
-			"mutating_exec_after_untrusted_external_exposure", "secret_use_after_untrusted_external_exposure",
-			"external_publish_after_untrusted_external_exposure", "mutating_network_after_untrusted_external_exposure",
-			"no_taint_escalation_required",
-		},
-		// The request method comes from the client; only the standard methods
-		// are a known vocabulary.
-		"action_record.method": {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"},
-	},
+	Enums: actionReceiptEnums,
 	Outer: actionReceiptOuter,
 })
+
+// actionReceiptEnums are the closed vocabularies of a v1 receipt. A value
+// outside its list is still scanned as content.
+var actionReceiptEnums = map[string][]string{
+	"action_record.action_type":       actionTypeNames(),
+	"action_record.side_effect_class": {string(SideEffectNone), string(SideEffectExternalRead), string(SideEffectExternalWrite), string(SideEffectFinancial), string(SideEffectPhysical)},
+	"action_record.reversibility":     {string(ReversibilityFull), string(ReversibilityCompensatable), string(ReversibilityIrreversible), string(ReversibilityUnknown)},
+	"action_record.verdict":           {"block", "allow", "warn", "ask", "strip", "forward", "defer"},
+	"action_record.decision_phase":    {DecisionPhaseIntent, DecisionPhaseOutcome, DecisionPhaseDefer, DecisionPhaseResolution},
+	"action_record.session_control.kind": {
+		string(SessionControlOpen), string(SessionControlHeartbeat), string(SessionControlClose),
+	},
+	// Taint and authority labels are decision codes Pipelock derives, never
+	// caller text; a value outside these lists is still scanned as content.
+	// Each fragment-search candidate costs a full detector call, so these
+	// constants must not multiply the search.
+	"action_record.session_taint_level": {"trusted", "internal_generated", "allowlisted_reference", "external_low_risk", "external_untrusted", "external_hostile"},
+	"action_record.authority_kind":      {"unknown", "external", "policy", "user_broad", "user_exact", "operator_override"},
+	"action_record.taint_decision":      {"allow", "warn", "ask", "block"},
+	"action_record.taint_decision_reason": {
+		"taint_safe_read_only_action", "trusted_or_allowlisted_context", "taint_permissive_observe_only",
+		"sensitive_action_after_hostile_external_exposure", "fail_safe_low_confidence_read_after_untrusted_exposure",
+		"protected_write_after_untrusted_external_exposure", "elevated_write_after_untrusted_external_exposure",
+		"mutating_exec_after_untrusted_external_exposure", "secret_use_after_untrusted_external_exposure",
+		"external_publish_after_untrusted_external_exposure", "mutating_network_after_untrusted_external_exposure",
+		"no_taint_escalation_required",
+	},
+	// The request method comes from the client; only the standard methods
+	// are a known vocabulary.
+	"action_record.method": {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"},
+}
+
+// anonymousAgent is the agent name Pipelock records for a request that names
+// no agent (see edition.ExtractAgent). Configuration reserves it.
+const anonymousAgent = "anonymous"
+
+// receiptLayerNames are the decision layers Pipelock writes into receipts:
+// scanner names and the proxy's own block and outcome layers.
+var receiptLayerNames = []string{
+	"outcome", "receipt_emission_failed", "receipt_emission", "core_dlp", "core_ssrf", "core_response",
+	"dlp", "body_dlp", "header_dlp", "dlp_header", "denial_of_wallet", "parser", "scheme", "length",
+	"ssrf", "ssrf_metadata", "allowlist", "blocklist", "domain_block", "ratelimit", "entropy",
+	"subdomain_entropy", "databudget", "budget", "path_traversal", "crlf_injection", "context",
+	"mcp_tool_scanning", "mcp_tool_scan", "mcp_response_scan", "mcp_input_scanning", "mcp_input_scan",
+	"mcp_contract", "mcp_transport_admission", "response_scan", "response_scan_error", "response_size",
+	"response_decision", "cross_request", "media_policy", "kill_switch", "ws_protocol",
+	"tls_response_blocked", "tls_authority_mismatch", "taint_policy", "browser_shield", "browser_cache",
+	"shield_oversize", "shield_uninspectable", "authenticated_artifact", "unscannable_passthrough",
+	"a2a_header", "a2a_response", "a2a_card_signature", "a2a_card_drift", "session_close",
+	"session_capacity", "session_deny", "identity_reload", "git_protection", "contract", "authority",
+	"request_policy", "mediation_envelope", "credential_audience_receipt", "issuer_allow_receipt",
+	"dlp_credential_audience_allow", "dlp_issuer_cookie_allow", "airlock", "address_protection",
+	"adaptive_enforcement", "canary", "guard", "scanner", "evidence_selfaudit_violation",
+}
 
 // groupGateProducer is the group opener's capability for its gate entries.
 var groupGateProducer = receiptcontent.Register(receiptcontent.Schema{
@@ -178,32 +212,36 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"transport":                           cContent,
 		"method":                              cEnum,
 		"layer":                               cContent,
-		"pattern":                             cContent,
-		"severity":                            cContent,
-		"request_id":                          receiptcontent.ProvenRequestID,
-		"chain_prev_hash":                     cGenerated,
-		"chain_seq":                           cGenerated,
-		"run_nonce":                           cGenerated,
-		"key_transition":                      cGenerated,
-		"venue":                               cContent,
-		"jurisdiction":                        cContent,
-		"rulebook_id":                         cContent,
-		"remedy_class":                        cContent,
-		"contestation_window":                 cContent,
-		"redaction":                           cContent,
-		"redaction.profile":                   cContent,
-		"redaction.provider":                  cContent,
-		"redaction.parser":                    cContent,
-		"redaction.total_redactions":          cContent,
-		"redaction.by_class":                  cDynamic,
-		"redaction.by_class.*":                cContent,
-		"redaction.cache_boundary_kept":       cContent,
-		"shield":                              cContent,
-		"session_control":                     cContent,
-		"session_control.kind":                cEnum,
-		"session_control.open":                cContent,
-		"session_control.heartbeat":           cContent,
-		"session_control.close":               cContent,
+		// The pattern is free text Pipelock formats per decision (an outcome
+		// line interpolates status, size and reason). It is scanned alone, in
+		// the structured projection and in the joined values, but does not
+		// multiply the fragment search.
+		"pattern":                       receiptcontent.Standalone,
+		"severity":                      cContent,
+		"request_id":                    receiptcontent.ProvenRequestID,
+		"chain_prev_hash":               cGenerated,
+		"chain_seq":                     cGenerated,
+		"run_nonce":                     cGenerated,
+		"key_transition":                cGenerated,
+		"venue":                         cContent,
+		"jurisdiction":                  cContent,
+		"rulebook_id":                   cContent,
+		"remedy_class":                  cContent,
+		"contestation_window":           cContent,
+		"redaction":                     cContent,
+		"redaction.profile":             cContent,
+		"redaction.provider":            cContent,
+		"redaction.parser":              cContent,
+		"redaction.total_redactions":    cContent,
+		"redaction.by_class":            cDynamic,
+		"redaction.by_class.*":          cContent,
+		"redaction.cache_boundary_kept": cContent,
+		"shield":                        cContent,
+		"session_control":               cContent,
+		"session_control.kind":          cEnum,
+		"session_control.open":          cContent,
+		"session_control.heartbeat":     cContent,
+		"session_control.close":         cContent,
 		// The recorder session embeds the operator's session base; it is a
 		// pairing identity, validated at acquisition and never redacted. Only
 		// the base is projected; the proven run suffix is generated.

@@ -161,10 +161,13 @@ type Recorder struct {
 	cfg             Config
 	redactFn        RedactFunc
 	contentDetector receiptcontent.Detector
-	privKey         ed25519.PrivateKey
-	escrowPub       *[x25519KeySize]byte
-	observer        EntryObserver
-	metrics         MetricsSink
+	// contentCache is set only when contentDetector is a cached scanner
+	// generation (NewWithScanner).
+	contentCache *receiptcontent.CachedDetector
+	privKey      ed25519.PrivateKey
+	escrowPub    *[x25519KeySize]byte
+	observer     EntryObserver
+	metrics      MetricsSink
 
 	mu      sync.Mutex
 	groupMu sync.Mutex
@@ -2079,8 +2082,16 @@ func NewWithScanner(cfg Config, sc *scanner.Scanner, key ed25519.PrivateKey) (*R
 	r.receiptScanner = sc
 	if cfg.Redact && !r.nop {
 		// Content views scan many small texts per receipt; the quiet variant
-		// keeps warn telemetry to the one request scan that owns it.
-		r.contentDetector = sc.ScanTextForDLPQuiet
+		// keeps warn telemetry to the one request scan that owns it. The
+		// scanner generation is immutable for this recorder's lifetime, so a
+		// text it judged clean is remembered across receipts and requests.
+		cached, err := receiptcontent.NewCachedDetector(sc.ScanTextForDLPQuiet, receiptcontent.DefaultCleanCacheEntries)
+		if err != nil {
+			_ = r.Close()
+			return nil, err
+		}
+		r.contentCache = cached
+		r.contentDetector = cached.Detect
 	}
 	return r, nil
 }

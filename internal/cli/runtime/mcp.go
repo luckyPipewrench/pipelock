@@ -125,27 +125,27 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 	for _, entry := range raw {
 		key, value, ok := strings.Cut(entry, ":")
 		if !ok {
-			return nil, fmt.Errorf("--header %q: expected 'Key: Value' format", entry)
+			return nil, errors.New("--header: expected 'Key: Value' format")
 		}
 		key = strings.TrimSpace(key)
 		if key == "" {
-			return nil, fmt.Errorf("--header %q: key is empty", entry)
+			return nil, errors.New("--header: key is empty")
 		}
 		if !validHeaderName(key) {
-			return nil, fmt.Errorf("--header %q: key contains invalid characters", entry)
+			return nil, errors.New("--header: key contains invalid characters")
 		}
 		// Validate the raw value before trimming so leading/trailing CRLF,
 		// control chars, or unicode whitespace are rejected rather than
 		// silently stripped by TrimSpace and then accepted.
 		if !validHeaderValue(value) {
-			return nil, fmt.Errorf("--header %q: value contains invalid characters", entry)
+			return nil, errors.New("--header: value contains invalid characters")
 		}
 		// Trim ASCII space/tab only after validation; full TrimSpace would
 		// strip unicode whitespace that the validator just rejected, leaving
 		// the bypass available through the header value's edges.
 		value = strings.Trim(value, " \t")
 		if _, reserved := reservedTransportHeaders[http.CanonicalHeaderKey(key)]; reserved {
-			return nil, fmt.Errorf("--header %q: %q is managed by the MCP HTTP transport and cannot be overridden via --header", entry, key)
+			return nil, fmt.Errorf("--header: %q is managed by the MCP HTTP transport and cannot be overridden via --header", key)
 		}
 		canonicalKey := http.CanonicalHeaderKey(key)
 		if _, exists := h[canonicalKey]; exists {
@@ -153,7 +153,7 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 				h.Add(canonicalKey, value)
 				continue
 			}
-			return nil, fmt.Errorf("--header %q: duplicate header %q is ambiguous", entry, canonicalKey)
+			return nil, fmt.Errorf("--header: duplicate header %q is ambiguous", canonicalKey)
 		}
 		h.Add(canonicalKey, value)
 	}
@@ -896,13 +896,8 @@ Key-free evidence capture:
 				if fileErr != nil {
 					return fileErr
 				}
-				mergedHeaders := append([]string{}, fileHeaders...)
-				mergedHeaders = append(mergedHeaders, rawHeaders...)
-				for _, entry := range carrierEntries {
-					mergedHeaders = append(mergedHeaders, entry.Header+": "+entry.Value)
-				}
 				var headerErr error
-				upstreamHeaders, headerErr = parseHeaderFlags(mergedHeaders)
+				upstreamHeaders, headerErr = parseHeaderFlags(mergeHeaderLines(fileHeaders, rawHeaders, carrierEntries))
 				if headerErr != nil {
 					return headerErr
 				}

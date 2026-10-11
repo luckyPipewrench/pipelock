@@ -63,12 +63,24 @@ func (e *enterpriseEdition) LookupProfile(name string) (*edition.ResolvedAgent, 
 	return ra, true
 }
 
+// SetLicenseRevoked invalidates every named-profile lookup, including snapshots
+// held by long-lived handlers. The default profile remains available.
+func (e *enterpriseEdition) SetLicenseRevoked(revoked bool) {
+	e.registry.licenseRevoked.Store(revoked)
+}
+
 // Reload rebuilds the edition from new config. Returns a NEW immutable
 // Edition instance. The caller atomically swaps and closes the old one.
 func (e *enterpriseEdition) Reload(cfg *config.Config, sc *scanner.Scanner) (edition.Edition, error) {
 	reg, err := NewAgentRegistry(cfg, sc)
 	if err != nil {
 		return nil, err
+	}
+	// Preserve runtime revocation across unrelated reloads and share updates
+	// with handlers holding the previous edition. A replacement token starts
+	// with the freshly validated configuration's entitlement state.
+	if cfg.LicenseKey == e.cfg.LicenseKey {
+		reg.licenseRevoked = e.registry.licenseRevoked
 	}
 	return &enterpriseEdition{registry: reg, cfg: cfg, sc: sc}, nil
 }
@@ -107,7 +119,7 @@ func (e *enterpriseEdition) AgentBudgetSnapshots(_ context.Context, limit int) (
 			break
 		}
 		ra := e.registry.Lookup(name)
-		if ra == nil {
+		if ra == nil || ra.Name != name {
 			continue
 		}
 		sp, ok := ra.Budget.(edition.BudgetSnapshotProvider)

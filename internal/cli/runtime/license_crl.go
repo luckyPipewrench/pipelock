@@ -19,17 +19,13 @@ import (
 const licenseRuntimeCheckInterval = time.Minute
 
 func (s *Server) startLicenseCRLWatcher(ctx context.Context) {
-	if s.refreshLicenseCRLOnce() {
-		return
-	}
+	s.refreshLicenseCRLOnce()
 	ticker := time.NewTicker(licenseRuntimeCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			if s.refreshLicenseCRLOnce() {
-				return
-			}
+			s.refreshLicenseCRLOnce()
 		case <-ctx.Done():
 			return
 		}
@@ -37,7 +33,14 @@ func (s *Server) startLicenseCRLWatcher(ctx context.Context) {
 }
 
 func (s *Server) refreshLicenseCRLOnce() bool {
-	failClosed, err := s.checkLicenseCRL()
+	if s == nil || s.proxy == nil {
+		return false
+	}
+	cfg := s.proxy.CurrentConfig()
+	failClosed, err := checkLicenseCRLConfig(cfg)
+	if !s.proxy.SetLicenseRevoked(cfg, failClosed) {
+		return false
+	}
 	if err != nil {
 		s.logger.LogError(auditLicenseCRLContext(), err)
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license CRL refresh failed closed: %v\n", err)
@@ -57,7 +60,10 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 	if s == nil || s.proxy == nil {
 		return false, nil
 	}
-	cfg := s.proxy.CurrentConfig()
+	return checkLicenseCRLConfig(s.proxy.CurrentConfig())
+}
+
+func checkLicenseCRLConfig(cfg *config.Config) (bool, error) {
 	if cfg == nil || cfg.LicenseKey == "" {
 		return false, nil
 	}

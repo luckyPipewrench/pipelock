@@ -176,7 +176,11 @@ func TestFailedRotationSyncReleasesWaitingWritesWithAnError(t *testing.T) {
 	if err := h.pending.Wait(); !errors.Is(err, ErrDurability) {
 		t.Fatalf("pending entry: %v, want ErrDurability", err)
 	}
-	<-h.rotating
+	// The rotating write was appended before the failure surfaced, so it can
+	// never be confirmed either.
+	if err := <-h.rotating; !errors.Is(err, ErrDurability) && !errors.Is(err, ErrDurabilityInherited) {
+		t.Fatalf("rotating entry: %v, want a durability failure", err)
+	}
 	if err := <-arriving; !errors.Is(err, ErrDurabilityInherited) {
 		t.Fatalf("arriving entry: %v, want ErrDurabilityInherited", err)
 	}
